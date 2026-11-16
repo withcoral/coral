@@ -469,7 +469,7 @@ impl AccountModule {
                     &client.redirect_uri,
                 )
                 .await
-                .map_err(|error| Error::AuthorizationDiscovery(error.code()))?;
+                .map_err(|error| Error::AuthorizationDiscovery(error.into()))?;
                 Ok(StoredClient {
                     bootstrap: OAuthClientBootstrap::DynamicClientRegistration,
                     client_id: registered.client_id().to_owned(),

@@ -291,6 +291,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             .await
             .map_err(execution::run_error)?;
         let services = self.clone();
+        let mut stopping = self.stopping.clone();
         let (sender, receiver) = tokio::sync::mpsc::channel(1);
         // The subscription predates the caller's first read, so that read is current.
         sender
@@ -300,6 +301,11 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             loop {
                 let result = tokio::select! {
                     () = sender.closed() => break,
+                    // A stopping listener waits for its open streams, so this
+                    // one ends now. UNAVAILABLE has the client connect again.
+                    () = async { drop(stopping.wait_for(|stopping| *stopping).await) } => {
+                        Err(Status::unavailable("activity stream unavailable"))
+                    }
                     result = async {
                         let wake = observer.next().await.map_err(execution::run_error)?;
                         services.principal(&request, None, PrivateAudience::Reef).await?;

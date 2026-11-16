@@ -82,6 +82,31 @@ async fn activity_watch_reports_a_committed_change() {
     assert!(next.changed, "a change is not reported as a heartbeat");
 }
 
+/// A stream does not outlive its listener: when the application stops it, the
+/// stream ends with the status that tells Reef to connect again.
+#[tokio::test]
+async fn activity_watch_ends_unavailable_when_the_listener_stops() {
+    let f = Fixture::new().await;
+    let mut stream = f
+        .activity()
+        .watch_activity(request(
+            wire::WatchActivityRequest {},
+            &f.token(&f.member, "reef"),
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(stream.message().await.unwrap().unwrap().changed);
+    f.stop.send_replace(true);
+    // The next heartbeat is five seconds away, so the next message is the end.
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(2), stream.message())
+        .await
+        .expect("the stop signal ends the stream")
+        .expect_err("a stopped listener does not end the stream as if it were complete");
+    assert_eq!(ended.code(), tonic::Code::Unavailable);
+}
+
 #[tokio::test]
 async fn a_removed_agent_keeps_owner_only_attribution_without_a_registration() {
     let f = Fixture::new().await;

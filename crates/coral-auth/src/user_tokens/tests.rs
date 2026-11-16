@@ -139,6 +139,22 @@ impl Fixture {
         refresh_eligible: bool,
         now: i64,
     ) -> Result<IssuedTokens, TokenRefusal> {
+        let code = self
+            .issue_code(client, resource, &target, refresh_eligible, now)
+            .await;
+        self.redeem(&code, client, resource, target, now + 1).await
+    }
+
+    /// Issues a fresh code to `client` for `resource`, as a sign-in for
+    /// `target` would, and returns it.
+    pub(super) async fn issue_code(
+        &self,
+        client: &str,
+        resource: &str,
+        target: &AccessTarget,
+        refresh_eligible: bool,
+        now: i64,
+    ) -> String {
         let index = self
             .codes_issued
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -157,10 +173,23 @@ impl Fixture {
             .issue(&code, &sign_in, &grant, now)
             .await
             .unwrap();
+        code
+    }
+
+    /// Redeems a code that [`Self::issue_code`] issued, with the bindings it
+    /// was issued under.
+    pub(super) async fn redeem(
+        &self,
+        code: &str,
+        client: &str,
+        resource: &str,
+        target: AccessTarget,
+        now: i64,
+    ) -> Result<IssuedTokens, TokenRefusal> {
         let client = authenticated(self.database.database(), client).await;
         self.tokens
             .redeem_code(
-                &code,
+                code,
                 CodeRedemption {
                     client: &client,
                     redirect_uri: REDIRECT,
@@ -168,7 +197,7 @@ impl Fixture {
                     resource,
                 },
                 target,
-                now + 1,
+                now,
             )
             .await
     }
@@ -571,9 +600,16 @@ async fn refresh_rechecks_current_organization_membership() {
 }
 
 /// A storage outage is unavailability, never a rejected credential, and
-/// leaves the presented token able to refresh once storage recovers.
+/// leaves the presented token able to refresh once storage recovers. The
+/// refusal carries no cause, so each one logs the database error's kind, and
+/// never its text, which names the statement.
 #[tokio::test]
 async fn a_storage_outage_is_unavailable_and_strands_no_token() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let logs = coral_telemetry::testing::ExportCapture::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(logs.log_layer()));
     let fixture = Fixture::new().await;
     let token = fixture.refreshable().await;
     fixture
@@ -589,6 +625,24 @@ async fn a_storage_outage_is_unavailable_and_strands_no_token() {
         fixture.tokens.revoke(&token, &fixture.client).await,
         Err(TokenRefusal::Unavailable)
     );
+    let failures = logs
+        .log_records()
+        .into_iter()
+        .filter(|record| record.contains("the database failed a statement"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        failures.len(),
+        2,
+        "one record for each refusal: {failures:?}"
+    );
+    for failure in &failures {
+        assert!(failure.contains("error.type"), "{failure}");
+        assert!(failure.contains("sqlx"), "{failure}");
+    }
+    let exported = logs.text();
+    for private in ["oauth_refresh_tokens", token.as_str()] {
+        assert!(!exported.contains(private), "{private} in {exported}");
+    }
     fixture
         .database
         .execute_fixture_sql("ALTER TABLE refresh_tokens_away RENAME TO oauth_refresh_tokens")

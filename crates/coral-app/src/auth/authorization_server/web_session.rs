@@ -16,7 +16,8 @@
 //! `invalid_client` means the client did not authenticate as it registered.
 //! `invalid_grant` means the client must sign in again. `503` means storage
 //! did not answer and the request may be retried: none of these requests
-//! changes anything that a retry could repeat.
+//! changes anything that a retry could repeat. `500` means a retry fails the
+//! same way: a token could not be signed, or stored state does not decode.
 
 use std::time::Duration;
 
@@ -24,7 +25,7 @@ use axum::body::to_bytes;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use coral_auth::oauth_clients::AuthenticatedClient;
+use coral_auth::oauth_clients::{AuthenticatedClient, ClientAuthenticationError};
 use coral_auth::user_tokens::TokenRefusal;
 use coral_telemetry::safe;
 use zeroize::Zeroizing;
@@ -139,8 +140,11 @@ async fn read_form(
             FormError::Malformed | FormError::InvalidScope => TokenError::InvalidRequest,
         }))
     })?;
-    let client = authenticate(state, header, &mut form, || {
-        refused(TokenRefusal::Unavailable)
+    let client = authenticate(state, header, &mut form, |error| {
+        refused(match error {
+            ClientAuthenticationError::Corrupt => TokenRefusal::Corrupt(error.code()),
+            _ => TokenRefusal::Unavailable,
+        })
     })
     .await?;
     Ok((client, form))
@@ -182,18 +186,23 @@ fn refused(refusal: TokenRefusal) -> Response {
         error.type = safe::kind(refusal.code()),
         "web session endpoint could not answer"
     );
-    // Storage that did not answer may answer a retry; a failed signature
-    // will not, so it reports as the token endpoint does.
-    let status = if refusal == TokenRefusal::Unavailable {
-        StatusCode::SERVICE_UNAVAILABLE
-    } else {
-        StatusCode::INTERNAL_SERVER_ERROR
+    // Storage that did not answer may answer a retry. A failed signature or
+    // stored state that does not decode will not, so each reports as the
+    // token endpoint does.
+    let unavailable = "the session is temporarily unavailable";
+    let (status, description) = match refusal {
+        TokenRefusal::Unavailable => (StatusCode::SERVICE_UNAVAILABLE, unavailable),
+        TokenRefusal::Corrupt(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "the session request failed",
+        ),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, unavailable),
     };
     json_response(
         status,
         &serde_json::json!({
             "error": "server_error",
-            "error_description": "the session is temporarily unavailable",
+            "error_description": description,
         }),
     )
 }
@@ -353,6 +362,66 @@ mod tests {
         let value: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(value["error"], "invalid_grant");
         assert!(!body.contains(session));
+    }
+
+    /// Storage that does not answer is a 503, which the client may retry. A
+    /// stored grant that does not decode fails every retry, so it is a 500.
+    /// Both are `server_error`, and neither spends the token or ends the
+    /// session.
+    #[tokio::test]
+    async fn an_outage_is_a_503_and_a_corrupt_grant_a_500() {
+        async fn server_error(response: axum::response::Response) -> StatusCode {
+            let (status, body) = read(response).await;
+            let value: Value = serde_json::from_str(&body).unwrap();
+            assert_eq!(value["error"], "server_error", "{body}");
+            status
+        }
+        let (state, _codes, _session, database) = state().await;
+        let issued = signed_in(&state, &database, Some("reef")).await;
+        let refresh = issued["refresh_token"].as_str().unwrap();
+        let pairs = [
+            ("refresh_token", refresh),
+            ("client_id", CLIENT),
+            ("max_age", "3600"),
+        ];
+        // (fault, repair, status), with an outage of `table`.
+        let faults = |table: &str| {
+            [
+                (
+                    format!("ALTER TABLE {table} RENAME TO away"),
+                    format!("ALTER TABLE away RENAME TO {table}"),
+                    StatusCode::SERVICE_UNAVAILABLE,
+                ),
+                (
+                    "UPDATE oauth_refresh_grants SET private_audience = 'neither'".to_owned(),
+                    "UPDATE oauth_refresh_grants SET private_audience = 'reef'".to_owned(),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                ),
+            ]
+        };
+        for (fault, repair, expected) in faults("oauth_refresh_tokens") {
+            database.execute_fixture_sql(&fault).await.unwrap();
+            let status = server_error(start(State(state.clone()), form(&pairs)).await).await;
+            assert_eq!(status, expected, "{fault}");
+            database.execute_fixture_sql(&repair).await.unwrap();
+        }
+        let (status, body) = read(start(State(state.clone()), form(&pairs)).await).await;
+        assert_eq!(status, StatusCode::CREATED, "no refusal spent it: {body}");
+        let started: Value = serde_json::from_str(&body).unwrap();
+        let session = [
+            ("session", started["session"].as_str().unwrap()),
+            ("client_id", CLIENT),
+        ];
+        for (fault, repair, expected) in faults("oauth_web_sessions") {
+            database.execute_fixture_sql(&fault).await.unwrap();
+            let status = server_error(token(State(state.clone()), form(&session)).await).await;
+            assert_eq!(status, expected, "{fault}");
+            let status = server_error(end(State(state.clone()), form(&session)).await).await;
+            assert_eq!(status, expected, "{fault}");
+            database.execute_fixture_sql(&repair).await.unwrap();
+        }
+        let (status, body) = read(token(State(state.clone()), form(&session)).await).await;
+        assert_eq!(status, StatusCode::OK, "no refusal ended it: {body}");
     }
 
     /// A confidential client's refresh token starts no session without the

@@ -1,6 +1,6 @@
 .PHONY: install docker-build reef-docker-build docker-test rust-checks
 .PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests load-test
-.PHONY: license-check lint-migrations lint-proto reef-image-checks ee-boundary
+.PHONY: dependency-check advisory-check lint-migrations lint-proto reef-image-checks ee-boundary
 
 # Images build and test with Docker or Podman.
 CONTAINER_ENGINE ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
@@ -74,7 +74,7 @@ docker-test: docker-build reef-docker-build
 	CONTAINER_ENGINE="$(CONTAINER_ENGINE)" CORAL_IMAGE="$(DOCKER_IMAGE)" \
 	  CORAL_WEB_IMAGE="$(CORAL_WEB_DOCKER_IMAGE)" docker/image-test.sh
 
-rust-checks: lint-migrations lint-proto license-check ee-boundary
+rust-checks: lint-migrations lint-proto dependency-check ee-boundary
 	scripts/check-migrations.sh
 	# A plain build at the root builds only the Apache-2.0 crates; prove they
 	# stand alone without ee/ (ADR 0033).
@@ -150,16 +150,29 @@ load-test:
 	@node scripts/load.mjs $(LOAD_ARGS)
 
 # ----------------------------------------------------------------------------
-# Dependency license scan
+# Dependency scan
 # ----------------------------------------------------------------------------
-# Fails if any workspace dependency uses a license outside the allow-list in
-# deny.toml. Requires `cargo-deny`.
+# Two checks of the locked crates against deny.toml. Both require `cargo-deny`.
 #
-#   make license-check
+# dependency-check fails if a crate uses a license outside the allow-list,
+# breaks a ban, or comes from anywhere but crates.io. Its result changes only
+# with the lockfile or deny.toml, so rust-checks runs it.
+#
+# advisory-check fails if a crate has a RustSec advisory or is yanked. It
+# fetches the advisory database, so its result can change with no change to
+# the lockfile. rust-checks does not run it: a new advisory must not fail an
+# unrelated pull request. .github/workflows/dependencies.yml runs it daily.
+#
+#   make dependency-check
+#   make advisory-check
 
-license-check:
+dependency-check:
 	cargo deny --version >/dev/null 2>&1 || cargo install --locked cargo-deny
-	cargo deny check licenses
+	cargo deny check bans licenses sources
+
+advisory-check:
+	cargo deny --version >/dev/null 2>&1 || cargo install --locked cargo-deny
+	cargo deny check advisories
 
 # ----------------------------------------------------------------------------
 # Postgres migration linting
