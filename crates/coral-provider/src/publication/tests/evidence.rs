@@ -18,7 +18,7 @@ async fn active_generation(
         &mut transaction,
         workspace,
         crate::repository::ProviderKey::Id(provider),
-        crate::repository::ProviderHold::None,
+        coral_db::RowLock::None,
     )
     .await
     .expect("read Provider")

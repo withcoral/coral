@@ -477,7 +477,7 @@ impl ProviderModule {
             transaction,
             workspace_id,
             provider_repository::ProviderKey::Id(provider_id),
-            provider_repository::ProviderHold::Exclusive,
+            coral_db::RowLock::Exclusive,
         )
         .await?
         else {

@@ -19,6 +19,10 @@ pub enum Error {
     /// timeout.
     #[error("database is busy")]
     WriterBusy,
+    /// A read snapshot was asked to hold a row. It takes no lock on either
+    /// database, so the caller must open a read-write transaction.
+    #[error("a read snapshot cannot hold a row")]
+    ReadSnapshotHold,
     /// A database connection or statement failed.
     #[error(transparent)]
     Sqlx(#[from] sqlx::Error),
@@ -44,6 +48,7 @@ impl Error {
             Self::MissingDatabaseParent { .. } => "missing_database_parent",
             Self::Io { .. } => "io",
             Self::WriterBusy { .. } => "writer_busy",
+            Self::ReadSnapshotHold { .. } => "read_snapshot_hold",
             Self::Sqlx { .. } => "sqlx",
             Self::Migration { .. } => "migration",
             Self::MigrationForeignKeys { .. } => "migration_foreign_keys",

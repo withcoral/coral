@@ -115,7 +115,7 @@ impl AccountModule {
             &mut tx,
             owner,
             crate::repository::ProviderKey::Id(provider),
-            crate::repository::ProviderHold::None,
+            coral_db::RowLock::None,
         )
         .await?
         .ok_or(Error::ProviderNotFound)?;
@@ -176,7 +176,7 @@ impl AccountModule {
             &mut tx,
             account_workspace,
             crate::repository::ProviderKey::Id(provider),
-            crate::repository::ProviderHold::None,
+            coral_db::RowLock::None,
         )
         .await?
         .and_then(crate::repository::ProviderWithActiveGeneration::into_active) else {
@@ -186,7 +186,7 @@ impl AccountModule {
             &mut tx,
             active.provider.owner(),
             crate::repository::ProviderKey::Id(provider),
-            crate::repository::ProviderHold::Exclusive,
+            coral_db::RowLock::Exclusive,
         )
         .await?
         else {
@@ -295,7 +295,7 @@ impl AccountModule {
             tx,
             account_workspace,
             crate::repository::ProviderKey::Id(provider),
-            crate::repository::ProviderHold::None,
+            coral_db::RowLock::None,
         )
         .await?
         .and_then(crate::repository::ProviderWithActiveGeneration::into_active)

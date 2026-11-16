@@ -202,7 +202,7 @@ pub async fn prepare_active_generation_entries_in_transaction(
         transaction,
         workspace_id,
         repository::ProviderKey::Id(provider_id),
-        repository::ProviderHold::None,
+        coral_db::RowLock::None,
     )
     .await?
     else {

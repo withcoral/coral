@@ -312,7 +312,7 @@ pub async fn published_provider_in_transaction(
         &mut *transaction,
         workspace_id,
         crate::repository::ProviderKey::Id(provider),
-        crate::repository::ProviderHold::None,
+        coral_db::RowLock::None,
     )
     .await?
     .ok_or(Error::ProviderNotFound)?;

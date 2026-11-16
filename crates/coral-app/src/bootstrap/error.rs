@@ -56,6 +56,7 @@ impl From<coral_db::Error> for AppError {
             coral_db::Error::Io(error) => Self::Io(error),
             coral_db::Error::Sqlx(_)
             | coral_db::Error::WriterBusy
+            | coral_db::Error::ReadSnapshotHold
             | coral_db::Error::Migration(_)
             | coral_db::Error::MigrationForeignKeys { .. }
             | coral_db::Error::ObservationUnavailable => Self::Database(error.to_string()),

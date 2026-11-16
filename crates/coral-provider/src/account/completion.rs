@@ -75,7 +75,7 @@ impl AccountModule {
             &mut tx,
             owner,
             crate::repository::ProviderKey::Id(&provider),
-            crate::repository::ProviderHold::Exclusive,
+            coral_db::RowLock::Exclusive,
         )
         .await?;
         let mut row = load_authorization(&mut tx, owner, id).await?;

@@ -333,18 +333,19 @@ pub(super) async fn hold_live_grant(
     grant_id: &str,
     now_unix_nanos: i64,
 ) -> Result<bool, TokenRefusal> {
-    let rows = tx
-        .execute(
-            Query::update()
-                .table(Grants::Table)
-                .value(Grants::Rotations, Expr::col(Grants::Rotations))
+    let held: Option<(i64,)> = tx
+        .fetch_optional_locked(
+            Query::select()
+                .column(Grants::Rotations)
+                .from(Grants::Table)
                 .and_where(Expr::col(Grants::GrantId).eq(grant_id))
                 .and_where(Expr::col(Grants::ExpiresAtUnixNanos).gt(now_unix_nanos))
                 .to_owned(),
+            coral_db::RowLock::Exclusive,
         )
         .await
         .map_err(|error| unavailable(&error))?;
-    Ok(rows == 1)
+    Ok(held.is_some())
 }
 
 /// Spends a current token; reports whether this call spent it.

@@ -250,6 +250,24 @@ pub(super) async fn share_workspace(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
 ) -> Result<bool, Error> {
+    workspace_held(transaction, workspace_id, coral_db::RowLock::Shared).await
+}
+
+/// Holds the Workspace row exclusively for the rest of the transaction, as
+/// the Workspace, Membership and Agent lifecycle writers do.
+pub(super) async fn hold_workspace(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<bool, Error> {
+    workspace_held(transaction, workspace_id, coral_db::RowLock::Exclusive).await
+}
+
+/// Whether the Workspace exists, holding its row as `lock` says.
+async fn workspace_held(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    lock: coral_db::RowLock,
+) -> Result<bool, Error> {
     let held: Option<(i64,)> = transaction
         .fetch_optional_locked(
             Query::select()
@@ -257,25 +275,10 @@ pub(super) async fn share_workspace(
                 .from(WorkspaceRecords::Table)
                 .and_where(Expr::col(WorkspaceRecords::Id).eq(workspace_id.to_string()))
                 .to_owned(),
-            coral_db::RowLock::Shared,
+            lock,
         )
         .await?;
     Ok(held.is_some())
-}
-
-pub(super) async fn hold_workspace(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-) -> Result<bool, Error> {
-    let statement = Query::update()
-        .table(WorkspaceRecords::Table)
-        .value(
-            WorkspaceRecords::LifecycleVersion,
-            Expr::col(WorkspaceRecords::LifecycleVersion),
-        )
-        .and_where(Expr::col(WorkspaceRecords::Id).eq(workspace_id.to_string()))
-        .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
 }
 
 pub(super) async fn insert_workspace(
