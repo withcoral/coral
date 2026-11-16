@@ -7,7 +7,9 @@ use std::time::Duration;
 
 use coral_embed::{CpuTooOld, MANIFEST, Manifest, ModelFile};
 use coral_outbound::{DestinationPolicy, NetworkAccess};
+use coral_search::ModelLoad;
 use tempfile::TempDir;
+use tokio::sync::watch;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -417,6 +419,124 @@ fn place_other_model(models_dir: &Path) -> PathBuf {
     dir
 }
 
+/// Search reads the model's slot to tell why a query ranks by words alone,
+/// so the slot says why no model loaded once the delivery ends without one.
+#[tokio::test]
+async fn the_model_slot_says_why_no_model_loaded() {
+    let too_old = CpuTooOld {
+        missing: vec!["avx2", "fma"],
+    };
+    #[cfg_attr(
+        not(unix),
+        expect(unused_mut, reason = "the unreadable case is Unix only")
+    )]
+    let mut cases = vec![
+        (
+            "below the CPU floor",
+            MODEL,
+            Err(too_old),
+            OnDisk::Nothing,
+            "cpu_too_old",
+        ),
+        (
+            "a file with another digest",
+            b"model bytez".as_slice(),
+            Ok(()),
+            OnDisk::Nothing,
+            "failed",
+        ),
+        // Files of the manifest's digests that are not a model.
+        (
+            "files that do not load",
+            MODEL,
+            Ok(()),
+            OnDisk::Files,
+            "failed",
+        ),
+    ];
+    #[cfg(unix)]
+    cases.push((
+        "a model file Coral cannot read",
+        MODEL,
+        Ok(()),
+        OnDisk::UnreadableModel,
+        "failed",
+    ));
+    for (case, bytes, cpu, on_disk, expected) in cases {
+        let server = MockServer::start().await;
+        serve(&server, "model.onnx", bytes).await;
+        serve(&server, "tokenizer.json", TOKENIZER).await;
+        let dirs = Dirs::new();
+        match on_disk {
+            OnDisk::Nothing => {}
+            OnDisk::Files => place_files(&dirs.system),
+            #[cfg(unix)]
+            OnDisk::UnreadableModel => {
+                place_unreadable_model(&dirs.system);
+            }
+        }
+        let (model, _delivery) = SearchModel::start(Delivery {
+            cpu,
+            ..delivery(&server, &dirs)
+        });
+        let (slot, load) = watch::channel(ModelLoad::Pending);
+
+        let _loading = model.load_into(slot);
+
+        assert_eq!(slot_after_pending(load).await, expected, "{case}");
+    }
+}
+
+/// A delivery that ends without a result, as when its task panics, leaves
+/// the slot failed, not waiting for a model that never comes.
+#[tokio::test]
+async fn a_delivery_that_ends_without_a_result_leaves_the_slot_failed() {
+    let (state, receiver) = watch::channel(SearchModelState::Looking);
+    let model = SearchModel { state: receiver };
+    let (slot, load) = watch::channel(ModelLoad::Pending);
+    let _loading = model.load_into(slot);
+
+    drop(state);
+
+    assert_eq!(slot_after_pending(load).await, "failed");
+}
+
+/// What the delivery finds in the system models folder when it starts.
+enum OnDisk {
+    Nothing,
+    Files,
+    #[cfg(unix)]
+    UnreadableModel,
+}
+
+/// The slot's first value after `Pending`, by name.
+async fn slot_after_pending(mut load: watch::Receiver<ModelLoad>) -> &'static str {
+    let load = tokio::time::timeout(
+        PATIENCE,
+        load.wait_for(|load| !matches!(load, ModelLoad::Pending)),
+    )
+    .await
+    .expect("the slot changes in time")
+    .expect("the slot stays open");
+    match &*load {
+        ModelLoad::Pending => "pending",
+        ModelLoad::Ready(_) => "ready",
+        ModelLoad::Failed => "failed",
+        ModelLoad::CpuTooOld => "cpu_too_old",
+    }
+}
+
+/// Places the model's files in `models_dir` with a model file that no
+/// user can open, root included: a link to itself. Returns its path.
+#[cfg(unix)]
+fn place_unreadable_model(models_dir: &Path) -> PathBuf {
+    place_files(models_dir);
+    let model_file = models_dir.join(MODEL_ID).join("model.onnx");
+    std::fs::remove_file(&model_file).expect("remove the model");
+    std::os::unix::fs::symlink(&model_file, &model_file).expect("link the model to itself");
+    model_file
+}
+
 #[tokio::test]
 async fn files_on_disk_are_ready_without_a_request() {
     for (case, in_system) in [("system folder", true), ("state folder", false)] {
@@ -451,11 +571,7 @@ async fn a_file_on_disk_that_cannot_be_read_stops_the_delivery_with_its_path() {
     serve(&server, "model.onnx", MODEL).await;
     serve(&server, "tokenizer.json", TOKENIZER).await;
     let dirs = Dirs::new();
-    place_files(&dirs.system);
-    // A link to itself: no user can open it, root included.
-    let model_file = dirs.system.join(MODEL_ID).join("model.onnx");
-    std::fs::remove_file(&model_file).expect("remove the model");
-    std::os::unix::fs::symlink(&model_file, &model_file).expect("link the model to itself");
+    let model_file = place_unreadable_model(&dirs.system);
 
     let model = start(&server, &dirs);
 

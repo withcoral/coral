@@ -1751,7 +1751,9 @@ async fn the_client_bootstrap_policy_decides_the_automatic_method_before_any_han
             Some(Ok(CGNAT_ANSWER)),
             true,
             false,
-            Refused(Error::AuthorizationDiscovery("client_bootstrap_failed")),
+            Refused(Error::AuthorizationDiscovery(
+                coral_upstream::AuthorizationDiscoveryError::ClientBootstrapFailed.into(),
+            )),
         ),
         (
             "split DNS with the document preferred",
@@ -1791,7 +1793,9 @@ async fn the_client_bootstrap_policy_decides_the_automatic_method_before_any_han
             Some(Ok(PUBLIC_ANSWER)),
             true,
             false,
-            Refused(Error::AuthorizationDiscovery("client_bootstrap_failed")),
+            Refused(Error::AuthorizationDiscovery(
+                coral_upstream::AuthorizationDiscoveryError::ClientBootstrapFailed.into(),
+            )),
         ),
     ];
     let upstream = OAuthMcp::start().await;
@@ -1855,8 +1859,8 @@ async fn the_client_bootstrap_policy_decides_the_automatic_method_before_any_han
                     std::mem::discriminant(&expected),
                     "{case}: {error}"
                 );
-                if let Error::AuthorizationDiscovery(code) = &error {
-                    assert_eq!(*code, "client_bootstrap_failed", "{case}");
+                if let Error::AuthorizationDiscovery(failure) = &error {
+                    assert_eq!(failure.code(), "client_bootstrap_failed", "{case}");
                 }
                 // The refusal happened before any handoff: no Authorization exists
                 // and the document was never used in its place.
@@ -1995,7 +1999,10 @@ async fn metadata_failures_are_typed_and_create_no_setup() {
         .await
         .expect_err("resource mismatch");
     assert!(
-        matches!(error, Error::AuthorizationDiscovery("resource_mismatch")),
+        matches!(
+            error,
+            Error::AuthorizationDiscovery(failure) if failure.code() == "resource_mismatch"
+        ),
         "{error:?}"
     );
     // A Basic challenge is unsupported.
@@ -2019,7 +2026,7 @@ async fn metadata_failures_are_typed_and_create_no_setup() {
     assert!(
         matches!(
             error,
-            Error::AuthorizationDiscovery("challenge_unsupported")
+            Error::AuthorizationDiscovery(failure) if failure.code() == "challenge_unsupported"
         ),
         "{error:?}"
     );

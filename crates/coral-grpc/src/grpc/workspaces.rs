@@ -59,7 +59,7 @@ pub(super) fn change(user: AuthenticatedUser) -> Result<ChangeContext, Status> {
 }
 pub(super) fn workspace_id(name: &str) -> Result<WorkspaceId, Status> {
     let Some(id) = name.strip_prefix("workspaces/") else {
-        return Err(invalid("invalid Workspace name"));
+        return Err(invalid());
     };
     WorkspaceId::parse(id).map_err(error)
 }
@@ -118,9 +118,9 @@ pub(super) fn mask(
     mask: Option<prost_types::FieldMask>,
     allowed: &[&str],
 ) -> Result<Vec<String>, Status> {
-    let paths = mask.ok_or_else(|| invalid("update_mask required"))?.paths;
+    let paths = mask.ok_or_else(invalid)?.paths;
     if paths.is_empty() || paths.iter().any(|p| !allowed.contains(&p.as_str())) {
-        return Err(invalid("unsupported update_mask"));
+        return Err(invalid());
     }
     Ok(paths)
 }
@@ -194,8 +194,10 @@ pub(super) fn administration_error(error: coral_administration::Error) -> Status
         }
     }
 }
-pub(super) fn invalid(message: &'static str) -> Status {
-    annotate(Status::invalid_argument(message))
+/// The one status for a request the adapter refuses as invalid. It does not
+/// say which rule the request broke: the client gets the stable reason alone.
+pub(super) fn invalid() -> Status {
+    safe_status(tonic::Code::InvalidArgument, "INVALID_ARGUMENT")
 }
 
 pub(super) fn resource<'a>(
@@ -270,23 +272,21 @@ pub(super) fn page_start_within(
     scope: &str,
 ) -> Result<(u32, String), Status> {
     if !(0..=limit).contains(&size) || token.len() > 4096 {
-        return Err(invalid("invalid page request"));
+        return Err(invalid());
     }
     let size = if size == 0 {
         30
     } else {
-        u32::try_from(size).map_err(|_error| invalid("invalid page size"))?
+        u32::try_from(size).map_err(|_error| invalid())?
     };
     let after = if token.is_empty() {
         String::new()
     } else {
-        let bytes = URL_SAFE_NO_PAD
-            .decode(token)
-            .map_err(|_error| invalid("invalid page token"))?;
+        let bytes = URL_SAFE_NO_PAD.decode(token).map_err(|_error| invalid())?;
         let (bound, after): (String, String) =
-            serde_json::from_slice(&bytes).map_err(|_error| invalid("invalid page token"))?;
+            serde_json::from_slice(&bytes).map_err(|_error| invalid())?;
         if bound != scope {
-            return Err(invalid("invalid page token"));
+            return Err(invalid());
         }
         after
     };
@@ -312,7 +312,7 @@ pub(super) fn page_of<T>(
     scope: &str,
     key: impl Fn(&T) -> String,
 ) -> Result<(Vec<T>, String), Status> {
-    let size = usize::try_from(size).map_err(|_error| invalid("invalid page size"))?;
+    let size = usize::try_from(size).map_err(|_error| invalid())?;
     values.sort_by_key(&key);
     values.retain(|v| key(v).as_str() > after);
     let more = values.len() > size;
@@ -399,9 +399,7 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
         mask(input.update_mask, &["display_name"])?;
-        let w = input
-            .workspace
-            .ok_or_else(|| invalid("workspace required"))?;
+        let w = input.workspace.ok_or_else(invalid)?;
         let id = workspace_id(&w.name)?;
         self.workspaces
             .update_display_name(

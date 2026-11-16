@@ -34,8 +34,9 @@
 //! already issued keep their own expiry and live authority checks.
 //!
 //! Only the SHA-256 digest of a refresh token is stored. Nothing is returned
-//! before its writes commit, and a storage failure is reported as
-//! [`TokenRefusal::Unavailable`], never as a rejected credential.
+//! before its writes commit. A storage failure is reported as
+//! [`TokenRefusal::Unavailable`] and a stored row that does not decode as
+//! [`TokenRefusal::Corrupt`], never as a rejected credential.
 
 mod repository;
 #[cfg(test)]
@@ -58,7 +59,9 @@ use ring::rand::{SecureRandom as _, SystemRandom};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-use crate::authorization_codes::{AuthorizationCodes, AuthorizationGrant, CodeRedemption};
+use crate::authorization_codes::{
+    AuthorizationCodeError, AuthorizationCodes, AuthorizationGrant, CodeRedemption,
+};
 use crate::oauth_clients::AuthenticatedClient;
 use crate::{IssuedAccessToken, PrivateAudience, SessionTokenIssuer};
 
@@ -205,6 +208,10 @@ pub enum TokenRefusal {
     /// The database did not accept or answer a statement.
     #[error("token storage is unavailable")]
     Unavailable,
+    /// A stored row holds a value Coral could not have written, so a retry
+    /// fails the same way. The code names the value, for `error.type`.
+    #[error("stored token state is corrupt")]
+    Corrupt(&'static str),
     /// The access or refresh token could not be generated.
     #[error("token issuance failed")]
     Issuance,
@@ -217,6 +224,7 @@ impl TokenRefusal {
         match self {
             Self::InvalidGrant => "invalid_grant",
             Self::Unavailable => "unavailable",
+            Self::Corrupt(code) => code,
             Self::Issuance => "issuance",
         }
     }
@@ -276,7 +284,12 @@ impl UserTokens {
             .codes
             .redeem(code, redemption, now_unix_nanos)
             .await
-            .map_err(|_error| TokenRefusal::Unavailable)?
+            .map_err(|error| match error {
+                AuthorizationCodeError::Corrupt(code) => TokenRefusal::Corrupt(code),
+                AuthorizationCodeError::EmptySecret
+                | AuthorizationCodeError::ClockOutOfRange
+                | AuthorizationCodeError::Unavailable => TokenRefusal::Unavailable,
+            })?
             .ok_or(TokenRefusal::InvalidGrant)?;
         let scope = Scope::for_code(target, &grant)?;
         if !grant.refresh_eligible {
@@ -493,9 +506,11 @@ impl UserTokens {
         if i64::try_from(session_end).unwrap_or(i64::MAX) <= now_unix_nanos / 1_000_000_000 {
             return Err(TokenRefusal::InvalidGrant);
         }
+        // A Web Session starts from a Reef grant alone, so a session whose
+        // grant names no audience is not one Coral wrote.
         let audience = scope
             .private_audience
-            .ok_or(TokenRefusal::Unavailable)?
+            .ok_or(TokenRefusal::Corrupt("corrupt_session_audience"))?
             .as_str();
         let access_token = self
             .issuer
@@ -783,18 +798,24 @@ fn digest(secret: &str) -> Option<String> {
     (!secret.is_empty()).then(|| URL_SAFE_NO_PAD.encode(Sha256::digest(secret.as_bytes())))
 }
 
-/// An authority decision becomes a refusal unless storage failed to answer.
+/// An authority decision becomes a refusal unless storage failed to answer
+/// or holds authority that does not decode.
 fn refusal(error: &coral_workspace::Error) -> TokenRefusal {
     match error {
-        coral_workspace::Error::Database(_)
-        | coral_workspace::Error::CorruptData(_)
-        | coral_workspace::Error::EventFields(_) => TokenRefusal::Unavailable,
+        coral_workspace::Error::Database(error) => repository::unavailable(error),
+        coral_workspace::Error::CorruptData(_) | coral_workspace::Error::EventFields(_) => {
+            TokenRefusal::Corrupt("corrupt_authority")
+        }
         _ => TokenRefusal::InvalidGrant,
     }
 }
 
-fn unavailable(_error: coral_db::Error) -> TokenRefusal {
-    TokenRefusal::Unavailable
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "`map_err` passes the database error by value"
+)]
+fn unavailable(error: coral_db::Error) -> TokenRefusal {
+    repository::unavailable(&error)
 }
 
 /// Rolls back a transaction that issued nothing. A rollback that fails ends

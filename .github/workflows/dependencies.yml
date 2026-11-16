@@ -1,0 +1,29 @@
+name: Dependencies
+
+# The one place that checks the locked crates for RustSec advisories and
+# yanked releases. Either can appear with no change to Cargo.lock, so pull
+# requests do not run this check: a new advisory would fail an unrelated one.
+# `make rust-checks` checks licences, bans and sources on every pull request.
+on:
+  schedule:
+    - cron: "43 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: Advisories
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      # `cargo metadata` needs the toolchain, not a build cache.
+      - run: rustup show
+      - uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
+        with:
+          tool: cargo-deny
+      - run: make advisory-check

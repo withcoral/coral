@@ -51,6 +51,8 @@ struct Fixture {
     channel: Channel,
     mcp_origin: Arc<OnceLock<String>>,
     ready: Arc<std::sync::atomic::AtomicBool>,
+    /// Tells the services that the listener is stopping, as bootstrap does.
+    stop: tokio::sync::watch::Sender<bool>,
     issuer: SessionTokenIssuer,
     owner: AuthenticatedUser,
     member: AuthenticatedUser,
@@ -243,6 +245,7 @@ impl Fixture {
         let mcp_origin = Arc::new(OnceLock::new());
         let ready = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let readiness = ready.clone();
+        let (stop, stopping) = tokio::sync::watch::channel(false);
         let server = TestServer::start(coral_grpc::routes(
             coral_grpc::Dependencies {
                 organization: OrganizationModule::new(database.clone()),
@@ -312,6 +315,7 @@ impl Fixture {
                         readiness.load(std::sync::atomic::Ordering::SeqCst),
                     ))
                 }),
+                stopping,
             },
         ))
         .await;
@@ -322,6 +326,7 @@ impl Fixture {
             _server: server,
             mcp_origin,
             ready,
+            stop,
             issuer,
             owner,
             member,

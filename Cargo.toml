@@ -11,6 +11,8 @@ version = "1.8.0" # x-release-please-version
 license = "Apache-2.0"
 rust-version = "1.100"
 
+# crates/coral-sqlite-vec copies these two tables with `unsafe_code = "deny"`.
+# Change both together.
 [workspace.lints.rust]
 missing_docs = "warn"
 unreachable_pub = "warn"
@@ -64,6 +66,9 @@ http-body = "1"
 hyper-util = "0.1"
 jsonschema = { version = "0.60.2", default-features = false }
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
+# The one bundled SQLite that rusqlite and sqlx share; coral-sqlite-vec hands
+# it sqlite-vec.
+libsqlite3-sys = { version = "0.37", features = ["bundled"] }
 mime = "0.3"
 oxc_allocator = "0.156"
 oxc_ast = "0.156"
@@ -78,7 +83,7 @@ opentelemetry-otlp = "0.33.1"
 opentelemetry_sdk = "0.33.1"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "charset", "form", "http2", "json", "query", "rustls", "system-proxy"] }
 ring = "0.17.14"
-rmcp = { version = "3.8.0", features = ["client", "reqwest", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
+rmcp = { version = "3.10.0", features = ["client", "reqwest", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 rustix = { version = "1.1", features = ["time"] }
 semver = "1"
@@ -101,6 +106,8 @@ sha2 = "0.11"
 subtle = "2.6"
 sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "postgres", "regexp", "runtime-tokio", "sqlite", "tls-rustls"] }
 sourcemap = "9.3.2"
+# Pre-v1: pin exactly and read the changelog before each bump (ADR 0035).
+sqlite-vec = "=0.1.9"
 sse-stream = "0.2.6"
 thiserror = "2"
 thread-priority = "3.1.1"
@@ -125,6 +132,8 @@ urlencoding = "2"
 unicode-general-category = "1.1"
 unicode-id-start = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
+# The build downloads V8 as a prebuilt archive. A new version needs new
+# digests in [workspace.metadata.v8-archive] below.
 v8 = "=152.2.0"
 wiremock = "0.6"
 zeroize = "1.9"
@@ -148,6 +157,7 @@ coral-provider = { path = "crates/coral-provider" }
 coral-release = { path = "crates/coral-release" }
 coral-usage = { path = "crates/coral-usage" }
 coral-secret-store = { path = "crates/coral-secret-store" }
+coral-sqlite-vec = { path = "crates/coral-sqlite-vec" }
 coral-run = { path = "crates/coral-run" }
 coral-run-executor = { path = "crates/coral-run-executor" }
 coral-search = { path = "crates/coral-search" }
@@ -158,6 +168,28 @@ coral-upstream = { path = "crates/coral-upstream" }
 coral-v8 = { path = "crates/coral-v8" }
 coral-value = { path = "crates/coral-value" }
 coral-workspace = { path = "crates/coral-workspace" }
+
+# The v8 crate's build script downloads a prebuilt V8 archive from the
+# rusty_v8 release of the same version and links it. Cargo.lock covers the
+# crate's source, not that archive. The build script stops the build when
+# RUSTY_V8_ARCHIVE_SHA256 is set and the archive has another digest. The
+# builds that Coral publishes set it to their target's row: Desktop's staging
+# (apps/desktop/scripts/runtime.mjs) reads this table, and docker/Dockerfile
+# repeats its Linux rows. xtask/tests/v8_archive.rs keeps them in step. Other
+# builds, `make install` among them, do not check the archive.
+#
+# Each value is the SHA-256 of the release asset as downloaded, still gzipped:
+#   https://github.com/denoland/rusty_v8/releases/download/v<version>/librusty_v8_release_<target>.a.gz
+# The Windows asset is rusty_v8_release_<target>.lib.gz. The build script
+# links the `release` archive under every Cargo profile.
+[workspace.metadata.v8-archive]
+version = "152.2.0"
+
+[workspace.metadata.v8-archive.sha256]
+aarch64-apple-darwin = "a4a5484444ad4b5f10dc7bed141236dd9dbeabf2006d14520f19b935d4db4227"
+aarch64-unknown-linux-gnu = "c40196bbf182532e583f65b7daf0196fdbb3354e6fac59b31d0539c20f931f3d"
+x86_64-pc-windows-msvc = "0b17ca072bae37dd4ff00e6014d2b413becb031c9342ee11cb8226a5881f62b2"
+x86_64-unknown-linux-gnu = "b6683e9afcb77fbd8cb2c3acf45d34d52029ab216b332522c95179c12f0fed3c"
 
 [profile.dev]
 debug = 1

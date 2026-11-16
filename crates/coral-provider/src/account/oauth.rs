@@ -3,8 +3,8 @@ use coral_workspace::WorkspaceId;
 
 use super::callback::CallbackResponse;
 use super::{
-    AccountModule, Authorization, AuthorizationId, AuthorizationState, CredentialMaterial, event,
-    expire, load_authorization, repository,
+    AccountModule, Authorization, AuthorizationId, AuthorizationState, CredentialMaterial,
+    TokenExchangeFailure, event, expire, load_authorization, repository,
 };
 use crate::{Error, LifecycleAction, LifecycleOutcome, ProviderId};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -490,7 +490,7 @@ pub(super) const fn authorization_failure_code(error: &Error) -> &'static str {
     match error {
         Error::OutboundDestinationRejected => "outbound_destination_rejected",
         Error::OAuthClientConfiguration => "oauth_client_configuration",
-        Error::OAuthTokenExchange(code) => code,
+        Error::OAuthTokenExchange(failure) => failure.code(),
         _ => "authorization_failed",
     }
 }
@@ -541,10 +541,10 @@ pub(super) async fn exchange(
     let mut token = token_request(endpoint, &form, authentication).await?;
     token
         .accept(scopes)
-        .map_err(|_error| Error::OAuthTokenExchange("oauth_token_response_invalid"))?;
+        .map_err(|_error| Error::OAuthTokenExchange(TokenExchangeFailure::ResponseInvalid))?;
     token
         .stamp(&flow.client_id, now)
-        .map_err(|_error| Error::OAuthTokenExchange("oauth_token_response_invalid"))?;
+        .map_err(|_error| Error::OAuthTokenExchange(TokenExchangeFailure::ResponseInvalid))?;
     Ok(token)
 }
 
@@ -624,7 +624,7 @@ pub(super) async fn form_request(
         .await
         .map_err(|error| match error {
             coral_outbound::OutboundUrlPolicyError::BodyRead(error) => token_transport_error(error),
-            _ => Error::OAuthTokenExchange("oauth_token_response_invalid"),
+            _ => Error::OAuthTokenExchange(TokenExchangeFailure::ResponseInvalid),
         })?;
     Ok((status, zeroize::Zeroizing::new(body)))
 }
@@ -634,9 +634,9 @@ fn token_transport_error(error: reqwest::Error) -> Error {
         coral_outbound::FetchError::DestinationRejected => Error::OutboundDestinationRejected,
         coral_outbound::FetchError::Http(error) => {
             Error::OAuthTokenExchange(if error.is_timeout() {
-                "oauth_token_timeout"
+                TokenExchangeFailure::Timeout
             } else {
-                "oauth_token_unavailable"
+                TokenExchangeFailure::Unavailable
             })
         }
     }
@@ -645,7 +645,7 @@ fn token_transport_error(error: reqwest::Error) -> Error {
 fn parse_token_response(status: reqwest::StatusCode, body: &[u8]) -> Result<TokenResponse, Error> {
     check_response(status, body)?;
     serde_json::from_slice(body)
-        .map_err(|_error| Error::OAuthTokenExchange("oauth_token_response_invalid"))
+        .map_err(|_error| Error::OAuthTokenExchange(TokenExchangeFailure::ResponseInvalid))
 }
 
 pub(super) fn check_response(status: reqwest::StatusCode, body: &[u8]) -> Result<(), Error> {
@@ -654,7 +654,7 @@ pub(super) fn check_response(status: reqwest::StatusCode, body: &[u8]) -> Result
         error: &'a str,
     }
     if status.is_server_error() || status.is_redirection() {
-        return Err(Error::OAuthTokenExchange("oauth_token_unavailable"));
+        return Err(Error::OAuthTokenExchange(TokenExchangeFailure::Unavailable));
     }
     // Some services report OAuth errors with HTTP 200. Only known codes cross
     // this boundary; descriptions, URLs, and response bodies can contain secrets.
@@ -664,19 +664,25 @@ pub(super) fn check_response(status: reqwest::StatusCode, body: &[u8]) -> Result
                 Error::OAuthClientConfiguration
             }
             "invalid_grant" | "bad_verification_code" | "bad_refresh_token" => {
-                Error::OAuthTokenExchange("oauth_code_rejected")
+                Error::OAuthTokenExchange(TokenExchangeFailure::CodeRejected)
             }
-            "redirect_uri_mismatch" => Error::OAuthTokenExchange("oauth_redirect_mismatch"),
-            "authorization_pending" => Error::OAuthTokenExchange("oauth_authorization_pending"),
-            "slow_down" => Error::OAuthTokenExchange("oauth_slow_down"),
-            "access_denied" => Error::OAuthTokenExchange("oauth_access_denied"),
-            "expired_token" => Error::OAuthTokenExchange("oauth_device_expired"),
-            "invalid_scope" => Error::OAuthTokenExchange("oauth_scope_rejected"),
-            _ => Error::OAuthTokenExchange("oauth_request_rejected"),
+            "redirect_uri_mismatch" => {
+                Error::OAuthTokenExchange(TokenExchangeFailure::RedirectMismatch)
+            }
+            "authorization_pending" => {
+                Error::OAuthTokenExchange(TokenExchangeFailure::AuthorizationPending)
+            }
+            "slow_down" => Error::OAuthTokenExchange(TokenExchangeFailure::SlowDown),
+            "access_denied" => Error::OAuthTokenExchange(TokenExchangeFailure::AccessDenied),
+            "expired_token" => Error::OAuthTokenExchange(TokenExchangeFailure::DeviceExpired),
+            "invalid_scope" => Error::OAuthTokenExchange(TokenExchangeFailure::ScopeRejected),
+            _ => Error::OAuthTokenExchange(TokenExchangeFailure::RequestRejected),
         });
     }
     if !status.is_success() {
-        return Err(Error::OAuthTokenExchange("oauth_request_rejected"));
+        return Err(Error::OAuthTokenExchange(
+            TokenExchangeFailure::RequestRejected,
+        ));
     }
     Ok(())
 }
@@ -708,9 +714,9 @@ pub(super) async fn refresh_token(
     let mut token = token_request(endpoint, &form, authentication)
         .await
         .map_err(|error| match error {
-            Error::OAuthTokenExchange("oauth_code_rejected" | "oauth_scope_rejected") => {
-                Error::AccountRequired
-            }
+            Error::OAuthTokenExchange(
+                TokenExchangeFailure::CodeRejected | TokenExchangeFailure::ScopeRejected,
+            ) => Error::AccountRequired,
             Error::OAuthClientConfiguration | Error::OutboundDestinationRejected => error,
             _ => Error::CredentialRefreshFailed,
         })?;

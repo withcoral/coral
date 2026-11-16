@@ -13,6 +13,8 @@ use axum::body::to_bytes;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use coral_auth::oauth_clients::ClientAuthenticationError;
+use coral_auth::user_tokens::TokenRefusal;
 use coral_telemetry::safe;
 use zeroize::Zeroizing;
 
@@ -46,7 +48,11 @@ pub(super) async fn oauth_revoke(
         }
     };
     // Every client identifies itself; without that, no grant can be bound.
-    let client = match authenticate(&state, header, &mut form, unavailable).await {
+    let client = match authenticate(&state, header, &mut form, |error| {
+        failed(error == ClientAuthenticationError::Corrupt)
+    })
+    .await
+    {
         Ok(client) => client,
         Err(response) => return *response,
     };
@@ -60,17 +66,25 @@ pub(super) async fn oauth_revoke(
                 error.type = safe::kind(refusal.code()),
                 "revocation endpoint could not revoke the token"
             );
-            unavailable()
+            failed(matches!(refusal, TokenRefusal::Corrupt(_)))
         }
     }
 }
 
-fn unavailable() -> Response {
+/// The response when the server could not revoke. Storage that did not
+/// answer may answer a retry, which a 503 tells the client (RFC 7009 section
+/// 2.2.1). Stored state that is `corrupt` fails every retry, so it is a 500.
+fn failed(corrupt: bool) -> Response {
+    let (status, description) = if corrupt {
+        (StatusCode::INTERNAL_SERVER_ERROR, "revocation failed")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "revocation is unavailable")
+    };
     json_response(
-        StatusCode::SERVICE_UNAVAILABLE,
+        status,
         &serde_json::json!({
             "error": "server_error",
-            "error_description": "revocation is unavailable",
+            "error_description": description,
         }),
     )
 }
@@ -114,7 +128,44 @@ mod tests {
         if status == StatusCode::OK {
             assert!(body.is_empty());
         }
+        if status.is_server_error() {
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(value["error"], "server_error");
+        }
         status
+    }
+
+    /// Storage that does not answer is a 503, which tells the client to
+    /// retry (RFC 7009 section 2.2.1). A stored grant that does not decode
+    /// fails every retry, so it is a 500. Neither revokes anything.
+    #[tokio::test]
+    async fn an_outage_is_a_503_and_a_corrupt_grant_a_500() {
+        let (state, _codes, _session, database) = state().await;
+        let issued = signed_in(&state, &database, Some("reef")).await;
+        let token = issued["refresh_token"].as_str().unwrap();
+        // (fault, repair, status)
+        for (fault, repair, expected) in [
+            (
+                "ALTER TABLE oauth_refresh_tokens RENAME TO refresh_tokens_away",
+                "ALTER TABLE refresh_tokens_away RENAME TO oauth_refresh_tokens",
+                StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                "UPDATE oauth_refresh_grants SET private_audience = 'neither'",
+                "UPDATE oauth_refresh_grants SET private_audience = 'reef'",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ] {
+            database.execute_fixture_sql(fault).await.unwrap();
+            assert_eq!(
+                revoke(&state, revocation(Some(token), Some(CLIENT))).await,
+                expected,
+                "{fault}"
+            );
+            database.execute_fixture_sql(repair).await.unwrap();
+        }
+        let (status, _headers, body) = send(state, request(refresh_form(token))).await;
+        assert_eq!(status, StatusCode::OK, "no refusal ended the grant: {body}");
     }
 
     /// Revocation validates its form, answers an empty no-store 200 whether

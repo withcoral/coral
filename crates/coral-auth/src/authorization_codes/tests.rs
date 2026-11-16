@@ -291,3 +291,51 @@ async fn an_unwritable_database_issues_no_code() {
         Err(AuthorizationCodeError::Unavailable)
     );
 }
+
+/// A stored code whose Workspace does not decode is corrupt data: not an
+/// outage that a retry could outlast, and not a spent or mismatched code.
+/// The refusal spends nothing, so the code redeems once its row is repaired.
+#[tokio::test]
+async fn a_code_that_does_not_decode_is_corrupt_and_stays_unspent() {
+    let (codes, fixture) = codes().await;
+    let client = authenticated(fixture.database(), CLIENT).await;
+    let issued = AuthorizationGrant {
+        workspace_id: Some(
+            coral_workspace::WorkspaceId::parse("0199f7a2-6a6e-7c3d-9a51-2f4e8b7d1c06").unwrap(),
+        ),
+        ..grant()
+    };
+    assert_eq!(
+        codes.issue("code", "sign-in", &issued, NOW).await,
+        Ok(CodeIssue::Issued)
+    );
+    let rewritten = fixture
+        .execute_fixture_sql(
+            "UPDATE oauth_authorization_codes SET workspace_id = 'corrupt:' || workspace_id",
+        )
+        .await
+        .unwrap();
+    assert_eq!(rewritten, 1);
+    for attempt in 1..=2 {
+        assert_eq!(
+            codes
+                .redeem("code", redemption(&issued, &client), NOW + attempt)
+                .await,
+            Err(AuthorizationCodeError::Corrupt("corrupt_code_workspace")),
+            "attempt {attempt}"
+        );
+    }
+    let repaired = fixture
+        .execute_fixture_sql(
+            "UPDATE oauth_authorization_codes SET workspace_id = substr(workspace_id, 9)",
+        )
+        .await
+        .unwrap();
+    assert_eq!(repaired, 1);
+    assert_eq!(
+        codes
+            .redeem("code", redemption(&issued, &client), NOW + 3)
+            .await,
+        Ok(Some(issued))
+    );
+}

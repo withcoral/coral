@@ -25,19 +25,18 @@ pub(super) fn credential_fields(
             .secret_store
             .strip_prefix("secretStores/")
             .and_then(|store| coral_secret_store::SecretStoreName::parse(store).ok())
-            .ok_or_else(|| invalid("secret store name is invalid"))?
+            .ok_or_else(invalid)?
             .as_str()
             .to_owned();
         let key = (!reference.key.is_empty()).then_some(reference.key);
-        let reference = SecretReference::new(store, reference.path, key)
-            .map_err(|_invalid| invalid("secret reference is invalid"))?;
+        let reference =
+            SecretReference::new(store, reference.path, key).map_err(|_invalid| invalid())?;
         if fields
             .insert(name, CredentialField::Reference(reference))
             .is_some()
         {
-            return Err(invalid(
-                "a credential field has both a value and a reference",
-            ));
+            // A field has a value or a reference, never both.
+            return Err(invalid());
         }
     }
     Ok(fields)
@@ -179,7 +178,7 @@ fn agent(name: &str, workspace: &WorkspaceId) -> Result<Option<PrincipalId>, Sta
     }
     let (ws, id) = super::resource(name, "agents")?;
     if &ws != workspace {
-        return Err(invalid("Agent Workspace mismatch"));
+        return Err(invalid());
     }
     Ok(Some(
         PrincipalId::parse(id).map_err(super::workspaces::error)?,
@@ -213,7 +212,7 @@ fn connection_view(
 fn provider_in_scope(owner: &WorkspaceId, name: &str) -> Result<(WorkspaceId, ProviderId), Status> {
     let (ws, id) = provider_resource(name)?;
     if owner != &ws {
-        return Err(invalid("Provider scope mismatch"));
+        return Err(invalid());
     }
     Ok((ws, id))
 }
@@ -298,10 +297,10 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         let filter = match wire::ProviderAccountScope::try_from(req.scope) {
             Ok(wire::ProviderAccountScope::User) if req.agent.is_empty() => AccountScope::User,
             Ok(wire::ProviderAccountScope::Shared) if req.agent.is_empty() => AccountScope::Shared,
-            Ok(wire::ProviderAccountScope::Agent) => AccountScope::Agent(
-                agent(&req.agent, &owner)?.ok_or_else(|| invalid("Agent required"))?,
-            ),
-            _ => return Err(invalid("invalid Account scope")),
+            Ok(wire::ProviderAccountScope::Agent) => {
+                AccountScope::Agent(agent(&req.agent, &owner)?.ok_or_else(invalid)?)
+            }
+            _ => return Err(invalid()),
         };
         let accounts = self
             .accounts()?
@@ -323,10 +322,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         let request_id = ManagementRequestId::parse(&req.request_id).map_err(error)?;
         let client = domain::OAuthClient::from_provider(req.redirect_uri).map_err(error)?;
         let accounts = self.accounts()?;
-        let value = match req
-            .target
-            .ok_or_else(|| invalid("authorization target required"))?
-        {
+        let value = match req.target.ok_or_else(invalid)? {
             Target::SharedProvider(name) => {
                 let provider = self
                     .account_provider(context.actor(), &owner, &name)
@@ -343,7 +339,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
             }
             Target::AgentAccount(target) => {
                 let (ws, id) = provider_in_scope(&owner, &target.provider)?;
-                let agent = agent(&target.agent, &ws)?.ok_or_else(|| invalid("Agent required"))?;
+                let agent = agent(&target.agent, &ws)?.ok_or_else(invalid)?;
                 accounts
                     .start_agent_authorization(&context, &ws, &agent, &id, request_id, Some(client))
                     .await
@@ -494,10 +490,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         let context = change(self.management_user(&request).await?)?;
         let req = request.into_inner();
         let (ws, id) = connection(&req.name)?;
-        let value = match req
-            .decision
-            .ok_or_else(|| invalid("connection decision required"))?
-        {
+        let value = match req.decision.ok_or_else(invalid)? {
             Decision::Decline(()) => self.accounts()?.decline_connection(&context, &ws, id).await,
         }
         .map_err(error)?;

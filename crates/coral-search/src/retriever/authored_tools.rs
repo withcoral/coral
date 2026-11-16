@@ -27,8 +27,8 @@ use super::plan::QueryPlan;
 use super::repository;
 use super::vector_list::{self, VectorList};
 use super::{
-    Answer, AuthoredToolRef, EntityRef, EntityRetriever, Hydrated, Listing, QueryError,
-    QueryRequest, RequestContext, RetrievalError, WindowEntry, count,
+    Answer, AuthoredToolRef, EntityRef, EntityRetriever, Hydrated, LexicalReason, Listing,
+    QueryError, QueryRequest, RequestContext, RetrievalError, Semantic, WindowEntry, count,
 };
 use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
@@ -101,6 +101,7 @@ impl EntityRetriever for AuthoredToolRetriever {
             return Ok(Answer {
                 window: Vec::new(),
                 coverage: RetrieverCoverage::new(eligible, eligible, 0, false),
+                semantic: Some(Semantic::of(&request.vector)),
             });
         };
         let ids = current.keys().cloned().collect::<Vec<_>>();
@@ -128,11 +129,17 @@ impl EntityRetriever for AuthoredToolRetriever {
             lexical_and_vector_lists(transaction, context.workspace_id, scope, &plan, request)
                 .await?
         } else {
-            (Vec::new(), None)
+            // No unit is searched, so neither list can hold a Tool.
+            let nothing = request.vector.map(|_vector| VectorList {
+                entries: Vec::new(),
+                has_more: false,
+            });
+            (Vec::new(), nothing)
         };
+        let semantic = Semantic::of(&vector);
         let (merged, has_more) = vector_list::merged_window(
             lexical,
-            vector,
+            vector.ok(),
             |tool: &repository::RankedAuthoredTool| tool.id.clone(),
             request.window,
         );
@@ -162,6 +169,7 @@ impl EntityRetriever for AuthoredToolRetriever {
                 has_more,
             ),
             window,
+            semantic: Some(semantic),
         })
     }
 
@@ -278,8 +286,8 @@ impl AuthoredToolRetriever {
     }
 }
 
-/// The lexical list, with one row past the window, and the vector list when
-/// the request carries a vector and the vector side answers.
+/// The lexical list, with one row past the window, and the vector list, or
+/// why the vector side gave none.
 async fn lexical_and_vector_lists(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -289,7 +297,7 @@ async fn lexical_and_vector_lists(
 ) -> Result<
     (
         Vec<repository::RankedAuthoredTool>,
-        Option<VectorList<repository::RankedAuthoredTool>>,
+        Result<VectorList<repository::RankedAuthoredTool>, LexicalReason>,
     ),
     QueryError,
 > {
@@ -298,7 +306,7 @@ async fn lexical_and_vector_lists(
             .await
             .map_err(QueryError::Retriever)?;
     let vector = match request.vector {
-        Some(vector) => {
+        Ok(vector) => {
             vector_list::vector_side(
                 transaction,
                 workspace_id,
@@ -317,7 +325,7 @@ async fn lexical_and_vector_lists(
             )
             .await?
         }
-        None => None,
+        Err(reason) => Err(reason),
     };
     Ok((lexical, vector))
 }
@@ -359,8 +367,9 @@ async fn nearest_current_authored_tools(
     })
 }
 
-/// The Postgres plan of the vector query over the Authored Tools of `kind`
-/// among `ids`, as `principal` would search them, one line per row.
+/// The plan of the vector query over the Authored Tools of `kind` among
+/// `ids`, as `principal` would search them, one line per row: `EXPLAIN` on
+/// Postgres, the detail of `EXPLAIN QUERY PLAN` on `SQLite`.
 #[cfg(test)]
 pub(crate) async fn explain_vector_query(
     transaction: &mut Transaction<'_>,

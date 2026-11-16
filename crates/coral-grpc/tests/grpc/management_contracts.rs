@@ -141,7 +141,8 @@ async fn management_validation_returns_standard_safe_error_info_and_preserves_tr
     let (key, trace) = detail.metadata.into_iter().next().unwrap();
     assert_eq!(key, "trace_id");
     assert_eq!(trace, "4bf92f3577b34da6a3ce929d0e0e4736");
-    assert!(!failure.message().contains("private-injected-path"));
+    // The message is the reason again: no text about the request or the rule it broke.
+    assert_eq!(failure.message(), "INVALID_ARGUMENT");
 
     // The request span continues the caller's trace and names the method. It
     // ends once the server has written the response, which can be a moment
