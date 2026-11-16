@@ -7,19 +7,28 @@
 //! visible to its owner only, and a live Shared Tool to every Principal of
 //! its Workspace. The statement holds the first as a condition on the row's
 //! own Principal columns; a Shared Tool's row names no Principal.
+//!
+//! Both the ranked statement and the vector query read only the ids of the
+//! Tools that the caller discovers and that policy lets it call now. The
+//! vector table names no Principal, so there the ids alone hold the
+//! Principal's rule. Another Principal's Private Tool and a hidden Shared
+//! Tool never take a place in either list.
 
 use std::collections::HashMap;
 
 use async_trait::async_trait;
 use coral_catalog::AuthoredToolKind;
 use coral_db::Transaction;
+use coral_embed::MANIFEST;
 use coral_tools::AuthoredToolSearchMaterial;
+use coral_workspace::WorkspaceId;
 
 use super::plan::QueryPlan;
 use super::repository;
+use super::vector_list::{self, VectorList};
 use super::{
     Answer, AuthoredToolRef, EntityRef, EntityRetriever, Hydrated, Listing, QueryError,
-    QueryRequest, RequestContext, WindowEntry, count,
+    QueryRequest, RequestContext, RetrievalError, WindowEntry, count,
 };
 use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
@@ -94,9 +103,11 @@ impl EntityRetriever for AuthoredToolRetriever {
                 coverage: RetrieverCoverage::new(eligible, eligible, 0, false),
             });
         };
+        let ids = current.keys().cloned().collect::<Vec<_>>();
         let scope = repository::AuthoredToolScope {
             kind: self.kind,
             principal: context.actor.principal(),
+            ids: &ids,
         };
         let indexed = repository::indexed_authored_tools(transaction, context.workspace_id, scope)
             .await
@@ -113,33 +124,34 @@ impl EntityRetriever for AuthoredToolRetriever {
                 .map_err(QueryError::retrieval)?;
         }
 
-        let ranked = if searched > 0 {
-            repository::rank_authored_tools(
-                transaction,
-                context.workspace_id,
-                scope,
-                &plan,
-                request.window + 1,
-            )
-            .await
-            .map_err(QueryError::Retriever)?
+        let (lexical, vector) = if searched > 0 {
+            lexical_and_vector_lists(transaction, context.workspace_id, scope, &plan, request)
+                .await?
         } else {
-            Vec::new()
+            (Vec::new(), None)
         };
-        let has_more = ranked.len() > request.window;
+        let (merged, has_more) = vector_list::merged_window(
+            lexical,
+            vector,
+            |tool: &repository::RankedAuthoredTool| tool.id.clone(),
+            request.window,
+        );
         let mut window = Vec::new();
-        for ranked in ranked.into_iter().take(request.window) {
-            // A delete or a removal leaves the Tool's row for a later
-            // write, so only what the caller discovers now may answer.
-            let Some(material) = current.get(&ranked.id) else {
-                continue;
-            };
+        for entry in merged {
+            let strong_by_vector = entry.strong_by_vector();
+            let ranked = entry.entry;
+            let material =
+                current
+                    .get(&ranked.id)
+                    .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
+                        "a ranked Authored Tool is not one the caller discovers",
+                    )))?;
             window.push(WindowEntry {
                 entity: EntityRef::AuthoredTool(AuthoredToolRef {
                     material: material.clone(),
                     call_path: ranked.call_path,
                 }),
-                strong: strong_authored_tool(&plan, &ranked.matched),
+                strong: strong_by_vector || strong_authored_tool(&plan, &ranked.matched),
             });
         }
         Ok(Answer {
@@ -264,6 +276,111 @@ impl AuthoredToolRetriever {
         })
         .collect())
     }
+}
+
+/// The lexical list, with one row past the window, and the vector list when
+/// the request carries a vector and the vector side answers.
+async fn lexical_and_vector_lists(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    scope: repository::AuthoredToolScope<'_>,
+    plan: &QueryPlan,
+    request: &QueryRequest<'_>,
+) -> Result<
+    (
+        Vec<repository::RankedAuthoredTool>,
+        Option<VectorList<repository::RankedAuthoredTool>>,
+    ),
+    QueryError,
+> {
+    let lexical =
+        repository::rank_authored_tools(transaction, workspace_id, scope, plan, request.window + 1)
+            .await
+            .map_err(QueryError::Retriever)?;
+    let vector = match request.vector {
+        Some(vector) => {
+            vector_list::vector_side(
+                transaction,
+                workspace_id,
+                EntityKind::authored(scope.kind),
+                async |transaction| {
+                    nearest_current_authored_tools(
+                        transaction,
+                        workspace_id,
+                        scope,
+                        plan,
+                        vector,
+                        request.window,
+                    )
+                    .await
+                },
+            )
+            .await?
+        }
+        None => None,
+    };
+    Ok((lexical, vector))
+}
+
+/// The vector list: the `window` Authored Tools of the scope whose vectors
+/// of the current Embedder revision are nearest to `vector`. It leaves out
+/// each vector that the Embedder made from other text than the row holds
+/// now.
+async fn nearest_current_authored_tools(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    scope: repository::AuthoredToolScope<'_>,
+    plan: &QueryPlan,
+    vector: &[f32],
+    window: usize,
+) -> Result<VectorList<repository::RankedAuthoredTool>, RetrievalError> {
+    let revision = MANIFEST.embedder_revision();
+    let mut nearest = repository::nearest_authored_tools(
+        transaction,
+        workspace_id,
+        scope,
+        revision.as_str(),
+        vector,
+        window + 1,
+    )
+    .await?;
+    let has_more = nearest.len() > window;
+    nearest.truncate(window);
+    let doc_ids = nearest
+        .iter()
+        .map(|vector| vector.doc_id.as_str())
+        .collect::<Vec<_>>();
+    let rows =
+        repository::current_authored_tools(transaction, workspace_id, scope.kind, plan, &doc_ids)
+            .await?;
+    Ok(VectorList {
+        entries: vector_list::keep_current(nearest, rows),
+        has_more,
+    })
+}
+
+/// The Postgres plan of the vector query over the Authored Tools of `kind`
+/// among `ids`, as `principal` would search them, one line per row.
+#[cfg(test)]
+pub(crate) async fn explain_vector_query(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    principal: &coral_workspace::Principal,
+    kind: AuthoredToolKind,
+    ids: &[coral_tools::AuthoredToolId],
+) -> Result<Vec<String>, coral_db::Error> {
+    repository::explain_nearest_authored_tools(
+        transaction,
+        workspace_id,
+        repository::AuthoredToolScope {
+            kind,
+            principal,
+            ids,
+        },
+        MANIFEST.embedder_revision().as_str(),
+        &vec![0.5; MANIFEST.dimension],
+    )
+    .await
 }
 
 /// Whether a ranked Authored Tool is a strong match, by its retriever's own

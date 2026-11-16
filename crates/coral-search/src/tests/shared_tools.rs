@@ -6,10 +6,10 @@
 use coral_policy::ToolAccessState;
 use coral_test_support::change;
 use coral_tools::{
-    AuthoredToolDescription, AuthoredToolSource, SharedTool, SharedToolModule, SharedToolOrigin,
-    SharedToolPath, SharedToolPublish,
+    AuthoredToolDescription, AuthoredToolSource, SharedTool, SharedToolOrigin, SharedToolPath,
+    SharedToolPublish,
 };
-use coral_workspace::{AuthenticatedPrincipal, WorkspaceRole};
+use coral_workspace::AuthenticatedPrincipal;
 use sea_query::{Alias, Expr, ExprTrait as _, Query};
 
 use super::{TestModules, TracerScope, organization_user};
@@ -30,7 +30,6 @@ const SOURCE: &str = "export default async function summarize(input: { harbour: 
 struct SharedScope {
     fixture: TestModules,
     scope: TracerScope,
-    shared_tools: SharedToolModule,
     member: AuthenticatedPrincipal,
     agent: AuthenticatedPrincipal,
 }
@@ -39,24 +38,9 @@ impl SharedScope {
     async fn new() -> Self {
         let fixture = TestModules::new().await;
         let scope = TracerScope::new(&fixture).await;
-        let shared_tools = SharedToolModule::new(
-            fixture.search.database.clone(),
-            fixture.workspaces.clone(),
-            coral_tools::IsolateLimits::default(),
-            coral_test_support::TEST_COMPILATION_TIMEOUT,
-        )
-        .expect("start the Shared Tool compiler");
-        let member = organization_user(fixture.search.database.clone(), "user:shared-member").await;
-        fixture
-            .workspaces
-            .set_membership(
-                &change(scope.user.clone(), 50, '5'),
-                &scope.workspace_id,
-                &member,
-                WorkspaceRole::Member,
-            )
-            .await
-            .expect("add the Member");
+        let member = fixture
+            .add_member(&scope.user, &scope.workspace_id, "user:shared-member")
+            .await;
         let issued = fixture
             .workspaces
             .create_agent(
@@ -75,8 +59,7 @@ impl SharedScope {
         Self {
             fixture,
             scope,
-            shared_tools,
-            member: AuthenticatedPrincipal::user(member),
+            member,
             agent,
         }
     }
@@ -89,9 +72,9 @@ impl SharedScope {
         default: ToolAccessState,
         expected_revision: u64,
     ) -> SharedTool {
-        self.shared_tools
-            .publish_as_reviewed(
-                &change(self.scope.user.clone(), 60, '6'),
+        self.fixture
+            .publish_shared_tool(
+                &self.scope.user,
                 &self.scope.workspace_id,
                 SharedToolPublish::review(
                     SharedToolPath::parse("tides.summarize").expect("a path"),
@@ -104,18 +87,14 @@ impl SharedScope {
                     default,
                     expected_revision,
                 ),
-                None,
             )
             .await
-            .expect("publish the Shared Tool")
-            .published()
-            .expect("the published Shared Tool")
-            .clone()
     }
 
     /// Removes [`SHARED`] as the Owner, and notifies nothing.
     async fn remove(&self, expected_revision: u64) {
-        self.shared_tools
+        self.fixture
+            .shared_tools
             .remove(
                 &change(self.scope.user.clone(), 70, '7'),
                 &self.scope.workspace_id,
