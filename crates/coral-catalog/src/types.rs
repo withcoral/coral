@@ -558,6 +558,10 @@ impl SchemaGraph {
             .iter()
             .map(|(source, schema_id)| (source.as_str(), schema_id))
     }
+
+    pub(crate) fn schemas(&self) -> impl Iterator<Item = (&SchemaId, &Value)> {
+        self.schemas.iter()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

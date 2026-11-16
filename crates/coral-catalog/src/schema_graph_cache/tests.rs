@@ -42,7 +42,10 @@ async fn publish(fixture: &TestDatabase, inputs: &[ProviderSetupInput]) -> Vec<P
             panic!("the fixture materializes");
         };
         let graph = prepared.schema_graph().clone();
-        let weight_bytes = weight_bytes(graph.to_storage_json().unwrap().len());
+        // The cache weighs the graph it parses from storage.
+        let weight_bytes = weight_bytes(
+            &SchemaGraph::from_storage_json(&graph.to_storage_json().unwrap()).unwrap(),
+        );
         let id = crate::publish_generation_in_transaction(
             &mut transaction,
             input,
@@ -166,59 +169,74 @@ async fn a_corrupt_stored_graph_is_reported_and_not_cached() {
     );
 }
 
-// Catches: a cache that grows past its budget, evicts an entry still in use
-// before an idle one, keeps a graph larger than its budget, or evicts others
-// to make room for a graph it will not keep.
+struct BudgetCase {
+    name: &'static str,
+    /// The budget, from the weights of an HTTP graph and the smaller MCP graph.
+    budget_bytes: fn(usize, usize) -> usize,
+    /// Cached reads in order: 0, 1 and 2 are HTTP Generations, 3 and 4 MCP ones.
+    loads: &'static [usize],
+    kept: &'static [usize],
+}
+
+const BUDGET_CASES: [BudgetCase; 8] = [
+    BudgetCase {
+        name: "two graphs within the budget",
+        budget_bytes: |http, _mcp| 2 * http,
+        loads: &[0, 1],
+        kept: &[0, 1],
+    },
+    BudgetCase {
+        name: "a second graph over the budget evicts the first",
+        budget_bytes: |http, _mcp| 2 * http - 1,
+        loads: &[0, 1],
+        kept: &[1],
+    },
+    BudgetCase {
+        name: "a graph read again outlives one that was not",
+        budget_bytes: |http, _mcp| 2 * http,
+        loads: &[0, 1, 0, 2],
+        kept: &[0, 2],
+    },
+    BudgetCase {
+        name: "one graph evicts as many as it needs room for",
+        budget_bytes: |http, mcp| http + mcp - 1,
+        loads: &[3, 4, 0],
+        kept: &[0],
+    },
+    BudgetCase {
+        name: "a graph over the whole budget evicts the rest and is kept while most recent",
+        budget_bytes: |http, _mcp| http - 1,
+        loads: &[3, 0, 0],
+        kept: &[0],
+    },
+    BudgetCase {
+        name: "a graph over the whole budget leaves when another graph is used",
+        budget_bytes: |http, _mcp| http - 1,
+        loads: &[0, 3],
+        kept: &[3],
+    },
+    BudgetCase {
+        name: "a graph over the whole budget replaces another",
+        budget_bytes: |http, _mcp| http - 1,
+        loads: &[0, 1],
+        kept: &[1],
+    },
+    BudgetCase {
+        name: "a budget of zero keeps only the most recent graph",
+        budget_bytes: |_http, _mcp| 0,
+        loads: &[3, 4],
+        kept: &[4],
+    },
+];
+
+// Catches: a cache that grows past its budget, one that evicts an entry still
+// in use before an idle one, and one that the largest graph makes useless:
+// that does not keep a graph over its whole budget while it is the one in
+// use, or keeps it once another graph is.
 #[tokio::test]
-async fn the_byte_budget_evicts_the_entries_used_longest_ago() {
-    struct Case {
-        name: &'static str,
-        /// The budget, from the weights of an HTTP graph and the smaller MCP graph.
-        budget_bytes: fn(usize, usize) -> usize,
-        /// Cached reads in order: 0, 1 and 2 are HTTP Generations, 3 and 4 MCP ones.
-        loads: &'static [usize],
-        kept: &'static [usize],
-    }
-    let cases = [
-        Case {
-            name: "two graphs within the budget",
-            budget_bytes: |http, _mcp| 2 * http,
-            loads: &[0, 1],
-            kept: &[0, 1],
-        },
-        Case {
-            name: "a second graph over the budget evicts the first",
-            budget_bytes: |http, _mcp| 2 * http - 1,
-            loads: &[0, 1],
-            kept: &[1],
-        },
-        Case {
-            name: "a graph read again outlives one that was not",
-            budget_bytes: |http, _mcp| 2 * http,
-            loads: &[0, 1, 0, 2],
-            kept: &[0, 2],
-        },
-        Case {
-            name: "one graph evicts as many as it needs room for",
-            budget_bytes: |http, mcp| http + mcp - 1,
-            loads: &[3, 4, 0],
-            kept: &[0],
-        },
-        Case {
-            name: "a graph over the whole budget is not kept and evicts nothing",
-            budget_bytes: |http, _mcp| http - 1,
-            loads: &[3, 0],
-            kept: &[3],
-        },
-        Case {
-            name: "a budget of zero keeps nothing",
-            budget_bytes: |_http, _mcp| 0,
-            loads: &[3, 3],
-            kept: &[],
-        },
-    ];
+async fn the_byte_budget_evicts_the_entries_used_longest_ago_but_never_the_newest() {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
-    for case in cases {
+    for case in BUDGET_CASES {
         let generations = publish(
             &fixture,
             &[
@@ -269,6 +287,58 @@ async fn the_byte_budget_evicts_the_entries_used_longest_ago() {
             }
         }
     }
+}
+
+/// A graph of one schema, `schema`.
+fn one_schema_graph(schema: Value) -> SchemaGraph {
+    let source = "#/components/schemas/Only";
+    let id = SchemaId::for_source(source);
+    SchemaGraph::new(
+        crate::SchemaSemantics::JsonSchema2020_12,
+        BTreeMap::from([(id.clone(), schema)]),
+        BTreeMap::from([(source.to_string(), id)]),
+    )
+    .unwrap()
+}
+
+// Catches: a weight taken from the length of the stored JSON, which weighs a
+// graph of many small values, such as Microsoft Graph's, like one long string
+// and so keeps far more than the budget or nothing of the largest Provider.
+#[test]
+fn a_graph_weighs_what_its_values_hold_not_its_stored_length() {
+    let properties = (0..200)
+        .map(|index| {
+            (
+                format!("p{index:03}"),
+                serde_json::json!({"type": "string"}),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    let structure = one_schema_graph(serde_json::json!({"properties": properties}));
+    let stored_bytes = structure.to_storage_json().unwrap().len();
+    let padding = stored_bytes
+        - one_schema_graph(serde_json::json!({"description": ""}))
+            .to_storage_json()
+            .unwrap()
+            .len();
+    let text = one_schema_graph(serde_json::json!({"description": "a".repeat(padding)}));
+    assert_eq!(text.to_storage_json().unwrap().len(), stored_bytes);
+
+    let parsed = |graph: &SchemaGraph| {
+        SchemaGraph::from_storage_json(&graph.to_storage_json().unwrap()).unwrap()
+    };
+    let (structure, text) = (
+        weight_bytes(&parsed(&structure)),
+        weight_bytes(&parsed(&text)),
+    );
+    assert!(
+        text >= stored_bytes,
+        "a graph weighs at least its text: {text} for {stored_bytes} stored"
+    );
+    assert!(
+        structure > 8 * text,
+        "200 small objects weigh {structure}; one string as long when stored weighs {text}"
+    );
 }
 
 // Catches: two loads of one uncached Generation leaving two graphs in use,

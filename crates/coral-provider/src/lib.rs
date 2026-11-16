@@ -954,7 +954,7 @@ impl ProviderModule {
             transaction,
             workspace_id,
             repository::ProviderKey::CallRoot(&ProviderCallRoot::of_authored_tools(kind)),
-            coral_db::RowLock::Shared.into(),
+            coral_db::RowLock::Shared,
         )
         .await?
         .and_then(repository::ProviderWithActiveGeneration::into_active) else {

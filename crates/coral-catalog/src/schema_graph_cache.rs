@@ -4,8 +4,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use coral_db::Transaction;
+use serde_json::Value;
 
-use crate::{Error, ProviderGenerationId, SchemaGraph, repository};
+use crate::{Error, ProviderGenerationId, SchemaGraph, SchemaId, repository};
 
 #[cfg(test)]
 mod tests;
@@ -21,10 +22,19 @@ mod tests;
 /// process restarts. Publication and Generation verification read the stored
 /// graph itself, never this cache, and so keep reporting that corruption.
 ///
-/// The cache holds at most its byte budget, by an estimate of each graph's
-/// size in memory: twelve times the length of the JSON it is stored as. Over
-/// budget, it evicts the entries used longest ago. A graph larger than the
-/// whole budget is returned and not kept, and a budget of zero keeps nothing.
+/// The cache holds its byte budget of graphs, by an estimate of each graph's
+/// size in memory, and whatever the budget, it holds the graph used most
+/// recently. A graph that does not fit evicts the entries used longest ago
+/// until the cache is within its budget or holds that graph alone. So the
+/// largest Provider's graph is served from memory while it is the one in use,
+/// even when it alone exceeds the budget: it evicts every other entry when it
+/// arrives, and it is evicted when another graph is next loaded. The budget
+/// is therefore soft by at most one entry, and the cache exceeds it only
+/// while it holds that entry alone. A graph is made from one Setup input, so
+/// the input limit bounds the entry: an `OpenAPI` document of 64 MiB at most
+/// ([`OPENAPI_DOCUMENT_MAX_BYTES`](crate::OPENAPI_DOCUMENT_MAX_BYTES)), where
+/// Microsoft Graph's document of 43 MiB makes a graph of 184 MiB. A budget of
+/// zero keeps only the graph used most recently.
 ///
 /// Entries are keyed by Generation alone, with no Workspace. Ask only for a
 /// Generation that a Workspace-scoped read in the same transaction just
@@ -40,17 +50,6 @@ struct Shared {
     budget_bytes: usize,
     entries: Mutex<Entries>,
 }
-
-/// The bytes of memory that a parsed schema graph is weighed at for each byte
-/// of the JSON it is stored as: the largest ratio measured.
-///
-/// Measured as resident memory with glibc's allocator on x86-64, for nine
-/// graphs from 156 bytes to 4.2 MB stored. They hold 5.7 times (Gemini's,
-/// 330 KB stored) to 12.1 times (a 2 KB fixture's) their stored length;
-/// GitHub's, the largest, holds 10.5 times and the Built-in Provider's 9.5
-/// times. The weight is an upper estimate, so the cache holds less than its
-/// budget of most graphs and never much more.
-const STORED_BYTE_WEIGHT: usize = 12;
 
 #[derive(Default)]
 struct Entries {
@@ -69,13 +68,14 @@ struct Entry {
 }
 
 impl SchemaGraphCache {
-    /// The budget a Coral Instance runs with, 256 MiB: room for five graphs
-    /// the size of GitHub's (4.2 MB stored, 44 MB in memory, weighed at
-    /// 50 MB), or about 65 the size of Gemini's (330 KB stored).
+    /// The budget a Coral Instance runs with, 256 MiB: room for the graphs of
+    /// Microsoft Graph (184 MiB in memory, weighed at 189 MiB) and GitHub
+    /// (42 MiB, weighed at 44 MiB) together, with 23 MiB over for graphs the
+    /// size of Gmail's and Gemini's, which weigh 1 and 2 MiB.
     pub const DEFAULT_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 
-    /// Builds an empty cache that holds at most `budget_bytes` of graphs, by
-    /// their estimated size in memory.
+    /// Builds an empty cache with a budget of `budget_bytes` for the graphs
+    /// it holds, by their estimated size in memory.
     #[must_use]
     pub fn new(budget_bytes: usize) -> Self {
         Self {
@@ -105,11 +105,13 @@ impl SchemaGraphCache {
         if let Some(graph) = cached {
             return Ok(graph);
         }
-        let stored = repository::load_stored_schema_graph(transaction, generation_id).await?;
-        let weight_bytes = weight_bytes(stored.stored_bytes);
+        let graph = repository::load_schema_graph(transaction, generation_id).await?;
+        // The walk of a large graph takes milliseconds, so it runs here,
+        // before the lock.
+        let weight_bytes = weight_bytes(&graph);
         let (graph, released) = self.entries().keep(
             generation_id,
-            Arc::new(stored.graph),
+            Arc::new(graph),
             weight_bytes,
             self.shared.budget_bytes,
         );
@@ -120,7 +122,7 @@ impl SchemaGraphCache {
     }
 
     /// The entries, locked. Hold them for map operations only: never across
-    /// an `.await`, a parse or the drop of a graph.
+    /// an `.await`, a parse, a walk or the drop of a graph.
     fn entries(&self) -> MutexGuard<'_, Entries> {
         // No map operation leaves the entries half-changed, so a poisoned
         // lock still guards a coherent cache.
@@ -131,9 +133,90 @@ impl SchemaGraphCache {
     }
 }
 
-/// The estimated size in memory of a graph stored as `stored_bytes` of JSON.
-const fn weight_bytes(stored_bytes: usize) -> usize {
-    stored_bytes.saturating_mul(STORED_BYTE_WEIGHT)
+/// The estimated size in memory of a parsed graph: the bytes its values hold
+/// room for, by one walk of them, and 5/16 more, on a fixed base.
+///
+/// Measured against resident memory with glibc's allocator on x86-64, for ten
+/// graphs from the Private Provider's (156 bytes stored) to Microsoft Graph's
+/// (28.7 MB stored, 82,992 schemas). For the nine above 2 KB stored, resident
+/// memory was 1.25 to 1.31 times the walked bytes: the rest is what the
+/// allocator keeps for each block and the nodes of the graph's two maps, and
+/// 5/16 covers the largest share of it. The smallest graph is nearly all the
+/// first node of each map, which the base stands for.
+///
+/// The weight came to 1.02 to 1.13 times resident memory for those nine
+/// (1.03 for Microsoft Graph's, 1.04 for GitHub's) and 1.32 times for the
+/// smallest: never less. The length of the stored JSON predicts it poorly,
+/// since resident memory was 5.7 to 12.1 times that length.
+fn weight_bytes(graph: &SchemaGraph) -> usize {
+    let held = graph
+        .schemas()
+        .map(|(id, schema)| {
+            size_of::<SchemaId>() + id.as_str().len() + size_of::<Value>() + held_bytes(schema)
+        })
+        .sum::<usize>()
+        + graph
+            .sources()
+            .map(|(source, id)| {
+                size_of::<String>() + source.len() + size_of::<SchemaId>() + id.as_str().len()
+            })
+            .sum::<usize>();
+    GRAPH_BASE_BYTES + held + held * 5 / 16
+}
+
+/// The first node of each of a graph's two maps, in round numbers.
+const GRAPH_BASE_BYTES: usize = 2048;
+
+/// The bytes of heap that `value` holds room for, by capacity: a string's
+/// bytes, an array's values, an object's entries and index table.
+fn held_bytes(value: &Value) -> usize {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => 0,
+        Value::String(text) => text.capacity(),
+        Value::Array(items) => {
+            items.capacity() * size_of::<Value>() + items.iter().map(held_bytes).sum::<usize>()
+        }
+        Value::Object(entries) => {
+            let (slots, buckets) = object_room(entries.len());
+            slots * OBJECT_SLOT_BYTES
+                + buckets * OBJECT_BUCKET_BYTES
+                + entries
+                    .iter()
+                    .map(|(key, value)| key.capacity() + held_bytes(value))
+                    .sum::<usize>()
+        }
+    }
+}
+
+/// An object's entry: its hash, its key and its value.
+const OBJECT_SLOT_BYTES: usize = size_of::<u64>() + size_of::<String>() + size_of::<Value>();
+
+/// One bucket of an object's index table: an entry's position and a control
+/// byte.
+const OBJECT_BUCKET_BYTES: usize = size_of::<usize>() + 1;
+
+/// The entry slots and the index buckets that a parsed object of `len`
+/// entries holds room for. `serde_json` keeps an object in an index map that
+/// reports no capacity, and parsing adds one entry at a time: the index table
+/// doubles from 4 buckets, fills 7 in 8 of them (3 of the first 4), and the
+/// entries are given room to match. An object of one entry holds room for
+/// three, which is most of why a graph is several times its stored length.
+const fn object_room(len: usize) -> (usize, usize) {
+    if len == 0 {
+        return (0, 0);
+    }
+    let mut buckets: usize = 4;
+    loop {
+        let slots = if buckets < 8 {
+            buckets - 1
+        } else {
+            buckets / 8 * 7
+        };
+        if slots >= len {
+            return (slots, buckets);
+        }
+        buckets *= 2;
+    }
 }
 
 impl Entries {
@@ -148,10 +231,10 @@ impl Entries {
         Some(Arc::clone(&entry.graph))
     }
 
-    /// Keeps `graph` as the most recently used entry and evicts the entries
-    /// used longest ago until the cache is within `budget_bytes`. Keeps the
-    /// entry it already holds for the Generation instead, and nothing when
-    /// `graph` alone is over the budget.
+    /// Keeps `graph` as the most recently used entry, then evicts the entries
+    /// used longest ago until the cache is within `budget_bytes` or holds
+    /// `graph` alone. Keeps the entry it already holds for the Generation
+    /// instead.
     ///
     /// Returns the graph to use, and the graphs the cache let go of, for the
     /// caller to drop once it has released the lock.
@@ -165,10 +248,6 @@ impl Entries {
         if let Some(first) = self.used(generation_id) {
             return (first, vec![graph]);
         }
-        let mut released = Vec::new();
-        if weight_bytes > budget_bytes {
-            return (graph, released);
-        }
         self.last_tick += 1;
         self.by_last_use
             .insert(self.last_tick, generation_id.clone());
@@ -181,9 +260,10 @@ impl Entries {
             },
         );
         self.weight_bytes += weight_bytes;
-        // The new entry fits the budget and is the last in use order, so the
-        // cache is within budget before this reaches it.
-        while self.weight_bytes > budget_bytes {
+        // The new entry is the last in use order, so the loop never reaches
+        // it: the most recently used graph stays, whatever it weighs.
+        let mut released = Vec::new();
+        while self.weight_bytes > budget_bytes && self.by_generation.len() > 1 {
             let Some((_last_use, evicted)) = self.by_last_use.pop_first() else {
                 break;
             };
