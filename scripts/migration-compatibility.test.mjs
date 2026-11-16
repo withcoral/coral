@@ -52,6 +52,13 @@ const breaking = {
   'CREATE TABLE IF NOT EXISTS workspaces (id TEXT);\nALTER TABLE workspaces DROP COLUMN name;': /drops a column/,
   // Nor is a column new when the migration only may have added it.
   "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS name TEXT;\nUPDATE workspaces SET name = '';": /rewrites values/,
+  // An older release's insert gives a new column no value either.
+  'ALTER TABLE workspaces ADD COLUMN owner TEXT;\nALTER TABLE workspaces ALTER COLUMN owner SET NOT NULL;':
+    /requires a value/,
+  // A column is the migration's own only once: after it drops the column,
+  // the name is a release's again.
+  'ALTER TABLE workspaces ADD COLUMN tmp TEXT;\nALTER TABLE workspaces DROP COLUMN tmp;\nALTER TABLE workspaces DROP COLUMN tmp;':
+    /drops a column/,
   // A comment between two words separates them.
   'ALTER/**/TABLE workspaces DROP COLUMN name;': /drops a column/,
   // Every table of one DROP TABLE counts, not only the first.
@@ -89,6 +96,13 @@ const compatible = {
   'scratch tables that it drops together, one by its quoted name':
     'CREATE TABLE scratch (id TEXT);\nCREATE TABLE "a-b" (id TEXT);\nDROP TABLE "scratch", "a-b" CASCADE;\n',
   'a nullable column': 'ALTER TABLE workspaces ADD COLUMN owner TEXT;\n',
+  // No release uses a column that the migration itself added.
+  'a column that it adds, retypes, renames, fills and drops':
+    'ALTER TABLE workspaces ADD COLUMN tmp TEXT;\n' +
+    'ALTER TABLE workspaces ALTER COLUMN tmp TYPE BIGINT USING 0;\n' +
+    'ALTER TABLE workspaces RENAME COLUMN tmp TO scratch;\n' +
+    'UPDATE workspaces SET scratch = 1;\n' +
+    'ALTER TABLE workspaces DROP COLUMN IF EXISTS scratch;\n',
   'a required column with a default': "ALTER TABLE workspaces ADD COLUMN kind TEXT NOT NULL DEFAULT 'a';\n",
   'a column and its backfill':
     'ALTER TABLE workspaces ADD COLUMN slug TEXT;\n' +

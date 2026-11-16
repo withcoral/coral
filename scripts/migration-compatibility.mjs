@@ -13,7 +13,9 @@
 //   -- rolling-upgrade: compatible. <why no statement breaks an older release>
 //
 // One declaration covers the file. `compatible` does not cover a statement
-// that removes, renames or retypes a table or a column: see CERTAIN.
+// that removes, renames or retypes a table or a column, which `will` marks.
+// A table rebuild is the exception: a table the migration creates takes the
+// dropped one's name, and the declaration says that it keeps every column.
 //
 // It reads SQL text, so it does not see what a statement means: a stored value
 // that an older release cannot decode passes. AGENTS.md has the rule for those.
@@ -103,32 +105,43 @@ const PART = '(?:"[^"]+"|[a-z_][a-z0-9_$]*)'
 const IDENTIFIER = `(${PART}(?:\\.${PART})*)`
 const name = (identifier) => identifier.replaceAll('"', '')
 const match = (statement, pattern) => new RegExp(pattern).exec(statement)
-const REWRITES = 'rewrites values that an older release reads'
-// These break every release that uses what they remove, so no `compatible`
-// declaration covers them: the migration names the release that stopped.
-const CERTAIN = new Set([
-  'drops a column',
-  'drops the table',
-  'renames a table or a column',
-  'moves a table to another schema',
-  'changes a column type',
-])
 
-// What one `ALTER TABLE` action can break, or nothing.
+// One way a statement can break an older release. A `certain` one breaks every
+// release that uses what it removes, so no `compatible` declaration covers
+// it: the migration names the release that stopped.
+const may = (text) => ({ text, certain: false })
+const will = (text) => ({ text, certain: true })
+const REWRITES = may('rewrites values that an older release reads')
+
+// What one `ALTER TABLE` action can break, or nothing. A column that this
+// migration added is no release's yet, so dropping, renaming or retyping it
+// breaks none.
 function alterAction(action, table, known) {
   if (known.tables.has(table)) return null
-  if (/^drop\s+constraint\b/.test(action)) return 'drops a constraint'
+  const own = (column) => known.columns.has(`${table}.${name(column)}`)
+  if (/^drop\s+constraint\b/.test(action)) return may('drops a constraint')
   // COLUMN is optional in `DROP [COLUMN] name`.
-  if (/^drop\b/.test(action)) return 'drops a column'
-  if (/^rename\s+constraint\b/.test(action)) return 'renames a constraint'
-  if (/^rename\b/.test(action)) return 'renames a table or a column'
-  if (/^set\s+schema\b/.test(action)) return 'moves a table to another schema'
+  const dropped = match(action, `^drop\\s+(column\\s+)?(if\\s+exists\\s+)?${IDENTIFIER}`)
+  if (dropped && known.columns.delete(`${table}.${name(dropped[3])}`)) return null
+  if (/^drop\b/.test(action)) return will('drops a column')
+  if (/^rename\s+constraint\b/.test(action)) return may('renames a constraint')
+  const renamed = match(action, `^rename\\s+(column\\s+)?${IDENTIFIER}\\s+to\\s+${IDENTIFIER}`)
+  if (renamed && known.columns.delete(`${table}.${name(renamed[2])}`)) {
+    known.columns.add(`${table}.${name(renamed[3])}`)
+    return null
+  }
+  if (/^rename\b/.test(action)) return will('renames a table or a column')
+  if (/^set\s+schema\b/.test(action)) return will('moves a table to another schema')
   const column = `^alter\\s+(column\\s+)?${IDENTIFIER}\\s+`
-  if (match(action, `${column}(set\\s+data\\s+)?type\\b`)) return 'changes a column type'
-  if (match(action, `${column}set\\s+not\\s+null\\b`)) return 'requires a value that an older release may not write'
-  if (match(action, `${column}drop\\s+default\\b`)) return 'drops a default that an older release may rely on'
+  const retyped = match(action, `${column}(set\\s+data\\s+)?type\\b`)
+  if (retyped) return own(retyped[2]) ? null : will('changes a column type')
+  // An older release's insert leaves even a new column without a value.
+  if (match(action, `${column}set\\s+not\\s+null\\b`)) {
+    return may('requires a value that an older release may not write')
+  }
+  if (match(action, `${column}drop\\s+default\\b`)) return may('drops a default that an older release may rely on')
   if (/^add\s+(constraint|check|unique|primary\s+key|foreign\s+key|exclude)\b/.test(action)) {
-    return 'adds a constraint that an older release may not meet'
+    return may('adds a constraint that an older release may not meet')
   }
   const added = match(action, `^add\\s+(column\\s+)?(if\\s+not\\s+exists\\s+)?${IDENTIFIER}`)
   if (added) {
@@ -136,7 +149,7 @@ function alterAction(action, table, known) {
     if (!added[2]) known.columns.add(`${table}.${name(added[3])}`)
     // `DEFAULT NULL` supplies no value.
     if (/\bnot\s+null\b/.test(action) && !/\b(default\s+(?!null\b)|generated\b)/.test(action)) {
-      return 'adds a required column that an older release does not write'
+      return may('adds a required column that an older release does not write')
     }
   }
   return null
@@ -164,12 +177,17 @@ function statementBreaks(statement, known) {
       const table = match(target, `^${IDENTIFIER}`)
       return table && known.rebuilt.has(name(table[1]))
     })
-    if (rebuilt) return ['rebuilds a table']
+    // The check has no record of the dropped table's columns, so it cannot
+    // tell whether the new table keeps them: the declaration must say so.
+    if (rebuilt) return [may('rebuilds a table')]
   }
   const dropped = match(statement, '^drop\\s+(materialized\\s+view|[a-z]+)')
-  if (dropped) return [`drops the ${dropped[1].replace(/\s+/g, ' ')}`]
+  if (dropped) {
+    const kind = dropped[1].replace(/\s+/g, ' ')
+    return [kind === 'table' ? will('drops the table') : may(`drops the ${kind}`)]
+  }
   if (/^alter\s+(index|type|view|sequence)\b.*\brename\b/.test(statement)) {
-    return ['renames what an older release names']
+    return [may('renames what an older release names')]
   }
 
   const altered = match(statement, `^alter\\s+table\\s+(if\\s+exists\\s+)?(only\\s+)?${IDENTIFIER}\\s+(.*)$`)
@@ -182,11 +200,11 @@ function statementBreaks(statement, known) {
 
   const unique = match(statement, `^create\\s+unique\\s+index\\b.*?\\bon\\s+(only\\s+)?${IDENTIFIER}`)
   if (unique && !known.tables.has(name(unique[2]))) {
-    return ['adds a unique index that an older release may not meet']
+    return [may('adds a unique index that an older release may not meet')]
   }
 
   const removed = match(statement, `^(delete\\s+from|truncate(\\s+table)?)\\s+(only\\s+)?${IDENTIFIER}`)
-  if (removed && !known.tables.has(name(removed[4]))) return ['deletes rows that an older release may read']
+  if (removed && !known.tables.has(name(removed[4]))) return [may('deletes rows that an older release may read')]
 
   const updated = match(statement, `^update\\s+(only\\s+)?${IDENTIFIER}\\s+(.*?\\s)?set\\s+(.*)$`)
   if (updated && !known.tables.has(name(updated[2]))) {
@@ -202,10 +220,10 @@ function statementBreaks(statement, known) {
 
   const trigger = match(statement, `^create\\s+(or\\s+replace\\s+)?(constraint\\s+)?trigger\\b.*?\\bon\\s+${IDENTIFIER}`)
   if (trigger && !known.tables.has(name(trigger[3]))) {
-    return ['adds a trigger to a table that an older release writes']
+    return [may('adds a trigger to a table that an older release writes')]
   }
   // The body is a string here, so nothing in it was read.
-  if (/^do\b/.test(statement)) return ['runs a block that this check cannot read']
+  if (/^do\b/.test(statement)) return [may('runs a block that this check cannot read')]
 
   // A write that another statement carries: read no further into it.
   const replaced = match(statement, `^(insert\\s+or\\s+replace|replace)\\s+into\\s+${IDENTIFIER}`)
@@ -235,11 +253,11 @@ function breakingStatements(sql, quoted) {
   const found = []
   for (const statement of statements) {
     const shown = statement.replace(/"#(\d+)"/g, (_, index) => `"${quoted[index]}"`)
-    const reasons = [...new Set(statementBreaks(statement.toLowerCase(), known))]
+    const reasons = statementBreaks(statement.toLowerCase(), known)
     if (reasons.length > 0) {
       found.push({
-        certain: reasons.some((reason) => CERTAIN.has(reason)),
-        reason: reasons.join(', '),
+        certain: reasons.some(({ certain }) => certain),
+        reason: [...new Set(reasons.map(({ text }) => text))].join(', '),
         statement: shown.length > 100 ? `${shown.slice(0, 97)}...` : shown,
       })
     }
@@ -297,7 +315,8 @@ const HELP = `an older Coral release must keep working after a migration runs.
   If no statement named above breaks an older release, declare:
     -- rolling-upgrade: compatible. <why>
   That covers a constraint, an index or a rewrite of rows. It does not cover a dropped or renamed
-  table or column, or a changed column type.
+  table or column, or a changed column type. A table rebuild is the exception: when a table that
+  the migration creates takes the dropped table's name, say that it keeps every column.
   A step with a postgres/ and a sqlite/ half declares in the postgres/ half.`
 
 function main(args) {
