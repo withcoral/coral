@@ -5,10 +5,11 @@
 //! the answer into its ranked statement over the search-owned table, and
 //! hands the engine its window in rank order, each Entity marked strong or
 //! weak by the retriever's own rule. When the request carries the query's
-//! vector, each retriever also runs a vector query with its own visibility
-//! rules and merges the two lists ([`vector_list`]). It hydrates and
-//! describes the Entities of its kind. Every method joins the caller's read snapshot and opens no
-//! connection of its own.
+//! vector, the query has a word to rank, and some of what the caller may
+//! search is in the index, the retriever also runs a vector query with its
+//! own visibility rules and merges the two lists ([`vector_list`]). It
+//! hydrates and describes the Entities of its kind. Every method joins the
+//! caller's read snapshot and opens no connection of its own.
 
 pub(crate) mod authored_tools;
 pub(crate) mod plan;
