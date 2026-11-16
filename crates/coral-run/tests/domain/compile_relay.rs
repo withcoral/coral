@@ -3,7 +3,7 @@
 //! finds no Run Executor with room there is served through the database.
 //! The relay's own rules are tested in `coral-run-executor`.
 use super::*;
-use coral_run_executor::testing::{RUN_EXECUTOR_TOKEN, relayed_compiles};
+use coral_run_executor::testing::{RUN_EXECUTOR_TOKEN, relayed_requests};
 use coral_run_executor::{
     CompilerClient, Credentials, LinkServer, PullStreams, RunExecutorConfig, RunLimits, Token,
 };
@@ -65,17 +65,17 @@ async fn linked(link: &Link) {
     .await;
 }
 
-/// Waits until a compile is relayed: its row's write raises the change
-/// signal.
+/// Waits until admission waits on the relay: the write of its request, a
+/// probe or a compile, raises the change signal.
 async fn relayed(fixture: &TestModules) {
     let mut changes = fixture
         .database
         .subscribe_changes()
         .expect("the change signal");
     let written = async {
-        while relayed_compiles(&fixture.database)
+        while relayed_requests(&fixture.database)
             .await
-            .expect("the relayed compiles")
+            .expect("the relayed requests")
             == 0
         {
             changes.changed().await.expect("the change signal");

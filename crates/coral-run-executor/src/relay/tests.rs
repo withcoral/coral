@@ -274,7 +274,8 @@ async fn a_row_whose_taker_stopped_fails_as_a_stopped_compiler_and_is_gone() {
     let call = compiling(&requester.compiler, Duration::from_secs(3));
     rows_reach(&database.database(), 1).await;
 
-    // A Coral Instance takes the row, then stops before it answers.
+    // Simulates a taker that stops after it takes the row: the test takes
+    // it directly and never answers.
     let db = database.database();
     let mut transaction = db.begin().await.unwrap();
     let take = Take {
