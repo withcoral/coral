@@ -230,10 +230,11 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   can break an older release, and says how to declare one that does not. It
   reads SQL text in the shared files and the Postgres halves, not stored
   values: keep the values rule yourself. Coral acts on a declaration that
-  names a release: on Postgres it applies the migration only when that
-  release has started on the database, and no older release starts
-  afterwards (`crates/coral-db/src/upgrade.rs`). Operators cannot skip the
-  release you name, so name the oldest one for which the claim is true.
+  names a release (`crates/coral-db/src/upgrade.rs`). On Postgres it applies
+  the migration only when that release or a newer one has started on the
+  database, so a Postgres upgrade cannot skip past it. On both databases, no
+  older release starts afterwards. Name the oldest release for which the
+  claim is true.
 - Keep schemas portable across SQLite and Postgres and fail on schema drift;
   do not use `IF NOT EXISTS` to hide unexpected state.
 - When a migration needs a database feature whose availability it cannot

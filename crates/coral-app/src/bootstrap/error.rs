@@ -107,6 +107,33 @@ mod tests {
             sqlx::migrate::MigrateError::VersionMissing(1),
         ));
         assert!(matches!(migration, AppError::Database(_)));
+
+        // An operator ends each of these by starting another release.
+        let release = |text| coral_db::Release::parse(text).expect("a release");
+        for (refusal, names) in [
+            (
+                Error::SkippedRelease {
+                    migration: 80,
+                    required: release("1.9.0"),
+                    newest: Some(release("1.8.0")),
+                },
+                "Start Coral v1.9.0 on this database first",
+            ),
+            (
+                Error::ReleaseTooOld {
+                    release: release("1.8.0"),
+                    oldest: release("1.9.0"),
+                },
+                "Start Coral v1.9.0 or newer",
+            ),
+        ] {
+            let refusal = AppError::from(refusal);
+            assert!(
+                matches!(refusal, AppError::FailedPrecondition(_)),
+                "{refusal}"
+            );
+            assert!(refusal.to_string().contains(names), "{refusal}");
+        }
     }
 
     #[test]

@@ -85,9 +85,10 @@ impl Release {
 
 impl fmt::Display for Release {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}.{}.{}", self.major, self.minor, self.patch)?;
+        write!(formatter, "v{}.{}.{}", self.major, self.minor, self.patch)?;
         if !self.released {
-            formatter.write_str("-pre")?;
+            // The record keeps no more of a pre-release's name than this.
+            formatter.write_str(" (pre-release)")?;
         }
         Ok(())
     }
@@ -129,7 +130,8 @@ pub(crate) struct UpgradeGuard {
     /// that records itself has started on it.
     pub state: Option<UpgradeState>,
     /// Whether another Coral can serve the database while this one migrates
-    /// it. On `SQLite` the state root's lock keeps every other Coral out.
+    /// it. Coral runs one process on a `SQLite` database, and the state
+    /// root's lock holds that for the database file each root keeps.
     pub shared: bool,
 }
 
@@ -324,7 +326,8 @@ mod tests {
         assert!(ordered.is_sorted_by(|older, newer| older < newer));
         assert_eq!(release("1.9.0-beta.2"), release("1.9.0-rc.1"));
         assert_eq!(release("1.9.0+0e782f6"), release("1.9.0"));
-        assert_eq!(release("1.9.0-beta.2").to_string(), "1.9.0-pre");
+        assert_eq!(release("1.9.0").to_string(), "v1.9.0");
+        assert_eq!(release("1.9.0-beta.2").to_string(), "v1.9.0 (pre-release)");
         // The database keeps the same order, and gives each release back.
         assert!(ordered.is_sorted_by(|older, newer| older.stored() < newer.stored()));
         for release in ordered.into_iter().chain([release("12.345.6789")]) {

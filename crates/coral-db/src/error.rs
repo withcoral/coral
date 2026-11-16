@@ -35,8 +35,8 @@ pub enum Error {
     /// `required` has not started on a database that an older release may
     /// still be serving. No migration was applied.
     #[error(
-        "this upgrade skips Coral v{required}: database migration {migration:04} removes what \
-         older releases use, and {}. Start Coral v{required} on this database first, then start \
+        "this upgrade skips Coral {required}: database migration {migration:04} removes what \
+         older releases use, and {}. Start Coral {required} on this database first, then start \
          this version again. No migration was applied.",
         newest_release(*.newest)
     )]
@@ -51,8 +51,8 @@ pub enum Error {
     },
     /// A newer Coral removed what this release uses. Nothing was changed.
     #[error(
-        "this database needs Coral v{oldest} or newer: a newer release removed what Coral \
-         v{release} uses. Start Coral v{oldest} or newer. Nothing was changed."
+        "this database needs Coral {oldest} or newer: a newer release removed what Coral \
+         {release} uses. Start Coral {oldest} or newer. Nothing was changed."
     )]
     ReleaseTooOld {
         /// This Coral's release.
@@ -65,7 +65,7 @@ pub enum Error {
 fn newest_release(newest: Option<crate::Release>) -> String {
     newest.map_or_else(
         || "no release that records itself has started on this database".to_string(),
-        |newest| format!("the newest release that has started on this database is v{newest}"),
+        |newest| format!("the newest release that has started on this database is {newest}"),
     )
 }
 

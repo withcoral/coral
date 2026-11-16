@@ -13,8 +13,9 @@
 //   -- rolling-upgrade: compatible. <why no statement breaks an older release>
 //
 // Coral reads the first form too: on Postgres it applies the migration only
-// when the named release has started on the database, and afterwards no older
-// release starts (crates/coral-db/src/upgrade.rs). So the named release must
+// when the named release or a newer one has started on the database, and on
+// both databases no older release starts afterwards
+// (crates/coral-db/src/upgrade.rs). So the named release must
 // be one that records itself there, which `--releases` lists, oldest first.
 //
 // One declaration covers the file. `compatible` does not cover a statement
@@ -329,8 +330,8 @@ const HELP = `an older Coral release must keep working after a migration runs.
   To remove or tighten something, stagger it. First ship a release that no longer uses it. Then add
   the migration in a later release, and declare in it:
     -- rolling-upgrade: unused since vX.Y.Z. <what stopped using it>
-  Coral enforces that: on Postgres an upgrade cannot skip vX.Y.Z, and no older release starts after
-  the migration. Name the oldest release for which it is true.
+  Coral enforces that: a Postgres upgrade cannot skip past vX.Y.Z, and no older release starts
+  after the migration. Name the oldest release for which it is true.
   If no statement named above breaks an older release, declare:
     -- rolling-upgrade: compatible. <why>
   That covers a constraint, a rewrite of rows, and a dropped index, function, trigger, type or

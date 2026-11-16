@@ -215,14 +215,15 @@ impl Database {
                 // Foreign keys stay off on this connection, so the pool must
                 // not hand it to another writer.
                 connection.close_on_drop();
-                // The state root's lock keeps every other Coral off the file.
+                // Coral runs one process on a `SQLite` database.
                 let guard = plan.upgrade_guard(false);
                 migrate_sqlite(migrator, &mut connection, report, guard).await?;
             }
             DatabaseBackend::Postgres(pool) => {
                 let mut connection = pool.acquire().await?;
                 let Some(mut guard) = plan.upgrade_guard(true) else {
-                    apply_pending(migrator, &mut *connection, report, None).await?;
+                    let pending = pending_steps(migrator, &mut *connection, report, None).await?;
+                    apply_steps(migrator, &mut *connection, &pending, report).await?;
                     return Ok(());
                 };
                 // A run that fails or is dropped must not leave its lock on a
@@ -230,7 +231,16 @@ impl Database {
                 connection.close_on_drop();
                 upgrade::lock_postgres(&mut connection).await?;
                 guard.state = upgrade::read_postgres(&mut connection).await?;
-                apply_pending(migrator, &mut *connection, report, Some(&guard)).await?;
+                let pending =
+                    pending_steps(migrator, &mut *connection, report, Some(&guard)).await?;
+                // Postgres commits each step by itself. So the record comes
+                // before the first step: no step that removes what an older
+                // release uses is ever applied without the record that keeps
+                // that release off it. A run that then fails leaves the
+                // record ahead of the schema, which only refuses more.
+                upgrade::record_postgres(&mut connection, guard.release, guard.oldest()).await?;
+                apply_steps(migrator, &mut *connection, &pending, report).await?;
+                // Again, for the run that created the record's table.
                 upgrade::record_postgres(&mut connection, guard.release, guard.oldest()).await?;
                 upgrade::unlock_postgres(&mut connection).await?;
             }
@@ -239,14 +249,14 @@ impl Database {
     }
 }
 
-/// Validates the ledger and applies `migrator`'s pending steps one at a time,
-/// reporting each. Returns whether any step was pending.
-async fn apply_pending<C: Migrate>(
-    migrator: &Migrator,
+/// Validates the ledger and returns `migrator`'s pending steps, once `guard`
+/// admits them. Applies none.
+async fn pending_steps<'plan, C: Migrate>(
+    migrator: &'plan Migrator,
     connection: &mut C,
     report: MigrationReport<'_>,
     guard: Option<&UpgradeGuard>,
-) -> Result<bool, Error> {
+) -> Result<Vec<&'plan Migration>, Error> {
     // A target below every version creates the ledger if the database has
     // none, refuses one that holds a failed step, and applies nothing.
     migrator
@@ -279,7 +289,18 @@ async fn apply_pending<C: Migrate>(
             pending: pending.len(),
         });
     }
-    for migration in &pending {
+    Ok(pending)
+}
+
+/// Applies `pending`, the steps [`pending_steps`] returned, one at a time,
+/// reporting each.
+async fn apply_steps<C: Migrate>(
+    migrator: &Migrator,
+    connection: &mut C,
+    pending: &[&Migration],
+    report: MigrationReport<'_>,
+) -> Result<(), Error> {
+    for migration in pending {
         report(MigrationProgress::Started {
             version: migration.version,
             description: &migration.description,
@@ -297,7 +318,7 @@ async fn apply_pending<C: Migrate>(
     }
     // A run with a target checks the checksums up to it. This one checks all.
     migrator.run_direct(None, connection, false).await?;
-    Ok(!pending.is_empty())
+    Ok(())
 }
 
 /// Counts the applied versions that `migrator` lacks, when a newer Coral
@@ -345,8 +366,9 @@ async fn migrate_sqlite(
     if let Some(guard) = &mut guard {
         guard.state = upgrade::read_sqlite(&mut transaction).await?;
     }
-    let pending = apply_pending(migrator, &mut *transaction, report, guard.as_ref()).await?;
-    if pending {
+    let pending = pending_steps(migrator, &mut *transaction, report, guard.as_ref()).await?;
+    apply_steps(migrator, &mut *transaction, &pending, report).await?;
+    if !pending.is_empty() {
         let tables: Vec<String> = sqlx::query_scalar(
             r#"SELECT DISTINCT "table" FROM pragma_foreign_key_check ORDER BY 1"#,
         )
@@ -387,6 +409,7 @@ mod tests {
     fn corals_plan_has_a_release_and_reads_each_release_that_a_step_names() {
         let plan = super::migration_plan();
         assert!(plan.release.is_some(), "the workspace version is a release");
+        let named = crate::upgrade::release_that_stopped_using;
         for migration in plan.postgres.iter() {
             let names_a_release = migration
                 .sql
@@ -394,10 +417,25 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("rolling-upgrade: unused since");
             assert_eq!(
-                crate::upgrade::release_that_stopped_using(migration.sql.as_str()).is_some(),
+                named(migration.sql.as_str()).is_some(),
                 names_a_release,
                 "migration {}",
                 migration.version
+            );
+        }
+        // The Postgres half stands for both, so a release that only the
+        // SQLite half names would guard nothing.
+        for sqlite in plan.sqlite.iter() {
+            let postgres = plan
+                .postgres
+                .iter()
+                .find(|postgres| postgres.version == sqlite.version)
+                .and_then(|postgres| named(postgres.sql.as_str()));
+            let sqlite_names = named(sqlite.sql.as_str());
+            assert!(
+                sqlite_names.is_none() || sqlite_names == postgres,
+                "migration {}: the SQLite half names a release that the Postgres half does not",
+                sqlite.version
             );
         }
     }
