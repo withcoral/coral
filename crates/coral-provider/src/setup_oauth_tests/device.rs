@@ -1307,7 +1307,10 @@ async fn recovery_waits_for_an_abandoned_lease_and_keeps_the_original_deadline()
     // date. Put its end back where the claim at 10ns set it.
     let pinned = h
         .fixture
-        .execute_fixture_sql("UPDATE provider_device_jobs SET lease_until = 45000000010")
+        .execute_fixture_sql(&format!(
+            "UPDATE provider_device_jobs SET lease_until = 45000000010 \
+             WHERE workspace_id = '{owner}' AND setup_id = '{setup}'"
+        ))
         .await
         .unwrap();
     assert_eq!(pinned, 1, "the aborted worker leaves its job behind");
