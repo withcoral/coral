@@ -202,7 +202,10 @@ async fn reconnect_disconnect_and_setting_changes_block_invocations_waiting_on_a
                 )
                 .await
                 .unwrap();
-            assert!(review.errors.is_empty());
+            assert_eq!(
+                review.errors,
+                [] as [coral_catalog::ConfigurationFieldError; 0]
+            );
             fixture
                 .providers
                 .regenerate_provider(
@@ -504,7 +507,10 @@ async fn concurrent_invocations_wait_for_one_refresh_across_catalog_update_and_e
         )
         .await
         .unwrap();
-    assert!(review.errors.is_empty());
+    assert_eq!(
+        review.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     fixture
         .providers
         .regenerate_provider(

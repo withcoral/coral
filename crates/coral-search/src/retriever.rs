@@ -20,7 +20,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use coral_db::Transaction;
 use coral_policy::ExactToolRules;
-use coral_provider::{ActiveProvider, LoadedGenerations};
+use coral_provider::ActiveProvider;
 use coral_tools::AuthoredToolSearchMaterial;
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence, WorkspaceId};
 
@@ -29,17 +29,13 @@ use crate::{
     SearchHit,
 };
 
-/// The request one retriever call serves: who asks, in which Workspace, the
-/// engine's normalized query terms, if any, and the Generations its hits
-/// have loaded.
+/// The request one retriever call serves: who asks, and in which Workspace.
 #[derive(Clone, Copy)]
 pub(crate) struct RequestContext<'a> {
     pub(crate) actor: &'a AuthenticatedPrincipal,
     /// The caller's Workspace authority, checked once for this request.
     pub(crate) authority: &'a PrincipalWorkspaceEvidence,
     pub(crate) workspace_id: &'a WorkspaceId,
-    pub(crate) terms: Option<&'a [String]>,
-    pub(crate) loaded: &'a LoadedGenerations,
 }
 
 /// One ranked or listed Search Entity. The payload is the hydration handle
@@ -51,39 +47,22 @@ pub(crate) enum EntityRef {
 }
 
 /// A Tool of a Provider's active Generation, with what hydration needs:
-/// the Provider as the visibility step read it, the Tool Key, the
-/// Workspace's exact rules, loaded once per request, and the near-spellings
-/// its ranking matched.
+/// the Provider as the visibility step read it, the Tool Key, and the
+/// Workspace's exact rules, loaded once per request.
 #[derive(Clone)]
 pub(crate) struct ToolRef {
     provider: Arc<ActiveProvider>,
     tool_key: coral_catalog::ToolKey,
     rules: Arc<ExactToolRules>,
     call_path: CallPath,
-    near_spellings: Arc<[String]>,
 }
 
 /// An Authored Tool the requesting Principal can discover, one of its own
-/// Private Tools or a Shared Tool of the Workspace, with the near-spellings
-/// its ranking matched.
+/// Private Tools or a Shared Tool of the Workspace.
 #[derive(Clone)]
 pub(crate) struct AuthoredToolRef {
     material: AuthoredToolSearchMaterial,
     call_path: CallPath,
-    near_spellings: Arc<[String]>,
-}
-
-/// The Call Path of an entity a retriever ranked, as a span field.
-pub(crate) struct RankedCallPath<'a>(pub(crate) &'a CallPath);
-
-/// The search index holds only the Provider, Private and Shared Tools Coral
-/// serves, so a ranked entity's Call Path names one of them.
-impl coral_telemetry::safe::Identifier for RankedCallPath<'_> {}
-
-impl std::fmt::Display for RankedCallPath<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.0.as_str())
-    }
 }
 
 impl EntityRef {
@@ -172,11 +151,11 @@ impl QueryError {
 
 /// What hydrating one ranked or listed Entity gives.
 pub(crate) enum Hydrated {
-    /// The page item, with evidence for a query.
+    /// The page item. A ranked Entity stays a hit even when its current
+    /// material no longer holds the query's words (the index row is stale).
     Hit(Box<SearchHit>),
-    /// The Entity leaves the page: it vanished, policy disables it now, or
-    /// its current material no longer matches the query (the index row is
-    /// stale). The page goes on.
+    /// The Entity leaves the page: it vanished, or policy disables it now.
+    /// The page goes on.
     Dropped,
     /// The Entity's authoritative material cannot be read. The page goes on;
     /// a page whose every candidate is unreadable is unavailable.
@@ -207,8 +186,8 @@ pub(crate) trait EntityRetriever: Send + Sync {
         request: &QueryRequest<'_>,
     ) -> Result<Answer, QueryError>;
 
-    /// One page item from the entity's payload, in the same snapshot, with
-    /// evidence for the context's terms.
+    /// One page item from the entity's payload, in the same snapshot. The
+    /// query does not change it.
     async fn hydrate(
         &self,
         transaction: &mut Transaction<'_>,

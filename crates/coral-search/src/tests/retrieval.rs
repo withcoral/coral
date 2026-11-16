@@ -135,6 +135,21 @@ impl Corpus {
             .unwrap()
     }
 
+    /// Renames the GitHub Provider and notifies nothing.
+    async fn rename_github(&self, at: i64, digit: char, name: &str) {
+        self.modules
+            .providers
+            .rename_provider(
+                &change(self.user.clone(), at, digit),
+                &self.workspace,
+                &self.github,
+                coral_provider::ProviderDisplayName::parse(name).unwrap(),
+            )
+            .await
+            .unwrap()
+            .skip_search();
+    }
+
     /// Indexes the GitHub Provider's active Generation the way a
     /// notification does, and waits for the write.
     async fn notify_active_generation(&self) {
@@ -730,17 +745,16 @@ async fn both_backends_rank_one_corpus_in_the_same_order() {
 }
 
 #[tokio::test]
-async fn evidence_explains_a_match_by_the_words_of_a_dotted_term() {
+async fn a_dotted_term_matches_by_its_words() {
     let corpus = Corpus::new().await;
     // `issues.weekly` stays one term; no field holds it whole, but the
     // backends match its words `issues` and `weekly`.
     let page = corpus.search(Corpus::query("issues.weekly")).await;
-    let weekly = page
-        .hits()
-        .iter()
-        .find(|item| item.call_path().as_str() == "coral.private.reports.weekly")
-        .expect("a match by words keeps its hit");
-    assert_eq!(weekly.evidence().fields(), ["call_path", "description"]);
+    assert!(
+        paths(&page).contains(&"coral.private.reports.weekly"),
+        "{:?}",
+        paths(&page)
+    );
 }
 
 /// Tools whose names differ only inside camelCase. `getOutlook` also
@@ -804,10 +818,13 @@ async fn a_word_inside_a_camel_case_name_ranks() {
 }
 
 #[tokio::test]
-async fn a_stale_match_without_evidence_leaves_an_empty_page() {
+async fn a_ranked_hit_that_no_current_field_matches_stays_on_the_page() {
     let corpus = Corpus::new().await;
-    // Replace the description; nothing reindexes it, so the stored row still
-    // holds `closed`.
+    corpus.rename_github(50, '5', "Octocat Tracker").await;
+    corpus.modules.converge().await;
+    // Nothing reindexes these changes, so the stored rows still hold
+    // `octocat` and `closed`, which no current field holds.
+    corpus.rename_github(60, '6', "Forge").await;
     corpus
         .modules
         .save_private_tool(
@@ -815,13 +832,41 @@ async fn a_stale_match_without_evidence_leaves_an_empty_page() {
             &corpus.workspace,
             "reports.weekly",
             "A weekly summary.",
-            50,
+            70,
         )
         .await;
 
-    let page = corpus.search(Corpus::query("closed")).await;
-    assert!(page.hits().is_empty(), "the stale match leaves the page");
-    assert_eq!(page.next_offset(), None);
+    for (query, expected) in [
+        (
+            "octocat",
+            &[
+                (
+                    "coral.providers.github.issues.list",
+                    "Returns repository tickets.",
+                ),
+                (
+                    "coral.providers.github.pulls.list",
+                    "Pull requests are issues with code.",
+                ),
+            ][..],
+        ),
+        (
+            "closed",
+            &[("coral.private.reports.weekly", "A weekly summary.")][..],
+        ),
+    ] {
+        let page = corpus.search(Corpus::query(query)).await;
+        let mut hits = page
+            .hits()
+            .iter()
+            .map(|hit| (hit.call_path().as_str(), hit.description_snippet()))
+            .collect::<Vec<_>>();
+        hits.sort_unstable();
+        assert_eq!(
+            hits, expected,
+            "{query}: the stale rows rank, and their hits show the current text"
+        );
+    }
 }
 
 #[tokio::test]
@@ -983,15 +1028,6 @@ async fn postgres_ranks_a_british_spelling_as_its_american_one() {
         assert_eq!(paths(&page), paths(&typed), "{british} ranks as {american}");
         let first = page.hits().first().expect("a hit");
         assert_eq!(first.call_path().as_str(), expected, "{british}");
-        assert!(
-            first.evidence().fields().contains(&"title".to_string()),
-            "{british}: the evidence names the title, which holds {american}"
-        );
-        assert_eq!(
-            first.evidence().fields(),
-            typed.hits().first().expect("a hit").evidence().fields(),
-            "{british}: the evidence is that of {american}"
-        );
     }
 }
 

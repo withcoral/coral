@@ -342,7 +342,7 @@ async fn summary_counts_only_the_callers_attribution() {
     let hidden = summary(&fixture, &member, workspace).await;
     assert_eq!(hidden.calls, CallOutcomes::default());
     assert!(hidden.callers.is_empty() && hidden.tools.is_empty());
-    assert!(hidden.actors.is_empty());
+    assert_eq!(hidden.actors, [] as [crate::ActorContext; 0]);
     assert_eq!(hidden.context_impact_bytes, None);
 }
 
@@ -525,7 +525,7 @@ async fn summary_totals_only_each_principals_measured_runs() {
     assert_eq!(seen.context_impact_bytes, Some(-5));
 
     let hidden = summary(&fixture, &member, workspace).await;
-    assert!(hidden.actors.is_empty());
+    assert_eq!(hidden.actors, [] as [crate::ActorContext; 0]);
     assert_eq!(hidden.context_impact_bytes, None);
 }
 

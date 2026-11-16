@@ -106,7 +106,7 @@ fn shared_tool_references_are_literal_and_kept_apart_from_private_tools() {
         )
         .expect("prepare a module that calls a Shared Tool");
     assert_eq!(reference_paths(module.shared_references()), ["mail.send"]);
-    assert!(module.references().is_empty());
+    assert_eq!(module.references(), []);
     assert_eq!(module.tools().called_paths(), ["coral.providers.demo.get"]);
     assert_eq!(
         module.tools().runtime_built_paths(),
@@ -493,21 +493,21 @@ fn private_tool_reference_analysis_is_static_and_runtime_only() {
         "function erased(value = coral.private.types.overloadOnly()): void; export default function compose() { return 42; }",
         )
         .expect("ignore an erased overload declaration");
-    assert!(erased_overload.is_empty());
+    assert_eq!(erased_overload, [] as [coral_v8::LinkedToolReference; 0]);
 
     let shadowed_global = program_private_tools(
         &compiler,
         "const globalThis = { coral: { private: { local: { value: () => 42 } } } }; return globalThis.coral.private.local.value();",
         )
         .expect("ignore a local globalThis binding");
-    assert!(shadowed_global.is_empty());
+    assert_eq!(shadowed_global, [] as [coral_v8::LinkedToolReference; 0]);
 
     let shadowed = compiler
         .prepare_authored_tool(compilation_deadline(),
             "export default function local(coral: { private: { local: { value(): number } } }): number { return coral.private.local.value(); }",
         )
         .expect("prepare a callable with a local coral parameter");
-    assert!(shadowed.references().is_empty());
+    assert_eq!(shadowed.references(), []);
 
     for source in [
         "const key = 'one'; return coral.private.alpha[key]();",
@@ -548,7 +548,7 @@ fn reference_analysis_preserves_transparent_wrappers_and_ordinary_globals() {
     let source = "type __coralModel = number; const __coralValue: __coralModel = 1; let global = globalThis; return global[\"JSON\"].stringify(__coralValue);";
     let ordinary_globals = program_private_tools(&compiler, source)
         .expect("ordinary globals and local compiler-prefix names remain available");
-    assert!(ordinary_globals.is_empty());
+    assert_eq!(ordinary_globals, [] as [coral_v8::LinkedToolReference; 0]);
     compiler
         .compile(compilation_deadline(), source)
         .expect("compile ordinary globals and local compiler-prefix names");
@@ -1386,7 +1386,7 @@ impl ProgramHost for RejectingToolHost {
         Box::pin(async move {
             if call_path.ends_with(".retrievePage") {
                 return Err(ToolHostError::Rejected {
-                    code: "tool_not_found",
+                    code: "tool_not_found".into(),
                     message: "Tool Call Path was not found".into(),
                     trace_id: None,
                     suggestions: vec![
@@ -1396,7 +1396,7 @@ impl ProgramHost for RejectingToolHost {
                 });
             }
             Err(ToolHostError::Rejected {
-                code: "upstream_incomplete",
+                code: "upstream_incomplete".into(),
                 message: "durable Tool failure".into(),
                 trace_id: call_path
                     .ends_with(".traced")
@@ -1446,8 +1446,8 @@ impl ProgramHost for UpstreamRejectingHost {
     ) -> coral_v8::ToolFuture {
         Box::pin(async move {
             Err(ToolHostError::Upstream {
-                code: "error_response",
-                message: "The upstream service returned an error",
+                code: "error_response".into(),
+                message: "The upstream service returned an error".into(),
                 outcome_json: self.outcome_json.clone(),
             })
         })
@@ -3611,5 +3611,95 @@ fn linking_refuses_a_stored_tool_that_does_not_take_one_object() {
                 &[linked_source(&["people", "greet"], source)],
             )
             .unwrap_or_else(|error| panic!("{source}: {error}"));
+    }
+}
+
+/// Records the host calls a Program's run makes, in order, and lets the
+/// Program run when `starts`.
+struct StartingHost {
+    starts: bool,
+    calls: Mutex<Vec<&'static str>>,
+}
+
+impl StartingHost {
+    fn record(&self, call: &'static str) {
+        self.calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(call);
+    }
+}
+
+impl ProgramHost for StartingHost {
+    fn start(&self) -> bool {
+        self.record("start");
+        self.starts
+    }
+
+    fn cpu_budget(&self) -> Option<std::time::Duration> {
+        self.record("cpu_budget");
+        None
+    }
+
+    fn invoke(
+        self: Arc<Self>,
+        _call_path: String,
+        _arguments_json: String,
+        _location: Option<AuthoredLocation>,
+    ) -> coral_v8::ToolFuture {
+        Box::pin(async { Err(ToolHostError::Fatal) })
+    }
+
+    fn emit(
+        &self,
+        _value_json: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        self.record("emit");
+        Ok(())
+    }
+
+    fn log(
+        &self,
+        _level: ConsoleLevel,
+        _message: &str,
+        _location: Option<AuthoredLocation>,
+    ) -> Result<(), ProgramOutputHostError> {
+        Err(ProgramOutputHostError::Fatal)
+    }
+}
+
+// Catches: Program code that runs before `start` returns or after it refuses,
+// or a CPU budget read before `start`, which a Run Executor sets only once
+// Coral starts the Run.
+#[test]
+fn start_runs_before_the_program_and_its_cpu_budget_read() {
+    let program = ProgramCompiler::new(IsolateLimits::default(), CompilerRole::Run)
+        .expect("start compiler")
+        .compile(compilation_deadline(), "await coral.emit(1); return 2;")
+        .expect("compile start probe");
+    for (starts, calls) in [
+        (true, vec!["start", "cpu_budget", "emit"]),
+        (false, vec!["start"]),
+    ] {
+        let host = Arc::new(StartingHost {
+            starts,
+            calls: Mutex::default(),
+        });
+        let result = ProgramExecutor::new(IsolateLimits::default())
+            .execute_with_host(&program, host.clone());
+        assert!(
+            matches!(
+                (starts, &result),
+                (true, Ok(_)) | (false, Err(Error::ProgramHostTerminated))
+            ),
+            "starts {starts}: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            *host.calls.lock().expect("recorded calls"),
+            calls,
+            "starts {starts}"
+        );
     }
 }

@@ -888,7 +888,7 @@ mod tests {
             unmatched_assets(&verified, &uploaded),
             ["coral-app-mac-arm64.zip", "coral-app-win-x64.exe"]
         );
-        assert!(unmatched_assets(&verified, &verified).is_empty());
+        assert_eq!(unmatched_assets(&verified, &verified), Vec::<String>::new());
     }
 
     fn cargo(version: &str) -> String {

@@ -99,7 +99,10 @@ async fn removal_scrubs_configuration_only_setup_secrets_and_prevents_reuse_afte
         )
         .await
         .unwrap();
-    assert!(review.errors.is_empty());
+    assert_eq!(
+        review.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     assert!(
         providers
             .setup_authentication(&member, &scope, setup.id(), 100)

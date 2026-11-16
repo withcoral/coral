@@ -256,7 +256,10 @@ async fn authorized_bearer_setup(
         .confirm_setup_configuration(context, owner, setup.id(), review.revision, values)
         .await
         .unwrap();
-    assert!(confirmed.errors.is_empty());
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
     let grant = harness
         .accounts
         .authorize_setup(
@@ -333,13 +336,13 @@ async fn publication_preserves_exact_reviewed_grant_on_failure_and_replay() {
             .unwrap()
             .authorized
     );
-    assert!(
+    assert_eq!(
         harness
             .providers
             .inspect_providers(&actor, owner)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::Provider; 0]
     );
     assert_eq!(
         harness
@@ -396,13 +399,13 @@ async fn publication_cannot_retain_another_setups_grant_and_scrubs_only_its_own(
         .skip_search();
     assert_eq!(result.outcome(), ProviderPublicationOutcome::Failed);
     assert_eq!(result.diagnostic().unwrap().code(), "account_required");
-    assert!(
+    assert_eq!(
         harness
             .providers
             .inspect_providers(&actor, owner)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::Provider; 0]
     );
     assert!(
         !harness
@@ -523,13 +526,13 @@ async fn shared_publication_requires_both_compatible_credentials_and_explicit_re
             publication
         );
     }
-    assert!(
+    assert_eq!(
         harness
             .providers
             .inspect_providers(&actor, owner)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::Provider; 0]
     );
 }
 
@@ -579,13 +582,13 @@ async fn discovery_replacement_requires_exact_grant_and_obsolete_callbacks_canno
         .unwrap();
     let grant = completed.authentication.provisional_grant_id.unwrap();
     assert!(completed.authentication.authorized);
-    assert!(
+    assert_eq!(
         harness
             .providers
             .inspect_providers(&actor, owner)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::Provider; 0]
     );
     let review = harness
         .providers
@@ -915,13 +918,13 @@ async fn replacement_rechecks_the_grant_deadline_after_client_bootstrap() {
         .unwrap();
     assert!(!current.authorized);
     assert_eq!(current.provisional_grant_id, Some(grant));
-    assert!(
+    assert_eq!(
         harness
             .providers
             .inspect_providers(&actor, owner)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [crate::Provider; 0]
     );
     assert_eq!(upstream.knobs.tokens.load(Ordering::SeqCst), 1);
 }

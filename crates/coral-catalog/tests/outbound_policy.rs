@@ -1,8 +1,4 @@
 //! Destination policy at the public materialization boundary.
-#![expect(
-    unused_crate_dependencies,
-    reason = "integration targets inherit library dependencies"
-)]
 
 use coral_catalog::{MaterializationOutcome, OpenApiDocument, ProviderSetupInput};
 use coral_outbound::DestinationPolicy;

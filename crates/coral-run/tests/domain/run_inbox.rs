@@ -287,4 +287,13 @@ async fn a_request_a_recreated_owner_finds_late_is_logged() {
         "the sweep warns of the late request once: {late:?}"
     );
     let _answered = cancelling.await.expect("join");
+    // The recreated owner records the request: the Run ends canceled, once,
+    // and the row is gone.
+    let ended = wait_for_terminal(&fixture.runs, &held.actor, workspace_id, run_id).await;
+    assert_eq!(ended.state(), RunState::Canceled);
+    assert_eq!(
+        cancellations(fixture, &held.actor, workspace_id, run_id).await,
+        1
+    );
+    assert_eq!(fixture.inbox_rows(workspace_id, run_id).await, 0);
 }

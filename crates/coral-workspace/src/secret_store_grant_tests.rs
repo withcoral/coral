@@ -65,7 +65,7 @@ async fn an_organization_owner_grants_and_revokes_with_an_event_for_each() {
         .revoke_secret_store(&change(f.governor.clone(), 11, '3'), id, "platform")
         .await
         .unwrap();
-    assert!(f.granted().await.is_empty());
+    assert_eq!(f.granted().await, [] as [std::string::String; 0]);
 
     let events = f.module.list_lifecycle_events(&f.owner, id).await.unwrap();
     let added: Vec<_> = events.iter().skip(events_before.len()).collect();
@@ -262,7 +262,7 @@ async fn a_replayed_grant_does_not_undo_a_revocation() {
         f.module.grant_secret_store(&grant, id, "platform").await,
         Err(Error::RequestAlreadyApplied)
     ));
-    assert!(f.granted().await.is_empty());
+    assert_eq!(f.granted().await, [] as [std::string::String; 0]);
     assert_eq!(
         f.module.list_lifecycle_events(&f.owner, id).await.unwrap(),
         events

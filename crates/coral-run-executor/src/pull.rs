@@ -25,8 +25,8 @@ use crate::link::{KEEPALIVE, Token};
 use crate::wire::v1::compile::Call;
 use crate::wire::v1::link_service_server::{LinkService, LinkServiceServer};
 use crate::wire::v1::{
-    Compile, Compiled, PullRequest, PullResponse, Taken, TakenRun, Welcome, pull_request,
-    pull_response,
+    Compile, Compiled, PullRequest, PullResponse, RunRequest, RunResponse, Taken, TakenRun,
+    Welcome, pull_request, pull_response,
 };
 use crate::{MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, lease_repository};
 
@@ -615,6 +615,17 @@ struct PullService {
 #[tonic::async_trait]
 impl LinkService for PullService {
     type PullStream = UnboundedReceiverStream<Result<PullResponse, Status>>;
+    type RunStream = tokio_stream::Empty<Result<RunResponse, Status>>;
+
+    /// Refuses the Run rpc until #2903 serves it.
+    async fn run(
+        &self,
+        _request: Request<Streaming<RunRequest>>,
+    ) -> Result<Response<Self::RunStream>, Status> {
+        Err(Status::unimplemented(
+            "Coral does not serve Run streams yet",
+        ))
+    }
 
     async fn pull(
         &self,

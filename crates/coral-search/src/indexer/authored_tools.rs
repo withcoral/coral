@@ -279,8 +279,23 @@ fn authored_tool_row(entry: &AuthoredToolEntry) -> Result<AuthoredToolRow<'_>, I
         qualified_name: entry.path().relative_path(),
         description: entry.description().as_str(),
         searchable_text: searchable_text(entry),
+        field_names: crate::index_text::field_names(
+            entry
+                .declaration_fields()
+                .unwrap_or_default()
+                .iter()
+                .map(coral_tools::AuthoredToolDeclarationField::path)
+                .filter(|path| is_input_path(path)),
+        ),
         revision: entry.revision(),
     })
+}
+
+/// Whether a declaration path starts at `input`. An Authored Tool's index
+/// text names its inputs only (ADR 0035); a Provider Tool's names its result
+/// fields as well, as the bench measured.
+fn is_input_path(path: &str) -> bool {
+    path.split(['.', '[']).next() == Some("input")
 }
 
 /// The lowest-weight text: the words of every declaration path with its

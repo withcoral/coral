@@ -67,10 +67,9 @@ pub use deletion::PrivateToolDeletion;
 pub use discovery::{
     AuthoredToolAuthoringMaterial, AuthoredToolEntry, AuthoredToolIndexRevision,
     AuthoredToolSearchMaterial, ExactAuthoredToolAuthoringMaterial,
-    ExactAuthoredToolDescriptionMaterial, authored_tool_declaration_fields_in_transaction,
-    authored_tool_entries_in_transaction, authored_tool_entry_in_transaction,
-    authored_tool_index_revisions_in_transaction, authored_tool_search_material_in_transaction,
-    exact_authored_tool_description_in_transaction,
+    ExactAuthoredToolDescriptionMaterial, authored_tool_entries_in_transaction,
+    authored_tool_entry_in_transaction, authored_tool_index_revisions_in_transaction,
+    authored_tool_search_material_in_transaction, exact_authored_tool_description_in_transaction,
     hydrate_authored_tool_search_material_in_transaction,
 };
 pub use error::Error;

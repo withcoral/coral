@@ -85,10 +85,7 @@ fn authorization_view(
             .clone()
             .map(super::providers::consent_navigation),
         consent_rejected: value.consent_rejected,
-        account: value
-            .account_id
-            .map(|id| id.to_string())
-            .unwrap_or_default(),
+        account: value.account_id.map_or_default(|id| id.to_string()),
         expire_time: Some(timestamp(value.expires_at_unix_nanos)),
         failure_code: value.failure_code().unwrap_or_default().into(),
         automatic_refresh: value.automatic_refresh,
@@ -114,8 +111,7 @@ fn account_view(value: domain::AccountSummary) -> wire::ProviderAccount {
         connected_time: value.connected_at_unix_nanos.map(timestamp),
         configured_by_user: value
             .configured_by_user_id
-            .map(|id| id.to_string())
-            .unwrap_or_default(),
+            .map_or_default(|id| id.to_string()),
         secret_references: value
             .secret_references
             .into_iter()

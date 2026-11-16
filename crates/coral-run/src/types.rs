@@ -27,8 +27,9 @@ pub const COMPILATION_TIMEOUT: Duration = coral_tools::COMPILATION_TIMEOUT;
 pub const RUN_TIMEOUT_MAX_MS: u64 = 900_000;
 /// Maximum number of authored Emissions/Logs returned by one observation.
 pub const RUN_EVENT_PAGE_MAX: u16 = 100;
-/// Maximum UTF-8 byte length of one Program Log message.
-pub const PROGRAM_LOG_MESSAGE_MAX_BYTES: usize = 64 * 1024;
+/// Maximum UTF-8 byte length of one Program Log message; a Run Executor
+/// checks the same limit.
+pub use coral_run_executor::PROGRAM_LOG_MESSAGE_MAX_BYTES;
 /// Events after which the Run Owner closes a Run Ledger chunk.
 pub const CHUNK_EVENTS_CAP: usize = 1000;
 /// Output bytes after which the Run Owner closes a Run Ledger chunk; one larger

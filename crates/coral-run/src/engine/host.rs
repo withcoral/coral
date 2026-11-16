@@ -119,7 +119,7 @@ impl RunProgramHost {
     fn host_error(&self, error: InvocationHostError) -> coral_v8::ToolHostError {
         match error {
             InvocationHostError::Rejected(failure) => coral_v8::ToolHostError::Rejected {
-                code: failure.code(),
+                code: failure.code().into(),
                 message: failure.message(),
                 trace_id: self.trace_id.clone(),
                 suggestions: failure.suggestions().to_vec(),
@@ -128,8 +128,8 @@ impl RunProgramHost {
                 rejection,
                 outcome_json,
             } => coral_v8::ToolHostError::Upstream {
-                code: rejection.code(),
-                message: rejection.message(),
+                code: rejection.code().into(),
+                message: rejection.message().into(),
                 outcome_json,
             },
             InvocationHostError::Fatal(_private_error) => {
@@ -254,7 +254,7 @@ impl RunProgramHost {
                 let call = call.map_err(|error| self.host_error(error))?;
                 let arguments = serde_json::from_str(&arguments_json).map_err(|_error| {
                     coral_v8::ToolHostError::Rejected {
-                        code: CoralFailure::InvalidInput.code(),
+                        code: CoralFailure::InvalidInput.code().into(),
                         message: CoralFailure::InvalidInput.message().into(),
                         trace_id: trace_id.clone(),
                         suggestions: Vec::new(),

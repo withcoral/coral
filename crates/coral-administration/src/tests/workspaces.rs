@@ -133,7 +133,10 @@ async fn creating_a_workspace_creates_its_coral_defined_providers_with_the_creat
         })
         .collect::<Vec<_>>();
     expected.sort();
-    assert!(!expected.is_empty());
+    assert_ne!(
+        expected,
+        [] as [(std::string::String, std::string::String); 0]
+    );
     assert_eq!(indexed, expected);
 }
 

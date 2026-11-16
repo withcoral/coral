@@ -661,12 +661,12 @@ async fn connection_requests_are_concealed_from_other_users() {
         "a concealed decline changes nothing"
     );
     GateLoss::Decline.apply(&waiting).await;
-    assert!(
+    assert_eq!(
         accounts
             .list_user_lifecycle_events(&stranger, scope)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        [] as [coral_provider::AdministrativeLifecycleEvent; 0]
     );
     assert!(
         !waiting
@@ -1247,6 +1247,8 @@ async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_afte
 /// precheck still finds a completed connection and the Invocation
 /// dispatches. During the outage the owner's subscription rings nothing and
 /// subscribes again only a wake gap apart, which here outlasts the finding.
+/// The test cuts the listener only after the check from the subscription's
+/// first ring.
 #[tokio::test(flavor = "multi_thread")]
 async fn with_the_change_listener_down_the_periodic_precheck_still_finds_a_completed_connection() {
     coral_test_support::database_only!(Postgres);
@@ -1274,6 +1276,16 @@ async fn with_the_change_listener_down_the_periodic_precheck_still_finds_a_compl
         .unwrap();
     wait_for_connection(&accounts, &tool).await;
     probe.until_parked(1).await;
+    // The owner's subscription rings once as it starts, and that ring's
+    // check of the connection waits could otherwise read after the
+    // connection completes below and find it first.
+    wait_until(|| {
+        probe
+            .prechecks()
+            .iter()
+            .any(|(check, _)| *check == crate::owner::Check::Connections)
+    })
+    .await;
     fixture
         .database
         .interrupt_change_notifications()

@@ -357,7 +357,7 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
         .await
         .unwrap()
         .unwrap();
-    assert!(resolved.required_actions().is_empty());
+    assert_eq!(resolved.required_actions(), []);
     assert_eq!(
         fixture
             .runs
@@ -367,7 +367,7 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
             .action_count,
         0
     );
-    assert!(resolved.events().is_empty());
+    assert_eq!(resolved.events(), []);
     assert_ne!(resolved.next_cursor(), waiting.next_cursor());
     let no_change = immediate(Some(resolved.next_cursor().clone()), 100)
         .with_wait(Duration::from_millis(30))
@@ -409,7 +409,7 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
         changed.state().is_terminal(),
         "terminal state wakes observation without lifecycle chatter"
     );
-    assert!(changed.events().is_empty());
+    assert_eq!(changed.events(), []);
     let terminal = wait_for_terminal(
         &fixture.runs,
         &tool.principal,
@@ -417,7 +417,7 @@ async fn required_actions_show_pending_approval_and_clear_without_a_run_event() 
         accepted.run_id(),
     )
     .await;
-    assert!(terminal.required_actions().is_empty());
+    assert_eq!(terminal.required_actions(), []);
 }
 
 /// The spec requires that reads and streams do not renew retention. A wake-up
@@ -1044,7 +1044,7 @@ async fn required_actions_name_their_request_and_ignore_event_paging() {
         replay.event_prefix(0).required_actions(),
         waiting.required_actions()
     );
-    assert!(waiting.events().is_empty());
+    assert_eq!(waiting.events(), []);
     let kinds = retained_events(runs, user, scope, &mixed.run)
         .await
         .iter()
@@ -1182,7 +1182,7 @@ async fn cancellation_clears_actions_but_keeps_each_invocations_requests() {
         .await
         .unwrap();
     assert_eq!(terminal.state(), RunState::Canceled);
-    assert!(terminal.required_actions().is_empty());
+    assert_eq!(terminal.required_actions(), []);
     let ended = runs
         .activity_entries(
             user,
@@ -1447,7 +1447,7 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
         .await
         .unwrap();
     assert_eq!(terminal.state(), RunState::Canceled);
-    assert!(terminal.required_actions().is_empty());
+    assert_eq!(terminal.required_actions(), []);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1583,7 +1583,7 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
                 );
             }
             assert!(terminal.state().is_terminal());
-            assert!(terminal.required_actions().is_empty());
+            assert_eq!(terminal.required_actions(), []);
             assert_eq!(
                 resolved.state,
                 if expire {
@@ -1614,7 +1614,7 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
             let second_terminal =
                 wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, second.run_id())
                     .await;
-            assert!(second_terminal.required_actions().is_empty());
+            assert_eq!(second_terminal.required_actions(), []);
             assert_eq!(second_terminal.state(), RunState::Succeeded);
             let Some(RunTerminalOutcome::Succeeded {
                 final_value: FinalValue::Present(value),

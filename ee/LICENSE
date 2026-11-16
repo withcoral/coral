@@ -1,6 +1,18 @@
 The Coral Enterprise Edition (EE) license (the "EE License")
 Copyright (c) 2026-present Phoebe Technology Limited ("Coral")
 
+Definitions
+
+In this EE License:
+
+* "Enterprise Edition" means the features of the Coral software contained in the
+  files in the ee/ directory of this repository, and the parts of any build
+  compiled from them.
+* "Enterprise Edition subscription" means a paid subscription from Coral that
+  permits use of the Enterprise Edition.
+* "Community Edition" means any build of the Coral software that runs with no
+  Enterprise Edition feature enabled.
+
 With regard to the Coral Software:
 
 This software and associated documentation files (the "Software") may only be
@@ -22,15 +34,9 @@ modifications. You are not granted any other rights beyond what is expressly
 stated herein. Subject to the foregoing, it is forbidden to copy, merge,
 publish, distribute, sublicense, and/or sell the Software.
 
-This EE License applies only to the files in the ee/ directory of this
-repository and to the parts of a build that are compiled from them. All other
-files in this repository are licensed under the Apache License, Version 2.0,
-except third-party files that carry their own license notice. You may use, copy
-and distribute an unmodified build that Coral has released, in production and
-without a subscription, for as long as it runs as the Coral Community Edition,
-with no feature of the Coral Enterprise Edition enabled. The full text of this
-EE License shall be included in all copies or substantial portions of the
-Software.
+You may use, copy and distribute an unmodified build that Coral has released, in
+production and without a subscription, for as long as it runs as the Coral
+Community Edition, with no feature of the Coral Enterprise Edition enabled.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,

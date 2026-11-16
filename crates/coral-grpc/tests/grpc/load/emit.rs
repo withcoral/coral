@@ -91,8 +91,7 @@ async fn observe_emissions(
             {
                 acks_ms = value.as_json()["acks"]
                     .as_array()
-                    .map(|acks| acks.iter().filter_map(Value::as_f64).collect())
-                    .unwrap_or_default();
+                    .map_or_default(|acks| acks.iter().filter_map(Value::as_f64).collect());
             }
             break Ok(update.state());
         }

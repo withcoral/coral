@@ -9,10 +9,12 @@
 //!
 //! On the Run Executor's side, [`run`] warms its compiler, dials Coral, holds
 //! the pull stream that the [`wire`] contract defines, and serves the
-//! compiles that ride it. On Coral's side, [`LinkServer`] listens for Run
-//! Executors, admits them by [`Credentials`], and keeps the pull streams it
-//! holds in [`PullStreams`]. [`LocalRunExecutors`] starts the Run Executors
-//! that run as Coral's own child processes.
+//! compiles that ride it, and one Run stream for each Run Coral takes for it.
+//! Each Run's Program runs on a thread of its own. On Coral's side,
+//! [`LinkServer`] listens for Run Executors, admits them by [`Credentials`],
+//! and keeps the pull streams it holds in [`PullStreams`].
+//! [`LocalRunExecutors`] starts the Run Executors that run as Coral's own
+//! child processes.
 
 mod compile_wire;
 mod compiler;
@@ -22,6 +24,7 @@ mod link;
 mod local;
 mod pull;
 mod pull_compiler;
+mod run;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
@@ -41,6 +44,7 @@ pub use pull::{
     Credentials, HeldStream, Kind, LinkServer, LocalCredential, PullStreams, Refused, StreamId,
 };
 pub use pull_compiler::PullStreamCompiler;
+pub use run::{APPLIED_CAP_BYTES, PROGRAM_LOG_MESSAGE_MAX_BYTES, RunLimits};
 
 /// The link's wire contract, generated from `proto/`.
 #[allow(

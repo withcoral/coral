@@ -76,10 +76,15 @@ jobs:
             exit 1
           fi
           npm run test:e2e --prefix apps/reef -- "${args[@]}"
-      # Recordings and traces can carry tokens and source. Never expose them
-      # automatically if this repository becomes public during the final swap.
-      - name: Retain private review evidence, including failed runs
-        if: ${{ always() && github.event.repository.private }}
+      # A failed or cancelled run keeps its evidence, so its Coral and Reef
+      # logs and its traces explain it. The 60-minute timeout cancels a hung
+      # run, which needs its evidence most. In this public repository the
+      # artifact is public: the tokens a trace holds belong to this job's own
+      # Coral, which ends with the job, and no workflow secret reaches the
+      # suite: never pass one to this workflow. A private repository also
+      # keeps passing runs for review.
+      - name: Retain review evidence, always for a failed or cancelled run
+        if: ${{ always() && (failure() || cancelled() || github.event.repository.private) }}
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: reel-${{ inputs.suite }}-${{ inputs.suite == 'multi-instance' && 'postgres' || inputs.database }}${{ inputs.shard && format('-{0}', inputs.shard) || '' }}-${{ github.run_id }}-${{ github.run_attempt }}

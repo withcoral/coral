@@ -288,7 +288,7 @@ async fn default_startup_exposes_the_mcp_contract_with_explicit_human_destinatio
 
     let tools = client.list_all_tools().await.expect("list MCP tools");
     // coral-mcp owns the tool contract; composition only has to serve it.
-    assert!(!tools.is_empty());
+    assert_ne!(tools, [] as [rmcp::model::Tool; 0]);
     client.cancel().await.expect("close MCP client");
     server.shutdown().await.expect("stop composed server");
 

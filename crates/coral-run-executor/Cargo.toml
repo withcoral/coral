@@ -10,7 +10,8 @@ publish = false
 workspace = true
 
 [features]
-# A scripted Coral that serves the pull stream, for tests of the Run Executor.
+# A scripted Coral that serves the pull stream and the Run streams, for tests
+# of the Run Executor.
 test-support = []
 
 [dependencies]
@@ -18,9 +19,11 @@ coral-credentials.workspace = true
 coral-db.workspace = true
 coral-telemetry.workspace = true
 coral-v8.workspace = true
+coral-value.workspace = true
 prost.workspace = true
 ring.workspace = true
 sea-query.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true

@@ -4,26 +4,33 @@
 use std::future::{Future, pending};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use coral_credentials::Secret;
 use coral_telemetry::safe;
 use coral_v8::IsolateLimits;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::codegen::http::Uri;
 use tonic::metadata::AsciiMetadataValue;
+use tonic::service::interceptor::InterceptedService;
 use tonic::transport::server::TcpIncoming;
-use tonic::transport::{Endpoint, Server};
+use tonic::transport::{Channel, Endpoint, Server};
 use tonic_health::ServingStatus;
 
 use crate::compile_wire::{self, ProtocolError};
+use crate::run::{self, RunLimits};
 use crate::wire::v1::link_service_client::LinkServiceClient;
 use crate::wire::v1::{
     Compile, Compiled, Hello, Limits, PullRequest, PullResponse, Room, pull_request, pull_response,
 };
 use crate::{CompilerClient, InProcessCompiler};
+
+/// A client of Coral on one connection: every call carries the bearer
+/// credential.
+pub(crate) type Client = LinkServiceClient<InterceptedService<Channel, Bearer>>;
 
 /// The level of the link's messages and the Program Runtime Surface. A
 /// release that changes either raises it by exactly one.
@@ -37,6 +44,12 @@ pub const PROTOCOL_LEVEL: u32 = 1;
 /// for each Private or Shared Tool it calls, with no total bound: Coral sends no
 /// `Compile` past this one, and that call alone fails.
 pub const MESSAGE_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// Whether a peer at `level` may share a stream: its level equals this one
+/// or differs by one.
+pub(crate) const fn compatible(level: u32) -> bool {
+    level.abs_diff(PROTOCOL_LEVEL) <= 1
+}
 
 /// The longest Run this Run Executor holds: the Run deadline's maximum.
 const MAX_RUN_DURATION_SECONDS: u32 = 900;
@@ -62,6 +75,8 @@ pub struct RunExecutorConfig {
     pub token: Token,
     /// The most Runs it holds at once: its free room while it holds none.
     pub max_runs_held: u32,
+    /// What each Run runs within.
+    pub run_limits: RunLimits,
     /// The Program Compiler's heap limit, in bytes.
     pub compiler_heap_bytes: usize,
 }
@@ -180,6 +195,22 @@ impl Token {
     }
 }
 
+/// Puts the token on every call.
+#[derive(Clone)]
+pub(crate) struct Bearer(Token);
+
+impl tonic::service::Interceptor for Bearer {
+    fn call(
+        &mut self,
+        mut request: tonic::Request<()>,
+    ) -> Result<tonic::Request<()>, tonic::Status> {
+        request
+            .metadata_mut()
+            .insert("authorization", self.0.bearer()?);
+        Ok(request)
+    }
+}
+
 /// How a pull stream ended.
 enum End {
     /// Coral ended its side cleanly after Welcome, to move the stream (the
@@ -199,6 +230,36 @@ struct Link {
     /// Told after each `Compile` is queued, so a test can wait for one.
     #[cfg(test)]
     on_queued: Option<mpsc::UnboundedSender<()>>,
+    run_limits: RunLimits,
+    /// The Runs held, each from its `Taken` to its stream's end.
+    held: Arc<AtomicU32>,
+    /// A held Run's stream ended, so a unit freed.
+    freed: Arc<Notify>,
+}
+
+/// One unit of room a held Run takes. It frees when dropped: by the Run's
+/// Program thread once its isolate is gone, or by the Run's stream task when
+/// no Program started, even by a panic.
+pub(crate) struct HeldRun {
+    held: Arc<AtomicU32>,
+    freed: Arc<Notify>,
+}
+
+impl HeldRun {
+    pub(crate) fn take(held: &Arc<AtomicU32>, freed: &Arc<Notify>) -> Self {
+        held.fetch_add(1, Ordering::SeqCst);
+        Self {
+            held: held.clone(),
+            freed: freed.clone(),
+        }
+    }
+}
+
+impl Drop for HeldRun {
+    fn drop(&mut self) {
+        self.held.fetch_sub(1, Ordering::SeqCst);
+        self.freed.notify_one();
+    }
 }
 
 impl Link {
@@ -226,9 +287,22 @@ impl Link {
             hello,
             compiler,
             linked,
+            run_limits: config.run_limits,
+            held: Arc::default(),
+            freed: Arc::default(),
             #[cfg(test)]
             on_queued: None,
         }
+    }
+
+    /// The units of room free while this stream's `compiling` compiles hold
+    /// a unit each. A `Taken` or a `Compile` that crossed a report of none
+    /// holds a unit above the room.
+    fn free(&self, compiling: u32) -> u32 {
+        self.hello
+            .free
+            .saturating_sub(self.held.load(Ordering::SeqCst))
+            .saturating_sub(compiling)
     }
 
     /// Opens the pull stream again each time it ends, forever.
@@ -254,23 +328,20 @@ impl Link {
         let Ok(channel) = self.endpoint.connect().await else {
             return End::Failed;
         };
-        let token = self.token.clone();
-        let mut client =
-            LinkServiceClient::with_interceptor(channel, move |mut request: tonic::Request<()>| {
-                request
-                    .metadata_mut()
-                    .insert("authorization", token.bearer()?);
-                Ok(request)
-            })
+        let mut client = LinkServiceClient::with_interceptor(channel, Bearer(self.token.clone()))
             .max_decoding_message_size(MESSAGE_MAX_BYTES)
             .max_encoding_message_size(MESSAGE_MAX_BYTES);
         // The Run Executor's side of the stream ends when `outbound` drops,
-        // as this call returns. The room it reports is its whole room, though
-        // the last stream's compile can still hold the compiler thread: it
-        // finishes unanswered, as a report and a take can cross.
+        // as this call returns. The room it reports leaves out the Runs it
+        // holds, though the last stream's compile can still hold the
+        // compiler thread: it finishes unanswered, as a report and a take can
+        // cross.
         let (outbound, requests) = mpsc::channel(1);
         let hello = PullRequest {
-            message: Some(pull_request::Message::Hello(self.hello.clone())),
+            message: Some(pull_request::Message::Hello(Hello {
+                free: self.free(0),
+                ..self.hello.clone()
+            })),
         };
         if outbound.try_send(hello).is_err() {
             return End::Failed;
@@ -282,18 +353,30 @@ impl Link {
         let (queue, queued) = mpsc::unbounded_channel();
         let (answered, mut answers) = mpsc::unbounded_channel();
         tokio::spawn(serve(Arc::clone(&self.compiler), queued, answered));
-        // A compile holds one unit of room from Compile to Compiled. A report
-        // and a take can cross, so `held` can pass the room for a moment.
-        let mut held: u32 = 0;
+        // A compile holds one unit of room from Compile to Compiled.
+        let mut compiling: u32 = 0;
         loop {
             let welcomed = *self.linked.borrow();
             tokio::select! {
+                // A Run that freed before Hello leaves a permit here too, so
+                // a Room may repeat the room Hello reported. A free between
+                // Hello and Welcome reaches Coral only this way.
+                () = self.freed.notified(), if welcomed => {
+                    let room = PullRequest {
+                        message: Some(pull_request::Message::Room(Room {
+                            free: self.free(compiling),
+                        })),
+                    };
+                    if outbound.send(room).await.is_err() {
+                        return End::Failed;
+                    }
+                }
                 message = inbound.message() => match message {
                     Ok(None) if welcomed => return End::Moved,
                     Ok(Some(PullResponse {
                         message: Some(pull_response::Message::Welcome(welcome)),
                     })) if !welcomed => {
-                        if welcome.protocol_level.abs_diff(PROTOCOL_LEVEL) > 1 {
+                        if !compatible(welcome.protocol_level) {
                             tracing::warn!(
                                 coral.run_executor.protocol_level = safe::number(PROTOCOL_LEVEL),
                                 coral.run_executor.peer_protocol_level =
@@ -307,7 +390,7 @@ impl Link {
                     Ok(Some(PullResponse {
                         message: Some(pull_response::Message::Compile(compile)),
                     })) if welcomed => {
-                        held = held.saturating_add(1);
+                        compiling = compiling.saturating_add(1);
                         if queue.send((Instant::now(), compile)).is_err() {
                             return End::Failed;
                         }
@@ -317,9 +400,17 @@ impl Link {
                             let _unwatched = on_queued.send(()).is_err();
                         }
                     }
-                    // Taken is not served yet, so it breaks the protocol here
-                    // as any other message does. A clean end before Welcome
-                    // is no move.
+                    Ok(Some(PullResponse {
+                        message: Some(pull_response::Message::Taken(taken)),
+                    })) if welcomed => {
+                        // Each Run's stream rides this connection.
+                        for taken in taken.runs {
+                            let unit = HeldRun::take(&self.held, &self.freed);
+                            tokio::spawn(run::hold(client.clone(), taken, self.run_limits, unit));
+                        }
+                    }
+                    // Anything else breaks the protocol. A clean end before
+                    // Welcome is no move.
                     Ok(_) | Err(_) => return End::Failed,
                 },
                 answer = answers.recv() => {
@@ -333,8 +424,8 @@ impl Link {
                         }
                         None => return End::Failed,
                     };
-                    held = held.saturating_sub(1);
-                    let free = self.hello.free.saturating_sub(held);
+                    compiling = compiling.saturating_sub(1);
+                    let free = self.free(compiling);
                     for message in [
                         pull_request::Message::Compiled(compiled),
                         pull_request::Message::Room(Room { free }),

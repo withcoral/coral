@@ -180,12 +180,18 @@ impl Manifest {
                 digest.update(part);
             }
         }
-        let mut hex = String::with_capacity(16);
-        for byte in digest.finalize().iter().take(8) {
-            write!(hex, "{byte:02x}").expect("writing to a String does not fail");
-        }
-        EmbedderRevision(hex)
+        EmbedderRevision(hex(digest.finalize().iter().take(8)))
     }
+}
+
+/// `bytes` as lowercase hex: the form of [`ModelFile::sha256`] and of the
+/// [`EmbedderRevision`].
+pub(crate) fn hex<'a>(bytes: impl IntoIterator<Item = &'a u8>) -> String {
+    let mut hex = String::new();
+    for byte in bytes {
+        write!(hex, "{byte:02x}").expect("writing to a String does not fail");
+    }
+    hex
 }
 
 impl Pooling {

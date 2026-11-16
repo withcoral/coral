@@ -148,24 +148,24 @@ impl Drop for ActiveBudget {
 /// either runs `work` unbudgeted, as on a platform without
 /// [`cpu_budget_supported`].
 pub(crate) fn with_cpu_budget<T>(
-    isolate: &mut v8::OwnedIsolate,
+    isolate: &v8::IsolateHandle,
     budget: Option<Duration>,
     started: Option<Duration>,
-    work: impl FnOnce(&mut v8::OwnedIsolate) -> Result<T, Error>,
+    work: impl FnOnce() -> Result<T, Error>,
 ) -> Result<T, Error> {
     let (Some(budget), Some(started)) = (budget, started) else {
-        return work(isolate);
+        return work();
     };
     Watchdog::start()?;
     let entry = Arc::new(Budgeted {
-        handle: isolate.thread_safe_handle(),
+        handle: isolate.clone(),
         started,
         budget,
         asked: AtomicBool::new(false),
         exceeded: AtomicBool::new(false),
     });
     let active = ActiveBudget::install(entry.clone());
-    let result = work(isolate);
+    let result = work();
     drop(active);
     // A Program that crosses its budget between two checks has spent it too.
     if entry.exceeded.load(Ordering::SeqCst) || entry.spent() {

@@ -13,28 +13,21 @@ use tonic_health::pb::HealthCheckRequest;
 use tonic_health::pb::health_client::HealthClient;
 
 use super::*;
-use crate::testing::{Answer, ScriptedCoral};
+use crate::testing::{
+    Answer, RUN_EXECUTOR_TOKEN, ScriptedCoral, run_executor_config, start_run_executor,
+};
 use crate::{AnalysisError, CompileError, PullStreamCompiler};
-
-const TOKEN: &str = "test-run-executor-token";
 
 fn config(coral: &ScriptedCoral, compiler_heap_bytes: usize) -> RunExecutorConfig {
     RunExecutorConfig {
-        coral_address: coral.address().parse().unwrap(),
-        token: Token::new(TOKEN.to_owned()).unwrap(),
-        max_runs_held: 8,
         compiler_heap_bytes,
+        ..run_executor_config(coral, 8, RunLimits::default())
     }
 }
 
 /// Starts a Run Executor that holds eight Runs, until the sender drops.
 fn start(coral: &ScriptedCoral, health: Option<TcpListener>) -> oneshot::Sender<()> {
-    let config = config(coral, IsolateLimits::defaults().compiler_heap_bytes());
-    let (retire, retired) = oneshot::channel::<()>();
-    tokio::spawn(run(config, health, async {
-        drop(retired.await);
-    }));
-    retire
+    start_run_executor(coral, 8, RunLimits::default(), health)
 }
 
 #[tokio::test]
@@ -67,8 +60,8 @@ async fn hello_carries_the_token_and_a_move_reopens_on_a_fresh_connection() {
     }
     for call in calls {
         assert_eq!(
-            call.authorization.as_deref(),
-            Some("Bearer test-run-executor-token")
+            call.authorization,
+            Some(format!("Bearer {RUN_EXECUTOR_TOKEN}"))
         );
         assert_eq!(
             call.hello,
@@ -466,6 +459,26 @@ async fn each_call_on_a_pull_stream_returns_what_the_in_process_client_returns()
     for _ in CALLS {
         assert_eq!(call.rooms.recv().await, Some(8));
     }
+}
+
+/// Catches: a Room after a Compiled that leaves out the Runs held, or one
+/// after a freed Run that leaves out the compiles held.
+#[tokio::test]
+async fn a_held_run_and_a_compile_share_the_room() {
+    let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
+    let _retire = start(&coral, None);
+    let mut call = coral.next_call().await;
+    coral.take("run-1", "claim-1");
+    let run = coral.next_run().await;
+    let none = BuiltinTools::default();
+    let compiled = call
+        .compiler
+        .compile(TEST_COMPILATION_TIMEOUT, "return 1;", &[], &none, None)
+        .await;
+    assert!(compiled.is_ok(), "{compiled:?}");
+    assert_eq!(call.rooms.recv().await, Some(7), "the Run holds its unit");
+    drop(run);
+    assert_eq!(call.rooms.recv().await, Some(8), "the Run's unit frees");
 }
 
 /// The in-process compiler with a gate: each compile reports the time it

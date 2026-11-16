@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 
 use crate::source_map::{authored_location, decode_authored};
-use crate::v8_support::{evaluate_script, run_script};
+use crate::v8_support::{compile_script, evaluate_script, run_compiled, run_script};
 use crate::{
     AuthoredLocation, CompiledProgram, ConsoleLevel, Error, ExecutionOutput, IsolateLimits,
     PermitFuture, ProgramExecutionControl, ProgramHost, ProgramOutputHostError, ToolBodyOutcome,
@@ -102,12 +102,9 @@ impl ProgramExecutor {
                 .heap_limits(0, self.limits.execution_heap_bytes()),
         );
         let cpu_started = thread_cpu_time();
-        let cpu_budget = host.as_ref().and_then(|host| host.cpu_budget());
         HEAP_PEAK.set(0);
         let result = crate::memory::with_heap_limit(&mut isolate, |isolate| {
-            crate::cpu::with_cpu_budget(isolate, cpu_budget, cpu_started, |isolate| {
-                Self::execute_in_isolate(isolate, program, host, control)
-            })
+            Self::execute_in_isolate(isolate, program, host, control)
         });
         sample_heap(&mut isolate);
         let mut heap_peak = HEAP_PEAK.get();
@@ -166,7 +163,32 @@ impl ProgramExecutor {
         if let Some(control) = control {
             control.install(&isolate_handle);
         }
-        let entry = evaluate_script(scope, program.javascript(), "program.js");
+        let script = compile_script(scope, program.javascript(), "program.js");
+        if program_execution_terminated(scope, control) {
+            return Err(Error::ProgramHostTerminated);
+        }
+        let script = script?;
+        let host = scope
+            .get_slot::<ProgramHostSlot>()
+            .map(|slot| slot.host.clone());
+        if host.as_ref().is_some_and(|host| !host.start()) {
+            return Err(Error::ProgramHostTerminated);
+        }
+        let cpu_budget = host.and_then(|host| host.cpu_budget());
+        crate::cpu::with_cpu_budget(&isolate_handle, cpu_budget, thread_cpu_time(), || {
+            Self::run_program(scope, script, control, final_value_serializer, &source_map)
+        })
+    }
+
+    /// Runs the loaded Program to its end.
+    fn run_program<'s>(
+        scope: &mut v8::PinScope<'s, '_>,
+        script: v8::Local<'s, v8::Script>,
+        control: Option<&ProgramExecutionControl>,
+        final_value_serializer: v8::Local<'s, v8::Function>,
+        source_map: &sourcemap::SourceMap,
+    ) -> Result<ExecutionOutput, Error> {
+        let entry = run_compiled(scope, script, "program.js");
         if program_execution_terminated(scope, control) {
             return Err(Error::ProgramHostTerminated);
         }
@@ -185,7 +207,7 @@ impl ProgramExecutor {
                     Err(output_execution_error(error))
                 } else {
                     Err(Error::ProgramRejected(Box::new(
-                        crate::program_error::from_exception(scope, reason, &source_map),
+                        crate::program_error::from_exception(scope, reason, source_map),
                     )))
                 }
             }
@@ -194,7 +216,7 @@ impl ProgramExecutor {
                 if value.is_undefined() {
                     Ok(ExecutionOutput::new(None))
                 } else {
-                    serialize_final_value(scope, final_value_serializer, value, &source_map)
+                    serialize_final_value(scope, final_value_serializer, value, source_map)
                         .map(|json| ExecutionOutput::new(Some(json)))
                 }
             }
@@ -222,7 +244,7 @@ impl ProgramExecutor {
                 || crate::ProgramError::unavailable("Unhandled ToolError"),
                 |reason| {
                     let reason = v8::Local::new(scope, reason);
-                    crate::program_error::from_exception(scope, reason, &source_map)
+                    crate::program_error::from_exception(scope, reason, source_map)
                 },
             );
             error.truncated |= scope
@@ -425,7 +447,7 @@ fn reject_host_error(
         } => reject_tool_error(
             scope,
             resolver,
-            code,
+            &code,
             &message,
             trace_id.as_deref(),
             None,
@@ -439,8 +461,8 @@ fn reject_host_error(
         } => reject_tool_error(
             scope,
             resolver,
-            code,
-            message,
+            &code,
+            &message,
             None,
             Some(&outcome_json),
             &[],
