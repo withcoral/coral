@@ -25,7 +25,6 @@ const shell = {
   userName: undefined,
   userEmail: undefined,
   workspaces: [ops],
-  archivedWorkspaces: [],
   form: { csrf: 'test-csrf', requestId: 'test-request' },
 }
 

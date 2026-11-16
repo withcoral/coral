@@ -3,7 +3,7 @@ import { expect, type TestContext } from 'vitest'
 import { copiedBy } from '../../../support/clipboard.ts'
 import { breadcrumb } from '../../../support/providers.ts'
 import { withOwner } from '../../../support/topology.ts'
-import { switcherCommand } from '../../../support/sidebar.ts'
+import { openCreateWorkspace } from '../../../support/sidebar.ts'
 
 /**
  * A new workspace's overview opens with no dialog over it. Its quick start's prompt
@@ -17,7 +17,7 @@ export async function workspaceQuickStart(context: TestContext) {
       await page.goto('/')
       // Hydration first: a click that lands before it opens nothing.
       await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-      await switcherCommand(page, 'Create workspace')
+      await openCreateWorkspace(page)
       await page.getByLabel('Workspace name', { exact: true }).fill(name)
       await page
         .getByRole('dialog')

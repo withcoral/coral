@@ -8,7 +8,7 @@ import { breadcrumb, programRunner } from '../../../support/providers.ts'
 import { SetupAuthorizationState } from '../../../generated/coral/management/v1/provider_pb.ts'
 import { copyNewAgentKey } from '../../../support/agent-key.ts'
 import { copiedBy } from '../../../support/clipboard.ts'
-import { switcherCommand } from '../../../support/sidebar.ts'
+import { openCreateWorkspace } from '../../../support/sidebar.ts'
 
 test('Agent credential issuance, rotation, disablement, expiry and destructive cleanup', async (context) => {
   const { owner } = await createActors(context)
@@ -51,7 +51,7 @@ test('Agent credential issuance, rotation, disablement, expiry and destructive c
         await page.goto('/')
         await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
         const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
-        await switcherCommand(page, 'Create workspace')
+        await openCreateWorkspace(page)
         await page.getByLabel('Workspace name', { exact: true }).fill(name)
         await page
           .getByRole('dialog')

@@ -8,14 +8,14 @@ import {
   backToWorkspace,
   openArchiveConfirmation,
 } from '../../../support/settings.ts'
-import { switcherCommand } from '../../../support/sidebar.ts'
+import { openCreateWorkspace } from '../../../support/sidebar.ts'
 
 test('Management bottom actions are reachable by wheel and keyboard in a short viewport', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
     const name = `Scroll ${crypto.randomUUID()}`
     await page.goto('/')
     await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-    await switcherCommand(page, 'Create workspace')
+    await openCreateWorkspace(page)
     await page.getByLabel('Workspace name', { exact: true }).fill(name)
     await page
       .getByRole('dialog')

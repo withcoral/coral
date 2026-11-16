@@ -92,14 +92,6 @@ test('each workspace row in the switcher copies its own MCP URL', async () => {
   expect(switcher()).toHaveAccessibleName('Workspace: Operations')
 })
 
-// Catches: the switcher losing the way to create a workspace.
-test('the switcher opens the form that creates a workspace', async () => {
-  render('/workspaces/ops')
-  await userEvent.click(switcher())
-  await userEvent.click(screen.getByRole('menuitem', { name: 'Create workspace' }))
-  expect(await screen.findByRole('dialog', { name: 'Create workspace' })).toBeInTheDocument()
-})
-
 // Catches: the current workspace vanishing when the shell could not list workspaces.
 test('an open active workspace missing from the lists still appears', async () => {
   const { container } = render('/workspaces/unlisted', {
@@ -151,42 +143,45 @@ test('archiving the current workspace leaves it open as archived', async () => {
   ).toEqual(['Research'])
 })
 
-// Catches: Settings opening on a section the reader cannot open,
-// or a member losing the way to the usage data.
-test.each<[string, RenderOptions, string]>([
-  ['an organization owner', { organizationOwner: true }, '/organization/members'],
-  [
-    'a local deployment',
-    { organizationOwner: true, auth: { mode: 'disabled' } },
-    '/organization/workspaces',
-  ],
-  ['an organization member', {}, '/usage-data'],
-])('the account menu opens the settings for %s', async (_, options, href) => {
-  render('/workspaces/ops/approvals', options)
+// Catches: Settings opening on a section a member cannot open. Who sees which
+// section is the settings nav module's rule, tested there.
+test('the account menu opens the settings on the first section you can open', async () => {
+  render('/workspaces/ops/approvals')
   await userEvent.click(screen.getByRole('button', { name: /^Open account menu/ }))
-  expect(await screen.findByRole('menuitem', { name: 'Settings' })).toHaveAttribute('href', href)
+  expect(await screen.findByRole('menuitem', { name: 'Settings' })).toHaveAttribute(
+    'href',
+    '/usage-data',
+  )
 })
 
-// Catches: the organization's settings keeping the workspace's switcher and
-// pages. Who sees which section is the settings nav module's rule, tested there.
+// Catches: the organization's settings keeping the workspace's switcher and pages.
 test('in the organization settings their nav takes the place of the switcher and the pages', () => {
-  const { container } = render('/organization/workspaces', {
-    area: 'settings',
-    organizationOwner: true,
-  })
+  render('/organization/workspaces', { area: 'settings', organizationOwner: true })
   expect(screen.queryByRole('button', { name: /^(Workspace: |Workspaces)/ })).toBeNull()
-  expect(container.querySelector('a[href="/workspaces/ops/tools"]')).toBeNull()
+  expect(screen.queryByRole('link', { name: 'Tools' })).toBeNull()
   const organization = within(screen.getByRole('group', { name: 'Organization' }))
-  expect(organization.getAllByRole('link').map((link) => link.getAttribute('href'))).toEqual([
-    '/organization/members',
-    '/organization/workspaces',
-    '/organization/secret-stores',
-    '/usage-data',
-  ])
   expect(organization.getByRole('link', { name: 'Workspaces' })).toHaveAttribute(
     'aria-current',
     'page',
   )
+})
+
+const brand = () => screen.getByRole('link', { name: 'Coral' })
+
+// Catches: the brand taking you to another workspace than the one you are in,
+// or than the one you opened the settings from.
+test('the brand opens the Overview of the workspace you are in', async () => {
+  sessionStorage.clear()
+  onTestFinished(() => sessionStorage.clear())
+  const options: RenderOptions = {}
+  const { router } = render('/workspaces/research/approvals', options)
+  expect(brand()).toHaveAttribute('href', '/workspaces/research')
+  options.area = 'settings'
+  await act(async () => router.navigate('/usage-data'))
+  expect(brand()).toHaveAttribute('href', '/workspaces/research')
+  options.area = 'work'
+  await act(async () => router.navigate('/'))
+  expect(brand()).toHaveAttribute('href', '/')
 })
 
 // Catches: "Back to workspace" dropping you on another page than the one you left,
@@ -284,13 +279,16 @@ test('the account menu keeps the chosen appearance for the next load', async () 
   expect(localStorage.getItem('coral:theme')).toBe('"light"')
 })
 
-// Catches: two people who share a first letter looking the same in the sidebar.
-test('your avatar shows the first letters of your first and last names', () => {
-  render('/workspaces/ops', { userName: 'James Henry Summerfield' })
-  const account = screen.getByRole('button', {
-    name: 'Open account menu for James Henry Summerfield',
-  })
-  expect(within(account).getByText('JS')).toBeInTheDocument()
+// Catches: initials made from a placeholder, such as "LU" for the local user.
+// Which letters a name gives is the avatar's rule, shown in its story.
+test.each<[string, RenderOptions, string, string | null]>([
+  ['a named user', { userName: 'James Summerfield' }, 'James Summerfield', 'JS'],
+  ['a user without a profile', {}, 'Account', null],
+  ['the local user', { auth: { mode: 'disabled' } }, 'Local user', null],
+])('the account button shows initials only for %s', (_, options, label, initials) => {
+  render('/workspaces/ops', options)
+  const account = screen.getByRole('button', { name: `Open account menu for ${label}` })
+  expect(account.textContent).toBe(`${initials ?? ''}${label}`)
 })
 
 const counts = {
@@ -331,7 +329,9 @@ test.each([
 })
 test('Approvals sits directly under Overview and shows with nothing pending', () => {
   render('/workspaces/ops/approvals')
-  const hrefs = screen.getAllByRole('link').map((link) => link.getAttribute('href'))
+  const hrefs = within(screen.getByRole('group', { name: 'Operations' }))
+    .getAllByRole('link')
+    .map((link) => link.getAttribute('href'))
   expect(hrefs.indexOf('/workspaces/ops/approvals')).toBe(hrefs.indexOf('/workspaces/ops') + 1)
   expect(approvalsLink()).toHaveAccessibleName('Approvals')
   expect(approvalsLink()).toHaveAttribute('aria-current', 'page')

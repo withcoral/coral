@@ -45,11 +45,23 @@ export interface AvatarProps {
 export type AvatarSize = '20' | '28'
 export type AvatarShape = 'circle' | 'square'
 
-/** The letters that stand in for an image. CSS sets them in capitals. */
+/**
+ * The letters that stand in for an image. CSS sets them in capitals. Two
+ * letters are the initials of the first and last words that start with a
+ * letter or a digit, so "Jane Doe (Acme)" gives "JD". One word gives its first
+ * two characters.
+ */
 function fallbackLetters(name: string, letters: 1 | 2) {
-  const words = name.trim().split(/\s+/)
-  if (letters === 1 || !words[0]) return name.trim().charAt(0)
-  return words.length > 1 ? words[0].charAt(0) + words.at(-1)!.charAt(0) : words[0].slice(0, 2)
+  // By character, not UTF-16 unit, so a letter outside the basic plane stays whole.
+  const first = Array.from(name.trim())[0] ?? ''
+  if (letters === 1) return first
+  const words = name
+    .trim()
+    .split(/\s+/)
+    .map((word) => Array.from(word))
+    .filter((word) => /^[\p{L}\p{N}]/u.test(word[0] ?? ''))
+  if (words.length === 0) return first
+  return words.length > 1 ? words[0][0] + words.at(-1)![0] : words[0].slice(0, 2).join('')
 }
 
 export function Avatar({

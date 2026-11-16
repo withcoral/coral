@@ -4,7 +4,7 @@ import { withBrowserSession } from '../../../support/browser-session.ts'
 import { joinAsOwner, managementClients } from '../../../support/management.ts'
 import { pickPerson } from '../../../support/members.ts'
 import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_pb.ts'
-import { ownerPages } from '../../../support/sidebar.ts'
+import { showsOwnerPages } from '../../../support/sidebar.ts'
 
 test('Open Add members dialogs respect archive, in-place restoration and live self-demotion', async (context) => {
   const { owner, alice, bob } = await createActors(context)
@@ -74,7 +74,7 @@ test('Open Add members dialogs respect archive, in-place restoration and live se
             .poll(() => page.getByRole('button', { name: 'Add members', exact: true }).count())
             .toBe(0)
           // The sidebar now shows a Member's pages.
-          expect(await ownerPages(page)).toBe(0)
+          expect(await showsOwnerPages(page)).toBe(false)
           expect(
             (
               await api.memberships.listWorkspaceMemberships({ parent: workspace.name })
@@ -83,7 +83,7 @@ test('Open Add members dialogs respect archive, in-place restoration and live se
           await page.reload()
           // A reload shows the same.
           await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-          expect(await ownerPages(page)).toBe(0)
+          expect(await showsOwnerPages(page)).toBe(false)
         },
       )
     },

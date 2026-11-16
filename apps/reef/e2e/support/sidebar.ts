@@ -14,28 +14,21 @@ export function switcherWorkspace(page: Page, name: string): Locator {
   return page.getByRole('menuitemradio', { name: new RegExp(`^${escaped}(\\. \\d+ pending |$)`) })
 }
 
-/**
- * Opens the switcher and runs its one command. `scope` is the sidebar, or the
- * drawer that holds it in a narrow window.
- */
-export async function switcherCommand(
-  page: Page,
-  command: 'Create workspace',
-  scope: Page | Locator = page,
-) {
-  await workspaceSwitcher(scope).click()
-  await page.getByRole('menuitem', { name: command, exact: true }).click()
+/** Opens the form that creates a workspace, from the switcher's menu. */
+export async function openCreateWorkspace(page: Page) {
+  await workspaceSwitcher(page).click()
+  await page.getByRole('menuitem', { name: 'Create workspace', exact: true }).click()
 }
 
 /**
- * How many Agents links the sidebar shows for the current workspace: one for
- * an owner, none for a member. It shows the role the navigation acts on.
+ * Whether the sidebar shows the pages only an owner has, such as Agents, for
+ * the current workspace. It shows the role the navigation acts on.
  */
-export function ownerPages(page: Page) {
-  return page
+export async function showsOwnerPages(page: Page) {
+  const agents = page
     .getByRole('navigation', { name: 'Coral', exact: true })
     .getByRole('link', { name: 'Agents', exact: true })
-    .count()
+  return (await agents.count()) > 0
 }
 
 /**
@@ -62,15 +55,11 @@ export async function copyWorkspaceMcpUrl(
  * Opens the switcher, reads its menu, and closes it again, so the open menu
  * does not cover the page for the next step.
  */
-export async function readSwitcher<T>(
-  page: Page,
-  read: (menu: Locator) => Promise<T>,
-  scope: Page | Locator = page,
-): Promise<T> {
-  await workspaceSwitcher(scope).click()
+export async function readSwitcher<T>(page: Page, read: () => Promise<T>): Promise<T> {
+  await workspaceSwitcher(page).click()
   const menu = page.getByRole('menu')
   await menu.waitFor()
-  const result = await read(menu)
+  const result = await read()
   await page.keyboard.press('Escape')
   await menu.waitFor({ state: 'detached' })
   return result

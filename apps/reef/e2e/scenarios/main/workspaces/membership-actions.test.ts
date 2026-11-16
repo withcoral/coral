@@ -8,7 +8,7 @@ import {
   prepareOffboardingAccount,
 } from '../../../support/offboarding.ts'
 import { programRunner, type RunUpdate } from '../../../support/providers.ts'
-import { ownerPages } from '../../../support/sidebar.ts'
+import { showsOwnerPages } from '../../../support/sidebar.ts'
 
 test('Row actions keep the last Owner and removing another person keeps the administrator in place', async (context) => {
   const { owner, bob } = await createActors(context)
@@ -75,7 +75,7 @@ test('Row actions keep the last Owner and removing another person keeps the admi
         await lastOwner.waitFor()
         await page.getByRole('button', { name: 'Cancel', exact: true }).click()
         await expect.poll(() => page.getByRole('dialog').count()).toBe(0)
-        expect(await ownerPages(page)).toBe(1)
+        expect(await showsOwnerPages(page)).toBe(true)
         expect((await ownMembership()).role).toBe(WorkspaceRole.OWNER)
       })
       await step('Remove another person without navigating away', async () => {
@@ -107,7 +107,7 @@ test('Row actions keep the last Owner and removing another person keeps the admi
           await page.getByRole('button', { name: 'Cancel', exact: true }).click()
           await expect.poll(() => page.getByRole('dialog').count()).toBe(0)
           expect(new URL(page.url()).pathname).toBe(path)
-          expect(await ownerPages(page)).toBe(1)
+          expect(await showsOwnerPages(page)).toBe(true)
           const { memberships } = await api.memberships.listWorkspaceMemberships({
             parent: workspace.name,
           })

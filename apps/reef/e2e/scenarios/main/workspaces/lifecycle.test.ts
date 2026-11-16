@@ -10,7 +10,7 @@ import {
 import {
   copyWorkspaceMcpUrl,
   readSwitcher,
-  switcherCommand,
+  openCreateWorkspace,
   switcherWorkspace,
   workspaceSwitcher,
 } from '../../../support/sidebar.ts'
@@ -28,7 +28,7 @@ test('Workspace creation, MCP endpoint copy, rename, archive from the organizati
     await step('Create a Workspace', async () => {
       await page.goto('/')
       await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-      await switcherCommand(page, 'Create workspace')
+      await openCreateWorkspace(page)
       await page.getByLabel('Workspace name', { exact: true }).fill(name)
       await page
         .getByRole('dialog')
@@ -116,7 +116,7 @@ test('Workspace creation, MCP endpoint copy, rename, archive from the organizati
       async () => {
         const overviewLink = (workspace: string) =>
           group(workspace).getByRole('link', { name: 'Overview', exact: true })
-        await switcherCommand(page, 'Create workspace')
+        await openCreateWorkspace(page)
         await page
           .getByRole('dialog')
           .getByRole('textbox', { name: 'Workspace name', exact: true })

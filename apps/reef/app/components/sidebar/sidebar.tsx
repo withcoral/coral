@@ -235,12 +235,18 @@ function SidebarNavigation({
   mobile: boolean
 }) {
   const location = useLocation()
-  const accountLabel = auth.mode === 'disabled' ? 'Local user' : userName?.trim() || 'Account'
+  // Without a name there are no initials to show, so the account keeps the user icon.
+  const name = auth.mode === 'required' ? userName?.trim() : undefined
+  const accountLabel = auth.mode === 'disabled' ? 'Local user' : name || 'Account'
   const people = auth.mode === 'required'
   const inSettings = area === 'settings'
   const reader = { organizationOwner, people }
   // A tab that opened on the settings goes back home.
   const back = useReturnTo(inSettings, '/')
+  // The brand opens the Overview of the workspace you are in. In the settings
+  // that is the workspace you came from. Home picks one when there is none.
+  const cameFrom = inSettings ? /^\/workspaces\/[^/?#]+/.exec(back)?.[0] : undefined
+  const home = workspace?.path ?? cameFrom ?? '/'
   const logout = useRef<HTMLFormElement>(null)
   // You open a Workspace only as its member, so every entry here is one of yours.
   // The route's Workspace is fresher than the list, and stands in when the list
@@ -317,7 +323,7 @@ function SidebarNavigation({
     >
       <div className={classNames(styles.header, isMinimized && styles.minimizedColumn)}>
         <Link
-          to="/"
+          to={home}
           className={classNames(styles.identity, isMinimized && styles.minimizedControl)}
           aria-label="Coral"
         >
@@ -398,7 +404,7 @@ function SidebarNavigation({
             render={
               <SidebarButton
                 aria-label={`Open account menu for ${accountLabel}`}
-                icon={<Avatar name={accountLabel} letters={2} />}
+                icon={name ? <Avatar name={name} letters={2} /> : 'User'}
                 isMinimized={isMinimized}
                 title={accountLabel}
               />

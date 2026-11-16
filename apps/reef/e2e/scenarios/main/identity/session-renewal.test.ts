@@ -5,7 +5,7 @@ import { expect, inject, test } from 'vitest'
 import { loginActor } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
 import { startStack } from '../../../support/stack.ts'
-import { readSwitcher, switcherCommand, switcherWorkspace } from '../../../support/sidebar.ts'
+import { readSwitcher, openCreateWorkspace, switcherWorkspace } from '../../../support/sidebar.ts'
 
 // Coral access tokens last five seconds; Reef sessions last forty from sign-in.
 const ACCESS_TOKEN_TTL_SECONDS = 5
@@ -46,7 +46,7 @@ test('A Reef session outlives its access tokens, ends at its own deadline, and s
         async () => {
           await page.goto('/')
           await accountMenu.waitFor()
-          await switcherCommand(page, 'Create workspace')
+          await openCreateWorkspace(page)
           await page.getByLabel('Workspace name', { exact: true }).fill('Renewed')
         },
       )

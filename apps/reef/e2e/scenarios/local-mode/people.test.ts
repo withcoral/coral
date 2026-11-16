@@ -1,7 +1,7 @@
 import { expect, test } from 'vitest'
 import { withBrowserSession } from '../../support/browser-session.ts'
 import { createWorkspace } from '../../support/providers.ts'
-import { openSettings, settingsNav } from '../../support/settings.ts'
+import { openSettings, sidebarNav } from '../../support/settings.ts'
 
 // Nobody else can sign in to a local deployment, so Reef offers no people to manage.
 test('A local deployment offers no people management', async (context) => {
@@ -15,7 +15,7 @@ test('A local deployment offers no people management', async (context) => {
       // The local user owns the organization, and still has no members to manage.
       await openSettings(page, 'Workspaces')
       expect(
-        await settingsNav(page).getByRole('link', { name: 'Members', exact: true }).count(),
+        await sidebarNav(page).getByRole('link', { name: 'Members', exact: true }).count(),
       ).toBe(0)
     })
     await step('Serve no people pages', async () => {

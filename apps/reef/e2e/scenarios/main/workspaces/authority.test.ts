@@ -9,8 +9,8 @@ import { copyNewAgentKey } from '../../../support/agent-key.ts'
 import { organizationWorkspaceRow, pickPerson } from '../../../support/members.ts'
 import {
   readSwitcher,
-  ownerPages,
-  switcherCommand,
+  showsOwnerPages,
+  openCreateWorkspace,
   switcherWorkspace,
 } from '../../../support/sidebar.ts'
 import { backToWorkspace, openSettings } from '../../../support/settings.ts'
@@ -25,7 +25,7 @@ test('Organization Owner governance, eligible Memberships, and private server pa
       await step('Alice creates her Workspace as an Organization Member', async () => {
         await page.goto('/')
         await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-        await switcherCommand(page, 'Create workspace')
+        await openCreateWorkspace(page)
         await page.getByLabel('Workspace name', { exact: true }).fill(name)
         await page
           .getByRole('dialog')
@@ -148,7 +148,7 @@ test('Organization Owner governance, eligible Memberships, and private server pa
           expect(await page.getByRole('button', { name: 'Add members', exact: true }).count()).toBe(
             0,
           )
-          expect(await ownerPages(page)).toBe(0)
+          expect(await showsOwnerPages(page)).toBe(false)
           const html = await page.content()
           for (const hidden of [
             'Private Agent directory',

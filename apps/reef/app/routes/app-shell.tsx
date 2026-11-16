@@ -38,7 +38,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     ])
     const organizationOwner = membership?.role === OrganizationRole.OWNER
     const workspaces = all.filter((w) => w.state === WorkspaceState.ACTIVE)
-    const archived = all.filter((w) => w.state === WorkspaceState.ARCHIVED)
     const profile = membership?.profile
     return data(
       {
@@ -51,7 +50,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         auth: browserAuth(context.get(requestAuthContext)),
         userName: profile?.displayName.trim() || profile?.email.trim() || undefined,
         workspaces: workspaces.map(sidebarWorkspaceView),
-        archivedWorkspaces: archived.map(sidebarWorkspaceView),
         form: formContext(context),
       },
       { headers: privateHeaders },

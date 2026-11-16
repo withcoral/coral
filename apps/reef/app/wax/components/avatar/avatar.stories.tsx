@@ -61,8 +61,15 @@ export const TwoLetters: Story = {
       <Avatar name="James Summerfield" letters={2} size="28" />
       <Avatar name="Ada Byron Lovelace" letters={2} size="28" />
       <Avatar name="alex@example.com" letters={2} size="28" />
+      <Avatar name="Jane Doe (Acme)" letters={2} size="28" />
     </div>
   ),
+  // Catches: initials from a middle name or from punctuation, or one word losing its second letter.
+  play: async ({ canvas }) => {
+    await expect(canvas.getAllByText('JS')).toHaveLength(2)
+    for (const initials of ['AL', 'al', 'JD'])
+      await expect(canvas.getByText(initials)).toBeVisible()
+  },
 }
 
 /**

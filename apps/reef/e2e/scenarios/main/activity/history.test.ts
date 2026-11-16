@@ -13,7 +13,7 @@ import {
 } from '../../../support/providers.ts'
 import { openApiDocument } from '../../../support/provider-fixtures.ts'
 import { shownPayload } from '../../../support/payloads.ts'
-import { switcherCommand } from '../../../support/sidebar.ts'
+import { openCreateWorkspace } from '../../../support/sidebar.ts'
 
 /** The Activity list anchored at `record` in `run` of `task`, with nothing selected. */
 function revealedAt(task: string, run: string, record: string) {
@@ -63,7 +63,7 @@ test('Activity keeps one hierarchy, exact retained evidence, and narrow-screen r
             .getByRole('link', { name: 'Overview', exact: true })
             .getAttribute('aria-current'),
         ).toBe('page')
-        await switcherCommand(page, 'Create workspace')
+        await openCreateWorkspace(page)
         await page.getByRole('dialog', { name: 'Create workspace', exact: true }).waitFor()
         await page.keyboard.press('Escape')
         await page.getByRole('dialog').waitFor({ state: 'detached' })

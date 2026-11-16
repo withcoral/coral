@@ -16,7 +16,7 @@ import { ToolAccessState } from '../generated/coral/management/v1/policy_pb.ts'
 import type { Target } from './config.ts'
 import { managementClients } from './management.ts'
 import { mcpToken } from './actors.ts'
-import { switcherCommand } from './sidebar.ts'
+import { openCreateWorkspace } from './sidebar.ts'
 
 export { collectDataResponses } from './data-responses.ts'
 
@@ -37,7 +37,7 @@ export async function createWorkspaceViaUi(page: Page, name: string) {
   await page.goto('/')
   // Hydration first: a click that lands before it opens nothing.
   await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-  await switcherCommand(page, 'Create workspace')
+  await openCreateWorkspace(page)
   await page.getByLabel('Workspace name', { exact: true }).fill(name)
   await page
     .getByRole('dialog')
