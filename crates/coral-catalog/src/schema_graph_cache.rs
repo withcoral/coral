@@ -44,6 +44,10 @@ mod tests;
 /// one of about 276 MiB. The graphs of the Built-in, Private and Shared
 /// Providers are Coral's own, and each is under 1 MiB.
 ///
+/// The budget does not count the validators that a graph compiles for its
+/// Tools' responses. Each graph keeps up to 32 MiB of them by weight, and
+/// they leave with it.
+///
 /// Entries are keyed by Generation alone, with no Workspace. Ask only for a
 /// Generation that a Workspace-scoped read in the same transaction just
 /// returned, as Invocation admission does, and never for an id from outside.
@@ -68,7 +72,8 @@ struct Entries {
     weight_bytes: usize,
 }
 
-/// One Generation's graph. The validators compiled from it can join it here.
+/// One Generation's graph. The graph keeps the validators compiled from it,
+/// within a budget of its own that this weight does not count.
 struct Entry {
     graph: Arc<SchemaGraph>,
     weight_bytes: usize,
@@ -195,7 +200,7 @@ const GRAPH_BASE_BYTES: usize = 2048;
 
 /// The bytes of heap that `value` holds room for, by capacity: a string's
 /// bytes, an array's values, an object's entries and index table.
-fn held_bytes(value: &Value) -> usize {
+pub(crate) fn held_bytes(value: &Value) -> usize {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => 0,
         Value::String(text) => text.capacity(),

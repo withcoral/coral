@@ -7,6 +7,7 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use crate::schema::SharedTypes;
+use crate::validators::Validators;
 use crate::{Error, ExecutionBinding, McpDiscoverySnapshot, OpenApiDocument, ToolPathAssignment};
 
 macro_rules! uuid_id {
@@ -444,6 +445,10 @@ pub struct SchemaGraph {
     semantics: SchemaSemantics,
     schemas: BTreeMap<SchemaId, Value>,
     source_index: BTreeMap<String, SchemaId>,
+    /// The validators compiled from this graph so far. They are no part of
+    /// its stored form or its identity.
+    #[serde(skip)]
+    validators: Validators,
 }
 
 impl SchemaGraph {
@@ -456,6 +461,7 @@ impl SchemaGraph {
             semantics,
             schemas,
             source_index,
+            validators: Validators::default(),
         };
         graph.validate()?;
         Ok(graph)
@@ -483,6 +489,9 @@ impl SchemaGraph {
     ///
     /// Invalid package-local validator material returns `false`; Provider
     /// publication and persistence verification own reporting that corruption.
+    ///
+    /// The graph compiles the root's validator on its first use and keeps it,
+    /// within a budget, for the calls after it.
     #[must_use]
     pub fn accepts(&self, id: &SchemaId, value: &Value) -> bool {
         accepts_bundled(self, id, value, SchemaValidationDirection::Neutral)
@@ -492,6 +501,8 @@ impl SchemaGraph {
     ///
     /// A required `writeOnly` property applies only to requests and is not
     /// required in an upstream response.
+    ///
+    /// The graph keeps this validator as [`Self::accepts`] keeps its own.
     #[must_use]
     pub fn accepts_output(&self, id: &SchemaId, value: &Value) -> bool {
         accepts_bundled(self, id, value, SchemaValidationDirection::Output)
@@ -564,9 +575,12 @@ impl SchemaGraph {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SchemaValidationDirection {
+/// Which of a schema's requirements a validator applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SchemaValidationDirection {
+    /// Every requirement.
     Neutral,
+    /// Those of a response: a `writeOnly` property is not required.
     Output,
 }
 
@@ -576,9 +590,10 @@ fn accepts_bundled(
     value: &Value,
     direction: SchemaValidationDirection,
 ) -> bool {
-    bundled_schema(graph, root, direction).is_some_and(|schema| {
-        jsonschema::validator_for(&schema).is_ok_and(|validator| validator.is_valid(value))
-    })
+    graph
+        .validators
+        .validator(root, direction, || bundled_schema(graph, root, direction))
+        .is_some_and(|validator| validator.is_valid(value))
 }
 
 fn bundled_schema(
@@ -1857,6 +1872,41 @@ mod tests {
             .expect("stored root") = serde_json::json!({"$ref": "schema_000000000000000000000000"});
         SchemaGraph::from_storage_json(&missing.to_string())
             .expect_err("missing package target must be rejected");
+    }
+
+    // Catches: a check that bundles and compiles its schema on every call,
+    // and a response check served the validator of a neutral one, or the
+    // reverse, whichever the graph built first.
+    #[test]
+    fn a_graph_keeps_the_validator_of_each_direction_it_checks() {
+        use SchemaValidationDirection::{Neutral, Output};
+
+        let (semantics, schemas, source_index) = one_root(serde_json::json!({
+            "type": "object",
+            "properties": {"secret": {"type": "string", "writeOnly": true}},
+            "required": ["secret"]
+        }));
+        let id = SchemaId::for_source("generated:test");
+        let without_secret = serde_json::json!({});
+        for order in [[Output, Neutral], [Neutral, Output]] {
+            let graph = SchemaGraph::new(semantics, schemas.clone(), source_index.clone())
+                .expect("the graph is coherent");
+            for direction in order {
+                let accepted = match direction {
+                    Neutral => graph.accepts(&id, &without_secret),
+                    Output => graph.accepts_output(&id, &without_secret),
+                };
+                assert_eq!(
+                    accepted,
+                    direction == Output,
+                    "{direction:?} in {order:?}: only a response may omit a writeOnly property"
+                );
+                let kept = graph.validators.validator(&id, direction, || {
+                    panic!("{direction:?} in {order:?}: the check keeps its validator")
+                });
+                assert!(kept.is_some());
+            }
+        }
     }
 
     #[test]
