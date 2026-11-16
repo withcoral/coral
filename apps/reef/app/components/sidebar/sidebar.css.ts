@@ -1,13 +1,15 @@
 import { keyframes, style } from '@vanilla-extract/css'
 import { animation, theme, zIndex } from '@/wax/theme/theme.css'
+import { FRAME_INSET_PX } from '@/components/content-container/constants'
 import { TOP_BAR_HEIGHT_PX } from '@/wax/components/page-layout/constants'
 
 const SIDEBAR_PADDING_PX = 12
 // As tall as the collapse toggle beside the brand.
 const IDENTITY_HEIGHT_PX = 32
-// The masthead rises into the sidebar's padding, so the brand centres on the
-// page's top bar beside it.
-const MASTHEAD_OFFSET_PX = (TOP_BAR_HEIGHT_PX - IDENTITY_HEIGHT_PX) / 2 - SIDEBAR_PADDING_PX
+// The masthead sits so the brand centres on the top bar of the page's frame
+// beside it, which starts a little below the window's edge.
+const MASTHEAD_OFFSET_PX =
+  FRAME_INSET_PX + (TOP_BAR_HEIGHT_PX - IDENTITY_HEIGHT_PX) / 2 - SIDEBAR_PADDING_PX
 export const sidebar = style({
   backgroundColor: theme.surface.main,
   display: 'flex',
