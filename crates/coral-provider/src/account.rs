@@ -295,9 +295,27 @@ pub struct AccountModule {
     client_bootstrap_policy: ClientBootstrapPolicy,
     #[cfg(test)]
     exchange_gate: Option<std::sync::Arc<OAuthExchangeGate>>,
-    /// Holds a renewal between the read that found it due and its write.
     #[cfg(test)]
-    renewal_gate: Option<std::sync::Arc<OAuthExchangeGate>>,
+    renewal_gate: Option<std::sync::Arc<RenewalGate>>,
+}
+
+/// Holds each renewal between the read that found it due and its write, and
+/// counts the renewals it holds, so a test can bring several callers to one
+/// claim before it lets any of them write.
+#[cfg(test)]
+pub(crate) struct RenewalGate {
+    pub(crate) entered: tokio::sync::Semaphore,
+    pub(crate) release: tokio::sync::Semaphore,
+}
+
+#[cfg(test)]
+impl Default for RenewalGate {
+    fn default() -> Self {
+        Self {
+            entered: tokio::sync::Semaphore::new(0),
+            release: tokio::sync::Semaphore::new(0),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -466,7 +484,7 @@ impl AccountModule {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_renewal_gate(mut self, gate: std::sync::Arc<OAuthExchangeGate>) -> Self {
+    pub(crate) fn with_renewal_gate(mut self, gate: std::sync::Arc<RenewalGate>) -> Self {
         self.renewal_gate = Some(gate);
         self
     }

@@ -353,8 +353,10 @@ impl AccountModule {
     ) -> Result<CredentialResolution, Error> {
         #[cfg(test)]
         if let Some(gate) = &self.renewal_gate {
-            gate.entered.notify_one();
-            gate.release.notified().await;
+            gate.entered.add_permits(1);
+            if let Ok(released) = gate.release.acquire().await {
+                released.forget();
+            }
         }
         let row = &renewal.row;
         match renewal.due {

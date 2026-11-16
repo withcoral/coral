@@ -1,7 +1,9 @@
 //! Credential reads beside a writer, and callers that meet at one refresh.
 use super::{callback, client, oauth_document};
 use crate::access::CredentialRoute;
-use crate::account::{AccountModule, AccountScope, CredentialEvidence, OAuthExchangeGate};
+use crate::account::{
+    AccountModule, AccountScope, CredentialEvidence, OAuthExchangeGate, RenewalGate,
+};
 use crate::account_tests::{CREDENTIAL_REQUIRED_OPENAPI, authorization_request, publish_provider};
 use crate::setup_tests::{credential_evidence, harness, user_principal, workspace_owner};
 use crate::tests::{Harness, change_context};
@@ -155,6 +157,19 @@ async fn entered(what: &str, gate: &OAuthExchangeGate) {
         .unwrap_or_else(|_elapsed| panic!("timed out before {what}"));
 }
 
+/// Waits until `gate` holds `callers` renewals, each between the read that
+/// found it due and its write.
+async fn held(what: &str, gate: &RenewalGate, callers: u32) {
+    tokio::time::timeout(
+        coral_test_support::EVENTUALLY,
+        gate.entered.acquire_many(callers),
+    )
+    .await
+    .unwrap_or_else(|_elapsed| panic!("timed out before {what}"))
+    .unwrap()
+    .forget();
+}
+
 /// A dispatch reads a credential that needs no renewal while another
 /// transaction holds what a write would wait for: `SQLite`'s one writer, and
 /// on Postgres the Account row, held shared as the Policy Enforcement Point
@@ -244,34 +259,22 @@ async fn a_current_credential_is_read_beside_a_writer_without_a_write_transactio
     );
 }
 
-/// The first token expired at one second. Callers that all find it expired
-/// race for the refresh claim: one takes it and exchanges the refresh token,
-/// which the service then rotates, and the others wait for that exchange.
+/// The first token expired at one second. Every caller reads it expired, with
+/// no claim, before any of them writes. They then race for the refresh claim:
+/// one takes it and exchanges the refresh token, which the service rotates,
+/// and the others read again and wait for that exchange.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn callers_that_meet_at_an_expired_token_send_one_refresh_and_all_read_the_renewed_token() {
-    const CALLERS: usize = 8;
+    const CALLERS: u32 = 8;
     let oauth = connected("user:one-refresh", 1).await;
-    // The answer takes long enough for the callers that lost the claim to
-    // find it held.
-    oauth
-        .answer_one_refresh(renewed().set_delay(Duration::from_millis(100)))
-        .await;
-    let start = Arc::new(tokio::sync::Barrier::new(CALLERS));
+    oauth.answer_one_refresh(renewed()).await;
+    let renewal = Arc::new(RenewalGate::default());
+    let gated = oauth.h.accounts.clone().with_renewal_gate(renewal.clone());
     let callers: Vec<_> = (0..CALLERS)
-        .map(|_| {
-            let accounts = oauth.h.accounts.clone();
-            let workspace = oauth.workspace.clone();
-            let provider = oauth.provider.id().clone();
-            let evidence = oauth.evidence.clone();
-            let start = start.clone();
-            tokio::spawn(async move {
-                start.wait().await;
-                accounts
-                    .credentials(&workspace, &provider, &evidence, 2_000_000_000)
-                    .await
-            })
-        })
+        .map(|_| oauth.read(&gated, 2_000_000_000))
         .collect();
+    held("every caller finds the refresh due", &renewal, CALLERS).await;
+    renewal.release.add_permits(CALLERS as usize);
     for (caller, read) in callers.into_iter().enumerate() {
         let values = settled("every caller has its token", read).await.unwrap();
         assert_eq!(token(&values), "renewed-canary", "caller {caller}");
@@ -347,10 +350,10 @@ async fn a_refresh_found_due_is_not_claimed_once_the_account_has_moved_on() {
         let oauth = connected("user:stale-claim", 1).await;
         let accounts = &oauth.h.accounts;
         let now = 2_000_000_000;
-        let renewal = Arc::new(OAuthExchangeGate::default());
-        let held = accounts.clone().with_renewal_gate(renewal.clone());
-        let stale = oauth.read(&held, now);
-        entered("the caller finds a refresh due", &renewal).await;
+        let renewal = Arc::new(RenewalGate::default());
+        let gated = accounts.clone().with_renewal_gate(renewal.clone());
+        let stale = oauth.read(&gated, now);
+        held("the caller finds a refresh due", &renewal, 1).await;
         let (stale, renewed_token, refreshes) = match meanwhile {
             Meanwhile::Renewed => {
                 oauth.answer_one_refresh(renewed()).await;
@@ -364,7 +367,7 @@ async fn a_refresh_found_due_is_not_claimed_once_the_account_has_moved_on() {
                 let renewing = accounts.clone().with_exchange_gate(exchange.clone());
                 let other = oauth.read(&renewing, now);
                 entered("another caller claims the refresh", &exchange).await;
-                renewal.release.notify_one();
+                renewal.release.add_permits(1);
                 let mut stale = stale;
                 assert!(
                     tokio::time::timeout(Duration::from_millis(100), &mut stale)
@@ -411,8 +414,9 @@ async fn a_refresh_found_due_is_not_claimed_once_the_account_has_moved_on() {
             )
         };
         let before = account().await.unwrap();
-        // A second release is kept for a gate nobody waits at.
-        renewal.release.notify_one();
+        if !matches!(meanwhile, Meanwhile::Renewing) {
+            renewal.release.add_permits(1);
+        }
         let read = settled("the caller ends", stale).await;
         if renewed_token {
             assert_eq!(token(&read.unwrap()), "renewed-canary", "{meanwhile:?}");
@@ -446,14 +450,14 @@ async fn a_lapsed_claim_is_not_ended_once_its_exchange_has_stored_the_token() {
     // The claim's deadline is a minute after two seconds.
     let refresher = oauth.read(&refreshing, 2_000_000_000);
     entered("the refresh is claimed", &exchange).await;
-    let renewal = Arc::new(OAuthExchangeGate::default());
-    let held = accounts.clone().with_renewal_gate(renewal.clone());
-    let late = oauth.read(&held, 62_000_000_000);
-    entered("the late caller finds the claim lapsed", &renewal).await;
+    let renewal = Arc::new(RenewalGate::default());
+    let gated = accounts.clone().with_renewal_gate(renewal.clone());
+    let late = oauth.read(&gated, 62_000_000_000);
+    held("the late caller finds the claim lapsed", &renewal, 1).await;
     exchange.release.notify_one();
     let first = settled("the refresh ends", refresher).await.unwrap();
     assert_eq!(token(&first), "renewed-canary");
-    renewal.release.notify_one();
+    renewal.release.add_permits(1);
     let read = settled("the late caller ends", late).await.unwrap();
     assert_eq!(token(&read), "renewed-canary");
     assert_eq!(oauth.refreshes_sent().await, 1);
