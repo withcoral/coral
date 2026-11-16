@@ -110,14 +110,16 @@ export const TitledCompact: Story = {
 }
 
 // A page outside the navigation shows its own content in place of breadcrumbs.
+// A long email truncates, and its title shows all of it.
+const email = 'someone.with.a.long.name@a-long-company-domain.example.com'
 export const TopBarWithStart: Story = {
   render: () => (
     <TopBar
       start={<Brand />}
       actions={
         <>
-          <Typography.BodySmall as="span" variant="secondary">
-            someone@example.com
+          <Typography.BodySmall as="span" variant="secondary" truncate title={email}>
+            {email}
           </Typography.BodySmall>
           <Button.TextButton variant="secondary">Sign out</Button.TextButton>
         </>
