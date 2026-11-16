@@ -3,6 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { expect, waitFor } from 'storybook/test'
 import { Button } from '@/wax/components'
+import { Avatar } from '@/wax/components/avatar'
 import { darkTheme } from '@/wax/theme/theme-dark.css'
 
 import { SidebarButton } from './sidebar-button'
@@ -127,6 +128,37 @@ function PendingActions() {
       </Button.TextButton>
     </div>
   )
+}
+
+/**
+ * An avatar takes the icon's place and a second icon ends the row, for a menu
+ * trigger that names a place. A badge keeps its place before the trailing icon.
+ * Minimized, only the avatar shows.
+ */
+export const AvatarAndTrailingIcon: Story = {
+  args: {
+    children: 'Operations team',
+    icon: 'ChevronDown',
+  },
+  play: async ({ canvas }) => {
+    await expect(canvas.getByRole('button', { name: 'Research' })).toBeVisible()
+  },
+  render: () => {
+    const avatar = <Avatar name="Operations team" shape="square" />
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, width: 200 }}>
+        <SidebarButton icon={avatar} trailingIcon="ChevronDown">
+          Operations team
+        </SidebarButton>
+        <SidebarButton icon={avatar} trailingIcon="ChevronDown" badge="12" aria-label="Research">
+          Research
+        </SidebarButton>
+        <SidebarButton icon={avatar} trailingIcon="ChevronDown" isMinimized aria-label="Growth">
+          Growth
+        </SidebarButton>
+      </div>
+    )
+  },
 }
 
 export const BadgeArrivesAndLeaves: Story = {

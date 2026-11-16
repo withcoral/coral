@@ -52,6 +52,27 @@ export const Square: Story = {
   ),
 }
 
+// Two letters tell one person from another better than one does.
+export const TwoLetters: Story = {
+  args: { name: 'James Summerfield', letters: 2 },
+  render: () => (
+    <div style={{ alignItems: 'center', display: 'flex', gap: 16 }}>
+      <Avatar name="James Summerfield" letters={2} />
+      <Avatar name="James Summerfield" letters={2} size="28" />
+      <Avatar name="Ada Byron Lovelace" letters={2} size="28" />
+      <Avatar name="alex@example.com" letters={2} size="28" />
+      <Avatar name="Jane Doe (Acme)" letters={2} size="28" />
+      <Avatar name="@alex" letters={2} size="28" />
+    </div>
+  ),
+  // Catches: initials from a middle name or from punctuation, or one word losing its second letter.
+  play: async ({ canvas }) => {
+    await expect(canvas.getAllByText('JS')).toHaveLength(2)
+    for (const initials of ['AL', 'al', 'JD', '@a'])
+      await expect(canvas.getByText(initials)).toBeVisible()
+  },
+}
+
 /**
  * Beside a visible name, the fallback initial is decorative. A screen reader
  * reads the name once, not the initial and then the name.

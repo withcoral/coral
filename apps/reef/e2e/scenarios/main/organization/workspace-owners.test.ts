@@ -5,6 +5,7 @@ import { withBrowserSession } from '../../../support/browser-session.ts'
 import { managementClients } from '../../../support/management.ts'
 import { breadcrumb } from '../../../support/providers.ts'
 import { organizationWorkspaceRow, pickPerson } from '../../../support/members.ts'
+import { openSettings } from '../../../support/settings.ts'
 
 test('Organization Owner assigns several Owners to a Workspace in one submission', async (context) => {
   const { owner, alice, bob } = await createActors(context)
@@ -18,8 +19,7 @@ test('Organization Owner assigns several Owners to a Workspace in one submission
     async ({ page, step }) => {
       await step('Assign yourself and Bob from the Workspaces table', async () => {
         await page.goto('/')
-        await page.getByRole('button', { name: /^Open account menu for / }).click()
-        await page.getByRole('menuitem', { name: 'Workspaces', exact: true }).click()
+        await openSettings(page, 'Workspaces')
         await breadcrumb(page, 'Workspaces').waitFor()
         const row = await organizationWorkspaceRow(page, name)
         await row.getByRole('button', { name: `Actions for ${name}`, exact: true }).click()

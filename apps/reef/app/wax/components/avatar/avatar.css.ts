@@ -16,6 +16,9 @@ export const avatarContainer = recipe({
     verticalAlign: 'top',
   },
 
+  // The smaller square keeps the larger one's proportions.
+  compoundVariants: [{ variants: { shape: 'square', size: '20' }, style: { borderRadius: 6 } }],
+
   defaultVariants: {
     shape: 'circle',
     size: '20',

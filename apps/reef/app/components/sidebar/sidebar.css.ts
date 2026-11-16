@@ -1,16 +1,15 @@
-import { keyframes, style, styleVariants } from '@vanilla-extract/css'
+import { keyframes, style } from '@vanilla-extract/css'
 import { animation, theme, zIndex } from '@/wax/theme/theme.css'
+import { FRAME_INSET_PX, FRAME_LINE_PX } from '@/components/content-container/constants'
 import { TOP_BAR_HEIGHT_PX } from '@/wax/components/page-layout/constants'
 
 const SIDEBAR_PADDING_PX = 12
 // As tall as the collapse toggle beside the brand.
 const IDENTITY_HEIGHT_PX = 32
-// The masthead rises into the sidebar's padding, so the brand centres on the
-// page's top bar beside it.
-const MASTHEAD_OFFSET_PX = (TOP_BAR_HEIGHT_PX - IDENTITY_HEIGHT_PX) / 2 - SIDEBAR_PADDING_PX
-// Puts a 22px icon button's centre under the 30px collapse toggle's, so the
-// trailing controls share one column.
-const TRAILING_INSET_PX = 3
+// The masthead sits so the brand centres on the top bar of the page's frame
+// beside it, which starts a little below the window's edge, under the frame's line.
+const MASTHEAD_OFFSET_PX =
+  FRAME_INSET_PX + FRAME_LINE_PX + (TOP_BAR_HEIGHT_PX - IDENTITY_HEIGHT_PX) / 2 - SIDEBAR_PADDING_PX
 export const sidebar = style({
   backgroundColor: theme.surface.main,
   display: 'flex',
@@ -49,7 +48,7 @@ export const sidebarResized = style({
 // In the drawer the sidebar fills the popup, and looks as it does on a desktop.
 export const drawerSidebar = style({ flex: 1, height: 'auto', minHeight: 0 })
 // A masthead: the brand with the collapse toggle at its end, and room beneath
-// it before the scopes begin. Collapsed, the toggle sits under the mark, so it
+// it before the workspace switcher. Collapsed, the toggle sits under the mark, so it
 // stays at the top in both states.
 export const header = style({
   alignItems: 'center',
@@ -69,137 +68,107 @@ export const identity = style({
   color: theme.content.primary,
   textDecoration: 'none',
 })
-export const spacer = style({ flex: 1, minHeight: 0 })
-// The Workspace tree takes the spare height. Its label stays put and only the
-// list scrolls, so the footer stays put too.
-export const tree = style({
+// The switcher and the current Workspace's pages take the spare height. Only
+// the pages scroll, so the switcher and the footer stay put.
+export const workspace = style({
   display: 'flex',
   flex: 1,
   flexDirection: 'column',
-  gap: 4,
+  gap: 8,
   minHeight: 0,
+})
+// A fine ring sets the switcher apart from the pages beneath it: it opens a
+// menu, and they open pages.
+export const switcher = style({
+  boxShadow: `inset 0 0 0 1px ${theme.stroke.primary}`,
+  // As tall with an icon as with the 20px avatar.
+  minHeight: 32,
 })
 // The scroll area runs into the sidebar's 12px end padding (see its width in
 // sidebar.tsx), so its scrollbar sits by the sidebar's edge. The list restores
 // the padding for its rows.
-export const treeScroll = style({ flex: '1 1 auto', minHeight: 0 })
-export const treeList = style({
+export const destinationsScroll = style({ flex: '1 1 auto', minHeight: 0 })
+export const destinations = style({
   display: 'flex',
   flexDirection: 'column',
-  gap: 4,
+  gap: 2,
   paddingInlineEnd: 12,
 })
-export const groupLabel = style({
-  ...theme.typography.bodySmall,
-  alignItems: 'center',
-  color: theme.content.tertiary,
+// The settings nav: the way back, then the organization's sections under their
+// label. It scrolls as the workspace's pages do.
+export const settingsNav = style({
   display: 'flex',
-  justifyContent: 'space-between',
-  minHeight: 28,
-  // The create button centres on the collapse toggle above it.
-  paddingInlineStart: 8,
-  paddingInlineEnd: TRAILING_INSET_PX,
+  flexDirection: 'column',
+  gap: 16,
+  paddingInlineEnd: 12,
 })
-export const workspace = style({ display: 'flex', flexDirection: 'column', gap: 2 })
-// The header and its actions share one grid cell, so the actions sit inside
-// the header's trailing edge. Pointer devices reveal them on hover or focus;
-// touch devices always show them.
-// The column may shrink below the name's width, so the name truncates.
-export const workspaceHeader = style({ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)' })
-export const headerButton = style({
-  selectors: {
-    [`${workspaceHeader} &`]: { gridArea: '1 / 1' },
-    // Hovering an action still hovers the header it sits in.
-    [`${workspaceHeader}:hover &`]: { background: theme.sidebar.button.hover },
-  },
+export const settingsGroup = style({ display: 'flex', flexDirection: 'column', gap: 2 })
+export const settingsGroupLabel = style({
+  color: theme.content.tertiary,
+  paddingBlock: 6,
+  paddingInline: 8,
 })
-// Each 22px action plus the gap keeps a long name clear of the actions.
-export const headerActionsSpace = styleVariants({
-  0: {},
-  1: { selectors: { [`${workspaceHeader} &`]: { paddingInlineEnd: 34 } } },
-  2: { selectors: { [`${workspaceHeader} &`]: { paddingInlineEnd: 58 } } },
-})
-export const workspaceActions = style({
+// The switcher's menu holds workspace names. It is wider than a menu of short commands.
+export const menu = style({ width: 240 })
+// A Workspace's row in the switcher's menu: the Workspace, and the action that
+// copies its MCP URL.
+export const menuRow = style({
   alignItems: 'center',
-  alignSelf: 'center',
   display: 'flex',
   gap: 2,
-  gridArea: '1 / 1',
-  justifySelf: 'end',
-  marginInlineEnd: TRAILING_INSET_PX,
+  position: 'relative',
+})
+// The Workspace takes the row's spare width, so a long name truncates before the action.
+export const menuRowItem = style({ flex: '1 1 0', minWidth: 0, width: 'auto' })
+const pointer = '(hover: hover)'
+// With a pointer, the action takes the avatar's place while you point at the
+// row or reach the action with the keyboard, so the row keeps its full width.
+// A touch device cannot point, so there the action stays at the row's end.
+export const menuRowAction = style({
   '@media': {
-    '(hover: hover)': {
+    [pointer]: {
+      insetBlockStart: 0,
+      // Centres the 32px action on the avatar, which starts 7px into the row.
+      insetInlineStart: 1,
+      position: 'absolute',
       selectors: {
-        [`${workspaceHeader}:not(:hover, :focus-within) &:not(:has([aria-current]))`]: {
+        [`${menuRow}:not(:hover) &:not([data-highlighted])`]: { opacity: 0 },
+      },
+    },
+  },
+})
+// A 20px avatar takes an 18px icon's room, so the names line up under one another.
+export const menuAvatar = style({
+  display: 'flex',
+  flexShrink: 0,
+  marginInline: -1,
+  '@media': {
+    [pointer]: {
+      selectors: {
+        [`${menuRow}:hover &, ${menuRow}:has(${menuRowAction}[data-highlighted]) &`]: {
           opacity: 0,
         },
       },
     },
   },
 })
-// Archived Workspaces sit below the active ones, set apart by a rule.
-export const archived = style({
-  borderTop: `1px solid ${theme.stroke.secondary}`,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 2,
-  marginTop: 8,
-  paddingTop: 8,
-})
-// Child icons line up under the Workspace name: the header's 18px chevron plus
-// SidebarButton's 10px gap.
-export const workspaceChildren = style({
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 2,
-  paddingInlineStart: 28,
-})
-// Collapsed, each Workspace is an avatar under a divider. The current one
-// carries its destinations beneath it.
+// Keeps a count clear of the menu item's edge, as its check mark is.
+export const menuCount = style({ display: 'flex', flexShrink: 0, marginInlineEnd: 4 })
+// Collapsed, the switcher is the current Workspace's avatar, with its pages
+// beneath it.
 export const rail = style({
   alignItems: 'center',
   display: 'flex',
   flex: 1,
   flexDirection: 'column',
-  gap: 4,
+  gap: 8,
   minHeight: 0,
   overflowY: 'auto',
   scrollbarWidth: 'none',
 })
-export const railWorkspace = style({
-  alignItems: 'center',
-  borderTop: `1px solid ${theme.stroke.secondary}`,
-  display: 'flex',
-  flexDirection: 'column',
-  gap: 2,
-  paddingTop: 6,
-  width: 44,
-  // A rule divides one Workspace from the next; the masthead's space already
-  // sets the first apart, as it does in the expanded sidebar.
-  selectors: { '&:first-child': { borderTop: 0, paddingTop: 0 } },
-})
-// Each Workspace is its avatar. A fine ring marks the current one, quieter
-// than the selected background its current destination carries.
-export const railTile = style({
-  // Positions a pending-action dot in the corner.
-  position: 'relative',
-  alignItems: 'center',
-  borderRadius: 10,
-  display: 'flex',
-  flex: 'none',
-  height: 34,
-  justifyContent: 'center',
-  transition: animation.colorTransition,
-  width: 34,
-  selectors: {
-    '&:hover': { background: theme.sidebar.button.hover },
-    '&:focus-visible': { outline: `1px solid ${theme.button.primary.focus}` },
-  },
-})
-export const railTileCurrent = style({
-  boxShadow: `inset 0 0 0 1px ${theme.stroke.control}`,
-})
-// Help and the account menu are rows like the destinations above them.
+// A 34px square holds the 28px avatar, larger than the icons beneath it.
+export const railTile = style({ borderRadius: 10, height: 34, paddingBlock: 0 })
+// The release notice and the help and account menus are rows like the pages above them.
 export const footer = style({ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 })
 // Collapsed, the brand is the same centered square as the buttons, so they
 // share one axis.

@@ -7,6 +7,13 @@ import { managementClients } from '../../../support/management.ts'
 import { breadcrumb } from '../../../support/providers.ts'
 import { copyNewAgentKey } from '../../../support/agent-key.ts'
 import { organizationWorkspaceRow, pickPerson } from '../../../support/members.ts'
+import {
+  readSwitcher,
+  showsOwnerPages,
+  openCreateWorkspace,
+  switcherWorkspace,
+} from '../../../support/sidebar.ts'
+import { backToWorkspace, openSettings } from '../../../support/settings.ts'
 
 test('Organization Owner governance, eligible Memberships, and private server paths', async (context) => {
   const { owner, alice, bob } = await createActors(context)
@@ -18,10 +25,7 @@ test('Organization Owner governance, eligible Memberships, and private server pa
       await step('Alice creates her Workspace as an Organization Member', async () => {
         await page.goto('/')
         await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-        await page
-          .getByRole('navigation', { name: 'Coral', exact: true })
-          .getByRole('button', { name: 'Create workspace', exact: true })
-          .click()
+        await openCreateWorkspace(page)
         await page.getByLabel('Workspace name', { exact: true }).fill(name)
         await page
           .getByRole('dialog')
@@ -38,9 +42,8 @@ test('Organization Owner governance, eligible Memberships, and private server pa
     async ({ page, step }) => {
       await step('Bob cannot discover or open an unrelated Workspace', async () => {
         await page.goto('/')
-        const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
-        await nav.getByText('Workspaces', { exact: true }).waitFor()
-        expect(await nav.getByRole('button', { name, exact: true }).count()).toBe(0)
+        await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
+        expect(await readSwitcher(page, () => switcherWorkspace(page, name).count())).toBe(0)
         const hidden = await page.request.get(path)
         const absent = await page.request.get('/workspaces/00000000-0000-0000-0000-000000000000')
         expect(hidden.status()).toBe(404)
@@ -55,11 +58,10 @@ test('Organization Owner governance, eligible Memberships, and private server pa
   await withBrowserSession(
     context,
     async ({ page, step }) => {
-      const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
       await step('Organization Owner has no access without a Membership', async () => {
         await page.goto('/')
-        await nav.getByText('Workspaces', { exact: true }).waitFor()
-        expect(await nav.getByRole('button', { name, exact: true }).count()).toBe(0)
+        await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
+        expect(await readSwitcher(page, () => switcherWorkspace(page, name).count())).toBe(0)
         const hidden = await page.request.get(path)
         expect(hidden.status()).toBe(404)
         expect(await hidden.text()).not.toContain(name)
@@ -68,8 +70,7 @@ test('Organization Owner governance, eligible Memberships, and private server pa
         )
       })
       await step('Organization Owner assigns themselves as an Owner', async () => {
-        await page.getByRole('button', { name: /^Open account menu for / }).click()
-        await page.getByRole('menuitem', { name: 'Workspaces', exact: true }).click()
+        await openSettings(page, 'Workspaces')
         await breadcrumb(page, 'Workspaces').waitFor()
         const row = await organizationWorkspaceRow(page, name)
         await row.getByText('Active', { exact: true }).waitFor()
@@ -81,8 +82,9 @@ test('Organization Owner governance, eligible Memberships, and private server pa
         await dialog.getByRole('button', { name: 'Assign owner', exact: true }).click()
         await expect.poll(() => dialog.count()).toBe(0)
         await row.getByText(`${owner.label} (You)`, { exact: true }).waitFor()
-        // The new Membership puts the Workspace in the Owner's sidebar.
-        await nav.getByRole('button', { name, exact: true }).waitFor()
+        // The new Membership puts the Workspace in the Owner's switcher.
+        await backToWorkspace(page)
+        expect(await readSwitcher(page, () => switcherWorkspace(page, name).count())).toBe(1)
         const members = await api.memberships.listWorkspaceMemberships({ parent })
         expect(
           members.memberships.map((m) => [m.user, m.role]).toSorted(([a], [b]) => (a < b ? -1 : 1)),
@@ -146,13 +148,7 @@ test('Organization Owner governance, eligible Memberships, and private server pa
           expect(await page.getByRole('button', { name: 'Add members', exact: true }).count()).toBe(
             0,
           )
-          const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
-          expect(
-            await nav.getByRole('link', { name: `${name} settings`, exact: true }).count(),
-          ).toBe(0)
-          await nav
-            .getByRole('button', { name: `Copy ${name} workspace MCP URL`, exact: true })
-            .waitFor()
+          expect(await showsOwnerPages(page)).toBe(false)
           const html = await page.content()
           for (const hidden of [
             'Private Agent directory',

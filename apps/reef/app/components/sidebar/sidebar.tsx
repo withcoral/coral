@@ -1,5 +1,5 @@
 import classNames from 'classnames'
-import { useId, useRef, useState } from 'react'
+import { Fragment, useRef, useState } from 'react'
 import { Form, Link, useLocation } from 'react-router'
 import type { BrowserAuth } from '@/auth/types'
 import { Button, Menu, ScrollArea } from '@/wax/components'
@@ -12,12 +12,14 @@ import {
   NavigationClose,
   NavigationFrame,
 } from '@/wax/components/navigation-frame/navigation-frame'
+import { useCopy } from '@/wax/components/button/use-copy'
 import { useTheme } from '@/wax/theme/theme-provider'
 import { ActionDialog, NameInput } from '@/views/management/forms'
-import { ArchiveWorkspaceButton } from '@/views/management/archive-workspace'
-import { RestoreWorkspaceButton } from '@/views/management/restore-workspace'
 import type { FormContext, WorkspaceView } from '@/views/management/types'
 import type { ActionCount } from '@/lib/activity-live-types'
+import { settingsNav } from '@/components/settings/settings-nav'
+import { useReturnTo } from '@/components/settings/use-return-to'
+import { SettingsSidebar } from './settings-sidebar'
 import * as styles from './sidebar.css'
 import { useSidebarState } from './use-sidebar-state'
 
@@ -32,15 +34,19 @@ export type SidebarWorkspace = Pick<
 interface SidebarProps {
   /** Pending actions by Workspace path. Null or a null count shows no badge. */
   actionCounts?: Record<string, WorkspaceCount | null> | null
-  organizationOwner?: boolean
   /** A published Coral release newer than this one. The shell passes it only to organization owners. */
   newerRelease?: NewerRelease
   auth?: BrowserAuth
+  /**
+   * In the organization's settings, their nav replaces the workspace's switcher
+   * and pages. The shell decides which, from the route it matched.
+   */
+  area?: 'work' | 'settings'
+  /** Decides which sections the organization's settings show. */
+  organizationOwner?: boolean
   userName?: string
   initialIsMinimized: boolean
   workspaces?: SidebarWorkspace[]
-  /** Archived Workspaces you are a member of. Each opens on its Activity. */
-  archivedWorkspaces?: SidebarWorkspace[]
   workspace?: SidebarWorkspace
   form?: FormContext
 }
@@ -102,6 +108,42 @@ function pending(count: string | undefined, unit: string): Pending | undefined {
   }
 }
 
+/** The pending actions in every Workspace but the current one, which shows its own on its pages. */
+function pendingElsewhere(
+  workspaces: SidebarWorkspace[],
+  current: SidebarWorkspace | undefined,
+  counts: SidebarProps['actionCounts'],
+): Pending | undefined {
+  let sum = 0n
+  for (const w of workspaces) {
+    const total = w.path === current?.path ? undefined : counts?.[w.path]?.total
+    if (total && /^\d+$/.test(total)) sum += BigInt(total)
+  }
+  const count = pending(String(sum), 'action')
+  return count && current ? { ...count, text: `${count.text} in other workspaces` } : count
+}
+
+/**
+ * Copies one Workspace's MCP URL from its row in the switcher's menu. With a
+ * pointer it takes the avatar's place while you point at the row. The menu
+ * stays open, and the item's icon and name say that the copy happened. It is an
+ * item of its own beside the Workspace's, so the arrow keys reach it.
+ */
+function CopyEndpointItem({ workspace: w }: { workspace: SidebarWorkspace }) {
+  const [copied, copy] = useCopy()
+  const name = `Copy ${w.displayName} MCP URL`
+  return (
+    <Menu.Item
+      icon={copied ? 'Check' : 'Copy'}
+      ariaLabel={copied ? `${name}: copied` : name}
+      tooltip={copied ? 'Copied' : 'Copy MCP URL'}
+      closeOnClick={false}
+      className={styles.menuRowAction}
+      onClick={() => void copy(w.mcpEndpoint)}
+    />
+  )
+}
+
 /** The accessible name carries the count the badge shows. */
 function named(label: string, count?: Pending) {
   return count ? `${label}. ${count.text}` : label
@@ -114,6 +156,15 @@ function workspaceDestinations(
 ): Destination[] {
   const owner = workspace.effectiveRole === 'owner'
   const w = workspace.path
+  // Stable Run links are Activity detail, outside the Activity path.
+  const activity: Destination = {
+    to: `${w}/activity`,
+    icon: 'Activity',
+    label: 'Activity',
+    also: `${w}/runs/`,
+  }
+  // An archived Workspace has only its history to show.
+  if (workspace.state === 'archived') return [activity]
   return [
     { to: w, icon: 'Home', label: 'Overview', exact: true },
     {
@@ -122,13 +173,7 @@ function workspaceDestinations(
       label: 'Approvals',
       pending: pending(count?.approvals, 'approval'),
     },
-    // Stable Run links are Activity detail, outside the Activity path.
-    {
-      to: `${w}/activity`,
-      icon: 'Activity',
-      label: 'Activity',
-      also: `${w}/runs/`,
-    },
+    activity,
     // Each provider's own pages sit under its resource path, outside Tools.
     { to: `${w}/tools`, icon: 'Wrench', label: 'Tools', also: `${w}/providers/` },
     {
@@ -163,12 +208,12 @@ export function Sidebar({ initialIsMinimized, ...props }: SidebarProps) {
 
 function SidebarNavigation({
   actionCounts,
-  organizationOwner,
   newerRelease,
   auth = { mode: 'disabled' },
+  area = 'work',
+  organizationOwner = false,
   userName,
   workspaces = [],
-  archivedWorkspaces = [],
   workspace,
   form,
   isMinimized,
@@ -182,81 +227,65 @@ function SidebarNavigation({
   mobile: boolean
 }) {
   const location = useLocation()
-  const accountLabel = auth.mode === 'disabled' ? 'Local user' : userName?.trim() || 'Account'
+  // Without a name there are no initials to show, so the account keeps the user icon.
+  const name = auth.mode === 'required' ? userName?.trim() : undefined
+  const accountLabel = auth.mode === 'disabled' ? 'Local user' : name || 'Account'
   const people = auth.mode === 'required'
+  const inSettings = area === 'settings'
+  const reader = { organizationOwner, people }
+  // A tab that opened on the settings goes back home.
+  const back = useReturnTo(inSettings, '/')
+  // The brand opens the Overview of the workspace you are in. In the settings
+  // that is the workspace you came from. Home picks one when there is none.
+  const cameFrom = inSettings ? /^\/workspaces\/[^/?#]+/.exec(back)?.[0] : undefined
+  const home = workspace?.path ?? cameFrom ?? '/'
   const logout = useRef<HTMLFormElement>(null)
-  const create = useRef<HTMLButtonElement>(null)
-  // Desktop and the mobile drawer can mount this navigation together.
-  const treeId = useId()
-  const [createAt, setCreateAt] = useState<string | null>(null)
-  // This sidebar survives redirects. A completed creation must close its dialog,
-  // and Back must not reopen a form whose request has already committed.
-  if (createAt !== null && createAt !== location.key) setCreateAt(null)
-  const setCreate = (open: boolean) => setCreateAt(open ? location.key : null)
-  // Several Workspaces can be open. Navigating into a Workspace opens it; the
-  // headers toggle it without navigating.
-  const [openPaths, setOpenPaths] = useState<ReadonlySet<string>>(
-    () => new Set(workspace ? [workspace.path] : []),
-  )
-  const [openFor, setOpenFor] = useState(workspace?.path)
-  if (openFor !== workspace?.path) {
-    setOpenFor(workspace?.path)
-    if (workspace && !openPaths.has(workspace.path))
-      setOpenPaths(new Set(openPaths).add(workspace.path))
-  }
-  const toggle = (path: string) => {
-    const next = new Set(openPaths)
-    if (!next.delete(path)) next.add(path)
-    setOpenPaths(next)
-  }
   // You open a Workspace only as its member, so every entry here is one of yours.
-  // The route's Workspace is fresher than the lists, and stands in when they
-  // failed to load. Its state decides its group, even while you have it open.
-  const currentArchived = workspace?.state === 'archived'
-  const place = (list: SidebarWorkspace[], here: boolean) =>
-    !workspace
-      ? list
-      : !here
-        ? list.filter((w) => w.path !== workspace.path)
-        : list.some((w) => w.path === workspace.path)
-          ? list.map((w) => (w.path === workspace.path ? workspace : w))
-          : [workspace, ...list]
-  const tree = place(workspaces, !currentArchived)
-  const archived = place(archivedWorkspaces, currentArchived)
-  // The group opens when you open an archived Workspace, or archive the one you are in.
-  const currentArchivedPath = currentArchived ? workspace?.path : undefined
-  const [archivedOpen, setArchivedOpen] = useState(currentArchived)
-  const [archivedOpenFor, setArchivedOpenFor] = useState(currentArchivedPath)
-  if (archivedOpenFor !== currentArchivedPath) {
-    setArchivedOpenFor(currentArchivedPath)
-    if (currentArchivedPath) setArchivedOpen(true)
-  }
-  const archivedLabel = currentArchived
-    ? `Archived: ${workspace?.displayName}`
-    : 'Archived workspaces'
+  // The route's Workspace is fresher than the list, and stands in when the list
+  // failed to load. The switcher lists only active Workspaces, so one you
+  // archive while you have it open leaves the list.
+  const active = !workspace
+    ? workspaces
+    : workspace.state === 'archived'
+      ? workspaces.filter((w) => w.path !== workspace.path)
+      : workspaces.some((w) => w.path === workspace.path)
+        ? workspaces.map((w) => (w.path === workspace.path ? workspace : w))
+        : [workspace, ...workspaces]
   const isCurrent = (d: Destination) =>
     d.exact
       ? location.pathname === d.to
       : location.pathname.startsWith(d.to) ||
         Boolean(d.also && location.pathname.startsWith(d.also))
-  const totalFor = (w: SidebarWorkspace) => pending(actionCounts?.[w.path]?.total, 'action')
-  const links = (destinations: Destination[]) =>
-    destinations.map((d) => (
-      <SidebarButton
-        key={d.to}
-        as={Link}
-        to={d.to}
-        icon={d.icon}
-        badge={d.pending?.badge}
-        aria-label={named(d.label, d.pending)}
-        title={named(d.label, d.pending)}
-        isMinimized={isMinimized}
-        isActive={isCurrent(d)}
-        aria-current={isCurrent(d) ? 'page' : undefined}
-      >
-        {d.label}
-      </SidebarButton>
-    ))
+  // The current Workspace's pages. A page outside any Workspace shows none.
+  const destinations = workspace && (
+    <div
+      role="group"
+      aria-label={workspace.displayName}
+      className={isMinimized ? styles.railDestinations : styles.destinations}
+    >
+      {workspaceDestinations(workspace, people, actionCounts?.[workspace.path]).map((d) => (
+        <SidebarButton
+          key={d.to}
+          as={Link}
+          to={d.to}
+          icon={d.icon}
+          badge={d.pending?.badge}
+          aria-label={named(d.label, d.pending)}
+          title={named(d.label, d.pending)}
+          isMinimized={isMinimized}
+          isActive={isCurrent(d)}
+          aria-current={isCurrent(d) ? 'page' : undefined}
+        >
+          {d.label}
+        </SidebarButton>
+      ))}
+    </div>
+  )
+  const navigation = inSettings ? (
+    <SettingsSidebar reader={reader} back={back} isMinimized={isMinimized} />
+  ) : (
+    destinations
+  )
   // An owner's notice of a newer release leads the footer, above the help menu.
   const release = newerRelease && (
     <SidebarButton
@@ -273,7 +302,6 @@ function SidebarNavigation({
       Coral {newerRelease.version} is available
     </SidebarButton>
   )
-
   return (
     <nav
       aria-label="Coral"
@@ -287,7 +315,7 @@ function SidebarNavigation({
     >
       <div className={classNames(styles.header, isMinimized && styles.minimizedColumn)}>
         <Link
-          to="/"
+          to={home}
           className={classNames(styles.identity, isMinimized && styles.minimizedControl)}
           aria-label="Coral"
         >
@@ -315,200 +343,31 @@ function SidebarNavigation({
           </KeyboardShortcut>
         )}
       </div>
-      {isMinimized && (
-        <div className={styles.rail} role="group" aria-label="Workspaces">
-          {tree.map((w) => {
-            const current = w.path === workspace?.path
-            // The current Workspace shows its counts on their pages; the others on their tile.
-            const tileCount = current ? undefined : totalFor(w)
-            return (
-              <div key={w.path} className={styles.railWorkspace}>
-                <Link
-                  to={w.path}
-                  aria-label={named(w.displayName, tileCount)}
-                  title={named(w.displayName, tileCount)}
-                  className={classNames(styles.railTile, current && styles.railTileCurrent)}
-                >
-                  <Avatar name={w.displayName} seed={w.path} shape="square" size="28" />
-                  <SidebarBadge badge={tileCount?.badge} isMinimized />
-                </Link>
-                {current && (
-                  <div className={styles.railDestinations}>
-                    {links(workspaceDestinations(w, people, actionCounts?.[w.path]))}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-          {/* One tile holds every archived Workspace. It shows as current in any of them. */}
-          {archived.length > 0 && (
-            <div className={styles.railWorkspace}>
-              <SidebarButton
-                icon="Archive"
-                aria-label={archivedLabel}
-                title={archivedLabel}
-                aria-current={currentArchived ? 'page' : undefined}
-                isMinimized
-                className={classNames(currentArchived && styles.railTileCurrent)}
-                onClick={() => {
-                  setArchivedOpen(true)
-                  toggleSidebar()
-                }}
-              >
-                Archived
-              </SidebarButton>
-            </div>
-          )}
-        </div>
-      )}
-      {!isMinimized && (
-        <div className={styles.tree} role="group" aria-labelledby={`${treeId}-label`}>
-          <div className={styles.groupLabel}>
-            <span id={`${treeId}-label`}>Workspaces</span>
-            {form && (
-              <Button.IconButton
-                ref={create}
-                ariaLabel="Create workspace"
-                name="Plus"
-                onClick={() => setCreate(true)}
-                size="22"
-                variant="bare"
-              />
-            )}
-          </div>
+      <div className={isMinimized ? styles.rail : styles.workspace}>
+        {!inSettings && (
+          <WorkspaceSwitcher
+            workspace={workspace}
+            active={active}
+            actionCounts={actionCounts}
+            form={form}
+            isMinimized={isMinimized}
+          />
+        )}
+        {isMinimized ? (
+          navigation
+        ) : (
+          // Only the pages scroll, so the switcher and the footer stay put.
           <ScrollArea.Container
-            className={styles.treeScroll}
+            className={styles.destinationsScroll}
             constrainWidth
             height="auto"
             scrollDirection="vertical"
             width="calc(100% + 12px)"
           >
-            <div className={styles.treeList}>
-              {tree.map((w, index) => {
-                const open = openPaths.has(w.path)
-                const id = `${treeId}-${index}`
-                const owner = w.effectiveRole === 'owner'
-                const actions = (Number(Boolean(w.mcpEndpoint)) + Number(owner)) as 0 | 1 | 2
-                // An open Workspace shows its counts on their pages; a closed one on its name.
-                const headerCount = open ? undefined : totalFor(w)
-                return (
-                  <div key={w.path} className={styles.workspace}>
-                    <div className={styles.workspaceHeader}>
-                      <SidebarButton
-                        id={`${id}-header`}
-                        icon={open ? 'ChevronDown' : 'ChevronRight'}
-                        aria-expanded={open}
-                        aria-controls={open ? id : undefined}
-                        aria-label={named(w.displayName, headerCount)}
-                        title={named(w.displayName, headerCount)}
-                        badge={headerCount?.badge}
-                        className={classNames(
-                          styles.headerButton,
-                          styles.headerActionsSpace[actions],
-                        )}
-                        isActive={!open && w.path === workspace?.path}
-                        onClick={() => toggle(w.path)}
-                      >
-                        {w.displayName}
-                      </SidebarButton>
-                      {actions > 0 && (
-                        <div className={styles.workspaceActions}>
-                          {w.mcpEndpoint && (
-                            <Button.CopyButton
-                              ariaLabel={`Copy ${w.displayName} workspace MCP URL`}
-                              textToCopy={w.mcpEndpoint}
-                              tooltipText="Copy workspace MCP URL"
-                              size="22"
-                              variant="bare"
-                            />
-                          )}
-                          {owner && form && <ArchiveWorkspaceButton workspace={w} form={form} />}
-                        </div>
-                      )}
-                    </div>
-                    {open && (
-                      <div
-                        id={id}
-                        role="group"
-                        aria-labelledby={`${id}-header`}
-                        className={styles.workspaceChildren}
-                      >
-                        {links(workspaceDestinations(w, people, actionCounts?.[w.path]))}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-              {archived.length > 0 && (
-                <div className={styles.archived}>
-                  <SidebarButton
-                    id={`${treeId}-archived`}
-                    icon={archivedOpen ? 'ChevronDown' : 'ChevronRight'}
-                    aria-expanded={archivedOpen}
-                    aria-controls={archivedOpen ? `${treeId}-archived-list` : undefined}
-                    variant="muted"
-                    onClick={() => setArchivedOpen(!archivedOpen)}
-                  >
-                    Archived
-                  </SidebarButton>
-                  {archivedOpen && (
-                    <div
-                      id={`${treeId}-archived-list`}
-                      role="group"
-                      aria-labelledby={`${treeId}-archived`}
-                      className={styles.workspaceChildren}
-                    >
-                      {archived.map((w) => {
-                        const owner = w.effectiveRole === 'owner'
-                        const current = w.path === workspace?.path
-                        return (
-                          <div key={w.path} className={styles.workspaceHeader}>
-                            <SidebarButton
-                              as={Link}
-                              to={`${w.path}/activity`}
-                              icon="Archive"
-                              aria-label={`${w.displayName}, archived`}
-                              title={w.displayName}
-                              isActive={current}
-                              variant="muted"
-                              aria-current={current ? 'page' : undefined}
-                              className={classNames(
-                                styles.headerButton,
-                                styles.headerActionsSpace[owner ? 1 : 0],
-                              )}
-                            >
-                              {w.displayName}
-                            </SidebarButton>
-                            {owner && (
-                              <div className={styles.workspaceActions}>
-                                <RestoreWorkspaceButton workspace={w} form={form} compact />
-                              </div>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+            {navigation}
           </ScrollArea.Container>
-        </div>
-      )}
-      {form && (
-        <ActionDialog
-          open={createAt === location.key}
-          onOpenChange={setCreate}
-          finalFocus={create}
-          title="Create workspace"
-          description="Create a workspace to manage providers and run programs. You become its first owner."
-          form={form}
-          intent="createWorkspace"
-          action="/workspaces"
-        >
-          <NameInput label="Workspace name" />
-        </ActionDialog>
-      )}
+        )}
+      </div>
       <div className={styles.footer}>
         {release}
         <Menu.Container>
@@ -530,11 +389,6 @@ function SidebarNavigation({
                 {link.label}
               </Menu.Item>
             ))}
-            {/* Every member can read what Coral sends; only organization owners change it. */}
-            <Menu.Separator />
-            <Menu.Item to="/usage-data" icon="ChartNoAxesColumn">
-              Usage data
-            </Menu.Item>
           </Menu.Content>
         </Menu.Container>
         <Menu.Container>
@@ -542,7 +396,7 @@ function SidebarNavigation({
             render={
               <SidebarButton
                 aria-label={`Open account menu for ${accountLabel}`}
-                icon="User"
+                icon={name ? <Avatar name={name} letters={2} /> : 'User'}
                 isMinimized={isMinimized}
                 title={accountLabel}
               />
@@ -553,22 +407,11 @@ function SidebarNavigation({
           <Menu.Content align={isMinimized ? 'end' : 'start'} side={isMinimized ? 'right' : 'top'}>
             <AppearanceMenu />
             <Menu.Separator />
-            {organizationOwner && (
-              <>
-                {people && (
-                  <Menu.Item to="/organization/members" icon="Users">
-                    Members
-                  </Menu.Item>
-                )}
-                <Menu.Item to="/organization/workspaces" icon="Folders">
-                  Workspaces
-                </Menu.Item>
-                <Menu.Item to="/organization/secret-stores" icon="KeyRound">
-                  Secret stores
-                </Menu.Item>
-                <Menu.Separator />
-              </>
-            )}
+            {/* Every member can read the usage data; an organization owner administers the rest. */}
+            <Menu.Item to={settingsNav(reader)[0].to} icon="Settings">
+              Settings
+            </Menu.Item>
+            <Menu.Separator />
             {auth.mode === 'required' ? (
               <Form action="/logout" method="post" ref={logout}>
                 <input name="csrf" type="hidden" value={auth.csrfToken} />
@@ -583,6 +426,135 @@ function SidebarNavigation({
         </Menu.Container>
       </div>
     </nav>
+  )
+}
+
+/**
+ * Names the current Workspace and opens the menu that switches to another.
+ * Each row also copies its Workspace's MCP URL, and the menu creates a Workspace.
+ */
+function WorkspaceSwitcher({
+  workspace,
+  active,
+  actionCounts,
+  form,
+  isMinimized,
+}: {
+  workspace?: SidebarWorkspace
+  active: SidebarWorkspace[]
+  actionCounts: SidebarProps['actionCounts']
+  form?: FormContext
+  isMinimized: boolean
+}) {
+  const location = useLocation()
+  const trigger = useRef<HTMLButtonElement>(null)
+  const [createAt, setCreateAt] = useState<string | null>(null)
+  // This sidebar survives redirects. A completed creation must close its dialog,
+  // and Back must not reopen a form whose request has already committed.
+  if (createAt !== null && createAt !== location.key) setCreateAt(null)
+  const setCreate = (open: boolean) => setCreateAt(open ? location.key : null)
+  const currentArchived = workspace?.state === 'archived'
+  // The other Workspaces sit behind the menu, so the trigger carries their count.
+  const elsewhere = pendingElsewhere(active, workspace, actionCounts)
+  const label = named(
+    workspace
+      ? `Workspace: ${workspace.displayName}${currentArchived ? ', archived' : ''}`
+      : 'Workspaces',
+    elsewhere,
+  )
+  const avatar = (w: SidebarWorkspace, size: '20' | '28') => (
+    <Avatar name={w.displayName} seed={w.path} shape="square" size={size} />
+  )
+  const menuAvatar = (w: SidebarWorkspace) => (
+    <span className={styles.menuAvatar}>{avatar(w, '20')}</span>
+  )
+  // Only an active Workspace shows its avatar. An archived one shows the archive's icon.
+  const shown = currentArchived ? undefined : workspace
+  const icon: IconName = currentArchived ? 'Archive' : 'Folders'
+  const sections = [
+    active.length > 0 && (
+      <Menu.RadioGroup key="active" ariaLabel="Workspaces" value={workspace?.path ?? ''}>
+        {active.map((w) => {
+          // The current Workspace shows its counts on its pages; the others here.
+          const count =
+            w.path === workspace?.path
+              ? undefined
+              : pending(actionCounts?.[w.path]?.total, 'action')
+          return (
+            // One row: the Workspace, then the action that copies its MCP URL.
+            <div key={w.path} role="none" className={styles.menuRow}>
+              <Menu.RadioItem
+                as={Link}
+                to={w.path}
+                value={w.path}
+                aria-label={named(w.displayName, count)}
+                className={styles.menuRowItem}
+                leading={menuAvatar(w)}
+                trailing={
+                  <span className={styles.menuCount}>
+                    <SidebarBadge badge={count?.badge} />
+                  </span>
+                }
+              >
+                {w.displayName}
+              </Menu.RadioItem>
+              {w.mcpEndpoint && <CopyEndpointItem workspace={w} />}
+            </div>
+          )
+        })}
+      </Menu.RadioGroup>
+    ),
+    form && (
+      <Menu.Item key="create" icon="Plus" onClick={() => setCreate(true)}>
+        Create workspace
+      </Menu.Item>
+    ),
+  ].filter((section): section is React.ReactElement => Boolean(section))
+
+  return (
+    <>
+      <Menu.Container>
+        <Menu.Trigger
+          render={
+            <SidebarButton
+              ref={trigger}
+              icon={shown ? avatar(shown, isMinimized ? '28' : '20') : icon}
+              trailingIcon="ChevronDown"
+              badge={elsewhere?.badge}
+              variant={shown ? 'default' : 'muted'}
+              isMinimized={isMinimized}
+              aria-label={label}
+              title={label}
+              className={isMinimized ? styles.railTile : styles.switcher}
+            />
+          }
+        >
+          {workspace?.displayName ?? 'Workspaces'}
+        </Menu.Trigger>
+        <Menu.Content align="start" side={isMinimized ? 'right' : 'bottom'} className={styles.menu}>
+          {sections.map((section, index) => (
+            <Fragment key={section.key}>
+              {index > 0 && <Menu.Separator />}
+              {section}
+            </Fragment>
+          ))}
+        </Menu.Content>
+      </Menu.Container>
+      {form && (
+        <ActionDialog
+          open={createAt === location.key}
+          onOpenChange={setCreate}
+          finalFocus={trigger}
+          title="Create workspace"
+          description="Create a workspace to manage providers and run programs. You become its first owner."
+          form={form}
+          intent="createWorkspace"
+          action="/workspaces"
+        >
+          <NameInput label="Workspace name" />
+        </ActionDialog>
+      )}
+    </>
   )
 }
 

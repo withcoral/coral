@@ -6,6 +6,7 @@ import type { IconName } from '@/wax/components/icon'
 
 import {
   activeClass,
+  badgeClass,
   badgeEnter,
   badgeExit,
   badgeStyles,
@@ -13,6 +14,7 @@ import {
   iconStyles,
   sidebarButton,
   textStyles,
+  trailingIconStyles,
 } from './sidebar-button.css'
 
 export interface SidebarButtonProps<T extends ElementType = 'button'> {
@@ -23,9 +25,12 @@ export interface SidebarButtonProps<T extends ElementType = 'button'> {
   children?: React.ReactNode
   className?: string
   disabled?: boolean
-  icon: IconName
+  /** An icon's name, or an element in its place, such as an avatar. */
+  icon: IconName | React.ReactElement
   isActive?: boolean
   isMinimized?: boolean
+  /** A second icon at the end, such as a menu's chevron. Minimized, it is hidden. */
+  trailingIcon?: IconName
   variant?: SidebarButtonVariant
 }
 
@@ -51,6 +56,7 @@ export function SidebarButton<T extends ElementType = 'button'>(
     isActive = false,
     isMinimized = false,
     ref,
+    trailingIcon,
     variant = 'default',
     ...rest
   } = props
@@ -75,9 +81,16 @@ export function SidebarButton<T extends ElementType = 'button'>(
 
   return (
     <Component {...componentProps}>
-      <Icon className={iconStyles({ variant })} color="inherit" name={icon} size="18" />
+      {typeof icon === 'string' ? (
+        <Icon className={iconStyles({ variant })} color="inherit" name={icon} size="18" />
+      ) : (
+        icon
+      )}
       {!isMinimized && children && <span className={textStyles({ variant })}>{children}</span>}
       <SidebarBadge badge={badge} isMinimized={isMinimized} />
+      {!isMinimized && trailingIcon && (
+        <Icon className={trailingIconStyles} color="tertiary" name={trailingIcon} size="16" />
+      )}
     </Component>
   )
 }
@@ -110,6 +123,7 @@ export function SidebarBadge({
     <span
       aria-hidden="true"
       className={classNames(
+        badgeClass,
         badgeStyles({ isMinimized }),
         shown.open ? shown.arrived && badgeEnter : badgeExit,
       )}

@@ -1,12 +1,12 @@
-import { ReactNode, useCallback, useState } from 'react'
+import type { ReactNode } from 'react'
 
 import type { ButtonSize, ButtonVariant } from '@/wax/components/button/button.css'
 import type { IconName } from '@/wax/components/icon'
-import { addToast } from '@/wax/components/toast'
 import { Tooltip, type TooltipProps } from '@/wax/components/tooltip'
 
 import { Container } from './container'
 import { Icon } from './icon'
+import { useCopy } from './use-copy'
 
 interface CopyButtonProps {
   ariaLabel?: string
@@ -42,22 +42,7 @@ export function CopyButton({
   tooltipSide,
   variant = 'secondary',
 }: CopyButtonProps) {
-  const [copied, setCopied] = useState(false)
-
-  const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(textToCopy)
-      setCopied(true)
-      onCopy?.()
-      setTimeout(() => setCopied(false), 3000)
-    } catch {
-      setCopied(false)
-      addToast('error', {
-        title: 'Copy failed',
-        description: failureDescription,
-      })
-    }
-  }, [failureDescription, textToCopy, onCopy])
+  const [copied, copy] = useCopy({ failureDescription, onCopy })
 
   const button = (
     <Container
@@ -65,7 +50,7 @@ export function CopyButton({
       ariaLabel={copied ? `${ariaLabel}: copied` : ariaLabel}
       className={className}
       disabled={disabled}
-      onClick={handleCopy}
+      onClick={() => void copy(textToCopy)}
       size={size}
       variant={variant}
     >

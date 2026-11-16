@@ -25,6 +25,7 @@ import { formContext, management, managementFailure, privateHeaders } from '@/li
 import { sidebarWorkspaceView } from '@/lib/management-views.server'
 import { toolGroupAddress } from '@/views/tools/addresses'
 import type { SidebarWorkspace } from '@/components/sidebar/sidebar'
+import type { handle as settingsHandle } from './settings'
 import * as styles from './app-shell.css'
 
 export async function loader({ request, context }: Route.LoaderArgs) {
@@ -37,7 +38,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     ])
     const organizationOwner = membership?.role === OrganizationRole.OWNER
     const workspaces = all.filter((w) => w.state === WorkspaceState.ACTIVE)
-    const archived = all.filter((w) => w.state === WorkspaceState.ARCHIVED)
     const profile = membership?.profile
     return data(
       {
@@ -50,7 +50,6 @@ export async function loader({ request, context }: Route.LoaderArgs) {
         auth: browserAuth(context.get(requestAuthContext)),
         userName: profile?.displayName.trim() || profile?.email.trim() || undefined,
         workspaces: workspaces.map(sidebarWorkspaceView),
-        archivedWorkspaces: archived.map(sidebarWorkspaceView),
         form: formContext(context),
       },
       { headers: privateHeaders },
@@ -92,6 +91,10 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
   const rootData = useRouteLoaderData('root') as { sidebarIsMinimized: boolean } | undefined
   const location = useLocation()
   const matches = useMatches()
+  // The settings layout marks its pages, whatever their path.
+  const inSettings = matches.some(
+    (match) => (match.handle as typeof settingsHandle | undefined)?.area === 'settings',
+  )
   const workspace = matches
     .map((match) => (match.loaderData as { workspace?: SidebarWorkspace } | undefined)?.workspace)
     .find((w) => w && (location.pathname === w.path || location.pathname.startsWith(`${w.path}/`)))
@@ -103,12 +106,12 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
             <Sidebar
               actionCounts={actionSignal.counts}
               auth={loaderData.auth}
+              area={inSettings ? 'settings' : 'work'}
               organizationOwner={loaderData.organizationOwner}
               newerRelease={loaderData.newerRelease}
               userName={loaderData.userName}
               initialIsMinimized={rootData?.sidebarIsMinimized ?? false}
               workspaces={loaderData.workspaces}
-              archivedWorkspaces={loaderData.archivedWorkspaces}
               workspace={workspace}
               form={loaderData.form}
             />

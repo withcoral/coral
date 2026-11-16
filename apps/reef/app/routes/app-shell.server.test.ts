@@ -52,10 +52,11 @@ function sidebarEntry(id: number, state: 'active' | 'archived') {
   }
 }
 
-it('lists every Workspace across pages, archived ones apart, because the sidebar is the only listing', async () => {
+// Catches: a workspace on a later page missing from the switcher, or an archived
+// one listed among the workspaces you can work in.
+it('lists the active Workspaces across pages, and no archived one', async () => {
   const result = await loader(authRouteTestArgs(new Request('http://reef/activity'), {}, null))
   expect(result.data.workspaces).toEqual([sidebarEntry(1, 'active'), sidebarEntry(3, 'active')])
-  expect(result.data.archivedWorkspaces).toEqual([sidebarEntry(2, 'archived')])
 })
 
 it.each([

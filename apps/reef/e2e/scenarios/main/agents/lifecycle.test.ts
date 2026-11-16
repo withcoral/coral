@@ -8,6 +8,7 @@ import { breadcrumb, programRunner } from '../../../support/providers.ts'
 import { SetupAuthorizationState } from '../../../generated/coral/management/v1/provider_pb.ts'
 import { copyNewAgentKey } from '../../../support/agent-key.ts'
 import { copiedBy } from '../../../support/clipboard.ts'
+import { openCreateWorkspace } from '../../../support/sidebar.ts'
 
 test('Agent credential issuance, rotation, disablement, expiry and destructive cleanup', async (context) => {
   const { owner } = await createActors(context)
@@ -50,13 +51,13 @@ test('Agent credential issuance, rotation, disablement, expiry and destructive c
         await page.goto('/')
         await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
         const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
-        await nav.getByRole('button', { name: 'Create workspace', exact: true }).click()
+        await openCreateWorkspace(page)
         await page.getByLabel('Workspace name', { exact: true }).fill(name)
         await page
           .getByRole('dialog')
           .getByRole('button', { name: 'Create workspace', exact: true })
           .click()
-        // Home may have opened another Workspace in the tree; use the new one.
+        // Home may have opened another Workspace first; wait for the new one's pages.
         await nav
           .getByRole('group', { name, exact: true })
           .getByRole('link', { name: 'Agents', exact: true })
