@@ -106,6 +106,9 @@ impl AccountModule {
             let result = module
                 .poll_setup_device(&context, &owner, &id, &requirement, started, &lease)
                 .await;
+            if unanswered(&result) {
+                return;
+            }
             let context = advanced(&context, started);
             if lease.renew(context.occurred_at_unix_nanos()).await.is_err() {
                 return;
@@ -337,6 +340,9 @@ impl AccountModule {
             let result = module
                 .poll_account_device(&context, &owner, id, &requirement, started, &lease)
                 .await;
+            if unanswered(&result) {
+                return;
+            }
             let context = advanced(&context, started);
             if lease.renew(context.occurred_at_unix_nanos()).await.is_err() {
                 return;
@@ -608,6 +614,13 @@ impl Polling<'_> {
             tx.commit().await?;
         }
     }
+}
+
+/// Whether a poll stopped because the database gave no answer. That says
+/// nothing about the device grant, so the worker ends nothing and keeps its
+/// lease unfinished: recovery resumes the job once the lease lapses.
+fn unanswered(result: &Result<oauth::TokenResponse, Error>) -> bool {
+    result.as_ref().is_err_and(Error::is_operational)
 }
 
 fn next_poll(now: i64, interval: u64) -> i64 {

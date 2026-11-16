@@ -349,5 +349,6 @@ async fn refresh_carries_reef_and_mcp_clients_past_access_token_expiry() {
         observed["state"], "succeeded",
         "the earlier Run stays observable"
     );
-    journey.shutdown().await;
+    // The runtime it moves is over clippy's future size: box it.
+    Box::pin(journey.shutdown()).await;
 }

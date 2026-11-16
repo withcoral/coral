@@ -80,25 +80,27 @@ export function PageLayout({
 
 /**
  * Coral's navigation bar keeps breadcrumbs separate from page content. Unless
- * the content has its own title, the current segment is the page's h1.
+ * the content has its own title, the current segment is the page's h1. A page
+ * outside the navigation, such as onboarding, puts `start` in their place.
  */
 export function TopBar({
   breadcrumbs,
+  start,
   heading = true,
   actions,
-}: {
-  breadcrumbs: Segment[]
-  heading?: boolean
-  actions?: ReactNode
-}) {
+}: { actions?: ReactNode } & (
+  | { breadcrumbs: Segment[]; heading?: boolean; start?: never }
+  | { breadcrumbs?: never; heading?: never; start: ReactNode }
+)) {
+  const custom = !breadcrumbs
   return (
     <header className={styles.topBar}>
       {/* On a phone the navigation is a drawer, opened from the start of this bar. */}
-      <div className={styles.topBarStart}>
+      <div className={styles.topBarStart({ custom })}>
         <NavigationTrigger />
-        <Breadcrumbs items={breadcrumbs} heading={heading} />
+        {breadcrumbs ? <Breadcrumbs items={breadcrumbs} heading={heading} /> : start}
       </div>
-      {actions && <div className={styles.topBarActions}>{actions}</div>}
+      {actions && <div className={styles.topBarActions({ custom })}>{actions}</div>}
     </header>
   )
 }

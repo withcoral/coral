@@ -19,6 +19,13 @@ use crate::{PrincipalAuthentication, PrivateAudience, SessionTokenIssuer};
 
 pub(super) const NOW: i64 = 1_800_000_000_000_000_000;
 pub(super) const SECOND: i64 = 1_000_000_000;
+
+/// A host time on the system clock, for a test that authenticates the access
+/// tokens it is issued: authentication reads the system clock. It is ten
+/// seconds back, so a token issued seconds after it is not from the future.
+pub(super) fn real_now() -> i64 {
+    coral_test_support::now_unix_nanos() - 10 * SECOND
+}
 pub(super) const CLIENT: &str = "https://client.example.test/oauth/client.json";
 const REDIRECT: &str = "http://127.0.0.1:14554/callback";
 pub(super) const REEF: &str = "https://reef.example.test";
@@ -169,11 +176,17 @@ impl Fixture {
     /// Signs in to the private MCP surface of the fixture's Workspace with a
     /// refresh-eligible client and returns the first refresh token.
     pub(super) async fn refreshable(&self) -> String {
+        self.refreshable_at(NOW).await
+    }
+
+    /// [`Self::refreshable`], signing in at `now`.
+    pub(super) async fn refreshable_at(&self, now: i64) -> String {
         let issued = self
-            .sign_in(
+            .sign_in_at(
                 &self.workspace_resource(),
                 AccessTarget::PrivateMcp(self.workspace.clone()),
                 true,
+                now,
             )
             .await
             .unwrap();
@@ -194,7 +207,8 @@ impl Fixture {
             .await
     }
 
-    /// Authenticates `access_token` at the fixture Workspace's private MCP surface.
+    /// Authenticates `access_token` at the fixture Workspace's private MCP
+    /// surface, on the system clock: issue the token at [`real_now`].
     pub(super) async fn authenticates(&self, access_token: &str) -> bool {
         PrincipalAuthentication::new(
             &self.issuer,
@@ -229,8 +243,9 @@ pub(super) fn refresh_token(issued: &IssuedTokens) -> String {
 #[tokio::test]
 async fn a_refresh_rotates_the_token_and_keeps_the_user_and_workspace() {
     let fixture = Fixture::new().await;
-    let first = fixture.refreshable().await;
-    let refreshed = fixture.refresh(&first, NOW + SECOND).await.unwrap();
+    let now = real_now();
+    let first = fixture.refreshable_at(now).await;
+    let refreshed = fixture.refresh(&first, now + SECOND).await.unwrap();
     assert!(
         fixture
             .authenticates(&refreshed.access_token.access_token)
@@ -239,7 +254,7 @@ async fn a_refresh_rotates_the_token_and_keeps_the_user_and_workspace() {
     let second = refresh_token(&refreshed);
     assert_ne!(second, first);
     assert!(second.starts_with("coral_rt_"));
-    let again = fixture.refresh(&second, NOW + 2 * SECOND).await.unwrap();
+    let again = fixture.refresh(&second, now + 2 * SECOND).await.unwrap();
     assert!(
         fixture
             .authenticates(&again.access_token.access_token)
@@ -251,10 +266,11 @@ async fn a_refresh_rotates_the_token_and_keeps_the_user_and_workspace() {
 async fn a_client_that_did_not_declare_refresh_gets_an_access_token_alone() {
     let fixture = Fixture::new().await;
     let issued = fixture
-        .sign_in(
+        .sign_in_at(
             &fixture.workspace_resource(),
             AccessTarget::PrivateMcp(fixture.workspace.clone()),
             false,
+            real_now(),
         )
         .await
         .unwrap();
@@ -390,6 +406,8 @@ async fn each_target_keeps_its_audience_and_workspace_across_refresh() {
         assert_eq!(claims["aud"], audience, "{resource}");
         assert_eq!(claims["sub"], fixture.user.user_id().as_str());
         assert_eq!(claims["client_id"], CLIENT);
+        // The request's host time issues the token, not the system clock.
+        assert_eq!(claims["iat"], (NOW + SECOND) / SECOND, "{resource}");
         assert_eq!(
             claims.get("workspace_id").and_then(|id| id.as_str()),
             workspace.as_deref(),
@@ -410,15 +428,16 @@ async fn revocation_ends_the_grant_for_its_own_client_only() {
             .await,
         Ok(())
     );
-    let first = fixture.refreshable().await;
-    let issued = fixture.refresh(&first, NOW + SECOND).await.unwrap();
+    let now = real_now();
+    let first = fixture.refreshable_at(now).await;
+    let issued = fixture.refresh(&first, now + SECOND).await.unwrap();
     let current = refresh_token(&issued);
     assert_eq!(fixture.tokens.revoke(&first, &fixture.other).await, Ok(()));
-    let current = refresh_token(&fixture.refresh(&current, NOW + 2 * SECOND).await.unwrap());
+    let current = refresh_token(&fixture.refresh(&current, now + 2 * SECOND).await.unwrap());
     // The consumed first token revokes, as a logout racing a rotation would.
     assert_eq!(fixture.tokens.revoke(&first, &fixture.client).await, Ok(()));
     assert_eq!(
-        fixture.refresh(&current, NOW + 3 * SECOND).await.err(),
+        fixture.refresh(&current, now + 3 * SECOND).await.err(),
         Some(TokenRefusal::InvalidGrant)
     );
     assert!(
@@ -499,7 +518,8 @@ async fn a_revocation_racing_a_refresh_leaves_nothing_refreshable() {
 #[tokio::test]
 async fn refresh_rechecks_current_organization_membership() {
     let fixture = Fixture::new().await;
-    let token = fixture.refreshable().await;
+    let now = real_now();
+    let token = fixture.refreshable_at(now).await;
     let owner = provision_user(
         fixture.database.database(),
         "0199f7a2-6a6e-7c3d-9a51-2f4e8b7d1c09",
@@ -518,8 +538,15 @@ async fn refresh_rechecks_current_organization_membership() {
                 .unwrap();
         }
     };
-    let issued = fixture.refresh(&token, NOW + SECOND).await.unwrap();
+    let issued = fixture.refresh(&token, now + SECOND).await.unwrap();
     let token = refresh_token(&issued);
+    // Before the disablement, the token authenticates: only the live check
+    // refuses it below.
+    assert!(
+        fixture
+            .authenticates(&issued.access_token.access_token)
+            .await
+    );
     set_enabled(false, 1).await;
     assert!(
         !fixture
@@ -528,11 +555,11 @@ async fn refresh_rechecks_current_organization_membership() {
         "live checks still block an issued access token"
     );
     assert_eq!(
-        fixture.refresh(&token, NOW + 2 * SECOND).await.err(),
+        fixture.refresh(&token, now + 2 * SECOND).await.err(),
         Some(TokenRefusal::InvalidGrant)
     );
     let access_only = fixture
-        .sign_in(REEF, AccessTarget::Reef, true)
+        .sign_in_at(REEF, AccessTarget::Reef, true, now)
         .await
         .unwrap();
     assert!(
@@ -540,7 +567,7 @@ async fn refresh_rechecks_current_organization_membership() {
         "a disabled User starts no grant"
     );
     set_enabled(true, 2).await;
-    fixture.refresh(&token, NOW + 3 * SECOND).await.unwrap();
+    fixture.refresh(&token, now + 3 * SECOND).await.unwrap();
 }
 
 /// A storage outage is unavailability, never a rejected credential, and

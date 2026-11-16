@@ -167,6 +167,14 @@ impl McpServer {
             .run_timeout_ms
             .unwrap_or(arguments::DEFAULT_RUN_TIMEOUT_MS);
         let wait_ms = validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_EXEC_WAIT_MS))?;
+        // Built before acceptance, so a refused wait accepts no Run. It links
+        // no trace: this request accepts the Run, and acceptance links it to
+        // the Run Trace.
+        let observation = (wait_ms > 0)
+            .then(|| RunObservation::initial(Duration::from_millis(wait_ms)))
+            .transpose()
+            .map_err(invalid_input)?
+            .map(RunObservation::without_trace_link);
         let (started, accepted) = match target {
             ExecTarget::Task(call) => {
                 let accepted = self
@@ -188,26 +196,39 @@ impl McpServer {
                     .map_err(task_failure)?;
                 let accepted = launched
                     .map_err(|error| started_task_failure(task_failure(error), task.id()))?;
-                (Some(task.id().clone()), accepted)
+                (Some(task), accepted)
             }
         };
-        if wait_ms == 0 {
-            return self
-                .run_update(&accepted, Reporter::Exec(started.as_ref()))
-                .map(Into::into)
-                .map_err(DispatchError::Tool);
-        }
-        // This request accepted the Run, so acceptance already linked it to
-        // the Run Trace.
-        let observation = RunObservation::initial(Duration::from_millis(wait_ms))
-            .map_err(invalid_input)?
-            .without_trace_link();
-        self.observe_update(
-            accepted.run_id(),
-            &observation,
-            Reporter::Exec(started.as_ref()),
+        // The Run is accepted, so every answer from here names it. A caller
+        // without its `run_id` can neither read nor cancel the Run, and
+        // another `exec` runs the Program again.
+        let observed = match &observation {
+            Some(observation) => match self.observe(accepted.run_id(), observation).await {
+                Ok(update) => Some(update),
+                Err(error) => {
+                    // The Run stays accepted, so report it as accepted; a
+                    // later `wait` reads it again.
+                    let run_id = accepted.telemetry_id();
+                    let task_id = started.as_ref().map(coral_task::Task::telemetry_id);
+                    tracing::warn!(
+                        coral.workspace.id = safe::id(&self.workspace_id),
+                        coral.run.id = safe::id(&run_id),
+                        coral.task.id = task_id.as_ref().map(safe::id),
+                        error.type = safe::kind(error.code()),
+                        "failed to observe the Run that exec accepted"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        let started = started.as_ref().map(coral_task::Task::id);
+        self.run_update(
+            observed.as_ref().unwrap_or(&accepted),
+            Reporter::Exec(started),
         )
-        .await
+        .map(Into::into)
+        .map_err(|failure| accepted_run_failure(failure, accepted.run_id(), started))
     }
 
     async fn wait(
@@ -231,7 +252,7 @@ impl McpServer {
             let peek = RunObservation::immediate(cursor.clone(), RUN_EVENT_PAGE_MAX)
                 .map_err(invalid_input)?
                 .without_trace_link();
-            let current = self.observe(&run_id, &peek).await?;
+            let current = self.observe(&run_id, &peek).await.map_err(run_failure)?;
             if let Some(message) =
                 projection::handoff_progress(&current, &self.runtime.modules.human_interface)
             {
@@ -256,7 +277,10 @@ impl McpServer {
         observation: &RunObservation,
         reporter: Reporter<'_>,
     ) -> Result<CallToolResponse, DispatchError> {
-        let update = self.observe(run_id, observation).await?;
+        let update = self
+            .observe(run_id, observation)
+            .await
+            .map_err(run_failure)?;
         self.run_update(&update, reporter)
             .map(Into::into)
             .map_err(DispatchError::Tool)
@@ -266,7 +290,7 @@ impl McpServer {
         &self,
         run_id: &RunId,
         observation: &RunObservation,
-    ) -> Result<coral_run::RunUpdate, DispatchError> {
+    ) -> Result<coral_run::RunUpdate, coral_run::Error> {
         self.runtime
             .modules
             .runs
@@ -277,7 +301,6 @@ impl McpServer {
                 observation,
             )
             .await
-            .map_err(run_failure)
     }
 
     async fn cancel(&self, arguments: CancelArguments) -> Result<CallToolResult, DispatchError> {
@@ -544,6 +567,21 @@ fn started_task_failure(error: DispatchError, task: &TaskId) -> DispatchError {
         DispatchError::Tool(failure) => DispatchError::Tool(failure.naming_started_task(task)),
         protocol @ DispatchError::Protocol(_) => protocol,
     }
+}
+
+/// A failure after `exec` accepted its Run. It names the Run, so the agent
+/// reads it with `wait` instead of running the Program again, and the Task
+/// when this call started it.
+fn accepted_run_failure(
+    failure: ToolFailure,
+    run: &RunId,
+    started: Option<&TaskId>,
+) -> DispatchError {
+    let failure = failure.naming_accepted_run(run);
+    DispatchError::Tool(match started {
+        Some(task) => failure.naming_started_task(task),
+        None => failure,
+    })
 }
 
 /// The kind of a failed namespace lookup, as a log names it.

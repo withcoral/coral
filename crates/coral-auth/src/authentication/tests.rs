@@ -74,7 +74,12 @@ async fn authentication_rejects_wrong_audience_signature_kind_and_malformed_cred
     )
     .unwrap();
     let wrong_key = other_issuer
-        .issue_access_token("owner", "client", AUDIENCE)
+        .issue_access_token(
+            "owner",
+            "client",
+            AUDIENCE,
+            coral_test_support::now_unix_nanos(),
+        )
         .unwrap();
     let wrong_kind =
         crate::session::test_tokens::agent_kind_token(&fixture.issuer, "owner", "client", AUDIENCE);
@@ -114,7 +119,13 @@ async fn the_credential_alone_fixes_the_workspace_at_the_organization_endpoint()
     let scoped = |audience: &str, workspace: &WorkspaceId| {
         fixture
             .issuer
-            .issue_workspace_access_token("owner", "client", audience, workspace)
+            .issue_workspace_access_token(
+                "owner",
+                "client",
+                audience,
+                workspace,
+                coral_test_support::now_unix_nanos(),
+            )
             .unwrap()
             .access_token
     };
@@ -453,7 +464,12 @@ impl Fixture {
 
     fn token(&self, user: &str, audience: &str) -> String {
         self.issuer
-            .issue_access_token(user, "untrusted-client", audience)
+            .issue_access_token(
+                user,
+                "untrusted-client",
+                audience,
+                coral_test_support::now_unix_nanos(),
+            )
             .unwrap()
             .access_token
     }

@@ -472,16 +472,14 @@ impl AccountModule {
         if record_status {
             // Application diagnostics must never discard a one-use token or prevent
             // the authorization from reaching its durable terminal state.
-            drop(
-                self.record_client_result(
-                    owner,
-                    &row.provider_id,
-                    &row.contract,
-                    client_secret.as_ref(),
-                    client_failed,
-                )
-                .await,
-            );
+            self.record_client_result_or_log(
+                owner,
+                &row.provider_id,
+                &row.contract,
+                client_secret.as_ref(),
+                client_failed,
+            )
+            .await;
         }
         completion
     }

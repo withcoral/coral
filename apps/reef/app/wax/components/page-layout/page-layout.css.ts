@@ -35,8 +35,16 @@ export const topBar = style({
   },
 })
 
-export const topBarStart = style({ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 })
-export const topBarActions = style({ alignItems: 'center', display: 'flex', gap: 4 })
+// Breadcrumbs give way to the actions. Other start content, such as a brand,
+// keeps its size, and the actions give way instead.
+export const topBarStart = recipe({
+  base: { alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 },
+  variants: { custom: { true: { flexShrink: 0 }, false: {} } },
+})
+export const topBarActions = recipe({
+  base: { alignItems: 'center', display: 'flex', gap: 4 },
+  variants: { custom: { true: { minWidth: 0 }, false: {} } },
+})
 export const scrollContainer = style({
   flex: '1 1 auto',
   minHeight: 0,
