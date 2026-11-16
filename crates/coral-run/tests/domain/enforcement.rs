@@ -697,27 +697,36 @@ async fn an_in_flight_dispatch_cannot_be_marked_dispatched_again() {
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
 }
 
+/// A call resolves its Tool in a read snapshot and holds no row afterwards,
+/// so each loss commits in one of the two windows the call leaves open:
+/// after it resolved, before its Invocation is admitted (no held recheck has
+/// run), and after its held rechecks, before the Policy Enforcement Point.
+/// In both, the next held read refuses the dispatch.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "one deterministic matrix exercises every current pre-enforcement authority race"
 )]
 async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
-    for race in [
+    let races = [
         EnforcementRace::Run,
         EnforcementRace::Workspace,
         EnforcementRace::Provider,
         EnforcementRace::ProviderRemoval,
         EnforcementRace::CredentialRoute,
         EnforcementRace::Policy,
-    ] {
+    ];
+    for (point, race) in [GatePoint::Resolved, GatePoint::BeforeEnforcement]
+        .into_iter()
+        .flat_map(|point| races.map(|race| (point, race)))
+    {
         let upstream = Arc::new(ScriptedUpstream::json(
             200,
             serde_json::json!({
                 "temperature": 21
             }),
         ));
-        let (observer, release_enforcement) = EnforcementGate::blocking();
+        let (observer, release_enforcement) = EnforcementGate::blocking_at(point);
         let fixture = TestModules::with_invocation_adapters(
             Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
             upstream.clone(),
@@ -805,28 +814,54 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
         )
         .await;
 
-        assert!(terminal.state().is_terminal(), "race: {race:?}");
+        assert!(terminal.state().is_terminal(), "{race:?} at {point:?}");
         observer.enforcement_checks.assert_no_dispatch();
-        assert_eq!(upstream.sends.load(Ordering::SeqCst), 0, "race: {race:?}");
-        if matches!(race, EnforcementRace::CredentialRoute) {
+        assert_eq!(
+            upstream.sends.load(Ordering::SeqCst),
+            0,
+            "{race:?} at {point:?}"
+        );
+        let refused_as = match race {
+            EnforcementRace::Provider | EnforcementRace::ProviderRemoval => {
+                Some("dispatch_authority_lost")
+            }
+            EnforcementRace::CredentialRoute => Some("credential_route_changed"),
+            EnforcementRace::Run | EnforcementRace::Workspace | EnforcementRace::Policy => None,
+        };
+        if refused_as.is_some() {
             assert_eq!(
                 *observer
                     .failure_code
                     .lock()
                     .expect("Invocation failure observation lock"),
-                Some("credential_route_changed")
+                refused_as,
+                "{race:?} at {point:?}"
             );
         }
     }
 }
 
+/// A regeneration that keeps the Provider's credential route and account
+/// setting does not refuse a call that already resolved its Tool: the call
+/// dispatches the Generation it resolved, whether the replacement became
+/// active before its Invocation was admitted or after its held rechecks.
 #[tokio::test]
-async fn admitted_invocation_dispatches_its_retained_generation_after_provider_regeneration() {
+async fn an_invocation_dispatches_the_generation_it_resolved_after_provider_regeneration() {
+    for point in [GatePoint::Resolved, GatePoint::BeforeEnforcement] {
+        dispatches_the_resolved_generation_after_regeneration_at(point).await;
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one journey through a regeneration, held at one gate point"
+)]
+async fn dispatches_the_resolved_generation_after_regeneration_at(point: GatePoint) {
     let upstream = Arc::new(ScriptedUpstream::json(
         200,
         serde_json::json!({"temperature": 21}),
     ));
-    let (observer, release_enforcement) = EnforcementGate::blocking();
+    let (observer, release_enforcement) = EnforcementGate::blocking_at(point);
     let fixture = TestModules::with_invocation_adapters(
         Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
         upstream.clone(),
@@ -916,8 +951,8 @@ async fn admitted_invocation_dispatches_its_retained_generation_after_provider_r
     )
     .await;
 
-    assert_eq!(terminal.state(), RunState::Succeeded);
-    assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
+    assert_eq!(terminal.state(), RunState::Succeeded, "{point:?}");
+    assert_eq!(upstream.sends.load(Ordering::SeqCst), 1, "{point:?}");
     assert!(matches!(
         terminal.terminal_outcome(),
         Some(RunTerminalOutcome::Succeeded {

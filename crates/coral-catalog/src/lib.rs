@@ -581,8 +581,9 @@ pub async fn tools_in_transaction(
 
 /// Loads one Tool by its exact Generation-relative Call Path projection.
 ///
-/// This transaction-compatible facet supports atomic Invocation admission;
-/// callers still retain the returned Tool Key as the callable address.
+/// A Tool call's resolution reads it in the read snapshot that read the
+/// Provider; callers still retain the returned Tool Key as the callable
+/// address.
 ///
 /// # Errors
 ///

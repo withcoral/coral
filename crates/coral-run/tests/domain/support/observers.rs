@@ -253,16 +253,33 @@ impl InvocationObserver for ApprovalWaitGate {
 pub(crate) struct EnforcementGate {
     pub(crate) enforcement_checks: ObservedEnforcementChecks,
     gate: BlockingGate,
+    holds: GatePoint,
     pub(crate) failure_code: Mutex<Option<&'static str>>,
+}
+
+/// Where an [`EnforcementGate`] holds a Tool call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatePoint {
+    /// After the call resolved its Tool, before its Invocation is opened or
+    /// admitted: no held recheck has run yet.
+    Resolved,
+    /// After the Invocation's held rechecks, before it asks for the Policy
+    /// Enforcement Point.
+    BeforeEnforcement,
 }
 
 impl EnforcementGate {
     pub(crate) fn blocking() -> (Arc<Self>, oneshot::Sender<()>) {
+        Self::blocking_at(GatePoint::BeforeEnforcement)
+    }
+
+    pub(crate) fn blocking_at(holds: GatePoint) -> (Arc<Self>, oneshot::Sender<()>) {
         let (gate, release) = BlockingGate::new();
         (
             Arc::new(Self {
                 enforcement_checks: ObservedEnforcementChecks::default(),
                 gate,
+                holds,
                 failure_code: Mutex::new(None),
             }),
             release,
@@ -271,6 +288,19 @@ impl EnforcementGate {
 
     pub(crate) fn entered(&self) -> bool {
         self.gate.entered.load(Ordering::SeqCst)
+    }
+
+    /// Holds the call that reached `point` when this gate holds there.
+    async fn hold_at(&self, point: GatePoint) -> Result<(), Error> {
+        if self.holds != point {
+            return Ok(());
+        }
+        // Unwinding drops the sender. Exit the blocking Program worker without
+        // further database work, even when the test runtime is shutting down.
+        self.gate
+            .hold()
+            .await
+            .map_err(|_closed| Error::ProgramHostTerminated)
     }
 }
 
@@ -295,17 +325,16 @@ impl InvocationObserver for TerminalCommitFault {
 
 #[async_trait]
 impl InvocationObserver for EnforcementGate {
+    async fn tool_resolved(&self) -> Result<(), Error> {
+        self.hold_at(GatePoint::Resolved).await
+    }
+
     fn enforcement_check_finished(&self, permit: bool, durable_start: bool) {
         self.enforcement_checks.record(permit, durable_start);
     }
 
     async fn before_enforcement(&self) -> Result<(), Error> {
-        // Unwinding drops the sender. Exit the blocking Program worker without
-        // further database work, even when the test runtime is shutting down.
-        self.gate
-            .hold()
-            .await
-            .map_err(|_closed| Error::ProgramHostTerminated)
+        self.hold_at(GatePoint::BeforeEnforcement).await
     }
 
     fn invocation_failure_committed(&self, code: &'static str) {
