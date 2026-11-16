@@ -10,6 +10,19 @@ use crate::InvocationResultKind;
 
 const WEATHER: &str = "coral.providers.weather.getForecast";
 
+/// Work a tool body starts and does not await. Its first call starts while
+/// the body runs. Coral refuses its second call as `parent_invocation_ended`
+/// once the body has ended, and the work emits that code, so a test reads
+/// from the Emission that the body's end is recorded.
+const LEFTOVER_WORK: &str = "void (async () => {
+    await coral.providers.weather.getForecast();
+    try {
+        await coral.providers.weather.getForecast();
+    } catch (error) {
+        await coral.emit((error as { code: string }).code);
+    }
+})();";
+
 /// A Workspace whose `weather` Tool sends through an upstream that holds
 /// each send until released, and whose Runs call its Private Tools. Its
 /// shutdown grace is longer than any wait here, so a Run that waits it out
@@ -809,18 +822,9 @@ async fn a_call_waiting_on_a_child_that_never_settles_holds_its_run_until_the_de
     scope
         .save(
             "stuck.leave",
-            "async () => {
-                void coral.private.stuck.hang();
-                void (async () => {
-                    await coral.providers.weather.getForecast();
-                    try {
-                        await coral.providers.weather.getForecast();
-                    } catch (error) {
-                        await coral.emit((error as { code: string }).code);
-                    }
-                })();
-                return 1;
-            }",
+            &format!(
+                "async () => {{ void coral.private.stuck.hang(); {LEFTOVER_WORK} return 1; }}"
+            ),
         )
         .await;
     let run = scope
@@ -915,17 +919,7 @@ async fn a_call_made_after_its_tool_body_ended_is_refused() {
     scope
         .save(
             "stray.fire",
-            "async () => {
-                void (async () => {
-                    await coral.providers.weather.getForecast();
-                    try {
-                        await coral.providers.weather.getForecast();
-                    } catch (error) {
-                        await coral.emit((error as { code: string }).code);
-                    }
-                })();
-                return 1;
-            }",
+            &format!("async () => {{ {LEFTOVER_WORK} return 1; }}"),
         )
         .await;
 
