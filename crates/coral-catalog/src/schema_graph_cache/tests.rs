@@ -119,12 +119,12 @@ async fn a_cached_graph_is_served_without_reading_its_row() {
         .await
         .pop()
         .expect("one Generation");
-    let cache = SchemaGraphCache::new(SchemaGraphCache::DEFAULT_BUDGET_BYTES);
+    let cache = SchemaGraphCache::with_default_budget();
 
     let first = cached(&fixture, &cache, &generation.id).await.unwrap();
     assert_eq!(*first, generation.graph);
 
-    // The stored graph is corrupted after this process cached it.
+    // The stored graph is corrupted after this Coral Instance cached it.
     store_graph_json(&fixture, Some(&generation.id), "not a graph").await;
     let second = cached(&fixture, &cache, &generation.id).await.unwrap();
     assert!(
@@ -153,7 +153,7 @@ async fn a_corrupt_stored_graph_is_reported_and_not_cached() {
         .await
         .pop()
         .expect("one Generation");
-    let cache = SchemaGraphCache::new(SchemaGraphCache::DEFAULT_BUDGET_BYTES);
+    let cache = SchemaGraphCache::with_default_budget();
     store_graph_json(&fixture, Some(&generation.id), "not a graph").await;
 
     for attempt in ["first", "second"] {
@@ -341,48 +341,78 @@ fn a_graph_weighs_what_its_values_hold_not_its_stored_length() {
     );
 }
 
-// Catches: the room an object is weighed at drifting from what its index map
-// really grows to, as an upgrade of `indexmap` could cause. Every weight
-// rests on it: measure the graphs again before changing `object_room`.
+// Catches: the entry slots an object is weighed at drifting from what its
+// index map really holds room for, as an upgrade of `indexmap` could cause.
+// The slots are about nine tenths of the room an object is weighed at, and
+// every weight rests on them: measure the graphs again before changing
+// `object_room`.
+//
+// Not checked: the bucket count of the index table. Neither `serde_json` nor
+// `indexmap` reports it, so `object_room` derives it from the same doubling.
 #[test]
-fn an_object_is_weighed_at_the_room_its_index_map_grows_to() {
+fn an_object_is_weighed_at_the_entries_its_index_map_holds_room_for() {
     assert_eq!(object_room(0), (0, 0));
     let mut object = indexmap::IndexMap::<String, Value>::new();
     for len in 1..=1024 {
         object.insert(len.to_string(), Value::Null);
-        let (slots, buckets) = object_room(len);
+        let (slots, _buckets) = object_room(len);
         assert_eq!(slots, object.capacity(), "{len} entries");
-        assert!(buckets > slots, "{len} entries");
     }
 }
 
-// Catches: two loads of one uncached Generation leaving two graphs in use,
-// or the later insert replacing the entry a caller already holds.
-#[tokio::test]
-async fn concurrent_loads_of_one_generation_share_one_graph() {
-    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
-    let generation = publish(&fixture, &[http_input()])
-        .await
-        .pop()
-        .expect("one Generation");
-    let cache = SchemaGraphCache::new(SchemaGraphCache::DEFAULT_BUDGET_BYTES);
-    let database = fixture.database();
+/// A graph of one schema that no other graph here equals.
+fn titled_graph(title: &str) -> SchemaGraph {
+    one_schema_graph(serde_json::json!({"title": title}))
+}
 
-    // Both transactions are open before either load starts, so the second
-    // load looks the Generation up while the first is still reading it.
-    let mut left = database.begin_read_snapshot().await.unwrap();
-    let mut right = database.begin_read_snapshot().await.unwrap();
-    let (first, second) = tokio::join!(
-        cache.schema_graph_in_transaction(&mut left, &generation.id),
-        cache.schema_graph_in_transaction(&mut right, &generation.id),
+// Catches: a load that lost the race for a Generation replacing the entry
+// that a caller already holds, weighing the Generation twice, or dropping
+// its own graph inside the lock.
+#[test]
+fn a_second_graph_for_a_cached_generation_is_released_and_the_first_stays() {
+    let (budget, weight) = (25, 10);
+    let mut entries = Entries::default();
+    let [contended, idle, next] = [(); 3].map(|()| ProviderGenerationId::generate());
+    let first = Arc::new(titled_graph("first"));
+    let other = Arc::new(titled_graph("other"));
+    let (kept, released) = entries.keep(&contended, Arc::clone(&first), weight, budget);
+    assert!(Arc::ptr_eq(&kept, &first));
+    assert_eq!(released.len(), 0, "the first graph displaces nothing");
+    let (_kept, released) = entries.keep(&idle, Arc::clone(&other), weight, budget);
+    assert_eq!(released.len(), 0, "both graphs are within the budget");
+
+    // A concurrent load of the first Generation finishes late, with its own parse.
+    let late = Arc::new(titled_graph("late"));
+    let (kept, released) = entries.keep(&contended, Arc::clone(&late), weight, budget);
+    assert!(
+        Arc::ptr_eq(&kept, &first),
+        "the first graph is the one in use"
     );
-    left.rollback().await.unwrap();
-    right.rollback().await.unwrap();
+    assert!(
+        matches!(&released[..], [only] if Arc::ptr_eq(only, &late)),
+        "the caller drops the late graph, and nothing else"
+    );
+    assert_eq!(entries.weight_bytes, 2 * weight);
+    assert_eq!(
+        (entries.by_generation.len(), entries.by_last_use.len()),
+        (2, 2),
+        "each entry is in the use order once"
+    );
 
-    let (first, second) = (first.unwrap(), second.unwrap());
-    assert!(Arc::ptr_eq(&first, &second));
-    assert!(Arc::ptr_eq(
-        &first,
-        &cached(&fixture, &cache, &generation.id).await.unwrap()
-    ));
+    // The late load used the entry as a hit does, so the idle one is evicted first.
+    let (_kept, released) = entries.keep(&next, Arc::new(titled_graph("next")), weight, budget);
+    assert!(matches!(&released[..], [only] if Arc::ptr_eq(only, &other)));
+    assert!(entries.by_generation.contains_key(&contended));
+}
+
+// Catches: a load returning the graph it parsed when another load cached the
+// Generation first, which leaves two graphs of one Generation in use.
+#[test]
+fn a_load_that_finds_its_generation_cached_returns_the_cached_graph() {
+    let cache = SchemaGraphCache::with_default_budget();
+    let generation = ProviderGenerationId::generate();
+    let first = cache.keep_loaded(&generation, titled_graph("first"));
+    assert_eq!(*first, titled_graph("first"));
+    let late = cache.keep_loaded(&generation, titled_graph("late"));
+    assert!(Arc::ptr_eq(&first, &late));
 }

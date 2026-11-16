@@ -799,7 +799,7 @@ async fn a_tool_this_version_does_not_perform_fails_before_approval() {
         scope.fixture.database.clone(),
         scope.fixture.workspaces.clone(),
         newer_catalog,
-        coral_catalog::SchemaGraphCache::new(coral_catalog::SchemaGraphCache::DEFAULT_BUDGET_BYTES),
+        coral_catalog::SchemaGraphCache::with_default_budget(),
     );
     // A process of the newer Coral boots and updates the Workspace.
     let [outdated] = newer

@@ -129,8 +129,8 @@ pub struct ProviderModule {
 
 impl ProviderModule {
     /// Builds the Module with the bootstrap-selected outbound policy, the
-    /// Built-in Provider catalog that this process serves, and the cache that
-    /// this process resolves Tool calls' schema graphs from.
+    /// Built-in Provider catalog that this Coral Instance serves, and the
+    /// cache that it resolves Tool calls' schema graphs from.
     #[must_use]
     pub fn new(
         outbound_policy: coral_outbound::DestinationPolicy,
@@ -154,8 +154,10 @@ impl ProviderModule {
     }
 
     /// Builds the Module with the Built-in catalog this Coral version defines
-    /// and a schema graph cache of its own, so that a test resolves Tool
-    /// calls as production does.
+    /// and a schema graph cache of its own. A test that resolves a Tool through
+    /// the Module, with [`Self::resolve_invocation_tool_in_transaction`] or
+    /// [`Self::resolve_authored_tool_in_transaction`], reads through that cache
+    /// as a Run does. [`resolve_owner_tool_in_transaction`] does not.
     ///
     /// # Panics
     ///
@@ -174,9 +176,7 @@ impl ProviderModule {
             database,
             workspaces,
             catalog,
-            coral_catalog::SchemaGraphCache::new(
-                coral_catalog::SchemaGraphCache::DEFAULT_BUDGET_BYTES,
-            ),
+            coral_catalog::SchemaGraphCache::with_default_budget(),
         )
     }
 
@@ -197,9 +197,7 @@ impl ProviderModule {
             consent: account::consent::Issuer::default(),
             builtin_catalog: coral_catalog::BuiltinCatalog::running()
                 .expect("the built-in catalog prepares"),
-            schema_graphs: coral_catalog::SchemaGraphCache::new(
-                coral_catalog::SchemaGraphCache::DEFAULT_BUDGET_BYTES,
-            ),
+            schema_graphs: coral_catalog::SchemaGraphCache::with_default_budget(),
             publication_observer,
         }
     }
@@ -976,19 +974,15 @@ impl ProviderModule {
         transaction: &mut coral_db::Transaction<'_>,
         reached: Option<ReachedTool>,
     ) -> Result<Option<ResolvedInvocationTool>, Error> {
-        let Some((provider_access, generation_id, tool)) = reached else {
+        let Some(reached) = reached else {
             return Ok(None);
         };
+        let (_provider_access, generation_id, _tool) = &reached;
         let schema_graph = self
             .schema_graphs
-            .schema_graph_in_transaction(transaction, &generation_id)
+            .schema_graph_in_transaction(transaction, generation_id)
             .await?;
-        Ok(Some(ResolvedInvocationTool::new(
-            provider_access,
-            generation_id,
-            tool,
-            schema_graph,
-        )))
+        Ok(Some(resolved_tool(reached, schema_graph)))
     }
 }
 
@@ -1055,10 +1049,14 @@ async fn reached_tool(
 }
 
 /// Resolves a Call Path under an Owner-added Provider's Call Root for test
-/// fixtures, reading its schema graph from the database each time. Every
-/// Principal reaches such a root, so admission reads no caller for it. Use
-/// [`ProviderModule::resolve_invocation_tool_in_transaction`] for the Built-in
-/// Provider.
+/// fixtures. Every Principal reaches such a root, so admission reads no caller
+/// for it. Use [`ProviderModule::resolve_invocation_tool_in_transaction`] for
+/// the Built-in Provider.
+///
+/// This reads the schema graph from the database each time, through no cache:
+/// it is a free function, so it has no Module whose cache it could use, and a
+/// fixture then holds the graph as its test stored it. Only the two
+/// [`ProviderModule`] resolvers, which a Run calls, read through the cache.
 ///
 /// # Errors
 ///
@@ -1091,17 +1089,13 @@ pub async fn resolve_owner_tool_in_transaction(
         coral_db::RowLock::Shared,
     )
     .await?;
-    let Some((provider_access, generation_id, tool)) = reached else {
+    let Some(reached) = reached else {
         return Ok(None);
     };
+    let (_provider_access, generation_id, _tool) = &reached;
     let schema_graph =
-        coral_catalog::schema_graph_in_transaction(transaction, &generation_id).await?;
-    Ok(Some(ResolvedInvocationTool::new(
-        provider_access,
-        generation_id,
-        tool,
-        Arc::new(schema_graph),
-    )))
+        coral_catalog::schema_graph_in_transaction(transaction, generation_id).await?;
+    Ok(Some(resolved_tool(reached, Arc::new(schema_graph))))
 }
 
 /// A Tool's Provider access, the Generation that holds it, and the Tool.
@@ -1110,6 +1104,15 @@ type ReachedTool = (
     coral_catalog::ProviderGenerationId,
     coral_catalog::MaterializedTool,
 );
+
+/// The reached Tool with the schema graph of its Generation, as Invocation
+/// admission retains it.
+fn resolved_tool(
+    (provider_access, generation_id, tool): ReachedTool,
+    schema_graph: Arc<coral_catalog::SchemaGraph>,
+) -> ResolvedInvocationTool {
+    ResolvedInvocationTool::new(provider_access, generation_id, tool, schema_graph)
+}
 
 async fn reached_tool_by_root(
     transaction: &mut coral_db::Transaction<'_>,

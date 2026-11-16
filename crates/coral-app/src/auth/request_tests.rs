@@ -640,9 +640,7 @@ impl Fixture {
                 database.clone(),
                 workspaces.clone(),
                 coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
-                coral_catalog::SchemaGraphCache::new(
-                    coral_catalog::SchemaGraphCache::DEFAULT_BUDGET_BYTES,
-                ),
+                coral_catalog::SchemaGraphCache::with_default_budget(),
             ),
             coral_run::RuntimeLimits::default()
                 .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),

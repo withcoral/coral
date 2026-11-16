@@ -17,10 +17,11 @@ mod tests;
 ///
 /// A Generation is immutable and its id is never reused, so no entry is ever
 /// invalidated: an entry can go unused, but it cannot go stale. The
-/// consequence is that this process does not notice a stored graph that is
-/// corrupted after it was cached here, until the entry is evicted or the
-/// process restarts. Publication and Generation verification read the stored
-/// graph itself, never this cache, and so keep reporting that corruption.
+/// consequence is that this Coral Instance does not notice a stored graph
+/// that is corrupted after it was cached here, until the entry is evicted or
+/// the Coral Instance ends. Publication and Generation verification read the
+/// stored graph itself, never this cache, and so keep reporting that
+/// corruption.
 ///
 /// The cache holds its byte budget of graphs, by an estimate of each graph's
 /// size in memory, and whatever the budget, it holds the graph used most
@@ -28,13 +29,20 @@ mod tests;
 /// until the cache is within its budget or holds that graph alone. So the
 /// largest Provider's graph is served from memory while it is the one in use,
 /// even when it alone exceeds the budget: it evicts every other entry when it
-/// arrives, and it is evicted when another graph is next loaded. The budget
-/// is therefore soft by at most one entry, and the cache exceeds it only
-/// while it holds that entry alone. A graph is made from one Setup input, so
-/// the input limit bounds the entry: an `OpenAPI` document of 64 MiB at most
-/// ([`OPENAPI_DOCUMENT_MAX_BYTES`](crate::OPENAPI_DOCUMENT_MAX_BYTES)), where
-/// Microsoft Graph's document of 43 MiB makes a graph of 184 MiB. A budget of
+/// arrives, and it is evicted when another graph is next loaded. A budget of
 /// zero keeps only the graph used most recently.
+///
+/// The budget is therefore soft by one entry: the cache exceeds it only while
+/// it holds that entry alone, and that entry can weigh more than the whole
+/// budget. Nothing limits the weight of a graph. The limits on a Setup input
+/// cap it only loosely: an `OpenAPI` document is 64 MiB at most
+/// ([`OPENAPI_DOCUMENT_MAX_BYTES`](crate::OPENAPI_DOCUMENT_MAX_BYTES)), and
+/// an MCP discovery snapshot 4 MiB
+/// ([`MCP_DISCOVERY_SNAPSHOT_MAX_BYTES`](crate::MCP_DISCOVERY_SNAPSHOT_MAX_BYTES)).
+/// As an estimate and not a bound, Microsoft Graph's document of 43 MiB makes
+/// a graph of 184 MiB, so a document of 64 MiB of the same shape would make
+/// one of about 276 MiB. The graphs of the Built-in, Private and Shared
+/// Providers are Coral's own, and each is under 1 MiB.
 ///
 /// Entries are keyed by Generation alone, with no Workspace. Ask only for a
 /// Generation that a Workspace-scoped read in the same transaction just
@@ -86,6 +94,14 @@ impl SchemaGraphCache {
         }
     }
 
+    /// Builds an empty cache with [`Self::DEFAULT_BUDGET_BYTES`], for a test
+    /// or a fixture that has no budget to choose. Bootstrap passes its budget
+    /// to [`Self::new`].
+    #[must_use]
+    pub fn with_default_budget() -> Self {
+        Self::new(Self::DEFAULT_BUDGET_BYTES)
+    }
+
     /// Returns one Generation's schema graph: the cached one, or else the
     /// stored one, read through `transaction`, parsed, checked and then
     /// cached. A cached graph costs no query.
@@ -101,24 +117,34 @@ impl SchemaGraphCache {
         transaction: &mut Transaction<'_>,
         generation_id: &ProviderGenerationId,
     ) -> Result<Arc<SchemaGraph>, Error> {
-        let cached = self.entries().used(generation_id);
+        let cached = self.entries().mark_used(generation_id);
         if let Some(graph) = cached {
             return Ok(graph);
         }
-        let graph = repository::load_schema_graph(transaction, generation_id).await?;
+        let loaded = repository::load_schema_graph(transaction, generation_id).await?;
+        Ok(self.keep_loaded(generation_id, loaded))
+    }
+
+    /// Caches the graph just loaded for `generation_id` and returns the graph
+    /// to use: `loaded`, or the one that a concurrent load cached first.
+    fn keep_loaded(
+        &self,
+        generation_id: &ProviderGenerationId,
+        loaded: SchemaGraph,
+    ) -> Arc<SchemaGraph> {
         // The walk of a large graph takes milliseconds, so it runs here,
         // before the lock.
-        let weight_bytes = weight_bytes(&graph);
+        let weight_bytes = weight_bytes(&loaded);
         let (graph, released) = self.entries().keep(
             generation_id,
-            Arc::new(graph),
+            Arc::new(loaded),
             weight_bytes,
             self.shared.budget_bytes,
         );
         // A graph can take milliseconds to drop, so these drop here, after
         // the statement above released the lock.
         drop(released);
-        Ok(graph)
+        graph
     }
 
     /// The entries, locked. Hold them for map operations only: never across
@@ -220,8 +246,9 @@ const fn object_room(len: usize) -> (usize, usize) {
 }
 
 impl Entries {
-    /// The cached graph of `generation_id`, now the most recently used.
-    fn used(&mut self, generation_id: &ProviderGenerationId) -> Option<Arc<SchemaGraph>> {
+    /// Marks the entry of `generation_id` as the most recently used and
+    /// returns its graph, when the cache holds one.
+    fn mark_used(&mut self, generation_id: &ProviderGenerationId) -> Option<Arc<SchemaGraph>> {
         let entry = self.by_generation.get_mut(generation_id)?;
         self.by_last_use.remove(&entry.last_use);
         self.last_tick += 1;
@@ -245,7 +272,7 @@ impl Entries {
         weight_bytes: usize,
         budget_bytes: usize,
     ) -> (Arc<SchemaGraph>, Vec<Arc<SchemaGraph>>) {
-        if let Some(first) = self.used(generation_id) {
+        if let Some(first) = self.mark_used(generation_id) {
             return (first, vec![graph]);
         }
         self.last_tick += 1;

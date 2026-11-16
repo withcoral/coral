@@ -188,6 +188,11 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   exact rules: the caller that owns the transaction joins
   `coral_policy::remove_authored_tool_rules_in_transaction` with the removed
   Tools' keys.
+- A Provider Generation row is written once and never updated, and its id is
+  never reused: to change a catalog, publish a new Generation, in a migration
+  or a repair as in product code. `coral_catalog::SchemaGraphCache` relies on
+  it: a Coral Instance keeps each Generation's parsed schema graph and never
+  invalidates it.
 - Give each independently identified entity one stable ID as its sole primary
   key. Use a composite primary key only when the tuple is the domain identity.
 - For Workspace-owned data, every externally influenced read or write must

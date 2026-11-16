@@ -546,13 +546,8 @@ fn serving(providers: &ProviderModule, catalog: BuiltinCatalog) -> ProviderModul
         providers.database.clone(),
         providers.workspaces.clone(),
         catalog,
-        test_schema_graphs(),
+        coral_catalog::SchemaGraphCache::with_default_budget(),
     )
-}
-
-/// A schema graph cache of its own, as each process has.
-fn test_schema_graphs() -> coral_catalog::SchemaGraphCache {
-    coral_catalog::SchemaGraphCache::new(coral_catalog::SchemaGraphCache::DEFAULT_BUDGET_BYTES)
 }
 
 /// A Workspace created at time 10 by `owner` with this Coral version's catalog.
@@ -804,7 +799,7 @@ async fn two_processes_that_boot_together_activate_one_generation() {
         peer.clone(),
         coral_workspace::WorkspaceModule::new(peer.clone()),
         catalog_b(),
-        test_schema_graphs(),
+        coral_catalog::SchemaGraphCache::with_default_budget(),
     );
     let [outdated] = first
         .outdated_builtin_generations()
@@ -1255,7 +1250,7 @@ async fn two_processes_that_boot_together_install_each_coral_defined_provider_on
         peer.clone(),
         coral_workspace::WorkspaceModule::new(peer.clone()),
         running(),
-        test_schema_graphs(),
+        coral_catalog::SchemaGraphCache::with_default_budget(),
     );
     let (left, right) = tokio::join!(boot_installs(&first, 20), boot_installs(&second, 21));
 
