@@ -615,10 +615,7 @@ pub(super) async fn gate(
         if !required {
             return Ok(Gate::Ready(ApprovalFact::NotRequested));
         }
-        let deadline = std::cmp::min(
-            run.deadline_at_unix_nanos,
-            now.saturating_add(approval_wait_nanos),
-        );
+        let deadline = run.bounded_by_deadline(now.saturating_add(approval_wait_nanos));
         let id = ApprovalId(Uuid::new_v4());
         approval_repository::insert_pending(
             tx,

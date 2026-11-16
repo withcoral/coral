@@ -103,6 +103,8 @@ pub(crate) enum Check {
 pub(crate) struct StartedExecution {
     pub(crate) package: ProgramPackage,
     pub(crate) head: u64,
+    /// The Run deadline the start mark recorded.
+    pub(crate) deadline_at_unix_nanos: i64,
 }
 
 /// One outside request's identity: the entity it decides. The first request

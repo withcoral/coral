@@ -18,12 +18,12 @@ use crate::wire::v1::{
 };
 use crate::{CompilerClient as _, InProcessCompiler};
 
-/// The number of the next request that parks on the Applied cap, within 10 s.
-async fn parks(parked: &mut mpsc::UnboundedReceiver<u64>) -> u64 {
-    tokio::time::timeout(Duration::from_secs(10), parked.recv())
+/// What `receiver` gets next, within 10 s.
+pub(super) async fn next<T>(receiver: &mut mpsc::UnboundedReceiver<T>, what: &str) -> T {
+    tokio::time::timeout(Duration::from_secs(10), receiver.recv())
         .await
-        .expect("a request parks on the Applied cap")
-        .expect("the Run Executor reports each park")
+        .unwrap_or_else(|_elapsed| panic!("{what} within 10 s"))
+        .unwrap_or_else(|| panic!("{what}: its sender is gone"))
 }
 
 /// A scripted Coral and a Run Executor that holds two Runs, linked, with
@@ -575,7 +575,11 @@ return 1;"#;
     }
     assert_eq!(next_request(&mut run).await, (4, emit(r#""123456789""#, 3)));
     // 11 output bytes above the watermark, more than the cap: the Log waits.
-    assert_eq!(parks(&mut parked).await, 5, "the Log waits");
+    assert_eq!(
+        next(&mut parked, "a request parks").await,
+        5,
+        "the Log waits"
+    );
     run.send(committed(4)).await;
     let (number, kind) = next_request(&mut run).await;
     assert!(
@@ -584,7 +588,11 @@ return 1;"#;
     );
     assert_eq!(next_request(&mut run).await, (6, emit(r#""123456789""#, 5)));
     // Finish waits for the cap like any other request.
-    assert_eq!(parks(&mut parked).await, 7, "Finish waits");
+    assert_eq!(
+        next(&mut parked, "a request parks").await,
+        7,
+        "Finish waits"
+    );
     run.send(committed(6)).await;
     let value = finish(finish::Completion::ValueJson("1".to_owned()));
     assert_eq!(next_request(&mut run).await, (7, value));
@@ -613,7 +621,7 @@ try { console.info("held"); } finally { await coral.emit("finally"); }"#,
         assert_eq!(next_request(&mut run).await.0, 1, "{waits_on}");
         if let Some(number) = waits {
             assert_eq!(
-                parks(&mut parked).await,
+                next(&mut parked, "a request parks").await,
                 number,
                 "{waits_on}: the Log waits"
             );
@@ -683,7 +691,7 @@ async fn a_panicked_stream_task_stops_its_program() {
     let Program { host, stopped, .. } = load(
         compiled("return 1;").await,
         outbound,
-        RunLimits::default(),
+        &Isolates::new(RunLimits::default(), 1),
         unit,
         &RunId::new("run-1"),
         stream,
@@ -955,7 +963,11 @@ async fn a_lost_run_keeps_running_up_to_a_cap_then_waits() {
         let run = loaded(&mut coral, "run-1", compiled(source).await).await;
         start(&run, 60_000, None).await;
         run.fail(Status::unavailable("lost")).await;
-        assert_eq!(parks(&mut parked).await, parks_at, "{case}");
+        assert_eq!(
+            next(&mut parked, "a request parks").await,
+            parks_at,
+            "{case}"
+        );
         let mut run = coral.next_run().await;
         run.send(committed(0)).await;
         for number in 1..parks_at {
@@ -1019,5 +1031,55 @@ async fn an_isolate_that_misses_its_stop_retires_the_run_executor() {
         }
         crate::testing::retired(task).await;
         drop(stalled);
+    }
+}
+
+/// Catches: a load that makes its own isolate while one is warm, a warm
+/// isolate never replaced, an isolate that runs a second Run, or one kept
+/// warm on a Run Executor that holds one Run at a time.
+#[tokio::test]
+async fn a_load_takes_the_warm_isolate_when_more_than_one_run_is_held() {
+    for (room, keeps_warm) in [(1, false), (2, true)] {
+        let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
+        let (on_isolate, mut events) = mpsc::unbounded_channel();
+        let limits = RunLimits {
+            on_isolate: Some(Box::leak(Box::new(on_isolate))),
+            ..RunLimits::default()
+        };
+        let _retire = start_run_executor(&coral, room, limits, None);
+        let _call = coral.next_call().await;
+        // Each thread is told as it starts, so one started before the dial
+        // is told by now.
+        let mut warm = match events.try_recv() {
+            Ok(IsolateEvent::Started(thread)) => Some(thread),
+            Ok(event) => panic!("room {room}: {event:?} before any Run"),
+            Err(_none) => None,
+        };
+        assert_eq!(
+            warm.is_some(),
+            keeps_warm,
+            "room {room}: warm before any Run"
+        );
+        let mut runs = Vec::new();
+        for run in 1..=room {
+            let run_id = format!("run-{run}");
+            runs.push(loaded(&mut coral, &run_id, compiled("return 1;").await).await);
+            // The load starts its replacement's thread, or its own, before
+            // it hands the Run over.
+            let IsolateEvent::Started(started) = next(&mut events, "a thread starts").await else {
+                panic!("room {room}: {run_id} starts a thread first");
+            };
+            let took = next(&mut events, "a thread takes the Run").await;
+            let expected = warm.unwrap_or(started);
+            assert_eq!(took, IsolateEvent::Took(expected), "room {room}: {run_id}");
+            if keeps_warm {
+                assert_ne!(
+                    Some(started),
+                    warm,
+                    "{run_id}: a new isolate replaces the warm one"
+                );
+                warm = Some(started);
+            }
+        }
     }
 }

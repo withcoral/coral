@@ -39,7 +39,6 @@ async fn acceptance_records_its_coral_instance_and_a_taken_identifier_writes_not
         workspace_id: workspace.id().clone(),
         principal: principal.clone(),
         accepted_at_unix_nanos,
-        deadline_at_unix_nanos: accepted_at_unix_nanos + 1_000,
         shutdown_grace_nanos: 0,
         value_limits: coral_value::ValueLimits::default(),
         claim_id: format!("claim-{accepted_at_unix_nanos}"),

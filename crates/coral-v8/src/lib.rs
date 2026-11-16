@@ -41,7 +41,7 @@ pub use cpu::cpu_budget_supported;
 pub use memory::IsolateLimits;
 pub use profile::{TYPESCRIPT_PROFILE, TYPESCRIPT_PROFILE_ID, TypeScriptProfile};
 pub use program_error::{ProgramError, ProgramErrorFrame, ProgramToolError};
-pub use runtime::ProgramExecutor;
+pub use runtime::{FreshIsolate, ProgramExecutor};
 
 /// Validates one retained authored source map against the pinned profile rules.
 ///

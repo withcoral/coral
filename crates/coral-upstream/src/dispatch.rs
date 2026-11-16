@@ -24,7 +24,7 @@ impl ReadyDispatch {
     /// Returns a protocol planning or invalid-input error before any send.
     pub fn plan(
         tool: &MaterializedTool,
-        schemas: &SchemaGraph,
+        schemas: &Arc<SchemaGraph>,
         arguments: &Value,
         provider: &str,
         resources: Arc<McpResources>,

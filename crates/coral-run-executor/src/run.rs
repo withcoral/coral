@@ -2,6 +2,7 @@
 //! its own.
 
 mod host;
+mod warm;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,6 +17,9 @@ use crate::wire::v1::{
     Open, RunPackage, RunRequest, RunResponse, TakenRun, ValueLimits, run_request, run_response,
 };
 use host::{Reconnect, RunHost};
+#[cfg(test)]
+pub(crate) use warm::IsolateEvent;
+pub(crate) use warm::Isolates;
 
 /// The Applied cap: while more output bytes than this are above the
 /// committed watermark, the Program's next request waits. Emissions and Logs
@@ -48,6 +52,9 @@ pub struct RunLimits {
     /// wait for it.
     #[cfg(test)]
     pub(crate) on_parked: Option<&'static mpsc::UnboundedSender<u64>>,
+    /// Told what happens on each isolate's thread.
+    #[cfg(test)]
+    pub(crate) on_isolate: Option<&'static mpsc::UnboundedSender<IsolateEvent>>,
 }
 
 impl Default for RunLimits {
@@ -61,6 +68,8 @@ impl Default for RunLimits {
             stall: None,
             #[cfg(test)]
             on_parked: None,
+            #[cfg(test)]
+            on_isolate: None,
         }
     }
 }
@@ -126,7 +135,7 @@ struct Program {
 struct Run {
     id: RunId,
     open: Open,
-    limits: RunLimits,
+    isolates: Arc<Isolates>,
     /// The unit of room, until the Program's thread holds it.
     unit: Option<HeldUnit>,
     /// What a retiring Run Executor waits for, until the Program's stop is
@@ -153,7 +162,7 @@ enum Reopen {
 pub(crate) async fn hold(
     mut connection: watch::Receiver<Connection>,
     taken: TakenRun,
-    limits: RunLimits,
+    isolates: Arc<Isolates>,
     held: HeldRun,
 ) {
     let mut run = Run {
@@ -163,7 +172,7 @@ pub(crate) async fn hold(
             claim_id: taken.claim_id,
             protocol_level: PROTOCOL_LEVEL,
         },
-        limits,
+        isolates,
         unit: Some(held.unit),
         stream: Some(held.stream),
         program: None,
@@ -306,7 +315,7 @@ impl Run {
                 let (Some(unit), Some(stream)) = (self.unit.take(), self.stream.take()) else {
                     return false;
                 };
-                self.program = load(package, outbound, self.limits, unit, &self.id, stream);
+                self.program = load(package, outbound, &self.isolates, unit, &self.id, stream);
                 self.program.is_some()
             }
             // Loaded here before: the digest names the package, so the
@@ -363,14 +372,14 @@ impl Drop for StopsOnDrop {
     }
 }
 
-/// Checks `package` and starts its Program's thread, which loads it and
+/// Checks `package` and starts its Program in an isolate, which loads it and
 /// holds `unit` until its isolate is gone, and the task that watches its
 /// stop with `stream`. `None` when the package breaks the protocol: the
 /// stream closes, with no reopen.
 fn load(
     package: RunPackage,
     outbound: mpsc::UnboundedSender<RunRequest>,
-    limits: RunLimits,
+    isolates: &Isolates,
     unit: HeldUnit,
     run: &RunId,
     stream: HeldRunStream,
@@ -420,13 +429,13 @@ fn load(
     let host = Arc::new(RunHost::new(
         outbound,
         value_limits,
-        &limits,
+        isolates.limits(),
         linked,
         trace_id,
     ));
     let sha256 = package.sha256;
     let program = coral_v8::CompiledProgram::restore(package.script, package.source_map);
-    let Ok(exited) = host.spawn(program, limits, unit) else {
+    let Ok(exited) = host.spawn(program, isolates, unit) else {
         tracing::warn!(
             coral.run.id = safe::id(run),
             "the Run's thread could not start; closing the Run stream"
@@ -434,7 +443,7 @@ fn load(
         return None;
     };
     let stopping = host.stopping.subscribe();
-    let grace = limits.stop_grace;
+    let grace = isolates.limits().stop_grace;
     let stopped = tokio::spawn(watch_stop(stopping, exited, grace, stream, run.clone()));
     Some(Program {
         host: StopsOnDrop(host),

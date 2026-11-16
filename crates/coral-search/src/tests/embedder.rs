@@ -5,6 +5,11 @@
 //! Every test indexes through `SearchIndex`, waits for the index to settle and
 //! for the Embedder to drain, then reads the vector table beside the entity
 //! table. The model is a fixed-vector stand-in, so no test loads the real one.
+//!
+//! A test that runs reconcile passes of its own starts the Embedder alone,
+//! with `spawn_embedder`. The reconcile task starts a pass as it starts, and
+//! nothing the test awaits waits for that pass: on a loaded host it runs
+//! between the test's own steps and indexes a row the test left stale.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -105,7 +110,7 @@ async fn a_row_an_older_coral_changed_gets_no_vector_until_a_pass_indexes_it_aga
     let doc_id = saved.id().to_string();
     let model = FixedVectors::default();
     let index = world.index_with(&model);
-    let _background = Background(index.spawn_reconcile_task());
+    let _background = Background(index.spawn_embedder());
     index.sync_authored_tool(world.workspace.clone(), saved.id().clone());
     index.settled().await;
     index.embedded().await;
@@ -173,7 +178,7 @@ async fn a_missing_vector_another_revision_or_a_changed_row_is_embedded_again_an
     let ledger = world.publish_ledger().await;
     let model = FixedVectors::default();
     let index = world.index_with(&model);
-    let _background = Background(index.spawn_reconcile_task());
+    let _background = Background(index.spawn_embedder());
     world
         .index_and_embed(&index, &[&world.tracer, &ledger])
         .await;
@@ -240,7 +245,7 @@ async fn a_reconcile_pass_removes_the_vectors_of_a_deleted_provider_and_keeps_th
     let ledger = world.publish_ledger().await;
     let model = FixedVectors::default();
     let index = world.index_with(&model);
-    let _background = Background(index.spawn_reconcile_task());
+    let _background = Background(index.spawn_embedder());
     world
         .index_and_embed(&index, &[&world.tracer, &ledger])
         .await;
@@ -284,7 +289,7 @@ async fn a_batch_that_fails_with_the_model_or_the_database_down_skips_nothing_an
             world.refuse_vector_writes(true).await;
         }
         let index = world.index_with(&model);
-        let _background = Background(index.spawn_reconcile_task());
+        let _background = Background(index.spawn_embedder());
         for provider in [&world.tracer, &ledger] {
             index.index_active_generation(world.workspace.clone(), provider.clone());
         }
@@ -313,7 +318,7 @@ async fn a_row_that_always_fails_is_skipped_until_its_row_changes_and_holds_back
     let model = FixedVectors::default();
     model.fail_texts_with(BROKEN);
     let index = world.index_with(&model);
-    let _background = Background(index.spawn_reconcile_task());
+    let _background = Background(index.spawn_embedder());
     index.index_active_generation(world.workspace.clone(), many.clone());
     index.index_active_generation(world.workspace.clone(), world.tracer.clone());
     index.settled().await;
@@ -465,7 +470,7 @@ async fn a_failing_row_alone_in_its_batch_is_skipped_and_holds_back_no_other_wor
     let model = FixedVectors::default();
     model.fail_texts_with("Get one weather forecast");
     let index = world.index_with(&model);
-    let _background = Background(index.spawn_reconcile_task());
+    let _background = Background(index.spawn_embedder());
     // The tracer's row is older, so its batch, of one row, comes first.
     index.index_active_generation(world.workspace.clone(), world.tracer.clone());
     index.settled().await;

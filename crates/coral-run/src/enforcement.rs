@@ -56,7 +56,7 @@ impl RunFacts<'_> {
         self.run
             .program_work_is_current(self.claim_id, now_unix_nanos)
             && self.run.principal == *self.principal
-            && self.run.deadline_at_unix_nanos == self.deadline_at_unix_nanos
+            && self.run.deadline_at_unix_nanos == Some(self.deadline_at_unix_nanos)
     }
 }
 

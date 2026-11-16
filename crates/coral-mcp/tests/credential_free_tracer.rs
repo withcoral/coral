@@ -917,8 +917,8 @@ async fn run_output_pages_replay_exactly_and_quiet_runs_page_no_output() {
     let task_id = start_task(&client, "Page exact Run output").await;
     quiet_invocations_do_not_require_history_draining(&client, &task_id).await;
     terminal_outcomes_follow_complete_events(&client, &task_id).await;
-    let rich = call(&client, "exec", json!({
-        "task_id": task_id, "intent":"Publish exact rich output", "wait_ms":1000,
+    let mut rich = call(&client, "exec", json!({
+        "task_id": task_id, "intent":"Publish exact rich output", "wait_ms":30_000,
         "program": r#"
             const binary = {_tag:"BinaryValue", encoding:"base64", mimeType:"image/png", data:"AP+ADQo=", byteLength:5};
             await coral.emit(binary);
@@ -926,6 +926,12 @@ async fn run_output_pages_replay_exactly_and_quiet_runs_page_no_output() {
             return {type:"audio", data:"AP+ADQo=", mimeType:"audio/wav", _meta:{"vendor/exact":true}};
         "#
     })).await;
+    // A wait is bounded, so on a loaded host it can end before the Program
+    // does. A wait with no cursor reads the first page again.
+    while structured(&rich)["state"] == "running" {
+        let from_the_start = json!({"run_id": structured(&rich)["run_id"], "wait_ms":30_000});
+        rich = call(&client, "wait", from_the_start).await;
+    }
     let update = rich.structured_content.as_ref().expect("Run Update");
     assert_eq!(update["state"], "succeeded");
     assert_eq!(rich.content.len(), 3, "JSON text, then two rich blocks");
@@ -1802,10 +1808,23 @@ async fn a_lost_worker_run_is_interrupted_not_a_tool_error() {
         tracer.upstream.signals.clone(),
     )
     .await;
+    // The worker claim lease is 30 seconds, and RunModule has no clock to
+    // inject. The test moves the end of the lost worker's lease back to the
+    // Run's acceptance, the earliest end a lease can have, so it does not
+    // wait out the lease.
+    let lapsed = tracer
+        .database
+        .execute_fixture_sql(&format!(
+            "UPDATE program_run_records \
+             SET worker_claim_expires_at_unix_nanos = accepted_at_unix_nanos \
+             WHERE id = '{lost_worker}' AND worker_claim_expires_at_unix_nanos IS NOT NULL"
+        ))
+        .await
+        .expect("lapse the lost worker's lease");
+    assert_eq!(lapsed, 1, "the lost worker held a lease on its Run");
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = RawSession::open(&tracer.endpoint(), version).await;
-        // The worker claim lease is 30 seconds and RunModule has no injected clock.
-        // This test waits out the whole lease, so allow ample margin under load.
+        // A liveness bound: recovery interrupts the Run in its own time.
         let interrupted = tokio::time::timeout(Duration::from_secs(90), async {
             loop {
                 tracer
@@ -2086,8 +2105,16 @@ async fn start_lost_worker(
 
 async fn check_raw_rich_paging(endpoint: &str, task: &str, protocol_version: &ProtocolVersion) {
     let session = RawSession::open(endpoint, protocol_version).await;
-    let mut result = session.tool("exec", json!({"task_id":task, "intent":"Page exact rich blocks", "wait_ms":1000,
+    let mut result = session.tool("exec", json!({"task_id":task, "intent":"Page exact rich blocks", "wait_ms":30_000,
         "program":r#"for (let i=0;i<7;i++) { await coral.providers.weather.getForecast({}); console.log('step:' + i); await coral.emit({type:"text", text:"x".repeat(400), annotations:{priority:0.5}, _meta:{position:i}}); await coral.providers.weather.getForecast({}); } return {type:"resource", resource:{uri:"provider://private", blob:"AP+ADQo=", mimeType:"application/pdf"}};"#})).await;
+    // Every page below is a page of the ended Run. A wait is bounded, so on a
+    // loaded host it can end before the Program does. A wait with no cursor
+    // reads the first page again.
+    while result.pointer("/structuredContent/state") == Some(&json!("running")) {
+        let from_the_start =
+            json!({"run_id":result.pointer("/structuredContent/run_id"), "wait_ms":30_000});
+        result = session.tool("wait", from_the_start).await;
+    }
     let mut positions = Vec::new();
     let mut authored = Vec::new();
     let mut cursor = Value::Null;

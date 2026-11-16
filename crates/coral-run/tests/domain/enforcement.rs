@@ -400,7 +400,7 @@ async fn organization_loss_commits_while_permitted_upstream_work_is_blocked() {
         authority.set_enabled(&administrator, tool.user.user_id(), 1, false),
     )
     .await;
-    upstream.release.store(true, Ordering::SeqCst);
+    upstream.release();
     changed
         .expect("authority update must not wait on upstream work")
         .unwrap();
@@ -620,7 +620,7 @@ async fn provider_disablement_and_deletion_after_the_enforcement_point_preserve_
         })
         .await
         .expect("post-enforcement lifecycle change must not wait for upstream work");
-        upstream.release.store(true, Ordering::SeqCst);
+        upstream.release();
 
         let terminal = wait_for_terminal(
             &fixture.runs,
@@ -685,7 +685,7 @@ async fn an_in_flight_dispatch_cannot_be_marked_dispatched_again() {
     transaction.rollback().await.unwrap();
     assert_eq!(marked_again, [] as [crate::InvocationId; 0]);
 
-    upstream.release.store(true, Ordering::SeqCst);
+    upstream.release();
     let terminal = wait_for_terminal(
         &fixture.runs,
         &tool.principal,
@@ -1037,7 +1037,7 @@ async fn a_batch_of_ready_invocations_dispatches_in_one_chunk_commit_with_indepe
     assert_eq!(denied.dispatch_started_at_unix_nanos, None);
     assert_eq!(denied.state, "pending", "denied, not yet ended: {rows:?}");
     latch.release_failures();
-    upstream.release.store(true, Ordering::SeqCst);
+    upstream.release();
     let terminal = wait_for_terminal(
         &fixture.runs,
         &tool.principal,
@@ -1177,7 +1177,7 @@ async fn a_revocation_that_commits_before_the_enforcement_point_denies_the_batch
         .await
         .expect("a policy change never waits on dispatched work")
         .unwrap();
-        upstream.release.store(true, Ordering::SeqCst);
+        upstream.release();
         let terminal = wait_for_terminal(
             &fixture.runs,
             &tool.principal,
@@ -1365,7 +1365,7 @@ async fn the_precheck_and_the_enforcement_point_reach_the_same_decision_on_the_s
     let record = fixture.run_record(&tool.workspace_id, run.run_id()).await;
     let admitted = admitted_invocation(&fixture, &tool, run.run_id()).await;
     let invoker = test_invoker(&fixture, &tool, &record);
-    let deadline = record.deadline_at_unix_nanos;
+    let deadline = record.deadline_at_unix_nanos.expect("started");
     let context = change(tool.user.clone(), 100, 'a');
     let cases: [(&str, ToolAccessState, ApprovalFact, Decision); 6] = [
         (
@@ -1640,7 +1640,7 @@ async fn a_refresh_wait_parked_by_the_enforcement_point_resumes_on_the_next_chec
         }
         latch.release_arrivals();
         if exchanges > 0 {
-            tokio::time::timeout(Duration::from_secs(5), endpoint.entered.notified())
+            tokio::time::timeout(EVENTUALLY, endpoint.entered.notified())
                 .await
                 .expect("the parked Invocation refreshes its token outside the enforcement point");
             endpoint.release.notify_one();
