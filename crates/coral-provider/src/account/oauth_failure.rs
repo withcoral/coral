@@ -95,120 +95,74 @@ mod tests {
     use super::{AuthorizationDiscoveryFailure as Failure, TokenExchangeFailure as Exchange};
     use crate::Error;
     use crate::account::oauth::authorization_failure_code;
-    use coral_upstream::AuthorizationDiscoveryError as Discovery;
+    use coral_upstream::AuthorizationDiscoveryError as D;
 
-    fn exchange(failure: Exchange) -> Error {
-        // A new variant does not compile until it is named here. Add its row
-        // to the table too.
-        match failure {
-            Exchange::ResponseInvalid
-            | Exchange::Timeout
-            | Exchange::Unavailable
-            | Exchange::CodeRejected
-            | Exchange::RedirectMismatch
-            | Exchange::AuthorizationPending
-            | Exchange::SlowDown
-            | Exchange::AccessDenied
-            | Exchange::DeviceExpired
-            | Exchange::ScopeRejected
-            | Exchange::RequestRejected => Error::OAuthTokenExchange(failure),
-        }
-    }
-
-    fn discovery(failure: impl Into<Failure>) -> Error {
-        let failure = failure.into();
-        // A new variant does not compile until it is named here. Add its row
-        // to the table too.
-        match failure {
-            Failure::ChallengeUnsupported
-            | Failure::Discovery(
-                Discovery::DestinationRejected
-                | Discovery::ResourceMetadataMissing
-                | Discovery::ResourceMetadataUnauthorized
-                | Discovery::ResourceMetadataUnavailable
-                | Discovery::ResourceMismatch
-                | Discovery::AuthorizationServerUnavailable
-                | Discovery::IssuerMismatch
-                | Discovery::PkceUnsupported
-                | Discovery::InsecureEndpoint
-                | Discovery::ClientBootstrapFailed,
-            ) => Error::AuthorizationDiscovery(failure),
-        }
+    /// The rows as `(Error, code, row name)`. The list is both the rows and
+    /// an exhaustive match that holds each row's code, so a new variant does
+    /// not compile until it has a row with a code.
+    macro_rules! pinned {
+        ($error:path: $($($variant:ident)::+ $(($($inner:ident)::+))? => $code:literal,)+) => {
+            [$($($variant)::+ $(($($inner)::+))?),+].map(|failure| match failure {
+                $($($variant)::+ $(($($inner)::+))? => (
+                    $error(failure),
+                    $code,
+                    stringify!($($variant)::+ $(($($inner)::+))?),
+                ),)+
+            })
+        };
     }
 
     /// Catches a renamed or re-mapped variant that would change a code in a
     /// stored row, a gRPC reason or a Program's error message.
     #[test]
     fn every_failure_keeps_its_stored_and_sent_code() {
-        use Discovery as D;
-        use Exchange as E;
-        let cases = [
-            (exchange(E::ResponseInvalid), "oauth_token_response_invalid"),
-            (exchange(E::Timeout), "oauth_token_timeout"),
-            (exchange(E::Unavailable), "oauth_token_unavailable"),
-            (exchange(E::CodeRejected), "oauth_code_rejected"),
-            (exchange(E::RedirectMismatch), "oauth_redirect_mismatch"),
-            (
-                exchange(E::AuthorizationPending),
-                "oauth_authorization_pending",
-            ),
-            (exchange(E::SlowDown), "oauth_slow_down"),
-            (exchange(E::AccessDenied), "oauth_access_denied"),
-            (exchange(E::DeviceExpired), "oauth_device_expired"),
-            (exchange(E::ScopeRejected), "oauth_scope_rejected"),
-            (exchange(E::RequestRejected), "oauth_request_rejected"),
-            (
-                discovery(Failure::ChallengeUnsupported),
-                "challenge_unsupported",
-            ),
-            (
-                discovery(D::DestinationRejected),
-                "outbound_destination_rejected",
-            ),
-            (
-                discovery(D::ResourceMetadataMissing),
-                "resource_metadata_missing",
-            ),
-            (
-                discovery(D::ResourceMetadataUnauthorized),
-                "resource_metadata_unavailable",
-            ),
-            (
-                discovery(D::ResourceMetadataUnavailable),
-                "resource_metadata_unavailable",
-            ),
-            (discovery(D::ResourceMismatch), "resource_mismatch"),
-            (
-                discovery(D::AuthorizationServerUnavailable),
-                "authorization_server_unavailable",
-            ),
-            (discovery(D::IssuerMismatch), "issuer_mismatch"),
-            (discovery(D::PkceUnsupported), "pkce_unsupported"),
-            (discovery(D::InsecureEndpoint), "insecure_endpoint"),
-            (
-                discovery(D::ClientBootstrapFailed),
-                "client_bootstrap_failed",
-            ),
-        ];
-        for (error, code) in cases {
+        let exchange = pinned!(Error::OAuthTokenExchange:
+            Exchange::ResponseInvalid => "oauth_token_response_invalid",
+            Exchange::Timeout => "oauth_token_timeout",
+            Exchange::Unavailable => "oauth_token_unavailable",
+            Exchange::CodeRejected => "oauth_code_rejected",
+            Exchange::RedirectMismatch => "oauth_redirect_mismatch",
+            Exchange::AuthorizationPending => "oauth_authorization_pending",
+            Exchange::SlowDown => "oauth_slow_down",
+            Exchange::AccessDenied => "oauth_access_denied",
+            Exchange::DeviceExpired => "oauth_device_expired",
+            Exchange::ScopeRejected => "oauth_scope_rejected",
+            Exchange::RequestRejected => "oauth_request_rejected",
+        );
+        let discovery = pinned!(Error::AuthorizationDiscovery:
+            Failure::ChallengeUnsupported => "challenge_unsupported",
+            Failure::Discovery(D::DestinationRejected) => "outbound_destination_rejected",
+            Failure::Discovery(D::ResourceMetadataMissing) => "resource_metadata_missing",
+            Failure::Discovery(D::ResourceMetadataUnauthorized) => "resource_metadata_unavailable",
+            Failure::Discovery(D::ResourceMetadataUnavailable) => "resource_metadata_unavailable",
+            Failure::Discovery(D::ResourceMismatch) => "resource_mismatch",
+            Failure::Discovery(D::AuthorizationServerUnavailable) => "authorization_server_unavailable",
+            Failure::Discovery(D::IssuerMismatch) => "issuer_mismatch",
+            Failure::Discovery(D::PkceUnsupported) => "pkce_unsupported",
+            Failure::Discovery(D::InsecureEndpoint) => "insecure_endpoint",
+            Failure::Discovery(D::ClientBootstrapFailed) => "client_bootstrap_failed",
+        );
+        for (error, code, row) in exchange.into_iter().chain(discovery) {
             match &error {
                 Error::OAuthTokenExchange(failure) => {
-                    assert_eq!(failure.code(), code, "{error:?}");
+                    assert_eq!(failure.code(), code, "{row}");
                     // The code an authorization stores when its exchange fails.
-                    assert_eq!(authorization_failure_code(&error), code, "{error:?}");
+                    assert_eq!(authorization_failure_code(&error), code, "{row}");
                     assert_eq!(
                         error.to_string(),
-                        format!("OAuth token exchange failed: {code}")
+                        format!("OAuth token exchange failed: {code}"),
+                        "{row}"
                     );
                 }
                 Error::AuthorizationDiscovery(failure) => {
-                    assert_eq!(failure.code(), code, "{error:?}");
+                    assert_eq!(failure.code(), code, "{row}");
                     assert_eq!(
                         error.to_string(),
-                        format!("MCP authorization discovery failed: {code}")
+                        format!("MCP authorization discovery failed: {code}"),
+                        "{row}"
                     );
                 }
-                other => panic!("the table holds a failure of another kind: {other:?}"),
+                other => panic!("{row} is a failure of another kind: {other:?}"),
             }
         }
     }
