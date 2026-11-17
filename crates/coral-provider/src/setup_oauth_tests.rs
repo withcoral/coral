@@ -2182,8 +2182,21 @@ async fn held_bearer_setup(
     context: &coral_workspace::ChangeContext,
     workspace: &WorkspaceId,
 ) -> crate::ProviderSetup {
-    const TOKEN: &str = "held-token";
-    let server = super::setup_tests::mcp_server(TOKEN).await;
+    let (setup, revision) = bearer_setup_awaiting_sign_in(harness, context, workspace).await;
+    hold_bearer_token(harness, context, workspace, &setup, revision).await;
+    setup
+}
+
+const HELD_TOKEN: &str = "held-token";
+
+/// An MCP Setup confirmed for a bearer token and not yet signed in, with its
+/// confirmed revision. The server stops answering once it is confirmed.
+async fn bearer_setup_awaiting_sign_in(
+    harness: &Harness,
+    context: &coral_workspace::ChangeContext,
+    workspace: &WorkspaceId,
+) -> (crate::ProviderSetup, i64) {
+    let server = super::setup_tests::mcp_server(HELD_TOKEN).await;
     let setup = harness
         .providers
         .prepare_setup(
@@ -2207,14 +2220,25 @@ async fn held_bearer_setup(
         .await
         .unwrap();
     server.reset().await;
+    (setup, confirmed.revision)
+}
+
+/// Signs in with the bearer token. Coral holds it and waits on discovery.
+async fn hold_bearer_token(
+    harness: &Harness,
+    context: &coral_workspace::ChangeContext,
+    workspace: &WorkspaceId,
+    setup: &crate::ProviderSetup,
+    revision: i64,
+) {
     let held = harness
         .accounts
         .authorize_setup(
             context,
             workspace,
             setup.id(),
-            confirmed.revision,
-            coral_credentials::CredentialValues::token(Secret::new(TOKEN.into()).unwrap()),
+            revision,
+            coral_credentials::CredentialValues::token(Secret::new(HELD_TOKEN.into()).unwrap()),
         )
         .await
         .unwrap();
@@ -2228,7 +2252,66 @@ async fn held_bearer_setup(
             .state(),
         ProviderSetupState::AwaitingDiscovery
     );
-    setup
+}
+
+// Catches: a name-only confirmation that read the Setup before its sign-in and
+// wrote after it, putting the Setup back to waiting on sign-in.
+#[tokio::test]
+async fn a_confirmation_that_races_sign_in_keeps_the_state_sign_in_wrote() {
+    let harness = harness(None).await;
+    let (owner, workspace) = workspace_owner(&harness, "user:confirm-race").await;
+    let context = change_context(owner.clone(), 10, '1');
+    let (setup, revision) = bearer_setup_awaiting_sign_in(&harness, &context, workspace.id()).await;
+
+    // The confirmation reads the Setup and prepares, then sign-in completes
+    // before the confirmation takes the row.
+    let loaded = crate::tests::stored_setup(&harness.database, workspace.id(), setup.id()).await;
+    assert_eq!(
+        loaded.setup.state(),
+        ProviderSetupState::AwaitingAuthorization
+    );
+    let mut renamed = loaded.configuration.clone().unwrap();
+    renamed.display_name = "Renamed".into();
+    let prepared = harness
+        .providers
+        .prepare_confirmation(&loaded, &renamed, revision, revision + 1)
+        .await
+        .unwrap();
+    hold_bearer_token(&harness, &context, workspace.id(), &setup, revision).await;
+    harness
+        .providers
+        .apply_confirmation(
+            &context,
+            workspace.id(),
+            setup.id(),
+            &loaded,
+            &prepared,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let review = harness
+        .providers
+        .review_setup_configuration(&owner, workspace.id(), setup.id())
+        .await
+        .unwrap();
+    assert_eq!(review.revision, revision + 1);
+    assert_eq!(review.confirmed.unwrap().display_name, "Renamed");
+    let after = harness
+        .providers
+        .get_setup(&owner, workspace.id(), setup.id())
+        .await
+        .unwrap();
+    assert_eq!(after.state(), ProviderSetupState::AwaitingDiscovery);
+    assert!(
+        harness
+            .providers
+            .setup_authentication(&owner, workspace.id(), setup.id(), 11)
+            .await
+            .unwrap()
+            .authorized
+    );
 }
 
 /// An OAuth MCP Setup whose discovery sign-in completed through an
@@ -2267,6 +2350,62 @@ async fn registered_sign_in_setup(
         .unwrap();
     assert_eq!(upstream.knobs.registrations.load(Ordering::SeqCst), 1);
     setup
+}
+
+#[tokio::test]
+async fn new_headers_drop_the_catalog_that_sign_in_read_and_start_authorization_over() {
+    let harness = harness(None).await;
+    let (owner, workspace) = workspace_owner(&harness, "user:reset-catalog").await;
+    let context = change_context(owner.clone(), 10, '1');
+    let setup = registered_sign_in_setup(&harness, &context, workspace.id()).await;
+    let read = harness
+        .providers
+        .get_setup(&owner, workspace.id(), setup.id())
+        .await
+        .unwrap();
+    assert_eq!(read.state(), ProviderSetupState::Ready);
+    assert!(read.input_digest().is_some());
+    let review = harness
+        .providers
+        .review_setup_configuration(&owner, workspace.id(), setup.id())
+        .await
+        .unwrap();
+    assert_ne!(review.tools, []);
+
+    let mut values = review.confirmed.unwrap();
+    values
+        .request_headers
+        .insert("x-tenant".into(), "two".into());
+    let confirmed = harness
+        .providers
+        .confirm_setup_configuration(
+            &context,
+            workspace.id(),
+            setup.id(),
+            review.revision,
+            values,
+        )
+        .await
+        .unwrap();
+
+    // The catalog was read with the old headers, so nothing of it stays: not
+    // the pinned input, not its preview, not the sign-in that read it. The
+    // registered application is configuration and outlives the sign-in.
+    let reset = harness
+        .providers
+        .get_setup(&owner, workspace.id(), setup.id())
+        .await
+        .unwrap();
+    assert_eq!(reset.state(), ProviderSetupState::AwaitingAuthorization);
+    assert_eq!(reset.input_digest(), None);
+    assert_eq!(confirmed.revision, review.revision + 1);
+    assert_eq!(confirmed.tools, []);
+    let authentication = harness
+        .providers
+        .setup_authentication(&owner, workspace.id(), setup.id(), 11)
+        .await
+        .unwrap();
+    assert!(!authentication.authorized);
 }
 
 fn explicit(client_id: &str) -> SetupOAuthClient {
@@ -5433,6 +5572,60 @@ async fn assert_consumed_without_application_secret(
         ProviderSetupState::Consumed(_)
     ));
     tx.rollback().await.unwrap();
+}
+
+// Catches: a Setup that keeps a confidential application's secret after a
+// confirmation stops using that application.
+#[tokio::test]
+async fn a_confirmation_without_a_confidential_application_drops_its_secret() {
+    use crate::account::oauth_client_secret_repository::{self as secrets, Target};
+    let api = OAuthApi::start().await;
+    let harness = harness(None).await;
+    let (actor, workspace) = workspace_owner(&harness, "user:drop-secret").await;
+    let owner = workspace.id().clone();
+    let context = change_context(actor.clone(), 10, '1');
+    let setup = harness
+        .providers
+        .prepare_openapi_fixture(&context, &owner, api.document("Secret"))
+        .await
+        .unwrap();
+    let revision = configure_publication_application(
+        &harness,
+        &context,
+        &owner,
+        setup.id(),
+        Some("secret-canary"),
+    )
+    .await;
+    let holds_secret = async || {
+        let mut tx = harness.database.begin_read_snapshot().await.unwrap();
+        let secret = secrets::load(&mut tx, &owner, &Target::Setup(setup.id()))
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        secret.is_some()
+    };
+    assert!(holds_secret().await);
+
+    let mut values = harness
+        .providers
+        .review_setup_configuration(&actor, &owner, setup.id())
+        .await
+        .unwrap()
+        .confirmed
+        .unwrap();
+    values.authentication = Some(AuthenticationConfiguration::Bearer);
+    let confirmed = harness
+        .providers
+        .confirm_setup_configuration(&context, &owner, setup.id(), revision, values)
+        .await
+        .unwrap();
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
+    assert_eq!(confirmed.revision, revision + 1);
+    assert!(!holds_secret().await);
 }
 
 #[tokio::test]
