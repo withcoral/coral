@@ -480,10 +480,11 @@ checks in `scenarios/local-mode/`, `scenarios/desktop/` and `scenarios/multi-ins
 or per-database lists. `configuration.test.ts` retains the formerly shared assertions;
 `oauth-configuration.test.ts` retains the formerly local-only configuration assertions.
 
-Keep a scenario's CI time well under its 60 s limit; CI runners are slower than
-your machine. Build the history a claim needs with the cheapest records, start
-those whose order does not matter together, and leave live pages while you
-build it: each record you add makes an open Activity page read again.
+Keep a scenario's CI time well under its 60 s limit (120 s in the `desktop`
+suite); CI runners are slower than your machine. Build the history a claim
+needs with the cheapest records, start those whose order does not matter
+together, and leave live pages while you build it: each record you add makes
+an open Activity page read again.
 
 After `page.goto`, assert the response status before you wait for content. An
 error page renders at once, and every later wait then times out with a message
