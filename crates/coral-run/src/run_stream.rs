@@ -19,7 +19,7 @@ use coral_workspace::{AgentRegistrationId, AuthenticatedPrincipal, PrincipalWork
 use tokio::sync::{mpsc, watch};
 use tokio_stream::StreamExt as _;
 
-use crate::engine::ProgramPackage;
+use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::execution::until_answered;
 use crate::lifecycle::{RunRecord, RunTerminationKind};
 use crate::owner::{self, Message, OwnerHandle, OwnerStart, StartedExecution};
@@ -194,32 +194,8 @@ impl RunModule {
             Err(_unanswered) => return link.close(Closing::Unavailable("the Run is not read")),
         };
         send_package(&run, &package, &linked, link);
-        match requests.next().await.and_then(|request| request.message) {
-            Some(run_request::Message::Loaded(_)) => {}
-            // A package the isolate could not load ends the Run unstarted.
-            Some(run_request::Message::Request(request)) if request.number == 1 => {
-                let Some(coral_run_executor::wire::v1::request::Kind::Finish(finish)) =
-                    request.kind
-                else {
-                    return link.close(Closing::InvalidArgument("Started was not sent"));
-                };
-                let Some(completion) = program::completion(finish, run.value_limits) else {
-                    return link.close(Closing::InvalidArgument("the Finish is invalid"));
-                };
-                let ended = until_answered(
-                    &held,
-                    "unstarted end",
-                    || true,
-                    || self.end_unstarted(&run, &claim, &completion),
-                )
-                .await;
-                return match ended {
-                    Ok(end) => link.end(end),
-                    Err(_unanswered) => link.close(Closing::Unavailable("the end is not written")),
-                };
-            }
-            None => return,
-            Some(_) => return link.close(Closing::InvalidArgument("Loaded was expected")),
+        if !self.loaded(&mut requests, &run, &claim, link).await {
+            return;
         }
         let attempted = AtomicBool::new(false);
         let started_at = std::sync::atomic::AtomicI64::new(0);
@@ -260,8 +236,60 @@ impl RunModule {
         }
     }
 
-    /// The Run an `Open` names, by its claim, read in one snapshot: with its
-    /// package and the Tools it linked while it has not started.
+    /// Waits for `Loaded` after the package: `false` once the stream is
+    /// done instead, as a load failure's `Finish`, a message that breaks the
+    /// protocol, or the stream's end leaves it.
+    async fn loaded(
+        &self,
+        requests: &mut Requests,
+        run: &RunRecord,
+        claim: &str,
+        link: &StreamLink,
+    ) -> bool {
+        let violation = match requests.next().await.and_then(|request| request.message) {
+            Some(run_request::Message::Loaded(_)) => None,
+            None => return false,
+            // A package the isolate could not load ends the Run unstarted.
+            Some(run_request::Message::Request(coral_run_executor::wire::v1::Request {
+                number: 1,
+                kind: Some(coral_run_executor::wire::v1::request::Kind::Finish(finish)),
+            })) => match program::completion(finish, run.value_limits) {
+                Some(completion) => {
+                    match self
+                        .end_unstarted_answered(run, claim, &completion, link)
+                        .await
+                    {
+                        Ok(end) => link.end(end),
+                        Err(_unanswered) => {
+                            link.close(Closing::Unavailable("the end is not written"));
+                        }
+                    }
+                    return false;
+                }
+                None => Some("the Finish is invalid"),
+            },
+            Some(run_request::Message::Request(_)) => Some("Started was not sent"),
+            Some(_) => Some("Loaded was expected"),
+        };
+        if let Some(reason) = violation {
+            // A message that breaks the protocol interrupts the Run before
+            // any Program code ran.
+            let _interrupted = self
+                .end_unstarted_answered(
+                    run,
+                    claim,
+                    &ExecutionCompletion::ProgramHostTerminated,
+                    link,
+                )
+                .await;
+            link.close(Closing::InvalidArgument(reason));
+            return false;
+        }
+        true
+    }
+
+    /// The Run an `Open` names, by its claim: with its package and the Tools
+    /// it linked while it has not started, in two reads that hold nothing.
     async fn open_taken(
         &self,
         run_id: &RunId,
@@ -456,14 +484,31 @@ impl RunModule {
             .map_err(Error::from))
     }
 
+    /// [`Self::end_unstarted`], written until the database answers.
+    /// It stops trying once the stream is gone.
+    async fn end_unstarted_answered(
+        &self,
+        taken: &RunRecord,
+        claim_id: &str,
+        completion: &ExecutionCompletion,
+        link: &StreamLink,
+    ) -> Result<WireEnd, Error> {
+        until_answered(
+            &taken.held_id(),
+            "unstarted end",
+            || !link.responses.is_closed(),
+            || self.end_unstarted(taken, claim_id, completion),
+        )
+        .await
+    }
+
     /// Ends a taken Run whose Program never started, as its `Finish` says.
     async fn end_unstarted(
         &self,
         taken: &RunRecord,
         claim_id: &str,
-        completion: &crate::engine::ExecutionCompletion,
+        completion: &ExecutionCompletion,
     ) -> Result<WireEnd, Error> {
-        use crate::engine::ExecutionCompletion;
         let outcome = match completion {
             ExecutionCompletion::Failed(failure) => RunTerminalOutcome::Failed(failure.clone()),
             ExecutionCompletion::MemoryLimitExceeded => {

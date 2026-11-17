@@ -214,8 +214,43 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
                 .await
                 .map(drop)
         ));
+        // A Run stream's start rebuilds the same actor from what the Run
+        // stored, and admits exactly whom admission admits.
+        let rebuilt = module
+            .check_run_start_in_transaction(
+                &mut transaction,
+                actor.principal(),
+                actor.agent_registration_id(),
+                workspace.id(),
+                15,
+            )
+            .await;
+        if let Ok((rebuilt, _evidence)) = &rebuilt {
+            assert_eq!(
+                (rebuilt.principal(), rebuilt.agent_registration_id()),
+                (actor.principal(), actor.agent_registration_id())
+            );
+        }
+        assert!(expected(permitted, rebuilt.map(drop)));
         transaction.rollback().await.unwrap();
     }
+    // An Agent's start needs the Registration that authenticated it.
+    let connection = database.database();
+    let mut transaction = connection.begin().await.unwrap();
+    assert!(expected(
+        false,
+        module
+            .check_run_start_in_transaction(
+                &mut transaction,
+                agent.principal(),
+                None,
+                workspace.id(),
+                15,
+            )
+            .await
+            .map(drop)
+    ));
+    transaction.rollback().await.unwrap();
     assert!(matches!(
         module.check_run_admission(&agent, other.id(), 15).await,
         Err(Error::WorkspaceNotFound)

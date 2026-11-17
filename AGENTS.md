@@ -119,7 +119,12 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   subscription to the change signal, and the Shutdown Drain's interruption
   of live Runs. Fix a defect in a retiring part under the rules below. Build
   new Run coordination beside the owner path, in the #2884 slice that
-  replaces that part.
+  replaces that part. The one exception is the Run stream (#2903): a Run that
+  a Run Executor holds is hosted by a Run Owner whose Program is its stream.
+  That owner has no worker lease, marks each chunk by its commit time,
+  applies the stream's requests in number order, and rebuilds a chunk on a
+  head that another writer moved under the claim, dropping the requests that
+  writer committed.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of
@@ -197,11 +202,12 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   key. Use a composite primary key only when the tuple is the domain identity.
 - For Workspace-owned data, every externally influenced read or write must
   match both the Workspace and entity identity, even when the entity ID is
-  globally unique. Two exceptions find a row by a secret, not an ID, and the
-  Workspace of the row found scopes every later read: Agent authentication at
+  globally unique. Two exceptions find a row with no Workspace, and the
+  Workspace of the row found scopes every later read. Agent authentication at
   the Organization MCP Endpoint finds the Registration by credential verifier
-  alone, and a Run stream's `Open` finds the Run by its id and the execution
-  claim a take gave the Run Executor.
+  alone, because the credential is a secret, not an ID. A Run stream's `Open`
+  comes from a Run Executor the link admitted, and finds the Run by its id
+  and the execution claim a take gave that Run Executor.
 - Add every schema migration to `crates/coral-db/migrations`, the one shared
   chain. Write one portable file that both databases run. When SQLite and
   Postgres must perform a step differently, add one file with the same name to

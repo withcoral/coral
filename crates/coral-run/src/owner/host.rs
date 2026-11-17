@@ -919,6 +919,7 @@ async fn commit_until_answered(
             module,
             accepted,
             &mut items,
+            &numbers,
             &mut enforcement,
             &records,
             &mut written,
@@ -1142,6 +1143,7 @@ async fn commit_once(
     module: &RunModule,
     accepted: &AcceptedRun,
     items: &mut [ChunkItem],
+    numbers: &[Option<u64>],
     enforcement: &mut Option<Box<EnforcementBatch>>,
     records: &Records,
     written: &mut Written,
@@ -1167,11 +1169,18 @@ async fn commit_once(
             // this read.
             return Ok(());
         }
-        if written.moved_on(&run, claim_id) {
+        // A head another writer moved, or a request it committed that this
+        // chunk still carries (queued before the owner learned of that
+        // writer), is rebuilt on the row as read.
+        let refused = refusal(&run, claim_id, written.head_before);
+        let covered = run.committed_request_number.unwrap_or(0);
+        let carries_covered =
+            refused.is_none() && numbers.iter().flatten().any(|number| *number <= covered);
+        if written.moved_on(&run, claim_id) || carries_covered {
             return Err(CommitFailure::Moved(Box::new(run)));
         }
         let now = module.now()?.max(run.accepted_at_unix_nanos);
-        if let Some(rejection) = refusal(&run, claim_id, written.head_before) {
+        if let Some(rejection) = refused {
             return Err(CommitFailure::Rejected(rejection));
         }
         if !run.accepts_owner_chunk(claim_id) {

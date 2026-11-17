@@ -59,14 +59,24 @@ impl Scripted {
         }));
     }
 
-    async fn next(&mut self) -> run_response::Message {
+    async fn recv(&mut self) -> Result<RunResponse, Closing> {
         tokio::time::timeout(EVENTUALLY, self.responses.recv())
             .await
             .expect("Coral answers in time")
             .expect("the stream is open")
+    }
+
+    async fn next(&mut self) -> run_response::Message {
+        self.recv()
+            .await
             .expect("a message, not a close")
             .message
             .expect("a message")
+    }
+
+    /// How Coral closed the stream without `Ended`.
+    async fn closing(&mut self) -> Closing {
+        self.recv().await.expect_err("a close, not a message")
     }
 
     /// Opens, loads and expects `Started`.
@@ -232,14 +242,42 @@ async fn an_open_with_another_claim_is_told_the_run_is_not_held() {
         .start(&principal, &workspace_id, submission("return 1;"))
         .await
         .expect("accept a Run");
-    let _claim = take(&runs).await;
+    let claim = take(&runs).await;
 
     let mut stream = Scripted::open(&runs, &accepted.run_id().to_string(), "not-the-claim");
     assert_eq!(stream.next().await, ended(WireEnd::NotHeld));
     let run = fixture.run_record(&workspace_id, accepted.run_id()).await;
     assert_eq!(
-        (run.state, run.execution_started()),
-        (RunState::Running, false)
+        (run.state, run.execution_started(), run.execution_claim_id),
+        (RunState::Running, false, Some(claim))
+    );
+}
+
+#[tokio::test]
+async fn a_request_before_started_interrupts_the_run_and_closes_the_stream() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let runs = fixture.runs.clone().with_run_streams();
+    let (workspace_id, principal) = fixture.user_scope("user:early", "Early request").await;
+    let accepted = runs
+        .start(&principal, &workspace_id, submission("return 1;"))
+        .await
+        .expect("accept a Run");
+    let claim = take(&runs).await;
+    let mut stream = Scripted::open(&runs, &accepted.run_id().to_string(), &claim);
+    assert!(matches!(
+        stream.next().await,
+        run_response::Message::Package(_)
+    ));
+    stream.request(1, emit(&serde_json::json!({"early": true})));
+
+    assert!(matches!(
+        stream.closing().await,
+        Closing::InvalidArgument(_)
+    ));
+    let run = fixture.run_record(&workspace_id, accepted.run_id()).await;
+    assert_eq!(
+        (run.state, run.execution_started(), run.execution_claim_id),
+        (RunState::Interrupted, false, None)
     );
 }
 
@@ -279,7 +317,8 @@ async fn a_lost_authority_at_the_start_fails_the_run_before_any_program_code() {
 }
 
 /// Catches: a loop that treats a head another writer moved as corrupt, or
-/// that commits again a request that writer already committed.
+/// that commits again a request that writer already committed, in the
+/// chunk in flight or in one built after it.
 #[tokio::test]
 async fn a_head_race_with_a_direct_write_lands_each_request_once() {
     let (gate, release) = CommitGate::blocking();
@@ -300,10 +339,11 @@ async fn a_head_race_with_a_direct_write_lands_each_request_once() {
     let mut stream = Scripted::open(&runs, &accepted.run_id().to_string(), &claim);
     stream.start().await;
 
-    // Request 1's chunk waits at the gate while another writer commits
-    // request 1 itself and moves the head.
+    // Request 1's chunk waits at the gate, request 2 waits behind it, and
+    // another writer commits both and moves the head.
     stream.request(1, emit(&serde_json::json!({"n": 1})));
     wait_until(|| gate.entered()).await;
+    stream.request(2, emit(&serde_json::json!({"n": 2})));
     let mut transaction = fixture.database.begin().await.expect("begin the write");
     let run = run_repository::find_exact_in_transaction(
         &mut transaction,
@@ -313,27 +353,33 @@ async fn a_head_race_with_a_direct_write_lands_each_request_once() {
     .await
     .expect("read the Run")
     .expect("the Run");
-    let other = OwnedEvent::new(
-        OwnedEventKind::Emitted(serde_json::json!({"n": 1}).to_string(), None),
-        run.accepted_at_unix_nanos,
-    );
+    let others = [1, 2].map(|n| {
+        OwnedEvent::new(
+            OwnedEventKind::Emitted(serde_json::json!({"n": n}).to_string(), None),
+            run.accepted_at_unix_nanos,
+        )
+    });
     run_repository::commit_chunk(
         &mut transaction,
         Chunk::new(&run, Some(&claim), run.accepted_at_unix_nanos)
-            .owned_events([&other])
-            .output_bytes(run.accumulated_output_bytes + other.output_bytes())
-            .request_number(1),
+            .owned_events(&others)
+            .output_bytes(
+                run.accumulated_output_bytes
+                    + others.iter().map(OwnedEvent::output_bytes).sum::<usize>(),
+            )
+            .request_number(2),
     )
     .await
     .expect("the other writer's chunk");
     transaction.commit().await.expect("commit it");
     release.send(()).expect("release the loop's commit");
 
-    assert_eq!(stream.next().await, committed(1));
-    stream.request(2, emit(&serde_json::json!({"n": 2})));
     assert_eq!(stream.next().await, committed(2));
+    assert_eq!(stream.next().await, committed(2));
+    stream.request(3, emit(&serde_json::json!({"n": 3})));
+    assert_eq!(stream.next().await, committed(3));
     stream.request(
-        3,
+        4,
         request::Kind::Finish(Finish {
             completion: Some(finish::Completion::ValueJson("3".to_owned())),
         }),
@@ -343,8 +389,12 @@ async fn a_head_race_with_a_direct_write_lands_each_request_once() {
     let terminal = wait_for_terminal(&runs, &principal, &workspace_id, accepted.run_id()).await;
     assert_eq!(
         shape(terminal.events()),
-        [r#"emitted {"n":1}"#, r#"emitted {"n":2}"#]
+        [
+            r#"emitted {"n":1}"#,
+            r#"emitted {"n":2}"#,
+            r#"emitted {"n":3}"#
+        ]
     );
     let run = fixture.run_record(&workspace_id, accepted.run_id()).await;
-    assert_eq!(run.committed_request_number, Some(2));
+    assert_eq!(run.committed_request_number, Some(3));
 }
