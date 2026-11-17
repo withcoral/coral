@@ -3,10 +3,10 @@ title: "Concepts"
 description: "Build the right mental model for Coral"
 ---
 
-<Frame caption="A principal submits a program. Its run calls the tools of a provider, directly or through custom tools. Coral checks each tool's policy and adds the account's credentials before it calls the upstream service.">
+<Frame caption="A principal submits a program. Its run calls the tools of a provider, directly or through custom tools. Coral checks the policy of each tool. Then Coral adds the credentials of the account and calls the upstream service.">
   <img
     src="/images/concepts.svg"
-    alt="Diagram of an organization that holds a workspace. In the workspace, a principal submits a program. Its run calls a tool of a provider, or a custom tool that calls the provider's tools. The provider lists its tools with a policy of Allow, Ask or Block. Coral adds the credentials of the provider's account, then calls the upstream service."
+    alt="Diagram of an organization that holds a workspace. In the workspace, a principal submits a program. Its run calls a tool of a provider, or a custom tool that calls the provider's tools. Each tool of the provider has a policy: Allow, Ask or Block. Coral adds the credentials of the provider's account. Then Coral calls the upstream service."
   />
 </Frame>
 

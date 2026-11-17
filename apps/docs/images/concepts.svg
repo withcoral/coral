@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 396" role="img" aria-labelledby="concepts-title" font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="#171717">
-  <title id="concepts-title">A principal submits a program. Its run calls the tools of a provider in a workspace, directly or through custom tools. Coral checks the policy of each tool and adds the credentials of the account, then calls the upstream service.</title>
+  <title id="concepts-title">A principal submits a program. Its run calls the tools of a provider, directly or through custom tools. Coral checks the policy of each tool. Then Coral adds the credentials of the account and calls the upstream service.</title>
   <defs>
     <marker id="arrow-path" markerUnits="userSpaceOnUse" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
       <path d="M0,0 L7,3.5 L0,7 Z" fill="#d53c05" />
@@ -9,7 +9,7 @@
   <!-- Organization -->
   <rect x="8" y="8" width="548" height="380" rx="14" fill="#000" fill-opacity="0.03" stroke="#000" stroke-opacity="0.14" />
   <text x="22" y="31" font-size="10.5" font-weight="600" letter-spacing="0.6" fill-opacity="0.6">ORGANIZATION</text>
-  <text x="122" y="31" font-size="11" fill-opacity="0.6">one for each deployment, holds the workspaces</text>
+  <text x="122" y="31" font-size="11" fill-opacity="0.6">One for each deployment. It holds the workspaces.</text>
 
   <!-- Workspace -->
   <rect x="20" y="44" width="524" height="332" rx="12" fill="#fff" stroke="#000" stroke-opacity="0.14" />
@@ -27,11 +27,11 @@
   <!-- Run -->
   <rect x="34" y="170" width="140" height="54" rx="8" fill="#fff" stroke="#000" stroke-opacity="0.22" />
   <text x="46" y="193" font-size="13" font-weight="600">Run</text>
-  <text x="46" y="211" fill-opacity="0.6">runs the program</text>
+  <text x="46" y="211" fill-opacity="0.6">one execution</text>
 
   <!-- Run to custom tools -->
   <line x1="104" y1="224" x2="104" y2="261" stroke="#d53c05" stroke-width="1.5" marker-end="url(#arrow-path)" />
-  <text x="114" y="247" font-size="11">or a custom tool</text>
+  <text x="114" y="247" font-size="11">calls a custom tool</text>
 
   <!-- Custom tools: a set of tools, drawn as the provider is -->
   <rect x="34" y="262" width="140" height="70" rx="10" fill="#000" fill-opacity="0.03" stroke="#000" stroke-opacity="0.14" />
@@ -54,7 +54,7 @@
   <rect x="262" y="88" width="268" height="274" rx="10" fill="#000" fill-opacity="0.03" stroke="#000" stroke-opacity="0.14" />
   <text x="274" y="111" font-size="10.5" font-weight="600" letter-spacing="0.6" fill-opacity="0.6">PROVIDER</text>
   <text x="518" y="111" font-size="11" text-anchor="end" fill-opacity="0.6" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">coral.providers.github</text>
-  <text x="274" y="135" font-size="11" fill-opacity="0.6">Tools and their policy</text>
+  <text x="274" y="135" font-size="11" fill-opacity="0.6">Each tool has a policy</text>
 
   <rect x="274" y="146" width="244" height="96" rx="8" fill="#fff" stroke="#000" stroke-opacity="0.22" />
   <line x1="274" y1="178" x2="518" y2="178" stroke="#000" stroke-opacity="0.1" />
@@ -75,7 +75,8 @@
 
   <!-- Tools to account -->
   <line x1="298" y1="242" x2="298" y2="275" stroke="#d53c05" stroke-width="1.5" marker-end="url(#arrow-path)" />
-  <text x="308" y="263" font-size="11">Coral adds the credentials</text>
+  <text x="308" y="256" font-size="11">Coral adds the credentials,</text>
+  <text x="308" y="269" font-size="11">then calls the service</text>
 
   <!-- Account -->
   <rect x="274" y="276" width="244" height="72" rx="8" fill="#fff" stroke="#000" stroke-opacity="0.22" />
@@ -85,7 +86,6 @@
 
   <!-- Account to upstream service -->
   <line x1="518" y1="312" x2="595" y2="312" stroke="#d53c05" stroke-width="1.5" marker-end="url(#arrow-path)" />
-  <text x="576" y="305" font-size="11" text-anchor="middle">calls</text>
 
   <!-- Upstream service -->
   <text x="596" y="278" font-size="10.5" font-weight="600" letter-spacing="0.6" fill-opacity="0.6">UPSTREAM SERVICE</text>
