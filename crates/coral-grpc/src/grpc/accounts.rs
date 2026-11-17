@@ -250,7 +250,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
             .provider_readiness
             .inspect_agent_providers(&user, &workspace, &agent)
             .await
-            .map_err(super::providers::readiness_error)?;
+            .map_err(super::providers::search_error)?;
         Ok(Response::new(wire::ListAgentProvidersResponse {
             providers: inspections.into_iter().map(agent_provider_view).collect(),
         }))

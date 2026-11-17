@@ -170,16 +170,22 @@ pub(super) fn error(error: coral_workspace::Error) -> Status {
     safe_status(code, reason)
 }
 
+/// The status of one coral-administration failure. An error that wraps
+/// another module's reports what that error reports alone.
 pub(super) fn administration_error(error: coral_administration::Error) -> Status {
     use coral_administration::Error as E;
     match error {
         E::Workspace(error) => self::error(error),
+        E::Provider(error) => super::providers::error(error),
+        E::Tools(error) => super::authored_tools::error(error),
+        E::Policy(error) => super::policies::error(error),
         E::UndefinedSecretStore => {
             safe_status(tonic::Code::FailedPrecondition, "SECRET_STORE_NOT_DEFINED")
         }
-        E::Database(_) | E::Provider(_) | E::Tools(_) | E::Policy(_) | E::Auth(_) => {
-            safe_status(tonic::Code::Unavailable, "UNAVAILABLE")
-        }
+        // An auth error reaches the adapter only here, wrapped, when access
+        // removal fails to retire a Refresh Grant. The adapter has no mapper
+        // of its own for it.
+        E::Database(_) | E::Auth(_) => status::unavailable(),
     }
 }
 /// The size of the page a list request asks for: zero selects the default of
@@ -450,6 +456,43 @@ mod tests {
             super::page_request::<SharedToolLifecycleEventKey>(2, "reports.total").unwrap_err();
         assert_eq!(no_position.code(), Code::InvalidArgument);
         assert_eq!(super::next_after::<PrivateToolPath>(None), "");
+    }
+
+    /// Catches: a refusal that reads as retryable because an administration
+    /// error wraps the error that refuses.
+    #[test]
+    fn an_administration_error_reports_what_it_wraps() {
+        use coral_administration::Error as Administration;
+        let reported = |status: tonic::Status| (status.code(), status.message().to_owned());
+        let cases = [
+            (
+                Administration::Workspace(E::LastWorkspaceOwner),
+                super::error(E::LastWorkspaceOwner),
+            ),
+            (
+                Administration::Provider(coral_provider::Error::ProviderNotFound),
+                crate::grpc::providers::error(coral_provider::Error::ProviderNotFound),
+            ),
+            (
+                Administration::Tools(coral_tools::Error::PrivateToolExists),
+                crate::grpc::authored_tools::error(coral_tools::Error::PrivateToolExists),
+            ),
+            (
+                Administration::Policy(coral_policy::Error::ToolNotFound),
+                crate::grpc::policies::error(coral_policy::Error::ToolNotFound),
+            ),
+        ];
+        for (wrapped, alone) in cases {
+            let label = format!("{wrapped:?}");
+            let status = super::administration_error(wrapped);
+            assert_ne!(status.code(), Code::Unavailable, "{label}");
+            assert_eq!(reported(status), reported(alone), "{label}");
+        }
+        assert_eq!(
+            super::administration_error(Administration::Database(coral_db::Error::WriterBusy))
+                .code(),
+            Code::Unavailable
+        );
     }
 
     /// Reef names these reasons in management forms (`apps/reef/app/lib/management.server.ts`).

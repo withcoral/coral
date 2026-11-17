@@ -223,29 +223,11 @@ impl GrpcServices {
         let (workspace, id) = resource(name, "tasks")?;
         let id = coral_task::TaskId::parse(id).map_err(|_error| status::invalid())?;
         let principal = self.principal(request, Some(&workspace), audience).await?;
-        let task =
-            self.tasks
-                .get(&principal, &workspace, &id)
-                .await
-                .map_err(|error| match error {
-                    coral_task::Error::TaskNotFound
-                    | coral_task::Error::WorkspaceNotFound
-                    | coral_task::Error::InteractionNotFound => status::not_found(),
-                    coral_task::Error::PermissionDenied(_) => status::permission_denied(),
-                    coral_task::Error::InvalidInput(_) => status::invalid(),
-                    coral_task::Error::TaskClosed => {
-                        status::safe_status(tonic::Code::FailedPrecondition, "TASK_CLOSED")
-                    }
-                    coral_task::Error::SnapshotTooLarge
-                    | coral_task::Error::Search(_)
-                    | coral_task::Error::Tools(_)
-                    | coral_task::Error::Run(_)
-                    | coral_task::Error::Clock
-                    | coral_task::Error::IdentifierIssuance(_)
-                    | coral_task::Error::Workspace(_)
-                    | coral_task::Error::CorruptData(_)
-                    | coral_task::Error::Database(_) => status::unavailable(),
-                })?;
+        let task = self
+            .tasks
+            .get(&principal, &workspace, &id)
+            .await
+            .map_err(activity::error)?;
         Ok(Response::new(internal::Task {
             name: name.to_owned(),
             intent: task.intent().as_str().to_owned(),
