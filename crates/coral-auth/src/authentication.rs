@@ -274,13 +274,19 @@ fn now_unix_nanos() -> Result<i64, AuthenticationError> {
 
 impl From<coral_workspace::Error> for AuthenticationError {
     fn from(error: coral_workspace::Error) -> Self {
-        match error {
-            coral_workspace::Error::InvalidAgentCredential
-            | coral_workspace::Error::AgentNotFound
-            | coral_workspace::Error::AgentDisabled
-            | coral_workspace::Error::AgentRegistrationExpired
-            | coral_workspace::Error::PermissionDenied(_) => Self::Unauthenticated,
-            _ => Self::Unavailable,
+        use coral_workspace::AuthorityRefusal as Refusal;
+        match error.refusal() {
+            Some(
+                Refusal::InvalidAgentCredential
+                | Refusal::AgentNotFound
+                | Refusal::AgentDisabled
+                | Refusal::AgentRegistrationExpired
+                | Refusal::PermissionDenied,
+            ) => Self::Unauthenticated,
+            // Neither is an answer about the credential.
+            Some(Refusal::WorkspaceNotFound | Refusal::WorkspaceArchived) | None => {
+                Self::Unavailable
+            }
         }
     }
 }

@@ -518,13 +518,8 @@ pub(crate) fn authority_failure(error: coral_workspace::Error) -> Result<CoralFa
 /// Whether a Workspace error means the Principal lost authority, rather than
 /// a host defect.
 pub(crate) const fn loses_authority(error: &coral_workspace::Error) -> bool {
-    matches!(
-        error,
-        coral_workspace::Error::WorkspaceNotFound
-            | coral_workspace::Error::PermissionDenied(_)
-            | coral_workspace::Error::WorkspaceArchived
-            | coral_workspace::Error::AgentNotFound
-            | coral_workspace::Error::AgentDisabled
-            | coral_workspace::Error::AgentRegistrationExpired
-    )
+    match error.refusal() {
+        Some(refusal) => refusal.ends_authority(),
+        None => false,
+    }
 }

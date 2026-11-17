@@ -463,11 +463,20 @@ impl ApprovalModule {
 }
 
 fn conceal(error: coral_workspace::Error) -> Error {
-    match error {
-        coral_workspace::Error::WorkspaceNotFound
-        | coral_workspace::Error::PermissionDenied(_)
-        | coral_workspace::Error::WorkspaceArchived => Error::ApprovalNotFound,
-        other => other.into(),
+    use coral_workspace::AuthorityRefusal as Refusal;
+    match error.refusal() {
+        Some(
+            Refusal::WorkspaceNotFound | Refusal::PermissionDenied | Refusal::WorkspaceArchived,
+        ) => Error::ApprovalNotFound,
+        // The actor is a User by the time this runs, so no Agent refusal
+        // reaches it.
+        Some(
+            Refusal::AgentNotFound
+            | Refusal::AgentDisabled
+            | Refusal::AgentRegistrationExpired
+            | Refusal::InvalidAgentCredential,
+        )
+        | None => error.into(),
     }
 }
 /// What of an Invocation [`decision_required`] reads. Two requests of one

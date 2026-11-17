@@ -873,15 +873,10 @@ impl<'a> InvocationCaller<'a> {
             .await
         {
             Ok(authority) => Ok(Some(authority)),
-            Err(
-                coral_workspace::Error::WorkspaceNotFound
-                | coral_workspace::Error::PermissionDenied(_)
-                | coral_workspace::Error::WorkspaceArchived
-                | coral_workspace::Error::AgentNotFound
-                | coral_workspace::Error::AgentDisabled
-                | coral_workspace::Error::AgentRegistrationExpired,
-            ) => Ok(None),
-            Err(error) => Err(error.into()),
+            Err(error) => match error.refusal() {
+                Some(refusal) if refusal.ends_authority() => Ok(None),
+                Some(_) | None => Err(error.into()),
+            },
         }
     }
 }

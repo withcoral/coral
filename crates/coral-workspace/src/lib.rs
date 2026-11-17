@@ -125,7 +125,7 @@ pub use agent_types::{
     IssuedAgentCredential,
 };
 pub use coral_telemetry::TraceId;
-pub use error::Error;
+pub use error::{AuthorityRefusal, Error};
 pub use principal::{
     AuthenticatedPrincipal, AuthenticatedPrincipalId, Principal, PrincipalId, PrincipalKind,
 };

@@ -150,6 +150,39 @@ impl Error {
         }
     }
 
+    /// The database error behind this one, directly or through the
+    /// Workspace error that wraps it. A module that wraps this error asks
+    /// here, so it never lists another module's variants.
+    #[must_use]
+    pub const fn database_error(&self) -> Option<&coral_db::Error> {
+        match self {
+            Self::Database(error) => Some(error),
+            Self::Workspace(error) => error.database_error(),
+            // Name every variant so a new one that holds a database error
+            // is found here.
+            Self::InvalidInput(_)
+            | Self::NotFound(_)
+            | Self::PrivateToolExists
+            | Self::RevisionConflict { .. }
+            | Self::Admission(..)
+            | Self::SharedToolSourceUnreadable
+            | Self::SharedToolRestoreDiffers
+            | Self::SharedToolDeclarationChanged
+            | Self::SharedToolHasDependents { .. }
+            | Self::PathConflict(_)
+            | Self::NotData(..)
+            | Self::CompilationTimedOut(_)
+            | Self::CompilerBusy
+            | Self::NoCompiler
+            | Self::PermissionDenied(_)
+            | Self::CompilerUnavailable(_)
+            | Self::CompilerWorkerStopped
+            | Self::Clock(_)
+            | Self::Json(_)
+            | Self::CorruptData(_) => None,
+        }
+    }
+
     /// Returns a definite safe rejection; operational uncertainty has no invented outcome.
     #[must_use]
     pub fn safe_rejection(&self) -> Option<(&'static str, String)> {
@@ -185,5 +218,38 @@ impl Error {
             code,
             coral_v8::bounded_diagnostic_message(&self.to_string()),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    // Catches: a database error that a caller of Tools cannot find, so an
+    // unanswered write reads as a definite answer.
+    #[test]
+    fn a_tools_error_states_the_database_error_behind_it() {
+        let unanswered = || coral_db::Error::WriterBusy;
+        for (error, label) in [
+            (Error::Database(unanswered()), "tools"),
+            (
+                Error::Workspace(coral_workspace::Error::Database(unanswered())),
+                "workspace",
+            ),
+        ] {
+            assert!(
+                error
+                    .database_error()
+                    .is_some_and(coral_db::Error::is_unanswered),
+                "{label}"
+            );
+        }
+        for error in [
+            Error::PrivateToolExists,
+            Error::CorruptData("row".into()),
+            Error::Workspace(coral_workspace::Error::WorkspaceArchived),
+        ] {
+            assert!(error.database_error().is_none(), "{error:?}");
+        }
     }
 }
