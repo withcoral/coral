@@ -1,7 +1,7 @@
 use super::authored_tools::{diagnostic, error, private_tool_agent};
 use super::status::invalid;
 use super::workspaces::{next_after, page_request, timestamp, workspace_id};
-use super::{GrpcServices, management as wire, now};
+use super::{GrpcServices, management as wire};
 use coral_tools::{PrivateTool, PrivateToolChangeContext, PrivateToolPath, PrivateToolSummary};
 use coral_workspace::{AuthenticatedPrincipal, TraceId};
 use tonic::{Request, Response, Status};
@@ -48,7 +48,7 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
             .map_err(super::providers::error)?;
         let page = self
             .private_tools
-            .list(&AuthenticatedPrincipal::user(user), &w, &asked)
+            .list(&AuthenticatedPrincipal::user(user.into_user()), &w, &asked)
             .await
             .map_err(error)?;
         Ok(Response::new(wire::ListPrivateToolsResponse {
@@ -67,7 +67,7 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
         let path = path(&input.path)?;
-        let actor = AuthenticatedPrincipal::user(user);
+        let actor = AuthenticatedPrincipal::user(user.into_user());
         let tool = match private_tool_agent(&input.agent, &w)? {
             Some(agent) => {
                 self.private_tools
@@ -89,9 +89,10 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
         let path = path(&input.path)?;
+        let now = user.now().get();
         let context = PrivateToolChangeContext::new(
-            AuthenticatedPrincipal::user(user),
-            now(),
+            AuthenticatedPrincipal::user(user.into_user()),
+            now,
             TraceId::current_or_new(),
         );
         let agent = private_tool_agent(&input.agent, &w)?;

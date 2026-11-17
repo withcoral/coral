@@ -59,8 +59,8 @@ fn registration(r: AgentRegistration, meta: ResourceMetadata) -> wire::AgentRegi
         update_time: Some(timestamp(meta.updated_at)),
     }
 }
-fn issued(view: IssuedAgentCredential) -> wire::IssuedAgentCredential {
-    let agent = agent_view(view.inspection(), super::now());
+fn issued(view: IssuedAgentCredential, now: i64) -> wire::IssuedAgentCredential {
+    let agent = agent_view(view.inspection(), now);
     wire::IssuedAgentCredential {
         agent: Some(agent),
         registration: Some(registration(view.registration, view.registration_metadata)),
@@ -127,7 +127,7 @@ impl wire::agent_service_server::AgentService for GrpcServices {
             )
             .await
             .map_err(error)?;
-        Ok(Response::new(issued(created)))
+        Ok(Response::new(issued(created, actor.now().get())))
     }
     #[tracing::instrument(skip_all, name = "coral.private.list_agents")]
     async fn list_agents(
@@ -142,8 +142,8 @@ impl wire::agent_service_server::AgentService for GrpcServices {
             .inspect_agents(&actor, &w)
             .await
             .map_err(error)?;
-        // One reading of the clock decides every Agent's blockers.
-        let now = super::now();
+        // The request's time decides every Agent's blockers.
+        let now = actor.now().get();
         let values = agents
             .into_iter()
             .map(|view| agent_view(view, now))
@@ -172,7 +172,7 @@ impl wire::agent_service_server::AgentService for GrpcServices {
             .inspect_agent(&actor, &w, &id)
             .await
             .map_err(error)?;
-        Ok(Response::new(agent_view(view, super::now())))
+        Ok(Response::new(agent_view(view, actor.now().get())))
     }
     #[tracing::instrument(skip_all, name = "coral.private.update_agent")]
     async fn update_agent(
@@ -203,7 +203,7 @@ impl wire::agent_service_server::AgentService for GrpcServices {
             .inspect_agent(&actor, &w, &id)
             .await
             .map_err(error)?;
-        Ok(Response::new(agent_view(view, super::now())))
+        Ok(Response::new(agent_view(view, actor.now().get())))
     }
     #[tracing::instrument(skip_all, name = "coral.private.delete_agent")]
     async fn delete_agent(
@@ -315,6 +315,6 @@ impl wire::agent_registration_service_server::AgentRegistrationService for GrpcS
             )
             .await
             .map_err(error)?;
-        Ok(Response::new(issued(rotated)))
+        Ok(Response::new(issued(rotated, actor.now().get())))
     }
 }

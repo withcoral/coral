@@ -652,6 +652,63 @@ async fn openapi_upload_accepts_64_mib_and_reports_the_document_limit() {
     assert_eq!(error.message(), "OPENAPI_DOCUMENT_TOO_LARGE");
 }
 
+/// coral-provider owns a Setup's deadline and what expiry scrubs
+/// (`setup_inspection_settles_expiry_before_returning_consistent_state_and_configuration`). Over the wire, the instant
+/// that settles it is the server's clock's: the request's time for a read, and
+/// a new reading once preparation has returned.
+///
+/// Catches: a handler that reads the host's clock, which shows the Setup
+/// expired from its first answer, or never.
+#[tokio::test]
+async fn a_setup_expires_once_the_servers_clock_reaches_its_deadline() {
+    for start in super::CLOCK_STARTS {
+        let clock = coral_test_support::ManualClock::starting_at(start);
+        let f = Fixture::at(clock.clone()).await;
+        let mut setups = f.setups();
+        let created = setups
+            .create_provider_setup(request(
+                setup_request(
+                    format!("workspaces/{}", f.workspace.id()),
+                    Input::OpenapiDocument(openapi_document(false).into()),
+                ),
+                &f.token(&f.owner, "reef"),
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        let mut state = async || {
+            setups
+                .get_provider_setup(request(
+                    management::GetProviderSetupRequest {
+                        name: created.name.clone(),
+                    },
+                    &f.token(&f.owner, "reef"),
+                    "reef",
+                ))
+                .await
+                .unwrap()
+                .into_inner()
+                .state()
+        };
+        let open = management::ProviderSetupState::AwaitingConfiguration;
+
+        assert_eq!(created.state(), open, "created at {start:?}");
+        assert_eq!(state().await, open, "at {start:?}");
+
+        let deadline = created.expire_time.unwrap();
+        clock.set(coral_db::UnixNanos::new(
+            deadline.seconds * 1_000_000_000 + i64::from(deadline.nanos),
+        ));
+
+        assert_eq!(
+            state().await,
+            management::ProviderSetupState::Expired,
+            "at the deadline of the Setup created at {start:?}"
+        );
+    }
+}
+
 /// coral-provider owns replay, consumption and request identity
 /// (`publication_replay_returns_the_committed_result_without_a_second_account`,
 /// `tests/workspace_provider.rs`). This checks the Setup and Publication projection.

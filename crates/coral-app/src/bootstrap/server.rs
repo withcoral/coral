@@ -470,6 +470,7 @@ impl PreparedServerBuilder {
             private_listeners: PrivateListeners {
                 grpc_bind: deployment_config.grpc_bind(),
                 authentication,
+                clock: clock.clone(),
                 run_executors,
                 held_authorization_server: None,
             },
@@ -499,6 +500,8 @@ pub(crate) struct Composition {
 pub(crate) struct PrivateListeners {
     grpc_bind: SocketAddr,
     authentication: coral_auth::PrincipalAuthentication,
+    /// The instance's one clock, the one `authentication` reads.
+    clock: Arc<dyn coral_db::Clock>,
     run_executors: RunExecutorLink,
     held_authorization_server: Option<Box<CoralAuthorizationServer>>,
 }
@@ -529,6 +532,7 @@ impl PrivateListeners {
             engine.grpc_dependencies(),
             coral_grpc::TransportContext {
                 authentication: self.authentication,
+                clock: self.clock,
                 mcp_origin: mcp_origin.clone(),
                 readiness: engine.readiness().probe(),
                 stopping: stopping.clone(),
