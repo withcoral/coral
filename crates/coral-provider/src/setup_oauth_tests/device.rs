@@ -108,6 +108,74 @@ async fn poll_setup(
     .expect("device authorization reaches the awaited state without browser activity")
 }
 
+/// A clock that reads one instant until the test moves it. A worker that
+/// reads it acts at exactly the instant its request or its recovery gave.
+fn still_clock() -> coral_test_support::ManualClock {
+    coral_test_support::ManualClock::starting_at(coral_db::UnixNanos::new(0))
+}
+
+/// A new Account Module over the harness's database whose workers read
+/// `clock`.
+fn accounts_reading(
+    harness: &Harness,
+    clock: &coral_test_support::ManualClock,
+) -> crate::account::AccountModule {
+    harness
+        .restarted_accounts()
+        .with_clock(Arc::new(clock.clone()))
+}
+
+/// Stops the workers of `stopped` and resumes their jobs at `now` in a new
+/// Account Module, as a server that restarts does. A resumed worker whose
+/// poll is due at `now` asks the token endpoint at once, so a test moves a
+/// sign-in over an interval without waiting for it.
+async fn resumed_at(
+    harness: &Harness,
+    stopped: &crate::account::AccountModule,
+    clock: &coral_test_support::ManualClock,
+    now: i64,
+) -> crate::account::AccountModule {
+    stopped.stop_device_authorizations().await.unwrap();
+    let resumed = accounts_reading(harness, clock);
+    resumed.recover_device_authorizations(now).await.unwrap();
+    resumed
+}
+
+/// The timing of a job that polls every `interval` seconds.
+fn timing(interval: u64, next_poll_at: i64) -> crate::account::device_schedule::Timing {
+    crate::account::device_schedule::Timing {
+        interval: std::time::Duration::from_secs(interval),
+        next_poll_at: coral_db::UnixNanos::new(next_poll_at),
+    }
+}
+
+/// Waits until the Workspace's one device job stores `expected`.
+async fn storing(
+    harness: &Harness,
+    workspace: &WorkspaceId,
+    expected: crate::account::device_schedule::Timing,
+) {
+    let mut stored = Vec::new();
+    let reached = tokio::time::timeout(coral_test_support::EVENTUALLY, async {
+        loop {
+            let mut tx = harness.database.begin_read_snapshot().await.unwrap();
+            stored = crate::account::device_repository::stored_timings(&mut tx, workspace)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            if stored == [expected] {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    assert!(
+        reached.is_ok(),
+        "the device job stores {stored:?}, not {expected:?}"
+    );
+}
+
 /// The device authorization has left its pending and exchanging states.
 fn settled(progress: &crate::account::SetupAuthentication) -> bool {
     !matches!(
@@ -877,6 +945,9 @@ fn logged(logs: &coral_telemetry::testing::ExportCapture, text: &str) -> Vec<Str
         .collect()
 }
 
+/// Catches a worker that does not keep the service's interval between its
+/// polls, one that does not slow down when the service asks, and a client
+/// secret, device code or token that reaches the stored progress.
 #[tokio::test]
 async fn device_confidential_client_polls_pending_and_slows_down_without_exposing_secrets() {
     let api = OAuthApi::start().await;
@@ -886,7 +957,7 @@ async fn device_confidential_client_polls_pending_and_slows_down_without_exposin
             "device_code": "device-private-canary", "user_code": "ABCD-EFGH",
             "verification_uri": format!("{}/activate", api.server.uri()), "expires_in": 60, "interval": 1,
         }))).expect(1).mount(&api.server).await;
-    let polls = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let polls = Arc::new(AtomicUsize::new(0));
     let seen = polls.clone();
     Mock::given(method("POST"))
         .and(path("/token"))
@@ -897,11 +968,9 @@ async fn device_confidential_client_polls_pending_and_slows_down_without_exposin
             let body = String::from_utf8_lossy(&request.body);
             assert!(!body.contains("code_verifier"));
             assert!(!body.contains("redirect_uri"));
-            let mut polls = seen.lock().unwrap();
-            polls.push(std::time::Instant::now());
-            ResponseTemplate::new(200).set_body_json(match polls.len() {
-                1 => json!({"error": "authorization_pending"}),
-                2 => json!({"error": "slow_down"}),
+            ResponseTemplate::new(200).set_body_json(match seen.fetch_add(1, Ordering::SeqCst) {
+                0 => json!({"error": "authorization_pending"}),
+                1 => json!({"error": "slow_down"}),
                 _ => json!({"access_token": ACCESS, "token_type": "Bearer", "scope": "read"}),
             })
         })
@@ -909,14 +978,47 @@ async fn device_confidential_client_polls_pending_and_slows_down_without_exposin
         .expect(3)
         .mount(&api.server)
         .await;
-    let (harness, context, workspace, setup) = pending_device_setup(
+    let clock = still_clock();
+    let mut device = confirmed_application_setup(
         &api,
         crate::OAuthClientAuthentication::ClientSecretPost {
             secret: Some(Secret::new("device-secret-canary".into()).unwrap()),
         },
     )
     .await;
-    poll_setup(&harness, &context, &workspace, &setup, |progress| {
+    device.harness.accounts = accounts_reading(&device.harness, &clock);
+    start_device_sign_in(&device).await;
+    let DeviceSetup {
+        harness,
+        context,
+        workspace,
+        setup,
+        ..
+    } = &device;
+    let issued = context.occurred_at_unix_nanos();
+    let second = std::time::Duration::from_secs(1);
+
+    // The service asked for one second between polls.
+    storing(harness, workspace, timing(1, issued + SECOND)).await;
+    assert_eq!(polls.load(Ordering::SeqCst), 0);
+    // The worker sleeps on Tokio's time and reads the clock when it wakes,
+    // so it polls within one second of sleep after the clock reaches a
+    // poll. No assertion here measures that sleep. Pending keeps the
+    // interval.
+    clock.advance(second);
+    storing(harness, workspace, timing(1, issued + 2 * SECOND)).await;
+    assert_eq!(polls.load(Ordering::SeqCst), 1);
+    // The same worker goes on to its next poll. `slow_down` adds five
+    // seconds.
+    clock.advance(second);
+    storing(harness, workspace, timing(6, issued + 8 * SECOND)).await;
+    assert_eq!(polls.load(Ordering::SeqCst), 2);
+
+    // Six seconds of sleep would say no more than the stored timing does. A
+    // worker that resumes the job at that instant reads the timing and
+    // polls at once.
+    let resumed = resumed_at(harness, &harness.accounts, &clock, issued + 8 * SECOND).await;
+    poll_setup(harness, context, workspace, setup, |progress| {
         let debug = format!("{progress:?}");
         for secret in ["device-secret-canary", "device-private-canary", ACCESS] {
             assert!(!debug.contains(secret));
@@ -924,9 +1026,7 @@ async fn device_confidential_client_polls_pending_and_slows_down_without_exposin
         progress.authorized
     })
     .await;
-    let polls = polls.lock().unwrap();
-    assert!(polls[1].duration_since(polls[0]) >= std::time::Duration::from_secs(1));
-    assert!(polls[2].duration_since(polls[1]) >= std::time::Duration::from_secs(6));
+    resumed.stop_device_authorizations().await.unwrap();
 }
 
 #[tokio::test]
@@ -1179,62 +1279,74 @@ async fn device_recovery_keeps_the_code_and_slow_down_schedule_with_one_poller()
     let observed = polls.clone();
     Mock::given(method("POST"))
         .and(path("/token"))
-        .respond_with(move |_request: &Request| {
-            if observed.fetch_add(1, Ordering::SeqCst) == 0 {
-                ResponseTemplate::new(400).set_body_json(json!({"error":"slow_down"}))
-            } else {
-                ResponseTemplate::new(200).set_body_json(
+        .respond_with(
+            move |_request: &Request| match observed.fetch_add(1, Ordering::SeqCst) {
+                0 => ResponseTemplate::new(400).set_body_json(json!({"error":"slow_down"})),
+                1 => ResponseTemplate::new(400)
+                    .set_body_json(json!({"error":"authorization_pending"})),
+                _ => ResponseTemplate::new(200).set_body_json(
                     json!({"access_token": ACCESS, "token_type":"Bearer", "scope":"read"}),
-                )
-            }
-        })
+                ),
+            },
+        )
         .with_priority(1)
         .mount(&api.server)
         .await;
-    let (h, context, owner, setup) =
-        pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
-    tokio::time::timeout(coral_test_support::EVENTUALLY, async {
-        while polls.load(Ordering::SeqCst) == 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    })
-    .await
-    .unwrap();
-    // Allow the received slow_down response to settle before stopping the process's workers.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    h.accounts.stop_device_authorizations().await.unwrap();
-    let restarted = h.restarted_accounts();
-    let competitor = h.restarted_accounts();
-    let now = 2_000_000_010;
+    let clock = still_clock();
+    let mut device =
+        confirmed_application_setup(&api, crate::OAuthClientAuthentication::None).await;
+    device.harness.accounts = accounts_reading(&device.harness, &clock);
+    start_device_sign_in(&device).await;
+    let DeviceSetup {
+        harness: h,
+        context,
+        workspace: owner,
+        setup,
+        ..
+    } = &device;
+    let issued = context.occurred_at_unix_nanos();
+    storing(h, owner, timing(1, issued + SECOND)).await;
+
+    // The first poll gets slow_down, and the worker stores the longer
+    // interval before its server stops.
+    let slowed = resumed_at(h, &h.accounts, &clock, issued + SECOND).await;
+    storing(h, owner, timing(6, issued + 7 * SECOND)).await;
+    slowed.stop_device_authorizations().await.unwrap();
+
+    // Two servers recover the job at the instant its next poll is due. One
+    // worker claims it and polls at once.
+    let restarted = accounts_reading(h, &clock);
+    let competitor = accounts_reading(h, &clock);
+    let now = issued + 7 * SECOND;
     let (first, second) = tokio::join!(
         restarted.recover_device_authorizations(now),
         competitor.recover_device_authorizations(now)
     );
     first.unwrap();
     second.unwrap();
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    assert_eq!(
-        polls.load(Ordering::SeqCst),
-        1,
-        "recovery must retain slow_down rather than restart the interval"
-    );
+    // The answer is pending, so the next poll is one interval later. A
+    // worker that had started again from the device code's one-second
+    // interval would store that interval here.
+    storing(h, owner, timing(6, issued + 13 * SECOND)).await;
     let progress = h
         .providers
-        .setup_authentication(context.actor(), &owner, &setup, now)
+        .setup_authentication(context.actor(), owner, setup, now)
         .await
         .unwrap();
     assert_eq!(
         progress.authorization.unwrap().user_code.as_deref(),
         Some("KEEP-CODE")
     );
-    poll_setup(&h, &context, &owner, &setup, |progress| progress.authorized).await;
+    restarted.stop_device_authorizations().await.unwrap();
+
+    let last = resumed_at(h, &competitor, &clock, issued + 13 * SECOND).await;
+    poll_setup(h, context, owner, setup, |progress| progress.authorized).await;
     assert_eq!(
         polls.load(Ordering::SeqCst),
-        2,
-        "only one worker exchanges the retained device code"
+        3,
+        "only one worker exchanges the retained device code at each poll"
     );
-    restarted.stop_device_authorizations().await.unwrap();
-    competitor.stop_device_authorizations().await.unwrap();
+    last.stop_device_authorizations().await.unwrap();
 }
 
 #[tokio::test]
@@ -1262,42 +1374,43 @@ async fn recovery_does_not_repeat_an_interrupted_token_request_immediately() {
         .with_priority(1)
         .mount(&api.server)
         .await;
-    let (h, _, _, _) = pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
-    tokio::time::timeout(coral_test_support::EVENTUALLY, async {
-        while polls.load(Ordering::SeqCst) == 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+    let clock = still_clock();
+    let mut device =
+        confirmed_application_setup(&api, crate::OAuthClientAuthentication::None).await;
+    device.harness.accounts = accounts_reading(&device.harness, &clock);
+    start_device_sign_in(&device).await;
+    let (h, owner) = (&device.harness, &device.workspace);
+    let issued = device.context.occurred_at_unix_nanos();
+    storing(h, owner, timing(1, issued + SECOND)).await;
+
+    // The request leaves at the first poll and gets no answer. Before it
+    // left, the worker stored the timing for an answer it never sees: the
+    // interval that slow_down would give, after the request's whole
+    // 30-second timeout.
+    let polled_at = issued + SECOND;
+    let interrupted = resumed_at(h, &h.accounts, &clock, polled_at).await;
+    until("the token request leaves Coral", || {
+        polls.load(Ordering::SeqCst) == 1
     })
-    .await
-    .unwrap();
-    h.accounts.stop_device_authorizations().await.unwrap();
-    let restarted = h.restarted_accounts();
-    restarted
-        .recover_device_authorizations(2_000_000_010)
-        .await
-        .unwrap();
+    .await;
+    storing(h, owner, timing(6, polled_at + 36 * SECOND)).await;
+
+    // No signal says that a worker chose to wait, so this gives a worker
+    // that repeats the request at once the time to do it.
+    let restarted = resumed_at(h, &interrupted, &clock, polled_at + SECOND).await;
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    restarted.stop_device_authorizations().await.unwrap();
     assert_eq!(
         polls.load(Ordering::SeqCst),
         1,
         "recovery must honor the in-flight request's cooldown"
     );
 
-    // The request persisted a 36-second cooldown before it left Coral. A
-    // worker recovering after it polls again at once.
-    let later = h.restarted_accounts();
-    later
-        .recover_device_authorizations(50_000_000_000)
-        .await
-        .unwrap();
-    tokio::time::timeout(coral_test_support::EVENTUALLY, async {
-        while polls.load(Ordering::SeqCst) < 2 {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+    // A worker that recovers at the stored instant polls again at once.
+    let later = resumed_at(h, &restarted, &clock, polled_at + 36 * SECOND).await;
+    until("recovery polls once the cooldown has passed", || {
+        polls.load(Ordering::SeqCst) == 2
     })
-    .await
-    .expect("recovery polls once the cooldown has passed");
+    .await;
     later.stop_device_authorizations().await.unwrap();
 }
 

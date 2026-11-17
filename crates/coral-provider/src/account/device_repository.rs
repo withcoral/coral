@@ -299,6 +299,41 @@ pub(super) async fn schedule(
     Ok(())
 }
 
+/// The timing that each of the Workspace's jobs stores. A test asserts the
+/// schedule a worker stored, in place of a wait for the poll that the
+/// schedule sets.
+#[cfg(test)]
+pub(crate) async fn stored_timings(
+    tx: &mut Transaction<'_>,
+    owner: &WorkspaceId,
+) -> Result<Vec<super::device_schedule::Timing>, Error> {
+    #[derive(sqlx::FromRow)]
+    struct TimingRow {
+        interval_seconds: i64,
+        next_poll_at: i64,
+    }
+    let rows: Vec<TimingRow> = tx
+        .fetch_all(
+            Query::select()
+                .columns([Jobs::IntervalSeconds, Jobs::NextPollAt])
+                .from(Jobs::Table)
+                .and_where(Expr::col(Jobs::WorkspaceId).eq(owner.to_string()))
+                .order_by(Jobs::Id, Order::Asc)
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|row| {
+            let seconds =
+                u64::try_from(row.interval_seconds).map_err(|_invalid| Error::AccountInput)?;
+            Ok(super::device_schedule::Timing {
+                interval: std::time::Duration::from_secs(seconds),
+                next_poll_at: coral_db::UnixNanos::new(row.next_poll_at),
+            })
+        })
+        .collect()
+}
+
 pub(super) async fn finish(
     tx: &mut Transaction<'_>,
     owner: &WorkspaceId,
