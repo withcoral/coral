@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use coral_db::Database;
+use coral_db::{Database, UnixNanos};
 use coral_test_support::TestDatabase;
 
 use super::{NewRequest, Status, Take, delete_past, request, status, take_oldest};
@@ -14,8 +14,8 @@ async fn write(database: &Database, id: &str, deadline: i64) {
         id,
         requester: "requester",
         call: None,
-        created_at: 0,
-        deadline,
+        created_at: UnixNanos::new(0),
+        deadline: UnixNanos::new(deadline),
     };
     request(&mut transaction, row).await.unwrap();
     transaction.commit().await.unwrap();
@@ -44,7 +44,7 @@ async fn a_take_wakes_the_requester() {
     let mut transaction = database.begin().await.unwrap();
     let take = Take {
         taker: "server",
-        deadline_after: 0,
+        deadline_after: UnixNanos::new(0),
         from: None,
     };
     let taken = take_oldest(&mut transaction, take).await.unwrap();
@@ -68,7 +68,9 @@ async fn a_row_left_past_its_deadline_is_deleted_and_reads_as_gone() {
     write(&database, "waited for", 3_000).await;
 
     let mut transaction = database.begin().await.unwrap();
-    delete_past(&mut transaction, 2_000).await.unwrap();
+    delete_past(&mut transaction, UnixNanos::new(2_000))
+        .await
+        .unwrap();
     transaction.commit().await.unwrap();
 
     for gone in ["left over", "due now"] {
