@@ -391,9 +391,16 @@ async fn current_rows<T>(
 fn ranked_columns(binds: &mut Binds, alias: &str, plan: &QueryPlan) -> String {
     let phrase = phrase_points(binds, alias, plan);
     format!(
+        "{}, CAST({phrase} AS BIGINT) AS phrase_points",
+        row_columns(alias)
+    )
+}
+
+/// The columns a [`RankedRow`] reads but its phrase points, over `alias`.
+fn row_columns(alias: &str) -> String {
+    format!(
         "{alias}.doc_id, {alias}.call_path, {alias}.provider_id, {alias}.tool_key, \
-         {alias}.authored_tool_id, {alias}.qualified_name, {alias}.title, \
-         CAST({phrase} AS BIGINT) AS phrase_points"
+         {alias}.authored_tool_id, {alias}.qualified_name, {alias}.title"
     )
 }
 
@@ -610,7 +617,7 @@ async fn rank(
 /// phrase points, a named Provider and the estimate. The estimate is cheap
 /// and the exact score is not, so a large Workspace's statement spends its
 /// time on these alone. A candidate past them takes no place in the window.
-pub(super) const EXACT_SCORE_LIMIT: usize = 1_000;
+const EXACT_SCORE_LIMIT: usize = 1_000;
 
 /// Candidates by prefix `tsquery` over the spellings, or by substring over
 /// `all_text`, in a `MATERIALIZED` CTE so the planner keeps the index scans
@@ -631,6 +638,13 @@ pub(super) const EXACT_SCORE_LIMIT: usize = 1_000;
 /// spelling's IDF. A word scores by its best spelling. The order is phrase
 /// first, then a named Provider, then score, then Call Path, then document
 /// id.
+///
+/// The plan decides from the Workspace's statistics which words select
+/// candidates, but the scope can be narrower: a Provider filter, or the
+/// Authored Tools of one kind. A rarer word that only rows outside it hold
+/// would leave the list short. So when some word selects nothing and the
+/// list holds fewer rows than `limit`, the statement runs again with every
+/// word selecting: the cap cuts the tail of a full list, never the list.
 async fn rank_postgres(
     transaction: &mut Transaction<'_>,
     scope: &Scope<'_>,
@@ -638,20 +652,36 @@ async fn rank_postgres(
     limit: usize,
 ) -> Result<Vec<RankedRow>, Error> {
     let statistics = statistics(transaction, scope.workspace_id(), plan).await?;
-    let scoring = plan.scoring(&statistics);
+    let mut scoring = plan.scoring(&statistics);
     if scoring.words.is_empty() && plan.wordless.is_empty() {
         return Ok(Vec::new());
     }
+    let (sql, values) = postgres_rank_statement(scope, plan, &scoring, limit);
+    let rows: Vec<RankedRow> = transaction.fetch_all_sql(&sql, values).await?;
+    if rows.len() >= limit || !scoring.select_by_every_word() {
+        return Ok(rows);
+    }
+    let (sql, values) = postgres_rank_statement(scope, plan, &scoring, limit);
+    transaction.fetch_all_sql(&sql, values).await
+}
 
+/// The two-stage statement of [`rank_postgres`], with its binds.
+fn postgres_rank_statement(
+    scope: &Scope<'_>,
+    plan: &QueryPlan,
+    scoring: &ScoringPlan,
+    limit: usize,
+) -> (String, sea_query::Values) {
     let mut binds = Binds::new(DatabaseSystem::Postgres);
     let conditions = scope.sql(&mut binds);
-    let matches = postgres_candidates(&mut binds, plan, &scoring);
-    let estimate_sql = postgres_score(&mut binds, &scoring, Reading::Estimate);
+    let matches = postgres_candidates(&mut binds, plan, scoring);
+    let estimate_sql = postgres_score(&mut binds, scoring, ScoreKind::Estimate);
     let columns = ranked_columns(&mut binds, "c", plan);
     let estimated_named = scope.named_key(&mut binds, "c");
     let exact_limit = binds.push(limit_value(limit.max(EXACT_SCORE_LIMIT)));
-    let score_sql = postgres_score(&mut binds, &scoring, Reading::Exact);
+    let score_sql = postgres_score(&mut binds, scoring, ScoreKind::Exact);
     let named = scope.named_key(&mut binds, "c");
+    let row_columns = row_columns("c");
     let limit = binds.push(limit_value(limit));
     let sql = format!(
         "WITH candidates AS MATERIALIZED ( \
@@ -672,8 +702,7 @@ async fn rank_postgres(
                  c.doc_id COLLATE \"C\" ASC \
              LIMIT {exact_limit} \
          ) \
-         SELECT c.doc_id, c.call_path, c.provider_id, c.tool_key, c.authored_tool_id, \
-                c.qualified_name, c.title, c.phrase_points \
+         SELECT {row_columns}, c.phrase_points \
          FROM estimated AS c \
          CROSS JOIN LATERAL ({score_sql}) AS s \
          ORDER BY \
@@ -683,7 +712,7 @@ async fn rank_postgres(
              c.doc_id COLLATE \"C\" ASC \
          LIMIT {limit}"
     );
-    transaction.fetch_all_sql(&sql, binds.values).await
+    (sql, binds.values)
 }
 
 /// The candidate disjuncts over the alias `d`: the prefix `tsquery` over the
@@ -693,8 +722,11 @@ async fn rank_postgres(
 /// A held spelling selects by its lexemes alone. Its substring would add
 /// only rows that hold it inside a longer lexeme, which the score gives
 /// nothing for it, and each pattern costs a trigram scan and a recheck of
-/// every matched row's whole text. A spelling no row holds keeps its
-/// pattern, so `enchmark` still meets `benchmark_runs`.
+/// every matched row's whole text. The phrase test can still find the word
+/// in such a row, at a camelCase edge of a title or description word
+/// (`pageToken`): that row now leaves the list while another row holds the
+/// word. A spelling no row holds keeps its pattern, so `enchmark` still
+/// meets `benchmark_runs`.
 fn postgres_candidates(binds: &mut Binds, plan: &QueryPlan, scoring: &ScoringPlan) -> String {
     let spellings = scoring
         .words
@@ -743,7 +775,7 @@ fn postgres_candidates(binds: &mut Binds, plan: &QueryPlan, scoring: &ScoringPla
 /// schema text, and adds a spelling's schema-text weight once when
 /// `c.tsv` holds it there, however many lexemes it prefix-matches. Schema
 /// text holds most of a row's lexemes, so the estimate unnests far fewer.
-fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan, reading: Reading) -> String {
+fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan, kind: ScoreKind) -> String {
     if scoring.words.is_empty() {
         return "SELECT 0::float8 AS score".to_string();
     }
@@ -758,9 +790,9 @@ fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan, reading: Reading) ->
                 .map(move |spelling| (position, spelling))
         })
         .map(|(position, spelling)| {
-            let schema_text = match reading {
-                Reading::Exact => String::new(),
-                Reading::Estimate => format!(
+            let schema_text = match kind {
+                ScoreKind::Exact => String::new(),
+                ScoreKind::Estimate => format!(
                     ", {}::tsquery",
                     binds.push(schema_text_prefix_query(&spelling.word))
                 ),
@@ -780,13 +812,13 @@ fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan, reading: Reading) ->
              / ({f} + 1.2 * (1 - 0.4 + 0.4 * c.tsv_length::float8 / {avgdl}))"
         )
     };
-    let (columns, lexemes, body_weights) = match reading {
-        Reading::Exact => (
+    let (columns, lexemes, body_weights) = match kind {
+        ScoreKind::Exact => (
             "word_position, pattern, idf",
             "c.tsv",
             "coalesce(sum(CASE w WHEN 'C' THEN 2::float8 WHEN 'D' THEN 0.25 ELSE 0 END), 0)",
         ),
-        Reading::Estimate => (
+        ScoreKind::Estimate => (
             "word_position, pattern, idf, schema_text",
             "c.fields",
             "coalesce(sum(CASE w WHEN 'C' THEN 2::float8 ELSE 0 END), 0) \
@@ -815,7 +847,7 @@ fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan, reading: Reading) ->
 /// Which score a statement computes: the exact one, or the first stage's
 /// estimate of it.
 #[derive(Clone, Copy)]
-enum Reading {
+enum ScoreKind {
     Exact,
     Estimate,
 }

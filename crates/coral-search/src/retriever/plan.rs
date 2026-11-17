@@ -7,7 +7,6 @@
 
 use std::collections::BTreeSet;
 
-use super::repository::EXACT_SCORE_LIMIT;
 use crate::indexer::compact_identifier_variant;
 
 /// Terms shorter than this cannot meet a trigram index; both backends drop them.
@@ -18,14 +17,17 @@ const MIN_TERM_CHARS: usize = 3;
 const NEAR_SPELLING_MIN_LETTERS: usize = 5;
 /// A word in more than half the corpus scores this instead of a negative IDF.
 const IDF_FLOOR: f64 = 1e-6;
-/// A word in more than this share of the Workspace's rows, and in more rows
-/// than the exact score reads, selects no Postgres candidates while a rarer
-/// typed word of the query is held. The reference implementation's 5%
-/// emptied the list of long queries, whose words are mostly common: lexical
-/// hit@10 fell from 0.667 to 0.622 on the Graph bench set (#3232). At 20%
-/// the top 10 stayed as before. A word in fewer rows costs little to select
-/// by, so a small Workspace ranks as if there were no cap.
+/// A word in more than this share of the Workspace's rows, and in more
+/// than [`CANDIDATE_CAP_MIN_ROWS`] rows, selects no Postgres candidates
+/// while a rarer typed word of the query is held. The reference
+/// implementation's 5% emptied the list of long queries, whose words are
+/// mostly common: lexical hit@10 fell from 0.667 to 0.622 on the Graph bench
+/// set (#3232). At 20% the top 10 stayed as before.
 const CANDIDATE_DOCUMENT_FREQUENCY_CAP: f64 = 0.20;
+/// A word in fewer rows costs little to select candidates by, so a small
+/// Workspace ranks as if there were no cap. The Postgres statement scores
+/// 1,000 candidates exactly; below that a common word adds little work.
+const CANDIDATE_CAP_MIN_ROWS: i64 = 1_000;
 /// What ends a word in the phrase test: any character but an ASCII letter or
 /// digit. `_` ends one too, so `pulls.get` meets the escaped name `pulls._get`.
 /// A letter outside ASCII also ends a word. Unicode classes would differ
@@ -213,7 +215,7 @@ impl QueryPlan {
     /// `color` would.
     ///
     /// A word in more than [`CANDIDATE_DOCUMENT_FREQUENCY_CAP`] of the
-    /// Workspace's rows, and in more than [`EXACT_SCORE_LIMIT`] rows, selects
+    /// Workspace's rows, and in more than [`CANDIDATE_CAP_MIN_ROWS`] rows, selects
     /// no candidates while a rarer typed word of the
     /// query has a spelling some row holds: the common word still scores the
     /// rows the rarer words select, and its low IDF ranks a row that holds it
@@ -222,6 +224,12 @@ impl QueryPlan {
     /// word from selecting: `violetledger` holds far fewer rows than the
     /// typed words `violet` and `ledger`, and would leave only its own.
     pub(super) fn scoring(&self, statistics: &Statistics) -> ScoringPlan {
+        /// One word as the cap reads it.
+        struct Word {
+            typed: bool,
+            common: bool,
+            spellings: Vec<Spelling>,
+        }
         let stats = statistics
             .words
             .iter()
@@ -246,27 +254,23 @@ impl QueryPlan {
                             && one_edit_apart(&stat.word, &catalog.word)
                     })
                     .map(spelling);
-                let common = usize::try_from(stat.ndoc).is_ok_and(|ndoc| ndoc > EXACT_SCORE_LIMIT)
-                    && as_f64(stat.ndoc) > CANDIDATE_DOCUMENT_FREQUENCY_CAP * as_f64(total);
-                let typed = !self.variant_words.contains(&stat.word);
-                (
-                    typed,
-                    common,
-                    std::iter::once(spelling(stat))
-                        .chain(near)
-                        .collect::<Vec<_>>(),
-                )
+                Word {
+                    typed: !self.variant_words.contains(&stat.word),
+                    common: stat.ndoc > CANDIDATE_CAP_MIN_ROWS
+                        && as_f64(stat.ndoc) > CANDIDATE_DOCUMENT_FREQUENCY_CAP * as_f64(total),
+                    spellings: std::iter::once(spelling(stat)).chain(near).collect(),
+                }
             })
             .collect::<Vec<_>>();
-        let rarer_typed_word_held = words.iter().any(|(typed, common, spellings)| {
-            *typed && !common && spellings.iter().any(|spelling| spelling.held)
+        let rarer_typed_word_held = words.iter().any(|word| {
+            word.typed && !word.common && word.spellings.iter().any(|spelling| spelling.held)
         });
         ScoringPlan {
             words: words
                 .into_iter()
-                .map(|(_typed, common, spellings)| ScoredWord {
-                    spellings,
-                    selects: !(common && rarer_typed_word_held),
+                .map(|word| ScoredWord {
+                    selects: !(word.common && rarer_typed_word_held),
+                    spellings: word.spellings,
                 })
                 .collect(),
             avgdl: if statistics.avgdl > 0.0 {
@@ -495,6 +499,19 @@ pub(super) struct WordStatistics {
 pub(super) struct ScoringPlan {
     pub(super) words: Vec<ScoredWord>,
     pub(super) avgdl: f64,
+}
+
+impl ScoringPlan {
+    /// Makes every word select candidates, and says whether a word did not
+    /// before.
+    pub(super) fn select_by_every_word(&mut self) -> bool {
+        let mut changed = false;
+        for word in &mut self.words {
+            changed |= !word.selects;
+            word.selects = true;
+        }
+        changed
+    }
 }
 
 /// One query word that scores, and the spellings it scores by.
