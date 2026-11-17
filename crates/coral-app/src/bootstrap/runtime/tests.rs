@@ -438,7 +438,7 @@ async fn the_configured_owner_limits_reach_the_shared_run_module() {
         "{WEB}[runtime]\napplied_output_cap_bytes = {CAP}\nfan_out_limit = {FAN_OUT}\n"
     ))
     .await;
-    let runs = server.grpc.runs();
+    let runs = server.grpc.engine().grpc_dependencies().runs;
     assert_eq!(runs.applied_output_cap().bytes(), CAP);
     assert_eq!(runs.fan_out_limit().invocations(), FAN_OUT);
     client.cancel().await.expect("close MCP client");

@@ -1,6 +1,7 @@
 //! Internal bootstrap seam for assembling the local server runtime.
 
 mod consts;
+mod engine;
 mod env;
 mod error;
 mod health;

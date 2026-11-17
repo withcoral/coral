@@ -93,7 +93,7 @@ mod tests {
             .start()
             .await
             .unwrap();
-        let accounts = host.provider_accounts().unwrap();
+        let accounts = host.engine().accounts();
         let workspaces = WorkspaceModule::new(host.database());
         let providers = ProviderModule::new(
             policy,
