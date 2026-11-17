@@ -23,10 +23,20 @@ const fn timing(backstop: Duration) -> Timing {
 /// Accepts `count` Runs for Run streams, oldest first.
 async fn waiting_runs(fixture: &TestModules, runs: &RunModule, count: usize) -> Vec<String> {
     let (workspace_id, principal) = fixture.user_scope("taker", "Take queue").await;
+    waiting_runs_in(runs, &principal, &workspace_id, count).await
+}
+
+/// [`waiting_runs`] for `principal` in `workspace_id`.
+async fn waiting_runs_in(
+    runs: &RunModule,
+    principal: &AuthenticatedPrincipal,
+    workspace_id: &coral_workspace::WorkspaceId,
+    count: usize,
+) -> Vec<String> {
     let mut ids = Vec::new();
     for _ in 0..count {
         let update = runs
-            .start(&principal, &workspace_id, submission("return 1;"))
+            .start(principal, workspace_id, submission("return 1;"))
             .await
             .expect("accept a Run");
         ids.push(update.run_id().to_string());
@@ -107,10 +117,11 @@ async fn a_run_accepted_for_run_streams_waits_running_with_no_owner() {
     assert!(runs.owners.get(update.run_id()).is_none());
 }
 
-/// Catches: a decode that accepts a take's claim with no start mark on a
-/// Run that has ended; only a running Run waits taken.
+/// Catches: a decode that rejects a taken Run, or accepts a take's claim
+/// with no start mark on a Run that has ended; only a running Run waits
+/// taken.
 #[tokio::test]
-async fn an_ended_run_with_a_take_claim_and_no_start_mark_is_corrupt() {
+async fn a_take_claim_with_no_start_mark_decodes_only_while_the_run_is_running() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let runs = fixture.runs.clone().with_run_streams();
     let (workspace_id, principal) = fixture.user_scope("ender", "Taken and ended").await;
@@ -125,7 +136,19 @@ async fn an_ended_run_with_a_take_claim_and_no_start_mark_is_corrupt() {
     let streams = PullStreams::default();
     let (_stream, mut sent) = streams.scripted("ender", 2);
     take_loop(&runs, &streams, timing(LONG));
-    assert_eq!(next_taken(&mut sent).await.len(), 2);
+    let taken = next_taken(&mut sent).await;
+    for (run_id, ..) in &ended {
+        let claim = taken
+            .iter()
+            .find(|run| run.run_id == run_id.to_string())
+            .map(|run| run.claim_id.clone());
+        let run = fixture.run_record(&workspace_id, run_id).await;
+        assert_eq!(
+            (run.state, run.execution_claim_id),
+            (RunState::Running, claim),
+            "a taken Run reads running with its claim"
+        );
+    }
 
     let succeeded = RunState::Succeeded.as_storage_str();
     for (run_id, keeps_claim, claim) in &ended {
@@ -190,18 +213,18 @@ async fn a_take_claims_the_oldest_runs_for_the_stream_with_the_most_room() {
 }
 
 #[tokio::test]
-async fn one_take_claims_at_most_sixteen_and_the_pass_repeats_for_the_rest() {
+async fn one_take_claims_at_most_the_cap_and_the_pass_repeats_for_the_rest() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let runs = fixture.runs.clone().with_run_streams();
-    let accepted = waiting_runs(&fixture, &runs, 20).await;
+    let cap = usize::try_from(TAKE_MAX).expect("the cap");
+    let accepted = waiting_runs(&fixture, &runs, cap + 1).await;
     let streams = PullStreams::default();
-    let (_stream, mut sent) = streams.scripted("roomy", 32);
+    let (_stream, mut sent) = streams.scripted("roomy", TAKE_MAX + 1);
 
     take_loop(&runs, &streams, timing(LONG));
     let first = next_taken(&mut sent).await;
     let second = next_taken(&mut sent).await;
 
-    let cap = usize::try_from(TAKE_MAX).expect("the cap");
     let (oldest, rest) = accepted.split_at(cap);
     assert_eq!(
         (ids(&first).as_slice(), ids(&second).as_slice()),
@@ -218,6 +241,14 @@ async fn no_room_takes_nothing_and_new_room_takes_at_once() {
     let (_full, mut full_sent) = streams.scripted("full", 0);
 
     take_loop(&runs, &streams, timing(LONG));
+    // On this one thread the spawned loop runs to its wait for room.
+    tokio::task::yield_now().await;
+    let run_id = accepted.first().expect("one Run");
+    assert_eq!(
+        take_row(&fixture.database, run_id).await.0,
+        None,
+        "no room, no take"
+    );
     let (_opened, mut opened_sent) = streams.scripted("opened", 1);
 
     assert_eq!(ids(&next_taken(&mut opened_sent).await), accepted);
@@ -225,6 +256,30 @@ async fn no_room_takes_nothing_and_new_room_takes_at_once() {
         full_sent.try_recv().is_err(),
         "a stream with no room gets none"
     );
+}
+
+/// Catches: a loop that waits for its backstop after the change signal
+/// rang.
+#[tokio::test]
+async fn a_run_accepted_while_the_loop_waits_is_taken_when_the_change_signal_rings() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let runs = fixture.runs.clone().with_run_streams();
+    let (workspace_id, principal) = fixture.user_scope("ringer", "Rung").await;
+    let first = waiting_runs_in(&runs, &principal, &workspace_id, 1).await;
+    let streams = PullStreams::default();
+    let (_stream, mut sent) = streams.scripted("roomy", 2);
+    // No spacing, and a backstop that does not come during the test.
+    let timing = Timing {
+        spacing: Duration::ZERO,
+        backstop: LONG,
+    };
+    take_loop(&runs, &streams, timing);
+    assert_eq!(ids(&next_taken(&mut sent).await), first);
+
+    // The pass ended with nothing left waiting, so only the change signal
+    // takes this one.
+    let later = waiting_runs_in(&runs, &principal, &workspace_id, 1).await;
+    assert_eq!(ids(&next_taken(&mut sent).await), later);
 }
 
 #[tokio::test]
@@ -256,7 +311,9 @@ async fn the_backstop_takes_a_run_that_nothing_rang_for() {
 async fn two_coral_instances_take_disjoint_runs_from_one_queue() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let runs = fixture.runs.clone().with_run_streams();
-    let accepted = waiting_runs(&fixture, &runs, 40).await;
+    let cap = usize::try_from(TAKE_MAX).expect("the cap");
+    // One more than both streams hold.
+    let accepted = waiting_runs(&fixture, &runs, 2 * cap + 1).await;
     let peer = Arc::new(
         fixture
             .test_database
@@ -283,7 +340,6 @@ async fn two_coral_instances_take_disjoint_runs_from_one_queue() {
 
     take_loop(&runs, &one, timing(LONG));
     take_loop(&other, &two, timing(LONG));
-    let cap = usize::try_from(TAKE_MAX).expect("the cap");
     let mut taken = Vec::new();
     for sent in [&mut one_sent, &mut two_sent] {
         let mut mine = Vec::new();

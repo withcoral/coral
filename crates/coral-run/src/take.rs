@@ -11,7 +11,7 @@ use coral_run_executor::wire::v1::TakenRun;
 use coral_telemetry::safe;
 use tokio::time::Instant;
 
-use crate::run_inbox::rung;
+use crate::observation::rung;
 use crate::run_repository::{self, Claimed, Taker};
 use crate::{Error, RunModule};
 
