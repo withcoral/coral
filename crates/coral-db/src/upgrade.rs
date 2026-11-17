@@ -201,7 +201,59 @@ upgrade_state_queries!(
 
 #[cfg(test)]
 mod tests {
-    use super::step_that_stopped_using;
+    use sqlx::migrate::{Migration, MigrationType, Migrator};
+
+    use super::{UpgradeGuard, step_that_stopped_using};
+    use crate::Error;
+
+    /// A ledger that holds the required step refuses a plan that lacks it
+    /// before the guard runs. So this asks the guard alone.
+    #[test]
+    fn a_coral_starts_only_when_its_plan_has_the_step_that_the_database_requires() {
+        for (case, steps, starts) in [
+            ("the plan ends at the step", &[1, 2, 3][..], true),
+            ("the plan has the step and more", &[1, 2, 3, 5], true),
+            ("the plan ends before the step", &[1, 2], false),
+            (
+                "the plan ends after the step and lacks it",
+                &[1, 2, 5],
+                false,
+            ),
+            ("the plan has no step", &[], false),
+        ] {
+            let plan = Migrator::with_migrations(
+                steps
+                    .iter()
+                    .map(|version| {
+                        Migration::new(
+                            *version,
+                            "fixture".into(),
+                            MigrationType::Simple,
+                            sqlx::SqlStr::from_static("SELECT 1"),
+                            false,
+                        )
+                    })
+                    .collect(),
+            );
+            let guard = UpgradeGuard {
+                plan: &plan,
+                requirements: &[],
+                required: Some(3),
+                shared: true,
+            };
+
+            let admitted = guard.admit(&[1, 2, 3, 4], &[]);
+
+            if starts {
+                admitted.unwrap_or_else(|error| panic!("{case}: {error}"));
+            } else {
+                assert!(
+                    matches!(admitted, Err(Error::CoralTooOld { required: 3 })),
+                    "{case}: {admitted:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn a_migration_names_the_step_that_stopped_using_what_it_removes() {
