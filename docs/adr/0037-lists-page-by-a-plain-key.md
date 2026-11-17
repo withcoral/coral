@@ -65,5 +65,7 @@ list that a User or an Agent can grow without limit pages.
 - Lists move to this contract one at a time. A list that has not moved keeps its token until it does.
 - A token from before a list moved is not migrated. The list refuses it, or reads it as a key and returns a page from
   that position. A client keeps a cursor only for one read, so we accept this.
-- On Postgres, an index serves the order of a text key only when the index has the `C` collation. Until a list has
-  such an index, each of its pages sorts the rows of its scope.
+- On Postgres, an index serves the order of a text key only when the index has the `C` collation. The Private Tool
+  list and the Shared Tool list page by a path, and their indexes have the database's collation. So each of their
+  pages sorts the rows of its scope until they have such an index. The Shared Tool event list orders by time and
+  identity as its indexes do, and does not sort.
