@@ -2,7 +2,7 @@
 use crate::Error;
 use coral_db::Transaction;
 use coral_workspace::{ChangeContext, WorkspaceId};
-use sea_query::{Expr, ExprTrait as _, Iden, Query};
+use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
 
 #[derive(Iden)]
 enum Jobs {
@@ -44,7 +44,35 @@ pub(super) struct Job {
     pub interval_seconds: u64,
     pub next_poll_at: i64,
 }
+
+/// The key a job row is stored under, as written. Recovery moves a row by it
+/// even when the row's identity does not decode.
+pub(super) struct StoredKey {
+    workspace_id: String,
+    id: String,
+}
+impl StoredKey {
+    /// The Workspace the row names, when that much of it decodes.
+    pub(super) fn workspace(&self) -> Option<WorkspaceId> {
+        WorkspaceId::parse(&self.workspace_id).ok()
+    }
+}
+
+/// One job whose lease has ended: its stored key, and the job when its row
+/// decodes.
+pub(super) struct Recoverable {
+    pub key: StoredKey,
+    pub job: Result<Job, Error>,
+}
+
 impl JobRow {
+    fn key(&self) -> StoredKey {
+        StoredKey {
+            workspace_id: self.workspace_id.clone(),
+            id: self.id.clone(),
+        }
+    }
+
     fn decode(self) -> Result<Job, Error> {
         let target = match self.setup_id {
             Some(setup) => Target::Setup(crate::ProviderSetupId::parse(&setup)?),
@@ -117,18 +145,58 @@ pub(super) async fn insert(
     Ok(())
 }
 
-pub(super) async fn recoverable(tx: &mut Transaction<'_>, now: i64) -> Result<Vec<Job>, Error> {
+/// The most jobs one recovery pass reads.
+pub(crate) const RECOVERY_PAGE: u64 = 100;
+
+/// The jobs whose lease has ended, the longest-ended first, one page at most.
+/// Each row decodes on its own, so a corrupt row fails only itself.
+pub(super) async fn recoverable(
+    tx: &mut Transaction<'_>,
+    now: i64,
+) -> Result<Vec<Recoverable>, Error> {
     let rows: Vec<JobRow> = tx
         .fetch_all(
             Query::select()
                 .columns(columns())
                 .from(Jobs::Table)
                 .and_where(Expr::col(Jobs::LeaseUntil).lte(now))
-                .limit(100)
+                .order_by(Jobs::LeaseUntil, Order::Asc)
+                .order_by(Jobs::Id, Order::Asc)
+                .limit(RECOVERY_PAGE)
                 .to_owned(),
         )
         .await?;
-    rows.into_iter().map(JobRow::decode).collect()
+    Ok(rows
+        .into_iter()
+        .map(|row| Recoverable {
+            key: row.key(),
+            job: row.decode(),
+        })
+        .collect())
+}
+
+/// Moves a job that recovery could not resume behind the other recoverable
+/// jobs: its lease now ends at `until`. Only a lease that has ended moves, so
+/// a worker that claimed the job since `recoverable` read it keeps its lease.
+pub(super) async fn defer(
+    tx: &mut Transaction<'_>,
+    key: &StoredKey,
+    now: i64,
+    until: i64,
+) -> Result<(), Error> {
+    // Not `scope()`: the key is the stored text, since a corrupt row's
+    // Workspace id may not parse.
+    tx.execute(
+        Query::update()
+            .table(Jobs::Table)
+            .value(Jobs::LeaseUntil, until)
+            .and_where(Expr::col(Jobs::WorkspaceId).eq(key.workspace_id.as_str()))
+            .and_where(Expr::col(Jobs::Id).eq(key.id.as_str()))
+            .and_where(Expr::col(Jobs::LeaseUntil).lte(now))
+            .to_owned(),
+    )
+    .await?;
+    Ok(())
 }
 
 pub(super) async fn claim(

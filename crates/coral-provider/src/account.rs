@@ -1189,8 +1189,8 @@ mod personal;
 #[cfg(test)]
 mod personal_tests;
 pub use personal::UserAccountInspection;
-mod device;
-mod device_repository;
+pub(crate) mod device;
+pub(crate) mod device_repository;
 mod oauth;
 pub use connection::{
     ConnectionRequest, ConnectionRequestId, ConnectionResolution, ConnectionState,
