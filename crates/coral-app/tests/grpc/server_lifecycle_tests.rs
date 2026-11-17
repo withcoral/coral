@@ -13,11 +13,10 @@ async fn server_lifecycle_can_repeat_over_the_domain_schema() {
     let temp = TempDir::new().expect("temp dir");
     let config_dir = temp.path().join("coral-config");
     fs::create_dir_all(&config_dir).unwrap();
-    fs::write(
-        config_dir.join("config.toml"),
+    coral_test_support::write_server_config(
+        &config_dir,
         "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
-    )
-    .unwrap();
+    );
 
     let owner = local_organization_owner();
     let mut created = Vec::new();
@@ -60,11 +59,10 @@ async fn bootstrap_publishes_the_companion_origin_to_private_workspace_responses
         GetWorkspaceRequest, workspace_service_client::WorkspaceServiceClient,
     };
     let temp = TempDir::new().unwrap();
-    fs::write(
-        temp.path().join("config.toml"),
+    coral_test_support::write_server_config(
+        temp.path(),
         "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
-    )
-    .unwrap();
+    );
     let server = ServerBuilder::new()
         .with_config_dir(temp.path())
         .start()
@@ -112,11 +110,10 @@ async fn shutdown_completes_while_a_client_holds_an_activity_stream() {
         WatchActivityRequest, activity_service_client::ActivityServiceClient,
     };
     let temp = TempDir::new().unwrap();
-    fs::write(
-        temp.path().join("config.toml"),
+    coral_test_support::write_server_config(
+        temp.path(),
         "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
-    )
-    .unwrap();
+    );
     let server = ServerBuilder::new()
         .with_config_dir(temp.path())
         .start()
@@ -157,15 +154,14 @@ async fn prepared_startup_keeps_its_configuration_after_file_changes() {
         let config_dir = temp.path().join("coral-config");
         fs::create_dir_all(&config_dir).expect("config dir");
         let config_file = config_dir.join("config.toml");
-        fs::write(
-            &config_file,
+        coral_test_support::write_server_config(
+            &config_dir,
             "[database]\nbackend = 'sqlite'\npath = 'custom.db'\n\
              [listeners.grpc]\nbind = '127.0.0.1:0'\n\
              [listeners.mcp]\nbind = '127.0.0.1:14556'\n\
              [otel]\nservice_name = 'snapshot-test'\n\
              [listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
-        )
-        .expect("initial config");
+        );
         let prepared = ServerBuilder::configured_standalone_grpc()
             .with_config_dir(&config_dir)
             .prepare()

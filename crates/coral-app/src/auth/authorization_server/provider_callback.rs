@@ -88,11 +88,10 @@ mod tests {
     )]
     async fn loopback_callback_completes_saved_consent_without_a_reef_cookie() {
         let directory = tempfile::tempdir().unwrap();
-        std::fs::write(
-            directory.path().join("config.toml"),
+        coral_test_support::write_server_config(
+            directory.path(),
             "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
-        )
-        .unwrap();
+        );
         // This callback fixture explicitly permits its loopback token server.
         // Server bootstrap opens its filesystem credential vault.
         let policy = loopback_policy();

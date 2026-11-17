@@ -782,9 +782,9 @@ struct SearchSettings {
     /// Seconds between the end of one reconcile pass and the start of the
     /// next.
     reconcile_interval_seconds: u64,
-    /// Whether Coral prepares search by meaning. Off, Coral needs no
-    /// pgvector and makes no vectors, and it leaves a vector table from an
-    /// earlier start as it is. Off by default until search by meaning ships.
+    /// Whether Coral runs semantic search. On by default (ADR 0035). Off,
+    /// Coral needs no pgvector, loads and downloads no model, makes no
+    /// vectors, and leaves a vector table from an earlier start as it is.
     semantic_search_enabled: bool,
 }
 
@@ -792,7 +792,7 @@ impl Default for SearchSettings {
     fn default() -> Self {
         Self {
             reconcile_interval_seconds: 5 * 60,
-            semantic_search_enabled: false,
+            semantic_search_enabled: true,
         }
     }
 }
@@ -1722,14 +1722,14 @@ client_secret = 'test-secret'
     }
 
     #[test]
-    fn the_vector_side_is_off_unless_the_operator_turns_it_on() {
+    fn the_vector_side_is_on_unless_the_operator_turns_it_off() {
         let on = coral_search::VectorStorage::On {
             dimension: coral_embed::MANIFEST.dimension,
         };
         let off = coral_search::VectorStorage::Off;
         for (raw, expected) in [
-            ("", off),
-            ("[search]", off),
+            ("", on),
+            ("[search]", on),
             ("[search]\nsemantic_search_enabled = false", off),
             ("[search]\nsemantic_search_enabled = true", on),
         ] {
@@ -2078,11 +2078,10 @@ client_secret = 'test-secret'
     async fn fresh_deployments_accept_outbound_configuration() {
         for access in ["deny", "https", "http-and-https"] {
             let temp = TempDir::new().unwrap();
-            fs::write(
-                temp.path().join("config.toml"),
-                format!("[outbound]\nloopback = '{access}'\nprivate_networks = '{access}'\n{WEB}"),
-            )
-            .unwrap();
+            coral_test_support::write_server_config(
+                temp.path(),
+                &format!("[outbound]\nloopback = '{access}'\nprivate_networks = '{access}'\n{WEB}"),
+            );
             let server = crate::ServerBuilder::new()
                 .with_config_dir(temp.path())
                 .start()

@@ -342,6 +342,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - A test that compiles TypeScript but is not about the compilation deadline
   uses `coral_test_support::TEST_COMPILATION_TIMEOUT`. The production deadline
   fails such tests on a starved runner.
+- A test server whose subject is not semantic search turns it off: write its
+  config with `coral_test_support::write_server_config`. With the default on,
+  each start downloads the model (133 MB) from GitHub and runs the Embedder.
+  Reel's stack and its Desktop profiles turn it off too.
 - In a unit or in-process test, drive time with fake timers or a test
   clock, not real waits. A test that starts Coral in its own process gives it
   a `coral_test_support::ManualClock` through `Launch::clock`. A Reel journey

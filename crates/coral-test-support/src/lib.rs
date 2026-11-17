@@ -36,6 +36,26 @@ pub const TEST_COMPILATION_TIMEOUT: Duration = Duration::from_secs(30);
 /// runner still passes. A test whose subject is a duration sets its own.
 pub const EVENTUALLY: Duration = Duration::from_secs(60);
 
+/// A `config.toml` table that turns semantic search off, for a test server
+/// whose subject is not semantic search. With the default on, each start
+/// downloads the search model (133 MB) from GitHub and runs the Embedder.
+/// Append it to a config that sets no `[search]` table.
+pub const SEMANTIC_SEARCH_OFF: &str = "\n[search]\nsemantic_search_enabled = false\n";
+
+/// Writes `config` and [`SEMANTIC_SEARCH_OFF`] to `config.toml` in
+/// `state_root`, for a test server whose subject is not semantic search.
+///
+/// # Panics
+///
+/// Panics when the file cannot be written.
+pub fn write_server_config(state_root: &std::path::Path, config: &str) {
+    std::fs::write(
+        state_root.join("config.toml"),
+        format!("{config}{SEMANTIC_SEARCH_OFF}"),
+    )
+    .expect("write config.toml");
+}
+
 /// The system clock as Unix nanoseconds, for a test whose subject reads the
 /// system clock itself, such as a server that authenticates a token the test
 /// issues. A test that passes its subject the time uses a fixed one instead,
