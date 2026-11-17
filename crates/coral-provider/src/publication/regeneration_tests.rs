@@ -17,10 +17,10 @@ fn bearer() -> Contract {
     AuthenticationConfiguration::Bearer.into()
 }
 
-/// An OAuth contract whose application authenticates with a secret.
-fn confidential() -> Contract {
+/// An OAuth contract whose application authenticates as `authentication`.
+fn oauth(authentication: OAuthClientAuthenticationMethod) -> Contract {
     let application = OAuthClientPolicy {
-        authentication: OAuthClientAuthenticationMethod::ClientSecretPost,
+        authentication,
         ..OAuthClientPolicy::public(OAuthClientBootstrap::Manual, "application".into())
     };
     Contract::from(AuthenticationConfiguration::OAuthAuthorizationCode {
@@ -33,6 +33,11 @@ fn confidential() -> Contract {
         client: None,
     })
     .with_oauth_client(&application)
+}
+
+/// An OAuth contract whose application authenticates with a secret.
+fn confidential() -> Contract {
+    oauth(OAuthClientAuthenticationMethod::ClientSecretPost)
 }
 
 /// A catalog-only regeneration of a Provider on `route`, whose active and
@@ -89,12 +94,6 @@ fn a_regeneration_changes_only_what_differs_from_the_active_provider() {
         },
         Caller,
         &[DropClientSecret],
-    );
-    // A confidential application keeps its secret.
-    assert_plans(
-        unchanged(Caller, &confidential),
-        Caller,
-        &[ActivateGeneration],
     );
     // A shared Account stays while its route and contract do.
     assert_plans(
@@ -184,6 +183,24 @@ fn a_regeneration_changes_only_what_differs_from_the_active_provider() {
             ClearClientFailure,
         ],
     );
+}
+
+#[test]
+fn a_regeneration_keeps_an_application_secret_only_for_a_confidential_application() {
+    let confidential = confidential();
+    assert_plans(
+        unchanged(Caller, &confidential),
+        Caller,
+        &[ActivateGeneration],
+    );
+    // A public application and a contract with no application have none to keep.
+    for contract in [oauth(OAuthClientAuthenticationMethod::None), bearer()] {
+        assert_plans(
+            unchanged(Caller, &contract),
+            Caller,
+            &[ActivateGeneration, DropClientSecret],
+        );
+    }
 }
 
 #[test]
