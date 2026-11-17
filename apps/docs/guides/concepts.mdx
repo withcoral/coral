@@ -7,7 +7,7 @@ description: "Build the right mental model for Coral"
 
 Each Coral deployment contains exactly one **organization**.
 
-An organization is the top level container for [workspaces](#workspaces). Any organization member can create a workspace.
+An organization is the top-level container for [workspaces](#workspaces). Any organization member can create a workspace.
 
 Organizations have owners. They can:
 
@@ -24,7 +24,7 @@ The [desktop app](/getting-started/install-locally) has one user, who doesn't si
 
 A **workspace** is a container for providers, the people and agents that use them, and everything they run.
 
-Workspaces have owners. They can perform some operations at the workspace level:
+Workspaces have owners. They can:
 
 - Manage [members](#principals)
 - Manage [providers](#providers) and [accounts](#account-setting)
@@ -46,7 +46,7 @@ You can add a provider multiple times, each under its own namespace, to give the
 
 ### Built-in provider
 
-Every [workspace](#workspaces) also has one built-in provider, **Coral**. Coral defines its tools and performs them itself, without an upstream service. It is listed first under **Tools** in the [Coral UI](#coral-ui).
+Every [workspace](#workspaces) also has one built-in provider, **Coral**. Coral defines its tools and performs them itself, without an upstream service. On the **Tools** page, the [Coral UI](#coral-ui) lists it first under **Provider tools**.
 
 - Its tools sit directly on `coral`, as in `coral.search`, with no namespace.
 - Members and agents can find and call only `coral.listProviders`, `coral.getPolicy`, `coral.search`, `coral.addCustomTool`, `coral.updateCustomTool` and `coral.removeCustomTool`. Workspace owners can find and call all its tools.
@@ -62,7 +62,7 @@ A **tool** is a single action exposed by a [provider](#providers). It has named 
 await coral.providers.github.actions.addRepoAccess({ repo, user });
 ```
 
-Tools of the [built-in provider](#built-in-provider) sit directly on `coral` instead, as in `coral.search`. [Private tools](#private-tools) sit under `coral.private`, and the workspace's shared tools sit under `coral.shared`.
+Tools of the [built-in provider](#built-in-provider) sit directly on `coral` instead, as in `coral.search`. [Private tools](#private-tools) sit under `coral.private`, and the workspace's [shared tools](#shared-tools) sit under `coral.shared`.
 
 ## Account setting
 
@@ -70,25 +70,27 @@ An **account** holds the credentials that Coral sends to the upstream service. I
 
 An **account setting** decides whose account a provider uses.
 
-- **No account**, the service doesn't require credentials.
-- **Individual accounts**, each user connects their own account. For agents, the workspace owner will have to connect an account.
-  - Choose this setting when you want each user to access the provider as themselves. For example, GMail should be set up this way: every user should only be able to access their own emails.
-- **One shared account**, all principals (users and agents) use the provider's single shared account.
-  - Choose this setting when the provider is something everyone is allowed to access. For example, Datadog: everyone should see the same dashboards and alerts, and the account is owned by the team rather than by any one person.
+- **No account**: the service doesn't require credentials.
+- **Individual accounts**: each user connects their own account. For an agent, the workspace owner must connect an account.
+  - Choose this setting when you want each user to access the provider as themselves. For example, Gmail should use this setting, because each user should access only their own emails.
+- **One shared account**: all principals (users and agents) use the provider's single shared account.
+  - Choose this setting when everyone is allowed to access the provider. For example, with Datadog, everyone should see the same dashboards and alerts, and the team owns the account, not one person.
 
-You can add the same provider multiple times, with different account settings. For example, you could have one GitHub provider with a shared readonly account used by every user, and another GitHub provider with individual accounts, so that users can create PRs as themselves through Coral.
+You can add the same provider multiple times, with different account settings. For example, one GitHub provider can have a shared read-only account that every user uses. Another GitHub provider can have individual accounts, so that users can create PRs as themselves through Coral.
 
 ## Tool policy
 
-**Policy** is set by workspace owners on a [provider](#providers), and decides whether a [tool](#tools) is:
+Workspace owners set **policy** on a [provider](#providers). The policy of each [tool](#tools) is one of:
 
-- Allow, the tool runs
-- Ask, the call pauses until a person decides. A user approves their own calls. A [workspace](#workspaces) owner approves an agent's calls.
-- Block, the tool cannot be called, and is hidden from the agent altogether
+- **Allow**: the tool runs.
+- **Ask**: the call pauses until a person decides. A user approves their own calls. A [workspace](#workspaces) owner approves an agent's calls.
+- **Block**: nobody can call the tool, and Coral hides it from the agent.
 
 Until you set a policy, a tool's policy is Allow when it declares itself read-only or uses the HTTP method GET, HEAD, OPTIONS, or TRACE. `coral.addCustomTool`, `coral.updateCustomTool` and `coral.removeCustomTool` are Allow too, because they change only the caller's own private tools. A private tool uses the policy its author chose, which is Allow by default. A shared tool uses the policy the workspace owner chose when publishing it. Every other tool's policy is Ask. Set Ask on a tool that changes data through one of these methods.
 
-A program reads the policy rules that a workspace owner set with `coral.getPolicy`, keyed by each tool's call path, such as `coral.providers.github.repos.get`. It reads the rules for every provider's tools, the built-in tools, the shared tools and its own private tools. A tool without a rule is left out and uses its default. Pass `under`, such as `coral.providers.github`, to read only part of them. A workspace owner's program can change a rule with `coral.updatePolicy`, which needs approval until you set another policy for it:
+With `coral.getPolicy`, a program reads the policy rules that a workspace owner set. The rules are keyed by each tool's call path, such as `coral.providers.github.repos.get`. The program reads the rules for every provider's tools, the built-in tools, the shared tools and its own private tools. The result leaves out a tool that has no rule, and that tool uses its default. Pass `under`, such as `coral.providers.github`, to read only part of the rules.
+
+A workspace owner's program can change a rule with `coral.updatePolicy`, which needs approval until you set another policy for it:
 
 ```ts
 await coral.updatePolicy({
@@ -111,7 +113,7 @@ Coral attributes a [run](#runs) to the principal that submitted it, even when a 
 
 A **program** is TypeScript that a [principal](#principals) submits for Coral to execute.
 
-A program reaches upstream services (e.g. GitHub, Linear) only through [tools](#tools):
+A program reaches upstream services, such as GitHub or Linear, only through [tools](#tools):
 
 ```ts
 const issues = await coral.providers.github.issues.list({ state: "open" });
@@ -136,21 +138,29 @@ Coral never retries a [tool](#tools).
 
 The **Coral UI** is Coral's web interface. The desktop app and a shared server both include it.
 
-Use the Coral UI to add [providers](#providers), connect [accounts](#account-setting), set [policy](#tool-policy), approve tool calls, and inspect [runs](#runs). A workspace's overview summarizes your recent activity over the last 24 hours, 7 days or 30 days: how your calls ended, which tools were called or stopped, approval decisions, and how many bytes your runs added to or saved from your context. In a workspace you own, it includes your agents' runs. Your agents do not use the Coral UI. They reach a workspace through its MCP endpoint.
+Use the Coral UI to add [providers](#providers), connect [accounts](#account-setting), set [policy](#tool-policy), approve tool calls, and inspect [runs](#runs).
 
-## Private tools
+A workspace's overview summarizes your recent activity over the last 24 hours, 7 days or 30 days. It shows how your calls ended, which tools were called or stopped, the approval decisions, and how many bytes your runs added to or saved from your context. In a workspace you own, it includes your agents' runs.
 
-A **private tool** is reusable TypeScript that a [principal](#principals) saves at a path under `coral.private` in one [workspace](#workspaces).
+Your agents do not use the Coral UI. They reach a workspace through its MCP endpoint.
+
+## Custom tools
+
+A **custom tool** is a reusable [tool](#tools) that Coral performs from TypeScript that a [principal](#principals) wrote. A custom tool is private or shared. On the **Tools** page, the [Coral UI](#coral-ui) lists both kinds under **Custom tools**.
+
+### Private tools
+
+A **private tool** is a custom tool that a [principal](#principals) saves at a path under `coral.private` in one [workspace](#workspaces).
 
 ```ts
 await coral.private.triage.staleIssues({ days: 30 });
 ```
 
-A [program](#programs) calls one the same way it calls a [tool](#tools). It can hold local types, helpers, and top-level setup, but no packages and no Node APIs.
+A [program](#programs) calls a private tool the same way it calls a [tool](#tools). A private tool can hold local types, helpers, and top-level setup, but no packages and no Node APIs.
 
 A private tool takes one object and returns JSON data. Coral refuses a `Date`, a `Map`, `NaN` or a function instead of converting it, and names where it is.
 
-A program saves a function that it declares at its top level. It calls the function first, then passes it as `source` to `coral.addCustomTool`. Coral saves the function with the top-level declarations it uses. `coral.addCustomTool` fails when the path is already taken. A program replaces a private tool with `coral.updateCustomTool` and removes one with `coral.removeCustomTool`. All three act only on the principal's own private tools.
+To save a private tool, a program declares a TypeScript function at its top level. The program calls the function first, then passes it as `source` to `coral.addCustomTool`. Coral saves the function with the top-level declarations it uses. `coral.addCustomTool` fails when the path is already taken. A program replaces a private tool with `coral.updateCustomTool` and removes one with `coral.removeCustomTool`. All three act only on the principal's own private tools.
 
 ```ts
 async function staleIssues({ days }: { days: number }) {
@@ -171,4 +181,8 @@ return issues;
 
 Later programs call it as `coral.private.triage.staleIssues`. The program that saves it cannot call the new version by that path. A program that replaces a private tool calls the version that was current when it started.
 
-A user's private tools are private to that user. They are listed under **Tools** in the [Coral UI](#coral-ui), in the **Private** group.
+A user's private tools are private to that user. The [Coral UI](#coral-ui) lists them in the **Private** group.
+
+### Shared tools
+
+A **shared tool** is a custom tool that a workspace owner publishes from a private tool, in the [Coral UI](#coral-ui). It sits under `coral.shared`, and every principal in the workspace can call it. The Coral UI lists shared tools in the **Shared** group.

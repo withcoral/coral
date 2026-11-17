@@ -10,7 +10,7 @@ server, and they can call every <Tooltip tip="GitHub, Slack, Notion, and anythin
 
 Coral stores your credentials and adds them to each call, so your agents never
 hold them. It checks every call against the policies you set. When a program
-works, your agent can save it as a function and reuse it next time.
+works, your agent can save it as a custom tool and reuse it next time.
 
 You run Coral yourself. Your data, credentials and usage history stay on your
 machine or your own server.
@@ -29,7 +29,7 @@ machine or your own server.
       </Tab>
 
       <Tab title="Shared server">
-        Run Coral as a server your team signs in to, using Coral's official container images.
+        Run Coral as a server that your team signs in to. Use Coral's official container images.
 
         [Run a shared server](/getting-started/self-host)
       </Tab>
@@ -39,13 +39,13 @@ machine or your own server.
 
 <Step title="Add your providers">
   Add GitHub, Slack, Datadog, and other providers to your workspace. Your agents
-  can only call tools from providers you've added.
+  can call tools only from the providers that you add.
 
   [Add a provider](/getting-started/quickstart#add-a-provider)
 </Step>
 
-  <Step title="Connect your agents to Coral via MCP">
-    Configure your MCP clients (e.g. Claude Code, Codex) to use the [Coral MCP server](/getting-started/quickstart#connect-an-mcp-client)
+  <Step title="Connect your agents to Coral through MCP">
+    Configure your MCP clients, such as Claude Code or Codex, to use the [Coral MCP server](/getting-started/quickstart#connect-an-mcp-client).
   </Step>
 </Steps>
 

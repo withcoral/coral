@@ -1,12 +1,12 @@
 ---
-title: "Configuration Reference"
+title: "Configuration reference"
 sidebarTitle: "Configuration"
 ---
 
-Your configuration lives in the `config.toml` file of Coral's configuration folder. Where that folder is depends on how you run Coral:
+Your configuration is in the `config.toml` file of Coral's configuration folder. The location of that folder depends on how you run Coral:
 
 - **Container image.** The `ghcr.io/withcoral/coral` image uses `/var/lib/coral/config`. Mount a volume at `/var/lib/coral` so the folder outlives the container. You can also pass the contents of `config.toml` in the `CORAL_CONFIG` variable. See [Container image](#container-image).
-- **Coral Desktop.** Desktop uses the `runtime` folder of its data folder, for example `~/Library/Application Support/com.withcoral.app/runtime` on macOS. Desktop writes this `config.toml` again at each launch, so your edits to it are lost.
+- **Desktop app.** The desktop app uses the `runtime` folder of its data folder, for example `~/Library/Application Support/com.withcoral.app/runtime` on macOS. The desktop app writes this `config.toml` again at each launch, so you lose your edits to it.
 - **The `coral` binary.** When you start the binary yourself, it uses:
   - macOS: `~/Library/Application Support/com.withcoral.coral`
   - Linux: `~/.config/coral`
@@ -29,43 +29,43 @@ Coral does not start when `config.toml` holds an unknown key, or a value that a 
 | Key          | Description                                                                                                | Required                  | Default       |
 | ------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------- | ------------- |
 | `bind`       | Bind address and port for Coral's MCP server                                                               | No                        | `127.0.0.1:0` |
-| `public_url` | Public URL of the MCP Server. Must be https or loopback http. May include a port; must not include a path. | Yes, when auth is enabled | N/A           |
+| `public_url` | Public URL of the MCP server. Must be https or loopback http. May include a port. Must not include a path. | Yes, when auth is enabled | N/A           |
 
 ### `[listeners.auth]`
 
 | Key          | Description                                                                                                 | Required                  | Default                                                                          |
 | ------------ | ----------------------------------------------------------------------------------------------------------- | ------------------------- | -------------------------------------------------------------------------------- |
 | `bind`       | Bind address and port for Coral's auth server                                                               | No                        | `127.0.0.1:0`. In the desktop app, where user auth is disabled, `127.0.0.1:8779`. |
-| `public_url` | Public URL of the Auth Server. Must be https or loopback http. May include a port; must not include a path. | Yes, when auth is enabled | N/A                                                                              |
+| `public_url` | Public URL of the auth server. Must be https or loopback http. May include a port. Must not include a path. | Yes, when auth is enabled | N/A                                                                              |
 
 ### `[listeners.web]`
 
 | Key          | Description                                                                                                                                                                  | Required                                                                                              | Default |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------- |
-| `public_url` | Public URL of the coral-web UI. Must be https or loopback http. May include a port; must not include a path. Set `CORAL_WEB_PUBLIC_URL` on the UI to the same origin. | Yes. Without `[auth]`, you can set the `CORAL_LOCAL_WEB_URL` environment variable instead. Coral does not start when you set both. | N/A     |
+| `public_url` | Public URL of the Coral UI (`coral-web`). Must be https or loopback http. May include a port. Must not include a path. Set `CORAL_WEB_PUBLIC_URL` on the UI to the same origin. | Yes. Without `[auth]`, you can set the `CORAL_LOCAL_WEB_URL` environment variable instead. Coral does not start when you set both. | N/A     |
 
 ### `[credentials]`
 
 | Key       | Description                                                                                                                         | Required                                                                                    | Default |
 | --------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------- |
-| `key_env` | Name of the environment variable that holds the encryption key for provider credentials. Generate it with `openssl rand -base64 32` | No. If not present Coral will autogenerate an encryption key and save it to its config dir. | N/A     |
+| `key_env` | Name of the environment variable that holds the encryption key for provider credentials. Generate it with `openssl rand -base64 32` | No. Without it, Coral generates an encryption key and saves it to its configuration folder. | N/A     |
 
-To switch an existing install to `key_env`, set the variable to the base64 encoding of the config folder's `credentials.key` file, then delete the file. For example, `base64 < credentials.key` prints the value. Coral does not start while both exist.
+To switch an existing install to `key_env`, set the variable to the base64 encoding of the configuration folder's `credentials.key` file, then delete the file. For example, `base64 < credentials.key` prints the value. Coral does not start while both exist.
 
 ### `[outbound]`
 
-Controls how Coral calls providers.
+This section controls how Coral calls providers.
 
 #### Network policies
 
 `loopback` and `private_networks` set the policy for provider calls to those addresses.
-Policies can have one of the following values:
+Each policy has one of these values:
 
-- `deny`: Denies all requests to the policy target
-- `https`: Allows only https requests, no plain http.
-- `http-and-https`: Allows both http and https requests.
+- `deny`: denies all requests to the policy's target.
+- `https`: allows only https requests, and no plain http.
+- `http-and-https`: allows both http and https requests.
 
-All provider calls not covered by an explicit policy in this section are treated under the `https` policy.
+Coral applies the `https` policy to every provider call that no explicit policy in this section covers.
 
 | Key                | Description                                                   | Required | Default                                  |
 | ------------------ | ------------------------------------------------------------- | -------- | ---------------------------------------- |
@@ -97,22 +97,30 @@ Write byte sizes as plain numbers. For example, write `134217728` for 128MiB.
 | Key                        | Description                                                                                                                                  | Required | Default              |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------------------- |
 | `execution_heap_bytes`     | Maximum heap bytes allowed for a single V8 isolate. Must be at least 8MiB.                                                                               | No       | 128MiB               |
-| `compiler_heap_bytes`      | Maximum heap bytes allowed for a single Typescript compilation job. Must be at least 8MiB.                                                               | No       | 512MiB               |
-| `execution_cpu_seconds`    | CPU seconds one Run's Program may use. A Run gets the lower of this and its time limit. Must be greater than 0. On Windows, Coral does not start with it. | No       | Unset (no CPU limit) |
-| `fan_out_limit`            | Provider calls one Run may have in flight at once. Further calls wait for an earlier one to end. Must be greater than 0.                                 | No       | `32`                 |
-| `applied_output_cap_bytes` | Program output a Run may hold before it is recorded. Programs wait above it. Must be at least 2MiB.                                                      | No       | 8MiB                 |
-| `shutdown_drain_seconds`   | Seconds a stopping Coral process lets its running Runs finish before it interrupts them. `0` interrupts at once.                             | No       | `30`                 |
+| `compiler_heap_bytes`      | Maximum heap bytes allowed for a single TypeScript compilation job. Must be at least 8MiB.                                                               | No       | 512MiB               |
+| `execution_cpu_seconds`    | CPU seconds that one run's program may use. A run gets the lower of this and its time limit. Must be greater than 0. On Windows, Coral does not start with it. | No       | Unset (no CPU limit) |
+| `fan_out_limit`            | Provider calls that one run may have in flight at once. Further calls wait for an earlier one to end. Must be greater than 0.                                 | No       | `32`                 |
+| `applied_output_cap_bytes` | Program output that a run may hold before Coral records it. Programs wait above it. Must be at least 2MiB.                                                      | No       | 8MiB                 |
+| `shutdown_drain_seconds`   | Seconds that a stopping Coral process lets its active runs finish before it interrupts them. `0` interrupts at once.                             | No       | `30`                 |
 
 ### `[search]`
 
 | Key                          | Description                                                                                                                 | Required | Default |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- | -------- | ------- |
-| `reconcile_interval_seconds` | Interval on which provider tool, private tool, and shared tool search indexing is executed. Must be greater than 0. | No       | `300`   |
-| `semantic_search_enabled`    | Turns on semantic search: search matches tools by what a query means, not only by its words. On Postgres, `true` needs pgvector 0.7 or later with its `halfvec` type on Coral's search path. When that is missing, Coral creates the `vector` extension if its database role may, and otherwise does not start. On SQLite, Coral's own build holds sqlite-vec, so `true` needs nothing more. Coral reads the setting at startup. With `true`, Coral looks for the search model in `/opt/coral/models` on Linux, then in `models` in its state directory. When neither folder holds it, Coral downloads it (133 MB) from GitHub into `models`, through the `[outbound]` policy, so the host must reach GitHub. Then Coral tries to delete the other model folders in `models`. When a model file is there but Coral cannot read it, Coral reports the file and does not download. When a downloaded file does not match, Coral tries again at its next start. On an x86-64 CPU without the x86-64-v3 features, Coral does not download the model. | No       | `false` |
+| `reconcile_interval_seconds` | Interval at which Coral indexes provider tools, private tools and shared tools for search. Must be greater than 0. | No       | `300`   |
+| `semantic_search_enabled`    | Turns on semantic search: search matches tools by what a query means, not only by its words. Coral reads the setting at startup. See [Semantic search requirements](#semantic-search-requirements). | No       | `false` |
+
+#### Semantic search requirements
+
+`semantic_search_enabled = true` has these requirements:
+
+- **Postgres.** `true` needs pgvector 0.7 or later, with its `halfvec` type on Coral's search path. When that is missing, Coral creates the `vector` extension if its database role may, and otherwise does not start.
+- **SQLite.** Coral's own build holds sqlite-vec, so `true` needs nothing more.
+- **Search model.** Coral looks for the search model in `/opt/coral/models` on Linux, then in `models` in its state directory. When neither folder holds it, Coral downloads it (133 MB) from GitHub into `models`, through the `[outbound]` policy, so the host must reach GitHub. Then Coral tries to delete the other model folders in `models`. When a model file is there but Coral cannot read it, Coral reports the file and does not download. When a downloaded file does not match, Coral tries again at its next start. On an x86-64 CPU without the x86-64-v3 features, Coral does not download the model.
 
 ### `[updates]`
 
-When the check is on, Coral reads the latest release from `api.github.com` at startup and every 6 hours. Organization owners then see a newer release in the sidebar. The `[outbound]` policy still applies. Coral Desktop turns the check on when it can update itself. There, a click on the notice offers Restart to Update, Release Notes or Later.
+When the check is on, Coral reads the latest release from `api.github.com` at startup and every 6 hours. Organization owners then see a newer release in the sidebar. The `[outbound]` policy still applies. The desktop app turns the check on when it can update itself. There, a click on the notice offers **Restart to Update**, **Release Notes** or **Later**.
 
 | Key     | Description                                        | Required | Default |
 | ------- | -------------------------------------------------- | -------- | ------- |
@@ -120,9 +128,11 @@ When the check is on, Coral reads the latest release from `api.github.com` at st
 
 ### `[[secret_stores]]`
 
-Defines a connection to a secrets system you run. Add one `[[secret_stores]]` table per store. Organization owners can see each store's name, kind and status in **Settings**, under **Secret stores**. Open **Settings** from the account menu. There they grant a store to a workspace, or revoke that grant. An archived workspace keeps its grants, and you cannot change them until you restore it. A grant whose store you remove from this file shows as **Removed from config**.
+Each `[[secret_stores]]` table defines a connection to a secrets system that you run. Add one table per store.
 
-The `kv-v2` kind connects to HashiCorp Vault or OpenBao KV version 2, and signs in with AppRole. It needs the Enterprise Edition. Under the Community Edition, the store shows as **Needs Enterprise** and every read from it fails. Coral deletes nothing, and the store works again once the Edition is Enterprise.
+Organization owners can see each store's name, kind and status in **Settings**, under **Secret stores**. Open **Settings** from the account menu. There, organization owners grant a store to a workspace, or revoke that grant. An archived workspace keeps its grants, and you cannot change them until you restore it. A grant whose store you remove from this file shows as **Removed from config**.
+
+The `kv-v2` kind connects to HashiCorp Vault or OpenBao KV version 2, and signs in with AppRole. It needs the Enterprise Edition. Under the Community Edition, the store shows as **Needs Enterprise** and every read from it fails. Coral deletes nothing, and the store works again when Coral runs the Enterprise Edition.
 
 ```toml
 [[secret_stores]]
@@ -140,8 +150,8 @@ secret_id_env = "CORAL_PLATFORM_SECRET_ID"
 | Key                  | Description                                                                                                | Required | Default   |
 | -------------------- | ---------------------------------------------------------------------------------------------------------- | -------- | --------- |
 | `name`               | Stable name for the store: up to 64 lowercase letters, digits, `-` or `_`, starting with a letter or digit | Yes      | N/A       |
-| `kind`               | The secrets system, such as `kv-v2` or `env`. The other keys depend on the kind; those below are `kv-v2`'s. | Yes      | N/A       |
-| `address`            | Origin of the store's API, http or https. May include a port; must not include a path.                     | Yes      | N/A       |
+| `kind`               | The secrets system, such as `kv-v2` or `env`. The other keys depend on the kind. The keys below are for `kv-v2`. | Yes      | N/A       |
+| `address`            | Origin of the store's API, http or https. May include a port. Must not include a path.                     | Yes      | N/A       |
 | `mount`              | Where the KV engine is mounted                                                                             | Yes      | N/A       |
 | `auth.method`        | How Coral signs in. Must be `approle`.                                                                     | Yes      | N/A       |
 | `auth.mount`         | Where the AppRole auth method is mounted                                                                   | No       | `approle` |
@@ -155,14 +165,14 @@ Coral reads this section when it starts, and stores no credential for a store in
 - A malformed store, or a secret ID variable that is not set, stops Coral from starting. The error names the store and the field.
 - An unreachable store does not stop Coral from starting.
 - A store whose kind your build of Coral cannot read does not stop Coral from starting. Coral logs a warning, shows the store as **Not in this build**, and every read from it fails. Its grants and references stay.
-- Coral logs in when it first needs a token. When it next needs a value, it renews a renewable token past half of its lease. It logs in again when a tenth of the lease is left, and never later than ten seconds before its end, or when the store refuses the renewal. So a one-hour lease logs in again with six minutes left. A lease of ten seconds or less logs in again at half its length. If the store does not answer a renewal, Coral keeps using the token until it nears its end, and tries the renewal again after five seconds. A store that is idle for a whole lease therefore costs one more login.
+- Coral logs in when it first needs a token. When it next needs a value, it renews a renewable token past half of its lease. It logs in again when a tenth of the lease is left, and never later than ten seconds before its end, or when the store refuses the renewal. For example, with a one-hour lease, Coral logs in again with six minutes left. With a lease of ten seconds or less, Coral logs in again at half the lease's length. If the store does not answer a renewal, Coral keeps using the token until it nears its end, and tries the renewal again after five seconds. So a store that is idle for a whole lease costs one more login.
 - Each login uses the role's secret ID, so do not limit the role with `secret_id_num_uses`, or give the secret ID a TTL shorter than you can replace it in.
 
-A workspace owner uses a granted store when they connect a shared account: for each field, they choose **Use a secret store**, pick the store, and enter what its kind asks for. Coral reads the value once to check it, then reads it again for each call and keeps no copy.
+A workspace owner uses a granted store when they connect a shared account. For each field, they choose **Use a secret store**, pick the store, and enter what its kind asks for. Coral reads the value once to check it. Then Coral reads the value again for each call, and keeps no copy.
 
 #### Read from environment variables
 
-The `env` kind reads each value from an environment variable of the Coral process. Use it when your platform injects secrets into the environment, for example from Kubernetes Secrets. The `env` kind is available in both Community and Enterprise editions. 
+The `env` kind reads each value from an environment variable of the Coral process. Use it when your platform injects secrets into the environment, for example from Kubernetes Secrets. Both the Community Edition and the Enterprise Edition have the `env` kind.
 
 ```toml
 [[secret_stores]]
@@ -187,7 +197,7 @@ Coral compares names without regard to case.
 
 #### Limit what each store can read
 
-The store's own policy is the security boundary, and Coral adds no check of its own. **A grant of a store to a workspace covers everything that store's role can read.** So give each store its own read-only role, with the least access that works, and use separate stores for workspaces that must not see each other's secrets.
+The store's own policy is the security boundary, and Coral adds no check of its own. **A grant of a store to a workspace covers everything that store's role can read.** So give each store its own read-only role, with the least access that works. Use separate stores for workspaces that must not see each other's secrets.
 
 Coral only reads. For KV version 2, a policy like this one is enough:
 
@@ -197,7 +207,7 @@ path "secret/data/coral/platform/*" {
 }
 ```
 
-Coral needs no `list`, `create`, `update` or `delete` access. Also keep Vault's `default` policy on the role, unless you grant `update` on `auth/token/renew-self` and `read` on `auth/token/lookup-self` another way: Coral uses them to renew its token and to tell a revoked token from a denied read.
+Coral needs no `list`, `create`, `update` or `delete` access. Also keep Vault's `default` policy on the role, unless you grant `update` on `auth/token/renew-self` and `read` on `auth/token/lookup-self` another way. Coral uses them to renew its token and to tell a revoked token from a denied read.
 
 #### Allow Coral to reach the store
 
@@ -213,7 +223,7 @@ The `[outbound]` policy applies to all store traffic. Without the setting a stor
 
 Coral never reaches a public address over http.
 
-These settings apply to all outbound traffic, so they also let Provider calls reach those networks.
+These settings apply to all outbound traffic, so they also let provider calls reach those networks.
 
 <Warning>
 Over http, Coral sends the role's secret ID, its token and the secret values unencrypted. Use http only for local development, or on a network you trust.
@@ -221,11 +231,11 @@ Over http, Coral sends the role's secret ID, its token and the secret values une
 
 ### `[otel]`
 
-Controls telemetry export to an OpenTelemetry endpoint.
+This section controls telemetry export to an OpenTelemetry endpoint.
 
 Every request has a trace, even when you do not set `endpoint`. A failed MCP tool call returns its `trace_id`. `trace_filter` controls which spans Coral exports, not which requests are traced. Request spans use the target `coral.request`.
 
-`trace_sample_ratio` controls which traces Coral exports. It applies to each trace Coral starts: a request without a valid caller `traceparent`, and each Program Run, which starts its own trace. A request with a valid caller `traceparent` follows the caller's sampled flag. An unsampled trace keeps its trace ID, so logs and tool failures still name it. Metrics are never sampled.
+`trace_sample_ratio` controls which traces Coral exports. It applies to each trace Coral starts: a request without a valid caller `traceparent`, and each program run, which starts its own trace. A request with a valid caller `traceparent` follows the caller's sampled flag. An unsampled trace keeps its trace ID, so logs and tool failures still name it. Coral never samples metrics.
 
 | Key            | Description                                                                        | Required | Default                                                                                                                                 |
 | -------------- | ---------------------------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------- |
@@ -269,8 +279,8 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 
 - On `coral.request.duration`, `operation` is the route template or the gRPC method. An MCP tool call is `tools/call` followed by the tool's name, such as `tools/call exec`.
 - On `coral.run.claims`, `operation` is the claim: `accept`, `start`, `recover` or `takeover`.
-- `coral.run.queue.depth` counts the program runs on this Coral instance that are accepted but not started yet. A run starts right after it is accepted, so this is usually 0. A run that waits for recovery by another Coral instance is not counted.
-- `coral.program.execution.heap.peak` is sampled each time a program waits and when it ends. A program that frees memory before it waits or ends shows less than its true peak.
+- `coral.run.queue.depth` counts the program runs that this Coral instance accepted and that wait to start. A run starts right after Coral accepts it, so the value is usually 0. The gauge does not count a run that waits for recovery by another Coral instance.
+- Coral samples `coral.program.execution.heap.peak` each time a program waits and when it ends. A program that frees memory before it waits or ends shows less than its true peak.
 
 | Metric                                   | Kind      | Attributes                                                                   |
 | ---------------------------------------- | --------- | ---------------------------------------------------------------------------- |
@@ -303,9 +313,11 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 | `coral.secret_store.read.duration`       | Histogram | `secret_store.kind`, `outcome`                                               |
 | `coral.telemetry.dropped`                | Counter   | `signal.kind`, `drop.reason`                                                 |
 
-No metric names a Secret Store. To find the store behind a slow or failing read, use the log records: each read logs `coral.secret_store.name`, `coral.secret_store.kind` and `coral.secret_store.read_ms`. A failed read logs at `warn` and adds `error.type`.
+No metric names a secret store. To find the store behind a slow or failing read, use the log records. Each read logs `coral.secret_store.name`, `coral.secret_store.kind` and `coral.secret_store.read_ms`. A failed read logs at `warn` and adds `error.type`.
 
-At most 2048 spans and 2048 log records wait for export. When a queue is full, the next span or log record is dropped and counted in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans and log records with `export_failed`. Neither delays a request or a program run. Metrics are cumulative by default, so a failed export loses no metric points: the next export carries their totals. If you select delta temporality, the metric points of a failed export are counted too. If you see drops, check that your collector is reachable and keeps up.
+At most 2048 spans and 2048 log records wait for export. When a queue is full, Coral drops the next span or log record and counts it in `coral.telemetry.dropped` with `drop.reason` `queue_full`. A failed export counts its spans and log records with `export_failed`. Neither delays a request or a program run.
+
+Metrics are cumulative by default, so a failed export loses no metric points: the next export carries their totals. If you select delta temporality, Coral counts the metric points of a failed export too. If you see drops, check that your collector is reachable and keeps up.
 
 #### Concurrency bottlenecks
 
@@ -331,15 +343,27 @@ Use these signals together to separate database admission, compiler saturation, 
 | `coral.search.embed.batch.duration`            | Histogram | `outcome`                                  |
 | `coral.request.cpu.duration`                   | Histogram | `interface`, `operation`, `outcome`        |
 
-**Database acquisition.** `operation` identifies `begin_write`, `begin_read_snapshot`, `execute`, `fetch_optional`, `fetch_all`, or `ping`. Acquisition duration covers the wait for a pooled connection. For transaction entry points, it also includes `BEGIN`. Direct-query execution is excluded. Outcomes are `ready`, `failed`, or `canceled`. A query failure after acquisition does not count as an acquisition failure. Transaction duration starts after acquisition. The waiter gauge counts callers awaiting acquisition; a detached Postgres `BEGIN` can finish after its caller cancels.
+**Database acquisition.** `operation` is `begin_write`, `begin_read_snapshot`, `execute`, `fetch_optional`, `fetch_all`, or `ping`. Acquisition duration covers the wait for a pooled connection. For transaction entry points, it also includes `BEGIN`. It excludes the execution of direct queries. Outcomes are `ready`, `failed`, or `canceled`. A query failure after acquisition does not count as an acquisition failure.
 
-**Compiler.** `compiler.role` distinguishes the Run compiler (`run`) from the custom tool compiler (`authoring`). Each has one worker and 32 queue slots. Check depth, active work, waits, and outcomes by role. `operation` identifies `program`, `authored_tool`, or `analysis`. Request duration includes queueing and ends when the caller receives an answer. Outcomes distinguish `queue_full`, `stopped`, `timed_out`, `rejected`, `failed`, and `ok`. Queue depth includes enqueue attempts until they succeed or fail. An accepted job remains queued after its caller times out until the worker dequeues it. Work duration starts at dequeue and includes expiry checks. When a compile throws, is stopped, or exceeds its heap, the worker replaces its isolate before the next request. When the isolate grows too large, the worker replaces it too. Isolate build duration measures each replacement. `build.reason` is `fault`, `recycle`, or `retry`. `retry` means an earlier replacement failed, so a request built the isolate. A rising `fault` rate means compiles are throwing, reaching their deadline, or exceeding their heap. Read the request outcomes to tell these apart. `coral.program.compile.duration` still covers Program admission only. Its outcomes are `ok`, `rejected` for a Program Coral refused, `timed_out`, and `unavailable` for a busy, stopped, or failed compiler or a failed database read.
+Transaction duration starts after acquisition. The waiter gauge counts the callers that wait for acquisition. A detached Postgres `BEGIN` can finish after its caller cancels.
 
-**Search backlog.** `search.projection.kind` distinguishes Provider catalog projections (`provider_catalog`), Private Tool projections (`private_tool`), and Shared Tool projections (`shared_tool`). These are units of indexing work, not counts of searchable Tools. Backlog includes missing or stale projections and failed retries that are not due yet. An observer runs in a separate supervised task, with shared shutdown, and takes read-only snapshots every 30 seconds. Each snapshot read has a 30-second limit. Failure logs identify the task and safe failure kind. A panicked task restarts after one second without stopping the other task. Check `sample.age` before trusting a count. A failed read reports no snapshot. A stopped observer removes its observation rather than reporting its last count.
+**Compiler.** `compiler.role` is `run` for the run compiler and `authoring` for the custom tool compiler. Each has one worker and 32 queue slots. Check depth, active work, waits, and outcomes by role. `operation` is `program`, `authored_tool`, or `analysis`.
 
-**First visibility and recovery.** `first_visibility.age` covers only published Provider catalogs that have never been searchable. Renames and index-version rebuilds do not reset first visibility. The age is zero when none are waiting and absent when visibility history or the clock is unknown. Legacy failed projections can have unknown history; no first-visibility latency is invented for them.
+Request duration includes queueing and ends when the caller receives an answer. Outcomes are `queue_full`, `stopped`, `timed_out`, `rejected`, `failed`, and `ok`. Queue depth includes enqueue attempts until they succeed or fail. An accepted job stays queued after its caller times out, until the worker dequeues it. Work duration starts at dequeue and includes expiry checks.
 
-`publication.visibility.duration` runs from the stored publication timestamp to the first successful index commit, including the publication transaction. `initial` identifies a first-attempt success; `retried` identifies success after failed initial attempts. Rewriting a complete projection records no visibility duration. If a previously searchable catalog becomes unavailable after a failed rebuild, `index.recovery.duration` measures from the first recorded failure to the recovery commit. Repeated failures preserve that start time. Visibility history survives restarts. Samples for replaced catalogs or failed visibility checks are omitted. Verification runs separately from index writes. The duration ends at the commit and excludes verification time. These signals exclude client setup time.
+When a compile throws, is stopped, or exceeds its heap, the worker replaces its isolate before the next request. When the isolate grows too large, the worker replaces it too. Isolate build duration measures each replacement. `build.reason` is `fault`, `recycle`, or `retry`. `retry` means an earlier replacement failed, so a request built the isolate. A rising `fault` rate means that compiles throw, reach their deadline, or exceed their heap. Read the request outcomes to tell these apart.
+
+`coral.program.compile.duration` still covers program admission only. Its outcomes are `ok`, `rejected` for a program that Coral refused, `timed_out`, and `unavailable` for a busy, stopped, or failed compiler or a failed database read.
+
+**Search backlog.** `search.projection.kind` is `provider_catalog` for provider catalog projections, `private_tool` for private tool projections, and `shared_tool` for shared tool projections. These are units of indexing work, not counts of searchable tools. Backlog includes missing or stale projections and failed retries that are not due yet.
+
+An observer runs in a separate supervised task, with shared shutdown, and takes read-only snapshots every 30 seconds. Each snapshot read has a 30-second limit. Failure logs identify the task and the safe failure kind. A panicked task restarts after one second and does not stop the other task. Check `sample.age` before you trust a count. A failed read reports no snapshot. A stopped observer removes its observation and does not report its last count.
+
+**First visibility and recovery.** `first_visibility.age` covers only published provider catalogs that have never been searchable. Renames and index-version rebuilds do not reset first visibility. The age is zero when no catalog waits, and absent when visibility history or the clock is unknown. Legacy failed projections can have unknown history. Coral invents no first-visibility latency for them.
+
+`publication.visibility.duration` runs from the stored publication timestamp to the first successful index commit, and includes the publication transaction. `initial` means success on the first attempt. `retried` means success after failed initial attempts. A rewrite of a complete projection records no visibility duration.
+
+If a previously searchable catalog becomes unavailable after a failed rebuild, `index.recovery.duration` measures from the first recorded failure to the recovery commit. Repeated failures preserve that start time. Visibility history survives restarts. Coral omits samples for replaced catalogs or failed visibility checks. Verification runs separately from index writes. The duration ends at the commit and excludes verification time. These signals exclude client setup time.
 
 **Semantic search.** With `[search] semantic_search_enabled` on, Coral gives each indexed tool a vector in the background. `embed.backlog` counts the tools that wait for a vector of their current text. `embed.skipped` counts the tools whose text the model refused while it embedded other tools. Coral tries a skipped tool again when the tool changes or Coral restarts. Until then, the tool stays in the backlog. Both gauges come from the search backlog snapshot. You see no value while the setting is off or when a snapshot read fails. `embed.batch.duration` times each write of a batch of tools: Coral reads their text, embeds it and writes the vectors. `outcome` is `ok` or `failed`.
 
@@ -354,7 +378,9 @@ Use traces to find searches that matched by words only. Each search with a query
 
 A `coral.search.embed_query` span times the embedding of the query. No query text and no vector leaves Coral.
 
-**Request CPU.** On Linux and macOS, CPU samples bracket each poll of the request handler and response body. Synchronous work in inline-awaited futures is included. Pending wait time, spawned tasks, and dedicated compiler or Program execution threads are excluded. The metric uses the same operation and outcome as request duration. Traces carry `coral.request.cpu_ns`, including when a handler is canceled. Sum CPU seconds by operation to attribute direct request work; this is not total process CPU. CPU histogram boundaries start at 10 microseconds and include sub-millisecond ranges. Other platforms omit the CPU signal.
+**Request CPU.** On Linux and macOS, CPU samples bracket each poll of the request handler and response body. The samples include synchronous work in inline-awaited futures. They exclude pending wait time, spawned tasks, and dedicated compiler or program execution threads. The metric uses the same operation and outcome as request duration. Traces carry `coral.request.cpu_ns`, also when a handler is canceled.
+
+Sum CPU seconds by operation to attribute direct request work. This sum is not total process CPU. CPU histogram boundaries start at 10 microseconds and include sub-millisecond ranges. Other platforms omit the CPU signal.
 
 ## Auth
 
@@ -363,14 +389,14 @@ A `coral.search.embed_query` span times the embedding of the query. No query tex
 | Key                 | Description                                                                            | Required | Default |
 | ------------------- | -------------------------------------------------------------------------------------- | -------- | ------- |
 | `allowed_audiences` | Array. Additional audiences for which Coral's auth server can mint tokens              | No       | `[]`    |
-| `trusted_clients`   | Array with client ids for which Coral's auth server will not display a consent screen. Each entry is an `http` or `https` URL. Use a lowercase host and leave out the default port. A URL with no path must end in `/`, as in `https://client.example.com/`. | No       | `[]`    |
+| `trusted_clients`   | Array of client IDs for which Coral's auth server displays no consent screen. Each entry is an `http` or `https` URL. Use a lowercase host and leave out the default port. A URL with no path must end in `/`, as in `https://client.example.com/`. | No       | `[]`    |
 
 ### `[auth.session]`
 
 | Key                         | Description                                                                                                                  | Required                                                                                                   | Default                     |
 | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------- |
-| `signing_key_env`           | Name of the environment variable holding the key used to sign Coral's auth server tokens. Must be a base64 PKCS#8 P-256 key. | No, but if `[auth]` is present the environment variable must exist or `signing_key_file` must be defined   | `CORAL_SESSION_SIGNING_KEY` |
-| `signing_key_file`          | File path containing the key used to sign Coral's auth server tokens. Must be a PKCS#8 P-256 key in DER format. A relative path starts at the config folder. | Yes, if `[auth]` section is present and if the environment variable defined in `signing_key_env` is absent | N/A                         |
+| `signing_key_env`           | Name of the environment variable that holds the key that signs Coral's auth server tokens. Must be a base64 PKCS#8 P-256 key. | No, but if `[auth]` is present the environment variable must exist or `signing_key_file` must be defined   | `CORAL_SESSION_SIGNING_KEY` |
+| `signing_key_file`          | Path of the file that contains the key that signs Coral's auth server tokens. Must be a PKCS#8 P-256 key in DER format. A relative path starts at the configuration folder. | Yes, if `[auth]` section is present and if the environment variable defined in `signing_key_env` is absent | N/A                         |
 | `access_token_ttl_seconds`  | Duration of Coral's access tokens, in seconds. From 1 to 31536000 (365 days).                                                | No                                                                                                         | `2592000` (720h)            |
 | `refresh_token_ttl_seconds` | How long a client can refresh after one sign-in, in seconds. Refresh never extends it. From 1 to 31536000 (365 days).       | No                                                                                                         | `2592000` (720h)            |
 
@@ -381,18 +407,18 @@ Coral gives a refresh token with each access token to a client that lists `refre
 - **Lifetime.** Your users can refresh for `refresh_token_ttl_seconds` after they sign in. A refresh does not extend this time. When it ends, your users must sign in again.
 - **Single use.** Each refresh returns a new refresh token, and the old one stops working. If a client sends a used token again, refresh stops for that sign-in, also for the newest token. Your clients must not refresh with the same token twice at the same time. If a refresh response is lost, the user may have to sign in again.
 - **Current access.** Each refresh checks that the user is still an enabled member of the organization. For a workspace token, it also checks that the user is still a member of the workspace. A refresh does not contact your OIDC issuer. Changes you make at the issuer apply at the next sign-in. If you remove a membership, refresh stops for good, even if the user joins again.
-- **Revocation.** To revoke a refresh token, send `token` and `client_id` to `<listeners.auth.public_url>/oauth/revoke`. A client registered with `client_secret_post` also sends its `client_secret`. Revocation stops refresh only. Access tokens that Coral already issued work until they expire. To cut off a user at once, disable or remove their organization membership: Coral then refuses their access tokens on the next request.
+- **Revocation.** To revoke a refresh token, send `token` and `client_id` to `<listeners.auth.public_url>/oauth/revoke`. A client registered with `client_secret_post` also sends its `client_secret`. Revocation stops refresh only. Access tokens that Coral already issued work until they expire. To cut off a user at once, disable or remove their organization membership. Coral then refuses their access tokens on the next request.
 - **Storage.** Coral stores only a SHA-256 digest of each refresh token, in its database. Refresh tokens survive restarts. If you run more than one Coral process, give them the same database so that each process can refresh any token.
 
 #### Web sessions
 
-The web interface keeps your users signed in through a web session that Coral holds. At sign-in, the web interface gives its refresh token to Coral and keeps only a random session handle in a signed cookie. On each request, Coral mints a new access token for that session, which lasts at most five minutes. Your users stay signed in when an access token expires.
+The Coral UI keeps your users signed in through a web session that Coral holds. At sign-in, the Coral UI gives its refresh token to Coral and keeps only a random session handle in a signed cookie. On each request, Coral mints a new access token for that session, which lasts at most five minutes. Your users stay signed in when an access token expires.
 
 - **Lifetime.** A web session lasts `CORAL_WEB_SESSION_MAX_AGE_SECONDS` (default 2592000, 30 days) or until `refresh_token_ttl_seconds` ends, whichever comes first, and never longer than one year. Activity does not extend it. To keep users signed in longer, increase both values. To sign them out sooner, decrease the value that limits the session, or both.
-- **Several processes.** Every web interface process reads sessions from Coral. You do not need shared storage for the web interface itself. Give every Coral process the same database and the same session signing key, and every web interface process the same `CORAL_WEB_SESSION_SECRET`, so that each process can finish a sign-in and serve a session that another one started.
+- **Several processes.** Every Coral UI process reads sessions from Coral. You do not need shared storage for the Coral UI itself. Give every Coral process the same database and the same session signing key. Give every Coral UI process the same `CORAL_WEB_SESSION_SECRET`. Then each process can finish a sign-in and serve a session that another one started.
 - **Sign-out.** Signing out ends the session and its refresh token at Coral, and a copied session cookie stops working. Access tokens that Coral minted for the session before sign-out work until they expire, within five minutes.
 - **Sign-out when Coral does not answer.** The browser still signs out. The next visit to the sign-in page finishes the sign-out at Coral. Until then, a copied session cookie still works, at most until the session would end.
-- **Outages.** If Coral does not answer, the web interface shows an error and keeps the session. Your users stay signed in when Coral recovers.
+- **Outages.** If Coral does not answer, the Coral UI shows an error and keeps the session. Your users stay signed in when Coral recovers.
 
 ### `[auth.provider]`
 
@@ -401,15 +427,15 @@ The web interface keeps your users signed in through a web session that Coral ho
 | `issuer`                  | URL of the OIDC issuer. Must be https, or loopback http.    | Yes, if `[auth]` section is present                                                                                       | N/A                              |
 | `client_id`               | Client ID used to connect to the OIDC issuer.                                                                              | Yes, if `[auth]` section is present                                                                                       | N/A                              |
 | `client_secret`           | Client secret used to connect to the OIDC issuer.                                                                          | Yes, if `[auth]` section is present and if `client_secret_env` is absent. Do not set both.                                | N/A                              |
-| `client_secret_env`       | Name of the environment variable holding the client secret used to connect to the OIDC issuer                              | Yes, if `[auth]` section is present and if `client_secret` is absent. Do not set both.                                    | N/A                              |
-| `scopes`                  | Array of scopes to request to the OIDC Issuer. Must include `openid`. An empty array uses the default.                    | No                                                                                                                        | `["openid", "email", "profile"]` |
+| `client_secret_env`       | Name of the environment variable that holds the client secret used to connect to the OIDC issuer                              | Yes, if `[auth]` section is present and if `client_secret` is absent. Do not set both.                                    | N/A                              |
+| `scopes`                  | Array of scopes to request from the OIDC issuer. Must include `openid`. An empty array uses the default.                    | No                                                                                                                        | `["openid", "email", "profile"]` |
 | `display_name_claim`      | Name of the claim from the OIDC token used for user display names                                                          | No                                                                                                                        | `email`                          |
 | `name_claim`              | Name of the claim from the OIDC token used for user names                                                                  | No                                                                                                                        | `name`                           |
 | `email_claim`             | Name of the claim from the OIDC token used for user emails                                                                 | No                                                                                                                        | `email`                          |
 | `email_verified_claim`    | Name of the claim from the OIDC token used to check if user email is verified                                              | No                                                                                                                        | `email_verified`                 |
-| `bootstrap_owner_subject` | Value of the `sub` claim of the user that will have Coral's organization owner role. Applied at that user's first sign-in. | No, but Org owner admin operations will be disabled if left undefined. Omit the key rather than set it to an empty string | N/A                              |
-| `auth_params`             | Extra parameters that will be passed in the OIDC authorization request. See the reserved names below.                     | No                                                                                                                        | `{}`                             |
-| `required_claims`         | Claim values that must be present on the OIDC ID token to allow login into Coral. See the value types below.              | No                                                                                                                        | `{}`                             |
+| `bootstrap_owner_subject` | Value of the `sub` claim of the user who gets Coral's organization owner role. Coral applies it at that user's first sign-in. | No, but without it, Coral disables organization owner admin operations. Omit the key. Do not set it to an empty string. | N/A                              |
+| `auth_params`             | Extra parameters that Coral passes in the OIDC authorization request. See the reserved names below.                     | No                                                                                                                        | `{}`                             |
+| `required_claims`         | Claim values that must be present on the OIDC ID token to allow sign-in to Coral. See the value types below.              | No                                                                                                                        | `{}`                             |
 
 Register `<listeners.auth.public_url>/auth/oidc/callback` as the redirect URI at the OIDC issuer.
 
@@ -419,12 +445,12 @@ Each `required_claims` value is a string, a boolean, a number, or an array of th
 
 ### `[auth.provider.access_token]`
 
-Optional section that can be used to require certain values on the OIDC's access token.
+Optional section. Use it to require certain values on the OIDC access token.
 
 | Key               | Description                                                                           | Required | Default |
 | ----------------- | ------------------------------------------------------------------------------------- | -------- | ------- |
 | `audience`        | `aud` claim that must be present on the OIDC access token                             | Yes      | N/A     |
-| `required_claims` | Claim values that must be present on the OIDC access token to allow login into Coral. Same value types as `[auth.provider].required_claims`. | No       | `{}`    |
+| `required_claims` | Claim values that must be present on the OIDC access token to allow sign-in to Coral. Same value types as `[auth.provider].required_claims`. | No       | `{}`    |
 
 ## Database
 
@@ -432,13 +458,13 @@ Optional section that can be used to require certain values on the OIDC's access
 
 | Key       | Description                                                                            | Required                             | Default                 |
 | --------- | -------------------------------------------------------------------------------------- | ------------------------------------ | ----------------------- |
-| `backend` | DB backend Coral will use. Either `sqlite` or `postgres`                               | Yes, when `[database]` is present    | `sqlite`                |
-| `path`    | SQLite only. Path to the db file. A relative path starts at the config folder.         | No                                   | `<config dir>/coral.db` |
-| `url_env` | Postgres only. Name of the environment variable that has the connection URL to the DB. | Yes, when `backend` is `postgres`    | N/A                     |
+| `backend` | Database backend that Coral uses: `sqlite` or `postgres`                               | Yes, when `[database]` is present    | `sqlite`                |
+| `path`    | SQLite only. Path to the database file. A relative path starts at the configuration folder.         | No                                   | `<config dir>/coral.db` |
+| `url_env` | Postgres only. Name of the environment variable that holds the connection URL of the database. | Yes, when `backend` is `postgres`    | N/A                     |
 
 ## Usage data
 
-Self-hosted Coral sends one anonymous usage report for each UTC day on which it runs. Sharing is on by default. Only official release builds send the data: Coral Desktop and the `ghcr.io/withcoral/coral` image.
+Self-hosted Coral sends one anonymous usage report for each UTC day on which it runs. Sharing is on by default. Only official release builds send the data: the desktop app and the `ghcr.io/withcoral/coral` image.
 
 Coral sends the report to `https://telemetry.withcoral.com/v1/report`. The [`[outbound]`](#outbound) policy still applies.
 
