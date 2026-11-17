@@ -62,18 +62,33 @@ impl Error {
     /// with it denies the request instead of serving it without the list.
     #[must_use]
     pub const fn lost_workspace_authority(&self) -> bool {
-        matches!(
-            self,
-            Self::PermissionDenied(_)
-                | Self::Workspace(
-                    coral_workspace::Error::WorkspaceNotFound
-                        | coral_workspace::Error::PermissionDenied(_)
-                        | coral_workspace::Error::AgentNotFound
-                        | coral_workspace::Error::InvalidAgentCredential
-                        | coral_workspace::Error::AgentDisabled
-                        | coral_workspace::Error::AgentRegistrationExpired
-                )
-        )
+        use coral_workspace::AuthorityRefusal as Refusal;
+        match self {
+            Self::PermissionDenied(_) => true,
+            Self::Workspace(error) => match error.refusal() {
+                Some(
+                    Refusal::WorkspaceNotFound
+                    | Refusal::PermissionDenied
+                    | Refusal::AgentNotFound
+                    | Refusal::InvalidAgentCredential
+                    | Refusal::AgentDisabled
+                    | Refusal::AgentRegistrationExpired,
+                ) => true,
+                // An archived Workspace stays open to inspection.
+                Some(Refusal::WorkspaceArchived) | None => false,
+            },
+            // Name every variant so a new one needs a decision here.
+            Self::InvalidInput(_)
+            | Self::UnknownProviderCallRoot { .. }
+            | Self::ServiceUnavailable
+            | Self::AuthoringDescriptionNotFound
+            | Self::TypesLimit
+            | Self::UndeclaredTypes { .. }
+            | Self::Provider(_)
+            | Self::Policy(_)
+            | Self::Tools(_)
+            | Self::Database(_) => false,
+        }
     }
 
     /// Returns a safe definite rejection, excluding uncertain persistence or host errors.

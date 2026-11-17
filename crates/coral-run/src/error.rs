@@ -588,47 +588,48 @@ impl Error {
             .is_some_and(coral_db::Error::is_unanswered)
     }
 
-    /// The database error behind this one, through the module errors that
-    /// wrap it (a Provider's Catalog or Workspace error, a Policy's Provider
-    /// or Workspace error, a Private Tool's Workspace error).
+    /// The database error behind this one, directly or through the module
+    /// error that wraps it. Each module answers for its own error, so this
+    /// lists no other module's variants.
     #[must_use]
-    pub(crate) fn database_error(&self) -> Option<&coral_db::Error> {
-        fn workspace(error: &coral_workspace::Error) -> Option<&coral_db::Error> {
-            match error {
-                coral_workspace::Error::Database(error) => Some(error),
-                _ => None,
-            }
-        }
-        fn catalog(error: &coral_catalog::Error) -> Option<&coral_db::Error> {
-            match error {
-                coral_catalog::Error::Database(error) => Some(error),
-                _ => None,
-            }
-        }
-        fn provider(error: &coral_provider::Error) -> Option<&coral_db::Error> {
-            match error {
-                coral_provider::Error::Database(error) => Some(error),
-                coral_provider::Error::Catalog(error) => catalog(error),
-                coral_provider::Error::Workspace(error) => workspace(error),
-                _ => None,
-            }
-        }
+    pub(crate) const fn database_error(&self) -> Option<&coral_db::Error> {
         match self {
             Self::Database(error) => Some(error),
-            Self::Workspace(error) => workspace(error),
-            Self::Provider(error) => provider(error),
-            Self::Policy(error) => match error {
-                coral_policy::Error::Database(error) => Some(error),
-                coral_policy::Error::Provider(error) => provider(error),
-                coral_policy::Error::Workspace(error) => workspace(error),
-                _ => None,
-            },
-            Self::Tools(error) => match error {
-                coral_tools::Error::Database(error) => Some(error),
-                coral_tools::Error::Workspace(error) => workspace(error),
-                _ => None,
-            },
-            _ => None,
+            Self::Workspace(error) => error.database_error(),
+            Self::Provider(error) => error.database_error(),
+            Self::Policy(error) => error.database_error(),
+            Self::Tools(error) => error.database_error(),
+            // Name every variant so a new one that holds a database error
+            // is found here: an unanswered write that this misses reads as
+            // a definite answer, and stops an owner that should retry.
+            Self::InvalidInput(_)
+            | Self::RunNotFound
+            | Self::ApprovalNotFound
+            | Self::ProgramAdmission(_)
+            | Self::PermissionDenied(_)
+            | Self::CompilationTimedOut
+            | Self::CompilerBusy
+            | Self::CompilerUnavailable
+            | Self::PackageTooLarge { .. }
+            | Self::ProgramRuntimeUnavailable(_)
+            | Self::ProgramWorkerStopped
+            | Self::Clock(_)
+            | Self::IdentifierIssuance(_)
+            | Self::ProgramValueTooLarge
+            | Self::InvalidProgramValue
+            | Self::ProgramValueJson(_)
+            | Self::InvocationRejected(_)
+            | Self::InvocationPersistence(_)
+            | Self::RunEventPersistence(_)
+            | Self::ClaimMismatch
+            | Self::HeadMismatch
+            | Self::RunEnded
+            | Self::OwnerLost
+            | Self::RunRequestNotYetRecorded
+            | Self::ShuttingDown
+            | Self::ProgramHostTerminated
+            | Self::Upstream(_)
+            | Self::CorruptData(_) => None,
         }
     }
 

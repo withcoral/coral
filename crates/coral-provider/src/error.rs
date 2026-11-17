@@ -213,11 +213,64 @@ impl Error {
     /// Every other error is a definite answer.
     #[must_use]
     pub(crate) fn is_operational(&self) -> bool {
+        self.database_error()
+            .is_some_and(coral_db::Error::is_unanswered)
+    }
+
+    /// The database error behind this one, directly or through the Catalog
+    /// or Workspace error that wraps it. A module that wraps this error asks
+    /// here, so it never lists another module's variants.
+    #[must_use]
+    pub const fn database_error(&self) -> Option<&coral_db::Error> {
         match self {
-            Self::Database(error)
-            | Self::Catalog(coral_catalog::Error::Database(error))
-            | Self::Workspace(coral_workspace::Error::Database(error)) => error.is_unanswered(),
-            _ => false,
+            Self::Database(error) => Some(error),
+            Self::Catalog(error) => error.database_error(),
+            Self::Workspace(error) => error.database_error(),
+            // Name every variant so a new one that holds a database error
+            // is found here.
+            Self::ConsentDestinationRejected
+            | Self::OutboundDestinationRejected
+            | Self::InputUnavailable
+            | Self::SetupPreparationUnavailable
+            | Self::ProviderSetupNotApplicable
+            | Self::ProviderSetupNotReady
+            | Self::AuthorizationDiscovery(_)
+            | Self::ClientBootstrapUnavailable
+            | Self::ClientMetadataNotPublic
+            | Self::ClientMetadataUnresolved
+            | Self::AccountInput
+            | Self::SecretReferenceNotAllowed
+            | Self::SecretStoreNotGranted
+            | Self::SecretStoreRead(_)
+            | Self::CredentialRefreshFailed
+            | Self::OAuthTokenExchange(_)
+            | Self::OAuthClientConfiguration
+            | Self::AccountNotFound
+            | Self::AccountRequired
+            | Self::AccountAuthorizationChanged
+            | Self::AccountConnectionDeclined
+            | Self::AccountConnectionExpired
+            | Self::CredentialRouteChanged
+            | Self::Credentials(_)
+            | Self::InvalidInput(_)
+            | Self::ProviderSetupNotFound
+            | Self::ProviderSetupConsumed
+            | Self::ProviderPublicationNotFound
+            | Self::ProviderNotFound
+            | Self::ProviderAlreadyDisabled
+            | Self::ProviderAlreadyActive
+            | Self::ProviderCallRootConflict
+            | Self::BuiltinProviderManaged
+            | Self::ProviderAccountSettingVersionOverflow
+            | Self::ToolNotFound
+            | Self::RequestIdConflict
+            | Self::PendingAuthorizationLimit
+            | Self::EtagMismatch
+            | Self::IncompatibleConfigurationConfirmationRequired
+            | Self::ProviderChangedDuringPublication
+            | Self::OperationalPublication(_)
+            | Self::CorruptData(_)
+            | Self::EventFields(_) => None,
         }
     }
 
