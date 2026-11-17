@@ -236,11 +236,12 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
           await delay(LOCK_RETRY_MS, undefined, { signal })
           continue
         }
-        // The deadline can pass while a runtime launched just before it is
-        // still on its way to that exit. Stop it and read how it left, so the
-        // report does not depend on how fast the runtime starts.
+        // The deadline can pass before a runtime launched just ahead of it has
+        // found the directory held. Stop it and read how it left, so the report
+        // does not depend on how fast the runtime starts.
         if (!(error instanceof SupervisorError) || error.failure.kind !== 'timeout') throw error
         await stopAll()
+        // It has exited by now, unless the kill failed.
         const exit = await exitWithin(runtime.child, 0)
         if (exit?.code !== STATE_LOCKED_EXIT_CODE) throw error
         throw new SupervisorError({ kind: 'state-locked', output: runtime.child.outputTail() })

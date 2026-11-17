@@ -338,22 +338,31 @@ fn second_runtime_on_a_held_state_root_exits_temporarily() {
     let state_root = local_state_root(&temp);
     let mut first = Runtime::start(&state_root, true);
 
-    let output = Command::from_std(runtime_command(&state_root))
-        .timeout(EXIT_TIMEOUT)
-        .output()
-        .expect("run second runtime");
+    // A launcher that stops the runtime by closing its stdin reads this code
+    // too: the second runtime's stdin is closed from the start, and it must
+    // still report the held state root, not stop as if asked to.
+    for stop_on_stdin_close in [false, true] {
+        let mut second = runtime_command(&state_root);
+        if stop_on_stdin_close {
+            second.env("CORAL_STOP_ON_STDIN_CLOSE", "1");
+        }
+        let output = Command::from_std(second)
+            .timeout(EXIT_TIMEOUT)
+            .output()
+            .expect("run second runtime");
 
-    // coral-app owns the refusal and its message; the process owns the code.
-    assert_eq!(
-        output.status.code(),
-        Some(STATE_LOCKED_EXIT_CODE),
-        "{:?}",
-        output.status
-    );
-    assert!(
-        !output.stderr.is_empty(),
-        "the process reports why it exited"
-    );
+        // coral-app owns the refusal and its message; the process owns the code.
+        assert_eq!(
+            output.status.code(),
+            Some(STATE_LOCKED_EXIT_CODE),
+            "stop_on_stdin_close={stop_on_stdin_close}: {:?}",
+            output.status
+        );
+        assert!(
+            !output.stderr.is_empty(),
+            "stop_on_stdin_close={stop_on_stdin_close}: the process reports why it exited"
+        );
+    }
     assert!(first.ready(), "the first runtime keeps serving");
 
     first.close_stdin();

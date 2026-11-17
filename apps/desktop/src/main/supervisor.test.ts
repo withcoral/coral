@@ -317,34 +317,42 @@ describe('after start', () => {
   })
 
   it.each([
-    ['times out', 'stub.hang', { kind: 'timeout', process: 'runtime' }, true],
-    ['refuses to start', 'stub.refuse', { kind: 'exited', process: 'runtime' }, false],
-  ] as const)(
-    'after a crash, retries a relaunch that %s only if it did not refuse',
-    async (_, marker, failure, retried) => {
-      const endpoints = await supervise().start()
-      const markerPath = await mark(marker)
-      await crash(endpoints.mcp)
+    ['times out is retried', 'stub.hang', { kind: 'timeout', process: 'runtime' }, true],
+    [
+      'refuses to start waits for a start',
+      'stub.refuse',
+      { kind: 'exited', process: 'runtime' },
+      false,
+    ],
+    [
+      'finds the directory held at the deadline waits for a start',
+      'stub.lock-late',
+      { kind: 'state-locked' },
+      false,
+    ],
+  ] as const)('after a crash, a relaunch that %s', async (_, marker, failure, retried) => {
+    const endpoints = await supervise().start()
+    const markerPath = await mark(marker)
+    await crash(endpoints.mcp)
 
-      const relaunchFailure = () =>
-        states.find((state) => state.status === 'failed' && state.failure.kind !== 'crashed')
-      await expect.poll(relaunchFailure, { timeout: 5000 }).toMatchObject({
-        failure,
-        restarting: retried,
-      })
-      await rm(markerPath)
-      if (retried) {
-        await expect
-          .poll(() => states.at(-1), { timeout: 5000 })
-          .toEqual({ status: 'running', endpoints })
-        expect(alive()).toEqual(['runtime', 'reef'])
-      } else {
-        await delay(RESTART.backoffMs * 4)
-        expect(states.at(-1)).toMatchObject({ status: 'failed', restarting: false })
-        expect(alive()).toEqual([])
-      }
-    },
-  )
+    const relaunchFailure = () =>
+      states.find((state) => state.status === 'failed' && state.failure.kind !== 'crashed')
+    await expect.poll(relaunchFailure, { timeout: 5000 }).toMatchObject({
+      failure,
+      restarting: retried,
+    })
+    await rm(markerPath)
+    if (retried) {
+      await expect
+        .poll(() => states.at(-1), { timeout: 5000 })
+        .toEqual({ status: 'running', endpoints })
+      expect(alive()).toEqual(['runtime', 'reef'])
+    } else {
+      await delay(RESTART.backoffMs * 4)
+      expect(states.at(-1)).toMatchObject({ status: 'failed', restarting: false })
+      expect(alive()).toEqual([])
+    }
+  })
 
   it('starts afresh when asked while a restart waits', async () => {
     const endpoints = await supervise('ready', 'ready', {
@@ -384,6 +392,12 @@ describe('after start', () => {
 })
 
 describe('a state directory another runtime holds', () => {
+  // The deadline can catch a runtime that has not started yet. It gets this
+  // long to exit by itself once it is stopped, and the test outlasts the
+  // readiness deadline, this stop and the kill that follows it.
+  const LOCKED_STOP_TIMEOUT_MS = 10_000
+  const LOCKED_TEST_TIMEOUT_MS = 15_000
+
   it('retries the runtime until the directory is free', async () => {
     const lock = await mark('stub.lock')
     const started = supervise().start()
@@ -400,12 +414,12 @@ describe('a state directory another runtime holds', () => {
     ['the directory stays held', 'stub.lock'],
     // The deadline passes before the runtime has found the directory held.
     ['a runtime that is still starting at the deadline finds it held', 'stub.lock-late'],
-  ])('fails as locked when %s', async (_, marker) => {
+  ])('fails as locked when %s', { timeout: LOCKED_TEST_TIMEOUT_MS }, async (_, marker) => {
     await mark(marker)
 
-    // The deadline can catch a runtime that has not started yet: give it time
-    // to exit by itself once it is stopped.
-    const failure = await failureOf(supervise('ready', 'ready', { stopTimeoutMs: 10_000 }).start())
+    const failure = await failureOf(
+      supervise('ready', 'ready', { stopTimeoutMs: LOCKED_STOP_TIMEOUT_MS }).start(),
+    )
 
     expect(failure).toMatchObject({ kind: 'state-locked' })
     expect(failure.kind === 'state-locked' && failure.output).toContain('state directory locked')
