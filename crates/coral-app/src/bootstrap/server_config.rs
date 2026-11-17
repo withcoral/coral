@@ -431,7 +431,6 @@ impl DeploymentConfig {
         Ok(ServeSettings {
             outbound_policy: self.outbound_policy(defaults),
             mcp_oauth_client_bootstrap: self.mcp_oauth_client_bootstrap(),
-            runtime_limits: self.runtime_limits,
             mcp_http: self.mcp_http.clone(),
             auth_bind_addr: self.auth_bind_addr,
             session_auth: self.resolve_session_auth()?,
@@ -1004,7 +1003,6 @@ impl McpHttpServeConfig {
 pub struct ServeSettings {
     outbound_policy: coral_outbound::DestinationPolicy,
     mcp_oauth_client_bootstrap: coral_provider::account::ClientBootstrapPolicy,
-    runtime_limits: coral_run::RuntimeLimits,
     pub(super) mcp_http: McpHttpServeConfig,
     auth_bind_addr: SocketAddr,
     pub(super) session_auth: Option<SessionAuthSettings>,
@@ -1028,12 +1026,6 @@ impl ServeSettings {
     #[must_use]
     pub fn mcp_oauth_client_bootstrap(&self) -> coral_provider::account::ClientBootstrapPolicy {
         self.mcp_oauth_client_bootstrap
-    }
-
-    /// Returns the Program runtime limits selected at process bootstrap.
-    #[must_use]
-    pub fn runtime_limits(&self) -> coral_run::RuntimeLimits {
-        self.runtime_limits
     }
 
     /// Returns the mandatory MCP HTTP listener configuration.

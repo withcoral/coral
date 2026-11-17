@@ -5,21 +5,15 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use coral_db::Database;
 use coral_mcp::{
-    McpHttpConfig, McpHttpError, McpModules, RunningMcpHttpServer, start_authenticated, start_local,
+    McpHttpConfig, McpHttpError, RunningMcpHttpServer, start_authenticated, start_local,
 };
-use coral_run::RunModule;
-use coral_search::{SearchIndex, UniversalSearchModule};
-use coral_task::{TaskCommands, TaskModule};
-use coral_tools::PrivateToolModule;
-use coral_workspace::WorkspaceModule;
 
+use super::engine::Engine;
 use super::error::AppError;
-use super::health::EngineReadiness as ListenerReadiness;
-use super::server::{PreparedServerBuilder, RunningServer as GrpcServer, ServerBuilder};
-use coral_run::RuntimeLimits;
-
+use super::server::{
+    Composition, PreparedServerBuilder, RunningServer as GrpcServer, ServerBuilder,
+};
 use super::server_config::{LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig};
 use crate::auth::{AuthServerError, CoralAuthorizationServer, RunningCoralAuthorizationServer};
 
@@ -380,22 +374,20 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, S
     let auth_bind_addr = settings.auth_bind_addr();
     let session_auth = settings.take_session_auth();
     let grpc_authentication_enabled = session_auth.is_some();
-    let builder = match session_auth {
-        Some(session_auth) => builder.with_session_auth(session_auth),
-        None => builder,
-    };
 
-    let mut grpc = builder
-        .start()
-        .await
-        .map_err(|error| ServeError(Box::new(ServeErrorKind::GrpcStart(error))))?;
-    let authentication = grpc.take_workspace_authentication();
-    let authorization_server = grpc.take_authorization_server();
-    let auth_support = match start_auth_support(
+    // The `Engine` first, then each listener over it.
+    let grpc_start = |error| ServeError(Box::new(ServeErrorKind::GrpcStart(error)));
+    let Composition {
+        engine,
+        private_listeners,
         authorization_server,
+        workspace_authentication,
+    } = builder.compose(session_auth).await.map_err(grpc_start)?;
+    let grpc = private_listeners.serve(engine).await.map_err(grpc_start)?;
+    let auth_support = match start_auth_support(
+        authorization_server.map(|server| *server),
         auth_bind_addr,
-        grpc.readiness(),
-        grpc.provider_accounts(),
+        grpc.engine(),
     )
     .await
     {
@@ -413,9 +405,8 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, S
     };
     let mcp_http = match start_mcp_http(
         mcp_config,
-        &grpc,
-        authentication,
-        settings.runtime_limits(),
+        grpc.engine(),
+        workspace_authentication,
         settings.human_interface().clone(),
     )
     .await
@@ -440,26 +431,22 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, S
     })
 }
 
+/// Starts Coral's authorization server when sign-in is on, and local auth
+/// support, with the Provider OAuth callback, otherwise.
 async fn start_auth_support(
     authorization_server: Option<CoralAuthorizationServer>,
     bind_addr: SocketAddr,
-    readiness: ListenerReadiness,
-    accounts: Option<coral_provider::account::AccountModule>,
+    engine: &Engine,
 ) -> Result<Option<RunningCoralAuthorizationServer>, AuthServerError> {
     match authorization_server {
         Some(server) => server.start().await.map(Some),
-        None if accounts.is_some() => CoralAuthorizationServer::start_local_with_provider_oauth(
+        None => CoralAuthorizationServer::start_local_with_provider_oauth(
             bind_addr,
-            readiness,
-            accounts.ok_or_else(|| {
-                AuthServerError::Config("Provider authorization is unavailable".into())
-            })?,
+            engine.readiness(),
+            engine.accounts(),
         )
         .await
         .map(Some),
-        None => CoralAuthorizationServer::start_local(bind_addr, readiness)
-            .await
-            .map(Some),
     }
 }
 
@@ -480,25 +467,15 @@ async fn shutdown_components(
     ShutdownFailures::from_results(mcp_result, auth_support_result, grpc_result)
 }
 
-/// Starts the MCP companion over the running server's database, Provider
-/// accounts, and search index.
+/// Starts the MCP companion over `engine`.
 async fn start_mcp_http(
     settings: McpHttpServeConfig,
-    grpc: &GrpcServer,
+    engine: &Engine,
     authentication: Option<crate::WorkspaceAuthentication>,
-    runtime_limits: RuntimeLimits,
     human_interface: coral_mcp::HumanInterfaceUrl,
 ) -> Result<RunningMcpHttpServer, McpStartError> {
-    let readiness = grpc.readiness().probe();
-    let modules = mcp_modules(
-        grpc.database(),
-        grpc.search(),
-        grpc.search_index(),
-        grpc.runs(),
-        grpc.compiler(),
-        runtime_limits,
-        human_interface,
-    );
+    let readiness = engine.readiness().probe();
+    let modules = engine.mcp_modules(human_interface);
     let server = match settings {
         McpHttpServeConfig::AuthDisabled { bind_addr } => {
             start_local(McpHttpConfig::new(bind_addr)?, modules, readiness).await?
@@ -520,37 +497,6 @@ async fn start_mcp_http(
         }
     };
     Ok(server)
-}
-
-/// Composes MCP domain Modules without selecting authentication or Principal.
-/// `search`, `search_index`, `runs` and `compiler` are the running server's,
-/// so the process has one search module, one index, one set of Run Owners and
-/// one warm compiler that every surface reaches.
-fn mcp_modules(
-    database: Arc<Database>,
-    search: UniversalSearchModule,
-    search_index: SearchIndex,
-    runs: RunModule,
-    compiler: Arc<dyn coral_run_executor::CompilerClient>,
-    runtime_limits: RuntimeLimits,
-    human_interface: coral_mcp::HumanInterfaceUrl,
-) -> McpModules {
-    let workspaces = WorkspaceModule::new(Arc::clone(&database));
-    let tasks = TaskModule::new(Arc::clone(&database), workspaces.clone());
-    let private_tools = PrivateToolModule::with_compiler_client(
-        database,
-        workspaces.clone(),
-        compiler,
-        runtime_limits.compilation_timeout(),
-    );
-    // MCP-started Runs link people to Reef and save Private Tools through
-    // the one module, so every save shares its compiler and deadline. This
-    // clone shares the server's Run Owners; no other clone runs a Program.
-    let runs = runs
-        .with_human_interface(human_interface.clone())
-        .with_private_tools(coral_run::PrivateTools::new(private_tools, search_index));
-    let commands = TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
-    McpModules::new(workspaces, tasks, commands, runs, search, human_interface)
 }
 
 #[cfg(test)]

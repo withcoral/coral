@@ -1,30 +1,32 @@
-//! Builds and runs the Coral gRPC server.
+//! Composes one Coral Instance and runs its private gRPC server.
 
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, watch};
-use tokio::task::{AbortHandle, JoinHandle};
+use tokio::task::JoinHandle;
 use tonic::service::Routes;
 use tonic::transport::Server;
 use tonic::transport::server::TcpIncoming;
 use zeroize::Zeroizing;
 
+use super::engine::{
+    BootedEngine, CredentialParts, Engine, EngineParts, LocalChildren, RunExecutorLink,
+    RunExecutorParts, SearchParts, UsageReporting,
+};
 use super::env::AppEnvironment;
 use super::error::AppError;
 use super::health::EngineReadiness;
-use super::periodic::{Passes, Schedule};
 use super::search_model::{Delivery, SearchModel};
 use super::server_config::{
-    DeploymentConfig, Launcher, LoadedServerConfig, RunExecutorListener, ServeSettings,
-    SessionAuthSettings,
+    DeploymentConfig, Launcher, LoadedServerConfig, ServeSettings, SessionAuthSettings,
 };
 use crate::auth::CoralAuthorizationServer;
 use crate::state::DatabaseConfig;
-use crate::state::{AppStateLayout, InitializedState, StateLock, initialize_state};
+use crate::state::{AppStateLayout, InitializedState, initialize_state};
 use crate::telemetry::TelemetryConfig;
 use coral_db::{Database, DatabaseOptions};
 use coral_telemetry::safe;
@@ -36,23 +38,6 @@ const HTTP2_MAX_HEADER_LIST_SIZE: u32 = 128 * 1024;
 /// close their connections. An open stream ends on the stop signal, so only
 /// a request still in flight, or a client that does not read, lasts this long.
 const SHUTDOWN_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// How often bootstrap sweeps `provider_device_jobs` for leases whose worker
-/// has gone away. The provider sets how often a flow polls it, anywhere from
-/// one second to an hour, so a lost flow resumes up to this long after its
-/// lease ends on top of that poll interval; the person is already waiting on
-/// a flow that lasts minutes. A one-second sweep cost a transaction per second
-/// per replica against a table that is empty whenever no flow is mid-flight.
-const DEVICE_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// The wall clock in nanoseconds since 1970; none when it is set before then
-/// or past what the databases hold.
-fn unix_nanos() -> Option<i64> {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?;
-    i64::try_from(elapsed.as_nanos()).ok()
-}
 
 #[derive(Clone)]
 enum ServerModeSelection {
@@ -104,15 +89,6 @@ impl ServerConfig {
             ServerModeSelection::ConfiguredStandaloneGrpc => None,
         }
     }
-
-    fn resolved_mode(&self, config: &DeploymentConfig) -> ServerMode {
-        match &self.mode {
-            ServerModeSelection::Explicit(mode) => mode.clone(),
-            ServerModeSelection::ConfiguredStandaloneGrpc => ServerMode::StandaloneGrpc {
-                bind: config.grpc_bind(),
-            },
-        }
-    }
 }
 
 /// Concrete local server mode.
@@ -140,25 +116,20 @@ impl ServerMode {
 }
 
 /// Builder for the Coral server runtime.
-///
-/// This is not [`Clone`]: session authentication hands the builder resolved
-/// signing-key and provider material, and one instance's authorization server
-/// is built from it exactly once.
 #[derive(Default)]
 pub struct ServerBuilder {
     config: ServerConfig,
     outbound_defaults: coral_outbound::DestinationPolicy,
     launcher: Launcher,
-    session_auth: Option<Box<SessionAuthSettings>>,
 }
 
 /// A server builder whose complete persistent state has passed the startup
 /// fence and completed fresh initialization, and whose configuration passed
 /// every rule that needs no secret.
 ///
-/// This temporal type lets process composition read companion settings and
-/// install their session policy without re-running or reordering state-format
-/// checks. Call [`Self::start`] to consume it and start gRPC.
+/// This temporal type lets process composition read companion settings
+/// without re-running or reordering state-format checks. Call [`Self::start`]
+/// to consume it and start gRPC.
 pub struct PreparedServerBuilder {
     builder: ServerBuilder,
     state: InitializedState,
@@ -174,7 +145,6 @@ impl ServerBuilder {
             config: ServerConfig::new(),
             outbound_defaults: coral_outbound::DestinationPolicy::default(),
             launcher: Launcher::default(),
-            session_auth: None,
         }
     }
 
@@ -282,19 +252,6 @@ impl ServerBuilder {
         self
     }
 
-    #[must_use]
-    /// Configures session authentication for this server.
-    ///
-    /// Startup prepares the authorization server once the app database has
-    /// been opened and migrated, and installs private authentication against
-    /// the same current authority. Taking the authorization server from the
-    /// returned [`RunningServer`] and running its transport stays the caller's
-    /// job. Only gRPC health is unauthenticated in an authenticated deployment.
-    pub fn with_session_auth(mut self, session_auth: SessionAuthSettings) -> Self {
-        self.session_auth = Some(Box::new(session_auth));
-        self
-    }
-
     /// Passes the complete persistent state through its one initialization
     /// Module before any caller can read companion configuration or start a
     /// listener.
@@ -332,8 +289,12 @@ impl ServerBuilder {
     /// Starts the Coral gRPC server on TCP.
     ///
     /// This convenience Interface prepares state and then starts the server.
-    /// Process composition that needs companion settings should call
-    /// [`Self::prepare`] and use the returned [`PreparedServerBuilder`].
+    /// With `[auth]` configured, startup prepares the authorization server
+    /// over the migrated database and installs private authentication against
+    /// the same authority; taking it from the returned [`RunningServer`] and
+    /// running its transport stays the caller's job. Process composition that
+    /// needs companion settings should call [`Self::prepare`] and use the
+    /// returned [`PreparedServerBuilder`].
     ///
     /// # Errors
     ///
@@ -372,59 +333,55 @@ impl PreparedServerBuilder {
         self
     }
 
-    /// Installs the session policy resolved from this prepared state.
-    #[must_use]
-    pub fn with_session_auth(mut self, session_auth: SessionAuthSettings) -> Self {
-        self.builder.session_auth = Some(Box::new(session_auth));
-        self
-    }
-
     /// Starts the prepared Coral gRPC server on TCP.
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] if configuration, credential initialization, or
-    /// gRPC startup fails.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "process composition prepares each dependency once, in order"
-    )]
+    /// Returns [`AppError`] if a secret cannot be read, or if credential
+    /// initialization or gRPC startup fails.
     pub async fn start(self) -> Result<RunningServer, AppError> {
+        let session_auth = self.serve_settings()?.take_session_auth();
+        let Composition {
+            engine,
+            private_listeners,
+            authorization_server,
+            workspace_authentication: _,
+        } = self.compose(session_auth).await?;
+        private_listeners
+            .holding(authorization_server)
+            .serve(engine)
+            .await
+    }
+
+    /// Composes this Coral Instance: its `Engine`, booted, and what each
+    /// listener is built from beside it. `session_auth` is the session
+    /// authentication that [`Self::serve_settings`] resolved, when `[auth]`
+    /// is configured.
+    ///
+    /// Only the Run Executor listener is bound when this returns. Nothing
+    /// serves yet, and no periodic pass runs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] if credential initialization, a secret read or
+    /// the `Engine`'s boot fails.
+    pub(crate) async fn compose(
+        self,
+        session_auth: Option<SessionAuthSettings>,
+    ) -> Result<Composition, AppError> {
         let Self {
             builder,
             state,
             deployment_config,
         } = self;
-        let session_auth = match builder.session_auth {
-            Some(auth) => Some(auth),
-            None => deployment_config
-                .serve_settings(builder.outbound_defaults)?
-                .take_session_auth()
-                .map(Box::new),
-        };
+        let launcher = builder.launcher;
         let policy = deployment_config.outbound_policy(builder.outbound_defaults);
-        let runtime_limits = deployment_config.runtime_limits();
-        let config = builder.config;
         let vault = open_credential_vault(
             deployment_config.credential_key_env(),
             state.credential_key_path(),
         )?;
-        // With the setting off, nothing looks for the model's files and
-        // nothing downloads them.
-        let search_model = deployment_config
-            .semantic_search_enabled()
-            .then(|| {
-                coral_outbound::Client::new(policy, super::search_model::CONNECT_TIMEOUT)
-                    .map(|client| Delivery::coral(state.state_dir(), client))
-                    .map_err(|_error| {
-                        AppError::FailedPrecondition(
-                            "search model download client initialization failed".into(),
-                        )
-                    })
-            })
-            .transpose()?;
-        let (coral_db, state_lock) = state.into_parts();
-        let mode = config.resolved_mode(&deployment_config);
+        let search_model = search_model_delivery(&deployment_config, state.state_dir(), policy)?;
+        let (database, state_lock) = state.into_parts();
         let run_executor_listener =
             deployment_config.run_executor_listener(&AppEnvironment::required_env_var)?;
         let local_children = match deployment_config.local_run_executors() {
@@ -437,61 +394,25 @@ impl PreparedServerBuilder {
         };
         let workspace_authentication = session_auth
             .as_ref()
-            .map(|auth| auth.workspace_authentication(coral_db.clone()));
-        let private_authentication = session_auth.as_ref().map_or_else(
-            || {
-                coral_auth::PrincipalAuthentication::local(coral_workspace::WorkspaceModule::new(
-                    coral_db.clone(),
-                ))
-            },
-            |auth| auth.principal_authentication(coral_db.clone()),
-        );
-        if session_auth.is_none() {
-            coral_workspace::OrganizationModule::new(coral_db.clone())
-                .provision_login(&coral_workspace::ChangeContext::new(
-                    coral_workspace::local_organization_owner(),
-                    0,
-                    coral_workspace::TraceId::current_or_new(),
-                ))
-                .await
-                .map_err(|_error| {
-                    AppError::FailedPrecondition("local authority initialization failed".to_owned())
-                })?;
-        }
+            .map(|auth| auth.workspace_authentication(database.clone()));
+        let authentication = private_authentication(session_auth.as_ref(), &database).await?;
         // Coral publishes its Client ID Metadata Document at Reef's public HTTPS
         // origin, which is what upstream authorization servers accept as client_id.
         let client_id_metadata_document = session_auth
             .as_ref()
             .and_then(|auth| auth.web_public_url())
             .map(|origin| format!("{origin}/.well-known/oauth-client"));
-        let client_bootstrap_policy = deployment_config.mcp_oauth_client_bootstrap();
         // One readiness for every listener, so shutdown takes them all out of
         // rotation at once.
-        let readiness = EngineReadiness::from_database(Arc::clone(&coral_db));
+        let readiness = EngineReadiness::from_database(Arc::clone(&database));
         let authorization_server = session_auth
             .map(|session_auth| {
-                build_authorization_server(*session_auth, &coral_db, policy, readiness.clone())
+                build_authorization_server(session_auth, &database, policy, readiness.clone())
             })
             .transpose()?;
-        let reconcile_interval = deployment_config.search_reconcile_interval();
-        let releases = deployment_config
-            .update_check()
-            .then(|| {
-                coral_outbound::Client::new(policy, coral_release::REQUEST_TIMEOUT)
-                    .map(coral_release::ReleaseCheck::coral)
-                    .map_err(|_error| {
-                        AppError::FailedPrecondition(
-                            "release check client initialization failed".into(),
-                        )
-                    })
-            })
-            .transpose()?;
-        let usage = UsageReporting::new(
-            &coral_db,
-            &builder.launcher,
-            authorization_server.is_some(),
-            policy,
-        )?;
+        let releases = release_check(&deployment_config, policy)?;
+        let usage =
+            UsageReporting::new(&database, &launcher, authorization_server.is_some(), policy)?;
         let secret_stores = deployment_config.secret_stores(policy)?;
         // This start's Coral Instance, recorded on the Runs it claims. The
         // first start in a process also names it in exported telemetry.
@@ -499,39 +420,186 @@ impl PreparedServerBuilder {
         init_server_telemetry(
             deployment_config.telemetry(),
             &instance.to_string(),
-            builder.launcher.service_version,
+            launcher.service_version,
         )?;
         tracing::info!(
-            coral.edition = safe::kind(builder.launcher.extensions.edition.current().as_str()),
+            coral.edition = safe::kind(launcher.extensions.edition.current().as_str()),
             "Coral Instance starting"
         );
-        let mut server = start_server(
-            Arc::clone(&coral_db),
-            mode,
-            private_authentication,
-            Some(vault),
-            client_id_metadata_document,
-            client_bootstrap_policy,
-            policy,
-            runtime_limits,
-            reconcile_interval,
-            search_model,
-            releases,
-            usage,
-            secret_stores,
-            readiness,
+        let (engine, run_executors) = Engine::boot(EngineParts {
+            database,
             state_lock,
             instance,
-            run_executor_listener,
-            local_children,
-            builder.launcher.compile_in_process,
-        )
+            readiness,
+            policy,
+            runtime_limits: deployment_config.runtime_limits(),
+            credentials: CredentialParts {
+                vault,
+                secret_stores,
+                client_id_metadata_document,
+                client_bootstrap_policy: deployment_config.mcp_oauth_client_bootstrap(),
+            },
+            search: SearchParts {
+                reconcile_interval: deployment_config.search_reconcile_interval(),
+                model: search_model,
+            },
+            run_executors: RunExecutorParts {
+                listener: run_executor_listener,
+                local_children,
+                compile_in_process: launcher.compile_in_process,
+            },
+            releases,
+            usage,
+        })
         .await?;
-        server.authorization_server = authorization_server
-            .map(|authorization| Box::new(authorization.with_providers(server.providers())));
-        server.workspace_authentication = workspace_authentication;
-        Ok(server)
+        let authorization_server =
+            authorization_server.map(|server| Box::new(server.with_providers(engine.providers())));
+        Ok(Composition {
+            engine,
+            private_listeners: PrivateListeners {
+                grpc_bind: deployment_config.grpc_bind(),
+                authentication,
+                run_executors,
+                held_authorization_server: None,
+            },
+            authorization_server,
+            workspace_authentication,
+        })
     }
+}
+
+/// One composed Coral Instance before its listeners serve: the booted
+/// `Engine`, and what each listener is built from beside it.
+pub(crate) struct Composition {
+    pub(crate) engine: BootedEngine,
+    pub(crate) private_listeners: PrivateListeners,
+    /// The authorization server this instance's logins are provisioned by,
+    /// when `[auth]` is configured. Running its transport is the caller's
+    /// decision.
+    pub(crate) authorization_server: Option<Box<CoralAuthorizationServer>>,
+    /// Public Workspace credential verification, when `[auth]` is configured.
+    pub(crate) workspace_authentication: Option<crate::WorkspaceAuthentication>,
+}
+
+/// The private gRPC listener and the Run Executor listener served beside it.
+pub(crate) struct PrivateListeners {
+    grpc_bind: SocketAddr,
+    authentication: coral_auth::PrincipalAuthentication,
+    run_executors: RunExecutorLink,
+    held_authorization_server: Option<Box<CoralAuthorizationServer>>,
+}
+
+impl PrivateListeners {
+    /// Leaves `server` on the running server, for a caller that takes it
+    /// from there and runs its transport itself.
+    fn holding(mut self, server: Option<Box<CoralAuthorizationServer>>) -> Self {
+        self.held_authorization_server = server;
+        self
+    }
+
+    /// Binds the private gRPC listener, starts `engine`'s background work,
+    /// and serves the listener, and the Run Executor listener, over it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError`] when the private gRPC address cannot be bound.
+    /// No periodic pass has run then.
+    pub(crate) async fn serve(self, engine: BootedEngine) -> Result<RunningServer, AppError> {
+        let listener = TcpListener::bind(self.grpc_bind).await?;
+        let local_addr = listener.local_addr()?;
+        let engine = engine.run();
+        let mcp_origin = Arc::new(std::sync::OnceLock::new());
+        // One stop signal for both listeners and the streams they serve.
+        let (stop, stopping) = watch::channel(false);
+        let routes = coral_grpc::routes(
+            engine.grpc_dependencies(),
+            coral_grpc::TransportContext {
+                authentication: self.authentication,
+                mcp_origin: mcp_origin.clone(),
+                readiness: engine.readiness().probe(),
+                stopping: stopping.clone(),
+            },
+        );
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let (task_finished_tx, task_finished) = watch::channel(false);
+        let task = start_grpc_server(
+            listener,
+            self.run_executors,
+            shutdown_rx,
+            (stop, stopping),
+            routes,
+            task_finished_tx,
+        );
+        Ok(RunningServer {
+            mcp_origin,
+            endpoint_uri: format!("http://{local_addr}"),
+            local_addr,
+            authorization_server: self.held_authorization_server,
+            shutdown_tx: Mutex::new(Some(shutdown_tx)),
+            task_finished,
+            task: Mutex::new(Some(task)),
+            engine,
+        })
+    }
+}
+
+/// How the search model's files arrive. With `[search]
+/// semantic_search_enabled` off there is none: nothing looks for the files and
+/// nothing downloads them.
+fn search_model_delivery(
+    config: &DeploymentConfig,
+    state_dir: &Path,
+    policy: coral_outbound::DestinationPolicy,
+) -> Result<Option<Delivery>, AppError> {
+    if !config.semantic_search_enabled() {
+        return Ok(None);
+    }
+    coral_outbound::Client::new(policy, super::search_model::CONNECT_TIMEOUT)
+        .map(|client| Some(Delivery::coral(state_dir, client)))
+        .map_err(|_error| {
+            AppError::FailedPrecondition(
+                "search model download client initialization failed".into(),
+            )
+        })
+}
+
+/// The release check, while `[updates] check` is on.
+fn release_check(
+    config: &DeploymentConfig,
+    policy: coral_outbound::DestinationPolicy,
+) -> Result<Option<coral_release::ReleaseCheck>, AppError> {
+    if !config.update_check() {
+        return Ok(None);
+    }
+    coral_outbound::Client::new(policy, coral_release::REQUEST_TIMEOUT)
+        .map(|client| Some(coral_release::ReleaseCheck::coral(client)))
+        .map_err(|_error| {
+            AppError::FailedPrecondition("release check client initialization failed".into())
+        })
+}
+
+/// The authentication of the private gRPC listener: the session's, or the
+/// local Organization Owner's without `[auth]`, whose login this provisions.
+async fn private_authentication(
+    session_auth: Option<&SessionAuthSettings>,
+    database: &Arc<Database>,
+) -> Result<coral_auth::PrincipalAuthentication, AppError> {
+    if let Some(auth) = session_auth {
+        return Ok(auth.principal_authentication(database.clone()));
+    }
+    coral_workspace::OrganizationModule::new(database.clone())
+        .provision_login(&coral_workspace::ChangeContext::new(
+            coral_workspace::local_organization_owner(),
+            0,
+            coral_workspace::TraceId::current_or_new(),
+        ))
+        .await
+        .map_err(|_error| {
+            AppError::FailedPrecondition("local authority initialization failed".to_owned())
+        })?;
+    Ok(coral_auth::PrincipalAuthentication::local(
+        coral_workspace::WorkspaceModule::new(database.clone()),
+    ))
 }
 
 /// Prepares the authorization server this instance's logins are provisioned by.
@@ -619,43 +687,23 @@ fn resolve_database_config(
     }
 }
 
-/// Running Coral server.
+/// Running Coral server: the `Engine`, and the private gRPC listener and the
+/// Run Executor listener that serve over it.
 ///
 /// Call [`RunningServer::shutdown`] for deterministic teardown. Dropping this
 /// handle sends shutdown to the background task as a best-effort fallback, but
 /// does not wait for the task to finish.
 pub struct RunningServer {
-    providers: coral_provider::ProviderModule,
-    accounts: Option<coral_provider::account::AccountModule>,
-    runs: coral_run::RunModule,
-    compiler: Arc<dyn coral_run_executor::CompilerClient>,
-    /// The local child supervisor; none with the children turned off.
-    local_run_executors: Option<coral_run_executor::LocalRunExecutors>,
-    readiness: EngineReadiness,
-    /// Every periodic pass of this Coral Instance.
-    passes: Passes,
-    /// The expired-lease sweep, one of `passes`: it stops before the Run
-    /// drain, and the others after.
-    run_recovery: AbortHandle,
-    search: coral_search::UniversalSearchModule,
-    search_index: coral_search::SearchIndex,
-    search_reconcile: JoinHandle<()>,
-    search_model: Option<SearchModel>,
-    search_model_delivery: Option<JoinHandle<()>>,
-    /// Loads the model for the Embedder; none while the vector side is off.
-    search_model_load: Option<JoinHandle<()>>,
     mcp_origin: Arc<std::sync::OnceLock<String>>,
     endpoint_uri: String,
     local_addr: SocketAddr,
-    database: Arc<Database>,
     authorization_server: Option<Box<CoralAuthorizationServer>>,
-    workspace_authentication: Option<crate::WorkspaceAuthentication>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     task_finished: watch::Receiver<bool>,
     task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
-    /// Keeps other runtimes off this server's state root. Declared last so
-    /// that it is released after every other field.
-    _state_lock: StateLock,
+    /// Declared last: it holds the state root's lock, so the lock is
+    /// released after every other field.
+    engine: Engine,
 }
 
 impl RunningServer {
@@ -681,11 +729,17 @@ impl RunningServer {
     /// domain Modules. Persistence queries remain owned by those Modules.
     #[must_use]
     pub fn database(&self) -> Arc<Database> {
-        Arc::clone(&self.database)
+        self.engine.database()
+    }
+
+    /// The `Engine` this server serves over, which every other listener of
+    /// the process is built over too.
+    pub(crate) fn engine(&self) -> &Engine {
+        &self.engine
     }
 
     /// Takes the authorization server prepared from this server's session
-    /// authentication, when it was configured with any.
+    /// authentication, when [`ServerBuilder::start`] composed one.
     ///
     /// Preparing it during app startup is what lets it share the one migrated
     /// state database. Whether and how its transport runs is the caller's
@@ -693,11 +747,6 @@ impl RunningServer {
     #[must_use]
     pub fn take_authorization_server(&mut self) -> Option<CoralAuthorizationServer> {
         self.authorization_server.take().map(|server| *server)
-    }
-
-    /// Takes public Workspace authentication composed over this server's database.
-    pub fn take_workspace_authentication(&mut self) -> Option<crate::WorkspaceAuthentication> {
-        self.workspace_authentication.take()
     }
 
     /// Waits until the background server task exits.
@@ -726,34 +775,22 @@ impl RunningServer {
     /// ([`coral_run::RunModule::shutdown`]) while every listener still
     /// serves; stop the listeners after it.
     pub async fn drain_runs(&self) {
-        self.readiness.stop_serving();
-        self.run_recovery.abort();
-        self.runs.shutdown().await;
+        self.engine.drain_runs().await;
     }
 
     async fn shutdown_inner(&self) -> Result<(), AppError> {
-        self.drain_runs().await;
-        // Each child's stdin closes, and nothing waits for the children.
-        if let Some(supervisor) = &self.local_run_executors {
-            supervisor.stop();
+        self.engine.drain_runs().await;
+        self.engine.stop().await;
+        self.stop_listeners();
+        let task = self.task.lock().expect("task mutex poisoned").take();
+        match task {
+            Some(task) => join_listeners(task).await,
+            None => Ok(()),
         }
-        self.passes.stop();
-        self.search_reconcile.abort();
-        if let Some(delivery) = &self.search_model_delivery {
-            delivery.abort();
-        }
-        if let Some(load) = &self.search_model_load {
-            load.abort();
-        }
-        if let Some(accounts) = &self.accounts
-            && let Err(error) = accounts.stop_device_authorizations().await
-        {
-            // Workers are already stopped; unreleased leases expire on their own.
-            tracing::warn!(
-                error.type = safe::kind(error.code()),
-                "device authorization lease release failed"
-            );
-        }
+    }
+
+    /// Tells the listener task to stop. A second call does nothing.
+    fn stop_listeners(&self) {
         if let Some(shutdown_tx) = self
             .shutdown_tx
             .lock()
@@ -766,12 +803,31 @@ impl RunningServer {
             )]
             let _ = shutdown_tx.send(());
         }
+    }
 
-        let task = self.task.lock().expect("task mutex poisoned").take();
-        match task {
-            Some(task) => join_listeners(task).await,
-            None => Ok(()),
-        }
+    /// The state of the search model's files. `None` when `[search]
+    /// semantic_search_enabled` is off: then nothing looks for the files
+    /// and nothing downloads them.
+    #[must_use]
+    pub fn search_model(&self) -> Option<SearchModel> {
+        self.engine.search_model()
+    }
+
+    /// Publishes the canonical MCP origin after the companion listener binds.
+    /// Bootstrap supplies the validated public origin or actual local listener address.
+    /// # Panics
+    /// Panics if bootstrap attempts to publish a second origin.
+    pub fn publish_mcp_origin(&self, origin: String) {
+        self.mcp_origin
+            .set(origin)
+            .expect("MCP origin published once at bootstrap");
+    }
+}
+
+impl Drop for RunningServer {
+    fn drop(&mut self) {
+        self.engine.halt();
+        self.stop_listeners();
     }
 }
 
@@ -793,535 +849,12 @@ async fn join_listeners(
     }
 }
 
-impl RunningServer {
-    /// Shares the bootstrap-owned Provider Module with companion runtime composition.
-    #[must_use]
-    pub fn providers(&self) -> coral_provider::ProviderModule {
-        self.providers.clone()
-    }
-
-    /// Shares the bootstrap-owned credential subsystem with companion runtime composition.
-    #[must_use]
-    pub fn provider_accounts(&self) -> Option<coral_provider::account::AccountModule> {
-        self.accounts.clone()
-    }
-
-    /// Shares the process's one search index with companion runtime
-    /// composition, so every notification and reconcile pass in the process
-    /// goes through the same in-process mutex.
-    #[must_use]
-    pub fn search_index(&self) -> coral_search::SearchIndex {
-        self.search_index.clone()
-    }
-
-    /// Shares the process's one search module with companion runtime
-    /// composition, so every surface's search uses the Embedder's model.
-    /// A query is embedded only on Postgres, while semantic search is on and
-    /// the model has loaded.
-    #[must_use]
-    pub fn search(&self) -> coral_search::UniversalSearchModule {
-        self.search.clone()
-    }
-
-    /// The state of the search model's files. `None` when `[search]
-    /// semantic_search_enabled` is off: then nothing looks for the files
-    /// and nothing downloads them.
-    #[must_use]
-    pub fn search_model(&self) -> Option<SearchModel> {
-        self.search_model.clone()
-    }
-
-    /// The readiness every listener of this process reports: database
-    /// reachability, and not serving once shutdown begins.
-    #[must_use]
-    pub fn readiness(&self) -> EngineReadiness {
-        self.readiness.clone()
-    }
-
-    /// Shares the process's one Run module with companion runtime composition,
-    /// so a cancel or decision from any surface reaches the Run Owner that
-    /// another surface's Run registered.
-    #[must_use]
-    pub fn runs(&self) -> coral_run::RunModule {
-        self.runs.clone()
-    }
-
-    /// Shares the process's one warm compiler with companion runtime
-    /// composition, so Private Tool save compiles where Program Admission
-    /// does.
-    #[must_use]
-    pub fn compiler(&self) -> Arc<dyn coral_run_executor::CompilerClient> {
-        Arc::clone(&self.compiler)
-    }
-
-    /// Publishes the canonical MCP origin after the companion listener binds.
-    /// Bootstrap supplies the validated public origin or actual local listener address.
-    /// # Panics
-    /// Panics if bootstrap attempts to publish a second origin.
-    pub fn publish_mcp_origin(&self, origin: String) {
-        self.mcp_origin
-            .set(origin)
-            .expect("MCP origin published once at bootstrap");
-    }
-}
-
-impl Drop for RunningServer {
-    fn drop(&mut self) {
-        self.readiness.stop_serving();
-        if let Some(supervisor) = &self.local_run_executors {
-            supervisor.stop();
-        }
-        self.passes.stop();
-        self.search_reconcile.abort();
-        if let Some(delivery) = &self.search_model_delivery {
-            delivery.abort();
-        }
-        if let Some(load) = &self.search_model_load {
-            load.abort();
-        }
-        if let Some(accounts) = &self.accounts {
-            accounts.abort_device_authorizations();
-        }
-        if let Some(shutdown_tx) = self
-            .shutdown_tx
-            .lock()
-            .expect("shutdown mutex poisoned")
-            .take()
-        {
-            #[expect(
-                clippy::let_underscore_must_use,
-                reason = "send error means the receiver is already dropped, which is fine during shutdown"
-            )]
-            let _ = shutdown_tx.send(());
-        }
-    }
-}
-
-/// The usage data module and the outbound client it sends with.
-pub(crate) struct UsageReporting {
-    data: coral_usage::UsageData,
-    client: coral_outbound::Client,
-}
-
-impl UsageReporting {
-    /// The usage data module, or none when the launch supplied no
-    /// environment: then nothing could honor `DO_NOT_TRACK`, so nothing
-    /// sends.
-    fn new(
-        database: &Arc<Database>,
-        launcher: &Launcher,
-        signs_in: bool,
-        policy: coral_outbound::DestinationPolicy,
-    ) -> Result<Option<Self>, AppError> {
-        let Some(environment) = &launcher.usage_environment else {
-            return Ok(None);
-        };
-        let host = coral_usage::Host {
-            version: launcher
-                .service_version
-                .unwrap_or(env!("CARGO_PKG_VERSION"))
-                .to_owned(),
-            kind: if launcher.desktop {
-                coral_usage::HostKind::Desktop
-            } else {
-                coral_usage::HostKind::Server
-            },
-            auth: if signs_in {
-                coral_usage::HostAuth::Required
-            } else {
-                coral_usage::HostAuth::Disabled
-            },
-            database: database.system(),
-        };
-        Ok(Some(Self {
-            data: coral_usage::UsageData::new(
-                Arc::clone(database),
-                host,
-                coral_usage::Build::from_marker(option_env!("CORAL_RELEASE_BUILD")),
-                environment,
-            ),
-            client: coral_outbound::Client::new(policy, coral_usage::REQUEST_TIMEOUT).map_err(
-                |_error| {
-                    AppError::FailedPrecondition("usage data client initialization failed".into())
-                },
-            )?,
-        }))
-    }
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "process composition passes each prepared dependency once"
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "process composition builds each Module once, in dependency order"
-)]
-pub(crate) async fn start_server(
-    database: Arc<Database>,
-    mode: ServerMode,
-    authentication: coral_auth::PrincipalAuthentication,
-    vault: Option<coral_credentials::CredentialVault>,
-    client_id_metadata_document: Option<String>,
-    client_bootstrap_policy: coral_provider::account::ClientBootstrapPolicy,
-    policy: coral_outbound::DestinationPolicy,
-    runtime_limits: coral_run::RuntimeLimits,
-    reconcile_interval: std::time::Duration,
-    search_model: Option<Delivery>,
-    releases: Option<coral_release::ReleaseCheck>,
-    usage: Option<UsageReporting>,
-    secret_stores: coral_secret_store::SecretStores,
-    readiness: EngineReadiness,
-    state_lock: StateLock,
-    instance: coral_run::CoralInstanceId,
-    run_executor_listener: RunExecutorListener,
-    local_children: Option<LocalChildren>,
-    compile_in_process: bool,
-) -> Result<RunningServer, AppError> {
-    let coral_instance_id = instance.to_string();
-    let mut passes = Passes::default();
-    let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
-    let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
-    let builtin_catalog = coral_catalog::BuiltinCatalog::running()
-        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-    let providers = coral_provider::ProviderModule::new(
-        policy,
-        database.clone(),
-        workspaces.clone(),
-        builtin_catalog,
-        coral_catalog::SchemaGraphCache::new(coral_catalog::SchemaGraphCache::DEFAULT_BUDGET_BYTES),
-    );
-    let accounts = vault.map(|vault| {
-        let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
-            .with_secret_stores(secret_stores.clone())
-            .with_client_bootstrap_policy(client_bootstrap_policy);
-        match client_id_metadata_document {
-            Some(document) => accounts.with_client_id_metadata_document(document),
-            None => accounts,
-        }
-    });
-    // State initialization already ran the search checks and stream. The
-    // reconcile task's first pass runs in the background, so neither boot nor
-    // a request waits for it.
-    let search_index = coral_search::SearchIndex::new(Arc::clone(&database), reconcile_interval);
-    // Every clone of the index is made after this, so each write wakes the
-    // Embedder; the model fills the slot once the delivery below finds the
-    // files.
-    let embedder_model = search_model
-        .is_some()
-        .then(|| watch::channel(coral_search::ModelLoad::Pending));
-    let search_index = match &embedder_model {
-        Some((_, model)) => search_index.with_embedder(model.clone()),
-        None => search_index,
-    };
-    let provider_workflow =
-        coral_administration::ProviderWorkflow::new(providers.clone(), search_index.clone());
-    // Every Workspace has a Built-in Provider with this process's catalog,
-    // and a Private Provider, before the process takes requests. A rollback
-    // moves Workspaces back the same way.
-    let booted_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
-        .ok_or_else(|| AppError::FailedPrecondition("system clock is out of range".into()))?;
-    provider_workflow
-        .install_missing_coral_providers(booted_at)
-        .await
-        .map_err(|error| {
-            AppError::FailedPrecondition(format!("Coral's Provider install failed: {error}"))
-        })?;
-    provider_workflow
-        .update_builtin_catalogs(booted_at)
-        .await
-        .map_err(|error| {
-            AppError::FailedPrecondition(format!("Built-in Provider update failed: {error}"))
-        })?;
-    let run_executor_credentials =
-        coral_run_executor::Credentials::new(run_executor_listener.tokens);
-    let run_executors = (
-        TcpListener::bind(run_executor_listener.bind).await?,
-        coral_run_executor::LinkServer::new(
-            run_executor_credentials.clone(),
-            database.clone(),
-            coral_instance_id,
-        ),
-    );
-    let local_run_executors = match local_children {
-        Some(children) => {
-            // A local child dials this host: loopback, unless the listener
-            // is bound to one address.
-            let mut address = run_executors.0.local_addr()?;
-            if address.ip().is_unspecified() {
-                address.set_ip(match address {
-                    SocketAddr::V4(_) => Ipv4Addr::LOCALHOST.into(),
-                    SocketAddr::V6(_) => Ipv6Addr::LOCALHOST.into(),
-                });
-            }
-            let command = coral_run_executor::ChildCommand {
-                program: children.program,
-                coral_address: format!("http://{address}"),
-                max_runs_held: children.settings.max_runs_held,
-                compiler_heap_bytes: runtime_limits.isolate().compiler_heap_bytes(),
-                environment: children.environment,
-            };
-            Some(coral_run_executor::LocalRunExecutors::start(
-                command,
-                children.settings.limit,
-                run_executor_credentials,
-                run_executors.1.streams(),
-            ))
-        }
-        None => None,
-    };
-    // Program Admission and Private Tool save share one compiler client:
-    // the Run Executors' pull streams, relayed through the database to any
-    // Coral Instance with room when none has room, or a warm compiler in this process
-    // for a test that starts Coral in its own process.
-    let compiler: Arc<dyn coral_run_executor::CompilerClient> = if compile_in_process {
-        Arc::new(
-            coral_run_executor::InProcessCompiler::new(runtime_limits.isolate()).map_err(
-                |error| {
-                    AppError::FailedPrecondition(format!("Program runtime is unavailable: {error}"))
-                },
-            )?,
-        )
-    } else {
-        Arc::new(run_executors.1.compiler(local_run_executors.clone()))
-    };
-    // The one search module of the process: Runs, gRPC and MCP share it. Its
-    // engine embeds queries with the Embedder's model, so a query waits for at
-    // most the one document the Embedder runs.
-    let search = coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone());
-    let search = match &embedder_model {
-        Some((_, model)) => search.with_model(model.clone()),
-        None => search,
-    };
-    // updateProvider renames through the same workflow as Reef.
-    let mut runs = coral_run::RunModule::with_compiler_client(
-        policy,
-        database.clone(),
-        workspaces.clone(),
-        providers.clone(),
-        runtime_limits,
-        compiler.clone(),
-        instance,
-        coral_run::RunInbox::table(database.clone()),
-    )
-    .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
-    .with_provider_renamer(Arc::new(provider_workflow.clone()))
-    .with_search(search.clone());
-    if let Some(accounts) = &accounts {
-        runs = runs.with_accounts(accounts.clone());
-    }
-    let private_tools =
-        coral_tools::PrivateToolInspection::new(database.clone(), workspaces.clone());
-    // A delete removes the Private Tool's exact rule and tells the search index.
-    let private_tool_workflow = coral_administration::PrivateToolWorkflow::new(
-        database.clone(),
-        coral_tools::PrivateToolDeletion::new(workspaces.clone()),
-        search_index.clone(),
-    );
-    // A Shared Tool Publish compiles through the same warm compiler.
-    let shared_tools = coral_tools::SharedToolModule::with_compiler_client(
-        database.clone(),
-        workspaces.clone(),
-        compiler.clone(),
-        runtime_limits.compilation_timeout(),
-    );
-    let mcp_origin = Arc::new(std::sync::OnceLock::new());
-    // One stop signal for both listeners and the streams they serve.
-    let (stop, stopping) = watch::channel(false);
-    let routes = coral_grpc::routes(
-        coral_grpc::Dependencies {
-            organization: coral_workspace::OrganizationModule::new(database.clone()),
-            // A publish and a removal tell the search index after they commit.
-            shared_tool_workflow: coral_administration::SharedToolWorkflow::new(
-                database.clone(),
-                shared_tools.clone(),
-                search.clone(),
-                search_index.clone(),
-            ),
-            provider_readiness: search.clone(),
-            policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
-            access_lifecycle: coral_administration::AccessLifecycleModule::new(
-                database.clone(),
-                workspaces.clone(),
-            ),
-            provider_workflow,
-            workspace_workflow: coral_administration::WorkspaceWorkflow::new(
-                database.clone(),
-                workspaces.clone(),
-                providers.clone(),
-                search_index.clone(),
-            ),
-            workspaces: workspaces.clone(),
-            providers: providers.clone(),
-            accounts: accounts.clone(),
-            tasks,
-            private_tools,
-            private_tool_workflow,
-            shared_tools,
-            runs: runs.clone(),
-            releases: releases.clone(),
-            usage: usage.as_ref().map(|usage| usage.data.clone()),
-            secret_stores: coral_administration::SecretStoreAdministration::new(
-                coral_workspace::OrganizationModule::new(database.clone()),
-                workspaces.clone(),
-                secret_stores,
-            ),
-        },
-        coral_grpc::TransportContext {
-            authentication,
-            mcp_origin: mcp_origin.clone(),
-            readiness: readiness.probe(),
-            stopping: stopping.clone(),
-        },
-    );
-
-    // The expired-lease sweep's first pass runs before any listener serves,
-    // and before any but the Run Executor listener binds:
-    // when it succeeds, a Run whose lease lapsed before boot has its owner
-    // back before the first request. A pass that fails is logged, the
-    // listeners bind anyway, and the next pass, a half lease later, reads
-    // again.
-    if let Err(code) = sweep_expired_leases(&runs).await {
-        tracing::warn!(
-            error.type = safe::kind(code),
-            "expired-lease sweep failed at boot; the next pass retries"
-        );
-    }
-    let listener = TcpListener::bind(mode.bind_addr()).await?;
-    let local_addr = listener.local_addr()?;
-    let endpoint_uri = format!("http://{local_addr}");
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    let (task_finished_tx, task_finished) = watch::channel(false);
-
-    let task = match mode {
-        ServerMode::EphemeralGrpc | ServerMode::StandaloneGrpc { .. } => start_grpc_server(
-            listener,
-            run_executors,
-            shutdown_rx,
-            (stop, stopping),
-            routes,
-            task_finished_tx,
-        ),
-    };
-
-    let run_recovery = {
-        let runs = runs.clone();
-        // The boot pass above was the first, so this one waits a cadence.
-        let schedule = Schedule::every(runs.sweep_interval()).first_after(runs.sweep_interval());
-        passes.start("expired_lease_sweep", schedule, move || {
-            let runs = runs.clone();
-            async move { sweep_expired_leases(&runs).await }
-        })
-    };
-    if let Some(accounts) = accounts.clone() {
-        let schedule = Schedule::every(DEVICE_RECOVERY_INTERVAL);
-        passes.start("device_authorization_recovery", schedule, move || {
-            let accounts = accounts.clone();
-            async move {
-                // A clock that gives no time gets no pass.
-                if let Some(now) = unix_nanos() {
-                    accounts
-                        .recover_device_authorizations(now)
-                        .await
-                        .map_err(|error| error.code())?;
-                }
-                Ok(())
-            }
-        });
-    }
-    if let Some(releases) = releases {
-        let schedule = Schedule::every(coral_release::CHECK_INTERVAL);
-        passes.start("release_check", schedule, move || {
-            let releases = releases.clone();
-            async move {
-                releases.check().await;
-                Ok(())
-            }
-        });
-    }
-    if let Some(usage) = usage {
-        let schedule = Schedule::every(coral_usage::CHECK_INTERVAL);
-        passes.start("usage_report_check", schedule, move || {
-            let (data, client) = (usage.data.clone(), usage.client.clone());
-            async move {
-                // The collector answering late or not at all is no failure:
-                // the reports wait for the next check.
-                data.send_due(&client, coral_usage::COLLECTOR_URL, || {
-                    unix_nanos().unwrap_or(0)
-                })
-                .await
-                .map_err(|error| error.code())?;
-                Ok(())
-            }
-        });
-    }
-    let search_reconcile = search_index.spawn_reconcile_task();
-    let (search_model, search_model_delivery) = search_model.map(SearchModel::start).unzip();
-    let search_model_load = search_model
-        .as_ref()
-        .zip(embedder_model)
-        .map(|(files, (slot, _))| files.load_into(slot));
-    Ok(RunningServer {
-        providers,
-        readiness,
-        passes,
-        run_recovery,
-        search,
-        search_index,
-        search_reconcile,
-        search_model,
-        search_model_delivery,
-        search_model_load,
-        accounts,
-        runs,
-        compiler,
-        local_run_executors,
-        mcp_origin,
-        endpoint_uri,
-        local_addr,
-        database,
-        authorization_server: None,
-        workspace_authentication: None,
-        shutdown_tx: Mutex::new(Some(shutdown_tx)),
-        task_finished,
-        task: Mutex::new(Some(task)),
-        _state_lock: state_lock,
-    })
-}
-
-/// What bootstrap resolved to start local Run Executors: the `[runtime]`
-/// settings, this process's own binary and the children's environment.
-pub(crate) struct LocalChildren {
-    settings: super::server_config::LocalRunExecutorSettings,
-    program: std::path::PathBuf,
-    environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
-}
-
-/// One pass of the expired-lease sweep. It fails with the error's code, and
-/// the next pass reads again.
-async fn sweep_expired_leases(runs: &coral_run::RunModule) -> Result<(), &'static str> {
-    let recovered = runs
-        .sweep_expired_leases()
-        .await
-        .map_err(|error| error.code())?;
-    if recovered > 0 {
-        tracing::info!(
-            coral.run.recovered = safe::number(recovered),
-            "expired-lease sweep recovered Runs"
-        );
-    }
-    Ok(())
-}
-
 /// Serves the private gRPC listener and the Run Executor listener until
 /// shutdown, or until either fails. Shutdown sets `stop`, which `routes`
 /// observes too; dropping the task drops `stop`, which reads the same.
 fn start_grpc_server(
     listener: TcpListener,
-    (run_executor_listener, link): (TcpListener, coral_run_executor::LinkServer),
+    run_executors: RunExecutorLink,
     shutdown_rx: oneshot::Receiver<()>,
     (stop, stopping): (watch::Sender<bool>, watch::Receiver<bool>),
     routes: Routes,
@@ -1337,7 +870,9 @@ fn start_grpc_server(
             .http2_max_header_list_size(HTTP2_MAX_HEADER_LIST_SIZE)
             .add_routes(routes)
             .serve_with_incoming_shutdown(incoming, stopped(stopping.clone()));
-        let run_executors = link.serve(run_executor_listener, stopped(stopping));
+        let run_executors = run_executors
+            .server
+            .serve(run_executors.listener, stopped(stopping));
         let shutdown = async move {
             drop(shutdown_rx.await);
             stop.send_replace(true);
@@ -1351,8 +886,6 @@ fn start_grpc_server(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use tempfile::TempDir;
 
     use super::{AppError, SHUTDOWN_GRACE_PERIOD, ServerBuilder, join_listeners};
@@ -1379,35 +912,6 @@ mod tests {
         released
             .await
             .expect_err("the aborted task dropped what it held");
-    }
-
-    #[tokio::test]
-    async fn the_search_reconcile_task_runs_beside_the_server_until_shutdown() {
-        let temp = TempDir::new().unwrap();
-        std::fs::write(
-            temp.path().join("config.toml"),
-            "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
-        )
-        .unwrap();
-        let server = ServerBuilder::new()
-            .with_config_dir(temp.path())
-            .start()
-            .await
-            .unwrap();
-        assert!(
-            !server.search_reconcile.is_finished(),
-            "the task runs a pass each interval until it is stopped"
-        );
-
-        server.shutdown_inner().await.unwrap();
-
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while !server.search_reconcile.is_finished() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("shutdown aborts the reconcile task");
     }
 
     #[tokio::test]
