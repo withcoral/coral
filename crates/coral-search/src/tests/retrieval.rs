@@ -1083,6 +1083,66 @@ async fn postgres_selects_a_held_word_by_its_lexemes_and_another_by_its_substrin
     }
 }
 
+#[tokio::test]
+async fn postgres_selects_by_a_common_word_only_while_no_rarer_word_is_held() {
+    coral_test_support::database_only!(Postgres);
+    let mut paths_json = serde_json::Map::new();
+    for index in 0..1_001 {
+        paths_json.insert(
+            format!("/t{index}"),
+            serde_json::json!({ "get": {
+                "operationId": format!("listTracer{index}"), "summary": format!("List tracer {index}"),
+                "responses": { "200": { "description": "OK" } }
+            } }),
+        );
+    }
+    for (path, id, summary) in [
+        ("/g", "readGorvex", "Read a gorvex"),
+        ("/j", "tracerlist", "Joined"),
+    ] {
+        paths_json.insert(
+            path.to_string(),
+            serde_json::json!({ "get": {
+                "operationId": id, "summary": summary,
+                "responses": { "200": { "description": "OK" } }
+            } }),
+        );
+    }
+    let document = serde_json::json!({
+        "openapi": "3.1.0",
+        "info": { "title": "Zentro", "version": "1.0.0" },
+        "servers": [{ "url": "https://zentro.example" }],
+        "security": [],
+        "paths": paths_json,
+    })
+    .to_string();
+    let (modules, principal, workspace) = published(&document, "zentro").await;
+    // `list` and `tracer` are each in more than 20% of the rows and in more
+    // than the 1,000 the exact score reads. So while the query's rarer typed
+    // word, or a spelling one edit from it, is a word some row holds, `list`
+    // selects no row. When the rarer word meets no row, `list` selects
+    // again. The compact variant `tracerlist` is no typed word: one row
+    // holds it, and `tracer` and `list` still select.
+    let gorvex = "coral.providers.zentro.readGorvex";
+    for (query, only_gorvex) in [
+        ("list gorvex", true),
+        ("list gorvez", true),
+        ("list qwxyzz", false),
+        ("tracer list", false),
+    ] {
+        let page = search_page(&modules, &principal, &workspace, query).await;
+        let ranked = paths(&page);
+        if only_gorvex {
+            assert_eq!(ranked, [gorvex], "{query}");
+        } else {
+            assert!(
+                ranked.iter().any(|path| path.contains(".listTracer")) && !ranked.contains(&gorvex),
+                "{query}: {ranked:?}"
+            );
+        }
+    }
+}
+
 /// One Provider of invented words whose rows separate the scoring rules.
 /// Every row holds `zentro` through the Provider name, so a query of
 /// two words with it never meets a phrase; the long rows hold the query

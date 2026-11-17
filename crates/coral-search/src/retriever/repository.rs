@@ -610,7 +610,7 @@ async fn rank(
 /// phrase points, a named Provider and the estimate. The estimate is cheap
 /// and the exact score is not, so a large Workspace's statement spends its
 /// time on these alone. A candidate past them takes no place in the window.
-const EXACT_SCORE_LIMIT: usize = 1_000;
+pub(super) const EXACT_SCORE_LIMIT: usize = 1_000;
 
 /// Candidates by prefix `tsquery` over the spellings, or by substring over
 /// `all_text`, in a `MATERIALIZED` CTE so the planner keeps the index scans
@@ -687,8 +687,8 @@ async fn rank_postgres(
 }
 
 /// The candidate disjuncts over the alias `d`: the prefix `tsquery` over the
-/// spellings, and a substring pattern per spelling that no row holds as a
-/// lexeme and per wordless term.
+/// spellings of the words that select, and a substring pattern per such
+/// spelling that no row holds as a lexeme and per wordless term.
 ///
 /// A held spelling selects by its lexemes alone. Its substring would add
 /// only rows that hold it inside a longer lexeme, which the score gives
@@ -699,6 +699,7 @@ fn postgres_candidates(binds: &mut Binds, plan: &QueryPlan, scoring: &ScoringPla
     let spellings = scoring
         .words
         .iter()
+        .filter(|word| word.selects)
         .flat_map(|word| &word.spellings)
         .collect::<Vec<_>>();
     let mut matches = Vec::new();
