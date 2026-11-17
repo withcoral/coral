@@ -331,10 +331,18 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
         .await
     {
         Ok(evidence) => evidence,
-        Err(
-            coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_),
-        ) => return lost(),
-        Err(_error) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(error) => {
+            return match refused(error.refusal()) {
+                Refused::Lost => lost(),
+                Refused::SignInAgain => unauthorized(
+                    &state,
+                    &endpoint,
+                    AuthenticationError::Unauthenticated,
+                    bearer,
+                ),
+                Refused::Unavailable => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            };
+        }
     };
     let workspace = evidence.workspace();
     let mut handler = McpServer::new(
@@ -387,6 +395,35 @@ fn bearer_credential(headers: &axum::http::HeaderMap) -> Result<Option<&str>, ()
         return Err(());
     }
     Ok(Some(token))
+}
+
+/// What the endpoint answers when the check of the caller's authority fails.
+#[derive(Debug, PartialEq, Eq)]
+enum Refused {
+    /// The caller cannot work in this Workspace, now or on a retry.
+    Lost,
+    /// The credential no longer works, so the client presents another.
+    SignInAgain,
+    /// The failure says nothing about the caller. A retry can succeed.
+    Unavailable,
+}
+
+/// The answer for each refusal, and for a failure that is none.
+const fn refused(refusal: Option<coral_workspace::AuthorityRefusal>) -> Refused {
+    use coral_workspace::AuthorityRefusal as Refusal;
+    match refusal {
+        Some(
+            Refusal::WorkspaceNotFound | Refusal::PermissionDenied | Refusal::WorkspaceArchived,
+        ) => Refused::Lost,
+        // The Agent's Registration ended after the request authenticated.
+        Some(
+            Refusal::AgentNotFound
+            | Refusal::AgentDisabled
+            | Refusal::AgentRegistrationExpired
+            | Refusal::InvalidAgentCredential,
+        ) => Refused::SignInAgain,
+        None => Refused::Unavailable,
+    }
 }
 
 /// A 401 whose challenge names `endpoint`'s protected-resource metadata.
@@ -447,4 +484,38 @@ fn now_unix_nanos() -> Option<i64> {
         .ok()?
         .as_nanos();
     i64::try_from(nanos).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Refused, refused};
+    use coral_workspace::AuthorityRefusal as Refusal;
+
+    // Catches: an Agent whose Registration ended being told to retry a
+    // request that can never succeed, and a failure that says nothing about
+    // the caller being read as a lost Workspace.
+    #[test]
+    fn a_refused_caller_is_told_whether_to_leave_sign_in_again_or_retry() {
+        let answers = [
+            (Some(Refusal::WorkspaceNotFound), Refused::Lost),
+            (Some(Refusal::PermissionDenied), Refused::Lost),
+            (Some(Refusal::WorkspaceArchived), Refused::Lost),
+            (Some(Refusal::AgentNotFound), Refused::SignInAgain),
+            (Some(Refusal::AgentDisabled), Refused::SignInAgain),
+            (
+                Some(Refusal::AgentRegistrationExpired),
+                Refused::SignInAgain,
+            ),
+            (Some(Refusal::InvalidAgentCredential), Refused::SignInAgain),
+            (None, Refused::Unavailable),
+        ];
+        for (refusal, answer) in answers {
+            assert_eq!(refused(refusal), answer, "{refusal:?}");
+        }
+        // A database failure is no refusal.
+        assert_eq!(
+            refused(coral_workspace::Error::Database(coral_db::Error::WriterBusy).refusal()),
+            Refused::Unavailable
+        );
+    }
 }
