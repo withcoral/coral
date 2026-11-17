@@ -304,11 +304,18 @@ impl Held {
     /// Marks the validator of `root` of `graph` as the most recently used
     /// and returns what is kept for it, when anything is.
     fn mark_used(&self, graph: GraphId, root: &Root) -> Option<Compiled> {
+        self.mark_used_at(graph, root, self.tick())
+    }
+
+    /// Records a use of the validator of `root` of `graph` at `tick` and
+    /// returns what is kept for it, when anything is.
+    ///
+    /// Two uses at once take their ticks and write them in either order, so
+    /// each writes only a later tick: a use never makes its validator look
+    /// older than a use before it did.
+    fn mark_used_at(&self, graph: GraphId, root: &Root, tick: u64) -> Option<Compiled> {
         let kept = self.by_graph.get(&graph)?.get(root)?;
-        // Two uses at once take their ticks and write them in either order,
-        // so each writes only a later tick: a use never looks older than
-        // the one before it.
-        kept.last_use.fetch_max(self.tick(), Ordering::Relaxed);
+        kept.last_use.fetch_max(tick, Ordering::Relaxed);
         Some(kept.compiled.clone())
     }
 

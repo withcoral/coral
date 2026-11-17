@@ -363,6 +363,34 @@ fn the_byte_budget_evicts_the_validators_used_longest_ago_whatever_their_graph()
     }
 }
 
+// Catches: a use that took its tick first and wrote it last moving its
+// validator's last use backwards, so that the store lets go of a validator
+// used after the one it keeps.
+#[test]
+fn a_use_that_writes_its_tick_late_does_not_make_its_validator_look_older() {
+    let graph = 1;
+    let (busy, idle) = ((OUTPUT, root("busy")), (OUTPUT, root("idle")));
+    let kept_idle = compiled();
+    let mut held = Held::default();
+    drop(held.keep(graph, busy.clone(), compiled(), 1, usize::MAX));
+    drop(held.keep(graph, idle.clone(), kept_idle.clone(), 1, usize::MAX));
+
+    // Three uses take their ticks in this order. The first to take its tick
+    // is the last to write it.
+    let (early, between, late) = (held.tick(), held.tick(), held.tick());
+    drop(held.mark_used_at(graph, &busy, late));
+    drop(held.mark_used_at(graph, &idle, between));
+    drop(held.mark_used_at(graph, &busy, early));
+
+    let released = held
+        .take_least_recently_used()
+        .expect("two validators are kept");
+    assert!(
+        same(&released, &kept_idle),
+        "the validator used longest ago leaves first"
+    );
+}
+
 fn same(left: &Compiled, right: &Compiled) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => Arc::ptr_eq(left, right),
