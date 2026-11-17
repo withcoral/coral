@@ -108,6 +108,7 @@ mod schema;
 mod schema_graph_cache;
 mod search;
 mod types;
+mod validators;
 
 use coral_db::Transaction;
 
