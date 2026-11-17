@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 396" role="img" aria-labelledby="concepts-title" font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" fill="#171717">
+  <title id="concepts-title">A principal submits a program. Its run calls the tools of a provider in a workspace, directly or through custom tools. Coral checks the policy of each tool and adds the credentials of the account, then calls the upstream service.</title>
+  <defs>
+    <marker id="arrow-path" markerUnits="userSpaceOnUse" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#d53c05" />
+    </marker>
+  </defs>
+
+  <!-- Organization -->
+  <rect x="8" y="8" width="548" height="380" rx="14" fill="#000" fill-opacity="0.03" stroke="#000" stroke-opacity="0.14" />
+  <text x="22" y="31" font-size="10.5" font-weight="600" letter-spacing="0.6" fill-opacity="0.6">ORGANIZATION</text>
+  <text x="122" y="31" font-size="11" fill-opacity="0.6">one for each deployment, holds the workspaces</text>
+
+  <!-- Workspace -->
+  <rect x="20" y="44" width="524" height="332" rx="12" fill="#fff" stroke="#000" stroke-opacity="0.14" />
+  <text x="34" y="67" font-size="10.5" font-weight="600" letter-spacing="0.6" fill-opacity="0.6">WORKSPACE</text>
+
+  <!-- Principal -->
+  <rect x="34" y="88" width="140" height="54" rx="8" fill="#fff" stroke="#000" stroke-opacity="0.22" />
+  <text x="46" y="111" font-size="13" font-weight="600">Principal</text>
+  <text x="46" y="129" fill-opacity="0.6">a user or an agent</text>
+
+  <!-- Principal to run -->
+  <line x1="104" y1="142" x2="104" y2="169" stroke="#d53c05" stroke-width="1.5" marker-end="url(#arrow-path)" />
+  <text x="114" y="160" font-size="11">submits a program</text>
+
+  <!-- Run -->
+  <rect x="34" y="170" width="140" height="54" rx="8" fill="#fff" stroke="#000" stroke-opacity="0.22" />
+  <text x="46" y="193" font-size="13" font-weight="600">Run</text>
+  <text x="46" y="211" fill-opacity="0.6">runs the program</text>
+
+  <!-- Run to custom tools -->
+  <line x1="104" y1="224" x2="104" y2="261" stroke="#d53c05" stroke-width="1.5" marker-end="url(#arrow-path)" />
+  <text x="114" y="247" font-size="11">or a custom tool</text>
+
+  <!-- Custom tools: a set of tools, drawn as the provider is -->
+  <rect x="34" y="262" width="140" height="70" rx="10" fill="#000" fill-opacity="0.03" stroke="#000" stroke-opacity="0.14" />
+  <text x="46" y="284" font-size="10.5" font-weight="600" letter-spacing="0.6" fill-opacity="0.6">CUSTOM TOOLS</text>
+  <g font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">
+    <text x="46" y="304">coral.private</text>
+    <text x="46" y="320">coral.shared</text>
+  </g>
+
+  <!-- Custom tools call provider tools: their calls join the run's -->
+  <polyline points="174,297 236,297 236,194" fill="none" stroke="#d53c05" stroke-width="1.5" stroke-linejoin="round" />
+  <circle cx="236" cy="194" r="2.75" fill="#d53c05" />
+  <text x="205" y="290" font-size="11" text-anchor="middle">call tools</text>
+
+  <!-- Run to provider -->
+  <line x1="174" y1="194" x2="261" y2="194" stroke="#d53c05" stroke-width="1.5" marker-end="url(#arrow-path)" />
+  <text x="217" y="187" font-size="11" text-anchor="middle">calls a tool</text>
+
+  <!-- Provider -->
+  <rect x="262" y="88" width="268" height="274" rx="10" fill="#000" fill-opacity="0.03" stroke="#000" stroke-opacity="0.14" />
+  <text x="274" y="111" font-size="10.5" font-weight="600" letter-spacing="0.6" fill-opacity="0.6">PROVIDER</text>
+  <text x="518" y="111" font-size="11" text-anchor="end" fill-opacity="0.6" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">coral.providers.github</text>
+  <text x="274" y="135" font-size="11" fill-opacity="0.6">Tools and their policy</text>
+
+  <rect x="274" y="146" width="244" height="96" rx="8" fill="#fff" stroke="#000" stroke-opacity="0.22" />
+  <line x1="274" y1="178" x2="518" y2="178" stroke="#000" stroke-opacity="0.1" />
+  <line x1="274" y1="210" x2="518" y2="210" stroke="#000" stroke-opacity="0.1" />
+  <g font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11">
+    <text x="286" y="166">issues.list</text>
+    <text x="286" y="198">actions.addRepoAccess</text>
+    <text x="286" y="230">repos.delete</text>
+  </g>
+  <g font-size="11" font-weight="500" text-anchor="middle">
+    <rect x="460" y="152" width="48" height="20" rx="10" fill="#000" fill-opacity="0.06" />
+    <text x="484" y="166">Allow</text>
+    <rect x="460" y="184" width="48" height="20" rx="10" fill="#000" fill-opacity="0.06" />
+    <text x="484" y="198">Ask</text>
+    <rect x="460" y="216" width="48" height="20" rx="10" fill="#000" fill-opacity="0.06" />
+    <text x="484" y="230">Block</text>
+  </g>
+
+  <!-- Tools to account -->
+  <line x1="298" y1="242" x2="298" y2="275" stroke="#d53c05" stroke-width="1.5" marker-end="url(#arrow-path)" />
+  <text x="308" y="263" font-size="11">Coral adds the credentials</text>
+
+  <!-- Account -->
+  <rect x="274" y="276" width="244" height="72" rx="8" fill="#fff" stroke="#000" stroke-opacity="0.22" />
+  <text x="286" y="299" font-size="13" font-weight="600">Account</text>
+  <text x="286" y="317" fill-opacity="0.6">holds the credentials</text>
+  <text x="286" y="334" font-size="11" fill-opacity="0.6">setting: none, individual or shared</text>
+
+  <!-- Account to upstream service -->
+  <line x1="518" y1="312" x2="595" y2="312" stroke="#d53c05" stroke-width="1.5" marker-end="url(#arrow-path)" />
+  <text x="576" y="305" font-size="11" text-anchor="middle">calls</text>
+
+  <!-- Upstream service -->
+  <text x="596" y="278" font-size="10.5" font-weight="600" letter-spacing="0.6" fill-opacity="0.6">UPSTREAM SERVICE</text>
+  <rect x="596" y="286" width="116" height="52" rx="8" fill="#fff" stroke="#000" stroke-opacity="0.22" />
+  <text x="608" y="308" font-size="13" font-weight="600">GitHub</text>
+  <text x="608" y="326" fill-opacity="0.6">for example</text>
+</svg>
