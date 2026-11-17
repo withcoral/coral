@@ -5,6 +5,7 @@
 //! [`SearchChange`] it committed. Per ADR 0017, the workflow hands it to
 //! search after the commit. A notification never fails the workflow; the
 //! reconcile task converges what a lost or failed notification missed.
+use coral_db::UnixNanos;
 use coral_provider::{
     Committed, CoralDefinedProvider, Error, Provider, ProviderDisplayName, ProviderId,
     ProviderModule, ProviderPublication, ProviderRegenerationPublication,
@@ -113,11 +114,11 @@ impl ProviderWorkflow {
     /// Returns the errors of [`ProviderModule::install_missing_coral_defined`].
     pub async fn install_missing_coral_providers(
         &self,
-        occurred_at_unix_nanos: i64,
+        occurred_at: UnixNanos,
     ) -> Result<(), Error> {
         for missing in self
             .providers
-            .install_missing_coral_defined(occurred_at_unix_nanos)
+            .install_missing_coral_defined(occurred_at.get())
             .await?
         {
             let workspace_id = missing.workspace_id().clone();
@@ -141,11 +142,11 @@ impl ProviderWorkflow {
     /// # Errors
     ///
     /// Returns the errors of [`ProviderModule::outdated_builtin_generations`].
-    pub async fn update_builtin_catalogs(&self, occurred_at_unix_nanos: i64) -> Result<(), Error> {
+    pub async fn update_builtin_catalogs(&self, occurred_at: UnixNanos) -> Result<(), Error> {
         for outdated in self.providers.outdated_builtin_generations().await? {
             match self
                 .providers
-                .update_builtin_catalog(&outdated, occurred_at_unix_nanos)
+                .update_builtin_catalog(&outdated, occurred_at.get())
                 .await
             {
                 Ok(committed) => {
