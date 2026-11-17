@@ -1254,22 +1254,29 @@ async fn release_inspection_projects_the_newer_release() {
     assert_eq!(denied.code(), tonic::Code::Unauthenticated);
 }
 
-/// Any member reads usage data with its exact report JSON; only an Owner
-/// changes the setting, and a denial is `PERMISSION_DENIED`.
+/// An Owner reads usage data with its exact report JSON and changes the
+/// setting. A Member does neither, and a denial is `PERMISSION_DENIED`.
 #[tokio::test]
-async fn usage_data_projects_the_view_and_denies_members_the_switch() {
+async fn usage_data_projects_the_view_and_denies_members() {
     let fixture = Fixture::new().await;
     let member = fixture.token(&fixture.member, "reef");
     let owner = fixture.token(&fixture.owner, "reef");
 
-    let view = fixture
+    let denied = fixture
         .usage_data()
         .get_usage_data(request(management::GetUsageDataRequest {}, &member, "reef"))
+        .await
+        .unwrap_err();
+    assert_eq!(denied.code(), tonic::Code::PermissionDenied);
+    assert_eq!(error_reason(&denied), "PERMISSION_DENIED");
+
+    let view = fixture
+        .usage_data()
+        .get_usage_data(request(management::GetUsageDataRequest {}, &owner, "reef"))
         .await
         .unwrap()
         .into_inner();
     assert!(view.sharing);
-    assert!(!view.can_change);
     assert_eq!(view.block(), management::UsageSendBlock::SourceBuild);
     assert_eq!(view.kind(), management::UsageHostKind::Server);
     assert_eq!(view.last_sent, None);
@@ -1302,7 +1309,6 @@ async fn usage_data_projects_the_view_and_denies_members_the_switch() {
         .unwrap()
         .into_inner();
     assert!(!changed.sharing);
-    assert!(changed.can_change);
 }
 
 /// The projection names each store, its kind and its state, and a denial is a denial.

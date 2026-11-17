@@ -26,7 +26,8 @@ type Story = StoryObj<typeof meta>
 
 // An organization owner sees every section.
 export const Owner: Story = {}
-// A member reads the usage data and administers nothing in the organization.
+// A member has no settings. Coral refuses a page they open by its address,
+// and the nav then shows only the way back.
 export const Member: Story = {
   args: { reader: { organizationOwner: false, people: true, secretStoresEnabled: true } },
   parameters: { initialEntry: '/usage-data' },

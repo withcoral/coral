@@ -149,6 +149,10 @@ test('Organization Owner governance, eligible Memberships, and private server pa
             0,
           )
           expect(await showsOwnerPages(page)).toBe(false)
+          // The organization's settings are for its owners: Coral refuses a
+          // Member each page by its address.
+          for (const address of ['/usage-data', '/organization/workspaces'])
+            expect((await page.request.get(address)).status(), address).toBe(403)
           const html = await page.content()
           for (const hidden of [
             'Private Agent directory',

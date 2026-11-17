@@ -4,11 +4,12 @@
 //! # Interface
 //!
 //! [`UsageData`] owns the deployment's one sharing setting, its random
-//! install ID, and the reports to send. [`UsageData::view`] shows any
-//! Organization Member the exact JSON of the next and the last report;
-//! [`UsageData::set_sharing`] lets an Organization Owner turn sharing off or
-//! on. [`UsageData::send_due`] is one pass: it makes each finished day's
-//! report and sends it through the bootstrap-selected destination policy.
+//! install ID, and the reports to send. [`UsageData::view`] shows an
+//! Organization Owner the exact JSON of the next and the last report;
+//! [`UsageData::set_sharing`] lets them turn sharing off or on. Both deny
+//! every other caller. [`UsageData::send_due`] is one pass: it makes each
+//! finished day's report and sends it through the bootstrap-selected
+//! destination policy.
 //! Bootstrap runs it at once, then every [`CHECK_INTERVAL`].
 //!
 //! # Invariants

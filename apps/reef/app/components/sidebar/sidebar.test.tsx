@@ -143,15 +143,17 @@ test('archiving the current workspace leaves it open as archived', async () => {
   ).toEqual(['Research'])
 })
 
-// Catches: Settings opening on a section a member cannot open. Who sees which
-// section is the settings nav module's rule, tested there.
-test('the account menu opens the settings on the first section you can open', async () => {
-  render('/workspaces/ops/approvals')
+// Catches: a member offered settings Coral refuses them, or an owner losing
+// the way in. Which sections an owner has is the settings nav module's rule.
+test.each<[string, boolean, string | null]>([
+  ['an organization owner', true, '/organization/members'],
+  ['an organization member', false, null],
+])('the account menu offers Settings only to %s', async (_, organizationOwner, href) => {
+  render('/workspaces/ops/approvals', { organizationOwner })
   await userEvent.click(screen.getByRole('button', { name: /^Open account menu/ }))
-  expect(await screen.findByRole('menuitem', { name: 'Settings' })).toHaveAttribute(
-    'href',
-    '/usage-data',
-  )
+  await screen.findByRole('menuitem', { name: 'Appearance' })
+  const settings = screen.queryByRole('menuitem', { name: 'Settings' })
+  expect(settings?.getAttribute('href') ?? null).toBe(href)
 })
 
 // Catches: the organization's settings keeping the workspace's switcher and pages.

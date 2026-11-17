@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use chrono::{Days, NaiveDate};
 use coral_db::{Database, Transaction};
-use coral_workspace::{AuthenticatedUser, OrganizationModule, OrganizationRole};
+use coral_workspace::{AuthenticatedUser, OrganizationModule};
 
 use crate::Error;
 use crate::compose::{Composed, compose};
@@ -20,8 +20,6 @@ use crate::repository::install::{self, Install, Unsent};
 pub struct UsageDataView {
     /// On until an Organization Owner turns it off.
     pub sharing: bool,
-    /// Whether the caller is an Organization Owner, who can change `sharing`.
-    pub can_change: bool,
     /// What stops this process from sending, whatever `sharing` says.
     pub block: Option<SendBlock>,
     /// Where Coral runs.
@@ -87,19 +85,19 @@ impl UsageData {
         self.inner.block
     }
 
-    /// What the Usage data page shows. Any Organization Member can read it.
+    /// What the Usage data page shows. Only an Organization Owner can read it,
+    /// as only an Organization Owner can change it.
     ///
     /// # Errors
     ///
-    /// Denies a caller without an enabled Organization Membership.
+    /// Denies a caller who is not an enabled Organization Owner.
     pub async fn view(&self, actor: &AuthenticatedUser, now: i64) -> Result<UsageDataView, Error> {
         loop {
             let mut tx = self.inner.database.begin_read_snapshot().await?;
             // Authorize first, so a denied caller changes nothing.
-            let role = self
-                .inner
+            self.inner
                 .organization
-                .check_inspection_in_transaction(&mut tx, actor)
+                .check_owner_inspection_in_transaction(&mut tx, actor)
                 .await?;
             let Some(install) = install::install(&mut tx).await? else {
                 tx.commit().await?;
@@ -123,7 +121,6 @@ impl UsageData {
             tx.commit().await?;
             return Ok(UsageDataView {
                 sharing: install.sharing,
-                can_change: role == OrganizationRole::Owner,
                 block: self.inner.block,
                 kind: self.inner.host.kind,
                 next_report_json,
