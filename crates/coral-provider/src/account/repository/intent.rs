@@ -36,10 +36,14 @@ impl IntentColumns {
     }
     pub(super) fn decode(self, actor: &UserId) -> Result<AuthorizationIntent, Error> {
         let caller = match (self.user_id, self.agent_id) {
-            (Some(user), None) if user == actor.as_str() => {
-                Some(Caller::User(UserId::parse(&user)?))
-            }
-            (None, Some(agent)) => Some(Caller::Agent(PrincipalId::parse(&agent)?)),
+            (Some(user), None) if user == actor.as_str() => Some(Caller::User(super::stored(
+                UserId::parse(&user),
+                "connection request User id",
+            )?)),
+            (None, Some(agent)) => Some(Caller::Agent(super::stored(
+                PrincipalId::parse(&agent),
+                "connection request Agent id",
+            )?)),
             (None, None) => None,
             _ => {
                 return Err(Error::CorruptData(
@@ -55,7 +59,10 @@ impl IntentColumns {
             ));
         }
         Ok(AuthorizationIntent {
-            account: ProviderAccountId::parse(&self.expected_account_id)?,
+            account: super::stored(
+                ProviderAccountId::parse(&self.expected_account_id),
+                "expected Provider Account id",
+            )?,
             authorization_version: self.expected_authorization_version,
             provider_account_setting_version: self.provider_account_setting_version,
             kind: match self.connection_intent.as_str() {

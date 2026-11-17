@@ -790,10 +790,8 @@ impl TokenResponse {
         client_id: &str,
         now: i64,
     ) -> Result<Self, Error> {
-        let invalid =
-            |_error: Error| Error::OAuthTokenExchange(TokenExchangeFailure::ResponseInvalid);
-        self.accept(requested).map_err(invalid)?;
-        self.stamp(client_id, now).map_err(invalid)?;
+        self.accept(requested)?;
+        self.stamp(client_id, now)?;
         Ok(self)
     }
 
@@ -806,7 +804,10 @@ impl TokenResponse {
                 coral_db::UnixNanos::new(now)
                     .checked_add(std::time::Duration::from_secs(seconds))
                     .map(coral_db::UnixNanos::get)
-                    .ok_or(Error::AccountInput)
+                    // The service named a lifetime that no clock can hold.
+                    .ok_or(Error::OAuthTokenExchange(
+                        TokenExchangeFailure::ResponseInvalid,
+                    ))
             })
             .transpose()?;
         Ok(())
@@ -824,13 +825,16 @@ impl TokenResponse {
         self.scope.clone().unwrap_or_default()
     }
 
-    /// Checks the response shape without judging the grant.
+    /// Checks the response shape without judging the grant. A response of
+    /// another shape is the service's fault, not the caller's.
     ///
     /// An omitted `scope` means the grant equals the request (RFC 6749 §5.1),
     /// so the requested scopes are recorded in its place.
     pub(super) fn accept(&mut self, requested: &[String]) -> Result<(), Error> {
         if !self.token_type.eq_ignore_ascii_case("bearer") {
-            return Err(Error::AccountInput);
+            return Err(Error::OAuthTokenExchange(
+                TokenExchangeFailure::ResponseInvalid,
+            ));
         }
         // RFC 6749 scope uses printable ASCII; anything else is not a grant.
         if self.scope.as_ref().is_some_and(|reported| {
@@ -841,12 +845,75 @@ impl TokenResponse {
                     || (b']'..=b'~').contains(&byte))
             })
         }) {
-            return Err(Error::AccountInput);
+            return Err(Error::OAuthTokenExchange(
+                TokenExchangeFailure::ResponseInvalid,
+            ));
         }
         if self.scope.is_none() {
             self.scope = Some(requested.join(" "));
         }
-        Secret::new(self.access_token.clone())?;
+        // An empty, oversized or control-bearing token is no token.
+        Secret::new(self.access_token.clone())
+            .map_err(|_invalid| Error::OAuthTokenExchange(TokenExchangeFailure::ResponseInvalid))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, TokenExchangeFailure, TokenResponse};
+
+    fn response(token_type: &str, scope: Option<&str>, expires_in: Option<u64>) -> TokenResponse {
+        TokenResponse {
+            access_token: "token".into(),
+            token_type: token_type.into(),
+            scope: scope.map(str::to_owned),
+            refresh_token: None,
+            expires_in,
+            client_id: String::new(),
+            expires_at: None,
+        }
+    }
+
+    // Catches: a token response of the wrong shape blamed on the person who
+    // signs in, when the service sent it.
+    #[test]
+    fn a_token_response_of_the_wrong_shape_is_the_services_fault() {
+        let invalid = |result: Result<(), Error>| {
+            matches!(
+                result,
+                Err(Error::OAuthTokenExchange(
+                    TokenExchangeFailure::ResponseInvalid
+                ))
+            )
+        };
+        let requested = ["read".to_owned()];
+        for (case, token_type, scope) in [
+            ("a token that is not a bearer token", "mac", None),
+            (
+                "a scope with a control character",
+                "Bearer",
+                Some("read\u{7}"),
+            ),
+        ] {
+            assert!(
+                invalid(response(token_type, scope, None).accept(&requested)),
+                "{case}"
+            );
+        }
+        let mut empty = response("Bearer", None, None);
+        empty.access_token = String::new();
+        assert!(invalid(empty.accept(&requested)), "an empty token");
+        let mut accepted = response("bearer", None, Some(60));
+        accepted.accept(&requested).expect("a bearer token");
+        assert_eq!(accepted.scope.as_deref(), Some("read"));
+
+        // A lifetime that no clock can hold.
+        assert!(invalid(
+            response("Bearer", None, Some(u64::MAX)).stamp("client", 0)
+        ));
+        let mut stamped = response("Bearer", None, Some(60));
+        stamped.stamp("client", 5).expect("a lifetime in range");
+        assert_eq!(stamped.expires_at, Some(60_000_000_005));
     }
 }
