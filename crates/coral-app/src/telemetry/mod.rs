@@ -1,7 +1,7 @@
 //! Tracing and OpenTelemetry initialization for the local Coral process.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use coral_telemetry::metric::Metrics;
@@ -9,7 +9,8 @@ use coral_telemetry::safe;
 use coral_telemetry::{OtlpLogFilter, OtlpSpanFilter};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_otlp::{
-    LogExporter, MetricExporter, SpanExporter as OtlpSpanExporter, WithExportConfig, WithHttpConfig,
+    ExporterBuildError, LogExporter, MetricExporter, SpanExporter as OtlpSpanExporter,
+    WithExportConfig, WithHttpConfig,
 };
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::error::OTelSdkError;
@@ -29,7 +30,14 @@ pub mod config;
 use crate::bootstrap::AppError;
 pub use config::TelemetryConfig;
 use config::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER, TRACE_CONTEXT_FILTER};
-static INIT: OnceLock<Result<(), String>> = OnceLock::new();
+/// Why an exporter that `[otel]` configures could not be built.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error(transparent)]
+pub struct ExporterError(Arc<ExporterBuildError>);
+
+/// The first initialization's outcome, which every later start in this
+/// process reports again.
+static INIT: OnceLock<Result<(), ExporterError>> = OnceLock::new();
 static PROVIDER: Mutex<Option<SdkTracerProvider>> = Mutex::new(None);
 static LOGGER_PROVIDER: Mutex<Option<SdkLoggerProvider>> = Mutex::new(None);
 static METER_PROVIDER: Mutex<Option<SdkMeterProvider>> = Mutex::new(None);
@@ -132,13 +140,12 @@ fn add_otlp_trace_exporter(
     headers: HashMap<String, String>,
     targets: Targets,
     metrics: Metrics,
-) -> Result<TracerProviderBuilder, AppError> {
+) -> Result<TracerProviderBuilder, ExporterBuildError> {
     let exporter = OtlpSpanExporter::builder()
         .with_http()
         .with_endpoint(normalize_otlp_endpoint(endpoint, "traces"))
         .with_headers(headers)
-        .build()
-        .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+        .build()?;
     // Filter ahead of the batch queue, so spans that may not leave never fill it.
     let batch = coral_telemetry::batch_span_processor(exporter, EXPORT_QUEUE_CAPACITY, metrics);
     Ok(builder.with_span_processor(OtlpSpanFilter::new(batch, targets)))
@@ -149,13 +156,12 @@ fn build_otlp_logger_provider(
     endpoint: &str,
     headers: HashMap<String, String>,
     metrics: Metrics,
-) -> Result<SdkLoggerProvider, AppError> {
+) -> Result<SdkLoggerProvider, ExporterBuildError> {
     let exporter = LogExporter::builder()
         .with_http()
         .with_endpoint(normalize_otlp_endpoint(endpoint, "logs"))
         .with_headers(headers)
-        .build()
-        .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+        .build()?;
     Ok(SdkLoggerProvider::builder()
         .with_resource(resource.clone())
         .with_log_processor(OtlpLogFilter::new(coral_telemetry::batch_log_processor(
@@ -171,13 +177,12 @@ fn build_otlp_meter_provider(
     resource: &Resource,
     endpoint: &str,
     headers: HashMap<String, String>,
-) -> Result<(SdkMeterProvider, Metrics), AppError> {
+) -> Result<(SdkMeterProvider, Metrics), ExporterBuildError> {
     let exporter = MetricExporter::builder()
         .with_http()
         .with_endpoint(normalize_otlp_endpoint(endpoint, "metrics"))
         .with_headers(headers)
-        .build()
-        .map_err(|e| AppError::InvalidInput(e.to_string()))?;
+        .build()?;
     Ok(coral_telemetry::meter_provider(
         SdkMeterProvider::builder().with_resource(resource.clone()),
         exporter,
@@ -331,7 +336,7 @@ fn trace_pipeline(
     config: &TelemetryConfig,
     resource: &Resource,
     metrics: Option<&Metrics>,
-) -> Result<(SdkTracerProvider, TraceLayer, Option<String>), AppError> {
+) -> Result<(SdkTracerProvider, TraceLayer, Option<String>), ExporterBuildError> {
     let mut builder = SdkTracerProvider::builder()
         .with_resource(resource.clone())
         .with_sampler(sampler(config.otel.trace_sample_ratio.get()));
@@ -363,18 +368,18 @@ pub(crate) fn init_tracing(
     service_version: &str,
 ) -> Result<(), AppError> {
     INIT.get_or_init(|| {
-        try_init_tracing(config, instance_id, service_version).map_err(|e| e.to_string())
+        try_init_tracing(config, instance_id, service_version)
+            .map_err(|error| ExporterError(Arc::new(error)))
     })
-    .as_ref()
-    .map_err(|e| AppError::InvalidInput(e.clone()))?;
-    Ok(())
+    .clone()
+    .map_err(AppError::Telemetry)
 }
 
 fn try_init_tracing(
     config: &TelemetryConfig,
     instance_id: &str,
     service_version: &str,
-) -> Result<(), AppError> {
+) -> Result<(), ExporterBuildError> {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
     let endpoint = configured_otlp_endpoint(config);
     let (log_filter, log_filter_error) = build_log_filter(config.otel.log_filter.as_deref());

@@ -195,8 +195,9 @@ impl UsageReporting {
                 environment,
             ),
             client: coral_outbound::Client::new(policy, coral_usage::REQUEST_TIMEOUT).map_err(
-                |_error| {
-                    AppError::FailedPrecondition("usage data client initialization failed".into())
+                |source| AppError::HttpClient {
+                    purpose: "usage data",
+                    source,
                 },
             )?,
         }))
@@ -268,9 +269,7 @@ impl RunExecutorParts {
             Arc::new(
                 coral_run_executor::InProcessCompiler::new(runtime_limits.isolate()).map_err(
                     |error| {
-                        AppError::FailedPrecondition(format!(
-                            "Program runtime is unavailable: {error}"
-                        ))
+                        AppError::engine_boot(format!("Program runtime is unavailable: {error}"))
                     },
                 )?,
             )
@@ -413,7 +412,7 @@ impl Engine {
         } = parts;
         let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
         let builtin_catalog = coral_catalog::BuiltinCatalog::running()
-            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+            .map_err(|error| AppError::engine_boot(error.to_string()))?;
         let providers = coral_provider::ProviderModule::new(
             policy,
             database.clone(),
@@ -446,7 +445,7 @@ impl Engine {
             instance,
             coral_run::RunInbox::table(database.clone()),
         )
-        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?
+        .map_err(|error| AppError::engine_boot(error.to_string()))?
         .with_provider_renamer(Arc::new(provider_workflow.clone()))
         .with_search(search_module.clone())
         .with_accounts(accounts.clone());
@@ -674,20 +673,18 @@ impl Drop for Engine {
 async fn install_coral_providers(
     provider_workflow: &coral_administration::ProviderWorkflow,
 ) -> Result<(), AppError> {
-    let booted_at = unix_nanos()
-        .ok_or_else(|| AppError::FailedPrecondition("system clock is out of range".into()))?;
+    let booted_at =
+        unix_nanos().ok_or_else(|| AppError::engine_boot("system clock is out of range"))?;
     provider_workflow
         .install_missing_coral_providers(booted_at)
         .await
         .map_err(|error| {
-            AppError::FailedPrecondition(format!("Coral's Provider install failed: {error}"))
+            AppError::engine_boot(format!("Coral's Provider install failed: {error}"))
         })?;
     provider_workflow
         .update_builtin_catalogs(booted_at)
         .await
-        .map_err(|error| {
-            AppError::FailedPrecondition(format!("Built-in Provider update failed: {error}"))
-        })
+        .map_err(|error| AppError::engine_boot(format!("Built-in Provider update failed: {error}")))
 }
 
 /// Schedules the periodic passes and returns the expired-lease sweep's

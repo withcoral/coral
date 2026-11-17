@@ -46,7 +46,7 @@ struct Entry<'a> {
 }
 
 fn invalid(message: impl std::fmt::Display) -> AppError {
-    AppError::FailedPrecondition(format!("server configuration is invalid: {message}"))
+    AppError::ConfigDecode(crate::ConfigDecodeError::new(message.to_string()))
 }
 
 fn rejected(label: &str, error: &SettingError) -> AppError {
@@ -388,15 +388,15 @@ mod tests {
         ] {
             let raw = format!("{raw}{env_store}");
             let index = usize::from(raw.contains("name = 'vault'"));
-            let Err(AppError::FailedPrecondition(error)) = validate(&raw) else {
+            let Err(AppError::ConfigDecode(error)) = validate(&raw) else {
                 panic!("{raw}: an env prefix over a named variable must fail validation");
             };
             assert_eq!(
                 error,
-                format!(
-                    "server configuration is invalid: secret_stores[{index}] (env).prefix: \
+                crate::ConfigDecodeError::new(format!(
+                    "secret_stores[{index}] (env).prefix: \
                      covers the variable that {setting} names"
-                ),
+                )),
                 "{raw}"
             );
         }
@@ -498,9 +498,10 @@ mod tests {
                 "secret_stores[1] (team).name: another store has this name",
             ),
         ] {
-            let error = validate(&raw).expect_err(&raw).to_string();
+            let error = validate(&raw).expect_err(&raw);
             assert!(
-                error.contains("server configuration is invalid: ") && error.contains(expected),
+                matches!(&error, AppError::ConfigDecode(decode)
+                    if decode.to_string().starts_with(expected)),
                 "{raw}: {error}"
             );
         }
@@ -512,14 +513,14 @@ mod tests {
     fn a_missing_secret_names_the_store_and_field_only_when_built() {
         let raw = store("team");
         validate(&raw).expect("validation needs no secret");
-        let Err(error) = build(&raw, None) else {
+        let Err(AppError::ConfigDecode(error)) = build(&raw, None) else {
             panic!("a store needs its secret");
         };
-        assert!(
-            error
-                .to_string()
-                .contains("secret_stores[0] (team).secret_env: environment variable is not set"),
-            "{error}"
+        assert_eq!(
+            error,
+            crate::ConfigDecodeError::new(
+                "secret_stores[0] (team).secret_env: environment variable is not set"
+            )
         );
     }
 
