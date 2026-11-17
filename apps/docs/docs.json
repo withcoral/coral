@@ -112,11 +112,11 @@
         "pages": [
           "guides/concepts",
           "guides/permissions",
-          "guides/providers",
-          "guides/database-providers",
           {
-            "group": "Provider-specific guides",
+            "group": "Providers",
             "pages": [
+              "guides/providers",
+              "guides/providers/databases",
               "guides/providers/aws",
               "guides/providers/slack"
             ]
@@ -149,7 +149,7 @@
     },
     {
       "source": "/guides/query-databases",
-      "destination": "/guides/database-providers",
+      "destination": "/guides/providers/databases",
       "permanent": true
     }
   ],

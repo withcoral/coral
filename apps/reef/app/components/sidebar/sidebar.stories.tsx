@@ -69,7 +69,7 @@ export const Owner: Story = {}
 export const Activity: Story = {
   parameters: { initialEntry: '/workspaces/demo/activity' },
 }
-// The open Workspace shows each count on its page; the closed one the total on its name.
+// The current Workspace shows each count on its page; the switcher the total of the others.
 export const ActionCount: Story = {
   ...Activity,
   args: {
@@ -93,17 +93,13 @@ export const CollapsedActionCount: Story = {
   args: { ...ActionCount.args, initialIsMinimized: true },
 }
 export const Collapsed: Story = { args: { initialIsMinimized: true } }
-export const HelpMenu: Story = {
-  play: async ({ canvas }) => {
-    await userEvent.click(canvas.getByRole('button', { name: 'Help and feedback' }))
-  },
+const openSwitcher: Story['play'] = async ({ canvas }) => {
+  await userEvent.click(canvas.getByRole('button', { name: /^Workspace: / }))
 }
-export const CollapsedHelpMenu: Story = {
-  ...Collapsed,
-  play: async ({ canvas }) => {
-    await userEvent.click(canvas.getByRole('button', { name: 'Help and feedback' }))
-  },
-}
+export const Switcher: Story = { play: openSwitcher }
+// Each other Workspace shows its own count in the menu.
+export const SwitcherActionCount: Story = { ...ActionCount, play: openSwitcher }
+export const CollapsedSwitcher: Story = { ...Collapsed, play: openSwitcher }
 export const CollapsedManyWorkspaces: Story = {
   args: {
     initialIsMinimized: true,
@@ -126,8 +122,9 @@ export const CollapsedManyWorkspaces: Story = {
   },
   parameters: { initialEntry: '/workspaces/demo/tools' },
 }
-// The list scrolls under the fixed Workspaces label; the footer stays put.
+// The menu scrolls; the sidebar keeps one Workspace's pages.
 export const ManyWorkspaces: Story = {
+  play: openSwitcher,
   args: {
     workspaces: Array.from({ length: 24 }, (_, i) => ({
       displayName: i === 0 ? 'Operations team' : `Workspace ${i + 1}`,
@@ -145,12 +142,28 @@ export const LocalUser: Story = {
 }
 export const MissingProfile: Story = { args: { userName: undefined } }
 export const EmailFallback: Story = { args: { userName: 'alex.morgan@example.com' } }
+const openAccountMenu: Story['play'] = async ({ canvas }) => {
+  await userEvent.click(canvas.getByRole('button', { name: /^Open account menu/ }))
+}
 export const LongUserName: Story = {
   args: { userName: 'Alexandra Morgan with a name long enough to truncate' },
 }
-export const AccountMenu: Story = {
+// An organization owner's menu holds Settings.
+export const AccountMenu: Story = { args: { organizationOwner: true }, play: openAccountMenu }
+export const CollapsedAccountMenu: Story = {
+  args: { ...Collapsed.args, organizationOwner: true },
+  play: openAccountMenu,
+}
+// The local user always owns the organization.
+export const LocalAccountMenu: Story = {
+  args: { ...LocalUser.args, organizationOwner: true },
+  play: openAccountMenu,
+}
+// A member's menu has no Settings: Coral refuses them the organization's pages.
+export const MemberAccountMenu: Story = { play: openAccountMenu }
+export const HelpMenu: Story = {
   play: async ({ canvas }) => {
-    await userEvent.click(canvas.getByRole('button', { name: 'Open account menu for Alex Morgan' }))
+    await userEvent.click(canvas.getByRole('button', { name: 'Help and feedback' }))
   },
 }
 export const Member: Story = {
@@ -186,51 +199,40 @@ export const Agents: Story = { parameters: { initialEntry: '/workspaces/demo/age
 export const ToolsOnProviderPage: Story = {
   parameters: { initialEntry: '/workspaces/demo/providers/github/settings' },
 }
-export const ArchiveConfirmation: Story = {
-  play: async ({ canvasElement }) => {
-    const body = within(canvasElement.ownerDocument.body)
-    await userEvent.click(body.getByRole('button', { name: 'Archive Operations team' }))
-    await body.findByRole('dialog', { name: 'Archive Operations team' })
-  },
+const archivedWorkspace = {
+  path: '/workspaces/archived',
+  displayName: 'Archived workspace',
+  effectiveRole: 'owner',
+  mcpEndpoint: '',
+  etag: 'etag',
+  state: 'archived',
 }
-export const OpenAnotherWorkspace: Story = {
-  play: async ({ canvas }) => {
-    await userEvent.click(canvas.getByRole('button', { name: 'Research' }))
-  },
-}
-const archivedWorkspaces = [
-  {
-    path: '/workspaces/archived',
-    displayName: 'Archived workspace',
-    effectiveRole: 'owner',
-    mcpEndpoint: '',
-    etag: 'etag',
-    state: 'archived',
-  },
-  {
-    path: '/workspaces/old-research',
-    displayName: 'Old research',
-    effectiveRole: 'member',
-    mcpEndpoint: '',
-    etag: 'etag',
-    state: 'archived',
-  },
-]
-// Archived workspaces sit in their own group, collapsed until you open one.
-export const ArchivedGroup: Story = { args: { archivedWorkspaces } }
-// An open archived workspace expands the group and shows as current there.
+// An open archived workspace shows the archive's icon and only its Activity.
+// The switcher does not list it: it lists the workspaces you can work in.
 export const ArchivedWorkspace: Story = {
-  args: { archivedWorkspaces, workspace: archivedWorkspaces[0] },
+  args: { workspace: archivedWorkspace },
   parameters: { initialEntry: '/workspaces/archived/activity' },
 }
-// Collapsed, one tile holds the archived workspaces and rings while you are in one.
+export const ArchivedWorkspaceSwitcher: Story = { ...ArchivedWorkspace, play: openSwitcher }
 export const CollapsedArchivedWorkspace: Story = {
   ...ArchivedWorkspace,
   args: { ...ArchivedWorkspace.args, initialIsMinimized: true },
 }
+// In the organization's settings their nav takes the place of the switcher and the pages.
+export const OrganizationSettings: Story = {
+  args: { area: 'settings', organizationOwner: true, workspace: undefined },
+  parameters: { initialEntry: '/organization/members' },
+}
+export const CollapsedOrganizationSettings: Story = {
+  ...OrganizationSettings,
+  args: { ...OrganizationSettings.args, initialIsMinimized: true },
+}
 export const CreateWorkspace: Story = {
-  play: async ({ canvas }) => {
-    await userEvent.click(canvas.getByRole('button', { name: 'Create workspace' }))
+  play: async (context) => {
+    await openSwitcher(context)
+    const body = within(context.canvasElement.ownerDocument.body)
+    await userEvent.click(await body.findByRole('menuitem', { name: 'Create workspace' }))
+    await body.findByRole('dialog', { name: 'Create workspace' })
   },
 }
 const newerRelease = {

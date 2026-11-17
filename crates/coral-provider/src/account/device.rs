@@ -1,6 +1,7 @@
 //! Server-owned RFC 8628 device authorization. Browser reads never drive polling.
 use std::time::{Duration, Instant};
 
+use coral_telemetry::safe;
 use coral_workspace::{ChangeContext, WorkspaceId};
 use serde::Deserialize;
 
@@ -108,28 +109,44 @@ impl AccountModule {
         let id = id.clone();
         self.track_device_task(async move {
             let started = Instant::now();
-            let Ok(Some(lease)) = module.claim_device(&owner, &generation, &context).await else {
-                return;
+            let lease = match module.claim_device(&owner, &generation, &context).await {
+                Ok(Some(lease)) => lease,
+                // Another worker holds the job.
+                Ok(None) => return,
+                Err(error) => return log_worker_stop(&owner, WorkerStop::Claim, &error),
             };
             let result = module
                 .poll_setup_device(&context, &owner, &id, &requirement, started, &lease)
                 .await;
-            if unanswered(&result) {
-                return;
+            if let Some(error) = unanswered(&result) {
+                return log_worker_stop(&owner, WorkerStop::Poll, error);
             }
             let context = advanced(&context, started);
-            if lease.renew(context.occurred_at_unix_nanos()).await.is_err() {
-                return;
+            if let Err(error) = lease.renew(context.occurred_at_unix_nanos()).await {
+                return log_worker_stop(&owner, WorkerStop::Renew, &error);
             }
             // A failed fence must not affect a replacement flow. Settlement checks it again.
-            if let Ok(discover) = module
+            match module
                 .finish_setup_device(&context, &owner, &id, &generation, result, &lease)
                 .await
             {
-                drop(lease.finish().await);
-                if discover {
-                    drop(module.retry_setup_discovery(&context, &owner, &id).await);
+                Ok(discover) => {
+                    if let Err(error) = lease.finish().await {
+                        log_worker_stop(&owner, WorkerStop::Finish, &error);
+                    }
+                    // The sign-in is settled; only the discovery it unblocked failed.
+                    if discover
+                        && let Err(error) =
+                            module.retry_setup_discovery(&context, &owner, &id).await
+                    {
+                        tracing::warn!(
+                            coral.workspace.id = safe::id(&owner),
+                            error.type = safe::kind(error.code()),
+                            "failed to retry a Provider Setup's discovery after its device sign-in"
+                        );
+                    }
                 }
+                Err(error) => log_worker_stop(&owner, WorkerStop::Settle, &error),
             }
         });
     }
@@ -344,19 +361,21 @@ impl AccountModule {
         let owner = owner.clone();
         self.track_device_task(async move {
             let started = Instant::now();
-            let Ok(Some(lease)) = module.claim_device(&owner, &id.to_string(), &context).await
-            else {
-                return;
+            let lease = match module.claim_device(&owner, &id.to_string(), &context).await {
+                Ok(Some(lease)) => lease,
+                // Another worker holds the job.
+                Ok(None) => return,
+                Err(error) => return log_worker_stop(&owner, WorkerStop::Claim, &error),
             };
             let result = module
                 .poll_account_device(&context, &owner, id, &requirement, started, &lease)
                 .await;
-            if unanswered(&result) {
-                return;
+            if let Some(error) = unanswered(&result) {
+                return log_worker_stop(&owner, WorkerStop::Poll, error);
             }
             let context = advanced(&context, started);
-            if lease.renew(context.occurred_at_unix_nanos()).await.is_err() {
-                return;
+            if let Err(error) = lease.renew(context.occurred_at_unix_nanos()).await {
+                return log_worker_stop(&owner, WorkerStop::Renew, &error);
             }
             let settled = match result {
                 Ok(token) => module
@@ -389,8 +408,13 @@ impl AccountModule {
                         .map(|_| ())
                 }
             };
-            if settled.is_ok() {
-                drop(lease.finish().await);
+            match settled {
+                Ok(()) => {
+                    if let Err(error) = lease.finish().await {
+                        log_worker_stop(&owner, WorkerStop::Finish, &error);
+                    }
+                }
+                Err(error) => log_worker_stop(&owner, WorkerStop::Settle, &error),
             }
         });
     }
@@ -611,13 +635,12 @@ impl Polling<'_> {
                 Err(Error::OAuthTokenExchange(TokenExchangeFailure::Timeout)) => {
                     interval = interval.saturating_mul(2);
                 }
-                Ok(mut token) => {
-                    token.accept(&self.requirement.scopes)?;
-                    token.stamp(
+                Ok(token) => {
+                    return token.usable(
+                        &self.requirement.scopes,
                         client_id,
                         advanced(self.context, self.started).occurred_at_unix_nanos(),
-                    )?;
-                    return Ok(token);
+                    );
                 }
                 Err(error) => return Err(error),
             }
@@ -631,12 +654,62 @@ impl Polling<'_> {
     }
 }
 
-/// Whether a poll stopped because the database gave no answer. That says
-/// nothing about the device grant, so the worker ends nothing and keeps its
-/// lease unfinished: recovery resumes the job once the lease lapses.
-fn unanswered(result: &Result<oauth::TokenResponse, Error>) -> bool {
-    result.as_ref().is_err_and(Error::is_operational)
+/// The error of a poll that stopped because the database gave no answer. That
+/// says nothing about the device grant, so the worker ends nothing and keeps
+/// its lease unfinished: recovery resumes the job once the lease lapses.
+fn unanswered(result: &Result<oauth::TokenResponse, Error>) -> Option<&Error> {
+    result.as_ref().err().filter(|error| error.is_operational())
 }
+
+/// The step at which a device worker stopped before it settled its sign-in
+/// and removed its job.
+#[derive(Clone, Copy)]
+enum WorkerStop {
+    Claim,
+    Poll,
+    Renew,
+    Settle,
+    Finish,
+}
+
+/// Records why a device worker stopped early. Its job stays, so recovery
+/// resumes or removes it once the lease has ended. The record names the
+/// Workspace and the error's code, never a device code, a user code or a
+/// token.
+fn log_worker_stop(owner: &WorkspaceId, stop: WorkerStop, error: &Error) {
+    match stop {
+        WorkerStop::Claim => tracing::warn!(
+            coral.workspace.id = safe::id(owner),
+            error.type = safe::kind(error.code()),
+            "a device sign-in worker failed to claim its job"
+        ),
+        WorkerStop::Poll => tracing::warn!(
+            coral.workspace.id = safe::id(owner),
+            error.type = safe::kind(error.code()),
+            "a device sign-in worker stopped polling because the database gave no answer"
+        ),
+        WorkerStop::Renew => tracing::warn!(
+            coral.workspace.id = safe::id(owner),
+            error.type = safe::kind(error.code()),
+            "a device sign-in worker failed to renew its lease before it recorded the result"
+        ),
+        WorkerStop::Settle => tracing::warn!(
+            coral.workspace.id = safe::id(owner),
+            error.type = safe::kind(error.code()),
+            "a device sign-in worker failed to record the sign-in's result"
+        ),
+        WorkerStop::Finish => tracing::warn!(
+            coral.workspace.id = safe::id(owner),
+            error.type = safe::kind(error.code()),
+            "a device sign-in worker failed to remove its job after it recorded the result"
+        ),
+    }
+}
+
+/// How long a worker's lease on its job runs from a claim or a renewal. A job
+/// whose worker died waits this long for recovery, and so does a job that
+/// recovery could not resume.
+pub(crate) const LEASE_SECONDS: u64 = 45;
 
 fn next_poll(now: i64, interval: u64) -> i64 {
     now.saturating_add(i64::try_from(interval.saturating_mul(1_000_000_000)).unwrap_or(i64::MAX))
@@ -659,7 +732,7 @@ impl Lease {
             &self.job.id,
             &self.token,
             now,
-            next_poll(now, 45),
+            next_poll(now, LEASE_SECONDS),
         )
         .await
     }
@@ -717,7 +790,7 @@ impl AccountModule {
             &self.device_worker_id,
             &token,
             context.occurred_at_unix_nanos(),
-            next_poll(context.occurred_at_unix_nanos(), 45),
+            next_poll(context.occurred_at_unix_nanos(), LEASE_SECONDS),
         )
         .await?;
         tx.commit().await?;
@@ -731,56 +804,124 @@ impl AccountModule {
 
     /// Resumes durable device authorizations whose previous worker lease has ended.
     /// Bootstrap calls this periodically; browser reads never schedule token requests.
+    /// A job that cannot be resumed is logged and its lease is moved one lease
+    /// on, behind the other jobs, so it never holds them back. Recovery tries
+    /// it again after each later lease for as long as it fails, and never
+    /// removes it. A job whose lease cannot be moved is logged too. It keeps
+    /// the lease it had, so it stays ahead of the jobs that were moved.
     /// # Errors
-    /// Returns persistence or corrupt stored identity failures.
+    /// Returns a failure to read the jobs, and any failure in which the
+    /// database gave no answer: every later job would fail the same way.
     pub async fn recover_device_authorizations(&self, now_unix_nanos: i64) -> Result<(), Error> {
         let mut tx = self.providers.database.begin_read_snapshot().await?;
-        let jobs = device_repository::recoverable(&mut tx, now_unix_nanos).await?;
+        let recoverable = device_repository::recoverable(&mut tx, now_unix_nanos).await?;
         tx.commit().await?;
         let organization =
             coral_workspace::OrganizationModule::new(self.providers.database.clone());
-        for job in jobs {
-            let owner = job.workspace_id.clone();
-            let user = job.actor_user_id.clone();
-            let actor = match organization.resolve_user_authority(&user).await {
-                Ok(actor) => actor,
-                Err(coral_workspace::Error::PermissionDenied(_)) => {
-                    coral_workspace::AuthenticatedUser::without_organization_membership(user)
+        for device_repository::Recoverable { key, job } in recoverable {
+            let recovered = match job {
+                Ok(job) => {
+                    self.recover_device_job(&organization, job, now_unix_nanos)
+                        .await
                 }
-                Err(error) => return Err(error.into()),
+                Err(error) => Err(error),
             };
-            let trace = job.trace_id;
-            let context = ChangeContext::new(actor, now_unix_nanos, trace);
-            let mut tx = self.providers.database.begin().await?;
-            if let device_repository::Target::Setup(id) = &job.target {
-                if let Some(row) = setup_repository::load(&mut tx, &owner, id).await?
-                    && row.credential_generation == job.id
-                    && row.authorization_state == SetupAuthorizationState::Pending
-                    && let Some(requirement) = StoredRequirement::from_contract(&row.contract)
-                {
-                    tx.commit().await?;
-                    self.spawn_setup_device(&context, &owner, id, job.id, requirement);
-                    continue;
-                }
-            } else if let device_repository::Target::Account(id) = job.target {
-                let row = match super::load_authorization(&mut tx, &owner, id).await {
-                    Ok(row) => Some(row),
-                    Err(Error::AccountNotFound) => None,
-                    Err(error) => return Err(error),
-                };
-                if let Some(row) = row
-                    && row.state.is_open()
-                    && let Some(requirement) = StoredRequirement::from_contract(&row.contract)
-                {
-                    tx.commit().await?;
-                    self.spawn_account_device(&context, &owner, id, requirement);
-                    continue;
-                }
+            let Err(error) = recovered else {
+                continue;
+            };
+            if error.is_operational() {
+                return Err(error);
             }
-            tx.commit().await?;
-            if let Some(lease) = self.claim_device(&owner, &job.id, &context).await? {
-                lease.finish().await?;
+            // A definite answer is about this job alone: stored data that does
+            // not decode, or a lookup that fails for it.
+            tracing::warn!(
+                coral.workspace.id = key.workspace().as_ref().map(safe::id),
+                error.type = safe::kind(error.code()),
+                "failed to recover a device sign-in job; recovery tries it again later"
+            );
+            let Err(error) = self.defer_device_job(&key, now_unix_nanos).await else {
+                continue;
+            };
+            if error.is_operational() {
+                return Err(error);
             }
+            // The job keeps its place ahead of the others. They still get
+            // their turn in this pass.
+            tracing::warn!(
+                coral.workspace.id = key.workspace().as_ref().map(safe::id),
+                error.type = safe::kind(error.code()),
+                "failed to move a device sign-in job that recovery could not resume behind the other jobs"
+            );
+        }
+        Ok(())
+    }
+
+    /// Moves a job that recovery could not resume one lease on.
+    async fn defer_device_job(
+        &self,
+        key: &device_repository::StoredKey,
+        now_unix_nanos: i64,
+    ) -> Result<(), Error> {
+        let mut tx = self.providers.database.begin().await?;
+        device_repository::defer(
+            &mut tx,
+            key,
+            now_unix_nanos,
+            next_poll(now_unix_nanos, LEASE_SECONDS),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Resumes one recoverable job: restarts its worker while its authorization
+    /// is still open, and removes the job when it is not.
+    async fn recover_device_job(
+        &self,
+        organization: &coral_workspace::OrganizationModule,
+        job: device_repository::Job,
+        now_unix_nanos: i64,
+    ) -> Result<(), Error> {
+        let owner = job.workspace_id.clone();
+        let user = job.actor_user_id.clone();
+        let actor = match organization.resolve_user_authority(&user).await {
+            Ok(actor) => actor,
+            Err(coral_workspace::Error::PermissionDenied(_)) => {
+                coral_workspace::AuthenticatedUser::without_organization_membership(user)
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let trace = job.trace_id;
+        let context = ChangeContext::new(actor, now_unix_nanos, trace);
+        let mut tx = self.providers.database.begin().await?;
+        if let device_repository::Target::Setup(id) = &job.target {
+            if let Some(row) = setup_repository::load(&mut tx, &owner, id).await?
+                && row.credential_generation == job.id
+                && row.authorization_state == SetupAuthorizationState::Pending
+                && let Some(requirement) = StoredRequirement::from_contract(&row.contract)
+            {
+                tx.commit().await?;
+                self.spawn_setup_device(&context, &owner, id, job.id, requirement);
+                return Ok(());
+            }
+        } else if let device_repository::Target::Account(id) = job.target {
+            let row = match super::load_authorization(&mut tx, &owner, id).await {
+                Ok(row) => Some(row),
+                Err(Error::AccountNotFound) => None,
+                Err(error) => return Err(error),
+            };
+            if let Some(row) = row
+                && row.state.is_open()
+                && let Some(requirement) = StoredRequirement::from_contract(&row.contract)
+            {
+                tx.commit().await?;
+                self.spawn_account_device(&context, &owner, id, requirement);
+                return Ok(());
+            }
+        }
+        tx.commit().await?;
+        if let Some(lease) = self.claim_device(&owner, &job.id, &context).await? {
+            lease.finish().await?;
         }
         Ok(())
     }

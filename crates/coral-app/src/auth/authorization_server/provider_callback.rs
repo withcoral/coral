@@ -93,13 +93,14 @@ mod tests {
             .start()
             .await
             .unwrap();
-        let accounts = host.provider_accounts().unwrap();
+        let accounts = host.engine().accounts();
         let workspaces = WorkspaceModule::new(host.database());
         let providers = ProviderModule::new(
             policy,
             host.database(),
             workspaces.clone(),
             coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
+            coral_catalog::SchemaGraphCache::with_default_budget(),
         );
         let now = i64::try_from(
             std::time::SystemTime::now()

@@ -314,8 +314,12 @@ impl SetupRow {
                 input_digest,
                 state,
                 self.created_at_unix_nanos,
+                // Every Setup is created with a deadline.
+                self.expires_at_unix_nanos.ok_or_else(|| {
+                    Error::CorruptData("Provider Setup has no deadline".to_string())
+                })?,
             )
-            .with_source(self.input_url, self.expires_at_unix_nanos)
+            .with_input_url(self.input_url)
             .with_request(request),
             setup_input,
             actor_user_id,
@@ -711,30 +715,89 @@ pub(super) async fn prepare_update_configuration(
     Ok(())
 }
 
-pub(super) async fn clear_setup_catalog(
+/// One confirmed configuration and everything the confirmation changes on its
+/// Setup row.
+pub(super) struct SetupConfirmation<'a> {
+    /// The encoded confirmed values.
+    pub(super) configuration: &'a str,
+    /// The revision the caller edited. The write applies only while the row
+    /// still holds it.
+    pub(super) replaces_revision: i64,
+    /// The revision this confirmation creates.
+    pub(super) revision: i64,
+    pub(super) state: &'a ProviderSetupState,
+    pub(super) catalog: ConfirmedCatalog<'a>,
+}
+
+/// What a confirmation does to the Setup's pinned input and its preview.
+pub(super) enum ConfirmedCatalog<'a> {
+    /// The pinned input stays; the preview is the confirmed configuration's.
+    Kept {
+        preview: Option<&'a crate::configuration::preparation::PreparedReview>,
+    },
+    /// The source was read again under the confirmed configuration.
+    Replaced {
+        input: &'a ProviderSetupInput,
+        digest: &'a ProviderSetupInputDigest,
+        preview: Option<&'a crate::configuration::preparation::PreparedReview>,
+    },
+    /// The catalog was read under an authority the confirmation replaced.
+    Cleared,
+}
+
+/// Writes one confirmation as one change of the Setup row, only while the row
+/// still holds the revision the confirmation replaces and no Publication has
+/// consumed it. The caller holds the row and has compared the pinned input.
+pub(super) async fn apply_setup_confirmation(
     transaction: &mut Transaction<'_>,
     owner: &WorkspaceId,
     id: &ProviderSetupId,
-) -> Result<(), Error> {
-    transaction
-        .execute(
-            Query::update()
-                .table(ProviderSetups::Table)
+    confirmation: &SetupConfirmation<'_>,
+) -> Result<bool, Error> {
+    let mut statement = Query::update();
+    statement
+        .table(ProviderSetups::Table)
+        .value(ProviderSetups::Configuration, confirmation.configuration)
+        .value(ProviderSetups::ConfigurationRevision, confirmation.revision)
+        .value(ProviderSetups::State, confirmation.state.as_storage_str());
+    let preview = match confirmation.catalog {
+        ConfirmedCatalog::Kept { preview } => preview,
+        ConfirmedCatalog::Replaced {
+            input,
+            digest,
+            preview,
+        } => {
+            statement
+                .value(ProviderSetups::PinnedInput, input.as_str())
+                .value(ProviderSetups::InputDigest, digest.as_str())
+                .value(ProviderSetups::DiscoveryFailureCode, Option::<String>::None);
+            preview
+        }
+        ConfirmedCatalog::Cleared => {
+            statement
                 .value(ProviderSetups::PinnedInput, Option::<String>::None)
-                .value(ProviderSetups::InputDigest, Option::<String>::None)
-                .value(ProviderSetups::ConfigurationPreview, Option::<String>::None)
-                .value(
-                    ProviderSetups::State,
-                    ProviderSetupState::AwaitingConfiguration.as_storage_str(),
-                )
-                .and_where(exact_setup_owner(owner))
-                .and_where(Expr::col(ProviderSetups::Id).eq(id.to_string()))
-                .to_owned(),
+                .value(ProviderSetups::InputDigest, Option::<String>::None);
+            None
+        }
+    };
+    statement
+        .value(
+            ProviderSetups::ConfigurationPreview,
+            preview.map(serde_json::to_string).transpose()?,
         )
-        .await?;
-    Ok(())
+        .and_where(exact_setup_owner(owner))
+        .and_where(Expr::col(ProviderSetups::Id).eq(id.to_string()))
+        .and_where(
+            Expr::col(ProviderSetups::ConfigurationRevision).eq(confirmation.replaces_revision),
+        )
+        .and_where(Expr::col(ProviderSetups::ConsumedByPublicationId).is_null());
+    Ok(transaction.execute(statement).await? == 1)
 }
 
+/// Saves a configuration, its revision and a state with no revision
+/// predicate. Its callers own the fence: Update preparation writes the Setup
+/// it has just created, and discovery writes under its credential fence. A
+/// confirmation goes through [`apply_setup_confirmation`].
 pub(super) async fn confirm_setup_configuration(
     transaction: &mut Transaction<'_>,
     owner: &WorkspaceId,
@@ -833,13 +896,14 @@ pub(super) async fn setup(
     row.map(SetupRow::decode).transpose()
 }
 
-/// The Setups that Programs asked `actor` to finish in `owner`, created after
-/// `created_after`, in one of `states` and not consumed, oldest first.
+/// The Setups that Programs asked `actor` to finish in `owner`, whose stored
+/// deadline is after `deadline_after`, in one of `states` and not consumed,
+/// oldest first.
 pub(super) async fn requested_setups(
     executor: impl QueryExecutor,
     owner: &WorkspaceId,
     actor: &UserId,
-    created_after: i64,
+    deadline_after: i64,
     states: &[ProviderSetupState],
 ) -> Result<Vec<LoadedSetup>, Error> {
     let rows: Vec<SetupRow> = executor
@@ -850,7 +914,7 @@ pub(super) async fn requested_setups(
                 .and_where(exact_setup_owner(owner))
                 .and_where(Expr::col(ProviderSetups::ActorUserId).eq(actor.as_str()))
                 .and_where(Expr::col(ProviderSetups::RequestedNamespace).is_not_null())
-                .and_where(Expr::col(ProviderSetups::CreatedAtUnixNanos).gt(created_after))
+                .and_where(Expr::col(ProviderSetups::ExpiresAtUnixNanos).gt(deadline_after))
                 .and_where(
                     Expr::col(ProviderSetups::State)
                         .is_in(states.iter().map(ProviderSetupState::as_storage_str)),
@@ -864,18 +928,25 @@ pub(super) async fn requested_setups(
     rows.into_iter().map(SetupRow::decode).collect()
 }
 
+/// Whether the Workspace has the Setup, holding its row exclusively for the
+/// rest of the transaction.
 pub(super) async fn lock_setup_for_publication(
     transaction: &mut Transaction<'_>,
     owner: &WorkspaceId,
     setup_id: &ProviderSetupId,
 ) -> Result<bool, Error> {
-    let statement = Query::update()
-        .table(ProviderSetups::Table)
-        .value(ProviderSetups::State, Expr::col(ProviderSetups::State))
-        .and_where(exact_setup_owner(owner))
-        .and_where(Expr::col(ProviderSetups::Id).eq(setup_id.to_string()))
-        .to_owned();
-    Ok(transaction.execute(statement).await? == 1)
+    let held: Option<(String,)> = transaction
+        .fetch_optional_locked(
+            Query::select()
+                .column(ProviderSetups::State)
+                .from(ProviderSetups::Table)
+                .and_where(exact_setup_owner(owner))
+                .and_where(Expr::col(ProviderSetups::Id).eq(setup_id.to_string()))
+                .to_owned(),
+            coral_db::RowLock::Exclusive,
+        )
+        .await?;
+    Ok(held.is_some())
 }
 
 pub(super) async fn consume_setup(
@@ -1076,33 +1147,6 @@ pub(super) async fn delete_provider(
     Ok(())
 }
 
-/// How [`current_provider`] holds the Provider row it returns, for the rest
-/// of the transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ProviderHold {
-    /// A plain read, as in a read snapshot.
-    None,
-    /// A shared hold, for a decision that reads the Provider but never writes
-    /// it. [`coral_db::RowLock::Shared`] says what each backend does: on
-    /// Postgres, concurrent decisions read side by side and a change waits
-    /// for them; SQLite's writer lock already serializes them.
-    Shared,
-    /// The exclusive no-op `UPDATE` hold, for a change that writes the
-    /// Provider or must exclude every other change while it decides.
-    Exclusive,
-}
-
-impl From<coral_db::RowLock> for ProviderHold {
-    fn from(lock: coral_db::RowLock) -> Self {
-        match lock {
-            coral_db::RowLock::None => Self::None,
-            coral_db::RowLock::Shared => Self::Shared,
-            // A hold for update holds the Provider exclusively.
-            coral_db::RowLock::SkipLocked => Self::Exclusive,
-        }
-    }
-}
-
 /// Which of a Workspace's Providers [`current_provider`] reads.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum ProviderKey<'a> {
@@ -1124,25 +1168,19 @@ impl ProviderKey<'_> {
 }
 
 /// Reads the Workspace's Provider at `key`, in any state, with its active
-/// Generation, holding its row as `hold` says. `None` means the Workspace has
-/// no such Provider.
+/// Generation, holding its row as `lock` says for the rest of the
+/// transaction. `None` means the Workspace has no such Provider.
+///
+/// A decision that reads the Provider but never writes it holds it
+/// [`coral_db::RowLock::Shared`]. A change that writes the Provider, or must
+/// exclude every other change while it decides, holds it
+/// [`coral_db::RowLock::Exclusive`].
 pub(super) async fn current_provider(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     key: ProviderKey<'_>,
-    hold: ProviderHold,
+    lock: coral_db::RowLock,
 ) -> Result<Option<ProviderWithActiveGeneration>, Error> {
-    if hold == ProviderHold::Exclusive {
-        let statement = Query::update()
-            .table(ProviderRecords::Table)
-            .value(ProviderRecords::State, Expr::col(ProviderRecords::State))
-            .and_where(exact_provider_owner(workspace_id))
-            .and_where(key.matches())
-            .to_owned();
-        if transaction.execute(statement).await? != 1 {
-            return Ok(None);
-        }
-    }
     let row: Option<ProviderWithActiveGenerationRow> = transaction
         .fetch_optional_locked(
             Query::select()
@@ -1151,10 +1189,7 @@ pub(super) async fn current_provider(
                 .and_where(exact_provider_owner(workspace_id))
                 .and_where(key.matches())
                 .to_owned(),
-            match hold {
-                ProviderHold::Shared => coral_db::RowLock::Shared,
-                ProviderHold::None | ProviderHold::Exclusive => coral_db::RowLock::None,
-            },
+            lock,
         )
         .await?;
     row.map(ProviderWithActiveGenerationRow::decode).transpose()

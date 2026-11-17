@@ -6,6 +6,7 @@
 //! the index through a test-only read of the search-owned tables.
 
 use super::*;
+use coral_search::test_fixtures::WritePoint;
 use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -181,13 +182,17 @@ async fn a_private_tool_whose_write_overran_its_limit_waits_for_a_change() {
             .await
             .unwrap();
         fixture.index.settled().await;
-        let stalled = fixture
-            .index
-            .clone()
-            .with_write_limit(std::time::Duration::from_millis(100))
-            .with_stall_after_lock(std::time::Duration::from_hours(1));
+        // The probe's clock passes the write limit, and only when this test
+        // advances it. The real clock still bounds the record of the failed
+        // state by the same limit, so the limit is long.
+        let limit = std::time::Duration::from_hours(1);
+        let mut stalled = fixture.index.clone().with_write_limit(limit);
+        let probe = stalled.probe_writes();
+        probe.hold_at(WritePoint::HoldsLock);
         lose_private_tool_rows(&fixture).await;
         stalled.sync_authored_tool(saved.workspace_id().clone(), saved.id().clone());
+        probe.reached(1, WritePoint::HoldsLock).await;
+        probe.advance(limit);
         stalled.settled().await;
         let failed = private_tool_states(&fixture).await;
         let [state] = failed.as_slice() else {

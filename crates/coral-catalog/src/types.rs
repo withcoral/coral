@@ -7,6 +7,7 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use crate::schema::SharedTypes;
+use crate::validators::{ValidatorStore, Validators};
 use crate::{Error, ExecutionBinding, McpDiscoverySnapshot, OpenApiDocument, ToolPathAssignment};
 
 macro_rules! uuid_id {
@@ -444,6 +445,10 @@ pub struct SchemaGraph {
     semantics: SchemaSemantics,
     schemas: BTreeMap<SchemaId, Value>,
     source_index: BTreeMap<String, SchemaId>,
+    /// This graph's place in the store that keeps its validators, when it
+    /// has one. It is no part of the graph's stored form or its identity.
+    #[serde(skip)]
+    validators: Validators,
 }
 
 impl SchemaGraph {
@@ -456,6 +461,7 @@ impl SchemaGraph {
             semantics,
             schemas,
             source_index,
+            validators: Validators::default(),
         };
         graph.validate()?;
         Ok(graph)
@@ -483,6 +489,13 @@ impl SchemaGraph {
     ///
     /// Invalid package-local validator material returns `false`; Provider
     /// publication and persistence verification own reporting that corruption.
+    ///
+    /// A graph that a [`SchemaGraphCache`](crate::SchemaGraphCache) keeps
+    /// compiles the root's validator on its first use, and the calls after
+    /// it use that one for as long as the cache's store keeps it. The store
+    /// lets go of a validator to stay within its budget and keeps none that
+    /// outweighs the budget; the next call then compiles it again. Any other
+    /// graph compiles it on each call.
     #[must_use]
     pub fn accepts(&self, id: &SchemaId, value: &Value) -> bool {
         accepts_bundled(self, id, value, SchemaValidationDirection::Neutral)
@@ -492,6 +505,8 @@ impl SchemaGraph {
     ///
     /// A required `writeOnly` property applies only to requests and is not
     /// required in an upstream response.
+    ///
+    /// The validator is kept as [`Self::accepts`] keeps its own.
     #[must_use]
     pub fn accepts_output(&self, id: &SchemaId, value: &Value) -> bool {
         accepts_bundled(self, id, value, SchemaValidationDirection::Output)
@@ -549,6 +564,17 @@ impl SchemaGraph {
         Ok(())
     }
 
+    /// Gives this graph a place in `store`, where it keeps the validators it
+    /// compiles from now on. A graph with no place keeps none.
+    pub(crate) fn keep_validators_in(&mut self, store: &ValidatorStore) {
+        self.validators.keep_in(store);
+    }
+
+    /// What this graph holds of its validators.
+    pub(crate) const fn validators(&self) -> &Validators {
+        &self.validators
+    }
+
     pub(crate) fn contains(&self, schema_id: &SchemaId) -> bool {
         self.schemas.contains_key(schema_id)
     }
@@ -558,11 +584,18 @@ impl SchemaGraph {
             .iter()
             .map(|(source, schema_id)| (source.as_str(), schema_id))
     }
+
+    pub(crate) fn schemas(&self) -> impl Iterator<Item = (&SchemaId, &Value)> {
+        self.schemas.iter()
+    }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SchemaValidationDirection {
+/// Which of a schema's requirements a validator applies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SchemaValidationDirection {
+    /// Every requirement.
     Neutral,
+    /// Those of a response: a `writeOnly` property is not required.
     Output,
 }
 
@@ -572,9 +605,10 @@ fn accepts_bundled(
     value: &Value,
     direction: SchemaValidationDirection,
 ) -> bool {
-    bundled_schema(graph, root, direction).is_some_and(|schema| {
-        jsonschema::validator_for(&schema).is_ok_and(|validator| validator.is_valid(value))
-    })
+    graph
+        .validators()
+        .validator(root, direction, || bundled_schema(graph, root, direction))
+        .is_some_and(|validator| validator.is_valid(value))
 }
 
 fn bundled_schema(
@@ -1853,6 +1887,61 @@ mod tests {
             .expect("stored root") = serde_json::json!({"$ref": "schema_000000000000000000000000"});
         SchemaGraph::from_storage_json(&missing.to_string())
             .expect_err("missing package target must be rejected");
+    }
+
+    // Catches: a check that bundles and compiles its schema on every call
+    // though its graph has a place in a store, a response check served the
+    // validator of a neutral one or the reverse, and one graph's check served
+    // the validator that another graph compiled for a root of the same
+    // identity.
+    #[test]
+    fn a_graph_with_a_place_in_a_store_keeps_the_validator_of_each_check() {
+        use SchemaValidationDirection::{Neutral, Output};
+
+        let id = SchemaId::for_source("generated:test");
+        let store = ValidatorStore::new(ValidatorStore::BUDGET_BYTES);
+        let placed = |schema: Value| {
+            let (semantics, schemas, source_index) = one_root(schema);
+            let mut graph =
+                SchemaGraph::new(semantics, schemas, source_index).expect("the graph is coherent");
+            graph.keep_validators_in(&store);
+            graph
+        };
+        let without_secret = serde_json::json!({});
+        for order in [[Output, Neutral], [Neutral, Output]] {
+            let secrets = placed(serde_json::json!({
+                "type": "object",
+                "properties": {"secret": {"type": "string", "writeOnly": true}},
+                "required": ["secret"]
+            }));
+            // Another graph names another schema by the same root identity.
+            let texts = placed(serde_json::json!({"type": "string"}));
+            for direction in order {
+                let accepts = |graph: &SchemaGraph, value: &Value| match direction {
+                    Neutral => graph.accepts(&id, value),
+                    Output => graph.accepts_output(&id, value),
+                };
+                assert!(
+                    accepts(&texts, &Value::from("text")),
+                    "{direction:?} in {order:?}"
+                );
+                assert_eq!(
+                    accepts(&secrets, &without_secret),
+                    direction == Output,
+                    "{direction:?} in {order:?}: only a response may omit a writeOnly property"
+                );
+                assert!(
+                    !accepts(&texts, &without_secret),
+                    "{direction:?} in {order:?}: each graph checks against its own schema"
+                );
+                for graph in [&secrets, &texts] {
+                    let kept = graph.validators().validator(&id, direction, || {
+                        panic!("{direction:?} in {order:?}: the check keeps its validator")
+                    });
+                    assert!(kept.is_some());
+                }
+            }
+        }
     }
 
     #[test]

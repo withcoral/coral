@@ -13,7 +13,7 @@ pub use authorization_server::{CoralAuthorizationServer, RunningCoralAuthorizati
 pub use config::AuthSettings;
 /// Visible to the crate so the bootstrap composition root can build the services
 /// these settings configure; resolution still happens only in this module.
-pub(crate) use config::{AuthListenerSettings, ResolvedAuthSettings, WebSettings};
+pub(crate) use config::{AuthListenerSettings, AuthSection, ResolvedAuthSettings, WebSettings};
 pub use error::AuthServerError;
 
 /// Path the authorization server answers the upstream provider's callback on.
@@ -21,6 +21,62 @@ pub use error::AuthServerError;
 /// Configuration derives the provider redirect URI from the public issuer and
 /// this same path, so the advertised callback is always one the router serves.
 pub(in crate::auth) const OIDC_CALLBACK_PATH: &str = "/auth/oidc/callback";
+
+/// A server for tests of what a client does with a connection it has used.
+#[cfg(test)]
+pub(super) mod test_server {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::net::TcpListener;
+    use tokio::task::JoinSet;
+
+    /// Answers the first request on each connection with the JSON that
+    /// `respond` returns for the request's path, and keeps the connection
+    /// open. It closes the connection without an answer when a second request
+    /// arrives on it, as a server does when its idle timeout ends while that
+    /// request is on its way.
+    pub(crate) async fn serve_one_request_per_connection(
+        listener: TcpListener,
+        respond: impl Fn(&str) -> String + Clone + Send + 'static,
+    ) {
+        let mut connections = JoinSet::new();
+        loop {
+            let (mut stream, _peer) = listener.accept().await.expect("connection");
+            let respond = respond.clone();
+            connections.spawn(async move {
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    head.push(stream.read_u8().await.expect("request"));
+                }
+                let head = String::from_utf8(head).expect("request head");
+                // Read the whole request. Closing a connection with unread
+                // bytes resets it, and the client can lose the response.
+                let content_length = head.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse().expect("content length"))
+                });
+                let mut request_body = vec![0; content_length.unwrap_or(0)];
+                stream
+                    .read_exact(&mut request_body)
+                    .await
+                    .expect("request body");
+                let path = head.split(' ').nth(1).expect("request path");
+                let body = respond(path);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("response");
+                // Returns on the first byte of a second request or when the
+                // client closes; dropping the stream then closes it.
+                let _second_request_or_close = stream.read_u8().await;
+            });
+        }
+    }
+}
 
 /// Minimal `[auth]` TOML sections shared by this module's tests.
 ///
@@ -36,7 +92,7 @@ pub(super) mod test_config {
     use base64::engine::general_purpose::STANDARD;
     use coral_auth::SessionTokenIssuer;
 
-    use super::config::{AuthSettings, ResolvedAuthSettings};
+    use super::config::ResolvedAuthSettings;
 
     pub(crate) const SESSION: &str = "[auth.session]\nsigning_key_file = 'session.key'\n";
     pub(crate) const AUTHORIZATION_SERVER: &str =
@@ -67,7 +123,7 @@ pub(super) mod test_config {
         provider_issuer: &str,
         extra: &str,
     ) -> (ResolvedAuthSettings, SessionTokenIssuer) {
-        let settings = AuthSettings::from_toml(&format!(
+        let settings = crate::bootstrap::auth_settings(&format!(
             "[auth.session]\n[listeners.auth]\npublic_url = '{AUTH_ISSUER}'\n\
              [auth.provider]\nissuer = '{provider_issuer}'\n\
              client_id = 'provider-client'\nclient_secret = '{PROVIDER_SECRET}'\n{extra}"

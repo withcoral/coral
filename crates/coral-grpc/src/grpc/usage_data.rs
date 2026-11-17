@@ -6,7 +6,6 @@ fn view(view: coral_usage::UsageDataView) -> wire::UsageData {
     use coral_usage::{BlockingVariable, SendBlock};
     wire::UsageData {
         sharing: view.sharing,
-        can_change: view.can_change,
         block: match view.block {
             None => wire::UsageSendBlock::None,
             Some(SendBlock::Environment(BlockingVariable::DoNotTrack)) => {

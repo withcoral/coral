@@ -14,8 +14,8 @@
 //! fence accepts the state root. Configuration validation is injected too and
 //! runs after both inspections and before the first write, so retired state is
 //! reported first and invalid configuration leaves a fresh root unchanged. It
-//! returns the one setting storage preparation reads: Universal Search's
-//! vector side.
+//! returns the configuration it decoded, which comes back to the caller, and
+//! the one setting storage preparation reads: Universal Search's vector side.
 //!
 //! The Module also makes one runtime the state root's only user. Once the
 //! filesystem root is accepted, it locks the root's existing lock file, so a
@@ -72,22 +72,22 @@ impl InitializedState {
 /// state root. I/O,
 /// connection, and migration failures are returned after the latest stage that
 /// completed successfully.
-pub(crate) async fn initialize<F, V>(
+pub(crate) async fn initialize<F, V, C>(
     layout: AppStateLayout,
     config: &str,
     resolve_database: F,
     validate_config: V,
     report_migration: coral_db::MigrationReport<'_>,
-) -> Result<InitializedState, AppError>
+) -> Result<(InitializedState, C), AppError>
 where
     F: FnOnce(&AppStateLayout, &str) -> Result<DatabaseOptions, AppError>,
-    V: FnOnce() -> Result<coral_search::VectorStorage, AppError>,
+    V: FnOnce() -> Result<(C, coral_search::VectorStorage), AppError>,
 {
     validate_state_root(&layout, config)?;
     let held = StateLock::acquire_existing(&layout)?;
     let database_config = resolve_database(&layout, config)?;
     validate_database_state(&database_config).await?;
-    let vector_storage = validate_config()?;
+    let (accepted, vector_storage) = validate_config()?;
 
     let lock = if let Some(lock) = held {
         lock
@@ -120,12 +120,13 @@ where
         coral_search::prepare_vector_table(&database, vector_storage).await?;
     }
 
-    Ok(InitializedState {
+    let state = InitializedState {
         credential_key_path: layout.config_dir().join("credentials.key"),
         state_dir: layout.config_dir().to_path_buf(),
         database: Arc::new(database),
         lock,
-    })
+    };
+    Ok((state, accepted))
 }
 
 #[cfg(test)]
@@ -215,6 +216,38 @@ mod tests {
         }
     }
 
+    /// Catches: configuration judged after the first write, so that startup
+    /// publishes the state marker and migrates the database of a fresh root
+    /// whose configuration it then refuses.
+    #[tokio::test]
+    async fn refused_configuration_leaves_a_fresh_root_unchanged() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.path().join("config.toml"), CONFIG).unwrap();
+        let layout = AppStateLayout::discover(Some(temp.path().to_path_buf())).unwrap();
+        let database = temp.path().join("coral.db");
+        let before = snapshot(temp.path());
+
+        let refused = super::initialize(
+            layout,
+            CONFIG,
+            |_, _| Ok(coral_db::DatabaseOptions::Sqlite { path: database }),
+            || {
+                Err::<((), coral_search::VectorStorage), _>(AppError::FailedPrecondition(
+                    "refused".into(),
+                ))
+            },
+            &|_| {},
+        )
+        .await;
+
+        assert!(
+            matches!(&refused, Err(AppError::FailedPrecondition(message)) if message == "refused"),
+            "{:?}",
+            refused.as_ref().map(drop)
+        );
+        assert_eq!(snapshot(temp.path()), before);
+    }
+
     #[tokio::test]
     async fn a_fresh_database_boots_with_a_vector_table_only_while_the_setting_is_on() {
         let system = coral_test_support::selected_database().expect("a test database");
@@ -235,11 +268,11 @@ mod tests {
             };
             let layout = AppStateLayout::discover(Some(temp.path().to_path_buf())).unwrap();
 
-            let state = super::initialize(
+            let (state, ()) = super::initialize(
                 layout,
                 "",
                 |_, _| Ok(options),
-                || Ok(vector_storage),
+                || Ok(((), vector_storage)),
                 &|_| {},
             )
             .await

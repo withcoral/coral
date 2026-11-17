@@ -1,6 +1,6 @@
 use coral_run::{
     FinalValue, ProgramLogLevel, RequiredAction, RequiredActionRequest, RequiredActor, RunEvent,
-    RunEventKind, RunFailureCode, RunState, RunTerminalOutcome, RunUpdate,
+    RunEventKind, RunFailureCode, RunId, RunState, RunTerminalOutcome, RunUpdate, RunUpdatePage,
 };
 use rmcp::model::{CallToolResult, ContentBlock};
 use schemars::JsonSchema;
@@ -247,71 +247,241 @@ pub(crate) fn run_update(
     }
 }
 
+/// Projects each Event once and builds one result. A candidate page's size
+/// comes from the counted sizes of its parts, so choosing a page copies no
+/// output. What a result holds besides its Events is counted again for each
+/// candidate, and the page chosen is then encoded once.
 fn paged<Task: Serialize + Copy>(
     update: &RunUpdate,
     task: Task,
     human_interface: &crate::HumanInterfaceUrl,
     page_bytes: usize,
 ) -> Result<CallToolResult, ToolFailure> {
-    let mut count = update.events().len();
-    loop {
-        let page = update.event_prefix(count);
-        let result = project_run_update(&page, task, human_interface)?;
-        if fits(&result, page_bytes) {
-            return Ok(result);
+    let mut events = PageEvents::default();
+    for event in update.events() {
+        let (event, block) = run_event(event, update.run_id(), events.rich.len() + 1)?;
+        events.push(event, block)?;
+        // No page carries the Events after the one that passes the target.
+        if events.end(events.len()).bytes > page_bytes {
+            break;
+        }
+    }
+    largest_page(update, &events, task, human_interface, page_bytes)?.into_result(events)
+}
+
+/// Chooses the page of `update` to deliver from the Events projected so far.
+fn largest_page<'a, Task: Serialize + Copy>(
+    update: &'a RunUpdate,
+    events: &PageEvents<'a>,
+    task: Task,
+    human_interface: &crate::HumanInterfaceUrl,
+    page_bytes: usize,
+) -> Result<Page<'a, Task>, ToolFailure> {
+    let all = update.events().len();
+    let project = |page| project_page(page, task, human_interface, events);
+    // The whole update is a candidate only when every Event was projected.
+    if events.len() == all {
+        let whole = update.event_prefix(all);
+        let complete = project(whole)?;
+        if complete.bytes <= page_bytes {
+            return Ok(complete);
         }
         // Preserve the complete outcome for the final page. If only the
         // combination is too large, deliver these Events and advance first.
-        if !page.events().is_empty() && page.terminal_outcome().is_some() {
-            let deferred =
-                project_run_update(&page.defer_terminal_outcome(), task, human_interface)?;
-            if count <= 1 || fits(&deferred, page_bytes) {
+        if all > 0 && whole.terminal_outcome().is_some() {
+            let deferred = project(whole.defer_terminal_outcome())?;
+            if all == 1 || deferred.bytes <= page_bytes {
                 return Ok(deferred);
             }
         }
         // The limit is a paging target. Paging never splits a value, so one
         // item above it arrives whole on its own page; domain limits bound it.
-        if count <= 1 {
-            return Ok(result);
+        if all <= 1 {
+            return Ok(complete);
         }
-        // Drop whole Events only. The cursor replays everything not delivered.
-        count /= 2;
+    }
+    // Drop whole Events only, and no more than the target asks. The cursor
+    // replays everything not delivered.
+    let mut count = events.len().min(all.saturating_sub(1));
+    loop {
+        let prefix = project(update.event_prefix(count))?;
+        if count <= 1 || prefix.bytes <= page_bytes {
+            return Ok(prefix);
+        }
+        count -= 1;
     }
 }
 
-fn fits(result: &CallToolResult, page_bytes: usize) -> bool {
-    serde_json::to_vec(result).is_ok_and(|bytes| bytes.len() <= page_bytes)
+/// The size of a compact JSON encoding, counted without keeping its bytes.
+#[derive(Default)]
+struct Encoded {
+    bytes: usize,
+    /// The `"` and `\` among them: a JSON string that holds this text spends
+    /// one more byte on each.
+    escaped: usize,
 }
 
-fn project_run_update<Task: Serialize>(
-    update: &RunUpdate,
+impl Encoded {
+    fn of(value: &impl Serialize) -> Result<Self, ToolFailure> {
+        let mut size = Self::default();
+        serde_json::to_writer(&mut size, value).map_err(|_error| ToolFailure::internal())?;
+        Ok(size)
+    }
+
+    /// The bytes a part of `structuredContent` adds to an encoded result,
+    /// which carries it twice: as JSON, and in the JSON text of `content[0]`.
+    const fn in_result(&self) -> usize {
+        2 * self.bytes + self.escaped
+    }
+
+    /// The bytes a rich block adds to an encoded result's `content`, with
+    /// the comma before it.
+    fn of_block(block: &ContentBlock) -> Result<usize, ToolFailure> {
+        Ok(1 + Self::of(block)?.bytes)
+    }
+
+    /// The bytes of an encoded result around its structured content and the
+    /// JSON text of it.
+    fn of_envelope() -> Result<usize, ToolFailure> {
+        let empty = Value::Null;
+        Ok(Self::of(&success(&empty)?)?.bytes - Self::of(&empty)?.in_result())
+    }
+}
+
+impl std::io::Write for Encoded {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.bytes += bytes.len();
+        self.escaped += bytes
+            .iter()
+            .filter(|byte| matches!(byte, b'"' | b'\\'))
+            .count();
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// The Events of a Run Update, projected in order from its first, with the
+/// rich blocks they moved out of their values.
+#[derive(Default)]
+struct PageEvents<'a> {
+    events: Vec<Event<'a>>,
+    rich: Vec<ContentBlock>,
+    /// Where the prefix that ends with each Event ends.
+    ends: Vec<PrefixEnd>,
+}
+
+/// What a prefix of Events adds to a result.
+#[derive(Clone, Copy, Default)]
+struct PrefixEnd {
+    /// Encoded bytes: the Events in both copies and their rich blocks.
+    bytes: usize,
+    rich: usize,
+}
+
+impl<'a> PageEvents<'a> {
+    fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    fn push(&mut self, event: Event<'a>, block: Option<ContentBlock>) -> Result<(), ToolFailure> {
+        let before = self.end(self.len());
+        // A comma separates it from the Event before it, in both copies.
+        let mut bytes =
+            Encoded::of(&event)?.in_result() + if self.events.is_empty() { 0 } else { 2 };
+        if let Some(block) = block {
+            bytes += Encoded::of_block(&block)?;
+            self.rich.push(block);
+        }
+        self.events.push(event);
+        self.ends.push(PrefixEnd {
+            bytes: before.bytes + bytes,
+            rich: self.rich.len(),
+        });
+        Ok(())
+    }
+
+    /// Where the prefix of the first `count` Events ends.
+    fn end(&self, count: usize) -> PrefixEnd {
+        count
+            .checked_sub(1)
+            .and_then(|last| self.ends.get(last))
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+/// One output page: its result without the Events, and how many it carries.
+struct Page<'a, Task> {
+    result: RunUpdateResult<'a, Task>,
+    /// The rich block of the Final Value, after those of the Events.
+    final_block: Option<ContentBlock>,
+    count: usize,
+    /// The size of the encoded result, with the Events.
+    bytes: usize,
+}
+
+impl<'a, Task: Serialize> Page<'a, Task> {
+    /// A page of the first `count` of `events`, around a `result` that has none.
+    fn new(
+        result: RunUpdateResult<'a, Task>,
+        final_block: Option<ContentBlock>,
+        events: &PageEvents<'a>,
+        count: usize,
+    ) -> Result<Self, ToolFailure> {
+        let mut bytes =
+            Encoded::of_envelope()? + Encoded::of(&result)?.in_result() + events.end(count).bytes;
+        if let Some(block) = &final_block {
+            bytes += Encoded::of_block(block)?;
+        }
+        Ok(Self {
+            result,
+            final_block,
+            count,
+            bytes,
+        })
+    }
+
+    fn into_result(mut self, events: PageEvents<'a>) -> Result<CallToolResult, ToolFailure> {
+        let blocks = events.end(self.count).rich;
+        self.result.events = events.events;
+        self.result.events.truncate(self.count);
+        let mut result = success(self.result)?;
+        result.content.extend(events.rich.into_iter().take(blocks));
+        result.content.extend(self.final_block);
+        Ok(result)
+    }
+}
+
+/// Projects everything of `page` but its Events, which `events` holds.
+fn project_page<'a, Task: Serialize>(
+    page: RunUpdatePage<'a>,
     task: Task,
     human_interface: &crate::HumanInterfaceUrl,
-) -> Result<CallToolResult, ToolFailure> {
-    let mut rich = Vec::new();
-    let events = update
-        .events()
-        .iter()
-        .map(|event| run_event(event, update, &mut rich))
-        .collect::<Result<_, _>>()?;
-    let (final_value, failure) = match update.terminal_outcome() {
+    events: &PageEvents<'a>,
+) -> Result<Page<'a, Task>, ToolFailure> {
+    let count = page.events().len();
+    let (final_value, final_block, failure) = match page.terminal_outcome() {
         Some(RunTerminalOutcome::Succeeded {
             final_value: FinalValue::Present(value),
-        }) => (
-            Some(output_value(
+        }) => {
+            let (value, block) = output_value(
                 value.as_json(),
-                &format!("urn:coral:output:{}:final", update.run_id()),
-                &mut rich,
-            )?),
-            None,
-        ),
+                &format!("urn:coral:output:{}:final", page.run_id()),
+                events.end(count).rich + 1,
+            )?;
+            (Some(value), block, None)
+        }
         Some(RunTerminalOutcome::Failed(failure)) => (
+            None,
             None,
             Some(Failure {
                 code: failure.code().into(),
                 message: failure.message(),
                 error: failure.error().map(ProgramError::try_from).transpose()?,
-                tool_result_shapes: update
+                tool_result_shapes: page
                     .tool_result_shapes()
                     .map(|shapes| {
                         shapes
@@ -329,7 +499,7 @@ fn project_run_update<Task: Serialize>(
                     })
                     .transpose()?
                     .unwrap_or_default(),
-                unsketched_tool_results: update
+                unsketched_tool_results: page
                     .tool_result_shapes()
                     .map(coral_run::ToolResultShapes::unsketched)
                     .filter(|count| *count > 0)
@@ -337,12 +507,12 @@ fn project_run_update<Task: Serialize>(
                     .transpose()?,
             }),
         ),
-        _ => (None, None),
+        _ => (None, None, None),
     };
-    let mut result = success(RunUpdateResult {
+    let result = RunUpdateResult {
         task,
-        run_id: update.run_id().to_string(),
-        state: match update.state() {
+        run_id: page.run_id().to_string(),
+        state: match page.state() {
             RunState::Running => State::Running,
             RunState::Succeeded => State::Succeeded,
             RunState::Failed => State::Failed,
@@ -350,23 +520,22 @@ fn project_run_update<Task: Serialize>(
             RunState::TimedOut => State::TimedOut,
             RunState::Interrupted => State::Interrupted,
         },
-        required_actions: update
+        required_actions: page
             .required_actions()
             .iter()
             .map(|action| required_action(action, human_interface))
             .collect(),
-        events,
-        next_cursor: update.next_cursor().to_string(),
-        has_more: update.has_more(),
+        events: Vec::new(),
+        next_cursor: page.next_cursor().to_string(),
+        has_more: page.has_more(),
         final_value,
         failure,
-        trace_id: update
+        trace_id: page
             .trace_id()
-            .filter(|_| !update.has_more())
+            .filter(|_| !page.has_more())
             .map(|trace| trace.as_str().to_string()),
-    })?;
-    result.content.extend(rich);
-    Ok(result)
+    };
+    Page::new(result, final_block, events, count)
 }
 
 /// One line for the person while a call holds: what the Run waits for from
@@ -433,13 +602,14 @@ fn timestamp_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     })
 }
 
-/// Moves a root rich value into `rich`, the blocks that follow the JSON text.
-/// Nested values stay structured Program data.
+/// Projects a root rich value as the block at `index` of the result's
+/// `content`, where rich blocks follow the JSON text, and borrows any other
+/// value. Nested values stay structured Program data.
 fn output_value<'a>(
     value: &'a Value,
     uri: &str,
-    rich: &mut Vec<ContentBlock>,
-) -> Result<OutputValue<'a>, ToolFailure> {
+    index: usize,
+) -> Result<(OutputValue<'a>, Option<ContentBlock>), ToolFailure> {
     let block = if value.get("_tag").and_then(Value::as_str) == Some("BinaryValue") {
         let mime = value
             .get("mimeType")
@@ -452,6 +622,8 @@ fn output_value<'a>(
         } else {
             json!({"type":"resource", "resource":{"uri":uri, "mimeType":mime, "blob":value["data"]}})
         }).ok()
+    } else if !names_content_block(value) {
+        None
     } else {
         let mut candidate = value.clone();
         // These labels identify only this retained occurrence, never resources/read capabilities.
@@ -482,46 +654,63 @@ fn output_value<'a>(
         // Only SDK-typed blocks are rich content; other JSON stays a plain value.
         serde_json::from_value::<ContentBlock>(candidate).ok()
     };
-    if let Some(block) = block {
-        // content[0] is the JSON text of structuredContent.
-        let index = u64::try_from(rich.len() + 1).map_err(|_error| ToolFailure::internal())?;
-        rich.push(block);
-        Ok(OutputValue::Content {
-            content_index: SafeInteger::new(index)?,
-        })
-    } else {
-        Ok(OutputValue::Value { value })
-    }
+    let Some(block) = block else {
+        return Ok((OutputValue::Value { value }, None));
+    };
+    let index = u64::try_from(index).map_err(|_error| ToolFailure::internal())?;
+    let content_index = SafeInteger::new(index)?;
+    Ok((OutputValue::Content { content_index }, Some(block)))
 }
 
+/// Whether the SDK may read `value` as a content block. It reads the block's
+/// type from an object's `type`, or from the first item of an array. Any
+/// other value stays plain, and is never copied to find that out.
+fn names_content_block(value: &Value) -> bool {
+    let block_type = match value {
+        Value::Object(fields) => fields.get("type"),
+        Value::Array(items) => items.first(),
+        _ => None,
+    };
+    matches!(
+        block_type.and_then(Value::as_str),
+        Some("text" | "image" | "audio" | "resource" | "resource_link")
+    )
+}
+
+/// Projects an Event. Its root rich value becomes the block at `index` of
+/// the result's `content`.
 fn run_event<'a>(
     event: &'a RunEvent,
-    update: &RunUpdate,
-    rich: &mut Vec<ContentBlock>,
-) -> Result<Event<'a>, ToolFailure> {
+    run_id: &RunId,
+    index: usize,
+) -> Result<(Event<'a>, Option<ContentBlock>), ToolFailure> {
     let sequence = event.sequence().to_string();
     let occurred_at = timestamp(event.occurred_at_unix_nanos());
     Ok(match event.kind() {
-        RunEventKind::ProgramEmitted { value } => Event::Emitted {
-            sequence,
-            occurred_at,
-            value: output_value(
-                value.as_json(),
-                &format!("urn:coral:output:{}:{}", update.run_id(), event.sequence()),
-                rich,
-            )?,
-        },
-        RunEventKind::ProgramLogged { level, message } => Event::Logged {
-            sequence,
-            occurred_at,
-            message,
-            level: match level {
-                ProgramLogLevel::Debug => LogLevel::Debug,
-                ProgramLogLevel::Info => LogLevel::Info,
-                ProgramLogLevel::Warn => LogLevel::Warn,
-                ProgramLogLevel::Error => LogLevel::Error,
+        RunEventKind::ProgramEmitted { value } => {
+            let uri = format!("urn:coral:output:{run_id}:{}", event.sequence());
+            let (value, block) = output_value(value.as_json(), &uri, index)?;
+            let event = Event::Emitted {
+                sequence,
+                occurred_at,
+                value,
+            };
+            (event, block)
+        }
+        RunEventKind::ProgramLogged { level, message } => (
+            Event::Logged {
+                sequence,
+                occurred_at,
+                message,
+                level: match level {
+                    ProgramLogLevel::Debug => LogLevel::Debug,
+                    ProgramLogLevel::Info => LogLevel::Info,
+                    ProgramLogLevel::Warn => LogLevel::Warn,
+                    ProgramLogLevel::Error => LogLevel::Error,
+                },
             },
-        },
+            None,
+        ),
         // Run Updates contain authored output only, not other durable Event kinds.
         _ => return Err(ToolFailure::internal()),
     })

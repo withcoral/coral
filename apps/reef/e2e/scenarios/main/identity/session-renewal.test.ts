@@ -5,6 +5,7 @@ import { expect, inject, test } from 'vitest'
 import { loginActor } from '../../../support/actors.ts'
 import { withBrowserSession } from '../../../support/browser-session.ts'
 import { startStack } from '../../../support/stack.ts'
+import { readSwitcher, openCreateWorkspace, switcherWorkspace } from '../../../support/sidebar.ts'
 
 // Coral access tokens last five seconds; Reef sessions last forty from sign-in.
 const ACCESS_TOKEN_TTL_SECONDS = 5
@@ -45,10 +46,7 @@ test('A Reef session outlives its access tokens, ends at its own deadline, and s
         async () => {
           await page.goto('/')
           await accountMenu.waitFor()
-          await page
-            .getByRole('navigation', { name: 'Coral', exact: true })
-            .getByRole('button', { name: 'Create workspace', exact: true })
-            .click()
+          await openCreateWorkspace(page)
           await page.getByLabel('Workspace name', { exact: true }).fill('Renewed')
         },
       )
@@ -62,16 +60,11 @@ test('A Reef session outlives its access tokens, ends at its own deadline, and s
         await page.waitForURL((url) => /^\/workspaces\/[0-9a-f-]{36}$/.test(url.pathname))
         workspacePath = new URL(page.url()).pathname
         // One submission, one Workspace: renewal neither drops nor repeats it.
-        await expect
-          .poll(
-            () =>
-              page
-                .getByRole('navigation', { name: 'Coral', exact: true })
-                .getByRole('button', { name: 'Renewed', exact: true })
-                .count(),
-            { timeout: 10_000 },
-          )
-          .toBe(1)
+        await page
+          .getByRole('navigation', { name: 'Coral', exact: true })
+          .getByRole('button', { name: 'Workspace: Renewed', exact: true })
+          .waitFor({ timeout: 10_000 })
+        expect(await readSwitcher(page, () => switcherWorkspace(page, 'Renewed').count())).toBe(1)
       })
 
       await step('Answer concurrent protected requests from one session', async () => {

@@ -1,6 +1,7 @@
 import type { RouteConfigEntry } from '@react-router/dev/routes'
 import { describe, expect, it } from 'vitest'
 
+import { settingsPath } from './components/settings/settings-nav'
 import routes from './routes'
 
 const protectedBoundaryFile = 'routes/_protected.tsx'
@@ -46,4 +47,15 @@ describe('route authentication boundary', () => {
     expect(new Set(publicRoutesOutsideBoundary)).toEqual(publicRouteFiles)
     expect(publicRoutesOutsideBoundary).toHaveLength(publicRouteFiles.size)
   })
+})
+
+// Catches: a section of the settings nav that leads to no page, or to a page
+// that shows the workspace's sidebar because it left the settings layout.
+it('puts every section of the settings nav under the settings layout', async () => {
+  const settings = (entries: RouteConfigEntry[]): RouteConfigEntry | undefined =>
+    entries
+      .flatMap((entry) => [entry, settings(entry.children ?? [])])
+      .find((entry) => entry?.file === 'routes/settings.tsx')
+  const pages = settings(await routes)?.children?.map((entry) => `/${entry.path}`)
+  expect(pages?.toSorted()).toEqual(Object.values(settingsPath).toSorted())
 })

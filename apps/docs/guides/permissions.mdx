@@ -1,81 +1,85 @@
 ---
-title: "Roles & Permissions"
-description: "This guide explains how operations are controlled in Coral and what knobs you have to control what your users and agents can do and under which circumstances."
+title: "Roles and permissions"
+description: "Control what your users and agents can do in Coral, and under which conditions."
 ---
 
 ## Overview
 
-Coral allows you to define how users and agents can access tools. This can be done by assigning users to certain [roles](#user-roles), defining [policies for tools](#tool-policy) and defining how [provider credentials](#provider-accounts) are stored and configured.
+In Coral, you decide how users and agents access tools. You do this in three ways:
 
-When users are assigned a role inside a workspace, they gain access to that workspace's configured providers. Depending how the providers have been configured, each user may use their own accounts for each provider or use a set of shared credentials the workspace owner has already configured.
+- Assign [roles](#user-roles) to users.
+- Set a [policy for each tool](#tool-policy).
+- Choose how to store and configure [provider credentials](#provider-accounts).
 
-[Agents](#agent-identities) have their own identity separate from users, and can have their own set of credentials to connect to providers. Their access to Coral can be suspended or revoked easily if needed.
+A user with a role in a workspace can use that workspace's providers. Depending on each provider's configuration, a user uses their own account for the provider, or shared credentials that the workspace owner configured.
 
-For each tool available in a workspace, a policy of **Allow**/**Ask**/**Block** can be defined. When [approvals](#approvals) are used, a human is required to approve an action when called by a request via MCP.
+[Agents](#agent-identities) have their own identity, separate from users. They can have their own credentials to connect to providers. You can suspend or revoke an agent's access to Coral.
+
+You can set a policy of **Allow**, **Ask** or **Block** for each tool in a workspace. When a tool uses [approvals](#approvals), a person must approve each call that comes through MCP.
 
 ## User roles
 
-A user in Coral may have different roles that allow them to execute certain actions.
+A user in Coral can have different roles. Each role allows certain actions.
 
 ### At organization level
 
-|                                                                             | Organization Member | Organization Owner |
-| --------------------------------------------------------------------------- | :-----------------: | :----------------: |
-| Can create workspaces (becoming their owner)                                |          ✓          |         ✓          |
-| Can be added as a workspace owner or member by another user to a workspace. |          ✓          |         ✓          |
-| See all organization members                                                |          —          |         ✓          |
-| Remove a user from the organization                                         |          —          |         ✓          |
-| See all workspaces                                                          |          —          |         ✓          |
-| Manage workspace owners for all workspaces                                  |          —          |         ✓          |
-| Archive and restore workspaces                                              |          —          |         ✓          |
+|                                                               | Organization member | Organization owner |
+| ------------------------------------------------------------- | :-----------------: | :----------------: |
+| Create workspaces, and become their owner                     |          ✓          |         ✓          |
+| Be added to a workspace as an owner or member by another user |          ✓          |         ✓          |
+| See all organization members                                  |          —          |         ✓          |
+| Remove a user from the organization                           |          —          |         ✓          |
+| See all workspaces                                            |          —          |         ✓          |
+| Manage workspace owners for all workspaces                    |          —          |         ✓          |
+| Archive and restore workspaces                                |          —          |         ✓          |
 
 ### At workspace level
 
-|                                                                                                   | Workspace members | Workspace owners |
-| ------------------------------------------------------------------------------------------------- | :---------------: | :--------------: |
-| See the list of providers and tools configured for the workspace                                  |         ✓         |        ✓         |
-| See the policies that have been set up for the tools                                              |         ✓         |        ✓         |
-| Connect your accounts to the providers that have been set up to do so                             |         ✓         |        ✓         |
-| Approve calls done by you via MCP clients                                                         |         ✓         |        ✓         |
-| See your runs and tasks                                                                           |         ✓         |        ✓         |
-| Manage your private tools                                                                         |         ✓         |        ✓         |
-| Add and remove owners and members to the workspace                                                |         —         |        ✓         |
-| Manage providers for the workspace                                                                |         —         |        ✓         |
-| Choose account settings for the providers (shared accounts vs individual accounts per user/agent) |         —         |        ✓         |
-| Connect shared accounts                                                                           |         —         |        ✓         |
-| Configure the policy for each tool                                                                |         —         |        ✓         |
-| Publish and remove shared tools                                                                   |         —         |        ✓         |
-| Manage agents                                                                                     |         —         |        ✓         |
-| Connect accounts for agents                                                                       |         —         |        ✓         |
-| Approve agent calls done via MCP clients                                                          |         —         |        ✓         |
-| See agents' runs and tasks                                                                        |         —         |        ✓         |
-| Rename, archive and restore the workspace                                                         |         —         |        ✓         |
+|                                                                                                          | Workspace member | Workspace owner |
+| -------------------------------------------------------------------------------------------------------- | :--------------: | :-------------: |
+| See the workspace's providers and tools                                                                  |        ✓         |        ✓        |
+| See the tools' policies                                                                                  |        ✓         |        ✓        |
+| Connect your accounts to the providers that allow it                                                     |        ✓         |        ✓        |
+| Approve your own calls from MCP clients                                                                  |        ✓         |        ✓        |
+| See your runs and tasks                                                                                  |        ✓         |        ✓        |
+| Manage your private tools                                                                                |        ✓         |        ✓        |
+| Add and remove the workspace's owners and members                                                        |        —         |        ✓        |
+| Manage the workspace's providers                                                                         |        —         |        ✓        |
+| Choose each provider's account setting: a shared account, or individual accounts for each user and agent |        —         |        ✓        |
+| Connect shared accounts                                                                                  |        —         |        ✓        |
+| Set the policy for each tool                                                                             |        —         |        ✓        |
+| Publish and remove shared tools                                                                          |        —         |        ✓        |
+| Manage agents                                                                                            |        —         |        ✓        |
+| Connect accounts for agents                                                                              |        —         |        ✓        |
+| Approve agents' calls from MCP clients                                                                   |        —         |        ✓        |
+| See agents' runs and tasks                                                                               |        —         |        ✓        |
+| Rename, archive and restore the workspace                                                                |        —         |        ✓        |
 
 ## Provider accounts
 
-When a workspace owner sets up a provider, they can choose the [account configuration](/guides/concepts#account-setting) for the provider:
+When a workspace owner sets up a provider, they choose its [account setting](/guides/concepts#account-setting):
 
-- **Shared account**: The provider uses a single account. All users and agents in the workspace use that account when talking to the provider. This is convenient when using credentials like service accounts or API keys, where the credential's identity is not tied to an individual user or agent. All users or agents using the provider's tools see and work on the same set of data.
-- **Individual account**: Each user or agent provides their own account and uses it to talk to the provider. This is preferred for providers that use OAuth or personal access tokens, where the user's identity is tied to the credential. Each user or agent operates on the data the provider allows for that given user.
+- **Shared account**: The provider uses a single account. All users and agents in the workspace use that account to call the provider. This setting suits credentials such as service accounts or API keys, whose identity is not tied to one user or agent. Everyone who uses the provider's tools sees and works on the same data.
+- **Individual account**: Each user or agent connects their own account and uses it to call the provider. Prefer this setting for providers that use OAuth or personal access tokens, where the credential is tied to the user's identity. Each user or agent works on the data that the provider allows for them.
 
-<Note>Only workspace owners can manage and set up the credentials for shared accounts.</Note>
+<Note>Only workspace owners can set up and manage the credentials of shared accounts.</Note>
 
 ## Agent identities
 
-Workspace owners can create agent identities. These allow an agent to use Coral via MCP, without going through Coral's user authentication. Instead Coral mints an API key for each agent, and you set up your MCP client to talk to Coral using that API key. Agents can be suspended temporarily if needed, and you can also set expiration for their credentials.
+Workspace owners can create agent identities. With an agent identity, an agent uses Coral through MCP without Coral's user authentication. Coral creates an API key for each agent, and you set up your MCP client to use that key. You can suspend an agent temporarily, and you can set an expiry for its credentials.
 
-With agent identities, you can set up [individual accounts](#provider-accounts) for that agent, separate from the accounts you've configured for your user. All tool calls done by an agent are still subject to the [tool's policies](#tool-policy) set up by the workspace owner.
+You can set up [individual accounts](#provider-accounts) for an agent, separate from the accounts of your own user. The [tool policies](#tool-policy) that the workspace owner set still apply to every tool call that an agent makes.
 
 ## Tool policy
 
-In Coral, you can define a policy for each tool available to users and agents. The policy determines if the calls to that tool are always allowed, always denied or require human approval. You can choose the policy for each tool on the provider's page of your workspace:
+You can set a policy for each tool that users and agents can call. The policy decides if Coral always allows calls to the tool, always blocks them, or asks a person to approve them. Set each tool's policy on the provider's page in your workspace:
 
-- **Allow**: All users and agents of the workspace can call this tool
-- **Ask**: Confirm with a human when the tool is called.
-- **Block**: No user or agent of this workspace can call this tool.
+- **Allow**: All users and agents in the workspace can call the tool.
+- **Ask**: A person must confirm each call to the tool.
+- **Block**: No user or agent in the workspace can call the tool.
 
 ### Approvals
 
-When **Ask** is chosen as the policy of a tool, Coral will request confirmation from a human when the tool is called. Your MCP client will either display or open a URL to Coral where you can confirm the request (depending on your client). In the Coral UI you'll be able to see all the details of the tool call, so you can make an informed decision. When you approve or decline, your MCP client should resume automatically.
+When a tool's policy is **Ask**, Coral asks a person to confirm each call to the tool. Depending on your MCP client, it displays or opens a Coral URL where you can confirm the request. The Coral UI shows all the details of the tool call, so you can make an informed decision. After you approve or decline, your MCP client should resume automatically.
 
-<Note>When an agent calls a tool with **Ask** policy, only workspace owners can approve its execution.</Note>
+<Note>When an agent calls a tool with the **Ask** policy, only workspace owners can approve the call.</Note>

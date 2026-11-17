@@ -3,10 +3,14 @@ import { Button, Table, Typography } from '@/wax/components'
 import { Picker } from '@/wax/components/picker'
 import { Pill } from '@/wax/components/pill'
 import { Status } from '@/wax/components/status'
+import { TextLink } from '@/wax/components/text-link'
 import { ActionDialog } from './forms'
 import { ManagementLayout, trail } from './layout'
 import type { FormContext } from './types'
 import * as styles from './management.css'
+
+/** How to define a secret store in config.toml. */
+const secretStoresDocsUrl = 'https://withcoral.com/docs/reference/configuration#secret_stores'
 
 /** A workspace that holds a grant. */
 interface GrantedWorkspace {
@@ -57,7 +61,13 @@ export function OrganizationSecretStoresPage({
       >
         <Table.Head />
         {stores.length === 0 && (
-          <Table.Status>No secret stores. To define one, edit config.toml.</Table.Status>
+          <Table.Status>
+            No secret stores defined.{' '}
+            <TextLink href={secretStoresDocsUrl} external>
+              Read the secret store docs
+            </TextLink>
+            .
+          </Table.Status>
         )}
         <Table.Body>
           {stores.map((store) => (

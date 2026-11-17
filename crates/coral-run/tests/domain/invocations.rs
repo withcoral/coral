@@ -187,15 +187,17 @@ async fn builtin_add_provider_waits_for_approval_by_default() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
     let (workspace_id, owner) = builtin_scope(&fixture, "user:builtin-policy").await;
     let mut transaction = fixture.database.begin().await.unwrap();
-    let target = coral_provider::resolve_invocation_tool_in_transaction(
-        &mut transaction,
-        &workspace_id,
-        coral_provider::InvocationCaller::new(&fixture.workspaces, &owner, 12),
-        "coral.addProvider",
-    )
-    .await
-    .unwrap()
-    .expect("the Built-in Tool resolves");
+    let target = fixture
+        .providers
+        .resolve_invocation_tool_in_transaction(
+            &mut transaction,
+            &workspace_id,
+            coral_provider::InvocationCaller::new(&fixture.workspaces, &owner, 12),
+            "coral.addProvider",
+        )
+        .await
+        .unwrap()
+        .expect("the Built-in Tool resolves");
     let decision = coral_policy::invocation_decision_in_transaction(
         &mut transaction,
         &ToolPolicyTarget::new(
@@ -674,6 +676,79 @@ async fn upstream_send_holds_no_database_transaction_or_lock() {
     .await;
     assert_eq!(terminal.state(), RunState::Succeeded);
     assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
+}
+
+/// Catches: a Tool call resolving its Tool in a write transaction. `SQLite`
+/// has one writer, so such a call waits behind every chunk commit of every
+/// Run only to read, and fails as `WriterBusy` when the wait is too long.
+/// While another transaction holds the writer, a call to a Provider's Tool
+/// and a call to a Private Tool each resolve from one read snapshot.
+#[tokio::test]
+async fn resolving_a_tool_call_begins_no_write_transaction() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let tool = fixture
+        .user_tool("user:resolve-beside-a-writer", "Resolve beside a writer")
+        .await;
+    // A Run that has ended and whose owner has retired, so that this test
+    // makes every database call the capture below records.
+    let run = fixture
+        .runs
+        .start(&tool.principal, &tool.workspace_id, submission("null"))
+        .await
+        .expect("accept the Run");
+    let record = fixture
+        .terminal_record(&tool.workspace_id, run.run_id())
+        .await;
+    wait_until(|| !fixture.runs.has_owner(run.run_id())).await;
+    let invoker = test_invoker(&fixture, &tool, &record);
+
+    for (call, private_path) in [
+        ("a Provider's Tool", None),
+        ("a Private Tool", Some("weather.spin")),
+    ] {
+        let writer = fixture.database.begin().await.expect("hold the writer");
+        let metrics = coral_telemetry::testing::MetricCapture::default();
+        let measured = tracing::subscriber::set_default(metrics.subscriber());
+        let resolved = match private_path {
+            Some(relative_path) => {
+                let linked = crate::types::LinkedTool {
+                    kind: coral_catalog::AuthoredToolKind::Private,
+                    binding: coral_catalog::CodeExecutionBinding::new(
+                        format!("definition:{relative_path}"),
+                        1,
+                    ),
+                    declared_default: ToolAccessState::Enabled,
+                };
+                invoker.resolve_linked(relative_path, linked).await
+            }
+            None => invoker
+                .resolve(&tool.call_path, &serde_json::json!({}))
+                .await
+                .map(|(target, policy, _builtin)| (target, policy)),
+        };
+        drop(measured);
+        writer.rollback().await.expect("release the writer");
+
+        let (target, policy) =
+            resolved.unwrap_or_else(|error| panic!("{call} resolves beside a writer: {error:?}"));
+        assert_eq!(
+            target.tool().relative_path(),
+            private_path.unwrap_or("getForecast"),
+            "{call}"
+        );
+        assert_eq!(policy, ToolAccessState::Enabled, "{call}");
+        let mut begun: Vec<(String, u64)> = metrics
+            .named("coral.persistence.acquisition.duration")
+            .into_iter()
+            .filter_map(|point| Some((point.attributes.get("operation")?.clone(), point.count)))
+            .collect();
+        begun.sort();
+        assert_eq!(
+            begun,
+            [("begin_read_snapshot".to_owned(), 1)],
+            "{call} resolves from one read snapshot and begins no write transaction"
+        );
+    }
 }
 
 /// Runs `source` against one real `getForecast` Tool at `server`, then

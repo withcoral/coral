@@ -133,15 +133,18 @@ impl AdminScope {
     /// The policy target of the Tool at `call_path`.
     pub(super) async fn policy_target(&self, call_path: &str) -> ToolPolicyTarget {
         let mut transaction = self.fixture.database.begin().await.unwrap();
-        let target = coral_provider::resolve_invocation_tool_in_transaction(
-            &mut transaction,
-            &self.workspace_id,
-            coral_provider::InvocationCaller::new(&self.fixture.workspaces, &self.owner, 12),
-            call_path,
-        )
-        .await
-        .unwrap()
-        .unwrap_or_else(|| panic!("{call_path} resolves"));
+        let target = self
+            .fixture
+            .providers
+            .resolve_invocation_tool_in_transaction(
+                &mut transaction,
+                &self.workspace_id,
+                coral_provider::InvocationCaller::new(&self.fixture.workspaces, &self.owner, 12),
+                call_path,
+            )
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{call_path} resolves"));
         transaction.rollback().await.unwrap();
         ToolPolicyTarget::new(
             self.workspace_id.clone(),
@@ -796,6 +799,7 @@ async fn a_tool_this_version_does_not_perform_fails_before_approval() {
         scope.fixture.database.clone(),
         scope.fixture.workspaces.clone(),
         newer_catalog,
+        coral_catalog::SchemaGraphCache::with_default_budget(),
     );
     // A process of the newer Coral boots and updates the Workspace.
     let [outdated] = newer

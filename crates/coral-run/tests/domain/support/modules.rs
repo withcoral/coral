@@ -781,6 +781,17 @@ impl TestModules {
         workspace_id: &coral_workspace::WorkspaceId,
         run_id: &crate::RunId,
     ) -> crate::lifecycle::RunRecord {
+        self.try_run_record(workspace_id, run_id)
+            .await
+            .expect("read the Run")
+    }
+
+    /// [`Self::run_record`], or the error its decode returns.
+    pub(crate) async fn try_run_record(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+    ) -> Result<crate::lifecycle::RunRecord, crate::Error> {
         let mut transaction = self
             .database
             .begin_read_snapshot()
@@ -791,11 +802,9 @@ impl TestModules {
             workspace_id,
             run_id,
         )
-        .await
-        .expect("read the Run")
-        .expect("Run exists");
-        transaction.commit().await.expect("end read snapshot");
-        run
+        .await;
+        transaction.rollback().await.expect("end read snapshot");
+        run.map(|run| run.expect("Run exists"))
     }
 
     /// Releases the Run's worker claim and its lease, as the previous
@@ -1546,15 +1555,17 @@ pub(crate) async fn admitted_invocation(
 ) -> Arc<crate::invocation::AdmittedInvocation> {
     let now = fixture.clock.now_unix_nanos().expect("clock");
     let mut transaction = fixture.database.begin().await.expect("begin resolution");
-    let target = coral_provider::resolve_invocation_tool_in_transaction(
-        &mut transaction,
-        &tool.workspace_id,
-        coral_provider::InvocationCaller::new(&fixture.workspaces, &tool.principal, now),
-        &tool.call_path,
-    )
-    .await
-    .expect("resolve the fixture Tool")
-    .expect("the fixture Tool resolves");
+    let target = fixture
+        .providers
+        .resolve_invocation_tool_in_transaction(
+            &mut transaction,
+            &tool.workspace_id,
+            coral_provider::InvocationCaller::new(&fixture.workspaces, &tool.principal, now),
+            &tool.call_path,
+        )
+        .await
+        .expect("resolve the fixture Tool")
+        .expect("the fixture Tool resolves");
     transaction.rollback().await.expect("end resolution");
     admitted(tool, run_id, target, tool.call_path.clone(), now)
 }
@@ -1570,17 +1581,19 @@ pub(crate) async fn admitted_private_invocation(
 ) -> Arc<crate::invocation::AdmittedInvocation> {
     let now = fixture.clock.now_unix_nanos().expect("clock");
     let mut transaction = fixture.database.begin().await.expect("begin resolution");
-    let target = coral_provider::resolve_authored_tool_in_transaction(
-        &mut transaction,
-        &tool.workspace_id,
-        coral_catalog::AuthoredToolKind::Private,
-        relative_path,
-        coral_catalog::CodeExecutionBinding::new(format!("definition:{relative_path}"), 1),
-        coral_catalog::ToolAccessState::Enabled,
-    )
-    .await
-    .expect("resolve the Private Tool")
-    .expect("the Private Provider is active");
+    let target = fixture
+        .providers
+        .resolve_authored_tool_in_transaction(
+            &mut transaction,
+            &tool.workspace_id,
+            coral_catalog::AuthoredToolKind::Private,
+            relative_path,
+            coral_catalog::CodeExecutionBinding::new(format!("definition:{relative_path}"), 1),
+            coral_catalog::ToolAccessState::Enabled,
+        )
+        .await
+        .expect("resolve the Private Tool")
+        .expect("the Private Provider is active");
     transaction.rollback().await.expect("end resolution");
     admitted(
         tool,

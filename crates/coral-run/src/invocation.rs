@@ -133,6 +133,12 @@ impl UpstreamSender for ProductionUpstream {
 #[cfg(test)]
 #[async_trait]
 pub(crate) trait InvocationObserver: Send + Sync {
+    /// A call resolved its Tool and ended that read; its Invocation is not
+    /// yet opened or admitted.
+    async fn tool_resolved(&self) -> Result<(), Error> {
+        Ok(())
+    }
+
     fn approval_authority_checked(&self) {}
 
     async fn enforcement_checks_loaded(&self) {}
@@ -315,6 +321,8 @@ impl ToolInvoker {
     ) -> Result<String, InvocationHostError> {
         let arguments_json = self.arguments_json(&arguments)?;
         let (target, policy, builtin) = self.resolve(call_path, &arguments).await?;
+        #[cfg(test)]
+        self.observer.tool_resolved().await?;
         let (admitted, trace) = self.open(
             child.as_ref(),
             target,
@@ -351,6 +359,8 @@ impl ToolInvoker {
         let arguments_json = self.arguments_json(&arguments)?;
         let call_path = linked.kind.call_path(relative_path);
         let (target, policy) = self.resolve_linked(relative_path, linked).await?;
+        #[cfg(test)]
+        self.observer.tool_resolved().await?;
         let (admitted, trace) = self.open(
             child.as_ref(),
             target,
@@ -456,17 +466,17 @@ impl ToolInvoker {
     }
 
     /// Resolves the Private or Shared Tool the Run linked as `linked` and
-    /// its policy, outside the Run: the enforcement point rechecks both
-    /// before the body runs.
-    async fn resolve_linked(
+    /// its policy, outside the Run, in a read snapshot that holds no row, as
+    /// [`Self::resolve`] does: the enforcement point rechecks both before
+    /// the body runs.
+    pub(crate) async fn resolve_linked(
         &self,
         relative_path: &str,
         linked: crate::types::LinkedTool,
     ) -> Result<(ResolvedInvocationTool, ToolAccessState), Error> {
-        let mut transaction = self.database.begin().await?;
-        // Read the caller's authority before the Provider, the order the
-        // enforcement point holds them in. A Private Tool is the caller's
-        // own, so its role decides whether an Owner's rule on it applies.
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        // A Private Tool is the caller's own, so its role decides whether an
+        // Owner's rule on it applies.
         let resolved_at = self.now()?.max(self.accepted_at_unix_nanos);
         let authority = match self
             .workspaces
@@ -475,7 +485,7 @@ impl ToolInvoker {
                 &self.actor,
                 &self.workspace_id,
                 resolved_at,
-                coral_db::RowLock::Shared,
+                coral_db::RowLock::None,
             )
             .await
         {
@@ -490,15 +500,17 @@ impl ToolInvoker {
             self.actor.principal().kind(),
             authority.effective_user_role(),
         );
-        let resolved = coral_provider::resolve_authored_tool_in_transaction(
-            &mut transaction,
-            &self.workspace_id,
-            linked.kind,
-            relative_path,
-            linked.binding,
-            linked.declared_default,
-        )
-        .await?;
+        let resolved = self
+            .providers
+            .resolve_authored_tool_in_transaction(
+                &mut transaction,
+                &self.workspace_id,
+                linked.kind,
+                relative_path,
+                linked.binding,
+                linked.declared_default,
+            )
+            .await?;
         let Some(target) = resolved else {
             transaction.rollback().await?;
             return Err(Error::InvocationRejected(
@@ -510,7 +522,7 @@ impl ToolInvoker {
             &self.workspace_id,
             &target,
             owner,
-            coral_db::RowLock::Shared,
+            coral_db::RowLock::None,
         )
         .await?
         .access_state();
@@ -672,7 +684,14 @@ impl ToolInvoker {
     /// the enforcement point rechecks both before any dispatch. A Built-in Tool
     /// checks its input here, before admission, so input it rejects, such as a
     /// credential, is never stored.
-    async fn resolve(
+    ///
+    /// It reads in a read snapshot and holds no row, so it never waits for a
+    /// writer: on `SQLite` every chunk commit of every Run takes the one
+    /// writer. A hold here would protect nothing. It would end with this
+    /// transaction, before the Invocation is opened or admitted, and the held
+    /// rechecks and the enforcement point verify the retained Tool under
+    /// their own shared holds.
+    pub(crate) async fn resolve(
         &self,
         call_path: &str,
         arguments: &serde_json::Value,
@@ -684,15 +703,17 @@ impl ToolInvoker {
         ),
         Error,
     > {
-        let mut transaction = self.database.begin().await?;
+        let mut transaction = self.database.begin_read_snapshot().await?;
         let resolved_at = self.now()?.max(self.accepted_at_unix_nanos);
-        let Some(target) = coral_provider::resolve_invocation_tool_in_transaction(
-            &mut transaction,
-            &self.workspace_id,
-            InvocationCaller::new(&self.workspaces, &self.actor, resolved_at),
-            call_path,
-        )
-        .await?
+        let Some(target) = self
+            .providers
+            .resolve_invocation_tool_in_transaction(
+                &mut transaction,
+                &self.workspace_id,
+                InvocationCaller::new(&self.workspaces, &self.actor, resolved_at),
+                call_path,
+            )
+            .await?
         else {
             transaction.rollback().await?;
             return Err(Error::InvocationRejected(Rejection::tool_not_found(
@@ -712,7 +733,7 @@ impl ToolInvoker {
             &mut transaction,
             &enforcement::policy_target(&self.workspace_id, &target),
             target.tool().policy_facts(),
-            coral_db::RowLock::Shared,
+            coral_db::RowLock::None,
         )
         .await?
         .access_state();

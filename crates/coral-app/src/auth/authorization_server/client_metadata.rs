@@ -221,7 +221,11 @@ impl ReqwestMetadataFetcher {
         // addresses only.
         let public_http = coral_outbound::MetadataClient::new(policy, PUBLIC_METADATA_TIMEOUT)
             .map_err(|_error| ClientMetadataError::ClientBuild)?;
+        // Like `MetadataClient`, open a connection for every fetch. A server
+        // closes an idle connection on its own schedule (Node after about six
+        // seconds), and a fetch sent on one at that moment fails the sign-in.
         let configured_http = reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .connect_timeout(PUBLIC_METADATA_TIMEOUT)
@@ -350,6 +354,7 @@ fn map_body_error(error: &OutboundUrlPolicyError) -> ClientMetadataError {
 #[expect(clippy::indexing_slicing, reason = "metadata JSON fixture mutation")]
 mod tests {
     use crate::auth::test_config::loopback_policy;
+    use crate::auth::test_server::serve_one_request_per_connection;
     use std::convert::Infallible;
     use std::sync::Arc;
 
@@ -664,6 +669,52 @@ mod tests {
                     .expect_err("invalid metadata"),
                 expected
             );
+        }
+    }
+
+    /// Reef's Node server closes a connection idle for about six seconds. A
+    /// sign-in that came at that moment sent its fetch on the closing
+    /// connection, and the authorization endpoint answered HTTP 400.
+    #[tokio::test]
+    async fn every_fetch_succeeds_when_the_server_closes_a_connection_used_again() {
+        // The fetcher has one HTTP client for each kind of metadata URL.
+        for path in ["configured", "public"] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+            let address = listener.local_addr().expect("address");
+            let client_id = format!("http://{address}/.well-known/oauth-client");
+            let mut metadata = document();
+            metadata["client_id"] = json!(client_id);
+            let metadata = metadata.to_string();
+            let server = tokio::spawn(serve_one_request_per_connection(listener, move |_path| {
+                metadata.clone()
+            }));
+            let fetcher =
+                ReqwestMetadataFetcher::new(loopback_policy()).expect("production fetcher");
+            let metadata_url = if path == "configured" {
+                MetadataUrl::ConfiguredReef(
+                    EndpointUrl::<Configured>::parse(&client_id).expect("configured URL"),
+                )
+            } else {
+                MetadataUrl::PublicClient(
+                    EndpointUrl::<ClientMetadata>::parse(
+                        &client_id,
+                        &EndpointUrl::<Configured>::parse(LOOPBACK_ISSUER).expect("issuer"),
+                        &BTreeSet::from([client_id.clone()]),
+                    )
+                    .expect("local client ID"),
+                )
+            };
+            for fetch in 1..=3 {
+                let redirect_uris = match fetcher.fetch(&metadata_url).await {
+                    Ok(response) => registration_from_response(&client_id, response)
+                        .await
+                        .map(|registration| registration.redirect_uris.len()),
+                    Err(error) => Err(error),
+                };
+                assert_eq!(redirect_uris, Ok(2), "{path} fetch {fetch}");
+            }
+            server.abort();
+            assert!(server.await.expect_err("aborted server").is_cancelled());
         }
     }
 

@@ -138,7 +138,8 @@ impl OrganizationModule {
     ///
     /// This host-only seam is not a self-service role setter. The Adapter must
     /// select Member unless this exact verified identity is the configured
-    /// bootstrap Owner. A repeated login cannot promote or re-enable a User.
+    /// bootstrap Owner. A repeated login cannot promote or re-enable a User,
+    /// and a rejoin keeps the disablement recorded before the removal.
     /// # Errors
     /// Returns invalid input or persistence failure.
     pub async fn provision_login(
@@ -460,13 +461,18 @@ pub(crate) async fn share_user(
         .map(|membership| membership.authenticated())
 }
 
-/// Holds the same row changed by role/disablement administration until commit.
+/// Holds the same row changed by role/disablement administration until
+/// commit, and reads the current User from the held row.
 pub(crate) async fn hold_user(
     tx: &mut Transaction<'_>,
     user_id: &UserId,
 ) -> Result<AuthenticatedUser, Error> {
-    repository::hold_user(tx, user_id).await?;
-    current_user(tx, user_id).await
+    repository::hold_membership(tx, user_id)
+        .await?
+        .ok_or(Error::PermissionDenied(
+            "current Organization authority is unavailable",
+        ))
+        .map(|membership| membership.authenticated())
 }
 
 pub(crate) async fn prepare_removal(

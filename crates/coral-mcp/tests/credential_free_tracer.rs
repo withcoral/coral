@@ -968,7 +968,63 @@ async fn run_output_pages_replay_exactly_and_quiet_runs_page_no_output() {
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         check_raw_rich_paging(&tracer.endpoint(), &task_id, version).await;
         check_raw_oversized_items(&tracer.endpoint(), &task_id, version).await;
+        check_raw_full_pages(&tracer.endpoint(), &task_id, version).await;
     }
+}
+
+/// Paging drops no more Events than the page target asks: a page that leaves
+/// Events behind has no room for the next one. Catches a page cut shorter,
+/// which costs the caller a `wait` for output that fitted.
+async fn check_raw_full_pages(endpoint: &str, task: &str, version: &ProtocolVersion) {
+    let session = RawSession::open(endpoint, version).await;
+    let emitted = (0..20)
+        .map(|item| json!(format!("{item:02}").repeat(150)))
+        .collect::<Vec<_>>();
+    let mut result = session
+        .tool("exec", json!({"task_id":task, "intent":"Fill each output page", "wait_ms":30_000,
+            "program":"for (let item = 0; item < 20; item++) await coral.emit(String(item).padStart(2, '0').repeat(150));"}))
+        .await;
+    result = session.first_page_of_ended_run(result).await;
+    let mut delivered = Vec::new();
+    let mut page_before: Option<Value> = None;
+    let mut cut_pages = 0;
+    loop {
+        let update = result.get("structuredContent").expect("Run Update");
+        let field = |name: &str| update.get(name).expect("Run Update field");
+        let events = field("events").as_array().expect("events");
+        if let (Some(mut fuller), Some(next)) = (page_before.take(), events.first()) {
+            // The page before, as Coral measured it, with this Event added.
+            // Coral measures a page with `resultType`, which the result of
+            // the older protocol version omits.
+            let page = fuller.as_object_mut().expect("result");
+            page.insert("resultType".into(), json!("complete"));
+            let structured = page.get_mut("structuredContent").expect("Run Update");
+            structured
+                .pointer_mut("/events")
+                .and_then(Value::as_array_mut)
+                .expect("events")
+                .push(next.clone());
+            let text = json!(structured.to_string());
+            *fuller.pointer_mut("/content/0/text").expect("JSON text") = text;
+            assert!(
+                fuller.to_string().len() > RUN_UPDATE_PAGE_BYTES,
+                "{version}: the page before left out an Event that fits: {fuller}"
+            );
+            cut_pages += 1;
+        }
+        for event in events {
+            delivered.push(event.pointer("/value/value").expect("plain value").clone());
+        }
+        if field("has_more") == &json!(false) {
+            break;
+        }
+        let next_page =
+            json!({"run_id":field("run_id"), "cursor":field("next_cursor"), "wait_ms":0});
+        page_before = Some(result);
+        result = session.tool("wait", next_page).await;
+    }
+    assert_eq!(delivered, emitted, "{version}: every Emission arrives once");
+    assert!(cut_pages > 0, "{version}: the Emissions span pages");
 }
 
 /// The MCP result limit is a paging target. Paging never splits a value, so an
@@ -2107,14 +2163,8 @@ async fn check_raw_rich_paging(endpoint: &str, task: &str, protocol_version: &Pr
     let session = RawSession::open(endpoint, protocol_version).await;
     let mut result = session.tool("exec", json!({"task_id":task, "intent":"Page exact rich blocks", "wait_ms":30_000,
         "program":r#"for (let i=0;i<7;i++) { await coral.providers.weather.getForecast({}); console.log('step:' + i); await coral.emit({type:"text", text:"x".repeat(400), annotations:{priority:0.5}, _meta:{position:i}}); await coral.providers.weather.getForecast({}); } return {type:"resource", resource:{uri:"provider://private", blob:"AP+ADQo=", mimeType:"application/pdf"}};"#})).await;
-    // Every page below is a page of the ended Run. A wait is bounded, so on a
-    // loaded host it can end before the Program does. A wait with no cursor
-    // reads the first page again.
-    while result.pointer("/structuredContent/state") == Some(&json!("running")) {
-        let from_the_start =
-            json!({"run_id":result.pointer("/structuredContent/run_id"), "wait_ms":30_000});
-        result = session.tool("wait", from_the_start).await;
-    }
+    // Every page below is a page of the ended Run.
+    result = session.first_page_of_ended_run(result).await;
     let mut positions = Vec::new();
     let mut authored = Vec::new();
     let mut cursor = Value::Null;
@@ -2907,6 +2957,18 @@ impl RawSession {
 
     async fn tool(&self, tool: &str, arguments: Value) -> Value {
         self.tool_with_headers(tool, arguments, &[]).await
+    }
+
+    /// The first page of the Run that `result` reports, read once the Run
+    /// has ended. A wait is bounded, so on a loaded host it can end before
+    /// the Program does. A wait with no cursor reads the first page again.
+    async fn first_page_of_ended_run(&self, mut result: Value) -> Value {
+        while result.pointer("/structuredContent/state") == Some(&json!("running")) {
+            let from_the_start =
+                json!({"run_id":result.pointer("/structuredContent/run_id"), "wait_ms":30_000});
+            result = self.tool("wait", from_the_start).await;
+        }
+        result
     }
 
     /// Starts a Task for `goal` the way an agent does: with its first `exec`.

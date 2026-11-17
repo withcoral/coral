@@ -16,6 +16,7 @@ import {
   waitForPublication,
   committedPublication,
 } from '../../../support/providers.ts'
+import { archiveConfirmation, openArchiveConfirmation } from '../../../support/settings.ts'
 
 test('Editing configuration after a lost Add starts a new attempt and keeps the namespace', async (context) => {
   await withOwnerSession(context, async ({ page, step, actor }) => {
@@ -213,15 +214,13 @@ test('Recover a lost Add response by replaying the same request identity', async
       const other = await page.context().newPage()
       try {
         await other.goto(`/workspaces/${workspace}`)
-        await other
-          .getByRole('navigation', { name: 'Coral', exact: true })
-          .getByRole('button', { name: `Archive ${displayName}`, exact: true })
-          .click()
-        await other
-          .getByRole('dialog', { name: `Archive ${displayName}`, exact: true })
+        // Hydration first: a click that lands before it opens nothing.
+        await other.getByRole('button', { name: /^Open account menu for / }).waitFor()
+        const row = await openArchiveConfirmation(other, displayName)
+        await archiveConfirmation(other)
           .getByRole('button', { name: 'Archive workspace', exact: true })
           .click()
-        await other.getByText('This workspace is archived', { exact: true }).waitFor()
+        await row.getByText('Archived', { exact: true }).waitFor()
       } finally {
         await other.close()
       }

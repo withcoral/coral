@@ -8,12 +8,16 @@ use serde::de::IgnoredAny;
 use zeroize::Zeroizing;
 
 use super::env::AppEnvironment;
+use super::secret_store_config::SecretStoreDefinitions;
 use super::{AppError, is_loopback_ip};
 use crate::auth::{
-    AuthListenerSettings, AuthSettings, CoralAuthorizationServer, ResolvedAuthSettings, WebSettings,
+    AuthListenerSettings, AuthSection, AuthSettings, CoralAuthorizationServer,
+    ResolvedAuthSettings, WebSettings,
 };
 use crate::oauth_resource::CanonicalOauthUrl;
 use crate::state::AppStateLayout;
+use crate::telemetry::TelemetryConfig;
+use crate::telemetry::config::OtlpConfig;
 use crate::workspace_mcp_urls::WorkspaceMcpUrls;
 use coral_auth::SessionTokenIssuer;
 
@@ -29,12 +33,33 @@ struct ServerConfigFile {
     updates: UpdateSettings,
     /// Decoded entry by entry in `secret_store_config`, so a failure can name the store.
     secret_stores: Vec<toml::Value>,
-    #[serde(rename = "auth")]
-    _auth: IgnoredAny,
+    auth: Option<AuthSection>,
+    otel: OtlpConfig,
+    /// The state fence reads this section before anything here is decoded.
     #[serde(rename = "database")]
     _database: IgnoredAny,
-    #[serde(rename = "otel")]
-    _otel: IgnoredAny,
+}
+
+impl ServerConfigFile {
+    /// Decodes the whole document. A failure names the key path and never
+    /// the value.
+    fn decode(raw: &str) -> Result<Self, AppError> {
+        crate::config_toml::decode(raw).map_err(|error| {
+            AppError::FailedPrecondition(format!("server configuration is invalid: {error}"))
+        })
+    }
+
+    /// Validates the auth settings: the `[auth]` table, and the auth and web
+    /// listeners whose addresses give the authorization server its identity.
+    /// None without `[auth]`.
+    fn auth_settings(&mut self) -> Result<Option<AuthSettings>, AppError> {
+        AuthSettings::from_sections(
+            self.auth.take(),
+            &self.listeners.auth,
+            self.listeners.web.as_ref(),
+        )
+        .map_err(|error| AppError::FailedPrecondition(error.to_string()))
+    }
 }
 
 /// What the launching process supplies beside the configuration file.
@@ -64,10 +89,12 @@ pub(crate) struct Launcher {
 /// fixed Provider OAuth callback.
 const DESKTOP_AUTH_PORT: u16 = 8779;
 
-/// One fail-closed configuration snapshot shared by state preparation and serving.
+/// The configuration file as captured, shared by state preparation and
+/// serving so that neither reads the file again.
 ///
 /// Capture does not parse settings or resolve secrets; state initialization must
 /// reject retired state before bootstrap interprets deployment settings.
+/// [`Self::validate`] then decodes the document once.
 pub(crate) struct LoadedServerConfig {
     config_path: PathBuf,
     raw: Zeroizing<String>,
@@ -91,70 +118,279 @@ impl LoadedServerConfig {
         &self.raw
     }
 
-    pub(crate) fn grpc_settings(&self) -> Result<GrpcSettings, AppError> {
-        Ok(self.parse()?.listeners.grpc)
+    /// Decodes the document and checks every rule that needs no secret, after
+    /// the persistent-state fence and before the first write.
+    ///
+    /// `launcher` is what the launching process supplies beside the file.
+    /// `grpc_bind` is the private gRPC address the composition selects itself;
+    /// without one, `listeners.grpc.bind` is the address.
+    ///
+    /// This is the one place a rule is checked, so a deployment whose
+    /// configuration cannot be served leaves a fresh state root unchanged.
+    /// Secrets are read later, only for the surfaces that use them. A
+    /// `credentials.key` file beside `credentials.key_env` is refused when the
+    /// vault opens, not here: the file is state on the volume, not a setting,
+    /// so the configuration alone cannot prove the key has one source.
+    pub(crate) fn validate(
+        &self,
+        launcher: &Launcher,
+        grpc_bind: Option<SocketAddr>,
+    ) -> Result<DeploymentConfig, AppError> {
+        let mut file = ServerConfigFile::decode(&self.raw)?;
+        let auth = file.auth_settings()?;
+        let ServerConfigFile {
+            listeners,
+            runtime,
+            outbound,
+            search,
+            credentials,
+            updates,
+            secret_stores,
+            auth: _,
+            otel,
+            _database: _,
+        } = file;
+        let local_run_executors =
+            runtime.local_run_executors(listeners.run_executor.token_env.is_some())?;
+        let runtime_limits = runtime.resolve()?;
+        let search_reconcile_interval = search.reconcile_interval()?;
+        let credential_key_env = credentials.key_env()?;
+        let secret_stores = credentials
+            .defined_secret_stores(&secret_stores)?
+            .map(|defined| {
+                SecretStoreDefinitions::validate(
+                    &self.raw,
+                    defined.to_vec(),
+                    &launcher.extensions.secret_store_kinds,
+                )
+            })
+            .transpose()?;
+        let (mcp_http, auth_bind_addr, session_auth) = match auth {
+            None => {
+                if !is_loopback_ip(listeners.grpc.bind.ip()) {
+                    return Err(AppError::FailedPrecondition(
+                        "auth-disabled listeners.grpc.bind must be loopback".to_string(),
+                    ));
+                }
+                if grpc_bind.is_some_and(|bind| !is_loopback_ip(bind.ip())) {
+                    return Err(AppError::FailedPrecondition(
+                        "auth-disabled private gRPC bind must be loopback".to_owned(),
+                    ));
+                }
+                let auth_bind_addr = listeners.auth.bind.unwrap_or_else(|| {
+                    let port = if launcher.desktop {
+                        DESKTOP_AUTH_PORT
+                    } else {
+                        0
+                    };
+                    SocketAddr::from((Ipv4Addr::LOCALHOST, port))
+                });
+                (listeners.mcp.resolve(None)?, auth_bind_addr, None)
+            }
+            Some(settings) => {
+                let auth_bind_addr = settings.bind_addr();
+                let (mcp_http, session_auth) =
+                    SessionAuthConfig::validate(settings, &listeners.mcp)?;
+                (mcp_http, auth_bind_addr, Some(session_auth))
+            }
+        };
+        let run_executor = listeners.run_executor.validate(session_auth.is_some())?;
+        let human_interface = human_interface(
+            listeners.web,
+            session_auth.is_some(),
+            launcher.local_web_url.clone(),
+        )?;
+        Ok(DeploymentConfig {
+            config_path: self.config_path.clone(),
+            grpc_bind: grpc_bind.unwrap_or(listeners.grpc.bind),
+            mcp_http,
+            auth_bind_addr,
+            human_interface,
+            run_executor,
+            local_run_executors,
+            runtime_limits,
+            outbound,
+            search_reconcile_interval,
+            semantic_search_enabled: search.semantic_search_enabled,
+            update_check: updates.check,
+            credential_key_env,
+            secret_stores,
+            session_auth,
+            telemetry: TelemetryConfig { otel },
+        })
+    }
+}
+
+/// The deployment's configuration: `config.toml` decoded once, with every
+/// rule checked that needs no secret.
+///
+/// [`LoadedServerConfig::validate`] is the only constructor, so holding one is
+/// proof that the deployment can be served as configured once its secrets are
+/// read. Each setting is a field; nothing here reads the file or decodes the
+/// document again. What reads a secret says so: [`Self::serve_settings`],
+/// [`Self::run_executor_listener`] and [`Self::secret_stores`].
+pub(crate) struct DeploymentConfig {
+    /// Where the file is, to find a signing key file named beside it.
+    config_path: PathBuf,
+    grpc_bind: SocketAddr,
+    mcp_http: McpHttpServeConfig,
+    auth_bind_addr: SocketAddr,
+    human_interface: coral_mcp::HumanInterfaceUrl,
+    run_executor: RunExecutorListenerConfig,
+    local_run_executors: Option<LocalRunExecutorSettings>,
+    runtime_limits: coral_run::RuntimeLimits,
+    outbound: OutboundSettings,
+    search_reconcile_interval: std::time::Duration,
+    semantic_search_enabled: bool,
+    update_check: bool,
+    credential_key_env: Option<String>,
+    /// None when the deployment turned Secret Stores off.
+    secret_stores: Option<SecretStoreDefinitions>,
+    session_auth: Option<SessionAuthConfig>,
+    telemetry: TelemetryConfig,
+}
+
+/// Validated session authentication, before its secrets are read.
+struct SessionAuthConfig {
+    settings: AuthSettings,
+    public_audiences: Vec<String>,
+    mcp_workspace_urls: WorkspaceMcpUrls,
+    web_public_url: Option<String>,
+}
+
+impl SessionAuthConfig {
+    /// Checks the public identities an `[auth]` deployment serves under: the
+    /// MCP listener's public origin and the audiences beside it.
+    fn validate(
+        settings: AuthSettings,
+        mcp: &RawMcpHttpSettings,
+    ) -> Result<(McpHttpServeConfig, Self), AppError> {
+        let authorization_server =
+            required_oauth_url("listeners.auth.public_url", Some(settings.issuer()))?;
+        let mcp_http = mcp.resolve(Some(&authorization_server))?;
+        let base = required_oauth_url("listeners.mcp.public_url", mcp.public_url.as_deref())?;
+        let mcp_workspace_urls =
+            WorkspaceMcpUrls::new(CanonicalOauthUrl::parse(&base).map_err(|error| {
+                AppError::FailedPrecondition(format!("listeners.mcp.public_url {error}"))
+            })?)
+            .map_err(|error| {
+                AppError::FailedPrecondition(format!("listeners.mcp.public_url {error}"))
+            })?;
+        let public_audiences = public_surface_audiences(
+            &mcp_workspace_urls,
+            settings.allowed_audiences(),
+            settings.web_public_url(),
+        )?;
+        let web_public_url = settings.web_public_url().map(str::to_owned);
+        Ok((
+            mcp_http,
+            Self {
+                settings,
+                public_audiences,
+                mcp_workspace_urls,
+                web_public_url,
+            },
+        ))
+    }
+}
+
+/// The settings can hold a secret an operator put under the wrong key, so
+/// this names the type and prints nothing of it.
+impl std::fmt::Debug for DeploymentConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DeploymentConfig")
+            .finish_non_exhaustive()
+    }
+}
+
+impl DeploymentConfig {
+    /// Where the private gRPC listener binds.
+    pub(crate) fn grpc_bind(&self) -> SocketAddr {
+        self.grpc_bind
     }
 
+    /// Whether `[auth]` is configured, so every listener authenticates.
+    pub(crate) fn authenticated(&self) -> bool {
+        self.session_auth.is_some()
+    }
+
+    /// The operator's outbound permissions over the composition's `defaults`.
     pub(crate) fn outbound_policy(
         &self,
         defaults: coral_outbound::DestinationPolicy,
-    ) -> Result<coral_outbound::DestinationPolicy, AppError> {
-        Ok(self.parse()?.outbound.policy(defaults))
+    ) -> coral_outbound::DestinationPolicy {
+        self.outbound.policy(defaults)
     }
 
     /// The policy for new automatic MCP Provider OAuth clients.
     pub(crate) fn mcp_oauth_client_bootstrap(
         &self,
-    ) -> Result<coral_provider::account::ClientBootstrapPolicy, AppError> {
-        Ok(self.parse()?.outbound.mcp_oauth_client_bootstrap())
+    ) -> coral_provider::account::ClientBootstrapPolicy {
+        self.outbound.mcp_oauth_client_bootstrap()
     }
 
     /// How often the search index's reconcile task runs a pass.
-    pub(crate) fn search_reconcile_interval(&self) -> Result<std::time::Duration, AppError> {
-        self.parse()?.search.reconcile_interval()
+    pub(crate) fn search_reconcile_interval(&self) -> std::time::Duration {
+        self.search_reconcile_interval
     }
 
     /// Whether `[search] semantic_search_enabled` turns Universal Search's
     /// vector side on.
-    pub(crate) fn semantic_search_enabled(&self) -> Result<bool, AppError> {
-        Ok(self.parse()?.search.semantic_search_enabled)
+    pub(crate) fn semantic_search_enabled(&self) -> bool {
+        self.semantic_search_enabled
     }
 
     /// Universal Search's vector side: vectors of the model manifest's
     /// dimension when `[search] semantic_search_enabled` is true, otherwise
     /// off.
-    pub(crate) fn vector_storage(&self) -> Result<coral_search::VectorStorage, AppError> {
-        Ok(if self.semantic_search_enabled()? {
+    pub(crate) fn vector_storage(&self) -> coral_search::VectorStorage {
+        if self.semantic_search_enabled {
             coral_search::VectorStorage::On {
                 dimension: coral_embed::MANIFEST.dimension,
             }
         } else {
             coral_search::VectorStorage::Off
-        })
+        }
     }
 
     /// Whether the runtime reads the release feed to tell Organization Owners
     /// about a newer release.
-    pub(crate) fn update_check(&self) -> Result<bool, AppError> {
-        Ok(self.parse()?.updates.check)
+    pub(crate) fn update_check(&self) -> bool {
+        self.update_check
     }
 
     /// The environment variable that holds the credential encryption key, when
     /// the deployment keeps that key in a secret instead of a key file.
-    pub(crate) fn credential_key_env(&self) -> Result<Option<String>, AppError> {
-        self.parse()?.credentials.key_env()
+    pub(crate) fn credential_key_env(&self) -> Option<&str> {
+        self.credential_key_env.as_deref()
     }
 
-    /// The Secret Stores this deployment defines, of the kinds every build has
-    /// and of `kinds`. Reads each store's secret ID from the environment and
+    /// The `[otel]` section.
+    pub(crate) fn telemetry(&self) -> &TelemetryConfig {
+        &self.telemetry
+    }
+
+    /// The local Run Executors of `[runtime]`: none when
+    /// `local_run_executors` is false, which `[listeners.run_executor]`
+    /// then makes up for with a `token_env`.
+    pub(crate) fn local_run_executors(&self) -> Option<LocalRunExecutorSettings> {
+        self.local_run_executors
+    }
+
+    /// The `[runtime]` section: the Program runtime limits.
+    pub(crate) fn runtime_limits(&self) -> coral_run::RuntimeLimits {
+        self.runtime_limits
+    }
+
+    /// The Secret Stores this deployment defines, or the disabled set when it
+    /// turned them off. Reads each store's secret ID from the environment and
     /// sends nothing; an `env` store keeps the reader for later reads.
     pub(crate) fn secret_stores(
         &self,
-        kinds: &coral_secret_store::SecretStoreKinds,
         policy: coral_outbound::DestinationPolicy,
     ) -> Result<coral_secret_store::SecretStores, AppError> {
         self.secret_stores_from(
-            kinds,
             policy,
             &(std::sync::Arc::new(AppEnvironment::env_var) as coral_secret_store::EnvReader),
         )
@@ -162,116 +398,53 @@ impl LoadedServerConfig {
 
     pub(super) fn secret_stores_from(
         &self,
-        kinds: &coral_secret_store::SecretStoreKinds,
         policy: coral_outbound::DestinationPolicy,
         env: &coral_secret_store::EnvReader,
     ) -> Result<coral_secret_store::SecretStores, AppError> {
-        super::secret_store_config::build(
-            &self.raw,
-            &self.parse()?.secret_stores,
-            kinds,
-            policy,
-            env,
-        )
+        match &self.secret_stores {
+            Some(defined) => defined.build(policy, env),
+            None => Ok(coral_secret_store::SecretStores::disabled()),
+        }
     }
 
-    /// Validates all deployment sections after the persistent-state fence.
-    /// Secrets are resolved later, only for the surfaces that use them. A
-    /// `credentials.key` file beside `credentials.key_env` is refused when the
-    /// vault opens, not here: the file is state on the volume, not a setting,
-    /// so the configuration alone cannot prove the key has one source.
-    pub(crate) fn validate(
-        &self,
-        secret_store_kinds: &coral_secret_store::SecretStoreKinds,
-    ) -> Result<(), AppError> {
-        let config = self.parse()?;
-        config
-            .runtime
-            .local_run_executors(config.listeners.run_executor.token_env.is_some())?;
-        config.runtime.resolve()?;
-        config.search.reconcile_interval()?;
-        config.credentials.key_env()?;
-        super::secret_store_config::validate(&self.raw, &config.secret_stores, secret_store_kinds)?;
-        self.auth_settings()?;
-        crate::telemetry::TelemetryConfig::from_toml(&self.raw)?;
-        Ok(())
-    }
-
-    /// Resolves `[listeners.run_executor]`, reading each token through `env`,
-    /// [`AppEnvironment::required_env_var`] at bootstrap. Without `[auth]`
-    /// (`authenticated` false) its bind must be loopback.
+    /// The Run Executor listener of `[listeners.run_executor]`, reading each
+    /// operator token through `env`, [`AppEnvironment::required_env_var`] at
+    /// bootstrap.
     pub(crate) fn run_executor_listener(
         &self,
-        authenticated: bool,
         env: &dyn Fn(&str, &str) -> Result<String, AppError>,
     ) -> Result<RunExecutorListener, AppError> {
-        self.parse()?
-            .listeners
-            .run_executor
-            .resolve(authenticated, env)
+        self.run_executor.resolve(env)
     }
 
-    /// Resolves the local Run Executors of `[runtime]`: none when
-    /// `local_run_executors` is false, which `[listeners.run_executor]`
-    /// must then make up for with a `token_env`.
-    pub(crate) fn local_run_executors(&self) -> Result<Option<LocalRunExecutorSettings>, AppError> {
-        let config = self.parse()?;
-        config
-            .runtime
-            .local_run_executors(config.listeners.run_executor.token_env.is_some())
-    }
-
-    /// Resolves the `[runtime]` section: the Program runtime limits.
-    pub(crate) fn runtime_limits(&self) -> Result<coral_run::RuntimeLimits, AppError> {
-        self.parse()?.runtime.resolve()
-    }
-
-    /// Resolves the mandatory MCP listener and optional OIDC authentication.
+    /// The settings of the mandatory MCP listener and of OIDC authentication
+    /// when `[auth]` is configured, whose signing key and provider secret
+    /// this reads from their sources.
     ///
-    /// This returns validated configuration and resolved key material only. The
+    /// This returns configuration and resolved key material only. The
     /// caller constructs the services and owns their lifecycle, so resolving
     /// configuration never produces a live service or its state.
     pub(crate) fn serve_settings(
         &self,
         defaults: coral_outbound::DestinationPolicy,
-        launcher: &Launcher,
     ) -> Result<ServeSettings, AppError> {
-        let config = self.parse()?;
-        let runtime_limits = config.runtime.resolve()?;
-        let listeners = config.listeners;
-        let mcp_settings = listeners.mcp;
-        let mcp_oauth_client_bootstrap = config.outbound.mcp_oauth_client_bootstrap();
-        let Some(auth_settings) = self.auth_settings()? else {
-            if !is_loopback_ip(listeners.grpc.bind.ip()) {
-                return Err(AppError::FailedPrecondition(
-                    "auth-disabled listeners.grpc.bind must be loopback".to_string(),
-                ));
-            }
-            let auth_bind_addr = listeners.auth.bind.unwrap_or_else(|| {
-                let port = if launcher.desktop {
-                    DESKTOP_AUTH_PORT
-                } else {
-                    0
-                };
-                SocketAddr::from((Ipv4Addr::LOCALHOST, port))
-            });
-            return Ok(ServeSettings {
-                outbound_policy: config.outbound.policy(defaults),
-                mcp_oauth_client_bootstrap,
-                runtime_limits,
-                mcp_http: mcp_settings.resolve(None)?,
-                auth_bind_addr,
-                session_auth: None,
-                human_interface: human_interface(
-                    listeners.web,
-                    false,
-                    launcher.local_web_url.clone(),
-                )?,
-            });
+        Ok(ServeSettings {
+            outbound_policy: self.outbound_policy(defaults),
+            mcp_oauth_client_bootstrap: self.mcp_oauth_client_bootstrap(),
+            mcp_http: self.mcp_http.clone(),
+            auth_bind_addr: self.auth_bind_addr,
+            session_auth: self.resolve_session_auth()?,
+            human_interface: self.human_interface.clone(),
+        })
+    }
+
+    fn resolve_session_auth(&self) -> Result<Option<SessionAuthSettings>, AppError> {
+        let Some(auth) = &self.session_auth else {
+            return Ok(None);
         };
-        let allowed_audiences = auth_settings.allowed_audiences().to_vec();
-        let web_public_url = auth_settings.web_public_url().map(str::to_owned);
-        let (auth_settings, session) = auth_settings
+        let (settings, session_tokens) = auth
+            .settings
+            .clone()
             .resolve_runtime_dependencies(&self.config_path, &|name| {
                 AppEnvironment::env_var(name).map_err(|error| match error {
                     std::env::VarError::NotPresent => {
@@ -283,57 +456,13 @@ impl LoadedServerConfig {
                 })
             })
             .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
-        let auth_bind_addr = auth_settings.bind_addr();
-        // The issuer accessor lives on the resolved settings, so read it after
-        // runtime resolution rather than before.
-        let authorization_server = required_oauth_url(
-            "listeners.auth.public_url",
-            Some(auth_settings.authorization_server().issuer()),
-        )?;
-        let mcp_http = mcp_settings.resolve(Some(&authorization_server))?;
-        let base = required_oauth_url(
-            "listeners.mcp.public_url",
-            mcp_settings.public_url.as_deref(),
-        )?;
-        let mcp_workspace_urls =
-            WorkspaceMcpUrls::new(CanonicalOauthUrl::parse(&base).map_err(|error| {
-                AppError::FailedPrecondition(format!("listeners.mcp.public_url {error}"))
-            })?)
-            .map_err(|error| {
-                AppError::FailedPrecondition(format!("listeners.mcp.public_url {error}"))
-            })?;
-        let public_audiences = public_surface_audiences(
-            &mcp_workspace_urls,
-            &allowed_audiences,
-            web_public_url.as_deref(),
-        )?;
-        let human_interface = human_interface(listeners.web, true, launcher.local_web_url.clone())?;
-        Ok(ServeSettings {
-            outbound_policy: config.outbound.policy(defaults),
-            mcp_oauth_client_bootstrap,
-            runtime_limits,
-            mcp_http,
-            auth_bind_addr,
-            human_interface,
-            session_auth: Some(SessionAuthSettings {
-                settings: auth_settings,
-                session_tokens: session,
-                public_audiences,
-                mcp_workspace_urls,
-                web_public_url,
-            }),
-        })
-    }
-
-    fn auth_settings(&self) -> Result<Option<AuthSettings>, AppError> {
-        AuthSettings::from_toml(&self.raw)
-            .map_err(|error| AppError::FailedPrecondition(error.to_string()))
-    }
-
-    fn parse(&self) -> Result<ServerConfigFile, AppError> {
-        crate::config_toml::decode(&self.raw).map_err(|error| {
-            AppError::FailedPrecondition(format!("server configuration is invalid: {error}"))
-        })
+        Ok(Some(SessionAuthSettings {
+            settings,
+            session_tokens,
+            public_audiences: auth.public_audiences.clone(),
+            mcp_workspace_urls: auth.mcp_workspace_urls.clone(),
+            web_public_url: auth.web_public_url.clone(),
+        }))
     }
 }
 
@@ -428,7 +557,7 @@ impl OutboundSettings {
     }
 
     fn policy(
-        self,
+        &self,
         mut defaults: coral_outbound::DestinationPolicy,
     ) -> coral_outbound::DestinationPolicy {
         if let Some(access) = self.loopback {
@@ -451,9 +580,30 @@ impl OutboundSettings {
 #[serde(default, deny_unknown_fields)]
 struct CredentialSettings {
     key_env: Option<String>,
+    /// Turns Secret Stores off, for a deployment that cannot offer them, such
+    /// as Desktop, whose generated config no operator edits. Reef then hides
+    /// them instead of showing how to define one.
+    disable_secret_stores: bool,
 }
 
 impl CredentialSettings {
+    /// The `[[secret_stores]]` tables to build, or `None` when the deployment
+    /// turned Secret Stores off. Refuses a config that does both, so the file
+    /// cannot say both.
+    fn defined_secret_stores<'a>(
+        &self,
+        secret_stores: &'a [toml::Value],
+    ) -> Result<Option<&'a [toml::Value]>, AppError> {
+        match (self.disable_secret_stores, secret_stores.is_empty()) {
+            (false, _) => Ok(Some(secret_stores)),
+            (true, true) => Ok(None),
+            (true, false) => Err(AppError::FailedPrecondition(
+                "credentials.disable_secret_stores is set, so remove the [[secret_stores]] tables"
+                    .into(),
+            )),
+        }
+    }
+
     fn key_env(&self) -> Result<Option<String>, AppError> {
         self.key_env
             .as_deref()
@@ -670,13 +820,20 @@ pub(crate) struct RunExecutorListener {
     pub(crate) tokens: Vec<coral_run_executor::Token>,
 }
 
+/// The validated Run Executor listener: where it binds, and the variables
+/// that hold its operator tokens.
+struct RunExecutorListenerConfig {
+    bind: SocketAddr,
+    token_env: Vec<String>,
+}
+
+const RUN_EXECUTOR_TOKEN_ENV: &str = "listeners.run_executor.token_env";
+
 impl RunExecutorListenerSettings {
-    fn resolve(
-        self,
-        authenticated: bool,
-        env: &dyn Fn(&str, &str) -> Result<String, AppError>,
-    ) -> Result<RunExecutorListener, AppError> {
-        const SETTING: &str = "listeners.run_executor.token_env";
+    /// Checks the section without reading a token. Without `[auth]`
+    /// (`authenticated` false) its bind must be loopback.
+    fn validate(self, authenticated: bool) -> Result<RunExecutorListenerConfig, AppError> {
+        const SETTING: &str = RUN_EXECUTOR_TOKEN_ENV;
         const BIND: &str = "listeners.run_executor.bind";
         let refuse = |message: String| AppError::FailedPrecondition(message);
         let names = match self.token_env {
@@ -697,11 +854,30 @@ impl RunExecutorListenerSettings {
                 return Err(refuse(format!("{BIND} off loopback requires {SETTING}")));
             }
         }
-        let tokens = names
+        let token_env = names
             .iter()
-            .map(|configured| {
-                let name = super::env_var_name(SETTING, configured).map_err(refuse)?;
-                let value = env(SETTING, &name)?;
+            .map(|configured| super::env_var_name(SETTING, configured).map_err(refuse))
+            .collect::<Result<_, _>>()?;
+        Ok(RunExecutorListenerConfig {
+            bind: self.bind,
+            token_env,
+        })
+    }
+}
+
+impl RunExecutorListenerConfig {
+    /// Reads each operator token through `env`.
+    fn resolve(
+        &self,
+        env: &dyn Fn(&str, &str) -> Result<String, AppError>,
+    ) -> Result<RunExecutorListener, AppError> {
+        const SETTING: &str = RUN_EXECUTOR_TOKEN_ENV;
+        let refuse = |message: String| AppError::FailedPrecondition(message);
+        let tokens = self
+            .token_env
+            .iter()
+            .map(|name| {
+                let value = env(SETTING, name)?;
                 if value.chars().count() < MIN_RUN_EXECUTOR_TOKEN_CHARS {
                     return Err(refuse(format!(
                         "{SETTING} names `{name}`, whose value is under {MIN_RUN_EXECUTOR_TOKEN_CHARS} characters"
@@ -827,7 +1003,6 @@ impl McpHttpServeConfig {
 pub struct ServeSettings {
     outbound_policy: coral_outbound::DestinationPolicy,
     mcp_oauth_client_bootstrap: coral_provider::account::ClientBootstrapPolicy,
-    runtime_limits: coral_run::RuntimeLimits,
     pub(super) mcp_http: McpHttpServeConfig,
     auth_bind_addr: SocketAddr,
     pub(super) session_auth: Option<SessionAuthSettings>,
@@ -851,12 +1026,6 @@ impl ServeSettings {
     #[must_use]
     pub fn mcp_oauth_client_bootstrap(&self) -> coral_provider::account::ClientBootstrapPolicy {
         self.mcp_oauth_client_bootstrap
-    }
-
-    /// Returns the Program runtime limits selected at process bootstrap.
-    #[must_use]
-    pub fn runtime_limits(&self) -> coral_run::RuntimeLimits {
-        self.runtime_limits
     }
 
     /// Returns the mandatory MCP HTTP listener configuration.
@@ -1058,7 +1227,9 @@ pub(super) mod tests {
 
     use tempfile::TempDir;
 
-    use super::{GrpcSettings, Launcher, LoadedServerConfig, McpHttpServeConfig, ServeSettings};
+    use super::{
+        DeploymentConfig, Launcher, LoadedServerConfig, McpHttpServeConfig, ServeSettings,
+    };
     use crate::bootstrap::AppError;
     use crate::state::AppStateLayout;
 
@@ -1079,9 +1250,58 @@ pub(super) mod tests {
     }
 
     /// Captures `raw` as the deployment configuration.
-    pub(in crate::bootstrap) fn load(raw: &str) -> (TempDir, LoadedServerConfig) {
+    fn load(raw: &str) -> (TempDir, LoadedServerConfig) {
         let (temp, layout) = deployment(raw);
         (temp, LoadedServerConfig::load(&layout).expect("load"))
+    }
+
+    /// Validates `raw` as the whole configuration of a launch with `launcher`.
+    fn validated_launched(raw: &str, launcher: &Launcher) -> Result<DeploymentConfig, AppError> {
+        load(raw).1.validate(launcher, None)
+    }
+
+    /// Validates `raw` as the whole configuration.
+    fn validated(raw: &str) -> Result<DeploymentConfig, AppError> {
+        validated_launched(raw, &Launcher::default())
+    }
+
+    /// Validates `raw` beside the web origin every deployment names, so a
+    /// test can give one section alone.
+    fn section(raw: &str) -> Result<DeploymentConfig, AppError> {
+        validated(&format!("{raw}{WEB}"))
+    }
+
+    /// Validates `raw` beside the web origin, in a launch whose binary adds
+    /// `kinds` to the Secret Store kinds every build has.
+    pub(in crate::bootstrap) fn validated_with(
+        raw: &str,
+        kinds: &coral_secret_store::SecretStoreKinds,
+    ) -> Result<DeploymentConfig, AppError> {
+        let launcher = Launcher {
+            extensions: crate::Extensions {
+                secret_store_kinds: kinds.clone(),
+                ..crate::Extensions::default()
+            },
+            ..Launcher::default()
+        };
+        validated_launched(&format!("{raw}{WEB}"), &launcher)
+    }
+
+    /// Decodes `raw` and validates its auth settings as startup does, for
+    /// the auth module's tests. A refusal is the message alone.
+    pub(crate) fn auth_settings(raw: &str) -> Result<Option<crate::auth::AuthSettings>, String> {
+        super::ServerConfigFile::decode(raw)
+            .and_then(|mut file| file.auth_settings())
+            .map_err(|error| match error {
+                AppError::FailedPrecondition(message) => message,
+                other => other.to_string(),
+            })
+    }
+
+    /// The `[otel]` settings startup reads from `raw`, beside the web origin
+    /// every deployment names, for the telemetry module's tests.
+    pub(crate) fn telemetry(raw: &str) -> Result<crate::telemetry::TelemetryConfig, AppError> {
+        section(raw).map(|config| config.telemetry().clone())
     }
 
     /// Resolves the serving settings `raw` configures, with deny/deny outbound defaults.
@@ -1090,8 +1310,11 @@ pub(super) mod tests {
     }
 
     fn serve_launched(raw: &str, launcher: &Launcher) -> Result<ServeSettings, AppError> {
+        // The directory holds the signing key that resolution reads.
         let (_temp, config) = load(raw);
-        config.serve_settings(coral_outbound::DestinationPolicy::default(), launcher)
+        config
+            .validate(launcher, None)?
+            .serve_settings(coral_outbound::DestinationPolicy::default())
     }
 
     fn serve_error(raw: &str) -> String {
@@ -1105,8 +1328,8 @@ pub(super) mod tests {
         serve(raw).map(|settings| settings.mcp_http)
     }
 
-    fn grpc_settings(raw: &str) -> Result<GrpcSettings, AppError> {
-        load(raw).1.grpc_settings()
+    fn grpc_bind(raw: &str) -> Result<SocketAddr, AppError> {
+        validated(raw).map(|config| config.grpc_bind())
     }
 
     /// Starts the authorization server `auth` composes and reports, for each
@@ -1340,16 +1563,13 @@ client_secret = 'test-secret'
                     } else {
                         format!("{raw}{WEB}")
                     });
-                    let config = LoadedServerConfig::load(&layout).unwrap();
-                    config
-                        .validate(&coral_secret_store::SecretStoreKinds::default())
+                    let config = LoadedServerConfig::load(&layout)
+                        .unwrap()
+                        .validate(&Launcher::default(), None)
                         .unwrap();
-                    let policy = config.outbound_policy(defaults).unwrap();
+                    let policy = config.outbound_policy(defaults);
                     assert_eq!(
-                        config
-                            .serve_settings(defaults, &Launcher::default())
-                            .unwrap()
-                            .outbound_policy(),
+                        config.serve_settings(defaults).unwrap().outbound_policy(),
                         policy
                     );
                     let permissive = defaults == super::LOCAL_OUTBOUND_DEFAULTS;
@@ -1364,13 +1584,16 @@ client_secret = 'test-secret'
                             "{raw}: {url}"
                         );
                     }
-                    fs::write(layout.config_file(), "").unwrap();
-                    assert_eq!(config.outbound_policy(defaults).unwrap(), policy);
+                    // The configuration is a snapshot: a later write to the
+                    // file changes only the next capture.
+                    fs::write(layout.config_file(), WEB).unwrap();
+                    assert_eq!(config.outbound_policy(defaults), policy);
                     assert_eq!(
                         LoadedServerConfig::load(&layout)
                             .unwrap()
-                            .outbound_policy(defaults)
-                            .unwrap(),
+                            .validate(&Launcher::default(), None)
+                            .unwrap()
+                            .outbound_policy(defaults),
                         defaults
                     );
                 }
@@ -1386,16 +1609,15 @@ client_secret = 'test-secret'
     fn the_search_reconcile_interval_defaults_to_five_minutes() {
         for raw in ["", "[search]"] {
             assert_eq!(
-                load(raw).1.search_reconcile_interval().expect(raw),
+                section(raw).expect(raw).search_reconcile_interval(),
                 std::time::Duration::from_mins(5),
                 "{raw:?}"
             );
         }
         assert_eq!(
-            load("[search]\nreconcile_interval_seconds = 30")
-                .1
-                .search_reconcile_interval()
-                .unwrap(),
+            section("[search]\nreconcile_interval_seconds = 30")
+                .unwrap()
+                .search_reconcile_interval(),
             std::time::Duration::from_secs(30)
         );
     }
@@ -1413,14 +1635,12 @@ client_secret = 'test-secret'
             ("[search]\nsemantic_search_enabled = true", on),
         ] {
             assert_eq!(
-                load(raw).1.vector_storage().expect(raw),
+                section(raw).expect(raw).vector_storage(),
                 expected,
                 "{raw:?}"
             );
         }
-        let error = load("[search]\nsemantic_search_enabled = \"no\"")
-            .1
-            .validate(&coral_secret_store::SecretStoreKinds::default())
+        let error = section("[search]\nsemantic_search_enabled = \"no\"")
             .expect_err("a string is not a boolean");
         assert!(
             matches!(&error, AppError::FailedPrecondition(message) if message.contains("semantic_search_enabled")),
@@ -1436,12 +1656,9 @@ client_secret = 'test-secret'
             ("[updates]\ncheck = false", false),
             ("[updates]\ncheck = true", true),
         ] {
-            assert_eq!(load(raw).1.update_check().expect(raw), expected, "{raw:?}");
+            assert_eq!(section(raw).expect(raw).update_check(), expected, "{raw:?}");
         }
-        let error = load("[updates]\nfeed = \"x\"")
-            .1
-            .update_check()
-            .expect_err("unknown key");
+        let error = section("[updates]\nfeed = \"x\"").expect_err("unknown key");
         assert!(
             matches!(&error, AppError::FailedPrecondition(message) if message.contains("unknown field `feed`")),
             "{error}"
@@ -1480,19 +1697,11 @@ client_secret = 'test-secret'
                 Err("runtime.run_executor_max_runs_held must be at least 1"),
             ),
         ] {
-            let config = load(&raw).1;
-            let resolved = config.local_run_executors();
+            let resolved = section(&raw).map(|config| config.local_run_executors());
             match (&resolved, expected) {
                 (Ok(resolved), Ok(expected)) => assert_eq!(*resolved, expected, "{raw}"),
                 (Err(AppError::FailedPrecondition(message)), Err(expected)) => {
                     assert!(message.contains(expected), "{raw}: {message}");
-                    // Boot validation refuses it the same way.
-                    match config.validate(&coral_secret_store::SecretStoreKinds::default()) {
-                        Err(AppError::FailedPrecondition(message)) => {
-                            assert!(message.contains(expected), "{raw}: {message}");
-                        }
-                        other => panic!("{raw}: {other:?}"),
-                    }
                 }
                 _ => panic!("{raw}: {resolved:?}"),
             }
@@ -1518,26 +1727,24 @@ client_secret = 'test-secret'
                 "unknown field `compilation_timeout_seconds`",
             ),
         ] {
-            let error = load(raw).1.runtime_limits().expect_err(raw);
+            let error = section(raw).expect_err(raw);
             assert!(
                 matches!(&error, AppError::FailedPrecondition(message) if message.contains(expected)),
                 "{raw}: {error}"
             );
         }
         assert_eq!(
-            load("[runtime]\nfan_out_limit = 4\n")
-                .1
-                .runtime_limits()
+            section("[runtime]\nfan_out_limit = 4\n")
                 .expect("a limit of four")
+                .runtime_limits()
                 .fan_out_limit()
                 .invocations(),
             4
         );
         assert_eq!(
-            load("")
-                .1
-                .runtime_limits()
+            section("")
                 .expect("default limits")
+                .runtime_limits()
                 .compilation_timeout(),
             std::time::Duration::from_secs(2),
             "production keeps the two-second compilation deadline"
@@ -1554,10 +1761,9 @@ client_secret = 'test-secret'
             ),
         ] {
             assert_eq!(
-                load(raw)
-                    .1
-                    .runtime_limits()
+                section(raw)
                     .expect("a drain")
+                    .runtime_limits()
                     .shutdown_drain()
                     .duration(),
                 drain,
@@ -1571,10 +1777,12 @@ client_secret = 'test-secret'
     #[test]
     fn execution_cpu_seconds_sets_the_run_cpu_budget() {
         let budget = |raw| {
-            load(raw)
-                .1
-                .runtime_limits()
-                .map(|limits| limits.cpu_budget().map(coral_run::RunCpuBudget::cpu))
+            section(raw).map(|config| {
+                config
+                    .runtime_limits()
+                    .cpu_budget()
+                    .map(coral_run::RunCpuBudget::cpu)
+            })
         };
         assert_eq!(budget("").expect("default limits"), None);
         let set = budget("[runtime]\nexecution_cpu_seconds = 5\n");
@@ -1609,10 +1817,7 @@ client_secret = 'test-secret'
                 "search.reconcile_interval_seconds",
             ),
         ] {
-            let error = load(raw)
-                .1
-                .validate(&coral_secret_store::SecretStoreKinds::default())
-                .expect_err(raw);
+            let error = section(raw).expect_err(raw);
             assert!(
                 matches!(&error, AppError::FailedPrecondition(message) if message.contains(expected)),
                 "{raw}: {error}"
@@ -1624,17 +1829,15 @@ client_secret = 'test-secret'
     fn the_credential_key_env_is_named_only_when_configured() {
         for raw in ["", "[credentials]"] {
             assert_eq!(
-                load(raw).1.credential_key_env().expect(raw),
+                section(raw).expect(raw).credential_key_env(),
                 None,
                 "{raw:?}"
             );
         }
         assert_eq!(
-            load("[credentials]\nkey_env = \" CORAL_CREDENTIALS_KEY \"")
-                .1
-                .credential_key_env()
+            section("[credentials]\nkey_env = \" CORAL_CREDENTIALS_KEY \"")
                 .unwrap()
-                .as_deref(),
+                .credential_key_env(),
             Some("CORAL_CREDENTIALS_KEY")
         );
     }
@@ -1658,15 +1861,42 @@ client_secret = 'test-secret'
                 "[credentials]\nkey_env = 1",
                 "credentials.key_env: unsupported value",
             ),
+            (
+                "[credentials]\ndisable_secret_stores = 'yes'",
+                "credentials.disable_secret_stores",
+            ),
+            (
+                "[credentials]\ndisable_secret_stores = true\n\
+                 [[secret_stores]]\nname = 'env'\nkind = 'env'\nprefix = 'MYCO_'",
+                "credentials.disable_secret_stores is set, so remove the [[secret_stores]] tables",
+            ),
         ] {
-            let error = load(raw)
-                .1
-                .validate(&coral_secret_store::SecretStoreKinds::default())
-                .expect_err(raw);
+            let error = section(raw).expect_err(raw);
             assert!(
                 matches!(&error, AppError::FailedPrecondition(message) if message.contains(expected)),
                 "{raw}: {error}"
             );
+        }
+    }
+
+    // Catches: Reef treating a deployment that defines no store yet like one
+    // that turned Secret Stores off, which would hide how to define one.
+    #[test]
+    fn only_disable_secret_stores_turns_them_off() {
+        for (raw, disabled) in [
+            ("", false),
+            ("[credentials]\ndisable_secret_stores = false", false),
+            ("[credentials]\ndisable_secret_stores = true", true),
+        ] {
+            let stores = section(raw)
+                .expect(raw)
+                .secret_stores_from(
+                    coral_outbound::DestinationPolicy::default(),
+                    &(std::sync::Arc::new(|_: &str| Ok(None)) as coral_secret_store::EnvReader),
+                )
+                .expect(raw);
+            assert_eq!(stores.is_disabled(), disabled, "{raw:?}");
+            assert_eq!(stores.list().count(), 0, "{raw:?}");
         }
     }
 
@@ -1699,10 +1929,7 @@ client_secret = 'test-secret'
                 "outbound.private_networks: wanted string or table",
             ),
         ] {
-            let error = load(raw)
-                .1
-                .validate(&coral_secret_store::SecretStoreKinds::default())
-                .expect_err(raw);
+            let error = section(raw).expect_err(raw);
             assert!(
                 matches!(&error, AppError::FailedPrecondition(message)
                     if message.starts_with("server configuration is invalid: ")
@@ -1843,8 +2070,10 @@ client_secret = 'test-secret'
 
     #[test]
     fn defaults_both_listener_binds_to_ephemeral_loopback_with_explicit_web_destination() {
-        let settings = grpc_settings(WEB).expect("gRPC settings");
-        assert_eq!(settings.bind, SocketAddr::from((Ipv4Addr::LOCALHOST, 0)));
+        assert_eq!(
+            grpc_bind(WEB).expect("gRPC bind"),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 0))
+        );
         assert_eq!(
             mcp_http(WEB).expect("MCP config"),
             McpHttpServeConfig::AuthDisabled {
@@ -1855,12 +2084,12 @@ client_secret = 'test-secret'
 
     #[test]
     fn loads_bind_address_alongside_supported_sections() {
-        let settings = grpc_settings(
-            "[listeners.grpc]\nbind = '127.0.0.2:14555'\n\n[listeners.mcp]\nbind = '[::1]:14556'\n\n[otel]\nservice_name = 'coral'\n",
-        )
-        .expect("gRPC settings");
-        assert_eq!(settings.bind.ip(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)));
-        assert_eq!(settings.bind.port(), 14555);
+        let bind = grpc_bind(&format!(
+            "[listeners.grpc]\nbind = '127.0.0.2:14555'\n\n[listeners.mcp]\nbind = '[::1]:14556'\n\n[otel]\nservice_name = 'coral'\n{WEB}"
+        ))
+        .expect("gRPC bind");
+        assert_eq!(bind.ip(), IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)));
+        assert_eq!(bind.port(), 14555);
     }
 
     #[test]
@@ -2058,23 +2287,23 @@ client_secret = 'test-secret'
         }
     }
 
-    /// Parsing `[auth]` validates the section without touching what it points
-    /// at, so an instance whose signing key is missing loads and only fails when
+    /// Validation checks `[auth]` without touching what it points at, so an
+    /// instance whose signing key is missing validates and only fails when
     /// the settings behind it are actually resolved.
     #[test]
     fn resolving_serve_settings_fails_on_a_missing_signing_key() {
-        let (_temp, layout) = deployment(&authenticated("", ""));
+        let (_temp, layout) = deployment(&authenticated(MCP, ""));
         let key_path = layout.config_dir().join("session.key");
         fs::remove_file(&key_path).expect("remove session key");
 
-        let config = LoadedServerConfig::load(&layout).expect("load");
+        let config = LoadedServerConfig::load(&layout)
+            .expect("load")
+            .validate(&Launcher::default(), None)
+            .expect("the configuration is valid without the key it names");
 
         // `ServeSettings` carries key material and so implements no `Debug`,
         // which rules out `expect_err` here.
-        let Err(error) = config.serve_settings(
-            coral_outbound::DestinationPolicy::default(),
-            &Launcher::default(),
-        ) else {
+        let Err(error) = config.serve_settings(coral_outbound::DestinationPolicy::default()) else {
             panic!("resolution must still fail on the missing signing key");
         };
         let message = error.to_string();
@@ -2108,9 +2337,12 @@ client_secret = 'test-secret'
         raw: &str,
         env: &[(&str, &str)],
     ) -> Result<super::RunExecutorListener, AppError> {
-        let (_temp, config) = load(raw);
-        let authenticated = config.auth_settings()?.is_some();
-        config.run_executor_listener(authenticated, &|setting, name| {
+        let config = if raw.contains("[listeners.web]") {
+            validated(raw)
+        } else {
+            section(raw)
+        }?;
+        config.run_executor_listener(&|setting, name| {
             let value = env.iter().find(|(key, _)| *key == name);
             value
                 .map(|(_, value)| (*value).to_owned())

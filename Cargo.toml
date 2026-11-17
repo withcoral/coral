@@ -64,6 +64,7 @@ futures-util = "0.3"
 http = "1"
 http-body = "1"
 hyper-util = "0.1"
+indexmap = "2"
 jsonschema = { version = "0.60.2", default-features = false }
 jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
 # The one bundled SQLite that rusqlite and sqlx share; coral-sqlite-vec hands

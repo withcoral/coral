@@ -81,9 +81,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   query expressions to domain callers.
 - Mark observable mutations with `Transaction::execute_change` in the owning
   repository (or through its existing lifecycle/Run evidence write). Reads, row
-  locks, and worker-lease renewals use `execute`, or `fetch_optional_returning`
-  for a lock that returns its row; they must not wake activity observers or Run
-  waits. Time-dependent visibility also needs an observation deadline.
+  holds (`fetch_optional_locked`), and worker-lease renewals (`execute`) must
+  not wake activity observers or Run waits. Time-dependent visibility also
+  needs an observation deadline.
 - Open read-only work with `Database::begin_read_snapshot` and non-holding
   checks. `Database::begin` takes SQLite's write lock at `BEGIN`, so it waits
   behind every other writer.
@@ -91,8 +91,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   rows they never write (a Workspace, a Provider, a policy rule, an Account)
   with `RowLock::Shared`
   (`Transaction::fetch_optional_locked`; `coral_db::RowLock` documents what
-  each backend does). Other decisions still take the exclusive no-op `UPDATE`
-  hold on those rows; a row the transaction goes on to write always keeps it.
+  each backend does). Other decisions hold those rows with
+  `RowLock::Exclusive`, never a no-op `UPDATE`; a row the transaction goes on
+  to write is always held that way.
   A row that two shared-hold decisions may both create for the first time (an
   Account placeholder, a connection request) is inserted with
   `ON CONFLICT DO NOTHING` and reread, since no shared hold serializes its
@@ -187,6 +188,11 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   exact rules: the caller that owns the transaction joins
   `coral_policy::remove_authored_tool_rules_in_transaction` with the removed
   Tools' keys.
+- A Provider Generation row is written once and never updated, and its id is
+  never reused: to change a catalog, publish a new Generation, in a migration
+  or a repair as in product code. `coral_catalog::SchemaGraphCache` relies on
+  it: a Coral Instance serves a Generation's parsed schema graph from memory
+  while the cache holds it, and never rereads the row to check it.
 - Give each independently identified entity one stable ID as its sole primary
   key. Use a composite primary key only when the tuple is the domain identity.
 - For Workspace-owned data, every externally influenced read or write must
@@ -277,6 +283,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   to a same-origin resource route. Loaders supply initial data; streams only
   push later changes. Reef's `.oxlintrc.json` and
   `app/__tests__/architecture.test.ts` enforce the rest of this boundary.
+- The organization's settings have their own navigation, which replaces the
+  sidebar's workspace switcher and pages. A page joins them by sitting under
+  the `routes/settings.tsx` layout in `routes.ts`. Do not decide which
+  navigation to show from a page's path: the pages keep unrelated addresses.
 - Add or extend Reef Vitest coverage when a change fixes a reproducible bug,
   introduces branching behavior (validation, state transitions, or error handling),
   or affects security or an architecture invariant. Name the failure the test

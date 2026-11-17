@@ -274,26 +274,25 @@ pub(super) async fn delete_group(
     Ok(())
 }
 
-/// A portable row lock, shared by begin, completion, ending, and cleanup.
+/// Holds the Task's row exclusively for the rest of the transaction, as
+/// begin, completion, ending, and cleanup all do; reports whether it exists.
 pub(super) async fn hold(
     transaction: &mut coral_db::Transaction<'_>,
     workspace: &WorkspaceId,
     task: &TaskId,
 ) -> Result<bool, Error> {
-    Ok(transaction
-        .execute(
-            Query::update()
-                .table(TaskRecords::Table)
-                .value(
-                    TaskRecords::LastActivityAtUnixNanos,
-                    Expr::col(TaskRecords::LastActivityAtUnixNanos),
-                )
+    let held: Option<(i64,)> = transaction
+        .fetch_optional_locked(
+            Query::select()
+                .column(TaskRecords::LastActivityAtUnixNanos)
+                .from(TaskRecords::Table)
                 .and_where(Expr::col(TaskRecords::WorkspaceId).eq(workspace.to_string()))
                 .and_where(Expr::col(TaskRecords::Id).eq(task.to_string()))
                 .to_owned(),
+            coral_db::RowLock::Exclusive,
         )
-        .await?
-        == 1)
+        .await?;
+    Ok(held.is_some())
 }
 
 pub(super) async fn touch(

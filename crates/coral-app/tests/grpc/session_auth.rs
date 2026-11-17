@@ -103,9 +103,9 @@ pub(crate) async fn session_authenticated_server(
         .with_config_dir(fixture.config_dir())
         .prepare()
         .await?;
-    let session_auth = builder
-        .serve_settings()?
-        .take_session_auth()
-        .expect("the fixture configures session authentication");
-    builder.with_session_auth(session_auth).start().await
+    assert!(
+        builder.serve_settings()?.take_session_auth().is_some(),
+        "the fixture configures session authentication"
+    );
+    builder.start().await
 }

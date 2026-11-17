@@ -3,6 +3,7 @@ import { expect, type TestContext } from 'vitest'
 import { copiedBy } from '../../../support/clipboard.ts'
 import { breadcrumb } from '../../../support/providers.ts'
 import { withOwner } from '../../../support/topology.ts'
+import { openCreateWorkspace } from '../../../support/sidebar.ts'
 
 /**
  * A new workspace's overview opens with no dialog over it. Its quick start's prompt
@@ -11,13 +12,12 @@ import { withOwner } from '../../../support/topology.ts'
 export async function workspaceQuickStart(context: TestContext) {
   await withOwner(context, async ({ page, target, step }) => {
     const name = `Quick start "${crypto.randomUUID()}"`
-    const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
     let id = ''
     await step('Create a workspace and land on its overview', async () => {
       await page.goto('/')
       // Hydration first: a click that lands before it opens nothing.
       await page.getByRole('button', { name: /^Open account menu for / }).waitFor()
-      await nav.getByRole('button', { name: 'Create workspace', exact: true }).click()
+      await openCreateWorkspace(page)
       await page.getByLabel('Workspace name', { exact: true }).fill(name)
       await page
         .getByRole('dialog')

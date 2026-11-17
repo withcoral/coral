@@ -139,7 +139,6 @@ const onServer = (r: UsageReport): UsageReport => ({
 })
 const sharing: UsageDataView = {
   choice: 'on',
-  canChange: true,
   kind: 'desktop',
   next: JSON.stringify(report),
   lastSent: { at: '2026-11-06T00:00:00Z', json: JSON.stringify(earlier) },
@@ -190,18 +189,6 @@ export const Sharing: Story = {
 
 export const NotSharing: Story = {
   args: { view: { ...sharing, choice: 'off' } },
-}
-
-/** A member reads the same reports, but cannot change the setting. */
-export const Member: Story = {
-  args: { view: { ...sharing, canChange: false } },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(
-      canvas.getByRole('switch', { name: 'Share anonymous usage data' }),
-    ).toHaveAttribute('aria-disabled', 'true')
-    await expect(canvas.getByText(/Only organization owners can change this/)).toBeVisible()
-  },
 }
 
 /** DO_NOT_TRACK or CORAL_DISABLE_USAGE_DATA stops sending from one Coral process, whatever the switch shows. */

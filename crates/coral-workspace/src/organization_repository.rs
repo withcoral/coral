@@ -81,6 +81,8 @@ pub(super) async fn removed_revision(
     row.map(|(revision,)| decode_revision(revision)).transpose()
 }
 
+/// Restores a removed Membership with the sign-in's role. The recorded
+/// disablement stays as removal left it, so removal never lifts it.
 pub(super) async fn rejoin_membership(
     tx: &mut Transaction<'_>,
     user_id: &UserId,
@@ -92,7 +94,6 @@ pub(super) async fn rejoin_membership(
             Query::update()
                 .table(OrganizationAuthorityRecords::Table)
                 .value(OrganizationAuthorityRecords::Role, role_str(role))
-                .value(OrganizationAuthorityRecords::Enabled, 1_i64)
                 .value(OrganizationAuthorityRecords::Removed, 0_i64)
                 .value(OrganizationAuthorityRecords::Revision, revision)
                 .and_where(Expr::col(OrganizationAuthorityRecords::UserId).eq(user_id.as_str()))
@@ -107,31 +108,65 @@ pub(super) async fn rejoin_membership(
     Ok(())
 }
 
+/// Holds the Organization administration guard for the rest of the
+/// transaction, so Organization administration runs one change at a time.
 pub(super) async fn hold_administration(tx: &mut Transaction<'_>) -> Result<(), Error> {
-    tx.execute(
-        Query::update()
-            .table(OrganizationAuthorityGuard::Table)
-            .value(OrganizationAuthorityGuard::Id, 1_i64)
-            .and_where(Expr::col(OrganizationAuthorityGuard::Id).eq(1_i64))
-            .to_owned(),
-    )
-    .await?;
+    let _guard: Option<(i64,)> = tx
+        .fetch_optional_locked(
+            Query::select()
+                .column(OrganizationAuthorityGuard::Id)
+                .from(OrganizationAuthorityGuard::Table)
+                .and_where(Expr::col(OrganizationAuthorityGuard::Id).eq(1_i64))
+                .to_owned(),
+            coral_db::RowLock::Exclusive,
+        )
+        .await?;
     Ok(())
 }
 
+/// Holds the User's Organization authority row, removed or not, for the rest
+/// of the transaction. An unknown User holds nothing.
 pub(super) async fn hold_user(tx: &mut Transaction<'_>, user_id: &UserId) -> Result<(), Error> {
-    tx.execute(
-        Query::update()
-            .table(OrganizationAuthorityRecords::Table)
-            .value(
-                OrganizationAuthorityRecords::Revision,
-                Expr::col(OrganizationAuthorityRecords::Revision),
-            )
-            .and_where(Expr::col(OrganizationAuthorityRecords::UserId).eq(user_id.as_str()))
-            .to_owned(),
-    )
-    .await?;
-    Ok(())
+    held_authority_row(tx, user_id).await.map(drop)
+}
+
+/// Holds the User's Organization authority row as [`hold_user`] does and
+/// reads the Membership from the held row. `None` means the User is unknown
+/// or removed; a removed User's row is still held.
+pub(super) async fn hold_membership(
+    tx: &mut Transaction<'_>,
+    user_id: &UserId,
+) -> Result<Option<OrganizationMembership>, Error> {
+    match held_authority_row(tx, user_id).await? {
+        Some((revision, role, enabled, 0)) => {
+            decode_membership(user_id, revision, &role, enabled).map(Some)
+        }
+        Some(_) | None => Ok(None),
+    }
+}
+
+/// The exclusive hold that role and disablement administration, and every
+/// decision that must exclude them, take on a User's row: its revision, role,
+/// enabled and removed columns.
+async fn held_authority_row(
+    tx: &mut Transaction<'_>,
+    user_id: &UserId,
+) -> Result<Option<(i64, String, i64, i64)>, Error> {
+    Ok(tx
+        .fetch_optional_locked(
+            Query::select()
+                .columns([
+                    OrganizationAuthorityRecords::Revision,
+                    OrganizationAuthorityRecords::Role,
+                    OrganizationAuthorityRecords::Enabled,
+                    OrganizationAuthorityRecords::Removed,
+                ])
+                .from(OrganizationAuthorityRecords::Table)
+                .and_where(Expr::col(OrganizationAuthorityRecords::UserId).eq(user_id.as_str()))
+                .to_owned(),
+            coral_db::RowLock::Exclusive,
+        )
+        .await?)
 }
 
 pub(super) async fn find_membership(
@@ -164,20 +199,27 @@ pub(super) async fn find_membership_locked(
             lock,
         )
         .await?;
-    let Some((revision, role, enabled)) = row else {
-        return Ok(None);
-    };
-    let role = match role.as_str() {
+    row.map(|(revision, role, enabled)| decode_membership(user_id, revision, &role, enabled))
+        .transpose()
+}
+
+fn decode_membership(
+    user_id: &UserId,
+    revision: i64,
+    role: &str,
+    enabled: i64,
+) -> Result<OrganizationMembership, Error> {
+    let role = match role {
         "owner" => OrganizationRole::Owner,
         "member" => OrganizationRole::Member,
         _ => return Err(Error::CorruptData("invalid Organization role".into())),
     };
-    Ok(Some(OrganizationMembership {
+    Ok(OrganizationMembership {
         user_id: user_id.clone(),
         role,
         enabled: enabled == 1,
         revision: decode_revision(revision)?,
-    }))
+    })
 }
 
 fn decode_revision(revision: i64) -> Result<u64, Error> {

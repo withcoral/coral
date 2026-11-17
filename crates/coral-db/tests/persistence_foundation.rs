@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 
 use coral_db::{
     Database, DatabaseOptions, DatabaseSystem, Error, MigrationPlan, MigrationProgress,
-    QueryExecutor, ReadOnlyDatabase,
+    QueryExecutor, ReadOnlyDatabase, RowLock,
 };
 use coral_test_support::TestDatabase;
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
@@ -960,6 +960,84 @@ async fn read_snapshots_cannot_write() {
     assert_eq!(record(&*database, "snapshot").await, None);
 }
 
+/// A hold reads like `fetch_optional` or `fetch_all` in a read-write
+/// transaction. A read snapshot holds nothing on either database, so it
+/// refuses the hold before it sends a statement, and stays usable.
+#[tokio::test]
+async fn a_hold_reads_its_row_in_a_read_write_transaction_and_a_read_snapshot_refuses_it() {
+    let fixture = TestDatabase::new(&MIGRATOR)
+        .await
+        .expect("create repository test database");
+    let database = fixture.database();
+    write_record(&database, "held", "visible")
+        .await
+        .expect("write the row to hold");
+    let held = Some(Record {
+        id: "held".to_string(),
+        value: "visible".to_string(),
+    });
+
+    for lock in [RowLock::Shared, RowLock::Exclusive, RowLock::SkipLocked] {
+        let mut transaction = database.begin().await.expect("begin the holder");
+        assert_eq!(
+            transaction
+                .fetch_optional_locked::<Record>(select_record("held"), lock)
+                .await
+                .expect("hold the row"),
+            held,
+            "{lock:?}"
+        );
+        assert_eq!(
+            transaction
+                .fetch_optional_locked::<Record>(select_record("absent"), lock)
+                .await
+                .expect("hold no row"),
+            None,
+            "{lock:?}"
+        );
+        assert_eq!(
+            transaction
+                .fetch_all_locked::<Record>(select_record("held"), lock)
+                .await
+                .expect("hold the rows")
+                .as_slice(),
+            held.as_slice(),
+            "{lock:?}"
+        );
+        transaction.commit().await.expect("commit the holder");
+
+        let mut snapshot = database
+            .begin_read_snapshot()
+            .await
+            .expect("begin read snapshot");
+        let error = snapshot
+            .fetch_optional_locked::<Record>(select_record("held"), lock)
+            .await
+            .expect_err("a read snapshot must refuse a hold");
+        assert!(
+            matches!(error, Error::ReadSnapshotHold),
+            "{lock:?}: {error:?}"
+        );
+        let error = snapshot
+            .fetch_all_locked::<Record>(select_record("held"), lock)
+            .await
+            .expect_err("a read snapshot must refuse a hold of rows");
+        assert!(
+            matches!(error, Error::ReadSnapshotHold),
+            "{lock:?}: {error:?}"
+        );
+        assert_eq!(
+            snapshot
+                .fetch_optional_locked::<Record>(select_record("held"), RowLock::None)
+                .await
+                .expect("the refused snapshot still reads"),
+            held,
+            "{lock:?}"
+        );
+        snapshot.rollback().await.expect("roll back read snapshot");
+    }
+}
+
 #[tokio::test]
 async fn a_canceled_read_snapshot_does_not_make_the_next_writer_read_only() {
     let fixture = TestDatabase::new(&MIGRATOR)
@@ -1079,6 +1157,163 @@ mod postgres_only {
             Some("retried".to_string())
         );
     }
+
+    /// What a second transaction does to the held row.
+    #[derive(Debug, Clone, Copy)]
+    enum Contender {
+        Read(RowLock),
+        Update,
+    }
+
+    /// An exclusive hold is a read that makes a shared hold, another exclusive
+    /// hold and an update of its row wait until the holder's transaction
+    /// ends, and that itself waits for a shared hold. Each contender is shown
+    /// waiting by the database (`pg_blocking_pids` names the holder), never
+    /// by elapsed time, and then acts on the row as the holder committed it.
+    #[tokio::test]
+    async fn an_exclusive_hold_makes_other_holders_and_writers_wait_for_its_commit() {
+        coral_test_support::database_only!(Postgres);
+        let fixture = TestDatabase::new(&MIGRATOR)
+            .await
+            .expect("create Postgres test database");
+        let database = fixture.database();
+
+        let cases = [
+            (RowLock::Exclusive, Contender::Read(RowLock::Shared)),
+            (RowLock::Exclusive, Contender::Read(RowLock::Exclusive)),
+            (RowLock::Exclusive, Contender::Update),
+            (RowLock::Shared, Contender::Read(RowLock::Exclusive)),
+        ];
+        for (case, (held, contender)) in cases.into_iter().enumerate() {
+            let id = format!("held-{case}");
+            write_record(&database, &id, "before")
+                .await
+                .expect("write the row to hold");
+
+            let mut holder = database.begin().await.expect("begin the holder");
+            let holder_pid = backend_pid(&mut holder).await;
+            let row: Option<Record> = holder
+                .fetch_optional_locked(select_record(&id), held)
+                .await
+                .expect("hold the row");
+            assert_eq!(row.map(|row| row.value).as_deref(), Some("before"));
+
+            let (report_pid, contender_pid) = tokio::sync::oneshot::channel();
+            let contending = tokio::spawn({
+                let database = database.clone();
+                let id = id.clone();
+                async move {
+                    let mut transaction = database.begin().await.expect("begin the contender");
+                    report_pid
+                        .send(backend_pid(&mut transaction).await)
+                        .expect("report the contender's backend");
+                    let seen = match contender {
+                        Contender::Read(lock) => transaction
+                            .fetch_optional_locked::<Record>(select_record(&id), lock)
+                            .await
+                            .expect("read the held row")
+                            .map(|row| row.value),
+                        Contender::Update => {
+                            let rows = transaction
+                                .execute(update_record(&id, "contender"))
+                                .await
+                                .expect("update the held row");
+                            assert_eq!(rows, 1);
+                            record(&mut transaction, &id).await.map(|row| row.value)
+                        }
+                    };
+                    transaction.commit().await.expect("commit the contender");
+                    seen
+                }
+            });
+            let contender_pid = contender_pid.await.expect("the contender's backend");
+            wait_until_blocked(&database, &contending, contender_pid, holder_pid).await;
+
+            // An exclusive holder goes on to write its row; a shared one must
+            // not, or it would deadlock with the exclusive contender.
+            let committed = if held == RowLock::Exclusive {
+                holder
+                    .execute(update_record(&id, "held"))
+                    .await
+                    .expect("write the held row");
+                "held"
+            } else {
+                "before"
+            };
+            assert!(
+                !contending.is_finished(),
+                "{held:?} then {contender:?}: the contender waits for the holder"
+            );
+            holder.commit().await.expect("commit the holder");
+
+            let seen = contending.await.expect("join the contender");
+            let expected = match contender {
+                Contender::Read(_) => committed,
+                Contender::Update => "contender",
+            };
+            assert_eq!(
+                seen.as_deref(),
+                Some(expected),
+                "{held:?} then {contender:?}: the contender acts on the committed row"
+            );
+            assert_eq!(
+                record(database.as_ref(), &id).await.map(|row| row.value),
+                Some(expected.to_string())
+            );
+        }
+    }
+
+    async fn backend_pid(transaction: &mut coral_db::Transaction<'_>) -> i32 {
+        let (pid,): (i32,) = transaction
+            .fetch_all_sql("SELECT pg_backend_pid()", sea_query::Values(Vec::new()))
+            .await
+            .expect("read the backend pid")
+            .into_iter()
+            .next()
+            .expect("a backend pid");
+        pid
+    }
+
+    /// Returns once Postgres reports that the backend `waiter`, which runs
+    /// `contending`, waits for a lock `holder` holds. The limit only bounds a
+    /// failure; no assertion depends on it.
+    async fn wait_until_blocked(
+        database: &Database,
+        contending: &tokio::task::JoinHandle<Option<String>>,
+        waiter: i32,
+        holder: i32,
+    ) {
+        let blocked = async {
+            loop {
+                assert!(
+                    !contending.is_finished(),
+                    "the contender did not wait for the holder"
+                );
+                let mut snapshot = database
+                    .begin_read_snapshot()
+                    .await
+                    .expect("begin the lock observer");
+                let (blocked,): (bool,) = snapshot
+                    .fetch_all_sql(
+                        "SELECT $1 = ANY(pg_blocking_pids($2))",
+                        sea_query::Values(vec![holder.into(), waiter.into()]),
+                    )
+                    .await
+                    .expect("read the blocking backends")
+                    .into_iter()
+                    .next()
+                    .expect("a row");
+                snapshot.rollback().await.expect("end the lock observer");
+                if blocked {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(30), blocked)
+            .await
+            .expect("the contender waits for the holder's row lock");
+    }
 }
 
 #[tokio::test]
@@ -1098,6 +1333,15 @@ async fn notifications_follow_commits_not_reads_locks_rollbacks_or_zero_row_writ
     let mut tx = database.begin_read_snapshot().await.unwrap();
     record(&mut tx, "unobserved").await;
     tx.commit().await.unwrap();
+    for lock in [RowLock::Shared, RowLock::Exclusive, RowLock::SkipLocked] {
+        let mut tx = database.begin().await.unwrap();
+        let held: Option<Record> = tx
+            .fetch_optional_locked(select_record("unobserved"), lock)
+            .await
+            .unwrap();
+        assert!(held.is_some(), "{lock:?}");
+        tx.commit().await.unwrap();
+    }
     let mut tx = database.begin().await.unwrap();
     tx.execute_change(
         Query::delete()
@@ -1311,6 +1555,14 @@ fn insert_record(id: &str, value: &str) -> sea_query::InsertStatement {
         .into_table(Records::Table)
         .columns([Records::Id, Records::Value])
         .values_panic([Expr::val(id.to_string()), Expr::val(value.to_string())])
+        .to_owned()
+}
+
+fn update_record(id: &str, value: &str) -> sea_query::UpdateStatement {
+    Query::update()
+        .table(Records::Table)
+        .value(Records::Value, value)
+        .and_where(Expr::col(Records::Id).eq(id))
         .to_owned()
 }
 

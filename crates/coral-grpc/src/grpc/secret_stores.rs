@@ -89,6 +89,7 @@ impl wire::secret_store_service_server::SecretStoreService for GrpcServices {
             .collect();
         Ok(Response::new(wire::ListSecretStoresResponse {
             secret_stores,
+            disabled: self.secret_stores.disabled(),
         }))
     }
 

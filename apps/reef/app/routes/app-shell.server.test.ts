@@ -18,6 +18,12 @@ const transport = fakeManagementTransport({
         : { workspaces: [workspace(3)], nextPageToken: '' },
   },
   organizationMemberships: { getCurrentOrganizationMembership: () => ({ role }) },
+  secretStores: {
+    listSecretStores: () => {
+      if (secretStores === 'unavailable') throw new ConnectError('down', Code.Unavailable)
+      return { secretStores: [], disabled: secretStores === 'off' }
+    },
+  },
   releases: {
     getNewerRelease: () => {
       if (release === 'unavailable') throw new ConnectError('down', Code.Unavailable)
@@ -27,6 +33,7 @@ const transport = fakeManagementTransport({
 })
 let role = OrganizationRole.UNSPECIFIED
 let release: { version: string; notesUrl: string } | undefined | 'unavailable'
+let secretStores: 'none defined' | 'off' | 'unavailable' = 'none defined'
 vi.mock('@/lib/coral-request.server', () => ({ managementTransportForRequest: () => transport }))
 
 function workspace(id: number, state = WorkspaceState.ACTIVE) {
@@ -52,10 +59,11 @@ function sidebarEntry(id: number, state: 'active' | 'archived') {
   }
 }
 
-it('lists every Workspace across pages, archived ones apart, because the sidebar is the only listing', async () => {
+// Catches: a workspace on a later page missing from the switcher, or an archived
+// one listed among the workspaces you can work in.
+it('lists the active Workspaces across pages, and no archived one', async () => {
   const result = await loader(authRouteTestArgs(new Request('http://reef/activity'), {}, null))
   expect(result.data.workspaces).toEqual([sidebarEntry(1, 'active'), sidebarEntry(3, 'active')])
-  expect(result.data.archivedWorkspaces).toEqual([sidebarEntry(2, 'archived')])
 })
 
 it.each([
@@ -71,6 +79,23 @@ it.each([
     release = version === '1.4.0' ? { version, notesUrl } : version
     const result = await loader(authRouteTestArgs(new Request('http://reef/activity'), {}, null))
     expect(result.data.newerRelease).toEqual(shown ? { version: '1.4.0', notesUrl } : undefined)
+  },
+)
+
+// Catches: an owner losing the section while their deployment defines no store
+// yet, which hides how to define one, or Desktop, which turned them off, keeping it.
+it.each([
+  ['an owner, with none defined', OrganizationRole.OWNER, 'none defined', true],
+  ['an owner, when Coral cannot answer', OrganizationRole.OWNER, 'unavailable', true],
+  ['an owner, where the deployment turned them off', OrganizationRole.OWNER, 'off', false],
+  ['a member', OrganizationRole.MEMBER, 'none defined', false],
+] as const)(
+  'offers secret stores to %s only while the deployment has them',
+  async (_case, caseRole, stores, shown) => {
+    role = caseRole
+    secretStores = stores
+    const result = await loader(authRouteTestArgs(new Request('http://reef/activity'), {}, null))
+    expect(result.data.secretStoresEnabled).toBe(shown)
   },
 )
 

@@ -78,7 +78,7 @@ impl ProviderModule {
             &mut tx,
             workspace,
             repository::ProviderKey::CallRoot(&ProviderCallRoot::Owner(namespace.clone())),
-            repository::ProviderHold::None,
+            coral_db::RowLock::None,
         )
         .await?
         .ok_or(Error::ProviderNotFound)?;
@@ -132,7 +132,7 @@ impl ProviderModule {
             &mut tx,
             workspace,
             repository::ProviderKey::Id(provider),
-            repository::ProviderHold::None,
+            coral_db::RowLock::None,
         )
         .await?
         .ok_or(Error::ProviderNotFound)?;
@@ -483,7 +483,7 @@ impl ProviderModule {
             &mut tx,
             workspace,
             repository::ProviderKey::Id(id),
-            repository::ProviderHold::None,
+            coral_db::RowLock::None,
         )
         .await?
         .ok_or(Error::ProviderNotFound)?
@@ -531,7 +531,7 @@ impl ProviderModule {
             &mut tx,
             workspace,
             repository::ProviderKey::Id(id),
-            repository::ProviderHold::None,
+            coral_db::RowLock::None,
         )
         .await?
         .ok_or(Error::ProviderNotFound)?

@@ -126,16 +126,17 @@ export async function loader({ request, context, params }: Route.LoaderArgs) {
 
 const saved: Record<string, string> = {
   rename: 'Workspace name saved.',
-  archive: 'Workspace archived.',
   restore: 'Workspace restored.',
 }
 const failed: Record<string, string> = {
   rename: 'Coral could not save the workspace name. ',
-  archive: 'Coral could not archive the workspace. ',
   restore: 'Coral could not restore the workspace. ',
 }
 
-/** Renames, archives and restores the Workspace. The sidebar and banners post here from any page. */
+/**
+ * Renames and restores the Workspace. The Overview's heading and the archived
+ * banner post here. An organization owner archives from the organization's Workspaces page.
+ */
 export async function action({ request, context, params }: Route.ActionArgs) {
   const form = await mutationForm(request, context)
   const intent = field(form, 'intent')
@@ -149,7 +150,6 @@ export async function action({ request, context, params }: Route.ActionArgs) {
         workspace: { name, etag, displayName: field(form, 'displayName') },
         updateMask: { paths: ['display_name'] },
       })
-    else if (intent === 'archive') await api.archiveWorkspace({ name, etag })
     else await api.restoreWorkspace({ name, etag })
     return data(
       { error: null, credential: null, message: saved[intent] },

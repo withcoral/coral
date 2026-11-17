@@ -1,3 +1,5 @@
+mod concurrency;
+
 use super::account_tests::{authorization_request, publish_provider};
 use super::setup_tests::credential_evidence;
 use super::tests::{change_context, organization_user, test_modules};

@@ -105,8 +105,10 @@ pub use credentials::{
 pub mod history_repository;
 mod repository;
 mod schema;
+mod schema_graph_cache;
 mod search;
 mod types;
+mod validators;
 
 use coral_db::Transaction;
 
@@ -134,6 +136,7 @@ pub use paths::{
     ToolPathAssignment, call_path_segment_is_reserved, provider_namespace_is_valid,
     unknown_call_path_message,
 };
+pub use schema_graph_cache::SchemaGraphCache;
 pub use search::{DeclarationIndexEntry, PreparedDeclarationFields, StoredDeclarationFields};
 pub use types::{
     CatalogDiagnostic, CatalogDiagnosticSeverity, CatalogSearchTarget, DiagnosticCode,
@@ -379,7 +382,10 @@ pub async fn generation_publication_times_in_transaction(
     repository::generation_publication_times(transaction, ids).await
 }
 
-/// Loads the authoritative schema graph for one retained private Generation.
+/// Loads the authoritative schema graph for one retained private Generation
+/// from the database: it reads, parses and checks the whole stored graph on
+/// every call. A Tool call resolves its graph through a [`SchemaGraphCache`]
+/// instead.
 ///
 /// # Errors
 ///
@@ -576,8 +582,9 @@ pub async fn tools_in_transaction(
 
 /// Loads one Tool by its exact Generation-relative Call Path projection.
 ///
-/// This transaction-compatible facet supports atomic Invocation admission;
-/// callers still retain the returned Tool Key as the callable address.
+/// A Tool call's resolution reads it in the read snapshot that read the
+/// Provider; callers still retain the returned Tool Key as the callable
+/// address.
 ///
 /// # Errors
 ///

@@ -245,7 +245,8 @@ impl RunModule {
             if run_repository::insert_acceptance(
                 transaction,
                 &run,
-                &self.instance,
+                // A Run for Run streams waits for a take: no holder, no lease.
+                (!self.run_streams).then_some(&self.instance),
                 submission.source(),
                 &package,
                 &linked,
@@ -301,8 +302,12 @@ impl RunModule {
         } = staged;
         drop(accept);
         crate::trace::record_run_accepted(actor.principal());
-        self.schedule_execution(run, actor, time_limit);
-        // The owner is registered: shutdown counts it from here.
+        // A Run for Run streams waits in the queue until a take claims it.
+        if !self.run_streams {
+            self.schedule_execution(run, actor, time_limit);
+        }
+        // An owned Run is registered, and shutdown counts it from here. A
+        // waiting Run holds nothing on this Coral Instance.
         drop(admitted);
         Ok(update)
     }

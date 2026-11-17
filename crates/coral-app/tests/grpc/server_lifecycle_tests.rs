@@ -230,6 +230,11 @@ async fn startup_rejects_unknown_keys_in_every_configuration_section() {
     let temp = TempDir::new().expect("temp dir");
     // A current marker distinguishes configuration errors from retired-state
     // rejection. Both ephemeral and configured startup must reject stale keys.
+    fs::write(
+        temp.path().join("config.toml"),
+        "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
+    )
+    .unwrap();
     drop(
         ServerBuilder::new()
             .with_config_dir(temp.path())
@@ -325,7 +330,8 @@ async fn removed_root_version_is_rejected_without_marking_fresh_state() {
 /// is accepted and a mistake is reported by key, with the root unchanged.
 #[tokio::test]
 async fn fresh_state_accepts_current_sections_and_reports_configuration_errors_unchanged() {
-    const GRPC: &str = "[listeners.grpc]\nbind = '127.0.0.1:0'\n";
+    const GRPC: &str = "[listeners.grpc]\nbind = '127.0.0.1:0'\n\
+                        [listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n";
     for section in ["[runtime]\n", "[outbound]\nloopback = 'deny'\n"] {
         let temp = TempDir::new().expect("temp dir");
         fs::write(temp.path().join("config.toml"), format!("{GRPC}{section}")).unwrap();

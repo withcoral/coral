@@ -12,6 +12,7 @@ import { DESKTOP_DATA } from './config.ts'
 import { freshDesktopProfile, type DesktopProfile } from './desktop-profile.ts'
 import { descendantProcesses } from './os-processes.ts'
 import { bounded } from './stack.ts'
+import { copyWorkspaceMcpUrl } from './sidebar.ts'
 
 export interface DesktopSession extends Session {
   app: ElectronApplication
@@ -120,17 +121,10 @@ export async function withDesktopApp(
   return exit
 }
 
-/** Copies a workspace's own MCP URL from the sidebar and reads the system clipboard. */
+/** Copies a workspace's own MCP URL from its row in the switcher and reads the system clipboard. */
 export async function copyMcpEndpoint(page: Page, app: ElectronApplication, workspace: string) {
   const nav = page.getByRole('navigation', { name: 'Coral', exact: true })
-  await nav
-    .getByRole('button', { name: `Copy ${workspace} workspace MCP URL`, exact: true })
-    .click()
-  // The button is named copied only after the write succeeds, so the clipboard
-  // below cannot be a URL copied earlier.
-  await nav
-    .getByRole('button', { name: `Copy ${workspace} workspace MCP URL: copied`, exact: true })
-    .waitFor()
+  await copyWorkspaceMcpUrl(page, workspace, nav)
   // Reef writes through the browser clipboard API, which Desktop's permission
   // handler must grant; read what reached the system clipboard.
   let copied = ''

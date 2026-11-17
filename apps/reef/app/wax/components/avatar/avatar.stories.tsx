@@ -50,11 +50,36 @@ export const Square: Story = {
       <Avatar name="Growth" shape="square" size="28" />
     </div>
   ),
+  // Catches: a place given a person's two initials.
+  play: async ({ canvas }) => {
+    for (const letter of ['O', 'R', 'G']) await expect(canvas.getByText(letter)).toBeVisible()
+  },
+}
+
+// Two letters tell one person from another better than one does.
+export const TwoLetters: Story = {
+  args: { name: 'James Summerfield' },
+  render: () => (
+    <div style={{ alignItems: 'center', display: 'flex', gap: 16 }}>
+      <Avatar name="James Summerfield" />
+      <Avatar name="James Summerfield" size="28" />
+      <Avatar name="Ada Byron Lovelace" size="28" />
+      <Avatar name="alex@example.com" size="28" />
+      <Avatar name="Jane Doe (Acme)" size="28" />
+      <Avatar name="@alex" size="28" />
+    </div>
+  ),
+  // Catches: initials from a middle name or from punctuation, or one word losing its second letter.
+  play: async ({ canvas }) => {
+    await expect(canvas.getAllByText('JS')).toHaveLength(2)
+    for (const initials of ['AL', 'al', 'JD', '@a'])
+      await expect(canvas.getByText(initials)).toBeVisible()
+  },
 }
 
 /**
- * Beside a visible name, the fallback initial is decorative. A screen reader
- * reads the name once, not the initial and then the name.
+ * Beside a visible name, the fallback initials are decorative. A screen reader
+ * reads the name once, not the initials and then the name.
  */
 export const BesideName: Story = {
   args: { name: 'Ada Lovelace' },

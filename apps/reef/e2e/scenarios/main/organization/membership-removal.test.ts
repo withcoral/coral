@@ -8,6 +8,7 @@ import {
 } from '../../../support/offboarding.ts'
 import { breadcrumb, programRunner, type RunUpdate } from '../../../support/providers.ts'
 import { WorkspaceRole } from '../../../generated/coral/management/v1/workspace_pb.ts'
+import { openSettings } from '../../../support/settings.ts'
 
 test('Organization owner removes current work across workspaces through Members while preserving private history', async (context) => {
   const { owner, bob } = await createActors(context)
@@ -68,8 +69,7 @@ test('Organization owner removes current work across workspaces through Members 
     context,
     async ({ page, step }) => {
       await page.goto('/')
-      await page.getByRole('button', { name: /^Open account menu for / }).click()
-      await page.getByRole('menuitem', { name: 'Members', exact: true }).click()
+      await openSettings(page, 'Members')
       await step('Remove the selected organization member', async () => {
         await breadcrumb(page, 'Members').waitFor()
         const row = page

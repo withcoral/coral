@@ -25,8 +25,9 @@ use crate::{
     PublicationDiagnostic, repository as providers,
 };
 
-/// Host deadline for setup-scoped credential material, from Setup creation.
-pub(crate) const SETUP_CREDENTIAL_LIFETIME_NANOS: i64 = 3_600_000_000_000;
+/// How long after its creation a Setup reaches its host deadline. Setup-scoped
+/// credential material expires at that deadline too.
+const SETUP_CREDENTIAL_LIFETIME_NANOS: i64 = 3_600_000_000_000;
 /// Host deadline for one setup-scoped Authorization, from its start.
 pub(crate) const SETUP_AUTHORIZATION_LIFETIME_NANOS: i64 = 900_000_000_000;
 
@@ -758,17 +759,17 @@ impl AccountModule {
         }))
     }
 
-    /// Seals typed values whose deadline runs from the Setup's creation, not from
-    /// entry. References stay beside the record, and no value read from a store joins it.
+    /// Seals typed values that expire at the Setup's host deadline, not a time
+    /// counted from entry, and refuses a Setup already past it. References stay
+    /// beside the record, and no value read from a store joins it.
     fn seal_setup_material(
         &self,
         context: &ChangeContext,
         contract: ProviderCredentialContract,
         material: &CredentialMaterial,
-        setup_created_at_unix_nanos: i64,
+        setup: &crate::ProviderSetup,
     ) -> Result<SealedSetupCredential, Error> {
-        let expires_at_unix_nanos = setup_deadline(setup_created_at_unix_nanos)?;
-        if context.occurred_at_unix_nanos() >= expires_at_unix_nanos {
+        if setup.is_past_deadline(context.occurred_at_unix_nanos()) {
             return Err(Error::ProviderSetupNotApplicable);
         }
         let credential_generation = Uuid::new_v4().to_string();
@@ -787,7 +788,7 @@ impl AccountModule {
             ciphertext,
             secret_references,
             granted_scope: String::new(),
-            expires_at_unix_nanos,
+            expires_at_unix_nanos: setup.expires_at_unix_nanos(),
         })
     }
 
@@ -864,12 +865,7 @@ impl AccountModule {
             }
             delete(&mut tx, owner, id).await?;
         }
-        let sealed = self.seal_setup_material(
-            context,
-            contract,
-            &material,
-            loaded.setup.created_at_unix_nanos(),
-        )?;
+        let sealed = self.seal_setup_material(context, contract, &material, &loaded.setup)?;
         insert(&mut tx, owner, id, &sealed).await?;
         if discovery {
             providers::update_setup_state(
@@ -1118,7 +1114,9 @@ impl ProviderModule {
     }
 }
 
-/// Host deadline for setup-scoped material and pre-ready Setups: one hour from creation.
+/// The host deadline that a Setup created at `created_at_unix_nanos` stores:
+/// one hour later. Only Setup creation asks; every later decision reads the
+/// stored deadline through `ProviderSetup::is_past_deadline`.
 pub(crate) fn setup_deadline(created_at_unix_nanos: i64) -> Result<i64, Error> {
     created_at_unix_nanos
         .checked_add(SETUP_CREDENTIAL_LIFETIME_NANOS)

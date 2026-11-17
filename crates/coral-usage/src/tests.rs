@@ -139,22 +139,17 @@ async fn sharing_is_on_until_an_owner_turns_it_off() {
     assert!(matches!(denied, Err(Error::PermissionDenied)), "{denied:?}");
     assert_eq!(fixture.installs().await, 0);
 
-    let member_view = usage.view(&fixture.member, at(9, 12)).await.expect("view");
-    assert!(member_view.sharing);
-    assert!(!member_view.can_change);
-    assert!(
-        usage
-            .view(&fixture.owner, at(9, 12))
-            .await
-            .expect("view")
-            .can_change
-    );
+    // A Member reads nothing either: the page belongs to those who can change it.
+    let denied = usage.view(&fixture.member, at(9, 12)).await;
+    assert!(matches!(denied, Err(Error::PermissionDenied)), "{denied:?}");
+    assert_eq!(fixture.installs().await, 0);
 
+    // An Owner's read makes the install row; a Member's change is still refused.
     let denied = usage.set_sharing(&fixture.member, false, at(9, 12)).await;
     assert!(matches!(denied, Err(Error::PermissionDenied)), "{denied:?}");
     assert!(
         usage
-            .view(&fixture.member, at(9, 12))
+            .view(&fixture.owner, at(9, 12))
             .await
             .expect("view")
             .sharing
@@ -202,7 +197,7 @@ async fn each_checked_day_gets_one_report() {
     assert_eq!(fixture.report("2026-11-08").await["install"], install);
 
     // The page shows the oldest waiting report, byte for byte.
-    let view = usage.view(&fixture.member, at(9, 12)).await.expect("view");
+    let view = usage.view(&fixture.owner, at(9, 12)).await.expect("view");
     let database = fixture.db.database();
     let mut tx = database.begin_read_snapshot().await.expect("read");
     let stored: Vec<(String,)> = tx
@@ -598,7 +593,7 @@ async fn sending_follows_the_collectors_answer() {
         [("2026-11-08".to_owned(), Some(at(9, 14)))]
     );
 
-    let view = usage.view(&fixture.member, at(9, 15)).await.expect("view");
+    let view = usage.view(&fixture.owner, at(9, 15)).await.expect("view");
     let last = view.last_sent.expect("last sent");
     assert_eq!(last.sent_at_unix_nanos, at(9, 14));
     assert_eq!(last.json, fixture.report("2026-11-08").await.to_string());
@@ -771,10 +766,7 @@ async fn a_blocked_process_makes_no_report_and_skips_no_day() {
     assert_eq!(days().await, ["2026-11-06", "2026-11-07", "2026-11-08"]);
 
     let source = fixture.usage(&SendEnvironment::default(), Build::Source);
-    let view = source
-        .view(&fixture.member, at(12, 13))
-        .await
-        .expect("view");
+    let view = source.view(&fixture.owner, at(12, 13)).await.expect("view");
     assert_eq!(view.block, Some(SendBlock::SourceBuild));
     assert_eq!(
         serde_json::from_str::<Value>(&view.next_report_json).expect("json")["build"],

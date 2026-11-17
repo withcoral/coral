@@ -137,7 +137,7 @@ pub(super) async fn load(
         tx,
         workspace,
         providers::ProviderKey::Id(provider),
-        providers::ProviderHold::Exclusive,
+        coral_db::RowLock::Exclusive,
     )
     .await?
     .and_then(providers::ProviderWithActiveGeneration::into_active)

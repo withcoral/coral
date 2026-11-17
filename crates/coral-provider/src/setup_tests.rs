@@ -214,7 +214,7 @@ async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
         assert_eq!(listed(3).await, expected, "{role:?}");
     }
     // Each Setup expires an hour after it was created.
-    let deadline = |created| crate::setup_credentials::setup_deadline(created).unwrap();
+    let deadline = |created: i64| created + HOUR;
     assert_eq!(listed(deadline(2) - 1).await, both);
     assert_eq!(
         listed(deadline(2)).await,
@@ -227,6 +227,78 @@ async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
         listed(deadline(3)).await,
         [] as [(crate::ProviderSetupId, Option<crate::SetupRequest>); 0]
     );
+}
+
+/// The migration version of the step that gives a Setup without a stored
+/// deadline the one its creation time sets.
+const SETUP_DEADLINES_MIGRATION_VERSION: i64 = 74;
+
+// Catches: a Setup without a stored deadline read as one that never expires,
+// an upgrade that leaves such a Setup unreadable, or one that gives it a
+// deadline other than the one creation stores or moves a deadline a Setup
+// already holds.
+#[tokio::test]
+async fn upgrade_gives_a_setup_without_a_deadline_the_one_creation_stores() {
+    let before = coral_test_support::migration_plan_before(SETUP_DEADLINES_MIGRATION_VERSION);
+    let fixture = coral_test_support::TestDatabase::new(&before)
+        .await
+        .expect("create a database from before the deadline step");
+    let database = fixture.database();
+    let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
+    let providers = crate::ProviderModule::with_running_catalog(
+        DestinationPolicy::default(),
+        database.clone(),
+        workspaces.clone(),
+    );
+    let actor = organization_user(database.clone(), "user:upgrade", OrganizationRole::Member).await;
+    let context = change_context(actor.clone(), 10, '1');
+    let workspace = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Upgrade").unwrap())
+        .await
+        .unwrap();
+    let owner = workspace.id();
+    let server = MockServer::start().await;
+    let create = || async {
+        providers
+            .create_openapi_setup(
+                &context,
+                owner,
+                coral_catalog::OpenApiDocument::parse(&credential_free_openapi(&server)).unwrap(),
+            )
+            .await
+            .unwrap()
+    };
+    let (without, moved) = (create().await, create().await);
+    assert_eq!(without.expires_at_unix_nanos(), 10 + HOUR);
+    for (setup, stored) in [(&without, "NULL"), (&moved, "5000")] {
+        fixture
+            .execute_fixture_sql(&format!(
+                "UPDATE provider_setups SET expires_at_unix_nanos = {stored} WHERE id = '{}'",
+                setup.id()
+            ))
+            .await
+            .unwrap();
+    }
+    let read = providers
+        .review_setup_configuration(&actor, owner, without.id())
+        .await;
+    assert!(
+        matches!(&read, Err(Error::CorruptData(reason)) if reason == "Provider Setup has no deadline"),
+        "{read:?}"
+    );
+
+    database
+        .migrate(coral_db::migration_plan())
+        .await
+        .expect("apply the upgrade");
+
+    for (setup, deadline) in [(&without, 10 + HOUR), (&moved, 5_000)] {
+        let inspected = providers
+            .inspect_setup(&actor, owner, setup.id(), 11)
+            .await
+            .expect("the upgraded Setup decodes");
+        assert_eq!(inspected.setup.expires_at_unix_nanos(), deadline);
+    }
 }
 
 #[tokio::test]
@@ -774,7 +846,7 @@ async fn anonymous_mcp_catalog_still_requires_explicit_configuration_confirmatio
     let context = change_context(actor.clone(), 10, '4');
     let owner = workspace.id().clone();
     let server = MockServer::start().await;
-    anonymous_catalog_for_tenant(&server, "one").await;
+    anonymous_catalog(&server, "one", "lookup").await;
     let setup = harness
         .providers
         .prepare_setup(
@@ -830,7 +902,7 @@ async fn anonymous_mcp_catalog_still_requires_explicit_configuration_confirmatio
         .unwrap();
     assert!(confirmed.configuration_confirmed);
     server.reset().await;
-    anonymous_catalog_for_tenant(&server, "two").await;
+    anonymous_catalog(&server, "two", "search").await;
     let mut changed = values;
     changed
         .request_headers
@@ -864,6 +936,30 @@ async fn anonymous_mcp_catalog_still_requires_explicit_configuration_confirmatio
         .unwrap()
         .skip_search();
     assert_eq!(published.outcome(), ProviderPublicationOutcome::Succeeded);
+    // The confirmation pinned what the edited header read, and Publication
+    // materializes exactly that.
+    assert_eq!(
+        refreshed
+            .tools
+            .iter()
+            .map(|tool| tool.key.as_str())
+            .collect::<Vec<_>>(),
+        ["search"]
+    );
+    let inspect = async |tool: &str| {
+        harness
+            .providers
+            .inspect_tool(
+                &actor,
+                &owner,
+                published.published_provider().unwrap().id(),
+                &coral_catalog::ToolKey::parse(tool).unwrap(),
+            )
+            .await
+            .map(|tool| tool.key().as_str().to_owned())
+    };
+    assert_eq!(inspect("search").await.unwrap(), "search");
+    assert!(matches!(inspect("lookup").await, Err(Error::ToolNotFound)));
     assert!(
         harness
             .providers
@@ -2743,7 +2839,7 @@ async fn an_mcp_update_takes_the_server_it_reads() {
         request_headers: std::collections::BTreeMap::from([("x-tenant".into(), "one".into())]),
     };
     let saved = MockServer::start().await;
-    anonymous_catalog_for_tenant(&saved, "one").await;
+    anonymous_catalog(&saved, "one", "lookup").await;
     let setup = harness
         .providers
         .prepare_setup(&context, workspace.id(), source(&saved), None)
@@ -2781,7 +2877,7 @@ async fn an_mcp_update_takes_the_server_it_reads() {
         .published_provider()
         .expect("a published Provider");
     let moved = MockServer::start().await;
-    anonymous_catalog_for_tenant(&moved, "one").await;
+    anonymous_catalog(&moved, "one", "lookup").await;
 
     let prepared = harness
         .providers
@@ -3557,7 +3653,9 @@ async fn public_configuration_preview_reports_a_loopback_destination() {
     assert!(review.destinations.is_empty());
 }
 
-async fn anonymous_catalog_for_tenant(server: &MockServer, tenant: &str) {
+/// An MCP server that lists one Tool, `tool`, without sign-in, to requests
+/// that carry `tenant` in `x-tenant`.
+async fn anonymous_catalog(server: &MockServer, tenant: &str, tool: &'static str) {
     Mock::given(method("POST")).and(wiremock::matchers::header("x-tenant", tenant)).and(body_partial_json(json!({"method":"initialize"})))
         .respond_with(|request: &Request| envelope(request, &json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"anonymous","version":"1"}}))).mount(server).await;
     Mock::given(method("POST"))
@@ -3571,10 +3669,10 @@ async fn anonymous_catalog_for_tenant(server: &MockServer, tenant: &str) {
     Mock::given(method("POST"))
         .and(wiremock::matchers::header("x-tenant", tenant))
         .and(body_partial_json(json!({"method":"tools/list"})))
-        .respond_with(|request: &Request| {
+        .respond_with(move |request: &Request| {
             envelope(
                 request,
-                &json!({"tools":[{"name":"lookup","inputSchema":{"type":"object"}}]}),
+                &json!({"tools":[{"name":tool,"inputSchema":{"type":"object"}}]}),
             )
         })
         .mount(server)

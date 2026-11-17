@@ -1,5 +1,6 @@
 ---
 title: "Database providers"
+sidebarTitle: "Databases"
 description: "Connect your database to Coral through MCP Toolbox for Databases."
 ---
 
@@ -24,36 +25,37 @@ See [Toolbox's integration catalog](https://mcp-toolbox.dev/integrations/) for t
 2. For trusted development, choose a [prebuilt configuration](https://mcp-toolbox.dev/documentation/configuration/prebuilt-configs/) for your database.
 3. Set the connection and credential environment variables listed in that configuration's documentation.
 
-For example, after setting the [PostgreSQL environment variables](https://mcp-toolbox.dev/integrations/postgres/prebuilt-configs/postgresql/), start a local server:
+For example, set the [PostgreSQL environment variables](https://mcp-toolbox.dev/integrations/postgres/prebuilt-configs/postgresql/), then start a local server:
 
 ```shellscript
 toolbox --prebuilt postgres --address 127.0.0.1 --port 5000
 ```
 
-This loads Toolbox's built-in PostgreSQL tools without a `tools.yaml` file.
-For custom tools or databases without a prebuilt configuration, [define `tools.yaml`](https://mcp-toolbox.dev/documentation/configuration/) and use `--config tools.yaml` instead.
+This command loads Toolbox's built-in PostgreSQL tools without a `tools.yaml` file.
+For custom Toolbox tools or databases without a prebuilt configuration, [define `tools.yaml`](https://mcp-toolbox.dev/documentation/configuration/) and use `--config tools.yaml` instead.
 
-Coral recommends exposing only an `execute_sql` tool, using a database account with the minimum permissions required for your agent's work.
+Coral recommends that you expose only an `execute_sql` tool.
+Use a database account with the minimum permissions that your agent's work requires.
 See [Toolbox's security guidance](https://mcp-toolbox.dev/documentation/configuration/prebuilt-configs/#security-for-dynamic-sql-tools).
 
-Its MCP endpoint is `http://127.0.0.1:5000/mcp`.
+The MCP endpoint of this server is `http://127.0.0.1:5000/mcp`.
 To expose a specific toolset, use `/mcp/<toolset-name>` instead.
 For containers or a remote server, use an address reachable from the Coral runtime.
-See [Deploy with Coral](#deploy-with-coral) below.
+See [Deploy with Coral](#deploy-with-coral).
 
 Configure database credentials in Toolbox.
 If Toolbox requires client authentication, follow its [authentication documentation](https://mcp-toolbox.dev/documentation/configuration/authentication/) and configure the corresponding credentials in Coral.
 
 ## Add Toolbox to Coral
 
-1. Open your workspace and select **Tools**, then **Add provider**.
-2. Select **Add custom** and enter the Toolbox endpoint in **MCP server URL**.
-3. Select **Connect**.
+1. Open your workspace and click **Tools**, then **Add provider**.
+2. Click **Add custom** and enter the Toolbox endpoint in **MCP server URL**.
+3. Click **Connect**.
 4. Set the display name and namespace, then choose the sign-in method that matches your Toolbox configuration.
-5. Select **Next**. Authenticate if prompted, then review the discovered tools with **Expand all**.
-6. Select **Next**, choose the account setting, and select **Add provider**.
+5. Click **Next**. Authenticate if prompted, then review the discovered tools with **Expand all**.
+6. Click **Next**, choose the account setting, and click **Add provider**.
 
-For a server without authentication, select **No authentication** and confirm **No account needed**.
+For a server without authentication, click **No authentication** and confirm **No account needed**.
 Review the provider's [tool policy](/guides/concepts#tool-policy) to choose which tools can run or require approval.
 The database account's permissions still apply to every query.
 
@@ -61,7 +63,7 @@ The database account's permissions still apply to every query.
 
 [Connect your MCP client to Coral](/getting-started/quickstart#connect-an-mcp-client).
 Give your client the Coral workspace URL, and keep the Toolbox URL in the provider configuration.
-Ask your agent to query the database using the provider's namespace.
+Ask your agent to query the database through the provider's namespace.
 
 ## Deploy with Coral
 
@@ -70,7 +72,7 @@ Direct access bypasses Coral's tool policy.
 
 ### Local
 
-Run Toolbox on the same host as Coral with `--address 127.0.0.1`, as shown above.
+Run Toolbox on the same host as Coral with `--address 127.0.0.1`, as in [Run Toolbox](#run-toolbox).
 Use `http://127.0.0.1:5000/mcp` as the provider URL.
 Loopback binding blocks remote connections, but other processes on the host can still access Toolbox.
 
@@ -84,7 +86,7 @@ For a service named `toolbox` on port `5000`, use `http://toolbox:5000/mcp` as t
 
 ### Kubernetes
 
-Follow [Toolbox's Kubernetes guide](https://mcp-toolbox.dev/documentation/deploy-to/kubernetes/) alongside [Coral's Kubernetes guide](/getting-started/self-host/kubernetes).
+Follow [Toolbox's Kubernetes guide](https://mcp-toolbox.dev/documentation/deploy-to/kubernetes/) together with [Coral's Kubernetes guide](/getting-started/self-host/kubernetes).
 For a sidecar, run Toolbox in Coral's Pod with `--address 127.0.0.1`.
 Use `http://127.0.0.1:5000/mcp` as the provider URL, without a Service for Toolbox.
 
@@ -95,8 +97,8 @@ Adjust the namespace, port, and cluster domain to match your deployment.
 For each deployment, include the provider URL's hostname and port in Toolbox's `--allowed-hosts`.
 Configure Coral's [outbound permissions](/reference/configuration#outbound) for the endpoint in its `[outbound]` configuration:
 
-- For loopback HTTP endpoints, including `127.0.0.1` sidecars, set `loopback = "http-and-https"`.
-- For private network HTTP endpoints, including Compose services and Kubernetes ClusterIP Services, set `private_networks = "http-and-https"`.
+- For loopback HTTP endpoints, such as `127.0.0.1` sidecars, set `loopback = "http-and-https"`.
+- For private network HTTP endpoints, such as Compose services and Kubernetes ClusterIP Services, set `private_networks = "http-and-https"`.
 
 These permissions are independent and default to `deny` in server deployments.
-Desktop and implicit-user local deployments allow both by default, unless you explicitly override them.
+Desktop and implicit-user local deployments allow both by default, unless you override them.

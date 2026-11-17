@@ -7,6 +7,8 @@
 use coral_db::Database;
 use coral_workspace::WorkspaceId;
 
+pub use crate::index::{WritePoint, WriteProbe};
+
 /// One Tool row of the index, as a test observes it: membership, never
 /// counts or scores.
 #[derive(Debug, Clone, PartialEq, Eq)]

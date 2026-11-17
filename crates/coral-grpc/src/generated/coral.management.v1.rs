@@ -796,7 +796,7 @@ pub struct ProviderSetup {
     /// Safe diagnostic of the last failed discovery attempt while awaiting discovery.
     #[prost(message, optional, tag = "14")]
     pub discovery_failure: ::core::option::Option<ProviderDiagnostic>,
-    /// Host deadline for a pre-ready Setup; absent once ready without material.
+    /// Host deadline of the Setup, set when it is created. An open Setup expires then, ready or not.
     #[prost(message, optional, tag = "15")]
     pub expire_time: ::core::option::Option<::prost_types::Timestamp>,
     /// What a Program asked this Setup to publish; absent for a Setup a person started.
@@ -15331,6 +15331,10 @@ pub struct ListSecretStoresResponse {
     /// Ordered by name.
     #[prost(message, repeated, tag = "1")]
     pub secret_stores: ::prost::alloc::vec::Vec<SecretStore>,
+    /// The deployment turned Secret Stores off and can define none, so there is
+    /// nothing to show. False while it merely defines none yet.
+    #[prost(bool, tag = "2")]
+    pub disabled: bool,
 }
 /// One defined store: what it is called, never how Coral reaches it.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -17455,9 +17459,6 @@ pub struct UsageData {
     /// On until an Organization Owner turns it off.
     #[prost(bool, tag = "1")]
     pub sharing: bool,
-    /// Whether the caller is an Organization Owner, who can change `sharing`.
-    #[prost(bool, tag = "2")]
-    pub can_change: bool,
     /// What stops this process from sending, whatever `sharing` says.
     #[prost(enumeration = "UsageSendBlock", tag = "3")]
     pub block: i32,
@@ -17570,7 +17571,7 @@ pub mod usage_data_service_client {
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
     /// The deployment's anonymous usage data: the one sharing setting, and the
-    /// Usage Reports Coral sends.
+    /// Usage Reports Coral sends. Only an Organization Owner can read or change it.
     #[derive(Debug, Clone)]
     pub struct UsageDataServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -17651,7 +17652,7 @@ pub mod usage_data_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        /// Any Organization Member can read the setting and the reports.
+        /// Reads the setting and the reports.
         pub async fn get_usage_data(
             &mut self,
             request: impl tonic::IntoRequest<super::GetUsageDataRequest>,
@@ -17678,7 +17679,7 @@ pub mod usage_data_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Only an Organization Owner can change the setting.
+        /// Changes the setting.
         pub async fn set_usage_data_sharing(
             &mut self,
             request: impl tonic::IntoRequest<super::SetUsageDataSharingRequest>,
@@ -17721,19 +17722,19 @@ pub(crate) mod usage_data_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with UsageDataServiceServer.
     #[async_trait]
     pub trait UsageDataService: std::marker::Send + std::marker::Sync + 'static {
-        /// Any Organization Member can read the setting and the reports.
+        /// Reads the setting and the reports.
         async fn get_usage_data(
             &self,
             request: tonic::Request<super::GetUsageDataRequest>,
         ) -> std::result::Result<tonic::Response<super::UsageData>, tonic::Status>;
-        /// Only an Organization Owner can change the setting.
+        /// Changes the setting.
         async fn set_usage_data_sharing(
             &self,
             request: tonic::Request<super::SetUsageDataSharingRequest>,
         ) -> std::result::Result<tonic::Response<super::UsageData>, tonic::Status>;
     }
     /// The deployment's anonymous usage data: the one sharing setting, and the
-    /// Usage Reports Coral sends.
+    /// Usage Reports Coral sends. Only an Organization Owner can read or change it.
     #[derive(Debug)]
     pub struct UsageDataServiceServer<T> {
         inner: Arc<T>,

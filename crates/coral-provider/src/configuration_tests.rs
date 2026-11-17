@@ -2369,9 +2369,7 @@ async fn confirmation_conceals_other_workspaces_and_rechecks_expiry_and_authorit
             .await,
         Err(Error::ProviderSetupNotFound)
     ));
-    let deadline = setup
-        .expires_at_unix_nanos()
-        .expect("unconfirmed input has a deadline");
+    let deadline = setup.expires_at_unix_nanos();
     assert!(matches!(
         h.providers
             .confirm_setup_configuration(
@@ -2447,6 +2445,7 @@ async fn modules_retain_independent_outbound_permissions_for_preview_and_publica
                     h.workspaces.clone(),
                     coral_catalog::BuiltinCatalog::running()
                         .expect("the built-in catalog prepares"),
+                    coral_catalog::SchemaGraphCache::with_default_budget(),
                 ),
             )
         })

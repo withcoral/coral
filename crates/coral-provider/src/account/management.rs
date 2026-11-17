@@ -193,7 +193,7 @@ impl AccountModule {
             &mut tx,
             workspace,
             crate::repository::ProviderKey::Id(provider),
-            crate::repository::ProviderHold::None,
+            coral_db::RowLock::None,
         )
         .await?
         .ok_or(Error::ProviderNotFound)?;
