@@ -34,8 +34,9 @@ impl From<ProtocolError> for CompileError {
     }
 }
 
-/// The digest a package carries: SHA-256 of the script's length as eight
-/// big-endian bytes, the script, and the source map.
+/// The digest a package carries: SHA-256 of the script's length in UTF-8
+/// bytes as eight big-endian bytes, then the script's and the source map's
+/// UTF-8 bytes.
 #[must_use]
 pub fn package_sha256(script: &str, source_map: &str) -> [u8; 32] {
     let length = u64::try_from(script.len()).unwrap_or(u64::MAX);

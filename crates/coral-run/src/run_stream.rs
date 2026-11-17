@@ -130,8 +130,9 @@ impl StreamLink {
 enum Start {
     Started(Box<(AuthenticatedPrincipal, StartedExecution)>),
     Ended(WireEnd),
-    /// Another stream of the same claim started the Run.
-    StartedElsewhere,
+    /// The Run cannot start on this stream now: the Run Executor opens it
+    /// again later.
+    Unavailable(&'static str),
 }
 
 /// How a taken Run that `claim_id` opened has ended, or that it is not
@@ -197,6 +198,10 @@ impl RunModule {
         if !self.loaded(&mut requests, &run, &claim, link).await {
             return;
         }
+        // Held until the owner is registered, so a Shutdown Drain counts it.
+        let Ok(admitted) = self.admission.admit() else {
+            return link.close(Closing::Unavailable("this Coral Instance is shutting down"));
+        };
         let attempted = AtomicBool::new(false);
         let started_at = std::sync::atomic::AtomicI64::new(0);
         let started = until_answered(
@@ -214,15 +219,13 @@ impl RunModule {
         let (actor, started) = match started {
             Ok(Start::Started(started)) => *started,
             Ok(Start::Ended(end)) => return link.end(end),
-            Ok(Start::StartedElsewhere) => {
-                return link.close(Closing::Unavailable("the Run started on another stream"));
-            }
+            Ok(Start::Unavailable(reason)) => return link.close(Closing::Unavailable(reason)),
             Err(_unanswered) => {
                 return link.close(Closing::Unavailable("the start is not written"));
             }
         };
         let (workspace_id, id) = (run.workspace_id.clone(), run.id.clone());
-        self.run_on_stream(run, claim, linked, actor, started, requests, link)
+        self.run_on_stream(run, claim, linked, actor, started, requests, link, admitted)
             .await;
         if link.violated.load(Ordering::SeqCst) {
             return link.close(Closing::InvalidArgument(
@@ -246,14 +249,15 @@ impl RunModule {
         claim: &str,
         link: &StreamLink,
     ) -> bool {
-        let violation = match requests.next().await.and_then(|request| request.message) {
-            Some(run_request::Message::Loaded(_)) => None,
+        let next = requests.next().await.map(|request| request.message);
+        let violation = match next {
             None => return false,
+            Some(Some(run_request::Message::Loaded(_))) => None,
             // A package the isolate could not load ends the Run unstarted.
-            Some(run_request::Message::Request(coral_run_executor::wire::v1::Request {
+            Some(Some(run_request::Message::Request(coral_run_executor::wire::v1::Request {
                 number: 1,
                 kind: Some(coral_run_executor::wire::v1::request::Kind::Finish(finish)),
-            })) => match program::completion(finish, run.value_limits) {
+            }))) => match program::completion(finish, run.value_limits) {
                 Some(completion) => {
                     match self
                         .end_unstarted_answered(run, claim, &completion, link)
@@ -268,13 +272,13 @@ impl RunModule {
                 }
                 None => Some("the Finish is invalid"),
             },
-            Some(run_request::Message::Request(_)) => Some("Started was not sent"),
+            Some(Some(run_request::Message::Request(_))) => Some("Started was not sent"),
             Some(_) => Some("Loaded was expected"),
         };
         if let Some(reason) = violation {
             // A message that breaks the protocol interrupts the Run before
             // any Program code ran.
-            let _interrupted = self
+            let interrupted = self
                 .end_unstarted_answered(
                     run,
                     claim,
@@ -282,6 +286,13 @@ impl RunModule {
                     link,
                 )
                 .await;
+            if let Err(error) = interrupted {
+                tracing::warn!(
+                    coral.run.id = coral_telemetry::safe::id(&run.held_id()),
+                    error.type = coral_telemetry::safe::kind(error.code()),
+                    "a Run whose stream broke the protocol before its start was not interrupted"
+                );
+            }
             link.close(Closing::InvalidArgument(reason));
             return false;
         }
@@ -372,9 +383,21 @@ impl RunModule {
         if resumed && run.execution_started_at_unix_nanos != Some(started_at.load(Ordering::SeqCst))
         {
             transaction.commit().await?;
-            return Ok(Start::StartedElsewhere);
+            return Ok(Start::Unavailable("the Run started on another stream"));
         }
         let checked_at = self.now()?.max(run.accepted_at_unix_nanos);
+        if resumed && run.termination.is_some() {
+            // A termination recorded meanwhile: no Program starts on it.
+            transaction.commit().await?;
+            return Ok(Start::Unavailable("the Run is being terminated"));
+        }
+        // A start mark that landed unanswered may have outlived its
+        // deadline meanwhile: the Run times out, unstarted.
+        if resumed && run.deadline_passed(checked_at) {
+            self.time_out_before_start(transaction, &run, checked_at)
+                .await?;
+            return Ok(Start::Ended(WireEnd::TimedOut));
+        }
         let checked = self
             .recheck_actor(&mut transaction, &run, checked_at)
             .await?;
@@ -389,28 +412,9 @@ impl RunModule {
             Ok(actor) => actor,
             Err(error) if error.database_error().is_some() => return Err(error),
             Err(_lost) => {
-                let outcome = RunTerminalOutcome::Failed(RunFailure::new(
-                    RunFailureCode::RunAuthorityLost,
-                    "Run authority was lost before Program execution started".to_string(),
-                ));
-                // A start mark that landed unanswered keeps the claim; no
-                // Program code has run either way.
-                if resumed {
-                    run_repository::finish_run(&mut transaction, &run, claim_id, &outcome, now)
-                        .await?;
-                } else {
-                    run_repository::finish_taken_run(
-                        &mut transaction,
-                        &run,
-                        claim_id,
-                        &outcome,
-                        now,
-                    )
-                    .await?;
-                }
-                transaction.commit().await?;
-                crate::trace::record_run_end(&run, &RunEnd::Unstarted(&outcome), now);
-                return Ok(Start::Ended(WireEnd::Failed));
+                return self
+                    .fail_unstarted(transaction, &run, claim_id, resumed, now)
+                    .await;
             }
         };
         let package = package.clone();
@@ -452,6 +456,32 @@ impl RunModule {
                 deadline_at_unix_nanos,
             },
         ))))
+    }
+
+    /// Fails a Run whose Principal lost its authority before its Program
+    /// started, under the take's claim. A start mark that landed unanswered
+    /// keeps the claim; no Program code has run either way.
+    async fn fail_unstarted(
+        &self,
+        mut transaction: coral_db::Transaction<'_>,
+        run: &RunRecord,
+        claim_id: &str,
+        resumed: bool,
+        now: i64,
+    ) -> Result<Start, Error> {
+        let outcome = RunTerminalOutcome::Failed(RunFailure::new(
+            RunFailureCode::RunAuthorityLost,
+            "Run authority was lost before Program execution started".to_string(),
+        ));
+        if resumed {
+            run_repository::finish_run(&mut transaction, run, claim_id, &outcome, now).await?;
+        } else {
+            run_repository::finish_taken_run(&mut transaction, run, claim_id, &outcome, now)
+                .await?;
+        }
+        transaction.commit().await?;
+        crate::trace::record_run_end(run, &RunEnd::Unstarted(&outcome), now);
+        Ok(Start::Ended(WireEnd::Failed))
     }
 
     /// The actor `run` names, rebuilt from current facts, with the evidence
@@ -559,6 +589,7 @@ impl RunModule {
         started: StartedExecution,
         requests: Requests,
         link: &Arc<StreamLink>,
+        admitted: crate::shutdown::Admitted,
     ) {
         let accepted = AcceptedRun {
             id: run.id,
@@ -581,6 +612,7 @@ impl RunModule {
         // Decisions and cancellations reach it through the Run Inbox until
         // the receiver commits them itself (#2907).
         let registration = self.register_owner(&handle);
+        drop(admitted);
         handle.send(Message::Started(Ok(Some(started))));
         let stream = Arc::new(StreamRun {
             actor,

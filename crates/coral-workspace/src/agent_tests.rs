@@ -234,9 +234,32 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
         assert!(expected(permitted, rebuilt.map(drop)));
         transaction.rollback().await.unwrap();
     }
-    // An Agent's start needs the Registration that authenticated it.
+    // An Agent's start needs the Registration that authenticated it, and
+    // one that authenticates another Agent admits nobody.
+    let another = module
+        .create_agent(
+            &change(owner.clone(), 16, '6'),
+            workspace.id(),
+            AgentDisplayName::parse("Other worker").unwrap(),
+            Some(100),
+        )
+        .await
+        .unwrap();
     let connection = database.database();
     let mut transaction = connection.begin().await.unwrap();
+    assert!(expected(
+        false,
+        module
+            .check_run_start_in_transaction(
+                &mut transaction,
+                agent.principal(),
+                Some(another.registration.id()),
+                workspace.id(),
+                15,
+            )
+            .await
+            .map(drop)
+    ));
     assert!(expected(
         false,
         module
@@ -298,10 +321,12 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
             Err(Error::WorkspaceArchived)
         ));
     }
-    assert_eq!(
-        module.list_agents(&owner, workspace.id()).await.unwrap(),
-        [issued.agent]
-    );
+    let by_id = |agent: &Agent| agent.principal().id().as_str().to_owned();
+    let mut listed = module.list_agents(&owner, workspace.id()).await.unwrap();
+    listed.sort_by_key(by_id);
+    let mut agents = vec![issued.agent, another.agent];
+    agents.sort_by_key(by_id);
+    assert_eq!(listed, agents);
 }
 
 #[tokio::test]

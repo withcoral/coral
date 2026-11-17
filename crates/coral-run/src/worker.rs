@@ -285,7 +285,7 @@ impl RunModule {
 
     /// Ends a Run whose deadline passed before its Program started: the
     /// timeout and its terminal chunk, committed here, and nothing to run.
-    async fn time_out_before_start(
+    pub(crate) async fn time_out_before_start(
         &self,
         mut transaction: coral_db::Transaction<'_>,
         run: &RunRecord,

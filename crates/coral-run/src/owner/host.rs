@@ -814,8 +814,14 @@ impl Written {
     /// for this one.
     fn landed_on(self, run: &RunRecord) -> bool {
         let marked = if run.on_run_executor {
+            // Another writer may stamp the same instant; the watermark this
+            // attempt wrote must be on the row too.
             self.committed_at_unix_nanos.is_some()
                 && run.last_commit_at_unix_nanos == self.committed_at_unix_nanos
+                && self.request_number.is_none_or(|number| {
+                    run.committed_request_number
+                        .is_some_and(|committed| committed >= number)
+                })
         } else {
             self.lease_until_unix_nanos.is_some()
                 && run.worker_claim_expires_at_unix_nanos == self.lease_until_unix_nanos

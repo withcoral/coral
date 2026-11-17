@@ -77,7 +77,9 @@ impl RunRecord {
     }
 
     /// Whether the Run row still takes the Run Owner's chunks: a running Run
-    /// whose claim columns both hold `claim_id`. Never the clock: the owner
+    /// that holds `claim_id` as its owner's claim ([`Self::holds_owner_claim`]:
+    /// both claim columns, or the execution claim alone for a Run a Run
+    /// Executor holds, which no worker claim fences). Never the clock: the owner
     /// applies the Run deadline itself and records the timeout like a
     /// cancellation. A lapsed lease does not end ownership (a local owner
     /// continues while its commits show a matching claim), and a recorded
@@ -97,7 +99,8 @@ impl RunRecord {
 
     /// Whether the owner holding `claim_id` may still do Program work on
     /// this Run. True when the Run is running, no termination is recorded,
-    /// both claim columns hold `claim_id`, and the deadline has not passed.
+    /// it holds `claim_id` as its owner's claim ([`Self::holds_owner_claim`]),
+    /// and the deadline has not passed.
     ///
     /// The lease is deliberately not part of this check. The lease decides
     /// which process owns the Run; every commit renews it. Inside its own

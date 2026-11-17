@@ -273,10 +273,15 @@ impl WorkspaceModule {
             }
             PrincipalKind::Agent => {
                 let id = agent_registration_id.ok_or(Error::WorkspaceNotFound)?;
-                AuthenticatedPrincipal::agent(
+                let registration =
                     agent_repository::registration_by_id(&mut *transaction, workspace_id, id)
-                        .await?,
-                )
+                        .await?;
+                // The actor is the Registration's Agent: it must be the one
+                // the Run names.
+                if registration.agent_id() != principal.id() {
+                    return Err(Error::WorkspaceNotFound);
+                }
+                AuthenticatedPrincipal::agent(registration)
             }
         };
         if !repository::hold_workspace(transaction, workspace_id).await? {

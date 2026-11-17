@@ -96,6 +96,7 @@ pub(crate) fn start(
             })
             .collect(),
         performed: Arc::default(),
+        completed: std::collections::HashSet::new(),
         last: 0,
     };
     drop(entered);
@@ -156,6 +157,9 @@ struct Reader {
     /// The Program and each linked Tool's source, by the Tool's id.
     sources: HashMap<String, AuthoredSource>,
     performed: Arc<Mutex<HashMap<u64, Performed>>>,
+    /// The Performs a `Complete` ended: a later call their bodies make is
+    /// refused, not a broken protocol.
+    completed: std::collections::HashSet<u64>,
     /// The last request number read.
     last: u64,
 }
@@ -236,7 +240,7 @@ impl Reader {
     /// Starts the Invoke the Program or a permitted Perform's body made.
     fn invoke(&self, number: u64, invoke: coral_run_executor::wire::v1::Invoke) -> Option<()> {
         let location = self.location(invoke.location);
-        let future = match invoke.parent.map(|parent| self.body(number, parent)) {
+        let future = match invoke.parent.map(|parent| self.body(parent)) {
             Some(Body::Running(body)) => {
                 body.invoke(invoke.call_path, invoke.arguments_json, location)
             }
@@ -257,7 +261,7 @@ impl Reader {
     /// Starts the Perform the Program or a permitted Perform's body made.
     fn perform(&self, number: u64, perform: coral_run_executor::wire::v1::Perform) -> Option<()> {
         let location = self.location(perform.location);
-        let permit = match perform.parent.map(|parent| self.body(number, parent)) {
+        let permit = match perform.parent.map(|parent| self.body(parent)) {
             Some(Body::Running(body)) => {
                 body.perform(perform.call_path, perform.arguments_json, location)
             }
@@ -294,9 +298,8 @@ impl Reader {
         })
     }
 
-    /// The body of Perform `perform`, which request `number` names as its
-    /// parent.
-    fn body(&self, number: u64, perform: u64) -> Body {
+    /// The body of Perform `perform`, which a request names as its parent.
+    fn body(&self, perform: u64) -> Body {
         let performed = self
             .performed
             .lock()
@@ -304,7 +307,7 @@ impl Reader {
         match performed.get(&perform) {
             Some(performed) => Body::Running(performed.body.clone()),
             // A completed Perform's body ended: its later calls are refused.
-            None if perform < number => Body::Ended,
+            None if self.completed.contains(&perform) => Body::Ended,
             None => Body::Unknown,
         }
     }
@@ -369,13 +372,18 @@ impl Reader {
 
     /// Completes the Perform `done` names; `None` when it names none still
     /// running.
-    fn complete(&self, number: u64, done: coral_run_executor::wire::v1::Complete) -> Option<()> {
+    fn complete(
+        &mut self,
+        number: u64,
+        done: coral_run_executor::wire::v1::Complete,
+    ) -> Option<()> {
         let completion = self
             .performed
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(&done.perform)?
             .completion;
+        self.completed.insert(done.perform);
         let outcome = match done.outcome? {
             complete::Outcome::ReturnedJson(json) => ToolBodyOutcome::Returned(json),
             complete::Outcome::NotData(not_data) => ToolBodyOutcome::NotData {
