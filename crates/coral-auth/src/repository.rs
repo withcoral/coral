@@ -49,8 +49,8 @@ pub(super) async fn upsert_login(
             Expr::val(login.issuer.to_string()),
             Expr::val(login.subject.to_string()),
             Expr::val(login.display_name.map(ToString::to_string)),
-            Expr::val(login.occurred_at_unix_nanos),
-            Expr::val(login.occurred_at_unix_nanos),
+            Expr::val(login.occurred_at),
+            Expr::val(login.occurred_at),
         ])
         .on_conflict(
             OnConflict::column(Users::Subject)

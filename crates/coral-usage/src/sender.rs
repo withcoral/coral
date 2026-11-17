@@ -2,6 +2,7 @@
 
 use std::time::Duration;
 
+use coral_db::UnixNanos;
 use coral_telemetry::safe;
 
 use crate::UsageData;
@@ -39,7 +40,7 @@ impl UsageData {
         &self,
         client: &coral_outbound::Client,
         collector: &str,
-        now: impl Fn() -> i64,
+        now: impl Fn() -> UnixNanos,
     ) -> Result<SendOutcome, crate::Error> {
         self.make_due_reports(now()).await?;
         // One report at a time: once an owner turns sharing off, the next

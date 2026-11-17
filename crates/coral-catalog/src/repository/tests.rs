@@ -48,7 +48,7 @@ async fn catalog_preserves_retained_generations_and_tools() {
             &ProviderSetupInputDigest::of_setup_input(input),
             prepared,
             "persistence-fixture",
-            1,
+            UnixNanos::new(1),
         )
         .await
         .expect("persist Generation");
@@ -168,7 +168,7 @@ async fn summary_fixture(
         &ProviderSetupInputDigest::of_setup_input(&input),
         prepared,
         "summary-page-fixture",
-        1,
+        UnixNanos::new(1),
     )
     .await
     .unwrap();
@@ -452,14 +452,14 @@ async fn upgrade_renames_what_a_generation_stored_about_its_tools() {
         &ProviderSetupInputDigest::of_setup_input(&input),
         prepared,
         "upgrade-fixture",
-        1,
+        UnixNanos::new(1),
     )
     .await
     .unwrap();
     let builtin = crate::publish_builtin_generation_in_transaction(
         &mut transaction,
         &crate::BuiltinCatalog::running().unwrap(),
-        2,
+        UnixNanos::new(2),
     )
     .await
     .unwrap();
@@ -544,21 +544,21 @@ async fn only_the_private_providers_generation_binds_code() {
         &ProviderSetupInputDigest::of_setup_input(&input),
         prepared,
         "code-binding-fixture",
-        1,
+        UnixNanos::new(1),
     )
     .await
     .unwrap();
     let builtin = crate::publish_builtin_generation_in_transaction(
         &mut transaction,
         &crate::BuiltinCatalog::running().unwrap(),
-        2,
+        UnixNanos::new(2),
     )
     .await
     .unwrap();
     let private = crate::publish_authored_generation_in_transaction(
         &mut transaction,
         crate::AuthoredToolKind::Private,
-        3,
+        UnixNanos::new(3),
     )
     .await
     .unwrap();
@@ -664,7 +664,7 @@ async fn an_oauth_contract_is_stored_once_and_restored_to_every_tool() {
         &ProviderSetupInputDigest::of_setup_input(&input),
         prepared,
         "persistence-fixture",
-        1,
+        UnixNanos::new(1),
     )
     .await
     .unwrap();
@@ -903,7 +903,7 @@ async fn a_generation_without_its_tools(
         &parts.schema_graph_json,
         &parts.typescript_view,
         "tool-per-statement-fixture",
-        1,
+        UnixNanos::new(1),
     )
     .await
     .unwrap();
@@ -973,7 +973,7 @@ async fn a_generation_stores_the_same_tool_rows_however_many_an_insert_holds() {
             &ProviderSetupInputDigest::of_setup_input(&input),
             prepared,
             "tool-insert-fixture",
-            1,
+            UnixNanos::new(1),
         )
         .await
         .unwrap();
@@ -1038,7 +1038,7 @@ async fn a_publish_writes_its_tools_in_inserts_of_many_rows() {
             &ProviderSetupInputDigest::of_setup_input(&input),
             prepared,
             "tool-insert-fixture",
-            1,
+            UnixNanos::new(1),
         )
         .await
         .unwrap();
@@ -1156,7 +1156,7 @@ async fn a_relative_path_too_long_for_postgres_fails_the_publish_at_the_first_su
         &ProviderSetupInputDigest::of_setup_input(&input),
         prepared,
         "long-path-fixture",
-        1,
+        UnixNanos::new(1),
     )
     .await
     .expect_err("Postgres rejects the long path");

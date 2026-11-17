@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use coral_db::Database;
+use coral_db::{Database, UnixNanos};
 use coral_outbound::{BrowserRedirect, EndpointUrl};
 use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::{Deserialize, Serialize};
@@ -209,17 +209,17 @@ impl OAuthClients {
     }
 
     /// Accepts a public client without creating a User, consent, or authority.
-    /// `now` is host time in Unix seconds, never supplied by the OAuth caller.
+    /// `now` is host time, never supplied by the OAuth caller.
     /// # Errors
     /// Invalid metadata or a failed commit creates no registration.
     pub async fn register(
         &self,
         request: RegistrationRequest,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<RegisteredClient, RegistrationError> {
-        if now < 0 {
-            return Err(RegistrationError::Unavailable);
-        }
+        // The response dates the registration in whole seconds (RFC 7591),
+        // and the admission window is stored in them.
+        let now = now.whole_seconds().cast_signed();
         let (metadata, method) = request.validate()?;
         let (client_secret, authentication) = match method {
             TokenEndpointAuthMethod::None => (None, StoredAuthentication::None),

@@ -174,7 +174,7 @@ pub(super) async fn issue_code(
     };
     match state
         .codes
-        .issue(&authorization_code, oidc_state, grant, now.get())
+        .issue(&authorization_code, oidc_state, grant, now)
         .await
     {
         Ok(CodeIssue::Issued) => trusted.success(&authorization_code),
@@ -238,7 +238,7 @@ async fn provision(
                 &identity.issuer,
                 &identity.subject,
                 identity.display_name.as_deref(),
-                now.get(),
+                now,
             )
             .with_profile(coral_workspace::VerifiedUserProfile::new(
                 identity.profile_name.as_deref(),
@@ -246,7 +246,7 @@ async fn provision(
                 identity.email_verified,
                 identity.hosted_domain.as_deref(),
             ))
-            .with_profile_observed_at(identity.profile_observed_at_unix_nanos),
+            .with_profile_observed_at(UnixNanos::new(identity.profile_observed_at_unix_nanos)),
         )
         .await;
     match provisioning {
@@ -444,7 +444,7 @@ mod tests {
                     code_challenge: &session.request.code_challenge,
                     resource: RESOURCE,
                 },
-                now.get(),
+                now,
             )
             .await
             .expect("code storage")
@@ -974,7 +974,7 @@ mod tests {
                 BOUND_ISSUER,
                 UPSTREAM_SUBJECT,
                 None,
-                1,
+                UnixNanos::new(1),
             ))
             .await
             .expect("seed the directory");
@@ -1242,7 +1242,7 @@ mod tests {
                 issuer,
                 UPSTREAM_SUBJECT,
                 None,
-                coral_test_support::now_unix_nanos(),
+                UnixNanos::new(coral_test_support::now_unix_nanos()),
             ))
             .await
         else {
@@ -1354,7 +1354,7 @@ mod tests {
                     code_challenge: &session.request.code_challenge,
                     resource: ORGANIZATION_RESOURCE,
                 },
-                coral_test_support::now_unix_nanos(),
+                UnixNanos::new(coral_test_support::now_unix_nanos()),
             )
             .await
             .unwrap()

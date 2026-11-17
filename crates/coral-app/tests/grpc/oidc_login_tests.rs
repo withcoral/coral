@@ -359,7 +359,7 @@ async fn composed_server_issues_an_organization_token_for_the_picked_workspace()
                 &composed.provider.uri(),
                 "upstream-subject",
                 None,
-                1,
+                coral_db::UnixNanos::new(1),
             ))
             .await
     else {

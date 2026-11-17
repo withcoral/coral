@@ -55,14 +55,14 @@ pub(super) async fn start(
     let now = state.clock.now();
     match state
         .tokens
-        .start_web_session(refresh_token, &client, max_age, now.get())
+        .start_web_session(refresh_token, &client, max_age, now)
         .await
     {
         Ok(started) => json_response(
             StatusCode::CREATED,
             &serde_json::json!({
                 "session": started.handle.expose(),
-                "expires_in": seconds_until(started.expires_at_unix_nanos, now),
+                "expires_in": seconds_until(started.expires_at, now),
             }),
         ),
         Err(refusal) => refused(refusal),
@@ -81,18 +81,14 @@ pub(super) async fn token(
         return token_error(TokenError::InvalidRequest);
     };
     let now = state.clock.now();
-    match state
-        .tokens
-        .web_session_token(session, &client, now.get())
-        .await
-    {
+    match state.tokens.web_session_token(session, &client, now).await {
         Ok(minted) => json_response(
             StatusCode::OK,
             &serde_json::json!({
                 "access_token": minted.access_token.access_token,
                 "token_type": "Bearer",
                 "expires_in": expires_in(&minted.access_token, now),
-                "session_expires_in": seconds_until(minted.session_expires_at_unix_nanos, now),
+                "session_expires_in": seconds_until(minted.session_expires_at, now),
             }),
         ),
         Err(refusal) => refused(refusal),
@@ -162,8 +158,8 @@ fn session_age(value: &str) -> Option<Duration> {
 
 /// Whole seconds from `now` until `deadline`, rounded up: a session with any
 /// time left reports at least one second.
-fn seconds_until(deadline_unix_nanos: i64, now: coral_db::UnixNanos) -> i64 {
-    let remaining = deadline_unix_nanos.saturating_sub(now.get()).max(0);
+fn seconds_until(deadline: coral_db::UnixNanos, now: coral_db::UnixNanos) -> i64 {
+    let remaining = deadline.get().saturating_sub(now.get()).max(0);
     remaining / 1_000_000_000 + i64::from(remaining % 1_000_000_000 != 0)
 }
 

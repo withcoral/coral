@@ -76,7 +76,7 @@ async fn authentication_rejects_wrong_audience_signature_kind_and_malformed_cred
     )
     .unwrap();
     let wrong_key = other_issuer
-        .issue_access_token("owner", "client", AUDIENCE, fixture.now_unix_nanos())
+        .issue_access_token("owner", "client", AUDIENCE, fixture.clock.now())
         .unwrap();
     let wrong_kind = crate::session::test_tokens::agent_kind_token(
         &fixture.issuer,
@@ -126,7 +126,7 @@ async fn the_credential_alone_fixes_the_workspace_at_the_organization_endpoint()
                 "client",
                 audience,
                 workspace,
-                fixture.now_unix_nanos(),
+                fixture.clock.now(),
             )
             .unwrap()
             .access_token
@@ -286,7 +286,7 @@ async fn a_credential_expires_when_the_clock_passes_its_expiry() {
             &fixture.workspace,
             agent.registration.id(),
             true,
-            Some(UnixNanos::new(fixture.now_unix_nanos() + 30 * SECOND)),
+            Some(UnixNanos::new(fixture.clock.now().get() + 30 * SECOND)),
         )
         .await
         .unwrap();
@@ -529,12 +529,6 @@ impl Fixture {
         }
     }
 
-    /// The fixture clock's reading in Unix nanoseconds, as the issuer and
-    /// the Workspace module take it.
-    fn now_unix_nanos(&self) -> i64 {
-        self.clock.now().get()
-    }
-
     async fn agent(&self, workspace: &WorkspaceId) -> IssuedAgentCredential {
         self.workspaces
             .create_agent(
@@ -549,7 +543,7 @@ impl Fixture {
 
     fn token(&self, user: &str, audience: &str) -> String {
         self.issuer
-            .issue_access_token(user, "untrusted-client", audience, self.now_unix_nanos())
+            .issue_access_token(user, "untrusted-client", audience, self.clock.now())
             .unwrap()
             .access_token
     }

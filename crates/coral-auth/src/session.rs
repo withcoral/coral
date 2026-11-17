@@ -124,7 +124,7 @@ impl SessionTokenIssuer {
     }
 
     /// Mints an access token whose `sub` is Coral's internal `user_id`, issued
-    /// at host time `now_unix_nanos`.
+    /// at host time `now`.
     ///
     /// No upstream identifier reaches the token: the issuer, the raw OIDC
     /// subject, and the configured principal claim all stop at login
@@ -142,23 +142,23 @@ impl SessionTokenIssuer {
         user_id: &str,
         client_id: &str,
         audience: &str,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
-        self.mint(user_id, client_id, audience, None, None, now_unix_nanos)
+        self.mint(user_id, client_id, audience, None, None, now)
     }
 
-    /// Issues unscoped User access at host time `now_unix_nanos` that lasts
-    /// at most `lifetime`, and expires by `latest_expires_at` (Unix seconds),
-    /// whichever comes first, and never later than the configured lifetime
-    /// allows.
+    /// Issues unscoped User access at host time `now` that lasts
+    /// at most `lifetime`, and expires by the second `latest_expires_at`
+    /// falls in, whichever comes first, and never later than the configured
+    /// lifetime allows.
     pub(crate) fn issue_bounded_access_token(
         &self,
         user_id: &str,
         client_id: &str,
         audience: &str,
         lifetime: Duration,
-        latest_expires_at: u64,
-        now_unix_nanos: i64,
+        latest_expires_at: UnixNanos,
+        now: UnixNanos,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
         self.mint(
             user_id,
@@ -166,12 +166,12 @@ impl SessionTokenIssuer {
             audience,
             None,
             Some((lifetime, latest_expires_at)),
-            now_unix_nanos,
+            now,
         )
     }
 
     /// Issues User access with a signed, immutable Workspace scope, at host
-    /// time `now_unix_nanos`.
+    /// time `now`.
     /// The trusted issuing Adapter must authenticate the User before issuance;
     /// a request body never supplies the User identity.
     ///
@@ -183,7 +183,7 @@ impl SessionTokenIssuer {
         client_id: &str,
         audience: &str,
         workspace: &coral_workspace::WorkspaceId,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
         self.mint(
             user_id,
@@ -191,7 +191,7 @@ impl SessionTokenIssuer {
             audience,
             Some(workspace.to_string()),
             None,
-            now_unix_nanos,
+            now,
         )
     }
 
@@ -201,8 +201,8 @@ impl SessionTokenIssuer {
         client_id: &str,
         audience: &str,
         workspace_id: Option<String>,
-        bound: Option<(Duration, u64)>,
-        now_unix_nanos: i64,
+        bound: Option<(Duration, UnixNanos)>,
+        now: UnixNanos,
     ) -> Result<IssuedAccessToken, SessionTokenError> {
         if external_user_id(user_id).is_err() {
             return Err(config_error(
@@ -218,14 +218,14 @@ impl SessionTokenIssuer {
                 "client_id and audience must be non-empty and have no surrounding whitespace",
             ));
         }
-        let issued_at = unix_seconds(now_unix_nanos)?;
+        let issued_at = unix_seconds(now)?;
         let lifetime = bound.map_or(self.access_token_ttl, |(lifetime, _latest)| {
             lifetime.min(self.access_token_ttl)
         });
         let expires_at = issued_at
             .checked_add(lifetime.as_secs())
             .ok_or_else(|| config_error("access token expiry overflowed"))?
-            .min(bound.map_or(u64::MAX, |(_lifetime, latest)| latest));
+            .min(bound.map_or(u64::MAX, |(_lifetime, latest)| latest.whole_seconds()));
         if expires_at <= issued_at {
             return Err(config_error("access token would expire as it is issued"));
         }
@@ -489,7 +489,7 @@ fn verification_key(jwk: &Jwk) -> Result<(String, DecodingKey), SessionTokenErro
 pub struct IssuedAccessToken {
     /// Secret bearer token for the requesting client.
     pub access_token: String,
-    /// Expiration as Unix seconds.
+    /// Expiration as Unix seconds: the token's `exp` claim.
     pub expires_at: u64,
 }
 
@@ -579,10 +579,12 @@ fn invalid_token(message: impl Into<String>) -> SessionTokenError {
     format!("invalid Coral access token: {}", message.into())
 }
 
-/// The whole Unix second `now_unix_nanos` falls in: token claims carry seconds.
-fn unix_seconds(now_unix_nanos: i64) -> Result<u64, SessionTokenError> {
-    u64::try_from(now_unix_nanos.div_euclid(1_000_000_000))
-        .map_err(|_error| "host time is before the Unix epoch".to_string())
+/// The whole Unix second `now` falls in: token claims carry seconds.
+fn unix_seconds(now: UnixNanos) -> Result<u64, SessionTokenError> {
+    if now < UnixNanos::new(0) {
+        return Err("host time is before the Unix epoch".to_string());
+    }
+    Ok(now.whole_seconds())
 }
 
 /// Hand-signed tokens for tests of what the verifier refuses.
@@ -759,7 +761,7 @@ mod tests {
         let issuer = test_issuer();
         let verifier = issuer.verifier();
         let access = issuer
-            .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, NOW.get())
+            .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, NOW)
             .unwrap();
         let header = decode_header(&access.access_token).unwrap();
         assert_eq!(header.alg, Algorithm::ES256);
@@ -799,7 +801,7 @@ mod tests {
                 PrincipalKind::User,
                 "user",
                 issuer
-                    .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, NOW.get())
+                    .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, NOW)
                     .expect("session token")
                     .access_token,
             ),
@@ -850,8 +852,7 @@ mod tests {
     fn issuance_rejects_subjects_that_could_never_authenticate() {
         let issuer = test_issuer();
         for user_id in ["", "   ", "user id", "user\tid", LOCAL_PRINCIPAL_ID] {
-            let Err(_error) =
-                issuer.issue_access_token(user_id, CLIENT_ID, MCP_AUDIENCE, NOW.get())
+            let Err(_error) = issuer.issue_access_token(user_id, CLIENT_ID, MCP_AUDIENCE, NOW)
             else {
                 panic!("token issuance should reject the subject {user_id:?}");
             };
@@ -1026,7 +1027,12 @@ mod tests {
             // is still that second.
             let last_nanosecond = i64::try_from(issued_at).expect("seconds") * SECOND + SECOND - 1;
             let token = issuer
-                .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, last_nanosecond)
+                .issue_access_token(
+                    USER_ID,
+                    CLIENT_ID,
+                    MCP_AUDIENCE,
+                    UnixNanos::new(last_nanosecond),
+                )
                 .expect("issued token");
             let claims = decode_unverified_claims(&token.access_token);
             let claim = |name: &str| claims.get(name).and_then(serde_json::Value::as_u64);
@@ -1037,7 +1043,7 @@ mod tests {
         }
         assert_eq!(
             issuer
-                .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, -1)
+                .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, UnixNanos::new(-1))
                 .err(),
             Some("host time is before the Unix epoch".to_string())
         );
@@ -1048,10 +1054,10 @@ mod tests {
         let issuer = test_issuer();
         let verifier = issuer.verifier();
         let mcp = issuer
-            .issue_access_token("user-123", "mcp-client", MCP_AUDIENCE, NOW.get())
+            .issue_access_token("user-123", "mcp-client", MCP_AUDIENCE, NOW)
             .unwrap();
         let bff = issuer
-            .issue_access_token("user-123", "bff-client", BFF_AUDIENCE, NOW.get())
+            .issue_access_token("user-123", "bff-client", BFF_AUDIENCE, NOW)
             .unwrap();
 
         verifier
@@ -1081,7 +1087,7 @@ mod tests {
             (CLIENT_ID, ""),
             (CLIENT_ID, "audience "),
         ] {
-            let Err(_error) = issuer.issue_access_token("user-123", client_id, audience, NOW.get())
+            let Err(_error) = issuer.issue_access_token("user-123", client_id, audience, NOW)
             else {
                 panic!(
                     "token issuance should reject client_id={client_id:?}, audience={audience:?}"
@@ -1094,7 +1100,7 @@ mod tests {
     fn public_jwks_support_detached_validation() {
         let issuer = test_issuer();
         let token = issuer
-            .issue_access_token("user-123", CLIENT_ID, MCP_AUDIENCE, NOW.get())
+            .issue_access_token("user-123", CLIENT_ID, MCP_AUDIENCE, NOW)
             .unwrap();
         let expected = issuer
             .verifier()

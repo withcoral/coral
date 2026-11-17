@@ -427,7 +427,7 @@ impl Engine {
         let (search_index, search_module, embedder_slot) = search.modules(&database, &workspaces);
         let provider_workflow =
             coral_administration::ProviderWorkflow::new(providers.clone(), search_index.clone());
-        install_coral_providers(&provider_workflow, clock.now().get()).await?;
+        install_coral_providers(&provider_workflow, clock.now()).await?;
         let RunExecutors {
             link,
             local: local_run_executors,
@@ -672,10 +672,10 @@ impl Drop for Engine {
 /// Every Workspace has a Built-in Provider with this process's catalog, and
 /// a Private Provider, before the process takes requests. A rollback moves
 /// Workspaces back the same way. `booted_at` dates every write: one reading
-/// of the instance's clock, in nanoseconds since 1970.
+/// of the instance's clock.
 async fn install_coral_providers(
     provider_workflow: &coral_administration::ProviderWorkflow,
-    booted_at: i64,
+    booted_at: coral_db::UnixNanos,
 ) -> Result<(), AppError> {
     provider_workflow
         .install_missing_coral_providers(booted_at)
@@ -742,7 +742,7 @@ fn start_passes(
             async move {
                 // The collector answering late or not at all is no failure:
                 // the reports wait for the next check.
-                data.send_due(&client, coral_usage::COLLECTOR_URL, || clock.now().get())
+                data.send_due(&client, coral_usage::COLLECTOR_URL, || clock.now())
                     .await
                     .map_err(|error| error.code())?;
                 Ok(())

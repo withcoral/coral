@@ -1,5 +1,5 @@
 use crate::authored::AuthoredToolKind;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
 use sqlx::FromRow;
 
@@ -672,7 +672,7 @@ pub(super) async fn publish_generation(
     input_digest: &ProviderSetupInputDigest,
     prepared: PreparedProviderCatalog,
     materializer_version: &str,
-    created_at_unix_nanos: i64,
+    created_at: UnixNanos,
 ) -> Result<ProviderGenerationId, Error> {
     let generation_id = ProviderGenerationId::generate();
     let contract = prepared.credential_contract().to_storage()?;
@@ -686,7 +686,7 @@ pub(super) async fn publish_generation(
         &parts.schema_graph_json,
         &parts.typescript_view,
         materializer_version,
-        created_at_unix_nanos,
+        created_at,
     )
     .await?;
     insert_tools(transaction, &generation_id, &parts.tools).await?;
@@ -792,7 +792,7 @@ async fn insert_generation(
     schema_graph_json: &str,
     typescript_view: &str,
     materializer_version: &str,
-    created_at_unix_nanos: i64,
+    created_at: UnixNanos,
 ) -> Result<(), Error> {
     let statement = Query::insert()
         .into_table(ProviderGenerations::Table)
@@ -824,7 +824,7 @@ async fn insert_generation(
             Expr::val(schema_graph_json),
             Expr::val(typescript_view),
             Expr::val(materializer_version),
-            Expr::val(created_at_unix_nanos),
+            Expr::val(created_at),
         ])
         .to_owned();
     transaction.execute(statement).await?;
@@ -1127,10 +1127,10 @@ async fn retained_credential_contract(
 pub(super) async fn generation_publication_times(
     transaction: &mut Transaction<'_>,
     ids: &[ProviderGenerationId],
-) -> Result<std::collections::BTreeMap<ProviderGenerationId, i64>, Error> {
+) -> Result<std::collections::BTreeMap<ProviderGenerationId, UnixNanos>, Error> {
     let mut times = std::collections::BTreeMap::new();
     for ids in ids.chunks(256) {
-        let rows: Vec<(String, i64)> = transaction
+        let rows: Vec<(String, UnixNanos)> = transaction
             .fetch_all(
                 Query::select()
                     .columns([

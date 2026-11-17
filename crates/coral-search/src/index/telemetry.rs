@@ -111,7 +111,7 @@ impl SearchIndex {
                     oldest_age: publications
                         .values()
                         .min()
-                        .and_then(|at| observed_at.checked_sub(*at))
+                        .and_then(|at| observed_at.checked_sub(at.get()))
                         .and_then(|age| u64::try_from(age).ok())
                         .map(Duration::from_nanos),
                 })

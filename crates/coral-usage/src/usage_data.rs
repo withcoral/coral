@@ -2,9 +2,10 @@
 //! and what the Usage data page shows.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{Days, NaiveDate};
-use coral_db::{Database, Transaction};
+use coral_db::{Database, Transaction, UnixNanos};
 use coral_workspace::{AuthenticatedUser, OrganizationModule};
 
 use crate::Error;
@@ -36,8 +37,8 @@ pub struct UsageDataView {
 pub struct SentReport {
     /// The exact JSON Coral sent.
     pub json: String,
-    /// When the collector stored it, in unix nanoseconds.
-    pub sent_at_unix_nanos: i64,
+    /// When the collector stored it.
+    pub sent_at: UnixNanos,
 }
 
 /// The deployment's usage data.
@@ -91,7 +92,11 @@ impl UsageData {
     /// # Errors
     ///
     /// Denies a caller who is not an enabled Organization Owner.
-    pub async fn view(&self, actor: &AuthenticatedUser, now: i64) -> Result<UsageDataView, Error> {
+    pub async fn view(
+        &self,
+        actor: &AuthenticatedUser,
+        now: UnixNanos,
+    ) -> Result<UsageDataView, Error> {
         loop {
             let mut tx = self.inner.database.begin_read_snapshot().await?;
             // Authorize first, so a denied caller changes nothing.
@@ -112,9 +117,14 @@ impl UsageData {
             let next_report_json = match waiting {
                 Some(report) => report.json,
                 None => {
-                    self.compose(&mut tx, &install, day_of(now), now.saturating_add(1))
-                        .await?
-                        .json
+                    self.compose(
+                        &mut tx,
+                        &install,
+                        day_of(now),
+                        now.saturating_add(Duration::from_nanos(1)),
+                    )
+                    .await?
+                    .json
                 }
             };
             let last_sent = install::last_sent(&mut tx).await?;
@@ -141,7 +151,7 @@ impl UsageData {
         &self,
         actor: &AuthenticatedUser,
         sharing: bool,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<UsageDataView, Error> {
         let mut tx = self.inner.database.begin().await?;
         self.inner
@@ -164,7 +174,7 @@ impl UsageData {
     /// # Errors
     ///
     /// Returns a database failure; the days made before it stay made.
-    pub async fn make_due_reports(&self, now: i64) -> Result<(), Error> {
+    pub async fn make_due_reports(&self, now: UnixNanos) -> Result<(), Error> {
         if self.inner.block.is_some() {
             return Ok(());
         }
@@ -232,7 +242,7 @@ impl UsageData {
     }
 
     /// Records that the collector stored `day`'s report.
-    pub(crate) async fn record_sent(&self, day: NaiveDate, now: i64) -> Result<(), Error> {
+    pub(crate) async fn record_sent(&self, day: NaiveDate, now: UnixNanos) -> Result<(), Error> {
         let mut tx = self.inner.database.begin().await?;
         install::mark_sent(&mut tx, day, now).await?;
         tx.commit().await?;
@@ -254,7 +264,7 @@ impl UsageData {
         tx: &mut Transaction<'_>,
         install: &Install,
         day: NaiveDate,
-        end: i64,
+        end: UnixNanos,
     ) -> Result<Composed, Error> {
         let window = Window {
             start: day_start(day).max(install.sharing_since),
@@ -265,7 +275,7 @@ impl UsageData {
 
     /// Mints the install row on first use. Reports start today: an earlier
     /// day's report would carry today's version and totals.
-    async fn ensure_install(&self, now: i64) -> Result<(), Error> {
+    async fn ensure_install(&self, now: UnixNanos) -> Result<(), Error> {
         let mut tx = self.inner.database.begin_read_snapshot().await?;
         let exists = install::install(&mut tx).await?.is_some();
         tx.commit().await?;

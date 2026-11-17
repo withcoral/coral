@@ -133,7 +133,7 @@ async fn fingerprints_retain_confirmed_selection_provenance_and_persisted_config
             &input,
             &ProviderSetupInputDigest::of_setup_input(&input),
             catalog,
-            1,
+            coral_db::UnixNanos::new(1),
         )
         .await
         .unwrap();

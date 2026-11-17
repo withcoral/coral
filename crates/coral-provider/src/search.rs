@@ -221,7 +221,7 @@ pub async fn prepare_active_generation_entries_in_transaction(
     )
     .await?
     .get(&stored.generation_id)
-    .copied()
+    .map(|published_at| published_at.get())
     .ok_or_else(|| Error::CorruptData("active Generation has no publication time".to_string()))?;
     Ok(Some(GenerationEntries {
         published_at_unix_nanos,

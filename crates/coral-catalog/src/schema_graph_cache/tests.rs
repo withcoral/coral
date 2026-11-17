@@ -51,7 +51,7 @@ async fn publish(fixture: &TestDatabase, inputs: &[ProviderSetupInput]) -> Vec<P
             input,
             &ProviderSetupInputDigest::of_setup_input(input),
             prepared,
-            1,
+            coral_db::UnixNanos::new(1),
         )
         .await
         .unwrap();

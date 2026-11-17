@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use chrono::{TimeZone as _, Utc};
+use coral_db::UnixNanos;
 use coral_outbound::{DestinationPolicy, NetworkAccess};
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{AuthenticatedUser, OrganizationRole};
@@ -20,6 +21,11 @@ fn at(day: u32, hour: u32) -> i64 {
         .single()
         .and_then(|time| time.timestamp_nanos_opt())
         .expect("a fixture time")
+}
+
+/// [`at`] as the instant a caller passes.
+fn instant(day: u32, hour: u32) -> UnixNanos {
+    UnixNanos::new(at(day, hour))
 }
 
 struct Fixture {
@@ -66,7 +72,10 @@ impl Fixture {
     /// `usage` checks once a day at noon, as a running process does.
     async fn check_daily(&self, usage: &UsageData, days: std::ops::RangeInclusive<u32>) {
         for day in days {
-            usage.make_due_reports(at(day, 12)).await.expect("reports");
+            usage
+                .make_due_reports(instant(day, 12))
+                .await
+                .expect("reports");
         }
     }
 
@@ -135,28 +144,32 @@ async fn sharing_is_on_until_an_owner_turns_it_off() {
     let usage = fixture.sending();
 
     // A refused first change writes nothing, not even the install row.
-    let denied = usage.set_sharing(&fixture.member, false, at(9, 12)).await;
+    let denied = usage
+        .set_sharing(&fixture.member, false, instant(9, 12))
+        .await;
     assert!(matches!(denied, Err(Error::PermissionDenied)), "{denied:?}");
     assert_eq!(fixture.installs().await, 0);
 
     // A Member reads nothing either: the page belongs to those who can change it.
-    let denied = usage.view(&fixture.member, at(9, 12)).await;
+    let denied = usage.view(&fixture.member, instant(9, 12)).await;
     assert!(matches!(denied, Err(Error::PermissionDenied)), "{denied:?}");
     assert_eq!(fixture.installs().await, 0);
 
     // An Owner's read makes the install row; a Member's change is still refused.
-    let denied = usage.set_sharing(&fixture.member, false, at(9, 12)).await;
+    let denied = usage
+        .set_sharing(&fixture.member, false, instant(9, 12))
+        .await;
     assert!(matches!(denied, Err(Error::PermissionDenied)), "{denied:?}");
     assert!(
         usage
-            .view(&fixture.owner, at(9, 12))
+            .view(&fixture.owner, instant(9, 12))
             .await
             .expect("view")
             .sharing
     );
 
     let off = usage
-        .set_sharing(&fixture.owner, false, at(9, 12))
+        .set_sharing(&fixture.owner, false, instant(9, 12))
         .await
         .expect("off");
     assert!(!off.sharing);
@@ -170,8 +183,8 @@ async fn each_checked_day_gets_one_report() {
     fixture.check_daily(&usage, 6..=8).await;
 
     let (first, second) = tokio::join!(
-        usage.make_due_reports(at(9, 12)),
-        peer.make_due_reports(at(9, 12))
+        usage.make_due_reports(instant(9, 12)),
+        peer.make_due_reports(instant(9, 12))
     );
     first.expect("reports");
     second.expect("reports");
@@ -197,7 +210,10 @@ async fn each_checked_day_gets_one_report() {
     assert_eq!(fixture.report("2026-11-08").await["install"], install);
 
     // The page shows the oldest waiting report, byte for byte.
-    let view = usage.view(&fixture.owner, at(9, 12)).await.expect("view");
+    let view = usage
+        .view(&fixture.owner, instant(9, 12))
+        .await
+        .expect("view");
     let database = fixture.db.database();
     let mut tx = database.begin_read_snapshot().await.expect("read");
     let stored: Vec<(String,)> = tx
@@ -483,7 +499,7 @@ async fn a_report_counts_its_days_activity_and_keeps_milestones() {
     fixture.sql("DELETE FROM program_run_records").await;
     fixture
         .sending()
-        .make_due_reports(at(10, 12))
+        .make_due_reports(instant(10, 12))
         .await
         .expect("reports");
     assert_eq!(fixture.report("2026-11-09").await["milestones"], milestones);
@@ -550,7 +566,7 @@ async fn sending_follows_the_collectors_answer() {
             .mount(&collector)
             .await;
         let outcome = usage
-            .send_due(&client(), &url, || at(9, 13))
+            .send_due(&client(), &url, || instant(9, 13))
             .await
             .expect("send");
         assert_eq!(outcome, SendOutcome::Retry, "{status}");
@@ -580,7 +596,7 @@ async fn sending_follows_the_collectors_answer() {
         .mount(&collector)
         .await;
     let outcome = usage
-        .send_due(&client(), &url, || at(9, 14))
+        .send_due(&client(), &url, || instant(9, 14))
         .await
         .expect("send");
     assert_eq!(outcome, SendOutcome::Done);
@@ -593,9 +609,12 @@ async fn sending_follows_the_collectors_answer() {
         [("2026-11-08".to_owned(), Some(at(9, 14)))]
     );
 
-    let view = usage.view(&fixture.owner, at(9, 15)).await.expect("view");
+    let view = usage
+        .view(&fixture.owner, instant(9, 15))
+        .await
+        .expect("view");
     let last = view.last_sent.expect("last sent");
-    assert_eq!(last.sent_at_unix_nanos, at(9, 14));
+    assert_eq!(last.sent_at, instant(9, 14));
     assert_eq!(last.json, fixture.report("2026-11-08").await.to_string());
     assert_eq!(
         serde_json::from_str::<Value>(&view.next_report_json).expect("json")["day"]["date"],
@@ -621,7 +640,7 @@ async fn turning_sharing_off_drops_waiting_reports_and_on_counts_from_then() {
     }
     fixture.check_daily(&usage, 6..=9).await;
     usage
-        .set_sharing(&fixture.owner, false, at(9, 12))
+        .set_sharing(&fixture.owner, false, instant(9, 12))
         .await
         .expect("off");
     assert_eq!(
@@ -630,7 +649,7 @@ async fn turning_sharing_off_drops_waiting_reports_and_on_counts_from_then() {
     );
 
     usage
-        .make_due_reports(at(12, 12))
+        .make_due_reports(instant(12, 12))
         .await
         .expect("reports while off");
     assert_eq!(
@@ -639,7 +658,7 @@ async fn turning_sharing_off_drops_waiting_reports_and_on_counts_from_then() {
     );
 
     usage
-        .set_sharing(&fixture.owner, true, at(12, 12))
+        .set_sharing(&fixture.owner, true, instant(12, 12))
         .await
         .expect("on");
     fixture.check_daily(&usage, 13..=14).await;
@@ -682,11 +701,11 @@ async fn turning_sharing_off_stops_the_next_send() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         usage
-            .set_sharing(&fixture.owner, false, at(8, 13))
+            .set_sharing(&fixture.owner, false, instant(8, 13))
             .await
             .expect("off");
     };
-    let (outcome, ()) = tokio::join!(usage.send_due(&client, &url, || at(8, 13)), turn_off);
+    let (outcome, ()) = tokio::join!(usage.send_due(&client, &url, || instant(8, 13)), turn_off);
     assert_eq!(outcome.expect("send"), SendOutcome::Done);
     assert_eq!(
         collector.received_requests().await.expect("requests").len(),
@@ -703,7 +722,7 @@ async fn a_report_composed_before_sharing_turned_off_is_not_stored() {
     let usage = fixture.sending();
     fixture.check_daily(&usage, 6..=6).await;
     usage
-        .set_sharing(&fixture.owner, false, at(7, 1))
+        .set_sharing(&fixture.owner, false, instant(7, 1))
         .await
         .expect("off");
 
@@ -748,7 +767,7 @@ async fn a_blocked_process_makes_no_report_and_skips_no_day() {
     fixture.check_daily(&blocked, 8..=8).await;
     fixture.check_daily(&usage, 8..=8).await;
     blocked
-        .send_due(&client(), &url, || at(9, 1))
+        .send_due(&client(), &url, || instant(9, 1))
         .await
         .expect("send");
     assert!(
@@ -766,7 +785,10 @@ async fn a_blocked_process_makes_no_report_and_skips_no_day() {
     assert_eq!(days().await, ["2026-11-06", "2026-11-07", "2026-11-08"]);
 
     let source = fixture.usage(&SendEnvironment::default(), Build::Source);
-    let view = source.view(&fixture.owner, at(12, 13)).await.expect("view");
+    let view = source
+        .view(&fixture.owner, instant(12, 13))
+        .await
+        .expect("view");
     assert_eq!(view.block, Some(SendBlock::SourceBuild));
     assert_eq!(
         serde_json::from_str::<Value>(&view.next_report_json).expect("json")["build"],

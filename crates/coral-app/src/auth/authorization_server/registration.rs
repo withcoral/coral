@@ -35,8 +35,7 @@ pub(super) async fn register(
     let Ok(request) = serde_json::from_slice::<RegistrationRequest>(&body) else {
         return failure(RegistrationError::InvalidMetadata);
     };
-    let now = state.clock.now().whole_seconds().cast_signed();
-    match state.clients.register(request, now).await {
+    match state.clients.register(request, state.clock.now()).await {
         Ok(client) => match serde_json::to_value(client) {
             Ok(value) => response(StatusCode::CREATED, super::json_response(&value)),
             Err(_) => failure(RegistrationError::Unavailable),
