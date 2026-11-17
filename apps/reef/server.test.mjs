@@ -908,6 +908,22 @@ const TOOLS_CATALOG = {
   UpdateToolPolicies: () => new Uint8Array(),
 }
 
+/** The Tools table of `page`, its usage still loading. */
+const loadingTools = async (page) => {
+  const table = page.getByRole('table', { name: 'Tools' })
+  await table
+    .getByRole('status')
+    .filter({ hasText: 'Loading usage…' })
+    .waitFor({ state: 'attached', timeout: ARRIVES_MS })
+  return { page, table, row: (path) => table.getByRole('row').filter({ hasText: path }) }
+}
+/** Waits until React handles input: root.tsx marks the page once every route's
+ * effects ran. A click before that reaches no handler. */
+const hydrated = (page) =>
+  page.waitForFunction(() => 'hydrated' in document.documentElement.dataset, null, {
+    timeout: ARRIVES_MS,
+  })
+
 test('the Tools page streams its usage after the catalog and saves a policy while it loads', async (t) => {
   const coral = await startOverviewPeer(TOOLS_CATALOG)
   const authorization = await startSessionPeer()
@@ -931,6 +947,21 @@ test('the Tools page streams its usage after the catalog and saves a policy whil
   const cookie = await validSessionCookie(authorization.url)
   const tools = `/${TOOLS_WORKSPACE}/tools`
   const headers = { Cookie: cookie, 'User-Agent': BROWSER }
+  /** Allows `repos.get` from its row, and expects Coral to save it while usage loads. */
+  const saveWhileLoading = async ({ table, row }) => {
+    const saves = coral.called('UpdateToolPolicies').length
+    await row('repos.get').getByRole('radio', { name: 'Allow' }).click({ timeout: ARRIVES_MS })
+    await row('repos.get')
+      .getByRole('radio', { name: 'Allow', checked: true })
+      .waitFor({ timeout: ARRIVES_MS })
+    for (let tries = 0; coral.called('UpdateToolPolicies').length === saves; tries++) {
+      if (tries === 30) assert.fail('The policy change did not reach Coral')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    assert.equal(protoField(coral.called('UpdateToolPolicies').at(-1), 1), TOOLS_PROVIDER)
+    // The saved policy patches the page; the usage it waits for is still loading.
+    assert.equal(await table.getByRole('status').count(), 1)
+  }
 
   await t.test('the whole catalog arrives first, and a failed summary still ends it', async () => {
     const response = await within(fetch(`${origin}${tools}`, { headers }), 'The page')
@@ -972,46 +1003,52 @@ test('the Tools page streams its usage after the catalog and saves a policy whil
       const page = await context.newPage()
       // The document stays open until its usage settles, so wait for its first bytes only.
       await page.goto(`${origin}${tools}`, { waitUntil: 'commit', timeout: ARRIVES_MS })
-      const table = page.getByRole('table', { name: 'Tools' })
-      await table
-        .getByRole('status')
-        .filter({ hasText: 'Loading usage…' })
-        .waitFor({ state: 'attached', timeout: ARRIVES_MS })
-      return { page, table, row: (path) => table.getByRole('row').filter({ hasText: path }) }
+      return loadingTools(page)
     }
 
     await browserTest.test('saves a policy while the usage loads, then shows it', async () => {
-      const { table, row } = await open()
-      const allow = row('repos.get').getByRole('radio', { name: 'Allow' })
-      // A click before hydration reaches no handler, so wait until React holds the radio.
-      await allow.evaluate(
-        (radio) =>
-          new Promise((resolve) => {
-            const check = () =>
-              Object.keys(radio).some((key) => key.startsWith('__reactProps'))
-                ? resolve()
-                : setTimeout(check, 20)
-            check()
-          }),
-      )
-      await allow.click({ timeout: ARRIVES_MS })
-      await row('repos.get')
-        .getByRole('radio', { name: 'Allow', checked: true })
-        .waitFor({ timeout: ARRIVES_MS })
-      for (let tries = 0; coral.called('UpdateToolPolicies').length === 0; tries++) {
-        if (tries === 30) assert.fail('The policy change did not reach Coral')
-        await new Promise((resolve) => setTimeout(resolve, 100))
-      }
-      assert.equal(protoField(coral.called('UpdateToolPolicies')[0], 1), TOOLS_PROVIDER)
-      // The saved policy patches the page; the usage it waits for is still loading.
-      assert.equal(await table.getByRole('status').count(), 1)
+      const opened = await open()
+      await hydrated(opened.page)
+      await saveWhileLoading(opened)
 
       await (await coral.held(30)).reply(toolUsageSummary(987654))
-      await row('issues.list')
+      await opened
+        .row('issues.list')
         .getByText('987,654 calls')
         .waitFor({ state: 'attached', timeout: ARRIVES_MS })
-      assert.equal(await table.getByRole('status').count(), 0)
+      assert.equal(await opened.table.getByRole('status').count(), 0)
     })
+
+    await browserTest.test(
+      'navigates to the catalog and saves a policy while the usage loads, then shows it',
+      async () => {
+        const page = await context.newPage()
+        // The Overview streams its own 7-day summary, which this case leaves pending.
+        await page.goto(`${origin}/${TOOLS_WORKSPACE}`, {
+          waitUntil: 'commit',
+          timeout: ARRIVES_MS,
+        })
+        await hydrated(page)
+        await page
+          .getByRole('link', { name: 'Tools', exact: true })
+          .first()
+          .click({ timeout: ARRIVES_MS })
+        await page.waitForURL(`${origin}${tools}`, { waitUntil: 'commit', timeout: ARRIVES_MS })
+        const navigated = await loadingTools(page)
+        // Throws unless the navigation's own usage read is still held.
+        const read = await coral.held(30)
+        await saveWhileLoading(navigated)
+
+        await read.reply(toolUsageSummary(987654))
+        await navigated
+          .row('issues.list')
+          .getByText('987,654 calls')
+          .waitFor({ state: 'attached', timeout: ARRIVES_MS })
+        assert.equal(await navigated.table.getByRole('status').count(), 0)
+        // The Overview's document stays open until its summary settles; end it here.
+        await (await coral.held(7)).answer(1)
+      },
+    )
 
     await browserTest.test('shows a failed summary as not available', async () => {
       const { table, row } = await open()
