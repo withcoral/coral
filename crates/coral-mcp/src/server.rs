@@ -761,6 +761,10 @@ fn workspace_tool_failure(error: coral_workspace::Error) -> ToolFailure {
         | coral_workspace::Error::LastWorkspaceOwner
         | coral_workspace::Error::OwnerTransferRequired
         | coral_workspace::Error::OwnerTargetNotEnabled
+        | coral_workspace::Error::OrganizationMembershipNotFound
+        | coral_workspace::Error::LastOrganizationOwner
+        | coral_workspace::Error::MemberTargetNotEnabled
+        | coral_workspace::Error::AccessRemovalMismatch
         | coral_workspace::Error::CorruptData(_)
         | coral_workspace::Error::Database(_)
         | coral_workspace::Error::EventFields(_)

@@ -205,7 +205,9 @@ mod tests {
                 "NOT_FOUND",
             ),
             (
-                E::Workspace(coral_workspace::Error::PermissionDenied("private detail")),
+                E::Workspace(coral_workspace::Error::PermissionDenied(
+                    coral_workspace::Denial::WorkspaceOwnerRequired,
+                )),
                 Code::PermissionDenied,
                 "PERMISSION_DENIED",
             ),

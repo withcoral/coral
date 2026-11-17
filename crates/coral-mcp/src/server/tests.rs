@@ -633,7 +633,7 @@ fn a_workspace_refusal_projects_one_code_and_message_through_every_wrapper() {
     let refusals: [(fn() -> Workspace, Refusal); 7] = [
         (|| Workspace::WorkspaceNotFound, Refusal::WorkspaceNotFound),
         (
-            || Workspace::PermissionDenied("denied"),
+            || Workspace::PermissionDenied(coral_workspace::Denial::WorkspaceOwnerRequired),
             Refusal::PermissionDenied,
         ),
         (|| Workspace::WorkspaceArchived, Refusal::WorkspaceArchived),

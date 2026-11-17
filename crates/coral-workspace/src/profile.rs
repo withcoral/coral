@@ -139,7 +139,7 @@ async fn eligible_matches(tx: &mut Transaction<'_>, email: &str) -> Result<UserI
                 }
                 matched = Some(id);
             }
-            Ok(_) | Err(Error::PermissionDenied(_)) => {}
+            Ok(_) | Err(Error::PermissionDenied(crate::Denial::NoOrganizationMembership)) => {}
             Err(error) => return Err(error),
         }
     }

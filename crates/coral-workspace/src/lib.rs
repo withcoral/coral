@@ -125,7 +125,7 @@ pub use agent_types::{
     IssuedAgentCredential,
 };
 pub use coral_telemetry::TraceId;
-pub use error::{AuthorityRefusal, Error};
+pub use error::{AuthorityRefusal, Denial, Error};
 pub use principal::{
     AuthenticatedPrincipal, AuthenticatedPrincipalId, Principal, PrincipalId, PrincipalKind,
 };
@@ -194,7 +194,7 @@ impl WorkspaceModule {
         let actor = organization::hold_user(transaction, context.actor().user_id()).await?;
         if actor.organization_role().is_none() {
             return Err(Error::PermissionDenied(
-                "current Organization Membership is required to create a Workspace",
+                Denial::OrganizationMembershipRequired,
             ));
         }
         management::claim_request(transaction, context).await?;
@@ -646,12 +646,12 @@ impl WorkspaceModule {
         // Hold both Users before Workspace, in stable order. Target disablement
         // cannot race past the prerequisite check, and opposite grants cannot
         // deadlock by taking their actor/target holds in reverse order.
-        let mut users = vec![context.actor().user_id(), target.user_id()];
-        users.sort();
-        users.dedup();
-        for user in users {
-            organization::hold_user(&mut transaction, user).await?;
-        }
+        let target_held = organization::hold_actor_and_target(
+            &mut transaction,
+            context.actor(),
+            target.user_id(),
+        )
+        .await?;
         let evidence = locked_authority(
             &mut transaction,
             context.actor(),
@@ -659,15 +659,8 @@ impl WorkspaceModule {
             AuthorityAction::Public(WorkspaceAction::Configure),
         )
         .await?;
-        if organization::current_user(&mut transaction, target.user_id())
-            .await?
-            .organization_role()
-            .is_none()
-        {
-            return Err(Error::PermissionDenied(
-                "a Workspace Membership requires current Organization Membership",
-            ));
-        }
+        organization::require_enabled_target(&mut transaction, target_held, target.user_id())
+            .await?;
         let previous = repository::membership_role_in_transaction(
             &mut transaction,
             workspace_id,
@@ -923,9 +916,7 @@ fn authorize(
         | AuthorityAction::Administer => true,
     };
     if requires_owner && effective_role != WorkspaceRole::Owner {
-        return Err(Error::PermissionDenied(
-            "Workspace Owner authority is required",
-        ));
+        return Err(Error::PermissionDenied(Denial::WorkspaceOwnerRequired));
     }
 
     if matches!(
@@ -1025,9 +1016,10 @@ async fn locked_authority(
     user_workspace_authority(transaction, &actor, workspace_id, action).await
 }
 
+/// A caller with no Organization Membership sees no Workspace.
 fn conceal_missing_user(error: Error) -> Error {
     match error {
-        Error::PermissionDenied(_) => Error::WorkspaceNotFound,
+        Error::PermissionDenied(Denial::NoOrganizationMembership) => Error::WorkspaceNotFound,
         other => other,
     }
 }

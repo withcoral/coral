@@ -454,7 +454,9 @@ async fn email_grants_require_one_current_verified_exact_address() {
         .unwrap();
     assert!(matches!(
         grant_by_email(&module, &bob, workspace.id(), "alice+tag@example.test").await,
-        Err(Error::PermissionDenied(_))
+        Err(Error::PermissionDenied(
+            crate::Denial::WorkspaceOwnerRequired
+        ))
     ));
     module
         .archive(&change(owner.clone(), 60, '6'), workspace.id())

@@ -69,9 +69,7 @@ impl PreparedAccessRemoval {
         context: &ChangeContext,
     ) -> Result<(), Error> {
         if !self.transaction.matches(tx) || &self.context != context {
-            return Err(Error::PermissionDenied(
-                "access removal belongs to another transaction or change context",
-            ));
+            return Err(Error::AccessRemovalMismatch);
         }
         Ok(())
     }
@@ -131,14 +129,15 @@ impl WorkspaceModule {
                     action,
                 )
                 .await?;
-                let mut users = vec![context.actor().user_id(), user];
-                users.sort();
-                users.dedup();
-                for user in users {
-                    crate::organization::hold_user(tx, user).await?;
-                }
+                let target_held =
+                    crate::organization::hold_actor_and_target(tx, context.actor(), user).await?;
                 let evidence =
                     crate::locked_authority(tx, context.actor(), workspace, action).await?;
+                // No row was there to hold, so the User is no Member here,
+                // and one created since is not held.
+                if !target_held {
+                    return Err(Error::MembershipNotFound);
+                }
                 let role = crate::repository::membership_role_in_transaction(tx, workspace, user)
                     .await?
                     .ok_or(Error::MembershipNotFound)?;

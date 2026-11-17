@@ -540,7 +540,7 @@ impl ToolPolicyModule {
             .await?;
         if evidence.effective_role() != WorkspaceRole::Owner {
             return Err(coral_workspace::Error::PermissionDenied(
-                "Workspace Owner authority is required",
+                coral_workspace::Denial::WorkspaceOwnerRequired,
             )
             .into());
         }

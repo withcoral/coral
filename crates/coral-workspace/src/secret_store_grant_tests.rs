@@ -138,7 +138,12 @@ async fn a_refused_change_changes_nothing() {
             let refused = if archived {
                 matches!(result, Err(Error::WorkspaceArchived))
             } else {
-                matches!(result, Err(Error::PermissionDenied(_)))
+                matches!(
+                    result,
+                    Err(Error::PermissionDenied(
+                        crate::Denial::OrganizationOwnerRequired
+                    ))
+                )
             };
             assert!(refused, "{actor:?}: {result:?}");
         }
@@ -206,7 +211,9 @@ async fn only_a_workspace_owner_reads_the_workspace_grants() {
 
     assert!(matches!(
         f.module.list_workspace_secret_stores(&member, id).await,
-        Err(Error::PermissionDenied(_))
+        Err(Error::PermissionDenied(
+            crate::Denial::WorkspaceOwnerRequired
+        ))
     ));
 }
 
@@ -301,6 +308,8 @@ async fn an_organization_owner_lists_every_workspace_grant() {
 
     assert!(matches!(
         f.module.list_secret_store_grants(&f.owner).await,
-        Err(Error::PermissionDenied(_))
+        Err(Error::PermissionDenied(
+            crate::Denial::OrganizationOwnerRequired
+        ))
     ));
 }

@@ -79,9 +79,9 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
                 None
             )
             .await,
-        Err(Error::Workspace(coral_workspace::Error::PermissionDenied(
-            _
-        )))
+        Err(Error::Workspace(
+            coral_workspace::Error::OrganizationMembershipNotFound
+        ))
     ));
     let rejoined = organization
         .provision_login(&change(&member))
@@ -259,13 +259,13 @@ async fn removed_owner_is_absent_and_cannot_satisfy_last_owner_protection() {
                 OrganizationRole::Member
             )
             .await,
-        Err(coral_workspace::Error::PermissionDenied(_))
+        Err(coral_workspace::Error::OrganizationMembershipNotFound)
     ));
     assert!(matches!(
         organization
             .set_enabled(&change(&owner), departed.user_id(), 1, true)
             .await,
-        Err(coral_workspace::Error::PermissionDenied(_))
+        Err(coral_workspace::Error::OrganizationMembershipNotFound)
     ));
     assert!(matches!(
         organization
@@ -276,21 +276,21 @@ async fn removed_owner_is_absent_and_cannot_satisfy_last_owner_protection() {
                 OrganizationRole::Member
             )
             .await,
-        Err(coral_workspace::Error::PermissionDenied(_))
+        Err(coral_workspace::Error::LastOrganizationOwner)
     ));
     assert!(matches!(
         organization
             .set_enabled(&change(&owner), owner.user_id(), 1, false)
             .await,
-        Err(coral_workspace::Error::PermissionDenied(_))
+        Err(coral_workspace::Error::LastOrganizationOwner)
     ));
     assert!(matches!(
         administration
             .remove_organization_member(&change(&owner), owner.user_id(), 1, None)
             .await,
-        Err(Error::Workspace(coral_workspace::Error::PermissionDenied(
-            _
-        )))
+        Err(Error::Workspace(
+            coral_workspace::Error::LastOrganizationOwner
+        ))
     ));
     let rejoined = organization
         .provision_login(&change(&AuthenticatedUser::organization_member(
