@@ -1,5 +1,9 @@
 use super::*;
 
+const SECOND: i64 = 1_000_000_000;
+/// One worker lease on a device job, in nanoseconds.
+const LEASE: i64 = crate::account::device::LEASE_SECONDS.cast_signed() * SECOND;
+
 /// A Device OpenAPI Setup after its owner submitted device-code authentication.
 struct DeviceSetup {
     harness: Harness,
@@ -288,20 +292,9 @@ async fn publish_device_provider(
         context,
         workspace,
         setup,
-        confirmation,
         ..
     } = &device;
-    harness
-        .accounts
-        .start_setup_authorization(
-            context,
-            workspace,
-            setup,
-            confirmation.revision,
-            SetupOAuthClient::new("https://reef.example/callback".into(), None).unwrap(),
-        )
-        .await
-        .expect("starts server-owned device authorization");
+    start_device_sign_in(&device).await;
     let completed = poll_setup(harness, context, workspace, setup, |progress| {
         assert!(
             progress
@@ -732,6 +725,22 @@ async fn pending_device_setup(
     WorkspaceId,
     crate::ProviderSetupId,
 ) {
+    let device = confirmed_application_setup(api, authentication).await;
+    start_device_sign_in(&device).await;
+    (
+        device.harness,
+        device.context,
+        device.workspace,
+        device.setup,
+    )
+}
+
+/// The Device OpenAPI Setup after `user:device-poll` confirmed it with the
+/// `manual-client` application. Its sign-in has not started.
+async fn confirmed_application_setup(
+    api: &OAuthApi,
+    authentication: crate::OAuthClientAuthentication,
+) -> DeviceSetup {
     let device = confirmed_device_setup(
         api,
         "user:device-poll",
@@ -750,6 +759,11 @@ async fn pending_device_setup(
         [] as [coral_catalog::ConfigurationFieldError; 0]
     );
     device
+}
+
+/// Starts the Setup's server-owned device sign-in, which stores its job.
+async fn start_device_sign_in(device: &DeviceSetup) {
+    device
         .harness
         .accounts
         .start_setup_authorization(
@@ -760,13 +774,90 @@ async fn pending_device_setup(
             SetupOAuthClient::new("https://reef.example/callback".into(), None).unwrap(),
         )
         .await
+        .expect("starts server-owned device authorization");
+}
+
+/// Mounts a device endpoint that issues `user_code` once, for two minutes.
+/// Its 50-second interval keeps the first worker from asking for a token: the
+/// worker that a recovery past that interval starts asks at once.
+async fn mount_patient_device_endpoint(api: &OAuthApi, device_code: &str, user_code: &str) {
+    Mock::given(method("POST"))
+        .and(path("/device"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "device_code": device_code, "user_code": user_code,
+            "verification_uri": "http://device.fixture.test/activate",
+            "expires_in": 120, "interval": 50
+        })))
+        .expect(1)
+        .mount(&api.server)
+        .await;
+}
+
+/// Mounts a token endpoint that grants the one request it expects.
+async fn mount_token_endpoint_granting_once(api: &OAuthApi) {
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            json!({"access_token": ACCESS, "token_type": "Bearer", "scope": "read"}),
+        ))
+        .with_priority(1)
+        .expect(1)
+        .mount(&api.server)
+        .await;
+}
+
+/// Waits until the Setup's sign-in shows `user_code`.
+async fn showing_user_code(
+    harness: &Harness,
+    context: &coral_workspace::ChangeContext,
+    workspace: &WorkspaceId,
+    setup: &crate::ProviderSetupId,
+    user_code: &str,
+) -> crate::account::SetupAuthentication {
+    poll_setup(harness, context, workspace, setup, |progress| {
+        progress
+            .authorization
+            .as_ref()
+            .unwrap()
+            .user_code
+            .as_deref()
+            == Some(user_code)
+    })
+    .await
+}
+
+/// Stores one job for each id, with a lease that ended at `lease_until`. No
+/// job decodes: `corrupt` is not a trace id.
+async fn store_undecodable_jobs(
+    harness: &Harness,
+    workspace: &WorkspaceId,
+    ids: impl Iterator<Item = String>,
+    lease_until: i64,
+) {
+    let jobs = ids
+        .map(|id| {
+            format!("('{id}', '{workspace}', 'user:device-poll', 'corrupt', 5, 0, {lease_until})")
+        })
+        .collect::<Vec<_>>();
+    let stored = harness
+        .fixture
+        .execute_fixture_sql(&format!(
+            "INSERT INTO provider_device_jobs \
+             (id, workspace_id, actor_user_id, trace_id, interval_seconds, next_poll_at, lease_until) \
+             VALUES {}",
+            jobs.join(", ")
+        ))
+        .await
         .unwrap();
-    (
-        device.harness,
-        device.context,
-        device.workspace,
-        device.setup,
-    )
+    assert_eq!(stored, u64::try_from(jobs.len()).unwrap());
+}
+
+/// The warnings recovery logged for the jobs it could not resume.
+fn recovery_failures(logs: &coral_telemetry::testing::ExportCapture) -> Vec<String> {
+    logs.log_records()
+        .into_iter()
+        .filter(|record| record.contains("failed to recover a device sign-in job"))
+        .collect()
 }
 
 #[tokio::test]
@@ -1196,16 +1287,7 @@ async fn recovery_does_not_repeat_an_interrupted_token_request_immediately() {
 #[tokio::test]
 async fn recovery_never_completes_for_an_initiator_who_lost_organization_access() {
     let api = OAuthApi::start().await;
-    Mock::given(method("POST"))
-        .and(path("/device"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "device_code": "disabled-code", "user_code": "GONE-USER",
-            "verification_uri": "http://device.fixture.test/activate",
-            "expires_in": 120, "interval": 50
-        })))
-        .expect(1)
-        .mount(&api.server)
-        .await;
+    mount_patient_device_endpoint(&api, "disabled-code", "GONE-USER").await;
     let polls = Arc::new(AtomicUsize::new(0));
     let seen = polls.clone();
     Mock::given(method("POST"))
@@ -1221,16 +1303,7 @@ async fn recovery_never_completes_for_an_initiator_who_lost_organization_access(
         .await;
     let (h, context, owner, setup) =
         pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
-    poll_setup(&h, &context, &owner, &setup, |progress| {
-        progress
-            .authorization
-            .as_ref()
-            .unwrap()
-            .user_code
-            .as_deref()
-            == Some("GONE-USER")
-    })
-    .await;
+    showing_user_code(&h, &context, &owner, &setup, "GONE-USER").await;
     h.accounts.stop_device_authorizations().await.unwrap();
     let administrator = organization_user(
         h.database.clone(),
@@ -1297,44 +1370,22 @@ async fn recovery_never_completes_for_an_initiator_who_lost_organization_access(
 #[tokio::test]
 async fn recovery_waits_for_an_abandoned_lease_and_keeps_the_original_deadline() {
     let api = OAuthApi::start().await;
-    Mock::given(method("POST")).and(path("/device"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "device_code":"crash-code", "user_code":"SAME-CODE",
-            "verification_uri":"http://device.fixture.test/activate", "expires_in":120, "interval":50
-        }))).expect(1).mount(&api.server).await;
-    Mock::given(method("POST"))
-        .and(path("/token"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(
-                json!({"access_token": ACCESS, "token_type":"Bearer", "scope":"read"}),
-            ),
-        )
-        .with_priority(1)
-        .expect(1)
-        .mount(&api.server)
-        .await;
+    mount_patient_device_endpoint(&api, "crash-code", "SAME-CODE").await;
+    mount_token_endpoint_granting_once(&api).await;
     let (h, context, owner, setup) =
         pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
-    let before = poll_setup(&h, &context, &owner, &setup, |progress| {
-        progress
-            .authorization
-            .as_ref()
-            .unwrap()
-            .user_code
-            .as_deref()
-            == Some("SAME-CODE")
-    })
-    .await;
+    let before = showing_user_code(&h, &context, &owner, &setup, "SAME-CODE").await;
     let deadline = before.authorization.unwrap().expires_at_unix_nanos;
     h.accounts.abort_device_authorizations();
     // The worker dated each renewal of its lease by the wall time it had run,
-    // so the abandoned lease ends 45 seconds after a renewal no test can
-    // date. Put its end back where the claim at 10ns set it.
+    // so the abandoned lease ends one lease, 45 seconds, after a renewal no
+    // test can date. Put its end back where the claim at 10ns set it.
     let pinned = h
         .fixture
         .execute_fixture_sql(&format!(
-            "UPDATE provider_device_jobs SET lease_until = 45000000010 \
-             WHERE workspace_id = '{owner}' AND setup_id = '{setup}'"
+            "UPDATE provider_device_jobs SET lease_until = {} \
+             WHERE workspace_id = '{owner}' AND setup_id = '{setup}'",
+            10 + LEASE
         ))
         .await
         .unwrap();
@@ -1368,6 +1419,188 @@ async fn recovery_waits_for_an_abandoned_lease_and_keeps_the_original_deadline()
         .await
         .expect("the worker that reclaims the lapsed lease polls at once");
     restarted.stop_device_authorizations().await.unwrap();
+}
+
+#[tokio::test]
+async fn recovery_resumes_a_sign_in_behind_pages_of_jobs_that_do_not_decode() {
+    let api = OAuthApi::start().await;
+    mount_patient_device_endpoint(&api, "healthy-code", "GOOD-CODE").await;
+    mount_token_endpoint_granting_once(&api).await;
+    let device = confirmed_application_setup(&api, crate::OAuthClientAuthentication::None).await;
+    let DeviceSetup {
+        harness: h,
+        context,
+        workspace: owner,
+        setup,
+        ..
+    } = &device;
+    let page = crate::account::device_repository::RECOVERY_PAGE;
+    let first_pass = MINUTE;
+    // A job that fails in the first pass waits until then.
+    let deferred = first_pass + LEASE;
+
+    // Two pages of corrupt jobs, stored before the sign-in's job, so that no
+    // order of storage puts the sign-in first. The first page is recoverable
+    // now, and its ids sort after every UUID. The second page is recoverable
+    // just after `deferred`, and its ids sort before the sign-in's.
+    let first_page = (0..page).map(|job| format!("z-corrupt-{job:03}"));
+    store_undecodable_jobs(h, owner, first_page, 0).await;
+    let second_page = (0..page).map(|job| format!("00000000-0000-4000-8000-{job:012}"));
+    store_undecodable_jobs(h, owner, second_page, deferred + 1).await;
+    let restarted = h.restarted_accounts();
+    restarted
+        .recover_device_authorizations(first_pass)
+        .await
+        .expect("a job that does not decode fails only itself");
+
+    // The sign-in's lease ends when the first page's leases now do.
+    start_device_sign_in(&device).await;
+    showing_user_code(h, context, owner, setup, "GOOD-CODE").await;
+    h.accounts.stop_device_authorizations().await.unwrap();
+    let pinned = h
+        .fixture
+        .execute_fixture_sql(&format!(
+            "UPDATE provider_device_jobs SET lease_until = {deferred} \
+             WHERE workspace_id = '{owner}' AND setup_id = '{setup}'"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(pinned, 1, "the stopped worker leaves its job behind");
+
+    // Every job is recoverable now, and a pass reads one page of them. Only
+    // the order recovery reads in puts the sign-in on that page: its lease
+    // ends before the second page's, and its id sorts before the first
+    // page's. A first page that had not moved would fill this pass again.
+    restarted
+        .recover_device_authorizations(deferred + 5 * SECOND)
+        .await
+        .expect("the corrupt jobs share this pass with the sign-in");
+    poll_setup(h, context, owner, setup, |progress| progress.authorized).await;
+    restarted.stop_device_authorizations().await.unwrap();
+}
+
+/// A stored fault that fails the recovery of one reconnection with a definite
+/// answer.
+struct RecoveryFault {
+    fails: &'static str,
+    /// The `error.type` of the warning that recovery logs.
+    code: &'static str,
+    /// The statement that stores the fault, and the one that repairs it.
+    statements: fn(crate::account::AuthorizationId, &crate::ProviderId) -> [String; 2],
+}
+
+#[tokio::test]
+async fn recovery_passes_over_a_reconnection_that_fails_and_tries_it_again_after_each_lease() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let faults = [
+        RecoveryFault {
+            fails: "the authorization does not load",
+            code: "invalid_input",
+            statements: |authorization, provider| {
+                let stored = |provider: &str| {
+                    format!(
+                        "UPDATE provider_account_authorizations SET provider_id = '{provider}' \
+                         WHERE id = '{authorization}'"
+                    )
+                };
+                [stored("corrupt"), stored(&provider.to_string())]
+            },
+        },
+        RecoveryFault {
+            fails: "the initiator's Organization authority cannot be read",
+            code: "workspace",
+            statements: |_, _| {
+                let renamed = |from: &str, to: &str| format!("ALTER TABLE {from} RENAME TO {to}");
+                let (table, away) = (
+                    "organization_authority_records",
+                    "organization_authority_records_away",
+                );
+                [renamed(table, away), renamed(away, table)]
+            },
+        },
+    ];
+    for RecoveryFault {
+        fails,
+        code,
+        statements,
+    } in faults
+    {
+        let logs = coral_telemetry::testing::ExportCapture::default();
+        let _subscriber =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(logs.log_layer()));
+        let api = OAuthApi::start().await;
+        mount_device_endpoint(&api, 2).await;
+        // The Setup's own sign-in takes the first token. The reconnection's
+        // first poll is held, so its worker is stopped before any answer.
+        let token = mount_token_endpoint_holding(&api, 2, 3).await;
+        let (device, provider, completed) =
+            publish_device_provider(&api, "user:device-faulty-reconnect").await;
+        let account = completed.provisional_grant_id.unwrap();
+        let pending = device_reconnect_showing_its_code(
+            &device,
+            &provider,
+            account,
+            crate::account_tests::authorization_request(),
+        )
+        .await;
+        tokio::time::timeout(coral_test_support::EVENTUALLY, token.arrived.notified())
+            .await
+            .expect("the worker asks the token endpoint");
+        device
+            .harness
+            .accounts
+            .stop_device_authorizations()
+            .await
+            .unwrap();
+        token.release.send(()).unwrap();
+        let [fault, repair] = statements(pending.id, provider.id());
+        let fixture = &device.harness.fixture;
+        fixture.execute_fixture_sql(&fault).await.unwrap();
+
+        // Every pass succeeds. A pass that reads the job logs one warning,
+        // and the job is read again only when a whole lease has passed.
+        let restarted = device.harness.restarted_accounts();
+        let first_pass = 20 * SECOND;
+        for (now, failures, why) in [
+            (first_pass, 1, "the job fails alone"),
+            (first_pass + LEASE - 1, 1, "the failed job waits one lease"),
+            (first_pass + LEASE, 2, "the job fails again after the lease"),
+        ] {
+            restarted
+                .recover_device_authorizations(now)
+                .await
+                .unwrap_or_else(|error| panic!("{fails}: {why}: {error:?}"));
+            let warnings = recovery_failures(&logs);
+            assert_eq!(warnings.len(), failures, "{fails}: {why}: {warnings:?}");
+            for warning in &warnings {
+                // The record names the failure by its code and the job by
+                // its Workspace.
+                for expected in [
+                    "\"error.type\"".to_owned(),
+                    format!("\"{code}\""),
+                    format!("\"{}\"", device.workspace),
+                ] {
+                    assert!(
+                        warning.contains(&expected),
+                        "{fails}: {expected} in {warning}"
+                    );
+                }
+            }
+        }
+
+        // Recovery never removed the job: once it can be resumed, the pass
+        // after its lease resumes it.
+        fixture.execute_fixture_sql(&repair).await.unwrap();
+        restarted
+            .recover_device_authorizations(first_pass + 2 * LEASE)
+            .await
+            .unwrap();
+        let connected = reconnected(&device, pending.id).await;
+        assert_eq!(connected.account_id, Some(account), "{fails}");
+        assert_eq!(token.requests.load(Ordering::SeqCst), 3, "{fails}");
+        restarted.stop_device_authorizations().await.unwrap();
+    }
 }
 
 /// An MCP Setup whose authorization server metadata offers the device-code
