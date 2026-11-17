@@ -801,8 +801,10 @@ fn digest(secret: &str) -> Option<String> {
 /// An authority decision becomes a refusal unless storage failed to answer
 /// or holds authority that does not decode.
 fn refusal(error: &coral_workspace::Error) -> TokenRefusal {
+    if let Some(error) = error.database_error() {
+        return repository::unavailable(error);
+    }
     match error {
-        coral_workspace::Error::Database(error) => repository::unavailable(error),
         coral_workspace::Error::CorruptData(_) | coral_workspace::Error::EventFields(_) => {
             TokenRefusal::Corrupt("corrupt_authority")
         }
