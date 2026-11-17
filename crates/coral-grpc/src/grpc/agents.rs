@@ -59,13 +59,13 @@ fn registration(r: AgentRegistration, meta: ResourceMetadata) -> wire::AgentRegi
         update_time: Some(timestamp(meta.updated_at)),
     }
 }
-fn issued(view: IssuedAgentCredential) -> Result<wire::IssuedAgentCredential, Status> {
-    let agent = agent_view(view.inspection())?;
-    Ok(wire::IssuedAgentCredential {
+fn issued(view: IssuedAgentCredential) -> wire::IssuedAgentCredential {
+    let agent = agent_view(view.inspection(), super::now());
+    wire::IssuedAgentCredential {
         agent: Some(agent),
         registration: Some(registration(view.registration, view.registration_metadata)),
         credential: view.credential.expose().into(),
-    })
+    }
 }
 fn expiration(value: Option<prost_types::Timestamp>) -> Result<Option<i64>, Status> {
     value
@@ -81,8 +81,9 @@ fn expiration(value: Option<prost_types::Timestamp>) -> Result<Option<i64>, Stat
         .transpose()
 }
 
-fn agent_view(view: coral_workspace::AgentInspection) -> Result<wire::Agent, Status> {
-    let blockers = view.access_blockers(super::now()?);
+/// An Agent as the page shows it, with what blocks its access at `now`.
+fn agent_view(view: coral_workspace::AgentInspection, now: i64) -> wire::Agent {
+    let blockers = view.access_blockers(now);
     let profile = view.creator_profile;
     let mut result = agent(view.agent, view.agent_metadata);
     result.creator_profile = Some(super::workspaces::profile(profile));
@@ -101,7 +102,7 @@ fn agent_view(view: coral_workspace::AgentInspection) -> Result<wire::Agent, Sta
             coral_workspace::AgentAccessBlocker::Expired => wire::AgentAccessBlocker::Expired,
         } as i32)
         .collect();
-    Ok(result)
+    result
 }
 
 #[tonic::async_trait]
@@ -117,7 +118,7 @@ impl wire::agent_service_server::AgentService for GrpcServices {
         let created = self
             .workspaces
             .create_agent(
-                &change(actor.clone())?
+                &change(actor.clone())
                     .with_request_id(&input.request_id)
                     .map_err(error)?,
                 &w,
@@ -126,7 +127,7 @@ impl wire::agent_service_server::AgentService for GrpcServices {
             )
             .await
             .map_err(error)?;
-        Ok(Response::new(issued(created)?))
+        Ok(Response::new(issued(created)))
     }
     #[tracing::instrument(skip_all, name = "coral.private.list_agents")]
     async fn list_agents(
@@ -141,10 +142,12 @@ impl wire::agent_service_server::AgentService for GrpcServices {
             .inspect_agents(&actor, &w)
             .await
             .map_err(error)?;
+        // One reading of the clock decides every Agent's blockers.
+        let now = super::now();
         let values = agents
             .into_iter()
-            .map(agent_view)
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|view| agent_view(view, now))
+            .collect::<Vec<_>>();
         let (agents, next_page_token) = page(
             values,
             input.page_size,
@@ -169,7 +172,7 @@ impl wire::agent_service_server::AgentService for GrpcServices {
             .inspect_agent(&actor, &w, &id)
             .await
             .map_err(error)?;
-        Ok(Response::new(agent_view(view)?))
+        Ok(Response::new(agent_view(view, super::now())))
     }
     #[tracing::instrument(skip_all, name = "coral.private.update_agent")]
     async fn update_agent(
@@ -188,7 +191,7 @@ impl wire::agent_service_server::AgentService for GrpcServices {
         };
         self.workspaces
             .set_agent_state(
-                &change(actor.clone())?.with_etag(&a.etag).map_err(error)?,
+                &change(actor.clone()).with_etag(&a.etag).map_err(error)?,
                 &w,
                 &id,
                 state,
@@ -200,7 +203,7 @@ impl wire::agent_service_server::AgentService for GrpcServices {
             .inspect_agent(&actor, &w, &id)
             .await
             .map_err(error)?;
-        Ok(Response::new(agent_view(view)?))
+        Ok(Response::new(agent_view(view, super::now())))
     }
     #[tracing::instrument(skip_all, name = "coral.private.delete_agent")]
     async fn delete_agent(
@@ -212,7 +215,7 @@ impl wire::agent_service_server::AgentService for GrpcServices {
         let (w, id) = agent_id(&input.name)?;
         self.access_lifecycle
             .delete_agent(
-                &change(actor)?.with_etag(&input.etag).map_err(error)?,
+                &change(actor).with_etag(&input.etag).map_err(error)?,
                 &w,
                 &id,
             )
@@ -268,7 +271,7 @@ impl wire::agent_registration_service_server::AgentRegistrationService for GrpcS
         };
         self.workspaces
             .update_agent_registration(
-                &change(actor.clone())?.with_etag(&r.etag).map_err(error)?,
+                &change(actor.clone()).with_etag(&r.etag).map_err(error)?,
                 &w,
                 view.registration.id(),
                 enabled,
@@ -302,7 +305,7 @@ impl wire::agent_registration_service_server::AgentRegistrationService for GrpcS
         let rotated = self
             .workspaces
             .rotate_agent_credential(
-                &change(actor.clone())?
+                &change(actor.clone())
                     .with_etag(&input.etag)
                     .map_err(error)?
                     .with_request_id(&input.request_id)
@@ -312,6 +315,6 @@ impl wire::agent_registration_service_server::AgentRegistrationService for GrpcS
             )
             .await
             .map_err(error)?;
-        Ok(Response::new(issued(rotated)?))
+        Ok(Response::new(issued(rotated)))
     }
 }

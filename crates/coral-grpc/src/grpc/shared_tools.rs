@@ -261,7 +261,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         if !input.validate_only {
             publish = publish.approve(input.reviewed_declaration);
         }
-        let context = ChangeContext::new(user, now()?, TraceId::current_or_new());
+        let context = ChangeContext::new(user, now(), TraceId::current_or_new());
         let published = self
             .shared_tool_workflow
             .publish(&context, &w, publish)
@@ -282,7 +282,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
         let path = path(&input.path)?;
-        let context = ChangeContext::new(user, now()?, TraceId::current_or_new());
+        let context = ChangeContext::new(user, now(), TraceId::current_or_new());
         let removed = self
             .shared_tool_workflow
             .remove(&context, &w, &path, input.expected_revision)

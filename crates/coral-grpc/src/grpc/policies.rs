@@ -154,7 +154,7 @@ impl wire::tool_policy_service_server::ToolPolicyService for GrpcServices {
         &self,
         request: Request<wire::UpdateToolPoliciesRequest>,
     ) -> Result<Response<wire::UpdateToolPoliciesResponse>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let names = req
             .policies

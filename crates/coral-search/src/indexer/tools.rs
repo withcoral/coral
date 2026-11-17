@@ -14,7 +14,6 @@ use super::repository::{self, AttemptState, GenerationState, RecordedOutcome, To
 use super::retry::RetryRule;
 use super::{
     DistinctWords, EntityIndexer, INDEXER_REVISION, IndexError, compact_identifier_variant,
-    now_unix_nanos,
 };
 use crate::CallPath;
 
@@ -78,7 +77,7 @@ impl EntityIndexer for ToolIndexer {
         let generation_id = entries.generation_id();
         let visibility =
             repository::generation_visibility(transaction, workspace_id, generation_id).await?;
-        let attempted_at = now_unix_nanos()?;
+        let attempted_at = crate::now_unix_nanos();
         repository::upsert_tool_rows(transaction, rows, attempted_at).await?;
         // A Generation keeps its Tools, but the reconcile task prepares
         // entries under the current rules, which may leave one out; a rewrite
@@ -387,7 +386,7 @@ pub(crate) async fn record_failed_attempt(
         generation.generation_id,
     )
     .await?;
-    let attempted_at = now_unix_nanos()?;
+    let attempted_at = crate::now_unix_nanos();
     let state = AttemptState::Failed {
         error: error.to_string(),
         failure: error.failure(),

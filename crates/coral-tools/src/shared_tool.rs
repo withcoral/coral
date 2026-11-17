@@ -1441,7 +1441,7 @@ impl SharedToolModule {
                 transaction,
                 actor,
                 workspace_id,
-                now_unix_nanos()?,
+                now_unix_nanos(),
             )
             .await
             .map(drop)

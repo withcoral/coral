@@ -75,14 +75,12 @@ pub(super) async fn oauth_workspace_post(
     else {
         return choice_error();
     };
-    let Some(pending) = sign_in_cookie::now_unix_secs().and_then(|now| {
-        PendingWorkspaceChoice::open(
-            state.settings.handshake_keys(),
-            submission.browser_binding.as_bytes(),
-            submission.ticket.as_bytes(),
-            now,
-        )
-    }) else {
+    let Some(pending) = PendingWorkspaceChoice::open(
+        state.settings.handshake_keys(),
+        submission.browser_binding.as_bytes(),
+        submission.ticket.as_bytes(),
+        sign_in_cookie::now_unix_secs(),
+    ) else {
         return choice_error();
     };
     let Some(trusted) = TrustedRedirect::parse(
@@ -217,7 +215,7 @@ fn picker_page(
 ) -> Option<Response> {
     let secure = state.secure_cookies();
     let browser_binding = approval_page::browser_binding_for_page(headers, secure).ok()?;
-    let expires_at = sign_in_cookie::now_unix_secs()? + approval_page::APPROVAL_MAX_AGE_SECONDS;
+    let expires_at = sign_in_cookie::now_unix_secs() + approval_page::APPROVAL_MAX_AGE_SECONDS;
     let ticket = pending
         .seal(
             state.settings.handshake_keys(),

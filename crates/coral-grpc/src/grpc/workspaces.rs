@@ -62,8 +62,8 @@ impl GrpcServices {
     }
 }
 
-pub(super) fn change(user: AuthenticatedUser) -> Result<ChangeContext, Status> {
-    Ok(ChangeContext::new(user, now()?, TraceId::current_or_new()))
+pub(super) fn change(user: AuthenticatedUser) -> ChangeContext {
+    ChangeContext::new(user, now(), TraceId::current_or_new())
 }
 pub(super) fn workspace_id(name: &str) -> Result<WorkspaceId, Status> {
     let Some(id) = name.strip_prefix("workspaces/") else {
@@ -302,7 +302,7 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
     ) -> Result<Response<wire::Workspace>, Status> {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
-        let context = change(user.clone())?
+        let context = change(user.clone())
             .with_request_id(&input.request_id)
             .map_err(error)?;
         let created = self
@@ -369,7 +369,7 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
         let id = workspace_id(&w.name)?;
         self.workspaces
             .update_display_name(
-                &change(user.clone())?.with_etag(&w.etag).map_err(error)?,
+                &change(user.clone()).with_etag(&w.etag).map_err(error)?,
                 &id,
                 WorkspaceDisplayName::parse(&w.display_name).map_err(error)?,
             )
@@ -387,9 +387,7 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
         let id = workspace_id(&input.name)?;
         self.workspaces
             .archive(
-                &change(user.clone())?
-                    .with_etag(&input.etag)
-                    .map_err(error)?,
+                &change(user.clone()).with_etag(&input.etag).map_err(error)?,
                 &id,
             )
             .await
@@ -406,9 +404,7 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
         let id = workspace_id(&input.name)?;
         self.workspaces
             .restore(
-                &change(user.clone())?
-                    .with_etag(&input.etag)
-                    .map_err(error)?,
+                &change(user.clone()).with_etag(&input.etag).map_err(error)?,
                 &id,
             )
             .await

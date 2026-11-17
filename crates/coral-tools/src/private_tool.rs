@@ -258,7 +258,7 @@ impl PrivateToolModule {
             revision,
             default_access_state,
         );
-        authority.require_current_at(now_unix_nanos()?)?;
+        authority.require_current_at(now_unix_nanos())?;
         match previous.as_ref() {
             None => repository::insert_current(transaction, &tool).await?,
             Some(previous) => {
@@ -474,7 +474,7 @@ impl PrivateToolModule {
         workspace_id: &WorkspaceId,
     ) -> Result<(), Error> {
         self.workspaces
-            .check_authoring(actor, workspace_id, now_unix_nanos()?)
+            .check_authoring(actor, workspace_id, now_unix_nanos())
             .await?;
         Ok(())
     }
@@ -486,7 +486,7 @@ impl PrivateToolModule {
         workspace_id: &WorkspaceId,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         self.workspaces
-            .check_authoring_in_transaction(transaction, actor, workspace_id, now_unix_nanos()?)
+            .check_authoring_in_transaction(transaction, actor, workspace_id, now_unix_nanos())
             .await
             .map_err(Into::into)
     }

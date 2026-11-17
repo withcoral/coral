@@ -251,15 +251,7 @@ impl SearchIndex {
     /// watermarks: no span then records counts the pass did not take.
     async fn run_pass(&self) -> PassWork {
         let mut work = PassWork::default();
-        let Some(now) = crate::unix_now_nanos() else {
-            // TODO: an error monitor for failed index writes is still to be set up.
-            tracing::error!(
-                error.type = safe::kind(IndexError::Clock.code()),
-                "failed to start a search index reconcile pass"
-            );
-            work.step_failed = true;
-            return work;
-        };
+        let now = crate::now_unix_nanos();
         work.step_failed |= step(
             step_span!("coral.search.reconcile.remove_superseded"),
             self.remove_superseded_generations(),

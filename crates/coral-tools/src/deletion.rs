@@ -87,7 +87,7 @@ impl PrivateToolDeletion {
                 transaction,
                 context.actor(),
                 workspace_id,
-                now_unix_nanos()?,
+                now_unix_nanos(),
             )
             .await?;
         let owner = context.actor().principal();
@@ -95,7 +95,7 @@ impl PrivateToolDeletion {
             repository::find_current_record_in_transaction(transaction, workspace_id, owner, path)
                 .await?
                 .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
-        authority.require_current_at(now_unix_nanos()?)?;
+        authority.require_current_at(now_unix_nanos())?;
         delete_current_with_event(transaction, context, &tool).await
     }
 }

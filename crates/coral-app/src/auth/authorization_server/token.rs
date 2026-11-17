@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::to_bytes;
 use axum::extract::{Request, State};
@@ -18,6 +17,7 @@ use coral_auth::PrivateAudience;
 use coral_auth::authorization_codes::CodeRedemption;
 use coral_auth::oauth_clients::AuthenticatedClient;
 use coral_auth::user_tokens::{AccessTarget, IssuedTokens, RefreshRequest, TokenRefusal};
+use coral_db::Clock as _;
 use coral_mcp::McpEndpoint;
 use coral_telemetry::safe;
 
@@ -59,9 +59,7 @@ pub(super) async fn oauth_token(
         Ok(client) => client,
         Err(response) => return *response,
     };
-    let Some(now_unix_nanos) = now_unix_nanos() else {
-        return token_error(TokenError::ServerError);
-    };
+    let now_unix_nanos = now_unix_nanos();
     let issued = match form.grant_type.as_ref().map(|value| value.as_str()) {
         Some("authorization_code") => redeem_code(&state, &form, &client, now_unix_nanos).await,
         Some("refresh_token") => refresh(&state, &form, &client, now_unix_nanos).await,
@@ -197,15 +195,8 @@ fn token_response(issued: &IssuedTokens, now_unix_nanos: i64) -> Response {
     json_response(StatusCode::OK, &serde_json::Value::Object(body))
 }
 
-pub(super) fn now_unix_nanos() -> Option<i64> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok());
-    if nanos.is_none() {
-        tracing::warn!("token endpoint could not read the system clock");
-    }
-    nanos
+pub(super) fn now_unix_nanos() -> i64 {
+    coral_db::SystemClock.now().get()
 }
 
 /// What the token for `resource` is for. First-party selection narrows the
@@ -448,11 +439,6 @@ pub(super) mod tests {
         let (_settings, session_tokens) =
             crate::auth::test_config::resolved_settings("https://accounts.example.test", "");
         (state, codes, session_tokens, database)
-    }
-
-    fn now_unix_nanos() -> i64 {
-        let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock");
-        i64::try_from(elapsed.as_nanos()).expect("clock")
     }
 
     #[tokio::test]

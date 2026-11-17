@@ -91,7 +91,7 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
         let path = path(&input.path)?;
         let context = PrivateToolChangeContext::new(
             AuthenticatedPrincipal::user(user),
-            now()?,
+            now(),
             TraceId::current_or_new(),
         );
         let agent = private_tool_agent(&input.agent, &w)?;

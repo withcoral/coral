@@ -112,7 +112,7 @@ impl wire::workspace_membership_service_server::WorkspaceMembershipService for G
         let actor = self.management_user(&request).await?;
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
-        let context = change(actor.clone())?
+        let context = change(actor.clone())
             .with_request_id(&input.request_id)
             .map_err(error)?;
         let granted = self
@@ -134,7 +134,7 @@ impl wire::workspace_membership_service_server::WorkspaceMembershipService for G
         mask(input.update_mask, &["role"])?;
         let m = input.membership.ok_or_else(invalid)?;
         let (w, user) = member(&m.name)?;
-        let context = change(actor.clone())?.with_etag(&m.etag).map_err(error)?;
+        let context = change(actor.clone()).with_etag(&m.etag).map_err(error)?;
         self.workspaces
             .manage_membership(
                 &context,
@@ -158,7 +158,7 @@ impl wire::workspace_membership_service_server::WorkspaceMembershipService for G
         let (w, user) = member(&input.name)?;
         self.access_lifecycle
             .remove_workspace_member(
-                &change(actor)?.with_etag(&input.etag).map_err(error)?,
+                &change(actor).with_etag(&input.etag).map_err(error)?,
                 &w,
                 &user,
             )

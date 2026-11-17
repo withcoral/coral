@@ -154,7 +154,7 @@ impl TaskModule {
                 started_at_unix_nanos,
             )
             .await?
-            .require_current_at(commands::now()?)?;
+            .require_current_at(commands::now())?;
         // The primary key proves the identifier unused: a conflict writes
         // nothing, and the next attempt draws fresh words.
         let mut attempts = 0;
@@ -287,7 +287,7 @@ impl TaskModule {
                     error.into()
                 }
             })?
-            .require_current_at(commands::now()?)?;
+            .require_current_at(commands::now())?;
         let task = repository::complete_for_principal(
             &mut transaction,
             workspace_id,

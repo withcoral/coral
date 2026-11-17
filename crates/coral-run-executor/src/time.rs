@@ -1,13 +1,13 @@
 //! The time conversions the link's messages and rows carry.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
+
+use coral_db::Clock as _;
 
 /// Now, in Unix nanoseconds: the deadlines that rows and leases record
 /// across Coral Instances.
 pub(crate) fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, nanos)
+    coral_db::SystemClock.now().get()
 }
 
 /// `duration` in whole nanoseconds, as rows record it.

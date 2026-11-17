@@ -100,11 +100,12 @@ async fn a_pass_retries_a_failed_private_tool_once_its_retry_is_due() {
                 .await
                 .unwrap();
             index.settled().await;
-            let attempted_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            let attempted_at = coral_db::Clock::now(&coral_db::SystemClock);
+            let retry_after = attempted_at
+                .checked_add(std::time::Duration::from_mins(5))
                 .unwrap()
-                .as_nanos();
-            let retry_after = attempted_at + std::time::Duration::from_mins(5).as_nanos();
+                .get();
+            let attempted_at = attempted_at.get();
             fixture
                 .test_database
                 .execute_fixture_sql(&format!(

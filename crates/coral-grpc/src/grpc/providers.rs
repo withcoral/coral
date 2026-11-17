@@ -505,7 +505,7 @@ impl GrpcServices {
     ) -> Result<Response<wire::ProviderSetup>, Status> {
         let inspected = self
             .providers
-            .inspect_setup(user, owner, id, super::now()?)
+            .inspect_setup(user, owner, id, super::now())
             .await
             .map_err(error)?;
         self.setup_view(user, inspected).await
@@ -519,7 +519,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         &self,
         request: Request<wire::ConfirmProviderSetupConfigurationRequest>,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let (owner, id) = resource(&req.name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
@@ -579,7 +579,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         &self,
         request: Request<wire::CreateProviderSetupRequest>,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let owner = scope(&req.parent)?;
         let input = req.input.ok_or_else(invalid)?;
@@ -630,7 +630,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         &self,
         request: Request<wire::StartProviderSetupAuthorizationRequest>,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let (owner, id) = resource(&req.name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
@@ -654,7 +654,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         &self,
         request: Request<wire::RetryProviderSetupDiscoveryRequest>,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let (owner, id) = resource(&request.get_ref().name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
         if request.get_ref().use_existing_account {
@@ -681,7 +681,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         &self,
         request: Request<wire::CancelProviderSetupRequest>,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let (owner, id) = resource(&request.get_ref().name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
         self.accounts()?
@@ -707,7 +707,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         &self,
         request: Request<wire::AuthorizeProviderSetupRequest>,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let (owner, id) = resource(&req.name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
@@ -724,7 +724,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
             .map_err(error)?;
         let mut inspected = self
             .providers
-            .inspect_setup(context.actor(), &owner, &id, super::now()?)
+            .inspect_setup(context.actor(), &owner, &id, super::now())
             .await
             .map_err(error)?;
         // Grant selection must use this mutation's receipt, never another command's
@@ -741,7 +741,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::GetProviderOAuthClientRequest>,
     ) -> Result<Response<wire::ProviderOAuthClient>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let (owner, id) = resource(&request.get_ref().name, "providers")?;
         let id = domain::ProviderId::parse(id).map_err(error)?;
         let status = self
@@ -761,7 +761,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::RotateProviderOAuthClientSecretRequest>,
     ) -> Result<Response<()>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let request = request.into_inner();
         let (owner, id) = resource(&request.name, "providers")?;
         let id = domain::ProviderId::parse(id).map_err(error)?;
@@ -779,7 +779,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::PublishProviderRequest>,
     ) -> Result<Response<wire::ProviderPublication>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let owner = scope(&req.parent)?;
         let (setup_owner, setup_id) = resource(&req.setup, "providerSetups")?;
@@ -951,7 +951,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::UpdateProviderRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)?
+        let context = change(self.management_user(&request).await?)
             .with_etag(&request.get_ref().etag)
             .map_err(super::workspaces::error)?;
         let req = request.into_inner();
@@ -1000,7 +1000,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::SetProviderIconRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)?
+        let context = change(self.management_user(&request).await?)
             .with_etag(&request.get_ref().etag)
             .map_err(super::workspaces::error)?;
         let req = request.into_inner();
@@ -1022,7 +1022,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::DeleteProviderIconRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)?
+        let context = change(self.management_user(&request).await?)
             .with_etag(&request.get_ref().etag)
             .map_err(super::workspaces::error)?;
         let (workspace, id) = resource(&request.get_ref().name, "providers")?;
@@ -1042,7 +1042,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::DisableProviderRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)?
+        let context = change(self.management_user(&request).await?)
             .with_etag(&request.get_ref().etag)
             .map_err(super::workspaces::error)?;
         let (owner, id) = resource(&request.get_ref().name, "providers")?;
@@ -1065,7 +1065,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::RestoreProviderRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)?
+        let context = change(self.management_user(&request).await?)
             .with_etag(&request.get_ref().etag)
             .map_err(super::workspaces::error)?;
         let (owner, id) = resource(&request.get_ref().name, "providers")?;
@@ -1088,7 +1088,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::DeleteProviderRequest>,
     ) -> Result<Response<()>, Status> {
-        let context = change(self.management_user(&request).await?)?
+        let context = change(self.management_user(&request).await?)
             .with_etag(&request.get_ref().etag)
             .map_err(super::workspaces::error)?;
         let (owner, id) = resource(&request.get_ref().name, "providers")?;

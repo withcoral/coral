@@ -52,9 +52,7 @@ pub(super) async fn start(
     ) else {
         return token_error(TokenError::InvalidRequest);
     };
-    let Some(now) = now_unix_nanos() else {
-        return token_error(TokenError::ServerError);
-    };
+    let now = now_unix_nanos();
     match state
         .tokens
         .start_web_session(refresh_token, &client, max_age, now)
@@ -82,9 +80,7 @@ pub(super) async fn token(
     let Some(session) = present(form.session.as_ref()) else {
         return token_error(TokenError::InvalidRequest);
     };
-    let Some(now) = now_unix_nanos() else {
-        return token_error(TokenError::ServerError);
-    };
+    let now = now_unix_nanos();
     match state.tokens.web_session_token(session, &client, now).await {
         Ok(minted) => {
             // The token expires after `now` by construction; one second is

@@ -18,6 +18,7 @@ use super::periodic::{Passes, Schedule};
 use super::search_model::{Delivery, SearchModel};
 use super::server_config::{Launcher, LocalRunExecutorSettings, RunExecutorListener};
 use crate::state::StateLock;
+use coral_db::Clock as _;
 use coral_db::Database;
 use coral_telemetry::safe;
 
@@ -30,13 +31,9 @@ use coral_telemetry::safe;
 /// mid-flight.
 const DEVICE_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// The wall clock in nanoseconds since 1970; none when it is set before then
-/// or past what the databases hold.
-fn unix_nanos() -> Option<i64> {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?;
-    i64::try_from(elapsed.as_nanos()).ok()
+/// The wall clock in nanoseconds since 1970.
+fn unix_nanos() -> i64 {
+    coral_db::SystemClock.now().get()
 }
 
 /// What bootstrap resolved for one [`Engine`]: every dependency it does not
@@ -673,8 +670,7 @@ impl Drop for Engine {
 async fn install_coral_providers(
     provider_workflow: &coral_administration::ProviderWorkflow,
 ) -> Result<(), AppError> {
-    let booted_at =
-        unix_nanos().ok_or_else(|| AppError::engine_boot("system clock is out of range"))?;
+    let booted_at = unix_nanos();
     provider_workflow
         .install_missing_coral_providers(booted_at)
         .await
@@ -710,13 +706,10 @@ fn start_passes(
     passes.start("device_authorization_recovery", schedule, move || {
         let accounts = accounts.clone();
         async move {
-            // A clock that gives no time gets no pass.
-            if let Some(now) = unix_nanos() {
-                accounts
-                    .recover_device_authorizations(now)
-                    .await
-                    .map_err(|error| error.code())?;
-            }
+            accounts
+                .recover_device_authorizations(unix_nanos())
+                .await
+                .map_err(|error| error.code())?;
             Ok(())
         }
     });
@@ -737,11 +730,9 @@ fn start_passes(
             async move {
                 // The collector answering late or not at all is no failure:
                 // the reports wait for the next check.
-                data.send_due(&client, coral_usage::COLLECTOR_URL, || {
-                    unix_nanos().unwrap_or(0)
-                })
-                .await
-                .map_err(|error| error.code())?;
+                data.send_due(&client, coral_usage::COLLECTOR_URL, unix_nanos)
+                    .await
+                    .map_err(|error| error.code())?;
                 Ok(())
             }
         });
