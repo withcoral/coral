@@ -19,7 +19,7 @@ use super::callback::CallbackResponse;
 use super::setup::{
     SETUP_AUTHORIZATION_LIFETIME_NANOS, SetupAuthentication, SetupAuthorizationCompletion,
     SetupAuthorizationState, SetupOAuthClient, StoredClient, StoredRequirement,
-    callback_state_digest, setup_deadline,
+    callback_state_digest,
 };
 use super::setup_repository::{load, locate_by_callback_state, scrub};
 use super::{AccountModule, ProviderAccountId, oauth, repository, setup_repository};
@@ -108,14 +108,10 @@ impl AccountModule {
         let reviewed = previous
             .as_ref()
             .map(|row| (row.grant_id, row.credential_generation.clone()));
-        let expires_at_unix_nanos = match flow.kind {
-            FlowKind::BeforeDiscovery => loaded
-                .setup
-                .expires_at_unix_nanos()
-                .ok_or(Error::ProviderSetupNotApplicable)?,
-            FlowKind::Ready => setup_deadline(loaded.setup.created_at_unix_nanos())?,
-        };
-        if context.occurred_at_unix_nanos() >= expires_at_unix_nanos {
+        if loaded
+            .setup
+            .is_past_deadline(context.occurred_at_unix_nanos())
+        {
             return Err(Error::ProviderSetupNotApplicable);
         }
         let retained = previous
@@ -176,7 +172,9 @@ impl AccountModule {
         let (authority, loaded) = self.lock_pre_ready(&mut tx, context, owner, id).await?;
         if flow_of(self.providers.outbound_policy, &loaded)?.kind != flow.kind
             || loaded.configuration_revision != configuration_revision
-            || context.occurred_at_unix_nanos() >= expires_at_unix_nanos
+            || loaded
+                .setup
+                .is_past_deadline(context.occurred_at_unix_nanos())
             || context.occurred_at_unix_nanos() >= authorization_expires_at
         {
             return Err(Error::ProviderSetupNotApplicable);
@@ -216,7 +214,7 @@ impl AccountModule {
                 provisional_grant_id: ProviderAccountId(Uuid::new_v4()),
                 contract: &contract,
                 generation: &generation,
-                credential_expires_at: expires_at_unix_nanos,
+                credential_expires_at: loaded.setup.expires_at_unix_nanos(),
                 client: &stored_client,
                 private_flow: &private,
                 navigation: &navigation,
@@ -1075,7 +1073,7 @@ pub(super) async fn settle_deadlines(
 ) -> Result<(), Error> {
     let now = actor.now();
     let id = loaded.setup.id().clone();
-    if now >= setup_deadline(loaded.setup.created_at_unix_nanos())? {
+    if loaded.setup.is_past_deadline(now) {
         super::oauth_client_secret_repository::delete(
             tx,
             owner,

@@ -824,7 +824,7 @@ message ProviderSetup {
   ProviderConfigurationReview configuration = 16;
   // Safe diagnostic of the last failed discovery attempt while awaiting discovery.
   ProviderDiagnostic discovery_failure = 14;
-  // Host deadline for a pre-ready Setup; absent once ready without material.
+  // Host deadline of the Setup, set when it is created. An open Setup expires then, ready or not.
   google.protobuf.Timestamp expire_time = 15;
   // What a Program asked this Setup to publish; absent for a Setup a person started.
   ProviderSetupRequest request = 20;

@@ -415,14 +415,12 @@ impl ProviderModule {
             tx.rollback().await?;
             return Ok(Vec::new());
         };
-        // Each Setup's deadline is a fixed time after it was created.
-        let created_after =
-            now.saturating_sub(crate::setup_credentials::SETUP_CREDENTIAL_LIFETIME_NANOS);
+        // A Setup is listed while it is not yet at its deadline at `now`.
         let setups = crate::repository::requested_setups(
             &mut tx,
             owner,
             user.user_id(),
-            created_after,
+            now,
             &ProviderSetupState::OPEN,
         )
         .await?;

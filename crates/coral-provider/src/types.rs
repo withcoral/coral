@@ -163,7 +163,7 @@ pub struct ProviderSetup {
     state: ProviderSetupState,
     created_at_unix_nanos: i64,
     input_url: Option<String>,
-    expires_at_unix_nanos: Option<i64>,
+    expires_at_unix_nanos: i64,
     request: Option<SetupRequest>,
 }
 
@@ -178,6 +178,9 @@ pub struct SetupRequest {
 }
 
 impl ProviderSetup {
+    /// `created_at_unix_nanos` is when the Setup was created, and
+    /// `expires_at_unix_nanos`, the later of the two times, is its host
+    /// deadline. Creation stores both, and neither changes afterwards.
     pub(crate) const fn new(
         id: ProviderSetupId,
         owner: WorkspaceId,
@@ -185,6 +188,7 @@ impl ProviderSetup {
         input_digest: Option<ProviderSetupInputDigest>,
         state: ProviderSetupState,
         created_at_unix_nanos: i64,
+        expires_at_unix_nanos: i64,
     ) -> Self {
         Self {
             id,
@@ -194,7 +198,7 @@ impl ProviderSetup {
             state,
             created_at_unix_nanos,
             input_url: None,
-            expires_at_unix_nanos: None,
+            expires_at_unix_nanos,
             request: None,
         }
     }
@@ -210,13 +214,8 @@ impl ProviderSetup {
         self.request.as_ref()
     }
 
-    pub(crate) fn with_source(
-        mut self,
-        input_url: Option<String>,
-        expires_at_unix_nanos: Option<i64>,
-    ) -> Self {
+    pub(crate) fn with_input_url(mut self, input_url: Option<String>) -> Self {
         self.input_url = input_url;
-        self.expires_at_unix_nanos = expires_at_unix_nanos;
         self
     }
 
@@ -226,17 +225,17 @@ impl ProviderSetup {
         self.input_url.as_deref()
     }
 
-    /// Returns the host deadline for a pre-ready Setup or setup-scoped material.
+    /// Returns the Setup's host deadline, stored once when the Setup is created.
     #[must_use]
-    pub const fn expires_at_unix_nanos(&self) -> Option<i64> {
+    pub const fn expires_at_unix_nanos(&self) -> i64 {
         self.expires_at_unix_nanos
     }
 
-    /// Whether `now` is at or past the Setup's deadline.
+    /// Whether `now` is at or past the Setup's host deadline. Ask here
+    /// instead of adding the Setup lifetime to the creation time again.
     #[must_use]
-    pub fn is_past_deadline(&self, now: i64) -> bool {
-        self.expires_at_unix_nanos
-            .is_some_and(|deadline| now >= deadline)
+    pub const fn is_past_deadline(&self, now: i64) -> bool {
+        now >= self.expires_at_unix_nanos
     }
 
     /// Returns the stable Setup identity.

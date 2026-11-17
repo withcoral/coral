@@ -796,7 +796,7 @@ pub struct ProviderSetup {
     /// Safe diagnostic of the last failed discovery attempt while awaiting discovery.
     #[prost(message, optional, tag = "14")]
     pub discovery_failure: ::core::option::Option<ProviderDiagnostic>,
-    /// Host deadline for a pre-ready Setup; absent once ready without material.
+    /// Host deadline of the Setup, set when it is created. An open Setup expires then, ready or not.
     #[prost(message, optional, tag = "15")]
     pub expire_time: ::core::option::Option<::prost_types::Timestamp>,
     /// What a Program asked this Setup to publish; absent for a Setup a person started.
