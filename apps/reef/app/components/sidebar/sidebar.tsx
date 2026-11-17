@@ -401,7 +401,7 @@ function SidebarNavigation({
             render={
               <SidebarButton
                 aria-label={`Open account menu for ${accountLabel}`}
-                icon={name ? <Avatar name={name} letters={2} /> : 'User'}
+                icon={name ? <Avatar name={name} /> : 'User'}
                 isMinimized={isMinimized}
                 title={accountLabel}
               />

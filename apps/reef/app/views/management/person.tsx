@@ -1,4 +1,5 @@
 import { Avatar } from '@/wax/components/avatar'
+import { Icon } from '@/wax/components/icon'
 import { Pill } from '@/wax/components/pill'
 import { Typography } from '@/wax/components'
 import type { PersonView } from './types'
@@ -6,6 +7,11 @@ import * as styles from './management.css'
 
 export function personLabel(person: PersonView) {
   return person.local ? 'Local user' : person.name || person.email || 'Unnamed user'
+}
+/** A person's avatar. A placeholder label shows an icon, since it has no initials. */
+function PersonAvatar({ person }: { person: PersonView }) {
+  if (person.local || !(person.name || person.email)) return <Icon name="User" size="20" />
+  return <Avatar name={personLabel(person)} seed={person.user} size="20" />
 }
 /** A person's label, or the given one, marked "(You)" for the signed-in user. */
 export function personName(person: PersonView, currentUser: string, label = personLabel(person)) {
@@ -27,7 +33,6 @@ export function Person({
   /** The table shows the email in its own column, so the name never falls back to it. */
   emailColumn?: boolean
 }) {
-  const label = personLabel(person)
   const name = personName(
     person,
     currentUser,
@@ -38,7 +43,7 @@ export function Person({
     // The full name and the email show on hover, since a narrow column truncates the name.
     return (
       <div className={styles.personLine} title={showEmail ? `${name}\n${person.email}` : name}>
-        <Avatar name={label} seed={person.user} size="20" />
+        <PersonAvatar person={person} />
         <Typography.BodyStrong className={styles.personLineName} truncate>
           {name}
         </Typography.BodyStrong>
@@ -48,7 +53,7 @@ export function Person({
   }
   return (
     <div className={styles.row}>
-      <Avatar name={label} seed={person.user} size="20" />
+      <PersonAvatar person={person} />
       <div className={styles.intro}>
         <Typography.BodyStrong className={styles.identity}>{name}</Typography.BodyStrong>
         {showEmail && (
