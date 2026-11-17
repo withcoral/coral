@@ -88,50 +88,50 @@ impl Error {
 
 impl From<coral_run::Error> for Error {
     fn from(error: coral_run::Error) -> Self {
-        match error {
-            coral_run::Error::Database(error) => Self::Database(error),
-            _ => Self::CorruptData("Run history is not what Coral writes"),
+        match error.into_database_error() {
+            Ok(error) => Self::Database(error),
+            Err(_other) => Self::CorruptData("Run history is not what Coral writes"),
         }
     }
 }
 
 impl From<coral_tools::Error> for Error {
     fn from(error: coral_tools::Error) -> Self {
-        match error {
-            coral_tools::Error::Database(error) => Self::Database(error),
-            _ => Self::CorruptData("a Private Tool is not what Coral writes"),
+        match error.into_database_error() {
+            Ok(error) => Self::Database(error),
+            Err(_other) => Self::CorruptData("a Private Tool is not what Coral writes"),
         }
     }
 }
 
 impl From<coral_task::Error> for Error {
     fn from(error: coral_task::Error) -> Self {
-        match error {
-            coral_task::Error::Database(error) => Self::Database(error),
-            _ => Self::CorruptData("a Task interaction is not what Coral writes"),
+        match error.into_database_error() {
+            Ok(error) => Self::Database(error),
+            Err(_other) => Self::CorruptData("a Task interaction is not what Coral writes"),
         }
     }
 }
 
 impl From<coral_provider::Error> for Error {
     fn from(error: coral_provider::Error) -> Self {
-        match error {
-            coral_provider::Error::Database(error) => Self::Database(error),
-            _ => Self::CorruptData("an Account is not what Coral writes"),
+        match error.into_database_error() {
+            Ok(error) => Self::Database(error),
+            Err(_other) => Self::CorruptData("an Account is not what Coral writes"),
         }
     }
 }
 
 impl From<coral_workspace::Error> for Error {
     fn from(error: coral_workspace::Error) -> Self {
-        match error {
-            coral_workspace::Error::Database(error) => Self::Database(error),
-            other
+        match error.into_database_error() {
+            Ok(error) => Self::Database(error),
+            Err(other)
                 if other.refusal() == Some(coral_workspace::AuthorityRefusal::PermissionDenied) =>
             {
                 Self::PermissionDenied
             }
-            _ => Self::Unavailable,
+            Err(_other) => Self::Unavailable,
         }
     }
 }

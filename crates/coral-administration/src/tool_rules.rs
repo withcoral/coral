@@ -20,8 +20,8 @@ pub(crate) async fn remove_in_transaction(
         &[removed.tool_key()],
     )
     .await
-    .map_err(|error| match error {
-        coral_policy::Error::Database(error) => Error::Database(error),
-        other => Error::CorruptData(other.to_string()),
+    .map_err(|error| match error.into_database_error() {
+        Ok(error) => Error::Database(error),
+        Err(other) => Error::CorruptData(other.to_string()),
     })
 }

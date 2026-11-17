@@ -774,3 +774,33 @@ async fn a_blocked_process_makes_no_report_and_skips_no_day() {
         "the oldest waiting report was made by the release process"
     );
 }
+
+// Catches: a database failure inside the module error that a count returns
+// reported as corrupt usage data, which reads as a definite answer.
+#[test]
+fn a_count_keeps_a_wrapped_database_error_and_calls_the_rest_corrupt() {
+    use crate::Error;
+    let unanswered = || coral_db::Error::WriterBusy;
+    let workspace = || coral_workspace::Error::Database(unanswered());
+    let kept: [Error; 5] = [
+        coral_tools::Error::Workspace(workspace()).into(),
+        coral_run::Error::Tools(coral_tools::Error::Workspace(workspace())).into(),
+        coral_task::Error::Run(coral_run::Error::Database(unanswered())).into(),
+        coral_provider::Error::Workspace(workspace()).into(),
+        workspace().into(),
+    ];
+    for error in kept {
+        assert!(
+            matches!(error, Error::Database(coral_db::Error::WriterBusy)),
+            "{error:?}"
+        );
+    }
+    let corrupt: [Error; 3] = [
+        coral_tools::Error::PrivateToolExists.into(),
+        coral_run::Error::RunNotFound.into(),
+        coral_task::Error::TaskNotFound.into(),
+    ];
+    for error in corrupt {
+        assert!(matches!(error, Error::CorruptData(_)), "{error:?}");
+    }
+}

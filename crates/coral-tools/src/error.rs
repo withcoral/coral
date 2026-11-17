@@ -183,6 +183,23 @@ impl Error {
         }
     }
 
+    /// The database error behind this one, by value, or this error back
+    /// when it holds none. [`Self::database_error`] says which it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error itself when no database error is behind it.
+    pub fn into_database_error(self) -> Result<coral_db::Error, Self> {
+        match self {
+            Self::Database(error) => Ok(error),
+            Self::Workspace(error) => error.into_database_error().map_err(Self::Workspace),
+            other => {
+                debug_assert!(other.database_error().is_none());
+                Err(other)
+            }
+        }
+    }
+
     /// The Workspace refusal this error wraps, directly or through another
     /// module's error. A refusal reads the same whichever module wrapped
     /// it, so a caller reports it without naming that module's variants.

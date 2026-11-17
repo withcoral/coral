@@ -126,6 +126,22 @@ impl Error {
         }
     }
 
+    /// The database error behind this one, by value, or this error back
+    /// when it holds none. [`Self::database_error`] says which it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error itself when no database error is behind it.
+    pub fn into_database_error(self) -> Result<coral_db::Error, Self> {
+        match self {
+            Self::Database(error) => Ok(error),
+            other => {
+                debug_assert!(other.database_error().is_none());
+                Err(other)
+            }
+        }
+    }
+
     /// Whether the caller has no access: [`AuthorityRefusal::denies_access`]
     /// for the refusal this error is, and `false` for an error that is none.
     #[must_use]

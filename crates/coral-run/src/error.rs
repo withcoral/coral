@@ -593,7 +593,7 @@ impl Error {
     /// error that wraps it. Each module answers for its own error, so this
     /// lists no other module's variants.
     #[must_use]
-    pub(crate) const fn database_error(&self) -> Option<&coral_db::Error> {
+    pub const fn database_error(&self) -> Option<&coral_db::Error> {
         match self {
             Self::Database(error) => Some(error),
             Self::Workspace(error) => error.database_error(),
@@ -631,6 +631,26 @@ impl Error {
             | Self::ProgramHostTerminated
             | Self::Upstream(_)
             | Self::CorruptData(_) => None,
+        }
+    }
+
+    /// The database error behind this one, by value, or this error back
+    /// when it holds none. [`Self::database_error`] says which it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error itself when no database error is behind it.
+    pub fn into_database_error(self) -> Result<coral_db::Error, Self> {
+        match self {
+            Self::Database(error) => Ok(error),
+            Self::Workspace(error) => error.into_database_error().map_err(Self::Workspace),
+            Self::Provider(error) => error.into_database_error().map_err(Self::Provider),
+            Self::Policy(error) => error.into_database_error().map_err(Self::Policy),
+            Self::Tools(error) => error.into_database_error().map_err(Self::Tools),
+            other => {
+                debug_assert!(other.database_error().is_none());
+                Err(other)
+            }
         }
     }
 
@@ -784,7 +804,19 @@ mod tests {
         for (wrap, label) in wrapped {
             assert!(wrap(unanswered()).is_operational(), "{label}");
             assert!(!wrap(definite()).is_operational(), "{label}");
+            // By value, the same database error comes back.
+            assert!(
+                matches!(
+                    wrap(unanswered()).into_database_error(),
+                    Ok(coral_db::Error::WriterBusy)
+                ),
+                "{label}"
+            );
         }
+        assert!(matches!(
+            Error::RunNotFound.into_database_error(),
+            Err(Error::RunNotFound)
+        ));
         assert!(!Error::RunNotFound.is_operational());
         assert!(!Error::ClaimMismatch.is_operational());
         assert!(!Error::RunRequestNotYetRecorded.is_operational());

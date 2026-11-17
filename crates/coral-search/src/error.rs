@@ -80,6 +80,48 @@ impl Error {
         }
     }
 
+    /// The database error behind this one, directly or through the module
+    /// error that wraps it.
+    #[must_use]
+    pub const fn database_error(&self) -> Option<&coral_db::Error> {
+        match self {
+            Self::Database(error) => Some(error),
+            Self::Workspace(error) => error.database_error(),
+            Self::Provider(error) => error.database_error(),
+            Self::Policy(error) => error.database_error(),
+            Self::Tools(error) => error.database_error(),
+            // Name every variant so a new one that holds a database error
+            // is found here.
+            Self::InvalidInput(_)
+            | Self::UnknownProviderCallRoot { .. }
+            | Self::ServiceUnavailable
+            | Self::AuthoringDescriptionNotFound
+            | Self::TypesLimit
+            | Self::UndeclaredTypes { .. }
+            | Self::PermissionDenied(_) => None,
+        }
+    }
+
+    /// The database error behind this one, by value, or this error back
+    /// when it holds none. [`Self::database_error`] says which it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error itself when no database error is behind it.
+    pub fn into_database_error(self) -> Result<coral_db::Error, Self> {
+        match self {
+            Self::Database(error) => Ok(error),
+            Self::Workspace(error) => error.into_database_error().map_err(Self::Workspace),
+            Self::Provider(error) => error.into_database_error().map_err(Self::Provider),
+            Self::Policy(error) => error.into_database_error().map_err(Self::Policy),
+            Self::Tools(error) => error.into_database_error().map_err(Self::Tools),
+            other => {
+                debug_assert!(other.database_error().is_none());
+                Err(other)
+            }
+        }
+    }
+
     /// The Workspace refusal this error wraps, directly or through another
     /// module's error. A refusal reads the same whichever module wrapped
     /// it, so a caller reports it without naming that module's variants.

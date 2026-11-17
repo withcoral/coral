@@ -683,9 +683,9 @@ fn declared_default_facts(default: ToolAccessState) -> ToolPolicyFacts {
 
 /// A coral-tools read failure: only persistence or corrupt data.
 fn tools_error(error: coral_tools::Error) -> Error {
-    match error {
-        coral_tools::Error::Database(error) => Error::Database(error),
-        other => Error::CorruptData(other.to_string()),
+    match error.into_database_error() {
+        Ok(error) => Error::Database(error),
+        Err(other) => Error::CorruptData(other.to_string()),
     }
 }
 
@@ -1119,13 +1119,9 @@ pub async fn remove_authored_tool_rules_in_transaction(
 
 /// A coral-provider read failure: only persistence or corrupt data.
 fn provider_read_error(error: coral_provider::Error) -> Error {
-    match error {
-        coral_provider::Error::Database(error)
-        | coral_provider::Error::Catalog(coral_catalog::Error::Database(error))
-        | coral_provider::Error::Workspace(coral_workspace::Error::Database(error)) => {
-            Error::Database(error)
-        }
-        other => Error::CorruptData(other.to_string()),
+    match error.into_database_error() {
+        Ok(error) => Error::Database(error),
+        Err(other) => Error::CorruptData(other.to_string()),
     }
 }
 
