@@ -886,9 +886,11 @@ impl AccountModule {
         let user = job.actor_user_id.clone();
         let actor = match organization.resolve_user_authority(&user).await {
             Ok(actor) => actor,
-            Err(coral_workspace::Error::PermissionDenied(_)) => {
-                coral_workspace::AuthenticatedUser::without_organization_membership(user)
-            }
+            // The User left the Organization, or was disabled in it.
+            Err(coral_workspace::Error::PermissionDenied(
+                coral_workspace::Denial::NoOrganizationMembership
+                | coral_workspace::Denial::OrganizationMembershipRequired,
+            )) => coral_workspace::AuthenticatedUser::without_organization_membership(user),
             Err(error) => return Err(error.into()),
         };
         let trace = job.trace_id;

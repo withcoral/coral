@@ -91,13 +91,13 @@ impl WorkspaceModule {
         actor: &AuthenticatedPrincipal,
         scope: &HistoryScope,
     ) -> Result<HistoryAuthority, Error> {
-        let user = actor
-            .authenticated_user()
-            .ok_or(Error::PermissionDenied("Agents cannot browse history"))?;
+        let user = actor.authenticated_user().ok_or(Error::PermissionDenied(
+            crate::Denial::AgentsCannotBrowseHistory,
+        ))?;
         let current = crate::organization::current_user(tx, user.user_id()).await?;
         if current.organization_role().is_none() {
             return Err(Error::PermissionDenied(
-                "current Organization Membership is required",
+                crate::Denial::OrganizationMembershipRequired,
             ));
         }
         let (principal, workspace) = match scope {

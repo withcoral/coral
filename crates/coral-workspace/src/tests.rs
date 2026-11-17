@@ -10,9 +10,9 @@ mod secret_store_grants;
 use coral_test_support::TestDatabase;
 
 use crate::{
-    AuthoritySource, ChangeContext, Error, LifecycleAction, LifecycleOutcome, OrganizationRole,
-    TraceId, UserId, WorkspaceAction, WorkspaceDisplayName, WorkspaceModule, WorkspaceRole,
-    WorkspaceState, local_organization_owner,
+    AuthoritySource, ChangeContext, Denial, Error, LifecycleAction, LifecycleOutcome,
+    OrganizationRole, TraceId, UserId, WorkspaceAction, WorkspaceDisplayName, WorkspaceModule,
+    WorkspaceRole, WorkspaceState, local_organization_owner,
 };
 
 #[tokio::test]
@@ -273,7 +273,7 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
     // Listing and assignment need Organization Owner authority, not Workspace ownership.
     assert!(matches!(
         module.list_organization_workspaces(&creator).await,
-        Err(Error::PermissionDenied(_))
+        Err(Error::PermissionDenied(Denial::OrganizationOwnerRequired))
     ));
     let before = events().await;
     let rejected = [
@@ -297,7 +297,7 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
                 (case, &result),
                 (
                     "Workspace Owner is not an Organization Owner",
-                    Err(Error::PermissionDenied(_))
+                    Err(Error::PermissionDenied(Denial::OrganizationOwnerRequired))
                 ) | ("target is disabled", Err(Error::OwnerTargetNotEnabled))
             ),
             "{case}: {result:?}"
@@ -386,7 +386,7 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
         module
             .archive_as_organization_owner(&change(creator.clone(), 39, '6'), workspace.id())
             .await,
-        Err(Error::PermissionDenied(_))
+        Err(Error::PermissionDenied(Denial::OrganizationOwnerRequired))
     ));
     assert_eq!(
         events().await,
@@ -481,7 +481,7 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
     );
     assert!(matches!(
         module.list_governance_events(&creator).await,
-        Err(Error::PermissionDenied(_))
+        Err(Error::PermissionDenied(Denial::OrganizationOwnerRequired))
     ));
     assert!(matches!(
         module
@@ -740,7 +740,7 @@ async fn ordinary_workspace_roles_require_current_organization_membership() {
         module
             .check(&member, workspace.id(), WorkspaceAction::Configure)
             .await,
-        Err(Error::PermissionDenied(_))
+        Err(Error::PermissionDenied(Denial::WorkspaceOwnerRequired))
     ));
     assert!(matches!(
         module
@@ -769,7 +769,9 @@ async fn ordinary_workspace_roles_require_current_organization_membership() {
     ));
     assert!(matches!(
         module.list(&departed).await,
-        Err(Error::PermissionDenied("User is disabled"))
+        Err(Error::PermissionDenied(
+            Denial::OrganizationMembershipRequired
+        ))
     ));
 
     let target_without_organization = crate::AuthenticatedUser::without_organization_membership(
@@ -789,7 +791,7 @@ async fn ordinary_workspace_roles_require_current_organization_membership() {
                 WorkspaceRole::Member,
             )
             .await,
-        Err(Error::PermissionDenied(_))
+        Err(Error::OrganizationMembershipNotFound)
     ));
     assert_eq!(
         module
@@ -799,6 +801,27 @@ async fn ordinary_workspace_roles_require_current_organization_membership() {
             .len(),
         event_count,
         "authorization rejection must not write an Administrative Lifecycle Event"
+    );
+    // A target whose Organization Membership is disabled is not absent.
+    assert!(matches!(
+        module
+            .set_membership(
+                &change(owner.clone(), 120, '5'),
+                workspace.id(),
+                &departed,
+                WorkspaceRole::Member,
+            )
+            .await,
+        Err(Error::MemberTargetNotEnabled)
+    ));
+    assert_eq!(
+        module
+            .list_lifecycle_events(&owner, workspace.id())
+            .await
+            .expect("list Events after the second rejection")
+            .len(),
+        event_count,
+        "a refused Membership writes no Administrative Lifecycle Event"
     );
 }
 
@@ -854,7 +877,10 @@ async fn archive_blocks_configuration_runs_and_dispatch_until_restoration() {
         ] {
             let result = module.check(actor, workspace.id(), action).await;
             if action == WorkspaceAction::Configure && actor == &member {
-                assert!(matches!(result, Err(Error::PermissionDenied(_))));
+                assert!(matches!(
+                    result,
+                    Err(Error::PermissionDenied(Denial::WorkspaceOwnerRequired))
+                ));
             } else {
                 assert!(matches!(result, Err(Error::WorkspaceArchived)));
             }
@@ -977,7 +1003,7 @@ async fn assert_archived_mutations_rejected(
         module
             .restore(&change(member.clone(), 260, 'c'), workspace_id)
             .await,
-        Err(Error::PermissionDenied(_))
+        Err(Error::PermissionDenied(Denial::WorkspaceOwnerRequired))
     ));
     assert_eq!(
         module

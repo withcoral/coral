@@ -141,9 +141,10 @@ pub(super) fn error(error: coral_workspace::Error) -> Status {
     use coral_workspace::Error as E;
     let (code, reason) = match error {
         E::InvalidInput(_) => (tonic::Code::InvalidArgument, "INVALID_ARGUMENT"),
-        E::WorkspaceNotFound | E::MembershipNotFound | E::AgentNotFound => {
-            (tonic::Code::NotFound, "NOT_FOUND")
-        }
+        E::WorkspaceNotFound
+        | E::MembershipNotFound
+        | E::AgentNotFound
+        | E::OrganizationMembershipNotFound => (tonic::Code::NotFound, "NOT_FOUND"),
         E::PermissionDenied(_) => (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
         E::EtagMismatch | E::OrganizationAuthorityConflict => {
             (tonic::Code::Aborted, "ETAG_MISMATCH")
@@ -153,6 +154,10 @@ pub(super) fn error(error: coral_workspace::Error) -> Status {
         E::MembershipAlreadyExists => (tonic::Code::AlreadyExists, "MEMBERSHIP_ALREADY_EXISTS"),
         E::WorkspaceArchived => (tonic::Code::FailedPrecondition, "WORKSPACE_ARCHIVED"),
         E::LastWorkspaceOwner => (tonic::Code::FailedPrecondition, "LAST_WORKSPACE_OWNER"),
+        E::LastOrganizationOwner => (tonic::Code::FailedPrecondition, "LAST_ORGANIZATION_OWNER"),
+        E::MemberTargetNotEnabled => (tonic::Code::FailedPrecondition, "MEMBER_TARGET_NOT_ENABLED"),
+        // A defect in Coral, which no retry of the request corrects.
+        E::AccessRemovalMismatch => (tonic::Code::Internal, "INTERNAL"),
         E::OwnerTransferRequired => (tonic::Code::FailedPrecondition, "OWNER_TRANSFER_REQUIRED"),
         E::OwnerTargetNotEnabled => (tonic::Code::FailedPrecondition, "OWNER_TARGET_NOT_ENABLED"),
         E::WorkspaceAlreadyActive
@@ -531,7 +536,23 @@ mod tests {
             ),
             (E::WorkspaceNotFound, Code::NotFound, "NOT_FOUND"),
             (
-                E::PermissionDenied("private detail"),
+                E::OrganizationMembershipNotFound,
+                Code::NotFound,
+                "NOT_FOUND",
+            ),
+            (
+                E::LastOrganizationOwner,
+                Code::FailedPrecondition,
+                "LAST_ORGANIZATION_OWNER",
+            ),
+            (
+                E::MemberTargetNotEnabled,
+                Code::FailedPrecondition,
+                "MEMBER_TARGET_NOT_ENABLED",
+            ),
+            (E::AccessRemovalMismatch, Code::Internal, "INTERNAL"),
+            (
+                E::PermissionDenied(coral_workspace::Denial::WorkspaceOwnerRequired),
                 Code::PermissionDenied,
                 "PERMISSION_DENIED",
             ),

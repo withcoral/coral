@@ -190,11 +190,19 @@ describe('actionFailure', () => {
     ['WORKSPACE_ARCHIVED', 'This workspace is archived. Restore it before you make changes.'],
     ['LAST_WORKSPACE_OWNER', 'This workspace must keep one owner. Assign another owner first.'],
     [
+      'LAST_ORGANIZATION_OWNER',
+      'This organization must keep one enabled owner. Assign another owner first.',
+    ],
+    [
       'OWNER_TRANSFER_REQUIRED',
       'This person is the only owner of a workspace. Choose a person to take over their workspaces.',
     ],
     [
       'OWNER_TARGET_NOT_ENABLED',
+      'This person does not have an enabled organization membership. Choose another person.',
+    ],
+    [
+      'MEMBER_TARGET_NOT_ENABLED',
       'This person does not have an enabled organization membership. Choose another person.',
     ],
     [

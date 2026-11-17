@@ -1199,10 +1199,10 @@ fn require_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
     if evidence.effective_role() == WorkspaceRole::Owner {
         Ok(())
     } else {
-        Err(
-            coral_workspace::Error::PermissionDenied("Workspace Owner authority is required")
-                .into(),
+        Err(coral_workspace::Error::PermissionDenied(
+            coral_workspace::Denial::WorkspaceOwnerRequired,
         )
+        .into())
     }
 }
 

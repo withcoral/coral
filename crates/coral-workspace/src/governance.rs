@@ -291,7 +291,7 @@ async fn organization_workspace(
 pub(super) fn require_organization_owner(actor: &AuthenticatedUser) -> Result<(), Error> {
     if actor.organization_role() != Some(OrganizationRole::Owner) {
         return Err(Error::PermissionDenied(
-            "Organization Owner authority is required",
+            crate::Denial::OrganizationOwnerRequired,
         ));
     }
     Ok(())

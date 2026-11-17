@@ -42,7 +42,9 @@ fn only_a_lost_workspace_counts_as_lost_authority() {
             true,
         ),
         (
-            Error::Workspace(coral_workspace::Error::PermissionDenied("inspect")),
+            Error::Workspace(coral_workspace::Error::PermissionDenied(
+                coral_workspace::Denial::WorkspaceOwnerRequired,
+            )),
             true,
         ),
         (
@@ -75,7 +77,9 @@ fn only_a_lost_workspace_counts_as_lost_authority() {
         ),
         (
             Error::Tools(coral_tools::Error::Workspace(
-                coral_workspace::Error::PermissionDenied("inspect"),
+                coral_workspace::Error::PermissionDenied(
+                    coral_workspace::Denial::WorkspaceOwnerRequired,
+                ),
             )),
             true,
         ),

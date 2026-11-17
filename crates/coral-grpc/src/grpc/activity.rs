@@ -734,9 +734,11 @@ mod tests {
             ),
             (
                 Task::Run(Run::Provider(Provider::Workspace(
-                    Workspace::PermissionDenied("private detail"),
+                    Workspace::PermissionDenied(coral_workspace::Denial::WorkspaceOwnerRequired),
                 ))),
-                crate::grpc::workspaces::error(Workspace::PermissionDenied("private detail")),
+                crate::grpc::workspaces::error(Workspace::PermissionDenied(
+                    coral_workspace::Denial::WorkspaceOwnerRequired,
+                )),
                 Code::PermissionDenied,
             ),
             (
@@ -791,7 +793,7 @@ mod tests {
             ),
             (
                 coral_task::Error::Workspace(coral_workspace::Error::PermissionDenied(
-                    "private detail",
+                    coral_workspace::Denial::WorkspaceOwnerRequired,
                 )),
                 Code::PermissionDenied,
             ),
