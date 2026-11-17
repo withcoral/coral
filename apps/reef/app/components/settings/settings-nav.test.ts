@@ -10,7 +10,7 @@ const sections = (reader: Parameters<typeof settingsNav>[0]) =>
 test.each([
   [
     'an organization owner',
-    { organizationOwner: true, people: true, secretStores: true },
+    { organizationOwner: true, people: true, secretStoresEnabled: true },
     [
       ['Members', '/organization/members'],
       ['Workspaces', '/organization/workspaces'],
@@ -20,12 +20,12 @@ test.each([
   ],
   [
     'an organization member',
-    { organizationOwner: false, people: true, secretStores: true },
+    { organizationOwner: false, people: true, secretStoresEnabled: true },
     [['Usage data', '/usage-data']],
   ],
   [
     'a local deployment',
-    { organizationOwner: true, people: false, secretStores: true },
+    { organizationOwner: true, people: false, secretStoresEnabled: true },
     [
       ['Workspaces', '/organization/workspaces'],
       ['Secret stores', '/organization/secret-stores'],
@@ -34,7 +34,7 @@ test.each([
   ],
   [
     'a deployment that turned secret stores off',
-    { organizationOwner: true, people: false, secretStores: false },
+    { organizationOwner: true, people: false, secretStoresEnabled: false },
     [
       ['Workspaces', '/organization/workspaces'],
       ['Usage data', '/usage-data'],
@@ -51,6 +51,6 @@ test.each([
   ['/usage-data', 'usage-data'],
   ['/workspaces/ops/members', undefined],
 ])('at %s the current section is %s', (pathname, expected) => {
-  const nav = settingsNav({ organizationOwner: true, people: true, secretStores: true })
+  const nav = settingsNav({ organizationOwner: true, people: true, secretStoresEnabled: true })
   expect(currentSettingsItem(nav, pathname)?.id).toBe(expected)
 })

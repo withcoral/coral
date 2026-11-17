@@ -45,7 +45,7 @@ interface SidebarProps {
   /** Decides which sections the organization's settings show. */
   organizationOwner?: boolean
   /** False when the deployment turned secret stores off. */
-  secretStores?: boolean
+  secretStoresEnabled?: boolean
   userName?: string
   initialIsMinimized: boolean
   workspaces?: SidebarWorkspace[]
@@ -214,7 +214,7 @@ function SidebarNavigation({
   auth = { mode: 'disabled' },
   area = 'work',
   organizationOwner = false,
-  secretStores = true,
+  secretStoresEnabled = true,
   userName,
   workspaces = [],
   workspace,
@@ -235,7 +235,7 @@ function SidebarNavigation({
   const accountLabel = auth.mode === 'disabled' ? 'Local user' : name || 'Account'
   const people = auth.mode === 'required'
   const inSettings = area === 'settings'
-  const reader = { organizationOwner, people, secretStores }
+  const reader = { organizationOwner, people, secretStoresEnabled }
   // A tab that opened on the settings goes back home.
   const back = useReturnTo(inSettings, '/')
   // The brand opens the Overview of the workspace you are in. In the settings

@@ -26,7 +26,7 @@ export interface SettingsReader {
   /** A local deployment has no other people to manage. */
   people: boolean
   /** False when the deployment turned secret stores off, as Desktop does. */
-  secretStores: boolean
+  secretStoresEnabled: boolean
 }
 
 /**
@@ -36,7 +36,7 @@ export interface SettingsReader {
 export function settingsNav({
   organizationOwner,
   people,
-  secretStores,
+  secretStoresEnabled,
 }: SettingsReader): SettingsNavItem[] {
   const sections: (SettingsNavItem | false)[] = [
     organizationOwner &&
@@ -53,7 +53,7 @@ export function settingsNav({
       icon: 'Folders',
     },
     organizationOwner &&
-      secretStores && {
+      secretStoresEnabled && {
         id: 'secret-stores',
         label: 'Secret stores',
         to: settingsPath.secretStores,

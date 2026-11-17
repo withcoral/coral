@@ -39,7 +39,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     const organizationOwner = membership?.role === OrganizationRole.OWNER
     const workspaces = all.filter((w) => w.state === WorkspaceState.ACTIVE)
     const profile = membership?.profile
-    const [actionCounts, secretStores] = await Promise.all([
+    const [actionCounts, secretStoresEnabled] = await Promise.all([
       loadActionCounts(api, workspaces, request.signal).catch(() => null),
       // Only an owner can list them. The page reports a failure, so the nav keeps the section.
       organizationOwner
@@ -53,7 +53,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
       {
         actionCounts,
         organizationOwner,
-        secretStores,
+        secretStoresEnabled,
         newerRelease:
           organizationOwner && release?.release
             ? { version: release.release.version, notesUrl: release.release.notesUrl }
@@ -119,7 +119,7 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
               auth={loaderData.auth}
               area={inSettings ? 'settings' : 'work'}
               organizationOwner={loaderData.organizationOwner}
-              secretStores={loaderData.secretStores}
+              secretStoresEnabled={loaderData.secretStoresEnabled}
               newerRelease={loaderData.newerRelease}
               userName={loaderData.userName}
               initialIsMinimized={rootData?.sidebarIsMinimized ?? false}

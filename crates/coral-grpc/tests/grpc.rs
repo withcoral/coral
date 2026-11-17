@@ -1367,8 +1367,6 @@ async fn only_an_organization_owner_lists_the_defined_secret_stores() {
         .unwrap_err();
     assert_eq!(anonymous.code(), tonic::Code::Unauthenticated);
 
-    assert!(!answer.disabled);
-
     // Defining none yet and turning Secret Stores off answer apart, so Reef
     // still shows how to define one in the first case.
     for (stores, disabled) in [

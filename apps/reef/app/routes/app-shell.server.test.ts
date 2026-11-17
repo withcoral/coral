@@ -95,7 +95,7 @@ it.each([
     role = caseRole
     secretStores = stores
     const result = await loader(authRouteTestArgs(new Request('http://reef/activity'), {}, null))
-    expect(result.data.secretStores).toBe(shown)
+    expect(result.data.secretStoresEnabled).toBe(shown)
   },
 )
 
