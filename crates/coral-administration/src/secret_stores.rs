@@ -69,6 +69,12 @@ impl SecretStoreAdministration {
             .collect())
     }
 
+    /// Whether the deployment turned Secret Stores off, so it can define none.
+    #[must_use]
+    pub const fn disabled(&self) -> bool {
+        self.stores.is_disabled()
+    }
+
     /// Every grant in the Organization, ordered by store.
     ///
     /// # Errors

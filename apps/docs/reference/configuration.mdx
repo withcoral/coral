@@ -46,9 +46,10 @@ Coral does not start when `config.toml` holds an unknown key, or a value that a 
 
 ### `[credentials]`
 
-| Key       | Description                                                                                                                         | Required                                                                                    | Default |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------- |
-| `key_env` | Name of the environment variable that holds the encryption key for provider credentials. Generate it with `openssl rand -base64 32` | No. If not present Coral will autogenerate an encryption key and save it to its config dir. | N/A     |
+| Key                     | Description                                                                                                                                | Required                                                                                    | Default |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- | ------- |
+| `key_env`               | Name of the environment variable that holds the encryption key for provider credentials. Generate it with `openssl rand -base64 32`        | No. If not present Coral will autogenerate an encryption key and save it to its config dir. | N/A     |
+| `disable_secret_stores` | Turns off [secret stores](#secret_stores). **Settings** then has no **Secret stores** section. You cannot also define `[[secret_stores]]`. | No                                                                                          | `false` |
 
 To switch an existing install to `key_env`, set the variable to the base64 encoding of the config folder's `credentials.key` file, then delete the file. For example, `base64 < credentials.key` prints the value. Coral does not start while both exist.
 

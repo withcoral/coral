@@ -4,12 +4,13 @@ import { currentSettingsItem, settingsNav } from './settings-nav'
 const sections = (reader: Parameters<typeof settingsNav>[0]) =>
   settingsNav(reader).map((item) => [item.label, item.to])
 
-// Catches: a member offered a section Coral refuses, or a local deployment,
-// where nobody else can sign in, offered people to manage.
+// Catches: a member offered a section Coral refuses, a local deployment, where
+// nobody else can sign in, offered people to manage, or a deployment that turned
+// secret stores off, such as Desktop, offered a page that does not exist.
 test.each([
   [
     'an organization owner',
-    { organizationOwner: true, people: true },
+    { organizationOwner: true, people: true, secretStores: true },
     [
       ['Members', '/organization/members'],
       ['Workspaces', '/organization/workspaces'],
@@ -19,15 +20,23 @@ test.each([
   ],
   [
     'an organization member',
-    { organizationOwner: false, people: true },
+    { organizationOwner: false, people: true, secretStores: true },
     [['Usage data', '/usage-data']],
   ],
   [
     'a local deployment',
-    { organizationOwner: true, people: false },
+    { organizationOwner: true, people: false, secretStores: true },
     [
       ['Workspaces', '/organization/workspaces'],
       ['Secret stores', '/organization/secret-stores'],
+      ['Usage data', '/usage-data'],
+    ],
+  ],
+  [
+    'a deployment that turned secret stores off',
+    { organizationOwner: true, people: false, secretStores: false },
+    [
+      ['Workspaces', '/organization/workspaces'],
       ['Usage data', '/usage-data'],
     ],
   ],
@@ -42,6 +51,6 @@ test.each([
   ['/usage-data', 'usage-data'],
   ['/workspaces/ops/members', undefined],
 ])('at %s the current section is %s', (pathname, expected) => {
-  const nav = settingsNav({ organizationOwner: true, people: true })
+  const nav = settingsNav({ organizationOwner: true, people: true, secretStores: true })
   expect(currentSettingsItem(nav, pathname)?.id).toBe(expected)
 })

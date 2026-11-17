@@ -8,6 +8,9 @@ import { ManagementLayout, trail } from './layout'
 import type { FormContext } from './types'
 import * as styles from './management.css'
 
+/** How to define a secret store in config.toml. */
+const secretStoresDocsUrl = 'https://withcoral.com/docs/reference/configuration#secret_stores'
+
 /** A workspace that holds a grant. */
 interface GrantedWorkspace {
   name: string
@@ -57,7 +60,12 @@ export function OrganizationSecretStoresPage({
       >
         <Table.Head />
         {stores.length === 0 && (
-          <Table.Status>No secret stores. To define one, edit config.toml.</Table.Status>
+          <Table.Status>
+            <span>No secret stores. To define one, add it to config.toml.</span>
+            <Button.ExternalLink href={secretStoresDocsUrl} size="small">
+              Read the secret store docs
+            </Button.ExternalLink>
+          </Table.Status>
         )}
         <Table.Body>
           {stores.map((store) => (

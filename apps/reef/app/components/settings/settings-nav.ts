@@ -25,13 +25,19 @@ export interface SettingsReader {
   organizationOwner: boolean
   /** A local deployment has no other people to manage. */
   people: boolean
+  /** False when the deployment turned secret stores off, as Desktop does. */
+  secretStores: boolean
 }
 
 /**
  * The organization's sections for this reader: only what they can open, in the
  * order it shows. It is never empty, and Settings in the account menu opens the first.
  */
-export function settingsNav({ organizationOwner, people }: SettingsReader): SettingsNavItem[] {
+export function settingsNav({
+  organizationOwner,
+  people,
+  secretStores,
+}: SettingsReader): SettingsNavItem[] {
   const sections: (SettingsNavItem | false)[] = [
     organizationOwner &&
       people && {
@@ -46,12 +52,13 @@ export function settingsNav({ organizationOwner, people }: SettingsReader): Sett
       to: settingsPath.organizationWorkspaces,
       icon: 'Folders',
     },
-    organizationOwner && {
-      id: 'secret-stores',
-      label: 'Secret stores',
-      to: settingsPath.secretStores,
-      icon: 'KeyRound',
-    },
+    organizationOwner &&
+      secretStores && {
+        id: 'secret-stores',
+        label: 'Secret stores',
+        to: settingsPath.secretStores,
+        icon: 'KeyRound',
+      },
     // Every member can read what Coral sends; only organization owners change it.
     {
       id: 'usage-data',

@@ -406,6 +406,21 @@ mod tests {
         assert_eq!(build("", None).unwrap().list().count(), 0);
     }
 
+    // Catches: Reef treating a deployment that defines no store yet like one
+    // that turned Secret Stores off, which would hide how to define one.
+    #[test]
+    fn only_disable_secret_stores_turns_them_off() {
+        for (raw, disabled) in [
+            ("", false),
+            ("[credentials]\ndisable_secret_stores = false", false),
+            ("[credentials]\ndisable_secret_stores = true", true),
+        ] {
+            let stores = build(raw, None).expect(raw);
+            assert_eq!(stores.is_disabled(), disabled, "{raw:?}");
+            assert_eq!(stores.list().count(), 0, "{raw:?}");
+        }
+    }
+
     /// ADR 0036: a deployment moves between builds without failing to boot.
     #[tokio::test]
     async fn a_store_of_a_kind_the_build_lacks_is_defined_and_never_read() {

@@ -15,7 +15,7 @@ const meta = {
     },
   ],
   args: {
-    reader: { organizationOwner: true, people: true },
+    reader: { organizationOwner: true, people: true, secretStores: true },
     back: '/workspaces/demo/tools',
     isMinimized: false,
   },
@@ -28,12 +28,17 @@ type Story = StoryObj<typeof meta>
 export const Owner: Story = {}
 // A member reads the usage data and administers nothing in the organization.
 export const Member: Story = {
-  args: { reader: { organizationOwner: false, people: true } },
+  args: { reader: { organizationOwner: false, people: true, secretStores: true } },
   parameters: { initialEntry: '/usage-data' },
 }
 // A local deployment has no other people, so it has no members to manage.
 export const LocalDeployment: Story = {
-  args: { reader: { organizationOwner: true, people: false } },
+  args: { reader: { organizationOwner: true, people: false, secretStores: true } },
+  parameters: { initialEntry: '/organization/workspaces' },
+}
+// Desktop turns secret stores off, so it has no secret stores section.
+export const SecretStoresOff: Story = {
+  args: { reader: { organizationOwner: true, people: false, secretStores: false } },
   parameters: { initialEntry: '/organization/workspaces' },
 }
 export const Collapsed: Story = { args: { isMinimized: true } }

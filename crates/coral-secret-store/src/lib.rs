@@ -335,7 +335,10 @@ struct DefinedStore {
 
 /// The Secret Stores this deployment defines, by name.
 #[derive(Clone, Default)]
-pub struct SecretStores(Arc<BTreeMap<SecretStoreName, DefinedStore>>);
+pub struct SecretStores {
+    stores: Arc<BTreeMap<SecretStoreName, DefinedStore>>,
+    disabled: bool,
+}
 
 impl SecretStores {
     /// The registry of the given stores.
@@ -352,12 +355,32 @@ impl SecretStores {
                 return Err(InvalidSetting::new("another store has this name"));
             }
         }
-        Ok(Self(Arc::new(defined)))
+        Ok(Self {
+            stores: Arc::new(defined),
+            disabled: false,
+        })
+    }
+
+    /// The registry of a deployment that turned Secret Stores off: it
+    /// defines none and can define none.
+    #[must_use]
+    pub fn disabled() -> Self {
+        Self {
+            stores: Arc::default(),
+            disabled: true,
+        }
+    }
+
+    /// Whether the deployment turned Secret Stores off. A deployment that
+    /// merely defines none can still define one.
+    #[must_use]
+    pub const fn is_disabled(&self) -> bool {
+        self.disabled
     }
 
     /// Each defined store's name, kind and current status, ordered by name.
     pub fn list(&self) -> impl Iterator<Item = (&SecretStoreName, &SecretStoreKind, StoreStatus)> {
-        self.0
+        self.stores
             .iter()
             .map(|(name, defined)| (name, &defined.kind, defined.store.status()))
     }
@@ -366,7 +389,7 @@ impl SecretStores {
     /// name, while config defines it.
     #[must_use]
     pub fn describe(&self, name: &str) -> Option<StoreDescription> {
-        self.0.get(name).map(|defined| StoreDescription {
+        self.stores.get(name).map(|defined| StoreDescription {
             kind: defined.kind.clone(),
             status: defined.store.status(),
             reference_form: defined.store.reference_form(),
@@ -376,13 +399,15 @@ impl SecretStores {
     /// The kind of the store with this name, while config defines it.
     #[must_use]
     pub fn kind(&self, name: &str) -> Option<&SecretStoreKind> {
-        self.0.get(name).map(|defined| &defined.kind)
+        self.stores.get(name).map(|defined| &defined.kind)
     }
 
     /// The store with this name, while config defines it.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<Arc<dyn SecretStore>> {
-        self.0.get(name).map(|defined| Arc::clone(&defined.store))
+        self.stores
+            .get(name)
+            .map(|defined| Arc::clone(&defined.store))
     }
 }
 
