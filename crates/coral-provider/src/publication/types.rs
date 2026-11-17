@@ -204,29 +204,73 @@ impl ProviderRegenerationRequest {
     }
 }
 
+/// What a Publication recorded when it ended: what it published, or the safe
+/// reason it published nothing. It is one or the other, never both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Recorded<T> {
+    Succeeded(T),
+    Failed(PublicationDiagnostic),
+}
+
+impl<T> Recorded<T> {
+    const fn published(&self) -> Option<&T> {
+        match self {
+            Self::Succeeded(published) => Some(published),
+            Self::Failed(_) => None,
+        }
+    }
+
+    const fn outcome(&self) -> ProviderPublicationOutcome {
+        match self {
+            Self::Succeeded(_) => ProviderPublicationOutcome::Succeeded,
+            Self::Failed(_) => ProviderPublicationOutcome::Failed,
+        }
+    }
+
+    const fn diagnostic(&self) -> Option<&PublicationDiagnostic> {
+        match self {
+            Self::Succeeded(_) => None,
+            Self::Failed(diagnostic) => Some(diagnostic),
+        }
+    }
+}
+
 /// Durable terminal result of one synchronous Provider regeneration attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderRegenerationPublication {
     id: ProviderPublicationId,
     request: ProviderRegenerationRequest,
-    outcome: ProviderPublicationOutcome,
-    diagnostic: Option<PublicationDiagnostic>,
+    result: Recorded<()>,
     completed_at_unix_nanos: i64,
 }
 
 impl ProviderRegenerationPublication {
-    pub(crate) const fn new(
+    /// A regeneration that replaced the Provider's catalog, or kept the
+    /// active Generation because the catalog is the same.
+    pub(crate) const fn succeeded(
         id: ProviderPublicationId,
         request: ProviderRegenerationRequest,
-        outcome: ProviderPublicationOutcome,
-        diagnostic: Option<PublicationDiagnostic>,
         completed_at_unix_nanos: i64,
     ) -> Self {
         Self {
             id,
             request,
-            outcome,
-            diagnostic,
+            result: Recorded::Succeeded(()),
+            completed_at_unix_nanos,
+        }
+    }
+
+    /// A regeneration that consumed its Setup and left the Provider as it was.
+    pub(crate) const fn failed(
+        id: ProviderPublicationId,
+        request: ProviderRegenerationRequest,
+        diagnostic: PublicationDiagnostic,
+        completed_at_unix_nanos: i64,
+    ) -> Self {
+        Self {
+            id,
+            request,
+            result: Recorded::Failed(diagnostic),
             completed_at_unix_nanos,
         }
     }
@@ -246,13 +290,13 @@ impl ProviderRegenerationPublication {
     /// Returns the terminal outcome.
     #[must_use]
     pub const fn outcome(&self) -> ProviderPublicationOutcome {
-        self.outcome
+        self.result.outcome()
     }
 
     /// Returns the safe structural diagnostic for a failed replacement.
     #[must_use]
     pub const fn diagnostic(&self) -> Option<&PublicationDiagnostic> {
-        self.diagnostic.as_ref()
+        self.result.diagnostic()
     }
 
     /// Returns the terminal commit timestamp.
@@ -276,27 +320,37 @@ pub enum ProviderPublicationOutcome {
 pub struct ProviderPublication {
     id: ProviderPublicationId,
     request: WorkspaceProviderPublicationRequest,
-    outcome: ProviderPublicationOutcome,
-    diagnostic: Option<PublicationDiagnostic>,
-    published_provider: Option<Provider>,
+    result: Recorded<Provider>,
     completed_at_unix_nanos: i64,
 }
 
 impl ProviderPublication {
-    pub(crate) const fn new(
+    /// A Publication that created `provider` and its resources atomically.
+    pub(crate) const fn succeeded(
         id: ProviderPublicationId,
         request: WorkspaceProviderPublicationRequest,
-        outcome: ProviderPublicationOutcome,
-        diagnostic: Option<PublicationDiagnostic>,
-        published_provider: Option<Provider>,
+        provider: Provider,
         completed_at_unix_nanos: i64,
     ) -> Self {
         Self {
             id,
             request,
-            outcome,
-            diagnostic,
-            published_provider,
+            result: Recorded::Succeeded(provider),
+            completed_at_unix_nanos,
+        }
+    }
+
+    /// A Publication that consumed its Setup and created no Provider.
+    pub(crate) const fn failed(
+        id: ProviderPublicationId,
+        request: WorkspaceProviderPublicationRequest,
+        diagnostic: PublicationDiagnostic,
+        completed_at_unix_nanos: i64,
+    ) -> Self {
+        Self {
+            id,
+            request,
+            result: Recorded::Failed(diagnostic),
             completed_at_unix_nanos,
         }
     }
@@ -322,19 +376,19 @@ impl ProviderPublication {
     /// Returns the terminal outcome.
     #[must_use]
     pub const fn outcome(&self) -> ProviderPublicationOutcome {
-        self.outcome
+        self.result.outcome()
     }
 
     /// Returns a safe failure diagnostic, when publication failed.
     #[must_use]
     pub const fn diagnostic(&self) -> Option<&PublicationDiagnostic> {
-        self.diagnostic.as_ref()
+        self.result.diagnostic()
     }
 
     /// Returns the atomic creation resources for a successful outcome.
     #[must_use]
     pub const fn published_provider(&self) -> Option<&Provider> {
-        self.published_provider.as_ref()
+        self.result.published()
     }
 
     /// Returns the terminal commit timestamp.

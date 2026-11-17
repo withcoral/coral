@@ -214,11 +214,9 @@ impl AppliedPublication {
         completed_at: i64,
     ) -> Self {
         Self {
-            terminal: Terminal::Regeneration(ProviderRegenerationPublication::new(
+            terminal: Terminal::Regeneration(ProviderRegenerationPublication::succeeded(
                 id,
                 request,
-                ProviderPublicationOutcome::Succeeded,
-                None,
                 completed_at,
             )),
             changed_field_paths: if activated.is_some() {
@@ -246,11 +244,10 @@ impl AppliedPublication {
         completed_at: i64,
     ) -> Self {
         Self {
-            terminal: Terminal::Regeneration(ProviderRegenerationPublication::new(
+            terminal: Terminal::Regeneration(ProviderRegenerationPublication::failed(
                 id,
                 request,
-                ProviderPublicationOutcome::Failed,
-                Some(diagnostic),
+                diagnostic,
                 completed_at,
             )),
             changed_field_paths: TERMINAL_ONLY_FIELDS,
@@ -1176,24 +1173,20 @@ impl ProviderModule {
                     None,
                 ));
                 (
-                    ProviderPublication::new(
+                    ProviderPublication::succeeded(
                         publication_id,
                         request,
-                        ProviderPublicationOutcome::Succeeded,
-                        None,
-                        Some(provider),
+                        provider,
                         context.occurred_at_unix_nanos(),
                     ),
                     evidence,
                 )
             }
             Err(diagnostic) => (
-                ProviderPublication::new(
+                ProviderPublication::failed(
                     publication_id,
                     request,
-                    ProviderPublicationOutcome::Failed,
-                    Some(diagnostic),
-                    None,
+                    diagnostic,
                     context.occurred_at_unix_nanos(),
                 ),
                 PublicationEvidence::Failed,
