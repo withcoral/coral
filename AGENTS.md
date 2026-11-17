@@ -209,6 +209,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   or a repair as in product code. `coral_catalog::SchemaGraphCache` relies on
   it: a Coral Instance serves a Generation's parsed schema graph from memory
   while the cache holds it, and never rereads the row to check it.
+- An instant is a `coral_db::UnixNanos` and a span is a `std::time::Duration`.
+  A repository binds and decodes `UnixNanos` directly, and a row struct keeps
+  its column's name. A crate that still carries an instant as an `i64`
+  converts at its call edge with `UnixNanos::new` or `.get()`.
 - Give each independently identified entity one stable ID as its sole primary
   key. Use a composite primary key only when the tuple is the domain identity.
 - For Workspace-owned data, every externally influenced read or write must

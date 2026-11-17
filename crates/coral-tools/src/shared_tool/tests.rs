@@ -85,7 +85,11 @@ impl SharedToolFixture {
             .await
             .expect("create Agent");
         let agent = workspaces
-            .authenticate_agent(&workspace, issued.credential.expose(), 13)
+            .authenticate_agent(
+                &workspace,
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(13),
+            )
             .await
             .expect("authenticate Agent");
         Self {

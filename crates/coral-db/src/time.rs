@@ -4,6 +4,10 @@
 //! [`UnixNanos`]. A span between two instants is a [`Duration`], so the
 //! compiler tells a deadline from a lifetime.
 //!
+//! A repository gives a statement a [`UnixNanos`] where it gave an `i64`, and
+//! names it as the type of a row's field or tuple member. The column holds
+//! the same integer of nanoseconds either way; an absent instant is a null.
+//!
 //! [`SystemClock`] is the only code in Coral that reads the host's clock;
 //! `clippy.toml` refuses `SystemTime::now` everywhere else. The rule does not
 //! reach a dependency that reads the clock itself.
@@ -16,7 +20,11 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// An instant: nanoseconds since 1970-01-01T00:00:00Z.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// A row decodes one from its integer column, on both databases, as it
+/// decodes the `i64` inside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, sqlx::Type)]
+#[sqlx(transparent)]
 pub struct UnixNanos(i64);
 
 impl UnixNanos {
@@ -84,6 +92,21 @@ impl UnixNanos {
 }
 
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
+
+/// A `SeaQuery` statement binds an instant as the integer its column holds.
+impl From<UnixNanos> for sea_query::Value {
+    fn from(instant: UnixNanos) -> Self {
+        Self::BigInt(Some(instant.0))
+    }
+}
+
+/// An absent instant binds as a null of the column's integer type, so a
+/// statement takes an `Option<UnixNanos>`.
+impl sea_query::Nullable for UnixNanos {
+    fn null() -> sea_query::Value {
+        sea_query::Value::BigInt(None)
+    }
+}
 
 /// A source of the current instant.
 ///

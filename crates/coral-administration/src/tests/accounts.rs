@@ -663,7 +663,7 @@ async fn disablement_and_archive_preserve_current_accounts() {
         .check_run_admission(
             &AuthenticatedPrincipal::user(f.member.clone()),
             f.workspace.id(),
-            100,
+            coral_db::UnixNanos::new(100),
         )
         .await
         .unwrap_err();

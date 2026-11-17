@@ -204,14 +204,13 @@ impl WorkspaceModule {
             WorkspaceState::Active,
             1,
         );
-        repository::insert_workspace(transaction, &workspace, context.occurred_at_unix_nanos())
-            .await?;
+        repository::insert_workspace(transaction, &workspace, context.occurred_at()).await?;
         repository::upsert_membership(
             transaction,
             workspace.id(),
             context.actor().user_id(),
             WorkspaceRole::Owner,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
         )
         .await?;
         record_event(
@@ -488,7 +487,7 @@ impl WorkspaceModule {
             &mut transaction,
             workspace_id,
             &display_name,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
         )
         .await?;
         record_event(
@@ -703,7 +702,7 @@ impl WorkspaceModule {
             workspace_id,
             target.user_id(),
             role,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
         )
         .await?;
         record_event(
@@ -846,7 +845,7 @@ impl WorkspaceModule {
             workspace_id,
             next_state,
             next_version,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
         )
         .await?;
         record_event(
@@ -1056,7 +1055,7 @@ async fn record_event(
             target_kind: detail.target_kind,
             target_id: detail.target_id,
             changed_field_paths: detail.changed_field_paths,
-            occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+            occurred_at: context.occurred_at(),
             trace_id: context.trace_id(),
         },
     )

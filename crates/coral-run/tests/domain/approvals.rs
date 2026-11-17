@@ -22,7 +22,7 @@ async fn approval_waits_for_the_invoking_user_and_commits_one_decision() {
         &mut tx,
         tool.user.user_id(),
         coral_workspace::VerifiedUserProfile::new(Some("Reviewing user"), None, None, None),
-        40,
+        coral_db::UnixNanos::new(40),
     )
     .await
     .unwrap();
@@ -2982,7 +2982,7 @@ impl TwoToolsTwoApprovers {
                 &mut tx,
                 approver.authenticated_user().unwrap().user_id(),
                 coral_workspace::VerifiedUserProfile::new(Some(name), None, None, None),
-                40,
+                coral_db::UnixNanos::new(40),
             )
             .await
             .unwrap();

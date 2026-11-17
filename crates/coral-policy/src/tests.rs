@@ -1745,7 +1745,11 @@ async fn rules_hold_the_exact_rules_of_current_provider_tools_by_call_path() {
         .await
         .expect("create Agent");
     let agent = workspaces
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 303)
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(303),
+        )
         .await
         .expect("authenticate Agent");
 
@@ -2343,7 +2347,11 @@ impl PrivateTools {
             .await
             .expect("create Agent");
         let agent = workspaces
-            .authenticate_agent(&workspace, issued.credential.expose(), 14)
+            .authenticate_agent(
+                &workspace,
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(14),
+            )
             .await
             .expect("authenticate Agent");
         let functions = coral_tools::PrivateToolModule::new(

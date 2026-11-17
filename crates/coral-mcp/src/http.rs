@@ -329,7 +329,7 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
     let evidence = match state
         .modules
         .workspaces
-        .check_principal_inspection(&principal, &workspace_id, now.get())
+        .check_principal_inspection(&principal, &workspace_id, now)
         .await
     {
         Ok(evidence) => evidence,

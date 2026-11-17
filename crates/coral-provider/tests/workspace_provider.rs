@@ -21,7 +21,7 @@ const SOURCE: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version":"
 fn context(actor: &AuthenticatedUser) -> ChangeContext {
     ChangeContext::new(
         actor.clone(),
-        10,
+        coral_db::UnixNanos::new(10),
         TraceId::parse(&"a".repeat(32)).expect("valid trace fixture"),
     )
 }

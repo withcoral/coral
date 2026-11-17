@@ -1,5 +1,6 @@
 use super::{change, organization_user, test_module};
 use crate::*;
+use coral_db::UnixNanos;
 use sqlx::SqlSafeStr as _;
 
 #[tokio::test]
@@ -21,7 +22,7 @@ async fn inspection_reports_all_coral_access_blockers_without_clearing_them() {
             &context,
             w.id(),
             AgentDisplayName::parse("Worker").unwrap(),
-            Some(100),
+            Some(UnixNanos::new(100)),
         )
         .await
         .unwrap();
@@ -31,7 +32,7 @@ async fn inspection_reports_all_coral_access_blockers_without_clearing_them() {
             .inspect_agent(&owner, w.id(), id)
             .await
             .unwrap()
-            .access_blockers(99),
+            .access_blockers(UnixNanos::new(99)),
         [] as [management::AgentAccessBlocker; 0]
     );
     module
@@ -39,7 +40,13 @@ async fn inspection_reports_all_coral_access_blockers_without_clearing_them() {
         .await
         .unwrap();
     module
-        .update_agent_registration(&context, w.id(), issued.registration.id(), false, Some(100))
+        .update_agent_registration(
+            &context,
+            w.id(),
+            issued.registration.id(),
+            false,
+            Some(UnixNanos::new(100)),
+        )
         .await
         .unwrap();
     module.archive(&context, w.id()).await.unwrap();
@@ -48,7 +55,7 @@ async fn inspection_reports_all_coral_access_blockers_without_clearing_them() {
             .inspect_agent(&owner, w.id(), id)
             .await
             .unwrap()
-            .access_blockers(100),
+            .access_blockers(UnixNanos::new(100)),
         vec![
             AgentAccessBlocker::WorkspaceArchived,
             AgentAccessBlocker::AgentDisabled,
@@ -66,7 +73,7 @@ async fn inspection_reports_all_coral_access_blockers_without_clearing_them() {
             .inspect_agent(&owner, w.id(), id)
             .await
             .unwrap()
-            .access_blockers(100),
+            .access_blockers(UnixNanos::new(100)),
         vec![
             AgentAccessBlocker::ApiSuspended,
             AgentAccessBlocker::Expired
@@ -133,12 +140,16 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
             &change(owner.clone(), 13, '4'),
             workspace.id(),
             AgentDisplayName::parse("Worker").unwrap(),
-            Some(100),
+            Some(UnixNanos::new(100)),
         )
         .await
         .unwrap();
     let agent = module
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 14)
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            UnixNanos::new(14),
+        )
         .await
         .unwrap();
     let actors = [
@@ -176,11 +187,13 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
         assert!(expected(
             permitted,
             module
-                .check_run_admission(&actor, workspace.id(), 15)
+                .check_run_admission(&actor, workspace.id(), UnixNanos::new(15))
                 .await
                 .map(drop)
         ));
-        let authoring = module.check_authoring(&actor, workspace.id(), 15).await;
+        let authoring = module
+            .check_authoring(&actor, workspace.id(), UnixNanos::new(15))
+            .await;
         if let Ok(evidence) = &authoring {
             assert_eq!(evidence.membership_user_id(), membership);
         }
@@ -190,14 +203,24 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
         assert!(expected(
             permitted,
             module
-                .check_run_admission_in_transaction(&mut transaction, &actor, workspace.id(), 15)
+                .check_run_admission_in_transaction(
+                    &mut transaction,
+                    &actor,
+                    workspace.id(),
+                    UnixNanos::new(15)
+                )
                 .await
                 .map(drop)
         ));
         assert!(expected(
             permitted,
             module
-                .check_authoring_in_transaction(&mut transaction, &actor, workspace.id(), 15)
+                .check_authoring_in_transaction(
+                    &mut transaction,
+                    &actor,
+                    workspace.id(),
+                    UnixNanos::new(15)
+                )
                 .await
                 .map(drop)
         ));
@@ -208,7 +231,7 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
                     &mut transaction,
                     &actor,
                     workspace.id(),
-                    15,
+                    UnixNanos::new(15),
                     coral_db::RowLock::Shared,
                 )
                 .await
@@ -217,17 +240,19 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
         transaction.rollback().await.unwrap();
     }
     assert!(matches!(
-        module.check_run_admission(&agent, other.id(), 15).await,
+        module
+            .check_run_admission(&agent, other.id(), UnixNanos::new(15))
+            .await,
         Err(Error::WorkspaceNotFound)
     ));
     assert!(matches!(
         module
-            .authenticate_agent(other.id(), issued.credential.expose(), 15)
+            .authenticate_agent(other.id(), issued.credential.expose(), UnixNanos::new(15))
             .await,
         Err(Error::InvalidAgentCredential)
     ));
     let (principal, resolved) = module
-        .authenticate_agent_credential(issued.credential.expose(), 15)
+        .authenticate_agent_credential(issued.credential.expose(), UnixNanos::new(15))
         .await
         .unwrap();
     assert_eq!(
@@ -272,11 +297,15 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
         .unwrap();
     for actor in [agent, AuthenticatedPrincipal::user(member)] {
         assert!(matches!(
-            module.check_run_admission(&actor, workspace.id(), 21).await,
+            module
+                .check_run_admission(&actor, workspace.id(), UnixNanos::new(21))
+                .await,
             Err(Error::WorkspaceArchived)
         ));
         assert!(matches!(
-            module.check_authoring(&actor, workspace.id(), 21).await,
+            module
+                .check_authoring(&actor, workspace.id(), UnixNanos::new(21))
+                .await,
             Err(Error::WorkspaceArchived)
         ));
     }
@@ -352,7 +381,13 @@ async fn rejected_agent_administration_changes_neither_configuration_nor_events(
             .await
             .unwrap_err();
         module
-            .update_agent_registration(&context, target, issued.registration.id(), false, Some(0))
+            .update_agent_registration(
+                &context,
+                target,
+                issued.registration.id(),
+                false,
+                Some(UnixNanos::new(0)),
+            )
             .await
             .unwrap_err();
     }
@@ -372,7 +407,11 @@ async fn rejected_agent_administration_changes_neither_configuration_nor_events(
         std::slice::from_ref(&issued.agent)
     );
     module
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 12)
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            UnixNanos::new(12),
+        )
         .await
         .unwrap();
     module.archive(&context, workspace.id()).await.unwrap();
@@ -510,13 +549,17 @@ async fn event_failure_rolls_back_rotation_and_lifecycle_changes() {
                 workspace.id(),
                 issued.registration.id(),
                 false,
-                Some(0)
+                Some(UnixNanos::new(0))
             )
             .await,
         Err(Error::Database(_))
     ));
     module
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 20)
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            UnixNanos::new(20),
+        )
         .await
         .unwrap();
     assert_eq!(

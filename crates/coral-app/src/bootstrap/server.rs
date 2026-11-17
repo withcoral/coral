@@ -609,7 +609,7 @@ async fn private_authentication(
     coral_workspace::OrganizationModule::new(database.clone())
         .provision_login(&coral_workspace::ChangeContext::new(
             coral_workspace::local_organization_owner(),
-            0,
+            coral_db::UnixNanos::new(0),
             coral_workspace::TraceId::current_or_new(),
         ))
         .await

@@ -151,10 +151,10 @@ impl TaskModule {
                 transaction,
                 actor,
                 workspace_id,
-                started_at_unix_nanos,
+                coral_db::UnixNanos::new(started_at_unix_nanos),
             )
             .await?
-            .require_current_at(commands::now())?;
+            .require_current_at(coral_db::UnixNanos::new(commands::now()))?;
         // The primary key proves the identifier unused: a conflict writes
         // nothing, and the next attempt draws fresh words.
         let mut attempts = 0;
@@ -277,7 +277,7 @@ impl TaskModule {
                 &mut transaction,
                 actor,
                 workspace_id,
-                ended_at_unix_nanos,
+                coral_db::UnixNanos::new(ended_at_unix_nanos),
             )
             .await
             .map_err(|error| {
@@ -287,7 +287,7 @@ impl TaskModule {
                     error.into()
                 }
             })?
-            .require_current_at(commands::now())?;
+            .require_current_at(coral_db::UnixNanos::new(commands::now()))?;
         let task = repository::complete_for_principal(
             &mut transaction,
             workspace_id,

@@ -921,7 +921,7 @@ impl<'a> InvocationCaller<'a> {
                 transaction,
                 self.actor,
                 workspace_id,
-                self.now_unix_nanos,
+                coral_db::UnixNanos::new(self.now_unix_nanos),
                 coral_db::RowLock::None,
             )
             .await

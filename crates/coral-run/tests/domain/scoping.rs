@@ -36,7 +36,7 @@ async fn a_run_is_not_found_through_another_workspace_the_caller_can_access() {
     let trace = TraceId::parse(&"c".repeat(32)).unwrap();
     held.fixture
         .workspaces
-        .check_run_admission(user, other, 60)
+        .check_run_admission(user, other, coral_db::UnixNanos::new(60))
         .await
         .expect("the User may start Runs in the other Workspace too");
 

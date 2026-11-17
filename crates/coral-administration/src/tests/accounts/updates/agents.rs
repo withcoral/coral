@@ -28,7 +28,11 @@ async fn agent_update(shared: bool, removal_first: bool) {
         .unwrap();
     let agent = f
         .workspaces
-        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 100)
+        .authenticate_agent(
+            f.workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(100),
+        )
         .await
         .unwrap();
     let initial = f
@@ -133,11 +137,15 @@ async fn agent_update(shared: bool, removal_first: bool) {
         }
     );
     f.workspaces
-        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 100)
+        .authenticate_agent(
+            f.workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(100),
+        )
         .await
         .unwrap_err();
     f.workspaces
-        .check_run_admission(&agent, f.workspace.id(), 100)
+        .check_run_admission(&agent, f.workspace.id(), coral_db::UnixNanos::new(100))
         .await
         .unwrap_err();
     f.accounts

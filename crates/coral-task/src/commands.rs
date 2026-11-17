@@ -318,7 +318,11 @@ impl TaskCommands {
         let observed_at = now();
         self.tasks
             .workspaces
-            .check_principal_inspection(&call.actor, &call.workspace_id, observed_at)
+            .check_principal_inspection(
+                &call.actor,
+                &call.workspace_id,
+                coral_db::UnixNanos::new(observed_at),
+            )
             .await?;
         #[cfg(test)]
         self.control
@@ -335,7 +339,7 @@ impl TaskCommands {
                 &mut transaction,
                 &call.actor,
                 &call.workspace_id,
-                now(),
+                coral_db::UnixNanos::new(now()),
             )
             .await?;
         let task = repository::find_attributed(
@@ -357,7 +361,7 @@ impl TaskCommands {
             .fault(crate::command_tests::Checkpoint::Begin, &mut transaction)
             .await?;
         let now = now();
-        authority.require_current_at(now)?;
+        authority.require_current_at(coral_db::UnixNanos::new(now))?;
         interaction_repository::insert(
             &mut transaction,
             call,

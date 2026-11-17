@@ -40,7 +40,11 @@ async fn server_lifecycle_can_repeat_over_the_domain_schema() {
         assert_eq!(listed, created);
         let workspace = workspaces
             .create(
-                &ChangeContext::new(owner.clone(), restart, TraceId::current_or_new()),
+                &ChangeContext::new(
+                    owner.clone(),
+                    coral_db::UnixNanos::new(restart),
+                    TraceId::current_or_new(),
+                ),
                 WorkspaceDisplayName::parse("Survives restart").expect("display name"),
             )
             .await
@@ -68,7 +72,11 @@ async fn bootstrap_publishes_the_companion_origin_to_private_workspace_responses
         .unwrap();
     let workspace = WorkspaceModule::new(server.database())
         .create(
-            &ChangeContext::new(local_organization_owner(), 1, TraceId::current_or_new()),
+            &ChangeContext::new(
+                local_organization_owner(),
+                coral_db::UnixNanos::new(1),
+                TraceId::current_or_new(),
+            ),
             WorkspaceDisplayName::parse("local").unwrap(),
         )
         .await

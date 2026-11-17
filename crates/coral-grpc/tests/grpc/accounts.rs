@@ -439,7 +439,7 @@ async fn secret_references_cross_the_wire_with_their_refusals() {
         .grant_secret_store(
             &coral_workspace::ChangeContext::new(
                 f.owner.clone(),
-                1,
+                coral_db::UnixNanos::new(1),
                 coral_workspace::TraceId::current_or_new(),
             ),
             f.workspace.id(),

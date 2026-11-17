@@ -1,12 +1,13 @@
 use crate::{
     AuthenticatedUser, ChangeContext, OrganizationModule, OrganizationRole, TraceId, UserId,
 };
+use coral_db::UnixNanos;
 use coral_test_support::TestDatabase;
 
 fn context(id: &str, role: OrganizationRole) -> ChangeContext {
     ChangeContext::new(
         AuthenticatedUser::organization_member(UserId::parse(id).unwrap(), role),
-        1,
+        UnixNanos::new(1),
         TraceId::parse(&"a".repeat(32)).unwrap(),
     )
 }
@@ -187,7 +188,7 @@ async fn disabled_user_cannot_use_retained_owner_context_or_dispatch() {
         .unwrap_err();
     let principal = crate::AuthenticatedPrincipal::user(owner.actor().clone());
     workspaces
-        .check_run_admission(&principal, workspace.id(), 1)
+        .check_run_admission(&principal, workspace.id(), UnixNanos::new(1))
         .await
         .unwrap_err();
     let database = fixture.database();
@@ -197,7 +198,7 @@ async fn disabled_user_cannot_use_retained_owner_context_or_dispatch() {
             &mut tx,
             &principal,
             workspace.id(),
-            1,
+            UnixNanos::new(1),
             coral_db::RowLock::Shared,
         )
         .await

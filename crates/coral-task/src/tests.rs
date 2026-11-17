@@ -324,7 +324,11 @@ async fn task_visibility_preserves_user_privacy_and_owner_agent_oversight() {
         .await
         .unwrap();
     let agent = workspaces
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 21)
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(21),
+        )
         .await
         .unwrap();
     let owner_task = start(tasks, &owner, workspace.id(), "Owner work", 30).await;

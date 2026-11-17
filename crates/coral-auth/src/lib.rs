@@ -214,7 +214,7 @@ impl UserDirectory {
             &mut transaction,
             &ChangeContext::new(
                 AuthenticatedUser::organization_member(user_id.clone(), initial_role),
-                login.occurred_at_unix_nanos,
+                coral_db::UnixNanos::new(login.occurred_at_unix_nanos),
                 TraceId::current_or_new(),
             ),
         )
@@ -223,7 +223,7 @@ impl UserDirectory {
             &mut transaction,
             &user_id,
             login.profile,
-            login.profile_observed_at_unix_nanos,
+            coral_db::UnixNanos::new(login.profile_observed_at_unix_nanos),
         )
         .await?;
         if !membership.enabled() {
@@ -264,7 +264,7 @@ mod tests {
         let workspaces = coral_workspace::WorkspaceModule::new(fixture.database());
         let context = coral_workspace::ChangeContext::new(
             actor.clone(),
-            11,
+            coral_db::UnixNanos::new(11),
             coral_workspace::TraceId::current_or_new(),
         );
         let workspace = workspaces
@@ -348,7 +348,11 @@ mod tests {
         let organization = OrganizationModule::new(fixture.database());
         let owner = organization.resolve_user_authority(&owner).await.unwrap();
         let workspaces = WorkspaceModule::new(fixture.database());
-        let context = ChangeContext::new(owner.clone(), 10, TraceId::current_or_new());
+        let context = ChangeContext::new(
+            owner.clone(),
+            coral_db::UnixNanos::new(10),
+            TraceId::current_or_new(),
+        );
         let workspace = workspaces
             .create(&context, WorkspaceDisplayName::parse("Collisions").unwrap())
             .await
@@ -418,7 +422,7 @@ mod tests {
         );
         let change = coral_workspace::ChangeContext::new(
             owner,
-            2,
+            coral_db::UnixNanos::new(2),
             coral_workspace::TraceId::parse(&"a".repeat(32)).unwrap(),
         );
         organization

@@ -2264,7 +2264,11 @@ impl AgentRoute {
             .unwrap();
         let agent = fixture
             .workspaces
-            .authenticate_agent(&workspace, issued.credential.expose(), 21)
+            .authenticate_agent(
+                &workspace,
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(21),
+            )
             .await
             .unwrap();
         let provider = fixture
@@ -2922,7 +2926,11 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
         .unwrap();
     let agent = fixture
         .workspaces
-        .authenticate_agent(&workspace, issued.credential.expose(), 21)
+        .authenticate_agent(
+            &workspace,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(21),
+        )
         .await
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -3227,7 +3235,11 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
         .unwrap();
     let agent = fixture
         .workspaces
-        .authenticate_agent(&workspace, issued.credential.expose(), 21)
+        .authenticate_agent(
+            &workspace,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(21),
+        )
         .await
         .unwrap();
     let mut document = credential_document();
@@ -3338,7 +3350,11 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
         .unwrap();
     let agent = fixture
         .workspaces
-        .authenticate_agent(&workspace, issued.credential.expose(), 21)
+        .authenticate_agent(
+            &workspace,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(21),
+        )
         .await
         .unwrap();
     fixture
@@ -3422,7 +3438,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
             &workspace,
             issued.registration.id(),
             true,
-            Some(1),
+            Some(coral_db::UnixNanos::new(1)),
         )
         .await
         .unwrap();

@@ -65,7 +65,11 @@ async fn workspace_server() -> (TestDatabase, McpServer) {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let user = local_organization_owner();
-    let change = ChangeContext::new(user.clone(), 1, TraceId::current_or_new());
+    let change = ChangeContext::new(
+        user.clone(),
+        coral_db::UnixNanos::new(1),
+        TraceId::current_or_new(),
+    );
     OrganizationModule::new(database.clone())
         .provision_login(&change)
         .await
@@ -119,7 +123,7 @@ async fn a_caller_that_lost_the_workspace_is_refused_the_tool_list() {
     OrganizationModule::new(database.clone())
         .provision_login(&ChangeContext::new(
             user.clone(),
-            1,
+            coral_db::UnixNanos::new(1),
             TraceId::current_or_new(),
         ))
         .await

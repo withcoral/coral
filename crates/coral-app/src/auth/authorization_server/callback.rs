@@ -1263,7 +1263,7 @@ mod tests {
             .create(
                 &coral_workspace::ChangeContext::new(
                     user.clone(),
-                    coral_test_support::now_unix_nanos(),
+                    UnixNanos::new(coral_test_support::now_unix_nanos()),
                     coral_workspace::TraceId::current_or_new(),
                 ),
                 coral_workspace::WorkspaceDisplayName::parse(name).unwrap(),
@@ -1442,7 +1442,7 @@ mod tests {
         coral_workspace::OrganizationModule::new(db.clone())
             .provision_login(&coral_workspace::ChangeContext::new(
                 stranger.clone(),
-                1,
+                UnixNanos::new(1),
                 coral_workspace::TraceId::current_or_new(),
             ))
             .await
@@ -1467,7 +1467,7 @@ mod tests {
             .set_membership(
                 &coral_workspace::ChangeContext::new(
                     stranger,
-                    coral_test_support::now_unix_nanos(),
+                    UnixNanos::new(coral_test_support::now_unix_nanos()),
                     coral_workspace::TraceId::current_or_new(),
                 ),
                 &shared,

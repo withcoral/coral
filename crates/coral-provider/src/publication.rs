@@ -722,9 +722,7 @@ impl TerminalContext<'_> {
 fn credential_decision_context(context: &ChangeContext, started: Started<'_>) -> ChangeContext {
     ChangeContext::new(
         context.actor().clone(),
-        started
-            .now_from(coral_db::UnixNanos::new(context.occurred_at_unix_nanos()))
-            .get(),
+        started.now_from(context.occurred_at()),
         context.trace_id().clone(),
     )
 }

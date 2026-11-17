@@ -34,8 +34,8 @@ fn agent(a: Agent, meta: ResourceMetadata) -> wire::Agent {
         }
         .into(),
         etag: meta.etag,
-        create_time: Some(timestamp(meta.created_at)),
-        update_time: Some(timestamp(meta.updated_at)),
+        create_time: Some(timestamp(meta.created_at.get())),
+        update_time: Some(timestamp(meta.updated_at.get())),
         creator_profile: None,
         access_blockers: Vec::new(),
     }
@@ -53,13 +53,13 @@ fn registration(r: AgentRegistration, meta: ResourceMetadata) -> wire::AgentRegi
         ),
         uid: r.id().to_string(),
         enabled: r.is_enabled(),
-        expire_time: r.expires_at_unix_nanos().map(timestamp),
+        expire_time: r.expires_at().map(coral_db::UnixNanos::get).map(timestamp),
         etag: meta.etag,
-        create_time: Some(timestamp(meta.created_at)),
-        update_time: Some(timestamp(meta.updated_at)),
+        create_time: Some(timestamp(meta.created_at.get())),
+        update_time: Some(timestamp(meta.updated_at.get())),
     }
 }
-fn issued(view: IssuedAgentCredential, now: i64) -> wire::IssuedAgentCredential {
+fn issued(view: IssuedAgentCredential, now: coral_db::UnixNanos) -> wire::IssuedAgentCredential {
     let agent = agent_view(view.inspection(), now);
     wire::IssuedAgentCredential {
         agent: Some(agent),
@@ -67,7 +67,9 @@ fn issued(view: IssuedAgentCredential, now: i64) -> wire::IssuedAgentCredential 
         credential: view.credential.expose().into(),
     }
 }
-fn expiration(value: Option<prost_types::Timestamp>) -> Result<Option<i64>, Status> {
+fn expiration(
+    value: Option<prost_types::Timestamp>,
+) -> Result<Option<coral_db::UnixNanos>, Status> {
     value
         .map(|t| {
             if !(0..1_000_000_000).contains(&t.nanos) {
@@ -76,13 +78,14 @@ fn expiration(value: Option<prost_types::Timestamp>) -> Result<Option<i64>, Stat
             t.seconds
                 .checked_mul(1_000_000_000)
                 .and_then(|v| v.checked_add(i64::from(t.nanos)))
+                .map(coral_db::UnixNanos::new)
                 .ok_or_else(invalid)
         })
         .transpose()
 }
 
 /// An Agent as the page shows it, with what blocks its access at `now`.
-fn agent_view(view: coral_workspace::AgentInspection, now: i64) -> wire::Agent {
+fn agent_view(view: coral_workspace::AgentInspection, now: coral_db::UnixNanos) -> wire::Agent {
     let blockers = view.access_blockers(now);
     let profile = view.creator_profile;
     let mut result = agent(view.agent, view.agent_metadata);
@@ -127,7 +130,7 @@ impl wire::agent_service_server::AgentService for GrpcServices {
             )
             .await
             .map_err(error)?;
-        Ok(Response::new(issued(created, actor.now().get())))
+        Ok(Response::new(issued(created, actor.now())))
     }
     #[tracing::instrument(skip_all, name = "coral.private.list_agents")]
     async fn list_agents(
@@ -143,7 +146,7 @@ impl wire::agent_service_server::AgentService for GrpcServices {
             .await
             .map_err(error)?;
         // The request's time decides every Agent's blockers.
-        let now = actor.now().get();
+        let now = actor.now();
         let values = agents
             .into_iter()
             .map(|view| agent_view(view, now))
@@ -172,7 +175,7 @@ impl wire::agent_service_server::AgentService for GrpcServices {
             .inspect_agent(&actor, &w, &id)
             .await
             .map_err(error)?;
-        Ok(Response::new(agent_view(view, actor.now().get())))
+        Ok(Response::new(agent_view(view, actor.now())))
     }
     #[tracing::instrument(skip_all, name = "coral.private.update_agent")]
     async fn update_agent(
@@ -203,7 +206,7 @@ impl wire::agent_service_server::AgentService for GrpcServices {
             .inspect_agent(&actor, &w, &id)
             .await
             .map_err(error)?;
-        Ok(Response::new(agent_view(view, actor.now().get())))
+        Ok(Response::new(agent_view(view, actor.now())))
     }
     #[tracing::instrument(skip_all, name = "coral.private.delete_agent")]
     async fn delete_agent(
@@ -267,7 +270,7 @@ impl wire::agent_registration_service_server::AgentRegistrationService for GrpcS
         let expires = if fields.iter().any(|p| p == "expire_time") {
             expiration(r.expire_time)?
         } else {
-            view.registration.expires_at_unix_nanos()
+            view.registration.expires_at()
         };
         self.workspaces
             .update_agent_registration(
@@ -315,6 +318,6 @@ impl wire::agent_registration_service_server::AgentRegistrationService for GrpcS
             )
             .await
             .map_err(error)?;
-        Ok(Response::new(issued(rotated, actor.now().get())))
+        Ok(Response::new(issued(rotated, actor.now())))
     }
 }

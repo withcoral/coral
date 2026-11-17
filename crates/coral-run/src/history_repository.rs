@@ -110,7 +110,7 @@ fn invoking_authority(now: i64) -> SimpleExpr {
         column("workspace_id"),
         column("principal_id"),
         column("principal_kind"),
-        now,
+        coral_db::UnixNanos::new(now),
     )
 }
 pub(super) async fn invoking_authority_current(

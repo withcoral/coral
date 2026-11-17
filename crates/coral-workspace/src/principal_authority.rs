@@ -1,4 +1,4 @@
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 
 use crate::{
     AuthenticatedPrincipal, AuthorityAction, Error, UserId, Workspace, WorkspaceAction,
@@ -15,7 +15,7 @@ pub struct PrincipalWorkspaceEvidence {
     workspace: Workspace,
     effective_user_role: Option<crate::WorkspaceRole>,
     membership_user_id: Option<UserId>,
-    expires_at_unix_nanos: Option<i64>,
+    expires_at: Option<UnixNanos>,
 }
 
 impl PrincipalWorkspaceEvidence {
@@ -44,11 +44,8 @@ impl PrincipalWorkspaceEvidence {
     /// # Errors
     ///
     /// Returns Registration expiry if the final timestamp reaches its deadline.
-    pub fn require_current_at(&self, now_unix_nanos: i64) -> Result<(), Error> {
-        if self
-            .expires_at_unix_nanos
-            .is_some_and(|expiry| now_unix_nanos >= expiry)
-        {
+    pub fn require_current_at(&self, now: UnixNanos) -> Result<(), Error> {
+        if self.expires_at.is_some_and(|expiry| now >= expiry) {
             Err(Error::AgentRegistrationExpired)
         } else {
             Ok(())
@@ -57,8 +54,8 @@ impl PrincipalWorkspaceEvidence {
 
     /// Returns when this authority expires without a commit, if it does.
     #[must_use]
-    pub const fn expires_at_unix_nanos(&self) -> Option<i64> {
-        self.expires_at_unix_nanos
+    pub const fn expires_at(&self) -> Option<UnixNanos> {
+        self.expires_at
     }
 }
 
@@ -74,7 +71,7 @@ impl WorkspaceModule {
         tx: &mut Transaction<'_>,
         workspace: &WorkspaceId,
         principal: &crate::Principal,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<Option<crate::WorkspaceRole>, Error> {
         if principal.kind() == crate::PrincipalKind::User {
             let evidence = current_user_workspace_authority(
@@ -106,7 +103,7 @@ impl WorkspaceModule {
         &self,
         actor: &AuthenticatedPrincipal,
         workspace: &WorkspaceId,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         self.check_principal_active(actor, workspace, WorkspaceAction::Inspect, now)
             .await
@@ -121,7 +118,7 @@ impl WorkspaceModule {
         transaction: &mut Transaction<'_>,
         actor: &AuthenticatedPrincipal,
         workspace: &WorkspaceId,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         held_principal_authority(transaction, actor, workspace, WorkspaceAction::Inspect, now).await
     }
@@ -135,14 +132,14 @@ impl WorkspaceModule {
         transaction: &mut Transaction<'_>,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         principal_authority(
             transaction,
             actor,
             workspace_id,
             WorkspaceAction::Inspect,
-            now_unix_nanos,
+            now,
         )
         .await
     }
@@ -156,15 +153,10 @@ impl WorkspaceModule {
         transaction: &mut Transaction<'_>,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         let evidence = self
-            .check_principal_inspection_in_snapshot(
-                transaction,
-                actor,
-                workspace_id,
-                now_unix_nanos,
-            )
+            .check_principal_inspection_in_snapshot(transaction, actor, workspace_id, now)
             .await?;
         require_active_for_run(evidence.workspace.clone())?;
         Ok(evidence)
@@ -180,15 +172,10 @@ impl WorkspaceModule {
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
-        self.check_principal_active(
-            actor,
-            workspace_id,
-            WorkspaceAction::StartRun,
-            now_unix_nanos,
-        )
-        .await
+        self.check_principal_active(actor, workspace_id, WorkspaceAction::StartRun, now)
+            .await
     }
 
     /// Checks a Principal's live authority before preparing a Private Tool.
@@ -200,9 +187,9 @@ impl WorkspaceModule {
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
-        self.check_principal_active(actor, workspace_id, WorkspaceAction::Author, now_unix_nanos)
+        self.check_principal_active(actor, workspace_id, WorkspaceAction::Author, now)
             .await
     }
 
@@ -211,7 +198,7 @@ impl WorkspaceModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         action: WorkspaceAction,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let evidence =
@@ -230,14 +217,14 @@ impl WorkspaceModule {
         transaction: &mut Transaction<'_>,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         held_principal_authority(
             transaction,
             actor,
             workspace_id,
             WorkspaceAction::StartRun,
-            now_unix_nanos,
+            now,
         )
         .await
     }
@@ -252,14 +239,14 @@ impl WorkspaceModule {
         transaction: &mut Transaction<'_>,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         held_principal_authority(
             transaction,
             actor,
             workspace_id,
             WorkspaceAction::Author,
-            now_unix_nanos,
+            now,
         )
         .await
     }
@@ -282,7 +269,7 @@ impl WorkspaceModule {
         transaction: &mut Transaction<'_>,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        now_unix_nanos: i64,
+        now: UnixNanos,
         lock: coral_db::RowLock,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         if lock == coral_db::RowLock::None {
@@ -291,7 +278,7 @@ impl WorkspaceModule {
                 actor,
                 workspace_id,
                 WorkspaceAction::Dispatch,
-                now_unix_nanos,
+                now,
             )
             .await;
         }
@@ -326,7 +313,7 @@ impl WorkspaceModule {
                     actor,
                     workspace_id,
                     WorkspaceAction::Dispatch,
-                    now_unix_nanos,
+                    now,
                 )
                 .await
             }
@@ -339,7 +326,7 @@ fn user_evidence(user_id: &UserId, evidence: &WorkspaceEvidence) -> PrincipalWor
         effective_user_role: Some(evidence.effective_role()),
         membership_user_id: Some(user_id.clone()),
         workspace: evidence.workspace().clone(),
-        expires_at_unix_nanos: None,
+        expires_at: None,
     }
 }
 
@@ -348,7 +335,7 @@ async fn held_principal_authority(
     actor: &AuthenticatedPrincipal,
     workspace_id: &WorkspaceId,
     action: WorkspaceAction,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<PrincipalWorkspaceEvidence, Error> {
     // Organization changes and dispatch share the User hold, before Workspace.
     if let Some(user) = actor.authenticated_user() {
@@ -368,7 +355,7 @@ async fn principal_authority(
     actor: &AuthenticatedPrincipal,
     workspace_id: &WorkspaceId,
     action: WorkspaceAction,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<PrincipalWorkspaceEvidence, Error> {
     if let Some(user) = actor.authenticated_user() {
         let evidence = current_user_workspace_authority(
@@ -389,7 +376,7 @@ async fn agent_authority(
     actor: &AuthenticatedPrincipal,
     workspace_id: &WorkspaceId,
     action: WorkspaceAction,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<PrincipalWorkspaceEvidence, Error> {
     let authenticated = actor.agent_registration().ok_or(Error::WorkspaceNotFound)?;
     if authenticated.workspace_id() != workspace_id {
@@ -415,6 +402,6 @@ async fn agent_authority(
         },
         effective_user_role: None,
         membership_user_id: None,
-        expires_at_unix_nanos: registration.expires_at_unix_nanos(),
+        expires_at: registration.expires_at(),
     })
 }

@@ -81,7 +81,7 @@ async fn an_organization_owner_grants_and_revokes_with_an_event_for_each() {
         assert_eq!(event.authority_source(), AuthoritySource::OrganizationOwner);
         assert_eq!(event.target_kind(), LifecycleTargetKind::SecretStore);
         assert_eq!(event.target_id(), "platform");
-        assert_eq!(event.occurred_at_unix_nanos(), at);
+        assert_eq!(event.occurred_at(), coral_db::UnixNanos::new(at));
     }
     // The Organization Owner reads the same Events, as their own governance.
     let governance = f.module.list_governance_events(&f.governor).await.unwrap();

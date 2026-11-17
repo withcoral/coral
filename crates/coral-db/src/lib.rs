@@ -38,8 +38,9 @@
 //!   portable statements cannot express.
 //! - [`ReadOnlyDatabase`] permits pre-migration inspection without write
 //!   authority or access to a concrete connection.
-//! - [`UnixNanos`] is an instant as the tables store it. [`SystemClock`] is
-//!   the one reader of the host's clock, behind [`Clock`].
+//! - [`UnixNanos`] is an instant as the tables store it: a statement binds
+//!   one and a row decodes one as the integer its column holds.
+//!   [`SystemClock`] is the one reader of the host's clock, behind [`Clock`].
 //!
 //! # Invariants
 //!

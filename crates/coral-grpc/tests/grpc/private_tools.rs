@@ -47,7 +47,11 @@ async fn agent_with_private_tool(
         .unwrap();
     let agent = f
         .workspaces
-        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 2)
+        .authenticate_agent(
+            f.workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(2),
+        )
         .await
         .unwrap();
     save_as(f, agent.clone(), path, source).await;

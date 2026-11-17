@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 
+use coral_db::UnixNanos;
 use coral_test_support::TestDatabase;
 
 use super::{change, organization_user, remove_access, test_module};
@@ -121,7 +122,7 @@ impl Lists {
                         Some(true),
                         None,
                     ),
-                    12,
+                    UnixNanos::new(12),
                 )
                 .await
                 .unwrap();
@@ -150,7 +151,7 @@ impl Lists {
                     &change(creator.clone(), 13, '3'),
                     workspace,
                     AgentDisplayName::parse(&format!("Agent {index}")).unwrap(),
-                    (index % 3 == 0).then_some(1_000),
+                    (index % 3 == 0).then_some(UnixNanos::new(1_000)),
                 )
                 .await
                 .unwrap();

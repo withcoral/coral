@@ -53,7 +53,11 @@ pub(crate) async fn registered_agent(
         .await
         .expect("create Agent");
     workspaces
-        .authenticate_agent(workspace_id, issued.credential.expose(), 11)
+        .authenticate_agent(
+            workspace_id,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(11),
+        )
         .await
         .expect("authenticate Agent")
 }
@@ -1534,7 +1538,7 @@ pub(crate) async fn organization_admin(fixture: &TestModules) -> ChangeContext {
 pub(crate) fn change(actor: AuthenticatedUser, at: i64, trace_digit: char) -> ChangeContext {
     ChangeContext::new(
         actor,
-        at,
+        coral_db::UnixNanos::new(at),
         TraceId::parse(&trace_digit.to_string().repeat(32)).expect("trace id"),
     )
 }

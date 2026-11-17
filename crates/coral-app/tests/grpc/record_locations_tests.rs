@@ -27,7 +27,11 @@ async fn record_run(
     database: Arc<coral_db::Database>,
 ) -> (coral_workspace::WorkspaceId, coral_run::RunId) {
     let owner = local_organization_owner();
-    let context = ChangeContext::new(owner.clone(), 1, TraceId::current_or_new());
+    let context = ChangeContext::new(
+        owner.clone(),
+        coral_db::UnixNanos::new(1),
+        TraceId::current_or_new(),
+    );
     let workspaces = WorkspaceModule::new(database.clone());
     let workspace = workspaces
         .create(&context, WorkspaceDisplayName::parse("Locations").unwrap())
