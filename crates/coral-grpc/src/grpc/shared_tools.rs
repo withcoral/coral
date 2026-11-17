@@ -8,7 +8,7 @@ use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, PrivateToolPath, SharedTool, SharedToolId,
     SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolLifecycleEventKey,
     SharedToolOrigin, SharedToolPath, SharedToolPublish, SharedToolReview, SharedToolRevision,
-    SharedToolRevisionOrigin, SharedToolSummary,
+    SharedToolRevisionOrigin, SharedToolRevisionSummary, SharedToolSummary,
 };
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, Principal, PrincipalKind, TraceId,
@@ -63,10 +63,10 @@ fn event(workspace: &WorkspaceId, event: &SharedToolLifecycleEvent) -> wire::Sha
     }
 }
 
-/// The earlier revision `revision` restored, or zero when it copied a
-/// Private Tool.
-const fn restored_from(revision: &SharedToolRevision) -> u64 {
-    match revision.origin() {
+/// The earlier revision that a revision of `origin` restored, or zero when
+/// it copied a Private Tool.
+const fn restored_from(origin: &SharedToolRevisionOrigin) -> u64 {
+    match origin {
         SharedToolRevisionOrigin::Revision(restored) => *restored,
         SharedToolRevisionOrigin::PrivateTool(_) => 0,
     }
@@ -84,11 +84,11 @@ fn revision(revision: &SharedToolRevision) -> wire::SharedToolRevision {
         default_access_state: access_state(revision.default_access_state()).into(),
         publisher: user_name(revision.published_by()),
         publish_time: Some(timestamp(revision.published_at_unix_nanos())),
-        restored_from_revision: restored_from(revision),
+        restored_from_revision: restored_from(revision.origin()),
     }
 }
 
-fn revision_summary(revision: &SharedToolRevision) -> wire::SharedToolRevisionSummary {
+fn revision_summary(revision: &SharedToolRevisionSummary) -> wire::SharedToolRevisionSummary {
     wire::SharedToolRevisionSummary {
         revision: revision.revision(),
         description: revision.description().as_str().to_owned(),
@@ -96,7 +96,7 @@ fn revision_summary(revision: &SharedToolRevision) -> wire::SharedToolRevisionSu
         default_access_state: access_state(revision.default_access_state()).into(),
         publisher: user_name(revision.published_by()),
         publish_time: Some(timestamp(revision.published_at_unix_nanos())),
-        restored_from_revision: restored_from(revision),
+        restored_from_revision: restored_from(revision.origin()),
     }
 }
 
@@ -214,7 +214,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let (w, id) = parse_resource_name(&input.shared_tool)?;
         let revisions = self
             .shared_tools
-            .list_revisions(&AuthenticatedPrincipal::user(user), &w, &id)
+            .list_revision_summaries(&AuthenticatedPrincipal::user(user), &w, &id)
             .await
             .map_err(error)?;
         Ok(Response::new(wire::ListSharedToolRevisionsResponse {

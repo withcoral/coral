@@ -1,13 +1,14 @@
-//! Test-only faults in persisted Private Tools, for crates that read them.
+//! Test-only faults in persisted Private Tools and Shared Tool Revisions, for
+//! crates that read them.
 //!
 //! The `test-fixtures` feature enables this module for dev-dependencies; production
 //! builds never do. Each fault changes exactly one Workspace-qualified Private Tool
-//! and panics unless it changed exactly one row.
+//! or Shared Tool Revision, and panics unless it changed exactly one row.
 use coral_db::Database;
 use coral_workspace::WorkspaceId;
 use sea_query::{Alias, Expr, ExprTrait as _, Query};
 
-use crate::{AUTHORED_TOOL_SOURCE_MAX_BYTES, PrivateToolId};
+use crate::{AUTHORED_TOOL_SOURCE_MAX_BYTES, PrivateToolId, SharedToolId};
 
 /// Stores declaration fields whose path the projection decoder rejects.
 ///
@@ -56,6 +57,39 @@ pub async fn corrupt_description(
     tool: &PrivateToolId,
 ) {
     corrupt(database, workspace, tool, "description", " ".to_owned()).await;
+}
+
+/// Stores source one byte over the authoring bound in one revision of a
+/// Shared Tool, so loading that revision whole fails.
+///
+/// # Panics
+///
+/// Panics when the write fails or does not change exactly one revision.
+pub async fn corrupt_shared_tool_revision_source(
+    database: &Database,
+    workspace: &WorkspaceId,
+    tool: &SharedToolId,
+    revision: u64,
+) {
+    let changed = database
+        .execute(
+            Query::update()
+                .table(Alias::new("shared_tool_revisions"))
+                .value(
+                    Alias::new("source"),
+                    "x".repeat(AUTHORED_TOOL_SOURCE_MAX_BYTES + 1),
+                )
+                .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace.to_string()))
+                .and_where(Expr::col(Alias::new("shared_tool_id")).eq(tool.to_string()))
+                .and_where(
+                    Expr::col(Alias::new("revision"))
+                        .eq(i64::try_from(revision).expect("a stored revision")),
+                )
+                .to_owned(),
+        )
+        .await
+        .expect("inject Shared Tool Revision fault");
+    assert_eq!(changed, 1, "exactly one Shared Tool Revision");
 }
 
 async fn corrupt(

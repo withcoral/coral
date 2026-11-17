@@ -778,8 +778,8 @@ async fn authored_tool_target_in_transaction(
     let Ok(path) = coral_tools::AuthoredToolPath::parse(kind, relative) else {
         return Ok(None);
     };
-    let Some(selection) =
-        coral_tools::select_linked_tool_in_transaction(transaction, workspace_id, principal, &path)
+    let Some(key) =
+        coral_tools::authored_tool_key_in_transaction(transaction, workspace_id, principal, &path)
             .await
             .map_err(tools_error)?
     else {
@@ -795,7 +795,7 @@ async fn authored_tool_target_in_transaction(
     Ok(Some(ToolPolicyTarget::new(
         workspace_id.clone(),
         provider.id().clone(),
-        selection.tool_key().clone(),
+        key,
     )))
 }
 

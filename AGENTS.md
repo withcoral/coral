@@ -315,6 +315,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   bare error check also passes on a database failure.
 - Assert deltas and domain properties, not totals. Event counts, byte sizes, and
   page sizes move whenever unrelated behavior changes.
+- To prove that a read does not send a statement for each row, read
+  `TestDatabase::statements_sent` around it for a small fixture and a large
+  one, and assert that the two differences are equal. It counts reads and
+  writes on both databases.
 - Extend the nearest shared helper (`coral-test-support` or the crate's test
   harness) and write near-duplicate cases as one table test. After a TDD loop,
   fold the tracer tests into that table before you open the PR.

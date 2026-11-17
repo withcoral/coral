@@ -205,6 +205,39 @@ pub async fn select_linked_tool_in_transaction(
     }
 }
 
+/// The Tool Key of the Authored Tool at `path`, as a Program names it: the
+/// Private Tool of `principal`, or the Workspace's live Shared Tool. `None`
+/// when [`select_linked_tool_in_transaction`] would select no Tool there.
+/// Reads the identity alone, and no definition.
+///
+/// The caller owns Workspace authority and the transaction.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-identity failure.
+pub async fn authored_tool_key_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    principal: &Principal,
+    path: &AuthoredToolPath,
+) -> Result<Option<ToolKey>, Error> {
+    Ok(match path {
+        AuthoredToolPath::Private(path) => repository::find_current_record_in_transaction(
+            transaction,
+            workspace_id,
+            principal,
+            path,
+        )
+        .await?
+        .map(|tool| tool.id.tool_key()),
+        AuthoredToolPath::Shared(path) => {
+            shared_tool_repository::find_live_id(transaction, workspace_id, path)
+                .await?
+                .map(|id| id.tool_key())
+        }
+    })
+}
+
 /// Holds every selected definition unchanged through the caller's
 /// acceptance commit. Returns the first selection that was replaced,
 /// removed or republished since it was selected, in which case admission

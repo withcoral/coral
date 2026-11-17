@@ -65,6 +65,7 @@ mod migration;
 mod options;
 mod page;
 mod query;
+mod statements;
 mod transaction;
 
 pub use backend::DatabaseSystem;
