@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use super::callback::CallbackResponse;
 use super::setup::{
-    SETUP_AUTHORIZATION_LIFETIME_NANOS, SetupAuthentication, SetupAuthorizationCompletion,
+    SETUP_AUTHORIZATION_LIFETIME, SetupAuthentication, SetupAuthorizationCompletion,
     SetupAuthorizationState, SetupOAuthClient, StoredClient, StoredRequirement,
     callback_state_digest,
 };
@@ -85,10 +85,10 @@ impl AccountModule {
         client: SetupOAuthClient,
     ) -> Result<SetupAuthentication, Error> {
         let started = self.started();
-        let authorization_expires_at = context
-            .occurred_at_unix_nanos()
-            .checked_add(SETUP_AUTHORIZATION_LIFETIME_NANOS)
-            .ok_or(Error::Internal(crate::InternalFault::Overflow))?;
+        let authorization_expires_at = coral_db::UnixNanos::new(context.occurred_at_unix_nanos())
+            .checked_add(SETUP_AUTHORIZATION_LIFETIME)
+            .ok_or(Error::Internal(crate::InternalFault::Overflow))?
+            .get();
         // Read the requirement and any retained registration, then bootstrap
         // outside the transaction: registration is a network call.
         let mut tx = self.providers.database.begin().await?;

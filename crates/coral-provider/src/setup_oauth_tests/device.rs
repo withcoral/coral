@@ -2,7 +2,7 @@ use super::*;
 
 const SECOND: i64 = 1_000_000_000;
 /// One worker lease on a device job, in nanoseconds.
-const LEASE: i64 = crate::account::device::LEASE_SECONDS.cast_signed() * SECOND;
+const LEASE: i64 = crate::account::device::LEASE.as_secs().cast_signed() * SECOND;
 
 /// A Device OpenAPI Setup after its owner submitted device-code authentication.
 struct DeviceSetup {

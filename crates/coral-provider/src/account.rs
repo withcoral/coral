@@ -42,6 +42,8 @@ use uuid::Uuid;
 
 /// Maximum open authorization workflows per exact principal and Provider.
 const MAX_PENDING_AUTHORIZATIONS: i64 = 20;
+/// How long a User has to complete an authorization, from its start.
+const AUTHORIZATION_LIFETIME: std::time::Duration = std::time::Duration::from_mins(15);
 
 macro_rules! account_id {
     ($name:ident, $doc:literal) => {
@@ -701,10 +703,10 @@ impl AccountModule {
         }
         let id = AuthorizationId(Uuid::new_v4());
         let (authorization_url, private_flow) = self.prepare_oauth(id, owner, &contract, oauth)?;
-        let expires_at = context
-            .occurred_at_unix_nanos()
-            .checked_add(900_000_000_000)
-            .ok_or(Error::Internal(crate::InternalFault::Overflow))?;
+        let expires_at = coral_db::UnixNanos::new(context.occurred_at_unix_nanos())
+            .checked_add(AUTHORIZATION_LIFETIME)
+            .ok_or(Error::Internal(crate::InternalFault::Overflow))?
+            .get();
         let row = LoadedAuthorization {
             automatic_refresh: None,
             id,

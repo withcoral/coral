@@ -16,7 +16,7 @@ use coral_workspace::{AuthoritySource, ChangeContext, Principal, PrincipalKind, 
 use uuid::Uuid;
 
 /// How long a User has to complete a connection request before it expires.
-const CONNECTION_REQUEST_LIFETIME_NANOS: i64 = 900_000_000_000;
+const CONNECTION_REQUEST_LIFETIME: std::time::Duration = std::time::Duration::from_mins(15);
 
 account_id!(
     ConnectionRequestId,
@@ -552,9 +552,10 @@ pub async fn resolve_connection_in_transaction(
             }
         }
         let id = ConnectionRequestId(Uuid::new_v4());
-        let expires = now
-            .checked_add(CONNECTION_REQUEST_LIFETIME_NANOS)
-            .ok_or(Error::AccountInput)?;
+        let expires = coral_db::UnixNanos::new(now)
+            .checked_add(CONNECTION_REQUEST_LIFETIME)
+            .ok_or(Error::AccountInput)?
+            .get();
         let account = repository::ensure_account(
             tx,
             workspace,

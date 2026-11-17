@@ -803,10 +803,9 @@ impl TokenResponse {
         self.expires_at = self
             .expires_in
             .map(|seconds| {
-                i64::try_from(seconds)
-                    .ok()
-                    .and_then(|seconds| seconds.checked_mul(1_000_000_000))
-                    .and_then(|duration| now.checked_add(duration))
+                coral_db::UnixNanos::new(now)
+                    .checked_add(std::time::Duration::from_secs(seconds))
+                    .map(coral_db::UnixNanos::get)
                     .ok_or(Error::AccountInput)
             })
             .transpose()?;

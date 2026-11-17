@@ -27,6 +27,10 @@ use zeroize::Zeroizing;
 
 use uuid::Uuid;
 
+/// How long one caller's claim on a renewal lasts, from the claim. Other
+/// callers wait for it until then.
+const REFRESH_CLAIM_LIFETIME: std::time::Duration = std::time::Duration::from_mins(1);
+
 // Contention is not an exchange failure. Remember the exact claim so observing
 // its failure cannot silently start or join a retry using the same token.
 struct PendingRefresh {
@@ -399,9 +403,10 @@ impl AccountModule {
         let (token_url, scopes, resource) =
             refresh_endpoint(&evidence.contract).ok_or(Error::AccountRequired)?;
         let attempt = Uuid::new_v4().to_string();
-        let deadline = now
-            .checked_add(60_000_000_000)
-            .ok_or(Error::Internal(crate::InternalFault::Overflow))?;
+        let deadline = coral_db::UnixNanos::new(now)
+            .checked_add(REFRESH_CLAIM_LIFETIME)
+            .ok_or(Error::Internal(crate::InternalFault::Overflow))?
+            .get();
         let mut tx = self.providers.database.begin().await?;
         if !repository::claim_refresh(&mut tx, row, &attempt, deadline).await? {
             return Ok(CredentialResolution::Changed);

@@ -24,8 +24,14 @@ pub(super) struct DeviceResponse {
     pub(super) interval: u64,
 }
 
+/// The interval of a device code whose service names none (RFC 8628
+/// section 3.2).
+const DEFAULT_INTERVAL: Duration = Duration::from_secs(5);
+/// The longest interval Coral accepts from a service.
+const LONGEST_INTERVAL: Duration = Duration::from_hours(1);
+
 const fn default_interval() -> u64 {
-    5
+    DEFAULT_INTERVAL.as_secs()
 }
 
 impl DeviceResponse {
@@ -37,7 +43,7 @@ impl DeviceResponse {
             || !bounded(&self.user_code, 256)
             || self.expires_in == 0
             || self.interval == 0
-            || self.interval > 3600
+            || self.interval > LONGEST_INTERVAL.as_secs()
         {
             return Err(Error::OAuthTokenExchange(
                 TokenExchangeFailure::ResponseInvalid,
@@ -58,10 +64,9 @@ impl DeviceResponse {
                 TokenExchangeFailure::ResponseInvalid,
             ));
         }
-        i64::try_from(self.expires_in)
-            .ok()
-            .and_then(|seconds| seconds.checked_mul(1_000_000_000))
-            .and_then(|duration| now.checked_add(duration))
+        UnixNanos::new(now)
+            .checked_add(Duration::from_secs(self.expires_in))
+            .map(UnixNanos::get)
             .ok_or(Error::OAuthTokenExchange(
                 TokenExchangeFailure::ResponseInvalid,
             ))
@@ -688,10 +693,11 @@ fn log_worker_stop(owner: &WorkspaceId, stop: WorkerStop, error: &Error) {
 /// How long a worker's lease on its job runs from a claim or a renewal. A job
 /// whose worker died waits this long for recovery, and so does a job that
 /// recovery could not resume.
-pub(crate) const LEASE_SECONDS: u64 = 45;
+pub(crate) const LEASE: Duration = Duration::from_secs(45);
 
-fn next_poll(now: i64, interval: u64) -> i64 {
-    now.saturating_add(i64::try_from(interval.saturating_mul(1_000_000_000)).unwrap_or(i64::MAX))
+/// The instant a lease that is claimed or renewed at `now` ends.
+fn lease_end(now: i64) -> i64 {
+    UnixNanos::new(now).saturating_add(LEASE).get()
 }
 
 struct Lease {
@@ -715,7 +721,7 @@ impl Lease {
             &self.job.id,
             &self.token,
             now,
-            next_poll(now, LEASE_SECONDS),
+            lease_end(now),
         )
         .await
     }
@@ -776,7 +782,7 @@ impl AccountModule {
             &self.device_worker_id,
             &token,
             context.occurred_at_unix_nanos(),
-            next_poll(context.occurred_at_unix_nanos(), LEASE_SECONDS),
+            lease_end(context.occurred_at_unix_nanos()),
         )
         .await?;
         tx.commit().await?;
@@ -849,13 +855,7 @@ impl AccountModule {
         now_unix_nanos: i64,
     ) -> Result<(), Error> {
         let mut tx = self.providers.database.begin().await?;
-        device_repository::defer(
-            &mut tx,
-            key,
-            now_unix_nanos,
-            next_poll(now_unix_nanos, LEASE_SECONDS),
-        )
-        .await?;
+        device_repository::defer(&mut tx, key, now_unix_nanos, lease_end(now_unix_nanos)).await?;
         tx.commit().await?;
         Ok(())
     }
