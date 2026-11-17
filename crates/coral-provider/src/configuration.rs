@@ -304,7 +304,7 @@ impl ProviderModule {
     /// Reads and computes everything a confirmation's write needs, outside any
     /// transaction: the source again when its headers changed, the preview,
     /// and the contracts before and after.
-    async fn prepare_confirmation(
+    pub(crate) async fn prepare_confirmation(
         &self,
         loaded: &repository::LoadedSetup,
         accepted: &ProviderConfiguration,
@@ -378,7 +378,7 @@ impl ProviderModule {
     /// and the revision and input comparison fence everything preparation
     /// read, the network read included, so the configuration, its catalog and
     /// its lifecycle evidence commit as one change.
-    async fn apply_confirmation(
+    pub(crate) async fn apply_confirmation(
         &self,
         context: &ChangeContext,
         owner: &WorkspaceId,
@@ -480,7 +480,7 @@ impl ProviderModule {
 }
 
 /// A validated confirmation and what preparing it found, before any write.
-struct PreparedConfirmation {
+pub(crate) struct PreparedConfirmation {
     /// The revision the caller edited.
     expected_revision: i64,
     /// The revision this confirmation creates.
