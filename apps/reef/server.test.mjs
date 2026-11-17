@@ -947,23 +947,44 @@ test('the Tools page streams its usage after the catalog and saves a policy whil
   const cookie = await validSessionCookie(authorization.url)
   const tools = `/${TOOLS_WORKSPACE}/tools`
   const headers = { Cookie: cookie, 'User-Agent': BROWSER }
-  /** Allows `repos.get` from its row, and expects Coral to save it while usage loads. */
-  const saveWhileLoading = async ({ table, row }) => {
+  /** Allows `repos.get` from its row, and expects the whole change to save while `read`,
+   * the page's usage, stays held. */
+  const saveWhileLoading = async ({ page, table, row }, read) => {
     const saves = coral.called('UpdateToolPolicies').length
+    const reads = coral.count(30)
+    const saved = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        new URL(response.url()).pathname === `/${TOOLS_PROVIDER}.data`,
+      { timeout: ARRIVES_MS },
+    )
     await row('repos.get').getByRole('radio', { name: 'Allow' }).click({ timeout: ARRIVES_MS })
     await row('repos.get')
       .getByRole('radio', { name: 'Allow', checked: true })
       .waitFor({ timeout: ARRIVES_MS })
-    for (let tries = 0; coral.called('UpdateToolPolicies').length === saves; tries++) {
-      if (tries === 30) assert.fail('The policy change did not reach Coral')
-      await new Promise((resolve) => setTimeout(resolve, 100))
-    }
-    assert.equal(protoField(coral.called('UpdateToolPolicies').at(-1), 1), TOOLS_PROVIDER)
-    // The saved policy patches the page; the usage it waits for is still loading.
-    assert.equal(await table.getByRole('status').count(), 1)
+    const response = await saved
+    assert.equal(response.status(), 200)
+    // The whole response arrived, so the change did not wait for the usage.
+    assert.equal(await within(response.finished(), 'The saved policy'), null)
+    // The row stops showing the change as pending once the page has the result.
+    await table
+      .locator('[role="row"][aria-busy="false"]', { hasText: 'repos.get' })
+      .waitFor({ timeout: ARRIVES_MS })
+    assert.deepEqual(
+      coral
+        .called('UpdateToolPolicies')
+        .slice(saves)
+        .map((request) => protoField(request, 1)),
+      [TOOLS_PROVIDER],
+    )
+    // The saved policy patches the page: it still waits for the same read, and no other.
+    assert.equal(read.settled || read.abandoned, false)
+    assert.equal(coral.count(30), reads)
+    assert.equal(await table.getByRole('status').filter({ hasText: 'Loading usage…' }).count(), 1)
   }
 
   await t.test('the whole catalog arrives first, and a failed summary still ends it', async () => {
+    const before = coral.count(30)
     const response = await within(fetch(`${origin}${tools}`, { headers }), 'The page')
     assert.equal(response.status, 200)
     const body = response.body.getReader()
@@ -972,13 +993,14 @@ test('the Tools page streams its usage after the catalog and saves a policy whil
     assert.match(page, /Loading usage…/)
     for (const path of TOOL_PATHS) assert.ok(page.includes(path), `The page names ${path}`)
     // Throws unless Reef still waits for this read.
-    await (await coral.held(30)).fail(13)
+    await (await coral.held(30, { after: before })).fail(13)
     await readUntil(body, null, ARRIVES_MS)
   })
 
   await t.test(
     'navigation data arrives first, and the usage follows in the same response',
     async () => {
+      const before = coral.count(30)
       const response = await within(
         fetch(`${origin}${tools}.data`, { headers }),
         'The navigation data',
@@ -987,7 +1009,7 @@ test('the Tools page streams its usage after the catalog and saves a policy whil
       const body = response.body.getReader()
       const first = await readUntil(body, /repos\.get/, ARRIVES_MS)
       assert.doesNotMatch(first, /987654/)
-      await (await coral.held(30)).reply(toolUsageSummary(987654))
+      await (await coral.held(30, { after: before })).reply(toolUsageSummary(987654))
       assert.match(await readUntil(body, null, ARRIVES_MS), /987654/)
     },
   )
@@ -998,46 +1020,80 @@ test('the Tools page streams its usage after the catalog and saves a policy whil
     const context = await browser.newContext({ userAgent: BROWSER })
     const [name, value] = cookie.split(/=(.*)/s)
     await context.addCookies([{ name, value, url: origin }])
-    /** Opens the page, its usage still loading, once its first bytes arrive. */
-    const open = async () => {
+    /** A page that ends with the case `caseTest`, failing any read the case left held. */
+    const newPage = async (caseTest) => {
       const page = await context.newPage()
+      caseTest.after(async () => {
+        coral.releaseAll()
+        await page.close()
+      })
+      return page
+    }
+    /** Opens the page once its first bytes arrive, with its own usage read still held. */
+    const open = async (caseTest) => {
+      const page = await newPage(caseTest)
+      const before = coral.count(30)
       // The document stays open until its usage settles, so wait for its first bytes only.
       await page.goto(`${origin}${tools}`, { waitUntil: 'commit', timeout: ARRIVES_MS })
-      return loadingTools(page)
+      const opened = await loadingTools(page)
+      // Throws unless Reef still waits for this page's own read.
+      return { ...opened, read: await coral.held(30, { after: before }) }
     }
 
-    await browserTest.test('saves a policy while the usage loads, then shows it', async () => {
-      const opened = await open()
-      await hydrated(opened.page)
-      await saveWhileLoading(opened)
+    await browserTest.test(
+      'saves a policy while the usage loads, then shows it',
+      async (caseTest) => {
+        const opened = await open(caseTest)
+        await hydrated(opened.page)
+        await saveWhileLoading(opened, opened.read)
 
-      await (await coral.held(30)).reply(toolUsageSummary(987654))
-      await opened
-        .row('issues.list')
-        .getByText('987,654 calls')
-        .waitFor({ state: 'attached', timeout: ARRIVES_MS })
-      assert.equal(await opened.table.getByRole('status').count(), 0)
-    })
+        await opened.read.reply(toolUsageSummary(987654))
+        await opened
+          .row('issues.list')
+          .getByText('987,654 calls')
+          .waitFor({ state: 'attached', timeout: ARRIVES_MS })
+        assert.equal(await opened.table.getByRole('status').count(), 0)
+      },
+    )
 
     await browserTest.test(
       'navigates to the catalog and saves a policy while the usage loads, then shows it',
-      async () => {
-        const page = await context.newPage()
-        // The Overview streams its own 7-day summary, which this case leaves pending.
+      async (caseTest) => {
+        const page = await newPage(caseTest)
+        // The Overview streams its own 7-day summary, which stays held.
         await page.goto(`${origin}/${TOOLS_WORKSPACE}`, {
           waitUntil: 'commit',
           timeout: ARRIVES_MS,
         })
         await hydrated(page)
+        // A document load would replace this window, and its mark with it.
+        await page.evaluate(() => {
+          window.stayedInPage = true
+        })
+        const documents = []
+        page.on('request', (request) => {
+          if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+            documents.push(request.url())
+        })
+        const before = coral.count(30)
+        const navigation = page.waitForResponse(
+          (response) =>
+            response.request().method() === 'GET' &&
+            new URL(response.url()).pathname === `${tools}.data`,
+          { timeout: ARRIVES_MS },
+        )
         await page
+          .getByRole('navigation', { name: 'Coral' })
           .getByRole('link', { name: 'Tools', exact: true })
-          .first()
           .click({ timeout: ARRIVES_MS })
+        assert.equal((await navigation).status(), 200)
         await page.waitForURL(`${origin}${tools}`, { waitUntil: 'commit', timeout: ARRIVES_MS })
         const navigated = await loadingTools(page)
-        // Throws unless the navigation's own usage read is still held.
-        const read = await coral.held(30)
-        await saveWhileLoading(navigated)
+        assert.equal(await page.evaluate(() => window.stayedInPage), true)
+        assert.deepEqual(documents, [])
+        // Throws unless Reef still waits for the navigation's own read.
+        const read = await coral.held(30, { after: before })
+        await saveWhileLoading(navigated, read)
 
         await read.reply(toolUsageSummary(987654))
         await navigated
@@ -1045,16 +1101,14 @@ test('the Tools page streams its usage after the catalog and saves a policy whil
           .getByText('987,654 calls')
           .waitFor({ state: 'attached', timeout: ARRIVES_MS })
         assert.equal(await navigated.table.getByRole('status').count(), 0)
-        // The Overview's document stays open until its summary settles; end it here.
-        await (await coral.held(7)).answer(1)
       },
     )
 
-    await browserTest.test('shows a failed summary as not available', async () => {
-      const { table, row } = await open()
+    await browserTest.test('shows a failed summary as not available', async (caseTest) => {
+      const { table, row, read } = await open(caseTest)
       // The server rendered the loading state, so only the hydrated page can show the
       // document's failed summary.
-      await (await coral.held(30)).fail(13)
+      await read.fail(13)
       await row('issues.list')
         .getByText('Not available')
         .waitFor({ state: 'attached', timeout: ARRIVES_MS })
@@ -1363,12 +1417,16 @@ async function startOverviewPeer(replies = {}) {
     url: `http://127.0.0.1:${peer.address().port}`,
     /** The requests to the methods `replies` names, by method. */
     called: (method) => calls.filter((call) => call.method === method).map((call) => call.request),
-    /** The first summary read for `days` that Reef still waits for, once Reef asks. */
-    async held(days) {
+    /** How many summary reads for `days` Reef has started. */
+    count: (days) => summaries.filter((read) => read.days === days).length,
+    /** The first summary read for `days` that Reef still waits for, once Reef asks. With
+     * `after`, only a read that started after the first `after` reads for `days`. */
+    async held(days, { after = 0 } = {}) {
       for (let tries = 0; tries < 60; tries++) {
-        const summary = summaries.find(
-          (read) => read.days === days && !read.settled && !read.abandoned,
-        )
+        const summary = summaries
+          .filter((read) => read.days === days)
+          .slice(after)
+          .find((read) => !read.settled && !read.abandoned)
         if (summary) return summary
         await new Promise((resolve) => setTimeout(resolve, 50))
       }
