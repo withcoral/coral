@@ -1,11 +1,8 @@
 Coral
-Copyright 2026 Phoebe Technology Limited
+Copyright 2026-present Phoebe Technology Limited
 
-The files in the ee/ directory are licensed under ee/LICENSE, not under the
-Apache License, Version 2.0, in LICENSE.
+The files in the ee/ directory are licensed under ee/LICENSE, not under the Apache License, Version 2.0.
 
-Third-party files that carry their own licence notice, such as the fonts in
-apps/reef/public/fonts, are licensed under those notices.
+Third-party files that carry their own licence notice, such as the fonts in apps/reef/public/fonts, are licensed under those notices.
 
-All other files in this repository are licensed under the Apache License,
-Version 2.0, in LICENSE.
+All other files in this repository are licensed under the Apache License, Version 2.0.
