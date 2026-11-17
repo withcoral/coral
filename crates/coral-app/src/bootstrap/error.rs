@@ -116,7 +116,7 @@ mod tests {
                     migration: 82,
                     required: 81,
                 },
-                "Start each Coral version between the one that runs now and this one",
+                "Start a Coral version that has migration 0081 first",
             ),
             (
                 Error::CoralTooOld { required: 81 },

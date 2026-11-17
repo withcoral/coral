@@ -81,11 +81,8 @@ impl MigrationPlan {
     /// What a run of this plan knows before it reads the database.
     fn upgrade_guard(&self, shared: bool) -> UpgradeGuard<'_> {
         UpgradeGuard {
-            last_step: self
-                .postgres
-                .iter()
-                .map(|migration| migration.version)
-                .max(),
+            // Both databases run the same versions.
+            plan: &self.postgres,
             requirements: &self.requirements,
             required: None,
             shared,

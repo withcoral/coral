@@ -41,8 +41,9 @@ pub enum Error {
     #[error(
         "this upgrade skips a Coral version: database migration {migration:04} removes what \
          older versions use, and no Coral that has migration {required:04} has started on this \
-         database. Start each Coral version between the one that runs now and this one, in \
-         order, then start this version again. No migration was applied."
+         database. Start a Coral version that has migration {required:04} first: go one \
+         version at a time from the one that runs now. Then start this version again. No \
+         migration was applied."
     )]
     SkippedStep {
         /// The migration's version.
@@ -51,11 +52,13 @@ pub enum Error {
         /// removes.
         required: i64,
     },
-    /// A newer Coral removed what this one uses. Nothing was changed.
+    /// The database requires a step that this Coral's plan lacks: a newer
+    /// Coral removes what Corals without that step use. Nothing was changed.
     #[error(
-        "this Coral is too old for its database: a newer version removed what this version \
-         uses, and this version lacks database migration {required:04}. Start the newest Coral \
-         version that has run on this database. Nothing was changed."
+        "this Coral is too old for its database: the database requires database migration \
+         {required:04} of every Coral, and this version lacks it. A newer version removes what \
+         versions without that migration use. Start the newest Coral version that has run on \
+         this database. Nothing was changed."
     )]
     CoralTooOld {
         /// The step that the database requires of every Coral's plan.

@@ -155,7 +155,9 @@ test('a removal passes only when it names a step that a release has', async (t) 
 
   // A pre-release is not a release that users upgrade through.
   repo.git('tag', 'v1.1.0-beta.1', 'main')
-  assert.equal(repo.check().status, 1)
+  const preRelease = repo.check()
+  assert.equal(preRelease.status, 1, preRelease.stderr)
+  assert.match(preRelease.stderr, /names step 0010, which no release has \(the newest release ends at step 0009\)/)
 
   repo.git('tag', 'v1.1.0', 'main')
   const accepted = repo.check()

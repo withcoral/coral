@@ -21,7 +21,7 @@
 //! database. It does not prove that every older Coral has stopped: the
 //! database keeps no record of the Coral Instances that serve it.
 
-use sqlx::migrate::Migration;
+use sqlx::migrate::{Migration, Migrator};
 use sqlx::{PgConnection, SqliteConnection};
 
 use crate::Error;
@@ -50,8 +50,8 @@ pub(crate) fn step_that_stopped_using(sql: &str) -> Option<i64> {
 
 /// What one migration run knows about this Coral's plan and the database.
 pub(crate) struct UpgradeGuard<'plan> {
-    /// The last step of this Coral's plan. `None` for a plan without steps.
-    pub last_step: Option<i64>,
+    /// The steps of this Coral's plan.
+    pub plan: &'plan Migrator,
     /// The step that stopped using what a step removes, by the removing
     /// step's version.
     pub requirements: &'plan [(i64, i64)],
@@ -70,13 +70,13 @@ impl UpgradeGuard<'_> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CoralTooOld`] when a newer Coral removed what this
-    /// one uses, and [`Error::SkippedStep`] when a pending step removes what
+    /// Returns [`Error::CoralTooOld`] when the database requires a step that
+    /// this Coral's plan lacks, and [`Error::SkippedStep`] when a pending step removes what
     /// Corals without the step it names use, and that step is not applied on
     /// a database that others may still be serving.
     pub(crate) fn admit(&self, applied: &[i64], pending: &[&Migration]) -> Result<(), Error> {
         if let Some(required) = self.required
-            && self.last_step.is_none_or(|last| last < required)
+            && !self.plan.version_exists(required)
         {
             return Err(Error::CoralTooOld { required });
         }
