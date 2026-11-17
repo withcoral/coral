@@ -533,7 +533,7 @@ enum RetainedReady {
 fn retained_context(call: &AttributedCommand) -> coral_tools::PrivateToolChangeContext {
     coral_tools::PrivateToolChangeContext::new(
         call.actor.clone(),
-        now(),
+        coral_db::UnixNanos::new(now()),
         coral_workspace::TraceId::current_or_new(),
     )
 }

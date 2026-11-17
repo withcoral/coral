@@ -2381,7 +2381,7 @@ impl PrivateTools {
                 .save(
                     &coral_tools::PrivateToolChangeContext::new(
                         principal,
-                        20,
+                        coral_db::UnixNanos::new(20),
                         coral_workspace::TraceId::parse(&"5".repeat(32)).expect("trace"),
                     ),
                     &workspace,

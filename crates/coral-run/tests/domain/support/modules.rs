@@ -69,7 +69,7 @@ pub(crate) fn private_tool_change(
 ) -> PrivateToolChangeContext {
     PrivateToolChangeContext::new(
         actor,
-        occurred_at_unix_nanos,
+        coral_db::UnixNanos::new(occurred_at_unix_nanos),
         TraceId::parse(&digit.to_string().repeat(32)).expect("trace id"),
     )
 }

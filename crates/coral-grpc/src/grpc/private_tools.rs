@@ -14,7 +14,7 @@ fn summary(summary: &PrivateToolSummary) -> wire::PrivateToolSummary {
     wire::PrivateToolSummary {
         path: summary.path().as_str().to_owned(),
         description: summary.description().as_str().to_owned(),
-        update_time: Some(timestamp(summary.saved_at_unix_nanos())),
+        update_time: Some(timestamp(summary.saved_at().get())),
     }
 }
 
@@ -26,7 +26,7 @@ fn private_tool(function: &PrivateTool) -> wire::PrivateTool {
         source: function.source().as_str().to_owned(),
         diagnostics: function.diagnostics().iter().map(diagnostic).collect(),
         diagnostics_truncated: function.diagnostics_truncated(),
-        update_time: Some(timestamp(function.saved_at_unix_nanos())),
+        update_time: Some(timestamp(function.saved_at().get())),
     }
 }
 
@@ -89,7 +89,7 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
         let path = path(&input.path)?;
-        let now = user.now().get();
+        let now = user.now();
         let context = PrivateToolChangeContext::new(
             AuthenticatedPrincipal::user(user.into_user()),
             now,

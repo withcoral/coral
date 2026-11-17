@@ -462,7 +462,7 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
         .save(
             &coral_tools::PrivateToolChangeContext::new(
                 AuthenticatedPrincipal::user(member),
-                wall_time(),
+                coral_db::UnixNanos::new(wall_time()),
                 coral_test_support::trace('1'),
             ),
             &fixture.workspace,
@@ -2266,7 +2266,7 @@ impl Fixture {
 fn private_tool_context(call: &AttributedCommand) -> coral_tools::PrivateToolChangeContext {
     coral_tools::PrivateToolChangeContext::new(
         call.actor.clone(),
-        wall_time(),
+        coral_db::UnixNanos::new(wall_time()),
         coral_test_support::trace('f'),
     )
 }

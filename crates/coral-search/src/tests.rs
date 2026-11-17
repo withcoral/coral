@@ -1870,7 +1870,11 @@ async fn private_tool_projection_bounds_do_not_become_authoring_limits() {
     let function = fixture
         .private_tools
         .save(
-            &PrivateToolChangeContext::new(principal.clone(), 20, trace('2')),
+            &PrivateToolChangeContext::new(
+                principal.clone(),
+                coral_db::UnixNanos::new(20),
+                trace('2'),
+            ),
             &workspace_id,
             PrivateToolSave::new(
                 PrivateToolPath::parse("largeProjection").expect("path"),
@@ -3615,7 +3619,8 @@ async fn readiness_ignores_unreadable_private_tools_for_the_same_caller() {
     fixture
         .publish_tracer(&user, &workspace, &upstream.uri())
         .await;
-    let change = PrivateToolChangeContext::new(principal.clone(), 40, trace('4'));
+    let change =
+        PrivateToolChangeContext::new(principal.clone(), coral_db::UnixNanos::new(40), trace('4'));
     let mut saved = Vec::new();
     for index in 0..32 {
         let function = fixture
@@ -3908,7 +3913,7 @@ impl TestModules {
             .save(
                 &PrivateToolChangeContext::new(
                     principal.clone(),
-                    occurred_at_unix_nanos,
+                    coral_db::UnixNanos::new(occurred_at_unix_nanos),
                     trace('5'),
                 ),
                 workspace_id,
@@ -3935,7 +3940,7 @@ impl TestModules {
             .delete(
                 &PrivateToolChangeContext::new(
                     principal.clone(),
-                    occurred_at_unix_nanos,
+                    coral_db::UnixNanos::new(occurred_at_unix_nanos),
                     trace('5'),
                 ),
                 workspace_id,
@@ -4239,7 +4244,7 @@ impl TestModules {
             .save(
                 &PrivateToolChangeContext::new(
                     principal.clone(),
-                    100,
+                    coral_db::UnixNanos::new(100),
                     trace('7'),
                 ),
                 workspace_id,
@@ -4272,7 +4277,7 @@ impl TestModules {
             .save(
                 &PrivateToolChangeContext::new(
                     principal.clone(),
-                    occurred_at_unix_nanos,
+                    coral_db::UnixNanos::new(occurred_at_unix_nanos),
                     trace('4'),
                 ),
                 workspace_id,

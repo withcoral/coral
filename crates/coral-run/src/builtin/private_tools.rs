@@ -243,7 +243,7 @@ fn call_path(path: &PrivateToolPath) -> String {
 fn change_context(host: &BuiltinHost<'_>) -> Result<PrivateToolChangeContext, Error> {
     Ok(PrivateToolChangeContext::new(
         host.actor.clone(),
-        host.run.now()?,
+        coral_db::UnixNanos::new(host.run.now()?),
         coral_workspace::TraceId::current_or_new(),
     ))
 }
