@@ -254,31 +254,42 @@ async fn an_open_with_another_claim_is_told_the_run_is_not_held() {
 }
 
 #[tokio::test]
-async fn a_request_before_started_interrupts_the_run_and_closes_the_stream() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.runs.clone().with_run_streams();
-    let (workspace_id, principal) = fixture.user_scope("user:early", "Early request").await;
-    let accepted = runs
-        .start(&principal, &workspace_id, submission("return 1;"))
-        .await
-        .expect("accept a Run");
-    let claim = take(&runs).await;
-    let mut stream = Scripted::open(&runs, &accepted.run_id().to_string(), &claim);
-    assert!(matches!(
-        stream.next().await,
-        run_response::Message::Package(_)
-    ));
-    stream.request(1, emit(&serde_json::json!({"early": true})));
+async fn a_broken_message_before_started_interrupts_the_run_and_closes_the_stream() {
+    // A request where Loaded belongs, and a message with nothing in it.
+    for empty in [false, true] {
+        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let runs = fixture.runs.clone().with_run_streams();
+        let (workspace_id, principal) = fixture.user_scope("user:early", "Early request").await;
+        let accepted = runs
+            .start(&principal, &workspace_id, submission("return 1;"))
+            .await
+            .expect("accept a Run");
+        let claim = take(&runs).await;
+        let mut stream = Scripted::open(&runs, &accepted.run_id().to_string(), &claim);
+        assert!(matches!(
+            stream.next().await,
+            run_response::Message::Package(_)
+        ));
+        if empty {
+            stream
+                .requests
+                .send(RunRequest { message: None })
+                .expect("the stream is served");
+        } else {
+            stream.request(1, emit(&serde_json::json!({"early": true})));
+        }
 
-    assert!(matches!(
-        stream.closing().await,
-        Closing::InvalidArgument(_)
-    ));
-    let run = fixture.run_record(&workspace_id, accepted.run_id()).await;
-    assert_eq!(
-        (run.state, run.execution_started(), run.execution_claim_id),
-        (RunState::Interrupted, false, None)
-    );
+        assert!(
+            matches!(stream.closing().await, Closing::InvalidArgument(_)),
+            "{empty}"
+        );
+        let run = fixture.run_record(&workspace_id, accepted.run_id()).await;
+        assert_eq!(
+            (run.state, run.execution_started(), run.execution_claim_id),
+            (RunState::Interrupted, false, None),
+            "{empty}"
+        );
+    }
 }
 
 #[tokio::test]
