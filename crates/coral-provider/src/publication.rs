@@ -66,7 +66,7 @@ use crate::types::check_etag;
 use crate::{
     Error, LifecycleAction, LifecycleActor, LifecycleOutcome, ManagementRequestId, Provider,
     ProviderDisplayName, ProviderId, ProviderModule, ProviderSetupId, ProviderState,
-    PublicationDiagnostic, access, require_owner, require_ready,
+    PublicationDiagnostic, Started, access, require_owner, require_ready,
 };
 use regeneration::Effect;
 
@@ -170,21 +170,22 @@ enum Preflight {
 }
 
 /// What preparation returns: a stored result, or a publication to write.
-pub(crate) enum PreparedPublication<T> {
+pub(crate) enum PreparedPublication<'a, T> {
     /// The request had already committed. Nothing is left to write.
     Replayed(T),
     /// A materialized publication for [`ProviderModule::publish_in_transaction`].
-    Materialized(Box<MaterializedPublication<T>>),
+    Materialized(Box<MaterializedPublication<'a, T>>),
 }
 
 /// A materialized publication that holds no transaction.
 ///
-/// It carries the start time: lock waits and materialization count against a
-/// Setup grant's lifetime.
-pub(crate) struct MaterializedPublication<T> {
+/// It carries the Module's clock and that clock's reading when preparation
+/// began: lock waits and materialization count against the Setup's lifetime
+/// and its grant's.
+pub(crate) struct MaterializedPublication<'a, T> {
     pinned: PinnedPublication,
     materialized: MaterializationOutcome,
-    started: std::time::Instant,
+    started: Started<'a>,
     result: fn(Terminal) -> Result<T, Error>,
 }
 
@@ -262,8 +263,8 @@ impl ProviderModule {
         context: &ChangeContext,
         command: Command,
         result: fn(Terminal) -> Result<T, Error>,
-    ) -> Result<PreparedPublication<T>, Error> {
-        let started = std::time::Instant::now();
+    ) -> Result<PreparedPublication<'_, T>, Error> {
+        let started = self.started();
         let pinned = match self.publication_preflight(context, command).await? {
             Preflight::Replay(terminal) => {
                 return Ok(PreparedPublication::Replayed(result(terminal)?));
@@ -448,7 +449,7 @@ impl ProviderModule {
         context: &ChangeContext,
         pinned: PinnedPublication,
         materialized: MaterializationOutcome,
-        started: std::time::Instant,
+        started: Started<'_>,
     ) -> Result<(Terminal, PublicationEvidence), Error> {
         let PinnedPublication {
             setup_input,
@@ -656,7 +657,7 @@ impl ProviderModule {
 
 struct TerminalContext<'a> {
     context: &'a ChangeContext,
-    started: std::time::Instant,
+    started: Started<'a>,
     current_setup: &'a provider_repository::LoadedSetup,
     setup_input: &'a ProviderSetupInput,
     authority: AuthoritySource,
@@ -715,15 +716,15 @@ impl TerminalContext<'_> {
 }
 
 // Retain the accepted change's actor, event timestamp and replay evidence separately
-// from credential freshness. Materialization and lock waits consume grant lifetime.
-fn credential_decision_context(
-    context: &ChangeContext,
-    started: std::time::Instant,
-) -> ChangeContext {
-    let elapsed = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
+// from credential freshness. Materialization and lock waits consume grant lifetime:
+// the context is dated by the request's instant plus the span the Module's clock
+// measured since preparation began, in one reading of that clock.
+fn credential_decision_context(context: &ChangeContext, started: Started<'_>) -> ChangeContext {
     ChangeContext::new(
         context.actor().clone(),
-        context.occurred_at_unix_nanos().saturating_add(elapsed),
+        started
+            .now_from(coral_db::UnixNanos::new(context.occurred_at_unix_nanos()))
+            .get(),
         context.trace_id().clone(),
     )
 }
@@ -843,7 +844,7 @@ impl ProviderModule {
         &self,
         context: &ChangeContext,
         request: WorkspaceProviderPublicationRequest,
-    ) -> Result<PreparedPublication<ProviderPublication>, Error> {
+    ) -> Result<PreparedPublication<'_, ProviderPublication>, Error> {
         self.prepare_command(
             context,
             Command::Workspace(request),
@@ -866,7 +867,7 @@ impl ProviderModule {
         &self,
         context: &ChangeContext,
         request: ProviderRegenerationRequest,
-    ) -> Result<PreparedPublication<ProviderRegenerationPublication>, Error> {
+    ) -> Result<PreparedPublication<'_, ProviderRegenerationPublication>, Error> {
         self.prepare_command(
             context,
             Command::Regenerate {
@@ -897,7 +898,7 @@ impl ProviderModule {
         &self,
         transaction: &mut Transaction<'_>,
         context: &ChangeContext,
-        publication: MaterializedPublication<T>,
+        publication: MaterializedPublication<'_, T>,
     ) -> Result<Published<T>, Error> {
         let MaterializedPublication {
             pinned,
@@ -959,7 +960,7 @@ impl ProviderModule {
     async fn commit_publication<T>(
         &self,
         context: &ChangeContext,
-        prepared: PreparedPublication<T>,
+        prepared: PreparedPublication<'_, T>,
     ) -> Result<Committed<T>, Error> {
         let publication = match prepared {
             PreparedPublication::Replayed(value) => return Ok(Committed::unchanged(value)),
