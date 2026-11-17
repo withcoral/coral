@@ -37,6 +37,9 @@
 - Read process environment only at process bootstrap. Pass explicit values to
   domain code. The `env` Secret Store is the one exception: bootstrap hands it
   a reader, and it reads only under its guarded prefix (ADR 0036).
+- Bootstrap builds one `coral_db::Clock` (`Launcher::clock()`). Give a new
+  reader of the time that clock, not a `SystemClock` of its own, so that a
+  test can drive it. Code that only decides takes the instant from its caller.
 - A sweep, a check or a cleanup that the server runs on a cadence is a
   periodic pass. Its module exposes the pass as one function, and bootstrap
   schedules it with `Passes` (`crates/coral-app/src/bootstrap/periodic.rs`); do
@@ -336,11 +339,12 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   uses `coral_test_support::TEST_COMPILATION_TIMEOUT`. The production deadline
   fails such tests on a starved runner.
 - In a unit or in-process test, drive time with fake timers or a test
-  clock, not real waits. An end-to-end journey whose subject is real elapsed
-  time, such as a session's renewal, keeps the real clocks. Read the clock
-  once per decision, in tests and product code alike: two readings can
-  differ, and a millisecond then decides which of two equal timers fires
-  first.
+  clock, not real waits. A test that starts Coral in its own process gives it
+  a `coral_test_support::ManualClock` through `Launch::clock`. A Reel journey
+  whose subject is real elapsed time, such as a session's renewal, keeps the
+  real clocks. Read the clock once per decision, in tests and product code
+  alike: two readings can differ, and a millisecond then decides which of two
+  equal timers fires first.
 - Inject faults through the owning crate's API or
   `TestDatabase::execute_fixture_sql`, so the test runs on both databases.
   Production `#[cfg(test)]` hooks only synchronize timing; every tested path is
