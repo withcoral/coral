@@ -1,5 +1,8 @@
 //! Setup configuration owns validation, preview, concurrency and credential invalidation.
 use coral_workspace::WorkspaceId;
+mod confirmation;
+#[cfg(test)]
+mod confirmation_tests;
 mod differences;
 mod mcp;
 pub(crate) mod preparation;
@@ -7,6 +10,7 @@ pub(crate) mod preparation;
 mod preparation_tests;
 pub use differences::ConfigurationDifference;
 
+use crate::account::oauth_client_secret_repository::{self, StoredSecret};
 use crate::repository::encode_configuration as encode;
 use crate::{
     Error, LifecycleAction, LifecycleActor, LifecycleOutcome, ProviderModule, ProviderSetupId,
@@ -237,10 +241,6 @@ impl ProviderModule {
         .await
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one confirmation atomically owns configuration and separately sealed application material"
-    )]
     pub(crate) async fn confirm_configuration_with_secret(
         &self,
         context: &ChangeContext,
@@ -248,7 +248,7 @@ impl ProviderModule {
         id: &ProviderSetupId,
         expected_revision: i64,
         configuration: ProviderConfiguration,
-        secret: Option<crate::account::oauth_client_secret_repository::StoredSecret>,
+        secret: Option<StoredSecret>,
     ) -> Result<SetupConfigurationReview, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
         self.workspaces
@@ -277,41 +277,55 @@ impl ProviderModule {
                 .take()
                 .map(|method| method.with_oauth_client(policy));
         }
-        if loaded.configuration_revision != expected_revision {
-            if expected_revision.checked_add(1) == Some(loaded.configuration_revision)
-                && loaded.configuration.as_ref() == Some(&accepted)
-                && loaded.setup.state() != ProviderSetupState::AwaitingConfiguration
-            {
+        let revision = match confirmation::check_revision(confirmation::RevisionFacts {
+            stored_revision: loaded.configuration_revision,
+            expected_revision,
+            saved: loaded.configuration.as_ref() == Some(&accepted),
+            state: &loaded.setup.state(),
+            secret: secret.is_some(),
+        }) {
+            confirmation::RevisionCheck::Current => {
                 return self
                     .review_setup_configuration(context.actor(), owner, id)
                     .await;
             }
-            return Err(Error::EtagMismatch);
-        }
-        let changed = loaded.configuration.as_ref() != Some(&accepted)
-            || loaded.setup.state() == ProviderSetupState::AwaitingConfiguration;
-        if !changed && secret.is_none() {
-            return self
-                .review_setup_configuration(context.actor(), owner, id)
-                .await;
-        }
-        let revision = expected_revision
-            .checked_add(1)
-            .ok_or(Error::EtagMismatch)?;
-        let value = encode(&accepted)?;
-        let headers_changed = accepted.request_headers
+            confirmation::RevisionCheck::Stale => return Err(Error::EtagMismatch),
+            confirmation::RevisionCheck::Confirm { revision } => revision,
+        };
+        let prepared = self
+            .prepare_confirmation(&loaded, &accepted, expected_revision, revision)
+            .await?;
+        self.apply_confirmation(context, owner, id, &loaded, &prepared, secret.as_ref())
+            .await?;
+        self.review_setup_configuration(context.actor(), owner, id)
+            .await
+    }
+
+    /// Reads and computes everything a confirmation's write needs, outside any
+    /// transaction: the source again when its headers changed, the preview,
+    /// and the contracts before and after.
+    async fn prepare_confirmation(
+        &self,
+        loaded: &repository::LoadedSetup,
+        accepted: &ProviderConfiguration,
+        expected_revision: i64,
+        revision: i64,
+    ) -> Result<PreparedConfirmation, Error> {
+        let configuration = encode(accepted)?;
+        let headers_changed = &accepted.request_headers
             != loaded
                 .configuration
                 .as_ref()
                 .map_or(&loaded.initial_request_headers, |values| {
                     &values.request_headers
-                })
-                .clone();
-        let refreshed = if headers_changed && mcp::anonymous_catalog(&loaded) {
-            Some(coral_catalog::ProviderSetupInput::Mcp(
+                });
+        let kind = loaded.setup.input_kind();
+        let anonymous_catalog = mcp::anonymous_catalog(loaded);
+        let refreshed = if headers_changed && anonymous_catalog {
+            Some(ProviderSetupInput::Mcp(
                 coral_upstream::discover_mcp(
                     self.outbound_policy,
-                    &mcp::source(&loaded)?,
+                    &mcp::source(loaded)?,
                     None,
                     &Contract::NONE,
                     &accepted.request_headers,
@@ -324,49 +338,55 @@ impl ProviderModule {
         };
         let new_input = repository::configured_input(
             refreshed.as_ref().or(loaded.setup_input.as_ref()),
-            &accepted,
+            accepted,
             revision,
         )?;
-        let old_contract = if loaded.setup.input_kind() == ProviderSetupInputKind::OpenApi
+        let old_contract = if kind == ProviderSetupInputKind::OpenApi
             && loaded.setup.state() == ProviderSetupState::AwaitingConfiguration
         {
             // This Setup has never authorized an account. This is not a compatibility
             // judgment about the active Provider whose configuration an Update retained.
             Contract::NONE
         } else {
-            effective_contract(self.outbound_policy, &loaded)?
+            effective_contract(self.outbound_policy, loaded)?
         };
         let preview = self
             .preparation
             .preview(new_input.as_ref(), revision)
             .await?;
-        let new_contract = if loaded.setup.input_kind() == ProviderSetupInputKind::Mcp {
-            mcp_contract(&loaded, Some(&accepted))
+        let new_contract = if kind == ProviderSetupInputKind::Mcp {
+            mcp_contract(loaded, Some(accepted))
         } else {
             preview.as_ref().map_or(Contract::NONE, |preview| {
                 preview.for_policy(self.outbound_policy).contract.clone()
             })
         };
-        let authority_changed = old_contract != new_contract;
-        let reset_catalog = (authority_changed || headers_changed)
-            && loaded.setup.input_kind() == ProviderSetupInputKind::Mcp
-            && !mcp::anonymous_catalog(&loaded);
-        // Without a snapshot the Setup still waits on sign-in or discovery. A
-        // change that leaves authority alone, such as the name, keeps whichever
-        // of those it was already in; only a first confirmation or a changed
-        // contract starts authorization over.
-        let next = if new_input.is_none() || reset_catalog {
-            if reset_catalog
-                || authority_changed
-                || loaded.setup.state() == ProviderSetupState::AwaitingConfiguration
-            {
-                ProviderSetupState::AwaitingAuthorization
-            } else {
-                loaded.setup.state()
-            }
-        } else {
-            ProviderSetupState::Ready
-        };
+        Ok(PreparedConfirmation {
+            expected_revision,
+            revision,
+            configuration,
+            refreshed,
+            preview,
+            old_contract,
+            new_contract,
+            headers_changed,
+            catalog_needs_sign_in: kind == ProviderSetupInputKind::Mcp && !anonymous_catalog,
+        })
+    }
+
+    /// Writes one prepared confirmation in its own transaction. The row hold
+    /// and the revision and input comparison fence everything preparation
+    /// read, the network read included, so the configuration, its catalog and
+    /// its lifecycle evidence commit as one change.
+    async fn apply_confirmation(
+        &self,
+        context: &ChangeContext,
+        owner: &WorkspaceId,
+        id: &ProviderSetupId,
+        loaded: &repository::LoadedSetup,
+        prepared: &PreparedConfirmation,
+        secret: Option<&StoredSecret>,
+    ) -> Result<(), Error> {
         let mut tx = self.database.begin().await?;
         let authority = self
             .check_owner_configuration_in_transaction(&mut tx, context.actor(), owner)
@@ -378,98 +398,126 @@ impl ProviderModule {
             .await?
             .ok_or(Error::ProviderSetupNotFound)?;
         require_editable(&current, context)?;
-        if current.configuration_revision != expected_revision
+        if current.configuration_revision != prepared.expected_revision
             || current.setup_input != loaded.setup_input
         {
             return Err(Error::EtagMismatch);
         }
-        if new_contract.oauth_client().is_none_or(|policy| {
-            policy.authentication == coral_catalog::OAuthClientAuthenticationMethod::None
-        }) {
-            crate::account::oauth_client_secret_repository::delete(
-                &mut tx,
-                owner,
-                &crate::account::oauth_client_secret_repository::Target::Setup(id),
-            )
-            .await?;
-        }
-        if let Some(secret) = secret.as_ref() {
-            crate::account::oauth_client_secret_repository::save(
-                &mut tx,
-                owner,
-                &crate::account::oauth_client_secret_repository::Target::Setup(id),
-                secret,
-            )
-            .await?;
+        let transition = prepared.transition(&current);
+        let secret_target = oauth_client_secret_repository::Target::Setup(id);
+        if transition.drops_application_secret {
+            oauth_client_secret_repository::delete(&mut tx, owner, &secret_target).await?;
         }
         // A confidential application's secret may follow confirmation: an agent
         // configures the application, and the person enters its secret when they
         // sign in. Sign-in and Publication each require it.
-        if changed || secret.is_some() {
-            if authority_changed || reset_catalog {
-                crate::setup_credentials::reset_for_configuration(
-                    &mut tx,
-                    context,
-                    owner,
-                    id,
-                    &old_contract,
-                    &new_contract,
-                )
-                .await?;
-            }
-            if reset_catalog {
-                repository::clear_setup_catalog(&mut tx, owner, id).await?;
-            }
-            repository::confirm_setup_configuration(&mut tx, owner, id, &value, revision, &next)
-                .await?;
-            // The authority, revision and input fence above also covers the network
-            // read. Commit its snapshot and configuration as one lifecycle change.
-            if let Some(input) = refreshed.as_ref() {
-                repository::update_setup_state(
-                    &mut tx,
-                    owner,
-                    id,
-                    std::slice::from_ref(&next),
-                    &ProviderSetupState::AwaitingDiscovery,
-                )
-                .await?;
-                let digest = crate::ProviderSetupInputDigest::of_setup_input(input);
-                if !repository::pin_setup_input(&mut tx, owner, id, input, &digest).await? {
-                    return Err(Error::EtagMismatch);
-                }
-            }
-            repository::save_setup_preview(
+        if let Some(secret) = secret {
+            oauth_client_secret_repository::save(&mut tx, owner, &secret_target, secret).await?;
+        }
+        if transition.resets_credentials {
+            crate::setup_credentials::reset_for_configuration(
                 &mut tx,
+                context,
                 owner,
                 id,
-                if reset_catalog {
-                    None
-                } else {
-                    preview.as_deref()
-                },
-            )
-            .await?;
-            repository::insert_lifecycle_event(
-                &mut tx,
-                repository::NewLifecycleEvent {
-                    workspace_id: Some(owner),
-                    actor: LifecycleActor::User {
-                        user_id: context.actor().user_id().clone(),
-                        authority_source: authority,
-                    },
-                    action: LifecycleAction::SetupConfigurationConfirmed,
-                    target_id: &id.to_string(),
-                    outcome: LifecycleOutcome::Accepted,
-                    changed_field_paths: &["configuration"],
-                    occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
-                    trace_id: context.trace_id(),
-                },
+                &prepared.old_contract,
+                &prepared.new_contract,
             )
             .await?;
         }
+        let reread = prepared.refreshed.as_ref().map(|input| {
+            (
+                input,
+                crate::ProviderSetupInputDigest::of_setup_input(input),
+            )
+        });
+        let preview = prepared.preview.as_deref();
+        let catalog = match &reread {
+            _ if transition.clears_catalog => repository::ConfirmedCatalog::Cleared,
+            Some((input, digest)) => repository::ConfirmedCatalog::Replaced {
+                input,
+                digest,
+                preview,
+            },
+            None => repository::ConfirmedCatalog::Kept { preview },
+        };
+        let confirmed = repository::apply_setup_confirmation(
+            &mut tx,
+            owner,
+            id,
+            &repository::SetupConfirmation {
+                configuration: &prepared.configuration,
+                replaces_revision: prepared.expected_revision,
+                revision: prepared.revision,
+                state: &transition.state,
+                catalog,
+            },
+        )
+        .await?;
+        if !confirmed {
+            return Err(Error::EtagMismatch);
+        }
+        repository::insert_lifecycle_event(
+            &mut tx,
+            repository::NewLifecycleEvent {
+                workspace_id: Some(owner),
+                actor: LifecycleActor::User {
+                    user_id: context.actor().user_id().clone(),
+                    authority_source: authority,
+                },
+                action: LifecycleAction::SetupConfigurationConfirmed,
+                target_id: &id.to_string(),
+                outcome: LifecycleOutcome::Accepted,
+                changed_field_paths: &["configuration"],
+                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                trace_id: context.trace_id(),
+            },
+        )
+        .await?;
         tx.commit().await?;
-        self.review_setup_configuration(context.actor(), owner, id)
-            .await
+        Ok(())
+    }
+}
+
+/// A validated confirmation and what preparing it found, before any write.
+struct PreparedConfirmation {
+    /// The revision the caller edited.
+    expected_revision: i64,
+    /// The revision this confirmation creates.
+    revision: i64,
+    /// The encoded accepted values.
+    configuration: String,
+    /// An anonymous MCP source, read again with the confirmed headers.
+    refreshed: Option<ProviderSetupInput>,
+    preview: Option<Box<preparation::PreparedReview>>,
+    /// The contract in effect before this confirmation.
+    old_contract: Contract,
+    new_contract: Contract,
+    headers_changed: bool,
+    /// Whether the source lists its Tools only after sign-in.
+    catalog_needs_sign_in: bool,
+}
+
+impl PreparedConfirmation {
+    /// Where this confirmation leaves `current`, the Setup as the write
+    /// transaction holds it. Sign-in moves the state without a new revision,
+    /// so the decision reads the held row, not the one preparation read.
+    fn transition(&self, current: &repository::LoadedSetup) -> confirmation::Transition {
+        confirmation::transition(confirmation::TransitionFacts {
+            state: &current.setup.state(),
+            source: if self.catalog_needs_sign_in {
+                confirmation::Source::SignIn {
+                    read: current.setup_input.is_some(),
+                }
+            } else {
+                confirmation::Source::Open
+            },
+            headers_changed: self.headers_changed,
+            authority_changed: self.old_contract != self.new_contract,
+            confidential_application: self.new_contract.oauth_client().is_some_and(|policy| {
+                policy.authentication != coral_catalog::OAuthClientAuthenticationMethod::None
+            }),
+        })
     }
 }
 

@@ -711,30 +711,89 @@ pub(super) async fn prepare_update_configuration(
     Ok(())
 }
 
-pub(super) async fn clear_setup_catalog(
+/// One confirmed configuration and everything the confirmation changes on its
+/// Setup row.
+pub(super) struct SetupConfirmation<'a> {
+    /// The encoded confirmed values.
+    pub(super) configuration: &'a str,
+    /// The revision the caller edited. The write applies only while the row
+    /// still holds it.
+    pub(super) replaces_revision: i64,
+    /// The revision this confirmation creates.
+    pub(super) revision: i64,
+    pub(super) state: &'a ProviderSetupState,
+    pub(super) catalog: ConfirmedCatalog<'a>,
+}
+
+/// What a confirmation does to the Setup's pinned input and its preview.
+pub(super) enum ConfirmedCatalog<'a> {
+    /// The pinned input stays; the preview is the confirmed configuration's.
+    Kept {
+        preview: Option<&'a crate::configuration::preparation::PreparedReview>,
+    },
+    /// The source was read again under the confirmed configuration.
+    Replaced {
+        input: &'a ProviderSetupInput,
+        digest: &'a ProviderSetupInputDigest,
+        preview: Option<&'a crate::configuration::preparation::PreparedReview>,
+    },
+    /// The catalog was read under an authority the confirmation replaced.
+    Cleared,
+}
+
+/// Writes one confirmation as one change of the Setup row, only while the row
+/// still holds the revision the confirmation replaces and no Publication has
+/// consumed it. The caller holds the row and has compared the pinned input.
+pub(super) async fn apply_setup_confirmation(
     transaction: &mut Transaction<'_>,
     owner: &WorkspaceId,
     id: &ProviderSetupId,
-) -> Result<(), Error> {
-    transaction
-        .execute(
-            Query::update()
-                .table(ProviderSetups::Table)
+    confirmation: &SetupConfirmation<'_>,
+) -> Result<bool, Error> {
+    let mut statement = Query::update();
+    statement
+        .table(ProviderSetups::Table)
+        .value(ProviderSetups::Configuration, confirmation.configuration)
+        .value(ProviderSetups::ConfigurationRevision, confirmation.revision)
+        .value(ProviderSetups::State, confirmation.state.as_storage_str());
+    let preview = match confirmation.catalog {
+        ConfirmedCatalog::Kept { preview } => preview,
+        ConfirmedCatalog::Replaced {
+            input,
+            digest,
+            preview,
+        } => {
+            statement
+                .value(ProviderSetups::PinnedInput, input.as_str())
+                .value(ProviderSetups::InputDigest, digest.as_str())
+                .value(ProviderSetups::DiscoveryFailureCode, Option::<String>::None);
+            preview
+        }
+        ConfirmedCatalog::Cleared => {
+            statement
                 .value(ProviderSetups::PinnedInput, Option::<String>::None)
-                .value(ProviderSetups::InputDigest, Option::<String>::None)
-                .value(ProviderSetups::ConfigurationPreview, Option::<String>::None)
-                .value(
-                    ProviderSetups::State,
-                    ProviderSetupState::AwaitingConfiguration.as_storage_str(),
-                )
-                .and_where(exact_setup_owner(owner))
-                .and_where(Expr::col(ProviderSetups::Id).eq(id.to_string()))
-                .to_owned(),
+                .value(ProviderSetups::InputDigest, Option::<String>::None);
+            None
+        }
+    };
+    statement
+        .value(
+            ProviderSetups::ConfigurationPreview,
+            preview.map(serde_json::to_string).transpose()?,
         )
-        .await?;
-    Ok(())
+        .and_where(exact_setup_owner(owner))
+        .and_where(Expr::col(ProviderSetups::Id).eq(id.to_string()))
+        .and_where(
+            Expr::col(ProviderSetups::ConfigurationRevision).eq(confirmation.replaces_revision),
+        )
+        .and_where(Expr::col(ProviderSetups::ConsumedByPublicationId).is_null());
+    Ok(transaction.execute(statement).await? == 1)
 }
 
+/// Saves a configuration, its revision and a state with no revision
+/// predicate. Its callers own the fence: Update preparation writes the Setup
+/// it has just created, and discovery writes under its credential fence. A
+/// confirmation goes through [`apply_setup_confirmation`].
 pub(super) async fn confirm_setup_configuration(
     transaction: &mut Transaction<'_>,
     owner: &WorkspaceId,

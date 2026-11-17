@@ -774,7 +774,7 @@ async fn anonymous_mcp_catalog_still_requires_explicit_configuration_confirmatio
     let context = change_context(actor.clone(), 10, '4');
     let owner = workspace.id().clone();
     let server = MockServer::start().await;
-    anonymous_catalog_for_tenant(&server, "one").await;
+    anonymous_catalog(&server, "one", "lookup").await;
     let setup = harness
         .providers
         .prepare_setup(
@@ -830,7 +830,7 @@ async fn anonymous_mcp_catalog_still_requires_explicit_configuration_confirmatio
         .unwrap();
     assert!(confirmed.configuration_confirmed);
     server.reset().await;
-    anonymous_catalog_for_tenant(&server, "two").await;
+    anonymous_catalog(&server, "two", "search").await;
     let mut changed = values;
     changed
         .request_headers
@@ -864,6 +864,30 @@ async fn anonymous_mcp_catalog_still_requires_explicit_configuration_confirmatio
         .unwrap()
         .skip_search();
     assert_eq!(published.outcome(), ProviderPublicationOutcome::Succeeded);
+    // The confirmation pinned what the edited header read, and Publication
+    // materializes exactly that.
+    assert_eq!(
+        refreshed
+            .tools
+            .iter()
+            .map(|tool| tool.key.as_str())
+            .collect::<Vec<_>>(),
+        ["search"]
+    );
+    let inspect = async |tool: &str| {
+        harness
+            .providers
+            .inspect_tool(
+                &actor,
+                &owner,
+                published.published_provider().unwrap().id(),
+                &coral_catalog::ToolKey::parse(tool).unwrap(),
+            )
+            .await
+            .map(|tool| tool.key().as_str().to_owned())
+    };
+    assert_eq!(inspect("search").await.unwrap(), "search");
+    assert!(matches!(inspect("lookup").await, Err(Error::ToolNotFound)));
     assert!(
         harness
             .providers
@@ -2743,7 +2767,7 @@ async fn an_mcp_update_takes_the_server_it_reads() {
         request_headers: std::collections::BTreeMap::from([("x-tenant".into(), "one".into())]),
     };
     let saved = MockServer::start().await;
-    anonymous_catalog_for_tenant(&saved, "one").await;
+    anonymous_catalog(&saved, "one", "lookup").await;
     let setup = harness
         .providers
         .prepare_setup(&context, workspace.id(), source(&saved), None)
@@ -2781,7 +2805,7 @@ async fn an_mcp_update_takes_the_server_it_reads() {
         .published_provider()
         .expect("a published Provider");
     let moved = MockServer::start().await;
-    anonymous_catalog_for_tenant(&moved, "one").await;
+    anonymous_catalog(&moved, "one", "lookup").await;
 
     let prepared = harness
         .providers
@@ -3557,7 +3581,9 @@ async fn public_configuration_preview_reports_a_loopback_destination() {
     assert!(review.destinations.is_empty());
 }
 
-async fn anonymous_catalog_for_tenant(server: &MockServer, tenant: &str) {
+/// An MCP server that lists one Tool, `tool`, without sign-in, to requests
+/// that carry `tenant` in `x-tenant`.
+async fn anonymous_catalog(server: &MockServer, tenant: &str, tool: &'static str) {
     Mock::given(method("POST")).and(wiremock::matchers::header("x-tenant", tenant)).and(body_partial_json(json!({"method":"initialize"})))
         .respond_with(|request: &Request| envelope(request, &json!({"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"anonymous","version":"1"}}))).mount(server).await;
     Mock::given(method("POST"))
@@ -3571,10 +3597,10 @@ async fn anonymous_catalog_for_tenant(server: &MockServer, tenant: &str) {
     Mock::given(method("POST"))
         .and(wiremock::matchers::header("x-tenant", tenant))
         .and(body_partial_json(json!({"method":"tools/list"})))
-        .respond_with(|request: &Request| {
+        .respond_with(move |request: &Request| {
             envelope(
                 request,
-                &json!({"tools":[{"name":"lookup","inputSchema":{"type":"object"}}]}),
+                &json!({"tools":[{"name":tool,"inputSchema":{"type":"object"}}]}),
             )
         })
         .mount(server)

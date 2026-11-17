@@ -2269,6 +2269,62 @@ async fn registered_sign_in_setup(
     setup
 }
 
+#[tokio::test]
+async fn new_headers_drop_the_catalog_that_sign_in_read_and_start_authorization_over() {
+    let harness = harness(None).await;
+    let (owner, workspace) = workspace_owner(&harness, "user:reset-catalog").await;
+    let context = change_context(owner.clone(), 10, '1');
+    let setup = registered_sign_in_setup(&harness, &context, workspace.id()).await;
+    let read = harness
+        .providers
+        .get_setup(&owner, workspace.id(), setup.id())
+        .await
+        .unwrap();
+    assert_eq!(read.state(), ProviderSetupState::Ready);
+    assert!(read.input_digest().is_some());
+    let review = harness
+        .providers
+        .review_setup_configuration(&owner, workspace.id(), setup.id())
+        .await
+        .unwrap();
+    assert_ne!(review.tools, []);
+
+    let mut values = review.confirmed.unwrap();
+    values
+        .request_headers
+        .insert("x-tenant".into(), "two".into());
+    let confirmed = harness
+        .providers
+        .confirm_setup_configuration(
+            &context,
+            workspace.id(),
+            setup.id(),
+            review.revision,
+            values,
+        )
+        .await
+        .unwrap();
+
+    // The catalog was read with the old headers, so nothing of it stays: not
+    // the pinned input, not its preview, not the sign-in that read it. The
+    // registered application is configuration and outlives the sign-in.
+    let reset = harness
+        .providers
+        .get_setup(&owner, workspace.id(), setup.id())
+        .await
+        .unwrap();
+    assert_eq!(reset.state(), ProviderSetupState::AwaitingAuthorization);
+    assert_eq!(reset.input_digest(), None);
+    assert_eq!(confirmed.revision, review.revision + 1);
+    assert_eq!(confirmed.tools, []);
+    let authentication = harness
+        .providers
+        .setup_authentication(&owner, workspace.id(), setup.id(), 11)
+        .await
+        .unwrap();
+    assert!(!authentication.authorized);
+}
+
 fn explicit(client_id: &str) -> SetupOAuthClient {
     SetupOAuthClient::new(
         "https://reef.example/provider-setup/oauth/callback".into(),
@@ -5050,6 +5106,60 @@ async fn assert_consumed_without_application_secret(
         ProviderSetupState::Consumed(_)
     ));
     tx.rollback().await.unwrap();
+}
+
+// Catches: a Setup that keeps a confidential application's secret after a
+// confirmation stops using that application.
+#[tokio::test]
+async fn a_confirmation_without_a_confidential_application_drops_its_secret() {
+    use crate::account::oauth_client_secret_repository::{self as secrets, Target};
+    let api = OAuthApi::start().await;
+    let harness = harness(None).await;
+    let (actor, workspace) = workspace_owner(&harness, "user:drop-secret").await;
+    let owner = workspace.id().clone();
+    let context = change_context(actor.clone(), 10, '1');
+    let setup = harness
+        .providers
+        .prepare_openapi_fixture(&context, &owner, api.document("Secret"))
+        .await
+        .unwrap();
+    let revision = configure_publication_application(
+        &harness,
+        &context,
+        &owner,
+        setup.id(),
+        Some("secret-canary"),
+    )
+    .await;
+    let holds_secret = async || {
+        let mut tx = harness.database.begin_read_snapshot().await.unwrap();
+        let secret = secrets::load(&mut tx, &owner, &Target::Setup(setup.id()))
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        secret.is_some()
+    };
+    assert!(holds_secret().await);
+
+    let mut values = harness
+        .providers
+        .review_setup_configuration(&actor, &owner, setup.id())
+        .await
+        .unwrap()
+        .confirmed
+        .unwrap();
+    values.authentication = Some(AuthenticationConfiguration::Bearer);
+    let confirmed = harness
+        .providers
+        .confirm_setup_configuration(&context, &owner, setup.id(), revision, values)
+        .await
+        .unwrap();
+    assert_eq!(
+        confirmed.errors,
+        [] as [coral_catalog::ConfigurationFieldError; 0]
+    );
+    assert_eq!(confirmed.revision, revision + 1);
+    assert!(!holds_secret().await);
 }
 
 #[tokio::test]
