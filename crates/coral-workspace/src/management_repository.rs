@@ -1,8 +1,11 @@
 //! Persistence for management concurrency metadata and accepted request identities.
 //! Callers supply the owning domain transaction.
+use std::collections::HashMap;
+
 use coral_db::Transaction;
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 
+use crate::list_repository::{ResourceScope, Resources};
 use crate::{Error, LifecycleTargetKind, ResourceMetadata, UserId, WorkspaceId};
 
 #[derive(Iden)]
@@ -98,13 +101,78 @@ pub(super) async fn metadata(
                 .to_owned(),
         )
         .await?;
-    let (etag, created_at, updated_at) =
-        row.ok_or_else(|| Error::CorruptData("resource metadata missing".into()))?;
+    let (etag, created_at, updated_at) = row.ok_or_else(missing_metadata)?;
     Ok(ResourceMetadata {
         etag,
         created_at,
         updated_at,
     })
+}
+
+fn missing_metadata() -> Error {
+    Error::CorruptData("resource metadata missing".into())
+}
+
+/// The metadata of the resources of one list, by resource id.
+pub(super) struct ListedMetadata(HashMap<String, ResourceMetadata>);
+
+impl ListedMetadata {
+    /// The metadata of one resource of the list, as [`metadata`] reads it.
+    pub(super) fn of(&self, id: &str) -> Result<ResourceMetadata, Error> {
+        self.0.get(id).cloned().ok_or_else(missing_metadata)
+    }
+}
+
+/// Reads the metadata of every resource of one list in one statement.
+pub(super) async fn listed_metadata(
+    tx: &mut Transaction<'_>,
+    resources: Resources<'_>,
+) -> Result<ListedMetadata, Error> {
+    let mut statement = Query::select();
+    statement
+        .columns([
+            WorkspaceResourceMetadata::TargetId,
+            WorkspaceResourceMetadata::Etag,
+            WorkspaceResourceMetadata::CreatedAt,
+            WorkspaceResourceMetadata::UpdatedAt,
+        ])
+        .from(WorkspaceResourceMetadata::Table)
+        .and_where(
+            Expr::col(WorkspaceResourceMetadata::Kind).eq(resources.kind().as_storage_str()),
+        );
+    match resources.scope() {
+        ResourceScope::Within(workspace, ids) => {
+            statement
+                .and_where(
+                    Expr::col(WorkspaceResourceMetadata::WorkspaceId).eq(workspace.to_string()),
+                )
+                .and_where(Expr::col(WorkspaceResourceMetadata::TargetId).in_subquery(ids));
+        }
+        // A Workspace's own metadata has the Workspace as its target.
+        ResourceScope::Workspaces(ids) => {
+            statement
+                .and_where(Expr::col(WorkspaceResourceMetadata::WorkspaceId).in_subquery(ids))
+                .and_where(
+                    Expr::col(WorkspaceResourceMetadata::TargetId)
+                        .equals(WorkspaceResourceMetadata::WorkspaceId),
+                );
+        }
+    }
+    let rows: Vec<(String, String, i64, i64)> = tx.fetch_all(statement).await?;
+    Ok(ListedMetadata(
+        rows.into_iter()
+            .map(|(id, etag, created_at, updated_at)| {
+                (
+                    id,
+                    ResourceMetadata {
+                        etag,
+                        created_at,
+                        updated_at,
+                    },
+                )
+            })
+            .collect(),
+    ))
 }
 
 pub(super) async fn upsert_metadata(

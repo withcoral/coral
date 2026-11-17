@@ -1917,7 +1917,7 @@ impl ManyRows {
     }
 
     /// Asserts that each of `rows` is what the read of that row alone
-    /// returns.
+    /// returns, and that an ordered read's rows keep its order.
     async fn assert_each_is_the_row_read_alone(
         &self,
         tx: &mut coral_db::Transaction<'_>,
@@ -1939,6 +1939,14 @@ impl ManyRows {
                 }
             }
             PageRows::Actions(actions) => {
+                let urgency = actions.iter().map(|queued| {
+                    let action = &queued.action;
+                    (action.deadline_at_unix_nanos, action.request.to_string())
+                });
+                assert!(
+                    urgency.is_sorted(),
+                    "the long page keeps the order: the most urgent request first"
+                );
                 for queued in actions {
                     let crate::RequiredActionRequest::InvocationApproval(id) =
                         &queued.action.request
@@ -1979,6 +1987,14 @@ impl ManyRows {
                 }
             }
             PageRows::Settled(settled) => {
+                let oldest_first = settled
+                    .iter()
+                    .rev()
+                    .map(|row| (row.settled_at_unix_nanos, row.approval.to_string()));
+                assert!(
+                    oldest_first.is_sorted(),
+                    "the long page keeps the order: the newest decision first"
+                );
                 for row in settled {
                     let request = self.approvals.get(actor, workspace, &row.approval).await;
                     let request = request.unwrap();
@@ -1997,11 +2013,15 @@ impl ManyRows {
 /// Catches: a read that sends a statement, or several, for each row of its
 /// page, so that a long page is many round trips inside one read snapshot;
 /// and a read of many rows that returns other rows than the read of one row
-/// at a time.
+/// at a time, or the right rows in another order.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_long_page_sends_the_statements_of_a_short_one() {
     let rows = ManyRows::new().await;
-    let mut tx = rows.fixture.database.begin_read_snapshot().await.unwrap();
+    // The Runs that wait keep sending statements on the fixture's handle:
+    // their owners renew leases and recheck parked waits. The reads run on a
+    // peer handle, which counts only its own statements.
+    let reads = rows.fixture.test_database.connect_peer().await.unwrap();
+    let mut tx = reads.begin_read_snapshot().await.unwrap();
     let authority = rows
         .fixture
         .workspaces
@@ -2014,12 +2034,12 @@ async fn a_long_page_sends_the_statements_of_a_short_one() {
         PageRead::ActivityEntries,
         PageRead::SettledApprovals,
     ] {
-        let before = tx.statements();
+        let before = reads.statements_sent();
         let short = rows.read(&mut tx, &authority, read, false).await;
-        let short_sent = tx.statements() - before;
-        let before = tx.statements();
+        let short_sent = reads.statements_sent() - before;
+        let before = reads.statements_sent();
         let long = rows.read(&mut tx, &authority, read, true).await;
-        let long_sent = tx.statements() - before;
+        let long_sent = reads.statements_sent() - before;
         assert!(
             short.len() < long.len(),
             "{read:?}: the long page has more rows: {} and {}",

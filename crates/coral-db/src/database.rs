@@ -29,6 +29,7 @@ pub struct Database<Access = ReadWrite> {
     pub(crate) access: Access,
     /// Registered lazily on the first acquisition under the metrics layer.
     pub(crate) pool_metric: std::sync::OnceLock<coral_telemetry::metric::PoolObservation>,
+    pub(crate) statements: crate::statements::StatementCount,
 }
 
 /// A database handle whose backend enforces read-only access.
@@ -117,6 +118,20 @@ impl ReadOnlyDatabase {
 }
 
 impl<Access> Database<Access> {
+    /// How many statements this handle and its transactions have sent since
+    /// it connected: one for each call that executes or fetches, whatever it
+    /// matched. Beginning and ending a transaction, a migration and
+    /// [`Self::ping`] are not counted.
+    ///
+    /// A test reads this before and after an operation and asserts on the
+    /// difference, for example that a list sends as many statements for
+    /// twelve rows as for two.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn statements_sent(&self) -> u64 {
+        self.statements.total()
+    }
+
     /// Identifies the selected Adapter without exposing its pool.
     #[must_use]
     pub const fn system(&self) -> DatabaseSystem {
@@ -200,6 +215,7 @@ async fn connect_sqlite(path: &Path, writer_wait: Duration) -> Result<Database, 
         .await?;
     Ok(Database {
         pool_metric: std::sync::OnceLock::new(),
+        statements: crate::statements::StatementCount::default(),
         backend: DatabaseBackend::Sqlite {
             reads,
             writes,
@@ -232,6 +248,7 @@ async fn connect_read_only_sqlite(path: &Path) -> Result<ReadOnlyDatabase, Error
         },
         access: ReadOnly,
         pool_metric: std::sync::OnceLock::new(),
+        statements: crate::statements::StatementCount::default(),
     })
 }
 
@@ -252,6 +269,7 @@ async fn connect_postgres(url: &str, keepalive: Duration) -> Result<Database, Er
         },
         backend: DatabaseBackend::Postgres(pool),
         pool_metric: std::sync::OnceLock::new(),
+        statements: crate::statements::StatementCount::default(),
     })
 }
 
@@ -265,6 +283,7 @@ async fn connect_read_only_postgres(url: &str) -> Result<ReadOnlyDatabase, Error
         backend: DatabaseBackend::Postgres(pool),
         access: ReadOnly,
         pool_metric: std::sync::OnceLock::new(),
+        statements: crate::statements::StatementCount::default(),
     })
 }
 

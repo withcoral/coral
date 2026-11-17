@@ -432,15 +432,43 @@ pub(super) async fn list_memberships(
     database: impl QueryExecutor,
     workspace_id: &WorkspaceId,
 ) -> Result<Vec<WorkspaceMembership>, Error> {
-    let statement = Query::select()
+    let statement = memberships()
+        .and_where(Expr::col(WorkspaceMemberships::WorkspaceId).eq(workspace_id.to_string()))
+        .to_owned();
+    fetch_memberships(database, statement).await
+}
+
+/// The designated Owner Memberships of one Workspace, or of every Workspace,
+/// ordered by User.
+pub(super) async fn list_owner_memberships(
+    database: impl QueryExecutor,
+    workspace_id: Option<&WorkspaceId>,
+) -> Result<Vec<WorkspaceMembership>, Error> {
+    let mut statement = memberships();
+    statement
+        .and_where(Expr::col(WorkspaceMemberships::Role).eq(WorkspaceRole::Owner.as_storage_str()));
+    if let Some(workspace_id) = workspace_id {
+        statement
+            .and_where(Expr::col(WorkspaceMemberships::WorkspaceId).eq(workspace_id.to_string()));
+    }
+    fetch_memberships(database, statement).await
+}
+
+fn memberships() -> sea_query::SelectStatement {
+    Query::select()
         .columns([
             WorkspaceMemberships::WorkspaceId,
             WorkspaceMemberships::UserId,
             WorkspaceMemberships::Role,
         ])
         .from(WorkspaceMemberships::Table)
-        .and_where(Expr::col(WorkspaceMemberships::WorkspaceId).eq(workspace_id.to_string()))
-        .to_owned();
+        .to_owned()
+}
+
+async fn fetch_memberships(
+    database: impl QueryExecutor,
+    statement: sea_query::SelectStatement,
+) -> Result<Vec<WorkspaceMembership>, Error> {
     let rows: Vec<MembershipRow> = database.fetch_all(statement).await?;
     let mut memberships = rows
         .into_iter()
@@ -450,9 +478,47 @@ pub(super) async fn list_memberships(
     Ok(memberships)
 }
 
+/// Selects the User ids of Memberships, in one column: of one Workspace or of
+/// every Workspace, and of one role or of every role.
+pub(super) fn membership_user_ids(
+    workspace_id: Option<&WorkspaceId>,
+    role: Option<WorkspaceRole>,
+) -> sea_query::SelectStatement {
+    let mut statement = Query::select();
+    statement
+        .column(WorkspaceMemberships::UserId)
+        .from(WorkspaceMemberships::Table);
+    if let Some(workspace_id) = workspace_id {
+        statement
+            .and_where(Expr::col(WorkspaceMemberships::WorkspaceId).eq(workspace_id.to_string()));
+    }
+    if let Some(role) = role {
+        statement.and_where(Expr::col(WorkspaceMemberships::Role).eq(role.as_storage_str()));
+    }
+    statement
+}
+
+/// Selects the ids of the Workspaces where one User holds a Membership, in
+/// one column.
+pub(super) fn membership_workspace_ids_of(user_id: &UserId) -> sea_query::SelectStatement {
+    Query::select()
+        .column(WorkspaceMemberships::WorkspaceId)
+        .from(WorkspaceMemberships::Table)
+        .and_where(Expr::col(WorkspaceMemberships::UserId).eq(user_id.as_str()))
+        .to_owned()
+}
+
+/// Selects the id of every Workspace, in one column.
+pub(super) fn every_workspace_id() -> sea_query::SelectStatement {
+    Query::select()
+        .column(WorkspaceRecords::Id)
+        .from(WorkspaceRecords::Table)
+        .to_owned()
+}
+
 /// Each Workspace where the User holds a Membership, with that Membership's role.
 pub(super) async fn list_workspaces(
-    database: &Database,
+    database: impl QueryExecutor,
     actor_user_id: &UserId,
 ) -> Result<Vec<(Workspace, WorkspaceRole)>, Error> {
     let mut statement = Query::select();
@@ -501,10 +567,10 @@ pub(super) async fn owner_count(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
 ) -> Result<usize, Error> {
-    let rows: Vec<(String,)> = transaction
-        .fetch_all(
+    let count: Option<(i64,)> = transaction
+        .fetch_optional(
             Query::select()
-                .column(WorkspaceMemberships::UserId)
+                .expr(Expr::col(WorkspaceMemberships::UserId).count())
                 .from(WorkspaceMemberships::Table)
                 .and_where(
                     Expr::col(WorkspaceMemberships::WorkspaceId).eq(workspace_id.to_string()),
@@ -515,7 +581,7 @@ pub(super) async fn owner_count(
                 .to_owned(),
         )
         .await?;
-    Ok(rows.len())
+    Ok(count.map_or(0, |(count,)| usize::try_from(count).unwrap_or_default()))
 }
 
 /// Workspaces where this User is the only designated Owner, in stable order.
@@ -523,16 +589,35 @@ pub(super) async fn sole_owner_workspace_ids(
     transaction: &mut Transaction<'_>,
     user_id: &UserId,
 ) -> Result<Vec<WorkspaceId>, Error> {
-    let mut sole = Vec::new();
-    for workspace in membership_workspace_ids(transaction, user_id).await? {
-        if membership_role_in_transaction(transaction, &workspace, user_id).await?
-            == Some(WorkspaceRole::Owner)
-            && owner_count(transaction, &workspace).await? == 1
-        {
-            sole.push(workspace);
-        }
-    }
-    Ok(sole)
+    // Of the Workspaces the User is a designated Owner of, those with one
+    // designated Owner: that Owner is the User.
+    let owned = Query::select()
+        .column(WorkspaceMemberships::WorkspaceId)
+        .from(WorkspaceMemberships::Table)
+        .and_where(Expr::col(WorkspaceMemberships::UserId).eq(user_id.as_str()))
+        .and_where(Expr::col(WorkspaceMemberships::Role).eq(WorkspaceRole::Owner.as_storage_str()))
+        .to_owned();
+    let rows: Vec<(String,)> = transaction
+        .fetch_all(
+            Query::select()
+                .column(WorkspaceMemberships::WorkspaceId)
+                .from(WorkspaceMemberships::Table)
+                .and_where(
+                    Expr::col(WorkspaceMemberships::Role).eq(WorkspaceRole::Owner.as_storage_str()),
+                )
+                .and_where(Expr::col(WorkspaceMemberships::WorkspaceId).in_subquery(owned))
+                .group_by_col(WorkspaceMemberships::WorkspaceId)
+                .and_having(Expr::col(WorkspaceMemberships::UserId).count().eq(1))
+                .order_by(WorkspaceMemberships::WorkspaceId, Order::Asc)
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter()
+        .map(|(value,)| {
+            WorkspaceId::parse(&value)
+                .map_err(|_error| Error::CorruptData("invalid Workspace Membership id".into()))
+        })
+        .collect()
 }
 
 /// Every Workspace in the Organization, in stable order.

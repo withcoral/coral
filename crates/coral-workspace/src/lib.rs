@@ -90,11 +90,12 @@ mod agent;
 pub use access_removal::{AccessRemovalTarget, LostWorkspaceAccess, PreparedAccessRemoval};
 mod governance;
 pub use governance::{OrganizationWorkspace, WorkspaceOwner};
+mod list_repository;
 mod management;
 mod management_repository;
 mod profile;
 mod profile_repository;
-pub use management::{AgentAccessBlocker, AgentInspection, ResourceMetadata};
+pub use management::{AgentAccessBlocker, AgentInspection, ResourceMetadata, WorkspaceInspections};
 pub use profile::{UserProfile, VerifiedUserProfile};
 mod agent_repository;
 mod agent_types;
@@ -252,8 +253,8 @@ impl WorkspaceModule {
         let actor = OrganizationModule::new(self.database.clone())
             .resolve_user_authority(actor.user_id())
             .await?;
-        Ok(repository::list_workspaces(&self.database, actor.user_id())
-            .await?
+        let listed = repository::list_workspaces(&*self.database, actor.user_id()).await?;
+        Ok(listed
             .into_iter()
             .map(|(workspace, _role)| workspace)
             .collect())
@@ -273,8 +274,8 @@ impl WorkspaceModule {
         let actor = OrganizationModule::new(self.database.clone())
             .resolve_user_authority(user_id)
             .await?;
-        Ok(repository::list_workspaces(&self.database, actor.user_id())
-            .await?
+        let listed = repository::list_workspaces(&*self.database, actor.user_id()).await?;
+        Ok(listed
             .into_iter()
             .filter(|(workspace, _role)| workspace.state() == WorkspaceState::Active)
             .map(|(workspace, role)| WorkspaceChoice { workspace, role })
@@ -770,12 +771,12 @@ impl WorkspaceModule {
         actor: &AuthenticatedUser,
         workspace_id: &WorkspaceId,
     ) -> Result<Vec<WorkspaceMembership>, Error> {
-        Ok(self
-            .inspect_memberships(actor, workspace_id)
-            .await?
-            .into_iter()
-            .map(|(membership, _metadata, _profile, _enabled)| membership)
-            .collect())
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        self.check_owner_inspection_in_transaction(&mut transaction, actor, workspace_id)
+            .await?;
+        let memberships = repository::list_memberships(&mut transaction, workspace_id).await?;
+        transaction.commit().await?;
+        Ok(memberships)
     }
 
     /// Lists safe Workspace-domain Administrative Lifecycle Events.

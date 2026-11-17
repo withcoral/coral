@@ -35,6 +35,7 @@ impl Database {
         S: SqlxBinder,
     {
         self.observe_pools();
+        self.statements.sent();
         match &self.backend {
             DatabaseBackend::Sqlite { writes, .. } => {
                 let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
@@ -84,6 +85,7 @@ impl<Access> Database<Access> {
         for<'row> T: FromRow<'row, PgRow>,
     {
         self.observe_pools();
+        self.statements.sent();
         match &self.backend {
             DatabaseBackend::Sqlite { reads, .. } => {
                 let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
@@ -126,6 +128,7 @@ impl<Access> Database<Access> {
         for<'row> T: FromRow<'row, PgRow>,
     {
         self.observe_pools();
+        self.statements.sent();
         match &self.backend {
             DatabaseBackend::Sqlite { reads, .. } => {
                 let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);

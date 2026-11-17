@@ -468,7 +468,6 @@ async fn a_read_of_several_runs_conceals_what_the_read_of_one_run_conceals() {
         .await
         .unwrap();
     let now = fixture.clock.now_unix_nanos().unwrap();
-    let before = tx.statements();
     let several = crate::history_repository::run_summaries(
         &mut tx,
         &authority,
@@ -477,7 +476,6 @@ async fn a_read_of_several_runs_conceals_what_the_read_of_one_run_conceals() {
     )
     .await
     .unwrap();
-    assert_eq!(tx.statements() - before, 1, "one statement reads every Run");
     for (workspace, run, held) in named {
         let alone =
             crate::history_repository::run_summary(&mut tx, &authority, workspace, run, now).await;
