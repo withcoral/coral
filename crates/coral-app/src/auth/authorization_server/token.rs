@@ -902,7 +902,7 @@ pub(super) mod tests {
         let token = get("access_token").as_str().expect("access token");
         let workspace =
             coral_workspace::WorkspaceId::parse("01234567-89ab-4cde-8fab-0123456789ab").unwrap();
-        let (principal, _workspace) = authentication
+        let (principal, _workspace, _now) = authentication
             .authenticate(
                 coral_auth::WorkspaceFixedBy::Url(&workspace),
                 Some(token),

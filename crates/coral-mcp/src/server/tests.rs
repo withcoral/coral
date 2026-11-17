@@ -54,6 +54,7 @@ fn server_on(
                 crate::HumanInterfaceUrl::parse("https://reef.example.test").unwrap(),
             ),
             principal,
+            now: coral_db::Clock::now(&coral_db::SystemClock),
         },
         workspace,
     )

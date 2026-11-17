@@ -249,7 +249,7 @@ impl Fixture {
         self.authentication()
             .authenticate_scoped(&self.workspace, Some(access_token), "mcp")
             .await
-            .is_ok_and(|principal: AuthenticatedPrincipal| {
+            .is_ok_and(|(principal, _now): (AuthenticatedPrincipal, _)| {
                 principal.principal().id().as_str() == self.user.user_id().as_str()
             })
     }

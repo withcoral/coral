@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 use std::time::Duration;
 
-use coral_db::Clock as _;
 use coral_run::{RUN_EVENT_PAGE_MAX, RunCursor, RunId, RunObservation};
 use coral_task::{TaskId, TaskIntent, TaskOutcome};
 use coral_telemetry::safe;
@@ -348,7 +347,7 @@ impl McpServer {
                 &task_id,
                 outcome,
                 arguments.feedback.as_deref(),
-                coral_db::SystemClock.now().get(),
+                self.runtime.now.get(),
             )
             .await
             .map_err(task_failure)?;

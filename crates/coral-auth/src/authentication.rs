@@ -35,8 +35,9 @@ pub enum AuthenticationError {
 /// credential is the implicit local Owner, and every presented credential must
 /// authenticate an Agent Registration. A credential never falls back to the Owner.
 ///
-/// Each call reads the clock it was built with once, and that instant dates
-/// every expiry the call checks.
+/// Each call reads the clock it was built with once. That instant dates every
+/// expiry the call checks, and the call returns it beside the Principal, so
+/// that the Adapter dates what the request decides next by the same reading.
 #[derive(Clone)]
 pub struct PrincipalAuthentication {
     mode: Mode,
@@ -95,7 +96,8 @@ impl PrincipalAuthentication {
     }
 
     /// Authenticates one request without provisioning a User or granting
-    /// resource access, and returns the Workspace it acts in.
+    /// resource access, and returns the Workspace it acts in and the instant
+    /// the call read.
     ///
     /// `expected_audience` is selected by the Adapter, never from unverified claims;
     /// local mode verifies no User token, so it reads none.
@@ -111,12 +113,13 @@ impl PrincipalAuthentication {
         fixed_by: WorkspaceFixedBy<'_>,
         bearer: Option<&str>,
         expected_audience: &str,
-    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId, UnixNanos), AuthenticationError> {
         self.authenticate_request(fixed_by, bearer, expected_audience, false)
             .await
     }
 
-    /// Verifies a credential whose signed scope must fix this exact Workspace.
+    /// Verifies a credential whose signed scope must fix this exact Workspace,
+    /// and returns the instant the call read beside the Principal.
     /// Agent Registrations already carry that immutable scope.
     ///
     /// # Errors
@@ -126,7 +129,7 @@ impl PrincipalAuthentication {
         workspace: &WorkspaceId,
         bearer: Option<&str>,
         expected_audience: &str,
-    ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
+    ) -> Result<(AuthenticatedPrincipal, UnixNanos), AuthenticationError> {
         self.authenticate_request(
             WorkspaceFixedBy::Url(workspace),
             bearer,
@@ -134,34 +137,36 @@ impl PrincipalAuthentication {
             true,
         )
         .await
-        .map(|(principal, _workspace)| principal)
+        .map(|(principal, _workspace, now)| (principal, now))
     }
 
     /// Authenticates an unscoped human management request (including Workspace creation).
     /// It never returns an Agent. In local mode only a missing credential, the
-    /// implicit local Owner, is accepted.
+    /// implicit local Owner, is accepted. The instant the call read is
+    /// returned beside the Principal.
     /// # Errors
     /// Rejects Agents, scoped MCP credentials, wrong audiences, and disabled Users.
     pub async fn authenticate_user(
         &self,
         bearer: Option<&str>,
         audience: &str,
-    ) -> Result<AuthenticatedPrincipal, AuthenticationError> {
+    ) -> Result<(AuthenticatedPrincipal, UnixNanos), AuthenticationError> {
+        let now = self.clock.now();
         let Mode::SignedIn(sign_in) = &self.mode else {
             return match bearer {
-                None => Ok(local_owner()),
+                None => Ok((local_owner(), now)),
                 Some(_) => Err(AuthenticationError::Unauthenticated),
             };
         };
         let session = sign_in.session(
             bearer.ok_or(AuthenticationError::Unauthenticated)?,
             audience,
-            self.clock.now(),
+            now,
         )?;
         if session.workspace_id.is_some() {
             return Err(AuthenticationError::Unauthenticated);
         }
-        sign_in.user(&session).await
+        Ok((sign_in.user(&session).await?, now))
     }
 
     async fn authenticate_request(
@@ -170,23 +175,26 @@ impl PrincipalAuthentication {
         bearer: Option<&str>,
         expected_audience: &str,
         require_scope: bool,
-    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId, UnixNanos), AuthenticationError> {
+        let now = self.clock.now();
         let Some(credential) = bearer else {
             return match (&self.mode, fixed_by) {
                 (Mode::SignedIn(_), _) => Err(AuthenticationError::Unauthenticated),
                 (Mode::Local, WorkspaceFixedBy::Url(workspace)) => {
-                    Ok((local_owner(), workspace.clone()))
+                    Ok((local_owner(), workspace.clone(), now))
                 }
                 (Mode::Local, WorkspaceFixedBy::Credential) => {
                     Err(AuthenticationError::WorkspaceUrlRequired)
                 }
             };
         };
-        let now = self.clock.now();
         // Without sign-in, every credential names an Agent Registration.
         let sign_in = match &self.mode {
             Mode::SignedIn(sign_in) if !credential.starts_with("coral_agent_") => sign_in,
-            Mode::SignedIn(_) | Mode::Local => return self.agent(fixed_by, credential, now).await,
+            Mode::SignedIn(_) | Mode::Local => {
+                let (agent, workspace) = self.agent(fixed_by, credential, now).await?;
+                return Ok((agent, workspace, now));
+            }
         };
         let session = sign_in.session(credential, expected_audience, now)?;
         let scope = session.workspace_id.as_deref();
@@ -203,7 +211,7 @@ impl PrincipalAuthentication {
                 .and_then(|scope| WorkspaceId::parse(scope).ok())
                 .ok_or(AuthenticationError::Unauthenticated)?,
         };
-        Ok((sign_in.user(&session).await?, workspace))
+        Ok((sign_in.user(&session).await?, workspace, now))
     }
 
     /// The Agent whose Registration `credential` authenticates at `now`, in

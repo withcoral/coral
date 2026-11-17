@@ -278,6 +278,7 @@ impl GrpcServices {
                     .await
             }
         }
+        .map(|(principal, _now)| principal)
         .map_err(authentication_error)
     }
 }

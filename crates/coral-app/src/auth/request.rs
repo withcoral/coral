@@ -1,6 +1,7 @@
 //! MCP projection of transport-neutral Principal authentication.
 use crate::WorkspaceMcpUrls;
 use coral_auth::PrincipalAuthentication;
+use coral_db::UnixNanos;
 use coral_mcp::{AuthenticationError, McpEndpoint, OauthProtectedResource, WorkspaceAuthenticator};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
@@ -30,7 +31,7 @@ impl WorkspaceAuthenticator for WorkspaceAuthentication {
         &self,
         endpoint: &McpEndpoint,
         bearer: Option<&str>,
-    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId, UnixNanos), AuthenticationError> {
         self.authentication
             .authenticate(
                 endpoint.workspace_fixed_by(),

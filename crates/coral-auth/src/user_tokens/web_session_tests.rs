@@ -83,7 +83,7 @@ async fn a_web_session_mints_reef_tokens_until_it_ends() {
     );
     // Ending a session ends refresh only: a token minted before keeps its
     // expiry and its live authority checks.
-    let reef = fixture
+    let (reef, _now) = fixture
         .authentication()
         .authenticate_user(Some(&issued.access_token.access_token), "reef")
         .await
