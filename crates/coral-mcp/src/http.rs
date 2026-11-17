@@ -10,7 +10,6 @@ use axum::http::{Method, Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::serve::ListenerExt as _;
-use coral_db::Clock as _;
 use coral_workspace::WorkspaceState;
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
@@ -309,13 +308,13 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
             None,
         );
     };
-    let (principal, workspace_id) = match state.authentication.authenticate(&endpoint, bearer).await
-    {
-        Ok(authenticated) => authenticated,
-        Err(error) => return unauthorized(&state, &endpoint, error, bearer),
-    };
-    // The request time dates Principal inspection.
-    let now = coral_db::SystemClock.now().get();
+    // The instant authentication read is the request's time: it dates
+    // Principal inspection here and what the tool call decides.
+    let (principal, workspace_id, now) =
+        match state.authentication.authenticate(&endpoint, bearer).await {
+            Ok(authenticated) => authenticated,
+            Err(error) => return unauthorized(&state, &endpoint, error, bearer),
+        };
     // At `/mcp` a lost Workspace answers 401 `invalid_token`, so the client
     // signs in again and its User picks another Workspace.
     let lost = || match endpoint {
@@ -330,7 +329,7 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
     let evidence = match state
         .modules
         .workspaces
-        .check_principal_inspection(&principal, &workspace_id, now)
+        .check_principal_inspection(&principal, &workspace_id, now.get())
         .await
     {
         Ok(evidence) => evidence,
@@ -352,6 +351,7 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
         McpRuntime {
             modules: state.modules.clone(),
             principal: principal.clone(),
+            now,
         },
         workspace_id.clone(),
     );

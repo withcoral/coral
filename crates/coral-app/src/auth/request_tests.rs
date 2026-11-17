@@ -46,7 +46,7 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
             Some(&token.access_token),
         )
         .await
-        .map(|(principal, _workspace)| principal)
+        .map(|(principal, _workspace, _now)| principal)
         .unwrap();
     assert_eq!(principal.principal().id().as_str(), "owner");
     assert_eq!(principal.principal().kind(), PrincipalKind::User);
@@ -159,7 +159,7 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
             Some(credential),
         )
         .await
-        .map(|(principal, _workspace)| principal)
+        .map(|(principal, _workspace, _now)| principal)
         .unwrap();
     assert_eq!(actor.principal(), issued.agent.principal());
     assert_eq!(actor.agent_workspace_id(), Some(&fixture.workspace));
@@ -528,7 +528,7 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
             Some(credential),
         )
         .await
-        .map(|(principal, _workspace)| principal)
+        .map(|(principal, _workspace, _now)| principal)
         .unwrap();
     fixture
         .assert_task_principal_at(

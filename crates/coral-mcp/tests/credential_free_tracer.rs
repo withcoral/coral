@@ -238,11 +238,16 @@ struct Tracer {
 }
 
 impl Tracer {
+    async fn start() -> Self {
+        Self::start_at(Arc::new(coral_db::SystemClock)).await
+    }
+
+    /// The tracer over a server that reads `clock`, for a test that moves time.
     #[expect(
         clippy::too_many_lines,
         reason = "composes the real domain graph and the tracer's Workspace and Agent once"
     )]
-    async fn start() -> Self {
+    async fn start_at(clock: Arc<dyn coral_db::Clock>) -> Self {
         let upstream = TestUpstream::start().await;
         let database = TestDatabase::new(coral_db::migration_plan())
             .await
@@ -369,7 +374,7 @@ impl Tracer {
                 .expect("loopback MCP config"),
             modules,
             Arc::new(|| Box::pin(async { true })),
-            Arc::new(coral_db::SystemClock),
+            clock,
         )
         .await
         .expect("start credential-free MCP");
@@ -649,6 +654,89 @@ async fn the_organization_endpoint_needs_an_agent_credential_in_local_mode() {
     .await
     .unwrap();
     assert_eq!(metadata.status(), reqwest::StatusCode::NOT_FOUND);
+}
+
+/// coral-workspace owns when an Agent Registration expires
+/// (`rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority`)
+/// and coral-task what ending a Task records. At the MCP endpoint one instant
+/// dates a request: the server's clock, as authentication read it.
+///
+/// Catches: the Adapter reading the host's clock, a quarter of a century
+/// after this one. Such an Adapter would refuse the Agent while its
+/// Registration still lasts, and would date the Task's end by the host.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_servers_clock_dates_a_request() {
+    // 2001-01-01.
+    let start = coral_db::UnixNanos::new(978_307_200 * 1_000_000_000);
+    let lifetime = Duration::from_hours(1);
+    let clock = coral_test_support::ManualClock::starting_at(start);
+    let tracer = Tracer::start_at(Arc::new(clock.clone())).await;
+    let endpoint = tracer.endpoint();
+    let expiring = tracer
+        .workspaces
+        .create_agent(
+            &change(tracer.local_user.clone(), 70, 'c'),
+            &tracer.workspace_a,
+            coral_workspace::AgentDisplayName::parse("Expiring Agent").expect("Agent name"),
+            Some(start.checked_add(lifetime).expect("expiry").get()),
+        )
+        .await
+        .expect("register the expiring Agent");
+    let initialize = async || {
+        reqwest::Client::new()
+            .post(&endpoint)
+            .bearer_auth(expiring.credential.expose())
+            .header("Accept", "application/json, text/event-stream")
+            .json(&json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":"2025-11-25", "capabilities":{}, "clientInfo":{"name":"expiring", "version":"1"}}}))
+            .send()
+            .await
+            .expect("initialize")
+    };
+
+    assert_eq!(initialize().await.status(), reqwest::StatusCode::OK);
+
+    // The local Owner ends a Task a minute later.
+    let owner = coral_workspace::AuthenticatedPrincipal::user(tracer.local_user.clone());
+    let tasks = TaskModule::new(tracer.database.database(), tracer.workspaces.clone());
+    let task = tasks
+        .start(
+            &owner,
+            &tracer.workspace_a,
+            coral_task::TaskIntent::parse("Dated by the clock").expect("Task intent"),
+            start.get(),
+        )
+        .await
+        .expect("start the Task");
+    clock.advance(Duration::from_mins(1));
+    let session = RawSession::open(&endpoint, protocol_window_ends().1).await;
+    let ended = session
+        .tool(
+            "end_task",
+            json!({"task_id": task.id().to_string(), "outcome": "success"}),
+        )
+        .await;
+    assert_eq!(
+        ended.pointer("/structuredContent/outcome"),
+        Some(&json!("success")),
+        "{ended}"
+    );
+    let recorded = tasks
+        .get(&owner, &tracer.workspace_a, task.id())
+        .await
+        .expect("read the ended Task");
+    assert_eq!(
+        recorded.ended_at_unix_nanos(),
+        Some(start.get() + 60 * 1_000_000_000)
+    );
+
+    clock.set(start.checked_add(lifetime).expect("expiry"));
+
+    let refused = initialize().await;
+    assert_eq!(refused.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        refused.headers()["www-authenticate"],
+        "Bearer error=\"invalid_token\""
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
