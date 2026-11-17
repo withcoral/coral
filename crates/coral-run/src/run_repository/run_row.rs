@@ -148,8 +148,12 @@ impl RunRow {
             .is_some_and(|deadline| deadline < self.accepted_at_unix_nanos)
             || self.shutdown_grace_nanos <= 0
             || self.worker_claim_id.is_some() != self.worker_claim_expires_at_unix_nanos.is_some()
-            // A take writes the claim before the start mark (ADR 0027).
+            // A take writes the claim before the start mark (ADR 0027), so
+            // only a running Run has a claim and no start mark.
             || (self.execution_started_at_unix_nanos.is_some() && self.execution_claim_id.is_none())
+            || (state != RunState::Running
+                && self.execution_claim_id.is_some()
+                && self.execution_started_at_unix_nanos.is_none())
             || self
                 .execution_started_at_unix_nanos
                 .is_some_and(|started| started < self.accepted_at_unix_nanos)

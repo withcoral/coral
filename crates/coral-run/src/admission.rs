@@ -306,7 +306,8 @@ impl RunModule {
         if !self.run_streams {
             self.schedule_execution(run, actor, time_limit);
         }
-        // The owner is registered: shutdown counts it from here.
+        // An owned Run is registered, and shutdown counts it from here. A
+        // waiting Run holds nothing on this Coral Instance.
         drop(admitted);
         Ok(update)
     }

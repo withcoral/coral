@@ -107,6 +107,46 @@ async fn a_run_accepted_for_run_streams_waits_running_with_no_owner() {
     assert!(runs.owners.get(update.run_id()).is_none());
 }
 
+/// Catches: a decode that accepts a take's claim with no start mark on a
+/// Run that has ended; only a running Run waits taken.
+#[tokio::test]
+async fn an_ended_run_with_a_take_claim_and_no_start_mark_is_corrupt() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let runs = fixture.runs.clone().with_run_streams();
+    let (workspace_id, principal) = fixture.user_scope("ender", "Taken and ended").await;
+    let mut ended = Vec::new();
+    for (keeps_claim, claim) in [(true, "execution_claim_id"), (false, "NULL")] {
+        let update = runs
+            .start(&principal, &workspace_id, submission("return 1;"))
+            .await
+            .expect("accept a Run");
+        ended.push((update.run_id().clone(), keeps_claim, claim));
+    }
+    let streams = PullStreams::default();
+    let (_stream, mut sent) = streams.scripted("ender", 2);
+    take_loop(&runs, &streams, timing(LONG));
+    assert_eq!(next_taken(&mut sent).await.len(), 2);
+
+    let succeeded = RunState::Succeeded.as_storage_str();
+    for (run_id, keeps_claim, claim) in &ended {
+        fixture
+            .inject_fault(&format!(
+                "UPDATE program_run_records SET state = '{succeeded}', \
+                 terminal_at_unix_nanos = accepted_at_unix_nanos + 1, \
+                 execution_claim_id = {claim} WHERE id = '{run_id}'"
+            ))
+            .await;
+        let decoded = fixture
+            .try_run_record(&workspace_id, run_id)
+            .await
+            .map(|run| run.state);
+        match (keeps_claim, decoded) {
+            (true, Err(Error::CorruptData(_))) | (false, Ok(RunState::Succeeded)) => {}
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_take_claims_the_oldest_runs_for_the_stream_with_the_most_room() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
