@@ -8,7 +8,7 @@ use rusqlite::OpenFlags;
 use sea_query::{Alias, Expr, ExprTrait as _, JoinType, Order, Query, SelectStatement};
 
 use super::migrations::rows_match_known_migration_prefix;
-use crate::bootstrap::AppError;
+use crate::bootstrap::{AppError, StateRefusal};
 
 const CURRENT_DATABASE_FORMAT: &str = "coral-state-v1";
 const DATABASE_FORMAT_TABLE: &str = "coral_state_format";
@@ -94,9 +94,9 @@ async fn validate_postgres_on(database: &ReadOnlyDatabase) -> Result<(), AppErro
         .await?;
     let current_schema = current_schema
         .ok_or_else(|| {
-            AppError::Database(
-                "database contains corrupt data: Postgres has no current schema".to_string(),
-            )
+            AppError::from(coral_db::Error::Config(
+                "Postgres has no current schema".to_owned(),
+            ))
         })?
         .0;
     if postgres_table_exists(database, &current_schema, DATABASE_FORMAT_TABLE).await? {
@@ -276,10 +276,7 @@ fn pre_v1_database_probe_error(error: rusqlite::Error) -> AppError {
 }
 
 fn database_probe_unavailable_error() -> AppError {
-    AppError::FailedPrecondition(
-        "the configured SQLite database could not be inspected read-only; correct its permissions or availability and retry; no state was changed"
-            .to_string(),
-    )
+    StateRefusal::DatabaseUninspectable.into()
 }
 
 fn malformed_database_probe_error<E>(error: E) -> AppError {
@@ -288,24 +285,15 @@ fn malformed_database_probe_error<E>(error: E) -> AppError {
 }
 
 fn pre_v1_database_error() -> AppError {
-    AppError::FailedPrecondition(
-        "pre-v1 Coral database state detected; move or remove it, or configure a fresh database before starting this version of Coral"
-            .to_string(),
-    )
+    StateRefusal::PreV1Database.into()
 }
 
 fn unknown_migrations_error() -> AppError {
-    AppError::FailedPrecondition(
-        "the Coral database has applied migrations this version of Coral does not recognize: a migration was edited or reordered, or a newer version of Coral created the database; move or remove the database before starting this version of Coral"
-            .to_string(),
-    )
+    StateRefusal::UnknownMigrations.into()
 }
 
 fn malformed_database_marker_error() -> AppError {
-    AppError::FailedPrecondition(
-        "the Coral database state format marker is malformed; move or remove the database before starting this version of Coral"
-            .to_string(),
-    )
+    StateRefusal::MalformedDatabaseMarker.into()
 }
 
 #[cfg(test)]
@@ -316,7 +304,7 @@ mod tests {
     use sea_query::{Alias, Order, Query};
 
     use super::validate_database_state;
-    use crate::bootstrap;
+    use crate::bootstrap::{self, AppError, StateRefusal};
     use coral_db::{Database, DatabaseOptions};
     use coral_test_support::TestDatabase;
 
@@ -333,7 +321,7 @@ mod tests {
                      (SELECT checksum FROM _sqlx_migrations WHERE version = {last}) \
                      WHERE version = (SELECT MIN(version) FROM _sqlx_migrations)"
                 ),
-                "does not recognize",
+                StateRefusal::UnknownMigrations,
             ),
             (
                 "migration from a newer Coral",
@@ -343,17 +331,17 @@ mod tests {
                      SELECT version + 1, 'from a newer Coral', success, checksum, execution_time \
                      FROM _sqlx_migrations WHERE version = {last}"
                 ),
-                "does not recognize",
+                StateRefusal::UnknownMigrations,
             ),
             (
                 "failed migration",
                 format!("UPDATE _sqlx_migrations SET success = FALSE WHERE version = {last}"),
-                "marker is malformed",
+                StateRefusal::MalformedDatabaseMarker,
             ),
             (
                 "empty ledger",
                 "DELETE FROM _sqlx_migrations".to_string(),
-                "marker is malformed",
+                StateRefusal::MalformedDatabaseMarker,
             ),
         ];
         for (label, fault, expected) in cases {
@@ -370,13 +358,23 @@ mod tests {
                 .await
                 .expect_err("a damaged ledger must be rejected");
 
-            assert!(error.to_string().contains(expected), "{label}: {error}");
+            assert_refused(&error, &expected, label);
             assert_eq!(
                 ledger_rows(&fixture).await,
                 before,
                 "{label}: ledger changed"
             );
         }
+    }
+
+    /// A refusal names no row, so a refused database's data never reaches
+    /// the operator's output.
+    #[track_caller]
+    fn assert_refused(error: &AppError, expected: &StateRefusal, case: &str) {
+        assert!(
+            matches!(error, AppError::StateRefused(refusal) if refusal == expected),
+            "{case}: {error}"
+        );
     }
 
     async fn ledger_rows(fixture: &TestDatabase) -> Vec<(i64, Vec<u8>)> {
@@ -463,8 +461,7 @@ mod tests {
         let retired_error = validate_database_state(&retired)
             .await
             .expect_err("a later-schema marker must not bless retired current-schema state");
-        assert!(retired_error.to_string().contains("pre-v1"));
-        assert!(!retired_error.to_string().contains("canary-retired-source"));
+        assert_refused(&retired_error, &StateRefusal::PreV1Database, "retired");
         let retired_rows: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT COUNT(*) FROM {retired_schema}.legacy_sources"
         )))
@@ -529,14 +526,18 @@ mod tests {
 
         extension_only.expect("extension objects alone are fresh state");
         let error = with_table.expect_err("a table beside the extension is pre-v1 state");
-        assert!(error.to_string().contains("pre-v1"), "{error}");
+        assert_refused(&error, &StateRefusal::PreV1Database, "extension");
     }
 
     async fn assert_forged_marker_is_rejected(pool: &sqlx::PgPool, url: &str, marker_schema: &str) {
         let marker_error = validate_database_state(&postgres_config(url, marker_schema))
             .await
             .expect_err("a marker without the current migration ledger must be rejected");
-        assert!(marker_error.to_string().contains("marker is malformed"));
+        assert_refused(
+            &marker_error,
+            &StateRefusal::MalformedDatabaseMarker,
+            "forged marker",
+        );
         let marker_rows: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT COUNT(*) FROM {marker_schema}.coral_state_format"
         )))
@@ -566,7 +567,11 @@ mod tests {
         let malformed_error = validate_database_state(&postgres_config(url, malformed_schema))
             .await
             .expect_err("malformed marker must be rejected");
-        assert!(malformed_error.to_string().contains("marker is malformed"));
+        assert_refused(
+            &malformed_error,
+            &StateRefusal::MalformedDatabaseMarker,
+            "malformed marker",
+        );
         let malformed_rows: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT COUNT(*) FROM {malformed_schema}.coral_state_format"
         )))
@@ -588,7 +593,7 @@ mod tests {
         let view_error = validate_database_state(&postgres_config(url, &view_schema))
             .await
             .expect_err("a schema containing only a view must be rejected");
-        assert!(view_error.to_string().contains("pre-v1"));
+        assert_refused(&view_error, &StateRefusal::PreV1Database, "view");
         assert_relation_still_exists(pool, &view_schema, "legacy_sources").await;
 
         sqlx::query(AssertSqlSafe(format!(
@@ -600,7 +605,7 @@ mod tests {
         let sequence_error = validate_database_state(&postgres_config(url, &sequence_schema))
             .await
             .expect_err("a schema containing only a sequence must be rejected");
-        assert!(sequence_error.to_string().contains("pre-v1"));
+        assert_refused(&sequence_error, &StateRefusal::PreV1Database, "sequence");
         assert_relation_still_exists(pool, &sequence_schema, "legacy_sequence").await;
 
         for schema in [view_schema, sequence_schema] {

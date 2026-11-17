@@ -19,6 +19,14 @@ const VALUE_BEARING_MESSAGES: [&str; 3] = ["invalid type: ", "invalid value: ", 
 #[error("{0}")]
 pub struct ConfigDecodeError(String);
 
+impl ConfigDecodeError {
+    /// A failure that a section's own decoder found. `message` says where
+    /// the document is invalid, never what it holds.
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
 /// Deserializes `T` from a whole `config.toml` document.
 ///
 /// # Errors

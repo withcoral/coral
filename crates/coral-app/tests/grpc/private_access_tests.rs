@@ -54,8 +54,7 @@ async fn local_private_listener_rejects_non_loopback() {
         panic!("local authority must never be exposed off loopback");
     };
     assert!(
-        matches!(error, AppError::FailedPrecondition(ref message)
-            if message == "auth-disabled private gRPC bind must be loopback"),
+        matches!(error, AppError::Config { ref setting, .. } if setting == "private gRPC bind"),
         "{error}"
     );
 }
@@ -84,8 +83,8 @@ async fn auth_disabled_grpc_configuration_rejects_non_loopback() {
         };
 
         assert!(
-            matches!(error, AppError::FailedPrecondition(ref message)
-                if message == "auth-disabled listeners.grpc.bind must be loopback"),
+            matches!(error, AppError::Config { ref setting, .. }
+                if setting == "listeners.grpc.bind"),
             "unexpected configuration error for {bind}: {error}"
         );
     }

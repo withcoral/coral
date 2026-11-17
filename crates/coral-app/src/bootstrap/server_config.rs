@@ -11,7 +11,7 @@ use super::env::AppEnvironment;
 use super::secret_store_config::SecretStoreDefinitions;
 use super::{AppError, is_loopback_ip};
 use crate::auth::{
-    AuthListenerSettings, AuthSection, AuthSettings, CoralAuthorizationServer,
+    AuthListenerSettings, AuthSection, AuthServerError, AuthSettings, CoralAuthorizationServer,
     ResolvedAuthSettings, WebSettings,
 };
 use crate::oauth_resource::CanonicalOauthUrl;
@@ -44,9 +44,7 @@ impl ServerConfigFile {
     /// Decodes the whole document. A failure names the key path and never
     /// the value.
     fn decode(raw: &str) -> Result<Self, AppError> {
-        crate::config_toml::decode(raw).map_err(|error| {
-            AppError::FailedPrecondition(format!("server configuration is invalid: {error}"))
-        })
+        crate::config_toml::decode(raw).map_err(AppError::ConfigDecode)
     }
 
     /// Validates the auth settings: the `[auth]` table, and the auth and web
@@ -58,8 +56,18 @@ impl ServerConfigFile {
             &self.listeners.auth,
             self.listeners.web.as_ref(),
         )
-        .map_err(|error| AppError::FailedPrecondition(error.to_string()))
+        .map_err(AppError::Auth)
     }
+}
+
+/// Refuses `setting` with what `problem` says about it.
+fn refused(setting: &str, problem: impl std::fmt::Display) -> AppError {
+    AppError::config(setting, format!("{setting} {problem}"))
+}
+
+/// Refuses `setting` in a deployment without `[auth]`.
+fn refused_without_auth(setting: &str, problem: &str) -> AppError {
+    AppError::config(setting, format!("auth-disabled {setting} {problem}"))
 }
 
 /// What the launching process supplies beside the configuration file.
@@ -168,13 +176,16 @@ impl LoadedServerConfig {
         let (mcp_http, auth_bind_addr, session_auth) = match auth {
             None => {
                 if !is_loopback_ip(listeners.grpc.bind.ip()) {
-                    return Err(AppError::FailedPrecondition(
-                        "auth-disabled listeners.grpc.bind must be loopback".to_string(),
+                    return Err(refused_without_auth(
+                        "listeners.grpc.bind",
+                        "must be loopback",
                     ));
                 }
+                // The composition's own address, which no setting names.
                 if grpc_bind.is_some_and(|bind| !is_loopback_ip(bind.ip())) {
-                    return Err(AppError::FailedPrecondition(
-                        "auth-disabled private gRPC bind must be loopback".to_owned(),
+                    return Err(refused_without_auth(
+                        "private gRPC bind",
+                        "must be loopback",
                     ));
                 }
                 let auth_bind_addr = listeners.auth.bind.unwrap_or_else(|| {
@@ -268,14 +279,11 @@ impl SessionAuthConfig {
         let authorization_server =
             required_oauth_url("listeners.auth.public_url", Some(settings.issuer()))?;
         let mcp_http = mcp.resolve(Some(&authorization_server))?;
-        let base = required_oauth_url("listeners.mcp.public_url", mcp.public_url.as_deref())?;
-        let mcp_workspace_urls =
-            WorkspaceMcpUrls::new(CanonicalOauthUrl::parse(&base).map_err(|error| {
-                AppError::FailedPrecondition(format!("listeners.mcp.public_url {error}"))
-            })?)
-            .map_err(|error| {
-                AppError::FailedPrecondition(format!("listeners.mcp.public_url {error}"))
-            })?;
+        let base = required_oauth_url(MCP_PUBLIC_URL, mcp.public_url.as_deref())?;
+        let mcp_workspace_urls = WorkspaceMcpUrls::new(
+            CanonicalOauthUrl::parse(&base).map_err(|error| refused(MCP_PUBLIC_URL, error))?,
+        )
+        .map_err(|error| refused(MCP_PUBLIC_URL, error))?;
         let public_audiences = public_surface_audiences(
             &mcp_workspace_urls,
             settings.allowed_audiences(),
@@ -455,7 +463,7 @@ impl DeploymentConfig {
                     }
                 })
             })
-            .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+            .map_err(AppError::Auth)?;
         Ok(Some(SessionAuthSettings {
             settings,
             session_tokens,
@@ -471,17 +479,24 @@ fn human_interface(
     authenticated: bool,
     local: Option<coral_mcp::HumanInterfaceUrl>,
 ) -> Result<coral_mcp::HumanInterfaceUrl, AppError> {
+    const WEB_PUBLIC_URL: &str = "listeners.web.public_url";
+    const LOCAL_WEB_URL: &str = "CORAL_LOCAL_WEB_URL";
     match (web, local) {
-        (_, Some(_)) if authenticated => Err(AppError::FailedPrecondition(
-            "CORAL_LOCAL_WEB_URL is local-only; configure listeners.web.public_url".into(),
+        (_, Some(_)) if authenticated => Err(refused(
+            LOCAL_WEB_URL,
+            format_args!("is local-only; configure {WEB_PUBLIC_URL}"),
         )),
-        (Some(_), Some(_)) => Err(AppError::FailedPrecondition(
-            "configure only one of listeners.web.public_url or CORAL_LOCAL_WEB_URL".into(),
+        (Some(_), Some(_)) => Err(AppError::config(
+            LOCAL_WEB_URL,
+            format!("configure only one of {WEB_PUBLIC_URL} or {LOCAL_WEB_URL}"),
         )),
         (Some(web), None) => Ok(web.public_url),
         (None, Some(local)) => Ok(local),
-        (None, None) => Err(AppError::FailedPrecondition(
-            "listeners.web.public_url is required for human handoff; local launchers may supply CORAL_LOCAL_WEB_URL".into(),
+        (None, None) => Err(refused(
+            WEB_PUBLIC_URL,
+            format_args!(
+                "is required for human handoff; local launchers may supply {LOCAL_WEB_URL}"
+            ),
         )),
     }
 }
@@ -597,9 +612,9 @@ impl CredentialSettings {
         match (self.disable_secret_stores, secret_stores.is_empty()) {
             (false, _) => Ok(Some(secret_stores)),
             (true, true) => Ok(None),
-            (true, false) => Err(AppError::FailedPrecondition(
-                "credentials.disable_secret_stores is set, so remove the [[secret_stores]] tables"
-                    .into(),
+            (true, false) => Err(refused(
+                "credentials.disable_secret_stores",
+                "is set, so remove the [[secret_stores]] tables",
             )),
         }
     }
@@ -608,8 +623,9 @@ impl CredentialSettings {
         self.key_env
             .as_deref()
             .map(|configured| {
-                super::env_var_name("credentials.key_env", configured)
-                    .map_err(AppError::FailedPrecondition)
+                const SETTING: &str = "credentials.key_env";
+                super::env_var_name(SETTING, configured)
+                    .map_err(|message| AppError::config(SETTING, message))
             })
             .transpose()
     }
@@ -680,12 +696,17 @@ impl RuntimeSettings {
         &self,
         dialed: bool,
     ) -> Result<Option<LocalRunExecutorSettings>, AppError> {
-        let refuse = |message: &str| Err(AppError::FailedPrecondition(message.to_owned()));
         if self.local_run_executor_limit == 0 {
-            return refuse("runtime.local_run_executor_limit must be at least 1");
+            return Err(refused(
+                "runtime.local_run_executor_limit",
+                "must be at least 1",
+            ));
         }
         if self.run_executor_max_runs_held == 0 {
-            return refuse("runtime.run_executor_max_runs_held must be at least 1");
+            return Err(refused(
+                "runtime.run_executor_max_runs_held",
+                "must be at least 1",
+            ));
         }
         match (self.local_run_executors, dialed) {
             (true, _) => Ok(Some(LocalRunExecutorSettings {
@@ -693,24 +714,28 @@ impl RuntimeSettings {
                 max_runs_held: self.run_executor_max_runs_held,
             })),
             (false, true) => Ok(None),
-            (false, false) => refuse(
-                "runtime.local_run_executors = false requires listeners.run_executor.token_env: \
-                 with neither, no Run Executor could run a Program",
-            ),
+            (false, false) => Err(refused(
+                "runtime.local_run_executors",
+                format_args!(
+                    "= false requires {RUN_EXECUTOR_TOKEN_ENV}: \
+                     with neither, no Run Executor could run a Program"
+                ),
+            )),
         }
     }
 
     fn resolve(self) -> Result<coral_run::RuntimeLimits, AppError> {
+        fn refuse(setting: &str, error: impl std::fmt::Display) -> AppError {
+            AppError::config(setting, format!("{setting}: {error}"))
+        }
+        // The two heap sizes are judged together.
         let isolate_limits =
             coral_run::IsolateLimits::new(self.execution_heap_bytes, self.compiler_heap_bytes)
-                .map_err(|error| AppError::FailedPrecondition(format!("runtime: {error}")))?;
+                .map_err(|error| refuse("runtime", error))?;
         let applied_output_cap = coral_run::AppliedOutputCap::new(self.applied_output_cap)
-            .map_err(|error| {
-                AppError::FailedPrecondition(format!("runtime.applied_output_cap_bytes: {error}"))
-            })?;
-        let fan_out_limit = coral_run::FanOutLimit::new(self.fan_out_limit).map_err(|error| {
-            AppError::FailedPrecondition(format!("runtime.fan_out_limit: {error}"))
-        })?;
+            .map_err(|error| refuse("runtime.applied_output_cap_bytes", error))?;
+        let fan_out_limit = coral_run::FanOutLimit::new(self.fan_out_limit)
+            .map_err(|error| refuse("runtime.fan_out_limit", error))?;
         let limits = coral_run::RuntimeLimits::new(
             isolate_limits,
             applied_output_cap,
@@ -723,9 +748,7 @@ impl RuntimeSettings {
             return Ok(limits);
         };
         let budget = coral_run::RunCpuBudget::new(std::time::Duration::from_secs(seconds))
-            .map_err(|error| {
-                AppError::FailedPrecondition(format!("runtime.execution_cpu_seconds: {error}"))
-            })?;
+            .map_err(|error| refuse("runtime.execution_cpu_seconds", error))?;
         Ok(limits.with_cpu_budget(budget))
     }
 }
@@ -764,8 +787,9 @@ impl Default for SearchSettings {
 impl SearchSettings {
     fn reconcile_interval(&self) -> Result<std::time::Duration, AppError> {
         if self.reconcile_interval_seconds == 0 {
-            return Err(AppError::FailedPrecondition(
-                "search.reconcile_interval_seconds must be greater than 0".to_string(),
+            return Err(refused(
+                "search.reconcile_interval_seconds",
+                "must be greater than 0",
             ));
         }
         Ok(std::time::Duration::from_secs(
@@ -835,28 +859,34 @@ impl RunExecutorListenerSettings {
     fn validate(self, authenticated: bool) -> Result<RunExecutorListenerConfig, AppError> {
         const SETTING: &str = RUN_EXECUTOR_TOKEN_ENV;
         const BIND: &str = "listeners.run_executor.bind";
-        let refuse = |message: String| AppError::FailedPrecondition(message);
         let names = match self.token_env {
             None => Vec::new(),
             Some(TokenEnv::One(name)) => vec![name],
             Some(TokenEnv::Rotation(names)) if (1..=2).contains(&names.len()) => names,
             Some(TokenEnv::Rotation(_)) => {
-                return Err(refuse(format!(
-                    "{SETTING} must name one environment variable, or two during a rotation"
-                )));
+                return Err(refused(
+                    SETTING,
+                    "must name one environment variable, or two during a rotation",
+                ));
             }
         };
         if !is_loopback_ip(self.bind.ip()) {
             if !authenticated {
-                return Err(refuse(format!("auth-disabled {BIND} must be loopback")));
+                return Err(refused_without_auth(BIND, "must be loopback"));
             }
             if names.is_empty() {
-                return Err(refuse(format!("{BIND} off loopback requires {SETTING}")));
+                return Err(refused(
+                    BIND,
+                    format_args!("off loopback requires {SETTING}"),
+                ));
             }
         }
         let token_env = names
             .iter()
-            .map(|configured| super::env_var_name(SETTING, configured).map_err(refuse))
+            .map(|configured| {
+                super::env_var_name(SETTING, configured)
+                    .map_err(|message| AppError::config(SETTING, message))
+            })
             .collect::<Result<_, _>>()?;
         Ok(RunExecutorListenerConfig {
             bind: self.bind,
@@ -872,19 +902,23 @@ impl RunExecutorListenerConfig {
         env: &dyn Fn(&str, &str) -> Result<String, AppError>,
     ) -> Result<RunExecutorListener, AppError> {
         const SETTING: &str = RUN_EXECUTOR_TOKEN_ENV;
-        let refuse = |message: String| AppError::FailedPrecondition(message);
+        let refuse = |name: &str, message: String| AppError::invalid_secret(SETTING, name, message);
         let tokens = self
             .token_env
             .iter()
             .map(|name| {
                 let value = env(SETTING, name)?;
                 if value.chars().count() < MIN_RUN_EXECUTOR_TOKEN_CHARS {
-                    return Err(refuse(format!(
-                        "{SETTING} names `{name}`, whose value is under {MIN_RUN_EXECUTOR_TOKEN_CHARS} characters"
-                    )));
+                    return Err(refuse(
+                        name,
+                        format!(
+                            "{SETTING} names `{name}`, whose value is under {MIN_RUN_EXECUTOR_TOKEN_CHARS} characters"
+                        ),
+                    ));
                 }
-                coral_run_executor::Token::new(value)
-                    .map_err(|invalid| refuse(format!("{SETTING} names `{name}`: {invalid}")))
+                coral_run_executor::Token::new(value).map_err(|invalid| {
+                    refuse(name, format!("{SETTING} names `{name}`: {invalid}"))
+                })
             })
             .collect::<Result<_, _>>()?;
         Ok(RunExecutorListener {
@@ -908,6 +942,9 @@ impl Default for GrpcSettings {
     }
 }
 
+/// The key path of the MCP listener's public origin.
+const MCP_PUBLIC_URL: &str = "listeners.mcp.public_url";
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 struct RawMcpHttpSettings {
@@ -928,14 +965,15 @@ impl RawMcpHttpSettings {
     fn resolve(&self, authorization_server: Option<&str>) -> Result<McpHttpServeConfig, AppError> {
         let Some(authorization_server) = authorization_server else {
             if !is_loopback_ip(self.bind.ip()) {
-                return Err(AppError::FailedPrecondition(
-                    "auth-disabled listeners.mcp.bind must be loopback".to_string(),
+                return Err(refused_without_auth(
+                    "listeners.mcp.bind",
+                    "must be loopback",
                 ));
             }
             if self.public_url.is_some() {
-                return Err(AppError::FailedPrecondition(
-                    "auth-disabled listeners.mcp.public_url must be unset; it advertises OAuth metadata"
-                        .to_string(),
+                return Err(refused_without_auth(
+                    MCP_PUBLIC_URL,
+                    "must be unset; it advertises OAuth metadata",
                 ));
             }
             return Ok(McpHttpServeConfig::AuthDisabled {
@@ -943,8 +981,7 @@ impl RawMcpHttpSettings {
             });
         };
 
-        let public_url =
-            required_oauth_url("listeners.mcp.public_url", self.public_url.as_deref())?;
+        let public_url = required_oauth_url(MCP_PUBLIC_URL, self.public_url.as_deref())?;
         let authorization_server = authorization_server.to_string();
 
         Ok(McpHttpServeConfig::Authenticated {
@@ -1143,11 +1180,11 @@ impl SessionAuthSettings {
             policy,
             database,
         )
-        .map_err(|error| AppError::FailedPrecondition(error.to_string()))?;
+        .map_err(AppError::Auth)?;
         for audience in &self.public_audiences {
             server = server
                 .with_authorization_resource(audience)
-                .map_err(AppError::FailedPrecondition)?;
+                .map_err(|message| AppError::Auth(AuthServerError::Config(message)))?;
         }
         Ok(server.with_workspace_resource_family(self.mcp_workspace_urls))
     }
@@ -1179,9 +1216,10 @@ fn public_surface_audiences(
         let label = format!("auth.allowed_audiences[{index}]");
         let audience = required_oauth_url(&label, Some(configured))?;
         if audiences.iter().any(|existing| existing == &audience) {
-            return Err(AppError::FailedPrecondition(format!(
-                "{label} duplicates another configured public surface audience"
-            )));
+            return Err(refused(
+                &label,
+                "duplicates another configured public surface audience",
+            ));
         }
         // A web interface can explicitly occupy the same public origin as MCP
         // behind a reverse proxy. Its root is then a web resource; only the
@@ -1189,20 +1227,24 @@ fn public_surface_audiences(
         if mcp_workspace_urls.is_base_audience(&audience)
             && web_public_url != Some(audience.as_str())
         {
-            return Err(AppError::FailedPrecondition(format!(
-                "{label} duplicates listeners.mcp.public_url, which is the base of the \
-                 per-workspace MCP resources and not an audience of its own"
-            )));
+            return Err(refused(
+                &label,
+                format_args!(
+                    "duplicates {MCP_PUBLIC_URL}, which is the base of the \
+                     per-workspace MCP resources and not an audience of its own"
+                ),
+            ));
         }
         // A token for `/mcp` must carry the Workspace its User picked; an
         // allowed audience would issue it one that names no Workspace.
         if mcp_workspace_urls.parse_endpoint(&audience)
             == Some(coral_mcp::McpEndpoint::Organization)
         {
-            return Err(AppError::FailedPrecondition(format!(
-                "{label} is the Organization MCP Endpoint, whose tokens name the workspace \
-                 picked at sign-in; it is not an audience of its own"
-            )));
+            return Err(refused(
+                &label,
+                "is the Organization MCP Endpoint, whose tokens name the workspace \
+                 picked at sign-in; it is not an audience of its own",
+            ));
         }
         audiences.push(audience);
     }
@@ -1211,13 +1253,14 @@ fn public_surface_audiences(
 
 fn required_oauth_url(label: &str, value: Option<&str>) -> Result<String, AppError> {
     let Some(value) = value.filter(|value| !value.is_empty()) else {
-        return Err(AppError::FailedPrecondition(format!(
-            "configured [auth] requires {label}"
-        )));
+        return Err(AppError::config(
+            label,
+            format!("configured [auth] requires {label}"),
+        ));
     };
     CanonicalOauthUrl::parse(value)
         .map(CanonicalOauthUrl::into_identifier)
-        .map_err(|error| AppError::FailedPrecondition(format!("{label} {error}")))
+        .map_err(|error| refused(label, error))
 }
 
 #[cfg(test)]
@@ -1230,6 +1273,7 @@ pub(super) mod tests {
     use super::{
         DeploymentConfig, Launcher, LoadedServerConfig, McpHttpServeConfig, ServeSettings,
     };
+    use crate::auth::AuthServerError;
     use crate::bootstrap::AppError;
     use crate::state::AppStateLayout;
 
@@ -1293,7 +1337,10 @@ pub(super) mod tests {
         super::ServerConfigFile::decode(raw)
             .and_then(|mut file| file.auth_settings())
             .map_err(|error| match error {
-                AppError::FailedPrecondition(message) => message,
+                AppError::Auth(error) => error.to_string(),
+                AppError::ConfigDecode(error) => {
+                    format!("server configuration is invalid: {error}")
+                }
                 other => other.to_string(),
             })
     }
@@ -1317,11 +1364,39 @@ pub(super) mod tests {
             .serve_settings(coral_outbound::DestinationPolicy::default())
     }
 
-    fn serve_error(raw: &str) -> String {
+    /// Why the serving settings `raw` configures were refused.
+    fn serve_refusal(raw: &str) -> AppError {
         match serve(raw) {
             Ok(_) => panic!("serving must fail for {raw}"),
-            Err(error) => error.to_string(),
+            Err(error) => error,
         }
+    }
+
+    /// The refusal a test expects.
+    #[derive(Debug, Clone, Copy)]
+    enum Refused {
+        /// A rule refused this setting.
+        Setting(&'static str),
+        /// The document did not decode, and the failure starts with this:
+        /// the key path, then the reason.
+        Decode(&'static str),
+        /// The value of this environment variable was refused.
+        Secret(&'static str),
+    }
+
+    #[track_caller]
+    fn assert_refused(error: &AppError, expected: Refused, case: &str) {
+        let refused = match (error, expected) {
+            (AppError::Config { setting, .. }, Refused::Setting(expected)) => setting == expected,
+            (AppError::ConfigDecode(decode), Refused::Decode(expected)) => {
+                decode.to_string().starts_with(expected)
+            }
+            (AppError::InvalidSecret { variable, .. }, Refused::Secret(expected)) => {
+                variable == expected
+            }
+            _ => false,
+        };
+        assert!(refused, "{case}: expected {expected:?}, got {error:?}");
     }
 
     fn mcp_http(raw: &str) -> Result<McpHttpServeConfig, AppError> {
@@ -1467,18 +1542,22 @@ client_secret = 'test-secret'
                 );
             }
         }
-        let error = serve_error(&format!(
+        let error = serve_refusal(&format!(
             "[outbound]\nmcp_oauth_client_bootstrap = 'cimd'\n{WEB}"
         ));
-        assert!(error.contains("mcp_oauth_client_bootstrap"), "{error}");
+        assert_refused(
+            &error,
+            Refused::Decode("outbound.mcp_oauth_client_bootstrap: unsupported value"),
+            "an unknown policy",
+        );
     }
 
     #[test]
     fn serving_requires_a_human_interface_before_accepting_work() {
-        let error = serve_error("");
-        assert!(
-            error.contains("listeners.web.public_url is required"),
-            "{error}"
+        assert_refused(
+            &serve_refusal(""),
+            Refused::Setting("listeners.web.public_url"),
+            "no web origin",
         );
     }
 
@@ -1492,22 +1571,19 @@ client_secret = 'test-secret'
         let settings = serve_launched("", &launcher).unwrap();
         assert_eq!(settings.human_interface().as_str(), origin);
         for (raw, expected) in [
-            (
-                WEB.to_owned(),
-                "configure only one of listeners.web.public_url or CORAL_LOCAL_WEB_URL",
-            ),
+            (WEB.to_owned(), Refused::Setting("CORAL_LOCAL_WEB_URL")),
             (
                 authenticated(
                     "[listeners.mcp]\npublic_url = 'https://mcp.example.test'\n",
                     "",
                 ),
-                "CORAL_LOCAL_WEB_URL is local-only; configure listeners.web.public_url",
+                Refused::Setting("CORAL_LOCAL_WEB_URL"),
             ),
         ] {
             let Err(error) = serve_launched(&raw, &launcher) else {
                 panic!("unsafe launcher configuration accepted: {raw}");
             };
-            assert!(error.to_string().contains(expected), "{error}");
+            assert_refused(&error, expected, &raw);
         }
     }
 
@@ -1642,9 +1718,10 @@ client_secret = 'test-secret'
         }
         let error = section("[search]\nsemantic_search_enabled = \"no\"")
             .expect_err("a string is not a boolean");
-        assert!(
-            matches!(&error, AppError::FailedPrecondition(message) if message.contains("semantic_search_enabled")),
-            "{error}"
+        assert_refused(
+            &error,
+            Refused::Decode("search.semantic_search_enabled: unsupported value"),
+            "a string",
         );
     }
 
@@ -1659,9 +1736,10 @@ client_secret = 'test-secret'
             assert_eq!(section(raw).expect(raw).update_check(), expected, "{raw:?}");
         }
         let error = section("[updates]\nfeed = \"x\"").expect_err("unknown key");
-        assert!(
-            matches!(&error, AppError::FailedPrecondition(message) if message.contains("unknown field `feed`")),
-            "{error}"
+        assert_refused(
+            &error,
+            Refused::Decode("updates.feed: unknown field"),
+            "an unknown key",
         );
     }
 
@@ -1684,25 +1762,21 @@ client_secret = 'test-secret'
             (format!("{off}{token}"), Ok(None)),
             (
                 off.to_owned(),
-                Err(
-                    "runtime.local_run_executors = false requires listeners.run_executor.token_env",
-                ),
+                Err(Refused::Setting("runtime.local_run_executors")),
             ),
             (
                 "[runtime]\nlocal_run_executor_limit = 0\n".to_owned(),
-                Err("runtime.local_run_executor_limit must be at least 1"),
+                Err(Refused::Setting("runtime.local_run_executor_limit")),
             ),
             (
                 "[runtime]\nrun_executor_max_runs_held = 0\n".to_owned(),
-                Err("runtime.run_executor_max_runs_held must be at least 1"),
+                Err(Refused::Setting("runtime.run_executor_max_runs_held")),
             ),
         ] {
             let resolved = section(&raw).map(|config| config.local_run_executors());
             match (&resolved, expected) {
                 (Ok(resolved), Ok(expected)) => assert_eq!(*resolved, expected, "{raw}"),
-                (Err(AppError::FailedPrecondition(message)), Err(expected)) => {
-                    assert!(message.contains(expected), "{raw}: {message}");
-                }
+                (Err(error), Err(expected)) => assert_refused(error, expected, &raw),
                 _ => panic!("{raw}: {resolved:?}"),
             }
         }
@@ -1711,27 +1785,33 @@ client_secret = 'test-secret'
     #[test]
     fn invalid_runtime_settings_fail_closed() {
         for (raw, expected) in [
-            ("[runtime]\nfan_out_limit = 0", "runtime.fan_out_limit:"),
+            (
+                "[runtime]\nfan_out_limit = 0",
+                Refused::Setting("runtime.fan_out_limit"),
+            ),
             (
                 "[runtime]\napplied_output_cap_bytes = 1",
-                "runtime.applied_output_cap_bytes:",
+                Refused::Setting("runtime.applied_output_cap_bytes"),
             ),
-            ("[runtime]\nfan_out = 4", "unknown field `fan_out`"),
+            (
+                "[runtime]\nexecution_heap_bytes = 1",
+                Refused::Setting("runtime"),
+            ),
+            (
+                "[runtime]\nfan_out = 4",
+                Refused::Decode("runtime.fan_out: unknown field"),
+            ),
             (
                 "[runtime]\nexecution_cpu_seconds = 0",
-                "runtime.execution_cpu_seconds:",
+                Refused::Setting("runtime.execution_cpu_seconds"),
             ),
             // The compilation deadline is a fixed Program Authoring Limit.
             (
                 "[runtime]\ncompilation_timeout_seconds = 30",
-                "unknown field `compilation_timeout_seconds`",
+                Refused::Decode("runtime.compilation_timeout_seconds: unknown field"),
             ),
         ] {
-            let error = section(raw).expect_err(raw);
-            assert!(
-                matches!(&error, AppError::FailedPrecondition(message) if message.contains(expected)),
-                "{raw}: {error}"
-            );
+            assert_refused(&section(raw).expect_err(raw), expected, raw);
         }
         assert_eq!(
             section("[runtime]\nfan_out_limit = 4\n")
@@ -1787,11 +1867,10 @@ client_secret = 'test-secret'
         assert_eq!(budget("").expect("default limits"), None);
         let set = budget("[runtime]\nexecution_cpu_seconds = 5\n");
         if cfg!(windows) {
-            assert!(
-                matches!(&set, Err(AppError::FailedPrecondition(message))
-                    if message.contains("runtime.execution_cpu_seconds:")
-                        && message.contains("Windows")),
-                "{set:?}"
+            assert_refused(
+                &set.expect_err("Windows measures no CPU time"),
+                Refused::Setting("runtime.execution_cpu_seconds"),
+                "a budget on Windows",
             );
         } else {
             assert_eq!(
@@ -1806,22 +1885,18 @@ client_secret = 'test-secret'
         for (raw, expected) in [
             (
                 "[search]\nreconcile_interval = 30",
-                "unknown field `reconcile_interval`",
+                Refused::Decode("search.reconcile_interval: unknown field"),
             ),
             (
                 "[search]\nreconcile_interval_seconds = 0",
-                "search.reconcile_interval_seconds must be greater than 0",
+                Refused::Setting("search.reconcile_interval_seconds"),
             ),
             (
                 "[search]\nreconcile_interval_seconds = -1",
-                "search.reconcile_interval_seconds",
+                Refused::Decode("search.reconcile_interval_seconds: "),
             ),
         ] {
-            let error = section(raw).expect_err(raw);
-            assert!(
-                matches!(&error, AppError::FailedPrecondition(message) if message.contains(expected)),
-                "{raw}: {error}"
-            );
+            assert_refused(&section(raw).expect_err(raw), expected, raw);
         }
     }
 
@@ -1847,35 +1922,31 @@ client_secret = 'test-secret'
         for (raw, expected) in [
             (
                 "[credentials]\nkey_env = \"\"",
-                "credentials.key_env must not be empty",
+                Refused::Setting("credentials.key_env"),
             ),
             (
                 "[credentials]\nkey_env = \" \"",
-                "credentials.key_env must not be empty",
+                Refused::Setting("credentials.key_env"),
             ),
             (
                 "[credentials]\nkey = \"CORAL_CREDENTIALS_KEY\"",
-                "unknown field `key`",
+                Refused::Decode("credentials.key: unknown field"),
             ),
             (
                 "[credentials]\nkey_env = 1",
-                "credentials.key_env: unsupported value",
+                Refused::Decode("credentials.key_env: unsupported value"),
             ),
             (
                 "[credentials]\ndisable_secret_stores = 'yes'",
-                "credentials.disable_secret_stores",
+                Refused::Decode("credentials.disable_secret_stores: unsupported value"),
             ),
             (
                 "[credentials]\ndisable_secret_stores = true\n\
                  [[secret_stores]]\nname = 'env'\nkind = 'env'\nprefix = 'MYCO_'",
-                "credentials.disable_secret_stores is set, so remove the [[secret_stores]] tables",
+                Refused::Setting("credentials.disable_secret_stores"),
             ),
         ] {
-            let error = section(raw).expect_err(raw);
-            assert!(
-                matches!(&error, AppError::FailedPrecondition(message) if message.contains(expected)),
-                "{raw}: {error}"
-            );
+            assert_refused(&section(raw).expect_err(raw), expected, raw);
         }
     }
 
@@ -1905,20 +1976,23 @@ client_secret = 'test-secret'
         for (raw, expected) in [
             (
                 "[outbound]\nallow_private_networks = 'true'",
-                "unknown field `allow_private_networks`",
+                "outbound.allow_private_networks: unknown field",
             ),
             (
                 "[outbound]\nallow_private_networks = 1",
-                "unknown field `allow_private_networks`",
+                "outbound.allow_private_networks: unknown field",
             ),
-            ("[outbound]\nunknown = true", "unknown field `unknown`"),
+            (
+                "[outbound]\nunknown = true",
+                "outbound.unknown: unknown field",
+            ),
             (
                 "[outbound]\nallow_private_networks = true",
-                "unknown field `allow_private_networks`",
+                "outbound.allow_private_networks: unknown field",
             ),
             (
                 "[outbound]\nallow_loopback = true",
-                "unknown field `allow_loopback`",
+                "outbound.allow_loopback: unknown field",
             ),
             (
                 "[outbound]\nloopback = 'https-only'",
@@ -1929,12 +2003,10 @@ client_secret = 'test-secret'
                 "outbound.private_networks: wanted string or table",
             ),
         ] {
-            let error = section(raw).expect_err(raw);
-            assert!(
-                matches!(&error, AppError::FailedPrecondition(message)
-                    if message.starts_with("server configuration is invalid: ")
-                        && message.contains(expected)),
-                "{raw}: {error}"
+            assert_refused(
+                &section(raw).expect_err(raw),
+                Refused::Decode(expected),
+                raw,
             );
         }
     }
@@ -2103,21 +2175,26 @@ client_secret = 'test-secret'
         assert_eq!(bind_addr, SocketAddr::from((Ipv6Addr::LOCALHOST, 14556)));
     }
 
+    /// Without `[auth]` the MCP listener stays on loopback and advertises no
+    /// authenticated public URL.
     #[test]
-    fn auth_disabled_mcp_http_rejects_public_bind() {
-        let error = mcp_http("[listeners.mcp]\nbind = '0.0.0.0:14556'\n")
-            .expect_err("public auth-disabled bind must fail");
-        assert!(error.to_string().contains("must be loopback"));
-    }
-
-    #[test]
-    fn auth_disabled_mcp_http_rejects_public_url() {
-        let error = mcp_http("[listeners.mcp]\npublic_url = 'https://coral.example/mcp'\n")
-            .expect_err("auth-disabled MCP must not advertise an authenticated public URL");
-        assert!(
-            error.to_string().contains("listeners.mcp.public_url"),
-            "{error}"
-        );
+    fn auth_disabled_mcp_http_rejects_a_public_bind_and_a_public_url() {
+        for (raw, setting) in [
+            (
+                "[listeners.mcp]\nbind = '0.0.0.0:14556'\n",
+                "listeners.mcp.bind",
+            ),
+            (
+                "[listeners.mcp]\npublic_url = 'https://coral.example/mcp'\n",
+                "listeners.mcp.public_url",
+            ),
+        ] {
+            assert_refused(
+                &mcp_http(raw).expect_err(raw),
+                Refused::Setting(setting),
+                raw,
+            );
+        }
     }
 
     #[test]
@@ -2189,13 +2266,14 @@ client_secret = 'test-secret'
             "https://mcp.example.test/mcp",
             "https://mcp.example.test/prefix/",
         ] {
-            let error = serve_error(&authenticated(
+            let error = serve_refusal(&authenticated(
                 &format!("[listeners.mcp]\npublic_url = '{public_url}'\n"),
                 "",
             ));
-            assert!(
-                error.contains("listeners.mcp.public_url must be an origin URL without a path"),
-                "{error}"
+            assert_refused(
+                &error,
+                Refused::Setting("listeners.mcp.public_url"),
+                public_url,
             );
         }
     }
@@ -2213,10 +2291,11 @@ client_secret = 'test-secret'
             ("", "allowed_audiences = []"),
             ("[listeners.mcp]\nbind = '127.0.0.1:0'\n", ""),
         ] {
-            let error = serve_error(&authenticated(mcp_http, auth_fields));
-            assert!(
-                error.contains("configured [auth] requires listeners.mcp.public_url"),
-                "{mcp_http}{auth_fields}: {error}"
+            let error = serve_refusal(&authenticated(mcp_http, auth_fields));
+            assert_refused(
+                &error,
+                Refused::Setting("listeners.mcp.public_url"),
+                &format!("{mcp_http}{auth_fields}"),
             );
         }
     }
@@ -2262,28 +2341,28 @@ client_secret = 'test-secret'
             (
                 "[listeners.mcp]\npublic_url = 'https://mcp.example.test'\n",
                 "allowed_audiences = ['https://coral-web.example.test/?tenant=one']",
-                "auth.allowed_audiences[0] must not include a query",
+                Refused::Setting("auth.allowed_audiences[0]"),
             ),
             (
                 "[listeners.mcp]\npublic_url = 'https://MCP.example.test/'\n",
                 "allowed_audiences = ['https://mcp.example.test']",
-                "auth.allowed_audiences[0] duplicates listeners.mcp.public_url",
+                Refused::Setting("auth.allowed_audiences[0]"),
             ),
             (
                 "[listeners.mcp]\npublic_url = 'https://mcp.example.test'\n",
                 "allowed_audiences = ['https://MCP.example.test/mcp']",
-                "auth.allowed_audiences[0] is the Organization MCP Endpoint",
+                Refused::Setting("auth.allowed_audiences[0]"),
             ),
             (
                 "[listeners.mcp]\npublic_url = 'https://mcp.example.test'\n",
                 "allowed_audiences = ['https://CORAL-WEB.example.test/', 'https://coral-web.example.test']",
-                "auth.allowed_audiences[1] duplicates another configured public surface audience",
+                Refused::Setting("auth.allowed_audiences[1]"),
             ),
         ];
 
         for (mcp_http, auth_fields, expected) in cases {
-            let error = serve_error(&authenticated(mcp_http, auth_fields));
-            assert!(error.contains(expected), "error: {error}");
+            let error = serve_refusal(&authenticated(mcp_http, auth_fields));
+            assert_refused(&error, expected, auth_fields);
         }
     }
 
@@ -2303,10 +2382,11 @@ client_secret = 'test-secret'
 
         // `ServeSettings` carries key material and so implements no `Debug`,
         // which rules out `expect_err` here.
-        let Err(error) = config.serve_settings(coral_outbound::DestinationPolicy::default()) else {
+        let Err(AppError::Auth(AuthServerError::Config(message))) =
+            config.serve_settings(coral_outbound::DestinationPolicy::default())
+        else {
             panic!("resolution must still fail on the missing signing key");
         };
-        let message = error.to_string();
         assert!(
             message.contains("failed to read signing_key_file")
                 && message.contains(&key_path.display().to_string()),
@@ -2346,7 +2426,10 @@ client_secret = 'test-secret'
             let value = env.iter().find(|(key, _)| *key == name);
             value
                 .map(|(_, value)| (*value).to_owned())
-                .ok_or_else(|| AppError::FailedPrecondition(format!("{setting} requires `{name}`")))
+                .ok_or_else(|| AppError::MissingSecret {
+                    setting: setting.to_owned(),
+                    variable: name.to_owned(),
+                })
         })
     }
 
@@ -2393,34 +2476,33 @@ client_secret = 'test-secret'
         for (raw, refusal) in [
             (
                 PUBLIC_RUN_EXECUTORS.to_owned(),
-                "auth-disabled listeners.run_executor.bind must be loopback",
+                Refused::Setting("listeners.run_executor.bind"),
             ),
             (
                 authenticated(&format!("{MCP}{PUBLIC_RUN_EXECUTORS}"), ""),
-                "listeners.run_executor.bind off loopback requires listeners.run_executor.token_env",
+                Refused::Setting("listeners.run_executor.bind"),
             ),
             (
                 format!("{section}token_env = 'SHORT'\n"),
-                "`SHORT`, whose value is under 32 characters",
+                Refused::Secret("SHORT"),
             ),
             (
                 format!("{section}token_env = 'SPACED'\n"),
-                "`SPACED`: the Run Executor token must be non-empty visible ASCII",
+                Refused::Secret("SPACED"),
             ),
             (
                 format!("{section}token_env = []\n"),
-                "must name one environment variable, or two",
+                Refused::Setting("listeners.run_executor.token_env"),
             ),
             (
                 format!("{section}token_env = ['SHORT', 'SPACED', 'MISSING']\n"),
-                "or two during a rotation",
+                Refused::Setting("listeners.run_executor.token_env"),
             ),
         ] {
-            let error = run_executor_listener(&raw, &env).err();
-            assert!(
-                matches!(&error, Some(AppError::FailedPrecondition(message)) if message.contains(refusal)),
-                "{raw}: {error:?}"
-            );
+            let Err(error) = run_executor_listener(&raw, &env) else {
+                panic!("{raw}: the listener must not resolve");
+            };
+            assert_refused(&error, refusal, &raw);
         }
     }
 }
