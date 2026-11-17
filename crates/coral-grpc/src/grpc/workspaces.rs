@@ -1,3 +1,4 @@
+use super::status::{self, invalid, safe_status};
 use super::{GrpcServices, PrivateAudience, management as wire, now};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use coral_db::{PageKey, PageRequest, PageSize};
@@ -5,7 +6,6 @@ use coral_workspace::{
     AuthenticatedUser, ChangeContext, ResourceMetadata, TraceId, WorkspaceDisplayName,
     WorkspaceEvidence, WorkspaceId,
 };
-use prost::Message as _;
 use tonic::{Request, Response, Status};
 
 impl GrpcServices {
@@ -14,11 +14,10 @@ impl GrpcServices {
         request: &Request<T>,
     ) -> Result<AuthenticatedUser, Status> {
         self.principal(request, None, PrivateAudience::Reef)
-            .await
-            .map_err(annotate)?
+            .await?
             .authenticated_user()
             .cloned()
-            .ok_or_else(|| annotate(Status::unauthenticated("User required")))
+            .ok_or_else(status::unauthenticated)
     }
     async fn workspace_view(
         &self,
@@ -64,11 +63,7 @@ impl GrpcServices {
 }
 
 pub(super) fn change(user: AuthenticatedUser) -> Result<ChangeContext, Status> {
-    Ok(ChangeContext::new(
-        user,
-        now().map_err(annotate)?,
-        TraceId::current_or_new(),
-    ))
+    Ok(ChangeContext::new(user, now()?, TraceId::current_or_new()))
 }
 pub(super) fn workspace_id(name: &str) -> Result<WorkspaceId, Status> {
     let Some(id) = name.strip_prefix("workspaces/") else {
@@ -138,26 +133,6 @@ pub(super) fn mask(
     Ok(paths)
 }
 
-// Standard google.rpc.Status / ErrorInfo wire layout. The one domain error
-// text exported is the bounded text of a definite refusal, as metadata.
-#[derive(Clone, PartialEq, prost::Message)]
-struct RpcStatus {
-    #[prost(int32, tag = "1")]
-    code: i32,
-    #[prost(string, tag = "2")]
-    message: String,
-    #[prost(message, repeated, tag = "3")]
-    details: Vec<prost_types::Any>,
-}
-#[derive(Clone, PartialEq, prost::Message)]
-struct ErrorInfo {
-    #[prost(string, tag = "1")]
-    reason: String,
-    #[prost(string, tag = "2")]
-    domain: String,
-    #[prost(map = "string, string", tag = "3")]
-    metadata: std::collections::HashMap<String, String>,
-}
 #[expect(
     clippy::needless_pass_by_value,
     reason = "consumes domain failures in Result::map_err without exporting their text"
@@ -207,69 +182,6 @@ pub(super) fn administration_error(error: coral_administration::Error) -> Status
         }
     }
 }
-/// The one status for a request the adapter refuses as invalid. It does not
-/// say which rule the request broke: the client gets the stable reason alone.
-pub(super) fn invalid() -> Status {
-    safe_status(tonic::Code::InvalidArgument, "INVALID_ARGUMENT")
-}
-
-pub(super) fn resource<'a>(
-    name: &'a str,
-    collection: &str,
-) -> Result<(WorkspaceId, &'a str), Status> {
-    super::resource(name, collection).map_err(annotate)
-}
-
-pub(super) fn annotate(status: Status) -> Status {
-    if !status.details().is_empty() {
-        return status;
-    }
-    let reason = match status.code() {
-        tonic::Code::InvalidArgument => "INVALID_ARGUMENT",
-        tonic::Code::Unauthenticated => "UNAUTHENTICATED",
-        tonic::Code::PermissionDenied => "PERMISSION_DENIED",
-        tonic::Code::NotFound => "NOT_FOUND",
-        tonic::Code::Internal => "INTERNAL",
-        _ => "UNAVAILABLE",
-    };
-    safe_status(status.code(), reason)
-}
-
-pub(super) fn safe_status(code: tonic::Code, reason: &str) -> Status {
-    safe_status_with(code, reason, [])
-}
-
-/// A status whose `ErrorInfo` also carries `metadata`: safe values that the
-/// client acts on or shows. An error's text is not one, except the bounded
-/// text its domain returns for a definite refusal.
-pub(super) fn safe_status_with(
-    code: tonic::Code,
-    reason: &str,
-    metadata: impl IntoIterator<Item = (&'static str, String)>,
-) -> Status {
-    let detail = ErrorInfo {
-        reason: reason.into(),
-        domain: "coral.management".into(),
-        metadata: metadata
-            .into_iter()
-            .map(|(key, value)| (key.to_owned(), value))
-            .chain([(
-                "trace_id".to_owned(),
-                TraceId::current_or_new().as_str().to_owned(),
-            )])
-            .collect(),
-    };
-    let status = RpcStatus {
-        code: code as i32,
-        message: reason.into(),
-        details: vec![prost_types::Any {
-            type_url: "type.googleapis.com/google.rpc.ErrorInfo".into(),
-            value: detail.encode_to_vec(),
-        }],
-    };
-    Status::with_details(code, reason, status.encode_to_vec().into())
-}
-
 /// The size of the page a list request asks for: zero selects the default of
 /// 30, and a size over `limit`, or a continuation too long to be one, is
 /// refused.
@@ -366,10 +278,8 @@ pub(super) fn page_of<T>(
 
 /// Encodes the continuation after `after`, bound to `scope`, for [`page_start`].
 pub(super) fn page_token(scope: &str, after: &str) -> Result<String, Status> {
-    Ok(URL_SAFE_NO_PAD.encode(
-        serde_json::to_vec(&(scope, after))
-            .map_err(|_error| annotate(Status::internal("page encoding failed")))?,
-    ))
+    Ok(URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&(scope, after)).map_err(|_error| status::internal())?))
 }
 
 #[tonic::async_trait]

@@ -2,6 +2,7 @@ use super::{
     GrpcServices, PrivateAudience, Request, Response, Status, error, execution, limit, resource,
     scope, task, task_identity, wire,
 };
+use crate::grpc::status;
 fn root_identity(name: &str) -> Result<coral_task::ActivityIdentity, Status> {
     if name.contains("/tasks/") {
         let id = task_identity(name)?;
@@ -24,12 +25,10 @@ pub(super) async fn roots(
     let input = request.into_inner();
     let window = if let Some(records) = input.retained {
         if !input.before.is_empty() || !input.after.is_empty() || !input.anchor.is_empty() {
-            return Err(Status::invalid_argument("ambiguous activity window"));
+            return Err(status::invalid());
         }
         if records.names.len() > usize::from(limit(input.page_size)?) {
-            return Err(Status::invalid_argument(
-                "too many retained activity records",
-            ));
+            return Err(status::invalid());
         }
         coral_task::ActivityWindow::Records(
             records
@@ -50,7 +49,7 @@ pub(super) async fn roots(
             }
             (true, false, true) => coral_task::ActivityWindow::After(root_identity(&input.after)?),
             (true, true, false) => coral_task::ActivityWindow::At(root_identity(&input.anchor)?),
-            _ => return Err(Status::invalid_argument("ambiguous activity window")),
+            _ => return Err(status::invalid()),
         }
     };
     let page = services
@@ -90,9 +89,9 @@ fn entry_anchor(
     anchor: &str,
 ) -> Result<coral_run::RunEntryAnchor, Status> {
     if let Some(sequence) = anchor.strip_prefix(&format!("{name}/events/")) {
-        return Ok(coral_run::RunEntryAnchor::Event(sequence.parse().map_err(
-            |_invalid| Status::invalid_argument("invalid Event identity"),
-        )?));
+        return Ok(coral_run::RunEntryAnchor::Event(
+            sequence.parse().map_err(|_invalid| status::invalid())?,
+        ));
     }
     Ok(coral_run::RunEntryAnchor::Invocation(invocation_in(
         anchor, workspace,
@@ -105,7 +104,7 @@ fn invocation_in(
 ) -> Result<coral_run::InvocationId, Status> {
     let (owner, id) = resource(name, "invocations")?;
     if &owner != workspace {
-        return Err(Status::invalid_argument("Invocation Workspace mismatch"));
+        return Err(status::invalid());
     }
     coral_run::InvocationId::parse(id).map_err(execution::run_error)
 }
@@ -122,7 +121,7 @@ pub(super) async fn entries(
     let selection = input.scope.as_ref().map(scope).transpose()?;
     let window = if let Some(viewport) = input.viewport {
         if input.after != 0 || !input.anchor.is_empty() {
-            return Err(Status::invalid_argument("ambiguous execution window"));
+            return Err(status::invalid());
         }
         coral_run::RunEntryWindow::Viewport {
             offset: viewport.offset,
@@ -131,15 +130,13 @@ pub(super) async fn entries(
             } else {
                 Some(entry_anchor(&input.name, &workspace, &viewport.anchor)?)
             },
-            preceding: u16::try_from(viewport.preceding).map_err(|_overflow| {
-                Status::invalid_argument("invalid viewport predecessor budget")
-            })?,
+            preceding: u16::try_from(viewport.preceding).map_err(|_overflow| status::invalid())?,
         }
     } else if input.anchor.is_empty() {
         coral_run::RunEntryWindow::After(input.after)
     } else {
         if input.after != 0 {
-            return Err(Status::invalid_argument("ambiguous execution window"));
+            return Err(status::invalid());
         }
         coral_run::RunEntryWindow::from(&entry_anchor(&input.name, &workspace, &input.anchor)?)
     };

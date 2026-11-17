@@ -1,4 +1,6 @@
-use super::workspaces::{change, error, invalid, mask, page, resource, timestamp, workspace_id};
+use super::resource;
+use super::status::invalid;
+use super::workspaces::{change, error, mask, page, timestamp, workspace_id};
 use super::{GrpcServices, management as wire};
 use coral_workspace::{
     Agent, AgentDisplayName, AgentRegistration, AgentState, IssuedAgentCredential, PrincipalId,
