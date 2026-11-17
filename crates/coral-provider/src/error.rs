@@ -37,9 +37,18 @@ pub enum Error {
         "client_metadata_unresolved: the Client ID Metadata Document address could not be resolved"
     )]
     ClientMetadataUnresolved,
-    /// Invalid or unsupported Account authorization input.
+    /// Invalid or unsupported Account authorization input from the caller.
+    /// Stored data that does not decode is [`Self::CorruptData`], and a
+    /// fault inside Coral is [`Self::Internal`].
     #[error("invalid Provider Account authorization input")]
     AccountInput,
+    /// The device sign-in job's lease is no longer this worker's: it lapsed,
+    /// or another worker took the job. It says nothing about the sign-in.
+    #[error("device sign-in job lease was lost")]
+    DeviceLeaseLost,
+    /// A fault inside Coral. It is no answer about the request.
+    #[error("Provider operation failed inside Coral: {0}")]
+    Internal(InternalFault),
     /// Only a shared Account can hold a Secret Reference.
     #[error("this Provider Account cannot hold a Secret Reference")]
     SecretReferenceNotAllowed,
@@ -165,6 +174,8 @@ impl Error {
             Self::ClientMetadataNotPublic { .. } => "client_metadata_not_public",
             Self::ClientMetadataUnresolved { .. } => "client_metadata_unresolved",
             Self::AccountInput { .. } => "account_input",
+            Self::DeviceLeaseLost { .. } => "device_lease_lost",
+            Self::Internal { .. } => "internal",
             Self::SecretReferenceNotAllowed { .. } => "secret_reference_not_allowed",
             Self::SecretStoreNotGranted { .. } => "secret_store_not_granted",
             Self::SecretStoreRead { .. } => "secret_store_read",
@@ -210,7 +221,9 @@ impl Error {
     /// Whether the database gave no answer (a lost connection, a pool
     /// timeout, a lock or serialization race), directly or through the
     /// Catalog or Workspace error that wraps it. The work may be tried again.
-    /// Every other error is a definite answer.
+    /// Every other error is a definite answer, but for the two that say
+    /// nothing about the request: [`Self::DeviceLeaseLost`] and
+    /// [`Self::Internal`].
     #[must_use]
     pub(crate) fn is_operational(&self) -> bool {
         self.database_error()
@@ -239,6 +252,8 @@ impl Error {
             | Self::ClientMetadataNotPublic
             | Self::ClientMetadataUnresolved
             | Self::AccountInput
+            | Self::DeviceLeaseLost
+            | Self::Internal(_)
             | Self::SecretReferenceNotAllowed
             | Self::SecretStoreNotGranted
             | Self::SecretStoreRead(_)
@@ -296,6 +311,8 @@ impl Error {
             | Self::ClientMetadataNotPublic
             | Self::ClientMetadataUnresolved
             | Self::AccountInput
+            | Self::DeviceLeaseLost
+            | Self::Internal(_)
             | Self::SecretReferenceNotAllowed
             | Self::SecretStoreNotGranted
             | Self::SecretStoreRead(_)
@@ -336,6 +353,30 @@ impl Error {
             coral_outbound::FetchError::DestinationRejected => Self::OutboundDestinationRejected,
             coral_outbound::FetchError::Http(_) => Self::InputUnavailable,
         }
+    }
+}
+
+/// What failed inside Coral. The set is closed, so a new fault is named here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InternalFault {
+    /// The host gave no secure randomness.
+    Random,
+    /// A task that Coral spawned stopped before it returned.
+    TaskStopped,
+    /// A value Coral built did not encode.
+    Encoding,
+    /// A time or a count overflowed.
+    Overflow,
+}
+
+impl std::fmt::Display for InternalFault {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Random => "secure randomness was unavailable",
+            Self::TaskStopped => "a task stopped before it returned",
+            Self::Encoding => "a value did not encode",
+            Self::Overflow => "a time or a count overflowed",
+        })
     }
 }
 

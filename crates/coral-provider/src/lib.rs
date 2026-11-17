@@ -85,7 +85,7 @@ pub use coral_catalog::{
     McpDiscoverySnapshot, OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, ProviderSetupInputDigest,
     ProviderSetupInputKind,
 };
-pub use error::Error;
+pub use error::{Error, InternalFault};
 pub mod history_repository;
 pub mod usage_repository;
 

@@ -400,7 +400,9 @@ impl AccountModule {
         let (token_url, scopes, resource) =
             refresh_endpoint(&evidence.contract).ok_or(Error::AccountRequired)?;
         let attempt = Uuid::new_v4().to_string();
-        let deadline = now.checked_add(60_000_000_000).ok_or(Error::AccountInput)?;
+        let deadline = now
+            .checked_add(60_000_000_000)
+            .ok_or(Error::Internal(crate::InternalFault::Overflow))?;
         let mut tx = self.providers.database.begin().await?;
         if !repository::claim_refresh(&mut tx, row, &attempt, deadline).await? {
             return Ok(CredentialResolution::Changed);

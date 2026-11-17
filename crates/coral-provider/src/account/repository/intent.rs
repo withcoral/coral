@@ -41,12 +41,18 @@ impl IntentColumns {
             }
             (None, Some(agent)) => Some(Caller::Agent(PrincipalId::parse(&agent)?)),
             (None, None) => None,
-            _ => return Err(Error::AccountInput),
+            _ => {
+                return Err(Error::CorruptData(
+                    "stored connection request names an inconsistent caller".into(),
+                ));
+            }
         };
         if self.provider_account_setting_version <= 0
             || self.expected_authorization_version.is_empty()
         {
-            return Err(Error::AccountInput);
+            return Err(Error::CorruptData(
+                "stored connection request has no Provider version or authorization version".into(),
+            ));
         }
         Ok(AuthorizationIntent {
             account: ProviderAccountId::parse(&self.expected_account_id)?,
@@ -55,7 +61,11 @@ impl IntentColumns {
             kind: match self.connection_intent.as_str() {
                 "initial" => ConnectionIntent::Initial,
                 "replace" => ConnectionIntent::Replace,
-                _ => return Err(Error::AccountInput),
+                _ => {
+                    return Err(Error::CorruptData(
+                        "stored connection intent is not known".into(),
+                    ));
+                }
             },
             caller,
         })

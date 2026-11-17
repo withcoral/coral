@@ -121,7 +121,9 @@ impl AuthorizationState {
             "failed" => Ok(Self::Failed),
             "canceled" => Ok(Self::Canceled),
             "expired" => Ok(Self::Expired),
-            _ => Err(Error::AccountInput),
+            _ => Err(Error::CorruptData(
+                "stored authorization state is not known".into(),
+            )),
         }
     }
 }
@@ -656,7 +658,7 @@ impl AccountModule {
         let expires_at = context
             .occurred_at_unix_nanos()
             .checked_add(900_000_000_000)
-            .ok_or(Error::AccountInput)?;
+            .ok_or(Error::Internal(crate::InternalFault::Overflow))?;
         let row = LoadedAuthorization {
             automatic_refresh: None,
             id,
