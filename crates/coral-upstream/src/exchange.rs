@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use coral_telemetry::metric::{self, ProviderProtocol, UpstreamOutcome};
 
-use crate::Error;
+use crate::SendError;
 
 /// One dispatch to an Upstream Service over its protocol, measured from its
 /// start until [`Self::end`]: the body bytes it sent and received, and how
@@ -43,11 +43,26 @@ impl ExchangeMeasure {
 
     /// Records how the dispatch ended: with a complete response, a JSON-RPC
     /// error among them, one too large, or none.
-    pub(crate) fn end(mut self, ended: Result<(), &Error>) {
+    pub(crate) fn end(mut self, ended: Result<(), &SendError>) {
         self.outcome = match ended {
-            Ok(()) | Err(Error::McpRejected(_)) => UpstreamOutcome::Response,
-            Err(Error::ResultTooLarge) => UpstreamOutcome::TooLarge,
-            Err(_) => UpstreamOutcome::Failed,
+            Ok(()) | Err(SendError::McpRejected(_)) => UpstreamOutcome::Response,
+            Err(SendError::ResultTooLarge) => UpstreamOutcome::TooLarge,
+            // Name every variant so a new one needs a decision here.
+            Err(
+                SendError::DestinationRejected
+                | SendError::CredentialRequired
+                | SendError::CredentialUnusable
+                | SendError::Send(_)
+                | SendError::Body(_)
+                | SendError::EncodeJson(_)
+                | SendError::InputTooLarge
+                | SendError::McpRequest
+                | SendError::McpUnauthorized(_)
+                | SendError::McpAuthenticationUnsupported
+                | SendError::McpProtocolChanged
+                | SendError::MalformedResult
+                | SendError::Internal,
+            ) => UpstreamOutcome::Failed,
         };
     }
 }

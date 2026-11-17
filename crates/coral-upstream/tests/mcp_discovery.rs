@@ -9,7 +9,7 @@ use coral_catalog::AuthenticationConfiguration;
 use coral_catalog::{MaterializationOutcome, ProviderCredentialContract, ProviderSetupInput};
 use coral_credentials::Secret;
 use coral_outbound::DestinationPolicy;
-use coral_upstream::{Error, discover_mcp};
+use coral_upstream::{McpDiscoveryError, discover_mcp};
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, method};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -25,7 +25,7 @@ async fn discover_catalog(
     url: &str,
     token: Option<&str>,
     contract: &ProviderCredentialContract,
-) -> Result<coral_catalog::McpDiscoverySnapshot, Error> {
+) -> Result<coral_catalog::McpDiscoverySnapshot, McpDiscoveryError> {
     let token = token.map(|token| Secret::new(token.into()).expect("fixture token"));
     discover_mcp(
         loopback(),
@@ -224,7 +224,10 @@ async fn discovery_still_rejects_an_oversized_sse_response() {
     )
     .await
     .expect_err("the response byte budget still applies");
-    assert!(matches!(error, Error::ResultTooLarge), "{error:?}");
+    assert!(
+        matches!(error, McpDiscoveryError::SnapshotTooLarge),
+        "{error:?}"
+    );
 }
 
 #[tokio::test]
@@ -252,7 +255,10 @@ async fn discovery_still_bounds_an_endless_sequence_of_distinct_pages() {
     )
     .await
     .expect_err("the pagination budget still applies");
-    assert!(matches!(error, Error::ResultTooLarge), "{error:?}");
+    assert!(
+        matches!(error, McpDiscoveryError::SnapshotTooLarge),
+        "{error:?}"
+    );
 }
 
 #[tokio::test]
@@ -262,7 +268,7 @@ async fn unauthenticated_discovery_returns_the_parsed_bearer_challenge() {
     let error = discover_catalog(&url, None, &ProviderCredentialContract::NONE)
         .await
         .expect_err("challenge");
-    let Error::McpUnauthorized(Some(challenge)) = error else {
+    let McpDiscoveryError::Unauthorized(Some(challenge)) = error else {
         panic!("expected a typed Bearer challenge, got {error:?}");
     };
     assert_eq!(
@@ -305,7 +311,7 @@ async fn a_challenge_after_initialization_is_still_typed() {
     )
     .await
     .expect_err("scope challenge");
-    let Error::McpUnauthorized(Some(challenge)) = error else {
+    let McpDiscoveryError::Unauthorized(Some(challenge)) = error else {
         panic!("expected a typed Bearer challenge, got {error:?}");
     };
     assert_eq!(challenge.resource_metadata(), None);
@@ -329,7 +335,7 @@ async fn an_unauthorized_answer_without_a_bearer_challenge_is_typed_as_unsupport
     .await
     .expect_err("basic challenge");
     assert!(
-        matches!(error, Error::McpAuthenticationUnsupported),
+        matches!(error, McpDiscoveryError::AuthenticationUnsupported),
         "{error:?}"
     );
 }

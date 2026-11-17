@@ -534,6 +534,132 @@ async fn upstream_send_failures_keep_their_cause_in_the_coral_failure() {
     }
 }
 
+/// Each error of a dispatch phase has one outcome: a Coral Failure that ends
+/// the Invocation, or a defect that stops the Run. `SendError::Send` and
+/// `SendError::Body` hold a transport error that only a real exchange makes.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table per dispatch phase names every error and its outcome"
+)]
+fn each_dispatch_phase_error_has_one_invocation_outcome() {
+    use crate::CoralFailure;
+    use crate::invocation::{UpstreamSendError, authorize_failure, plan_failure, send_failure};
+    use coral_upstream::{AuthorizeError, McpRejection, PlanError, SendError};
+    type Outcome = fn(&UpstreamSendError) -> bool;
+    let json_error = || serde_json::from_str::<serde_json::Value>("{").expect_err("invalid JSON");
+
+    for (error, failure) in [
+        (
+            PlanError::InputTooLarge,
+            Some(CoralFailure::InputTooLarge.into()),
+        ),
+        (
+            PlanError::InvalidArguments("`city` is missing".into()),
+            Some(crate::Rejection::invalid_input("", "`city` is missing")),
+        ),
+        (
+            PlanError::UnsupportedRequestMedia("text/csv".into()),
+            Some(CoralFailure::InvalidInput.into()),
+        ),
+        (
+            PlanError::ToolUnavailable,
+            Some(CoralFailure::ToolUnavailable.into()),
+        ),
+        (PlanError::UnsupportedProtocol, None),
+        (PlanError::MissingServer, None),
+        (PlanError::InvalidUrl(url::ParseError::EmptyHost), None),
+        (PlanError::MissingToolName, None),
+        (PlanError::EncodeJson(json_error()), None),
+        (PlanError::Internal, None),
+    ] {
+        let case = format!("{error:?}");
+        match (plan_failure(error), failure) {
+            (Ok(rejection), Some(failure)) => assert_eq!(rejection, failure, "{case}"),
+            (Err(Error::Upstream(coral_upstream::Error::Plan(_))), None) => {}
+            (outcome, _) => panic!("{case}: {outcome:?}"),
+        }
+    }
+
+    for (error, failure) in [
+        (
+            AuthorizeError::InputTooLarge,
+            Some(CoralFailure::InputTooLarge),
+        ),
+        (
+            AuthorizeError::CredentialRequired,
+            Some(CoralFailure::AccountRequired),
+        ),
+        (
+            AuthorizeError::CredentialUnusable,
+            Some(CoralFailure::AccountRequired),
+        ),
+        (
+            AuthorizeError::CredentialCollision,
+            Some(CoralFailure::ToolUnavailable),
+        ),
+        (AuthorizeError::AlreadyAuthorized, None),
+    ] {
+        match (authorize_failure(error), failure) {
+            (Error::InvocationRejected(rejection), Some(failure)) => {
+                assert_eq!(rejection, failure.into(), "{error:?}");
+            }
+            (Error::Upstream(coral_upstream::Error::Authorize(defect)), None) => {
+                assert_eq!(defect, error);
+            }
+            (outcome, _) => panic!("{error:?}: {outcome:?}"),
+        }
+    }
+
+    let incomplete: Outcome = |outcome| matches!(outcome, UpstreamSendError::Incomplete);
+    let unauthorized: Outcome = |outcome| matches!(outcome, UpstreamSendError::Unauthorized);
+    let cases: [(SendError, Outcome); 13] = [
+        (SendError::DestinationRejected, |outcome| {
+            matches!(outcome, UpstreamSendError::DestinationRejected)
+        }),
+        (SendError::InputTooLarge, |outcome| {
+            matches!(outcome, UpstreamSendError::InputTooLarge)
+        }),
+        (SendError::ResultTooLarge, |outcome| {
+            matches!(outcome, UpstreamSendError::TooLarge)
+        }),
+        (
+            SendError::McpRejected(McpRejection::Other(-32603)),
+            |outcome| {
+                matches!(
+                    outcome,
+                    UpstreamSendError::Rejected(McpRejection::Other(-32603))
+                )
+            },
+        ),
+        (SendError::McpUnauthorized(None), unauthorized),
+        (SendError::McpAuthenticationUnsupported, unauthorized),
+        (SendError::McpRequest, incomplete),
+        (SendError::McpProtocolChanged, incomplete),
+        (SendError::MalformedResult, incomplete),
+        (SendError::Internal, incomplete),
+        (SendError::CredentialRequired, |outcome| {
+            matches!(
+                outcome,
+                UpstreamSendError::Fatal(SendError::CredentialRequired)
+            )
+        }),
+        (SendError::CredentialUnusable, |outcome| {
+            matches!(
+                outcome,
+                UpstreamSendError::Fatal(SendError::CredentialUnusable)
+            )
+        }),
+        (SendError::EncodeJson(json_error()), |outcome| {
+            matches!(outcome, UpstreamSendError::Fatal(SendError::EncodeJson(_)))
+        }),
+    ];
+    for (error, expected) in cases {
+        let case = format!("{error:?}");
+        assert!(expected(&send_failure(error)), "{case}");
+    }
+}
+
 #[tokio::test]
 async fn unknown_call_path_creates_no_invocation_or_send() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::Value::Null));
@@ -1001,21 +1127,18 @@ async fn real_program_retains_no_sensitive_response_header_value() {
     }
 }
 
-/// The production sender never launches a request for a stop that is already
-/// set: the peer receives nothing and the dispatch ends `Canceled`.
-#[tokio::test]
-async fn a_stop_already_set_never_launches_the_upstream_send() {
-    let sink = wiremock::MockServer::start().await;
-    wiremock::Mock::given(wiremock::matchers::any())
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
-        .expect(0)
-        .mount(&sink)
-        .await;
+/// The production sender and one planned `GET {server}/forecast`.
+fn production_forecast(
+    server: &str,
+) -> (
+    crate::invocation::ProductionUpstream,
+    coral_upstream::ReadyDispatch,
+) {
     let policy = coral_outbound::DestinationPolicy::default()
         .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps);
     let document = serde_json::json!({
         "openapi": "3.1.0", "info": {"title": "Weather", "version": "1"},
-        "servers": [{"url": sink.uri()}],
+        "servers": [{"url": server}],
         "paths": {"/forecast": {"get": {
             "operationId": "getForecast",
             "responses": {"200": {"description": "Forecast"}}
@@ -1037,13 +1160,27 @@ async fn a_stop_already_set_never_launches_the_upstream_send() {
         coral_value::ValueLimits::default(),
     )
     .expect("plan the request");
-    let upstream = crate::invocation::ProductionUpstream::new(policy).expect("HTTP Adapter");
+    (
+        crate::invocation::ProductionUpstream::new(policy).expect("HTTP Adapter"),
+        coral_upstream::ReadyDispatch::Http(Box::new(ready)),
+    )
+}
+
+/// The production sender never launches a request for a stop that is already
+/// set: the peer receives nothing and the dispatch ends `Canceled`.
+#[tokio::test]
+async fn a_stop_already_set_never_launches_the_upstream_send() {
+    let sink = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .expect(0)
+        .mount(&sink)
+        .await;
+    let (upstream, ready) = production_forecast(&sink.uri());
     let stop = Arc::new(ExecutionStop::new());
     stop.request();
 
-    let outcome = upstream
-        .send(coral_upstream::ReadyDispatch::Http(Box::new(ready)), stop)
-        .await;
+    let outcome = upstream.send(ready, stop).await;
     assert!(
         matches!(outcome, Err(crate::invocation::UpstreamSendError::Canceled)),
         "a set stop cancels before the send"
@@ -1054,6 +1191,26 @@ async fn a_stop_already_set_never_launches_the_upstream_send() {
             .expect("recording sink")
             .is_empty(),
         "no request reaches the peer"
+    );
+}
+
+/// A request that reaches no peer is an incomplete send, which the Program
+/// can catch. It is no defect of the sender.
+#[tokio::test]
+async fn a_refused_connection_is_an_incomplete_send() {
+    // The port is free again once its listener is gone.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|listener| listener.local_addr())
+        .expect("a loopback port");
+    let (upstream, ready) = production_forecast(&format!("http://{closed}"));
+
+    let outcome = upstream.send(ready, Arc::new(ExecutionStop::new())).await;
+    assert!(
+        matches!(
+            outcome,
+            Err(crate::invocation::UpstreamSendError::Incomplete)
+        ),
+        "a transport failure is no complete result"
     );
 }
 

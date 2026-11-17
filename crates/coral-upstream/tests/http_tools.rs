@@ -62,7 +62,7 @@ fn ready(document: &str) -> Prepared {
 fn try_plan(
     prepared: &Prepared,
     arguments: &serde_json::Value,
-) -> Result<ReadyHttpDispatch, coral_upstream::Error> {
+) -> Result<ReadyHttpDispatch, coral_upstream::PlanError> {
     ReadyHttpDispatch::plan(
         prepared.tools().first().expect("Tool"),
         &prepared.schemas,
@@ -75,7 +75,7 @@ fn plan(prepared: &Prepared, arguments: &serde_json::Value) -> ReadyHttpDispatch
     try_plan(prepared, arguments).expect("plan HTTP request")
 }
 
-async fn send(dispatch: ReadyHttpDispatch) -> Result<HttpOutcome, coral_upstream::Error> {
+async fn send(dispatch: ReadyHttpDispatch) -> Result<HttpOutcome, coral_upstream::SendError> {
     HttpUpstream::new(loopback())
         .expect("HTTP Adapter")
         .send(dispatch)
@@ -223,7 +223,7 @@ async fn multipart_media_list_selects_one_permitted_binary_type() {
     let invalid = serde_json::json!({"body":{"avatar":{"_tag":"BinaryValue", "encoding":"base64", "data":"AP8=", "mimeType":"application/pdf", "byteLength":2}}});
     assert!(matches!(
         ReadyHttpDispatch::plan(tool, &prepared.schemas, &invalid, limits(4096)),
-        Err(coral_upstream::Error::InvalidArguments(_))
+        Err(coral_upstream::PlanError::InvalidArguments(_))
     ));
     server.verify().await;
 }
@@ -591,7 +591,7 @@ paths:
                 assert_eq!(dispatch.request_media_type(), Some(media));
             }
             None => assert!(
-                matches!(result, Err(coral_upstream::Error::InvalidArguments(_))),
+                matches!(result, Err(coral_upstream::PlanError::InvalidArguments(_))),
                 "{media}"
             ),
         }
@@ -701,7 +701,7 @@ fn a_path_argument_cannot_become_a_dot_segment() {
         match expected {
             Some(path) => assert_eq!(result.expect(&case).url().path(), path, "{case}"),
             None => assert!(
-                matches!(result, Err(coral_upstream::Error::InvalidArguments(_))),
+                matches!(result, Err(coral_upstream::PlanError::InvalidArguments(_))),
                 "{case}"
             ),
         }
@@ -711,7 +711,7 @@ fn a_path_argument_cannot_become_a_dot_segment() {
     assert!(
         matches!(
             try_plan(&prepared, &serde_json::json!({"a": "x", "b": "../admin"})),
-            Err(coral_upstream::Error::InvalidArguments(reason))
+            Err(coral_upstream::PlanError::InvalidArguments(reason))
                 if reason == "Tool argument `b` cannot contain a `.` or `..` path segment"
         ),
         "the reason names the argument"
@@ -755,7 +755,7 @@ paths:
 fn rejection_of(prepared: &Prepared, argument: &str) -> String {
     let arguments = serde_json::json!({argument: "secret-canary"});
     match try_plan(prepared, &arguments) {
-        Err(coral_upstream::Error::InvalidArguments(reason)) => reason,
+        Err(coral_upstream::PlanError::InvalidArguments(reason)) => reason,
         Err(error) => panic!("{error}"),
         Ok(_dispatch) => panic!("an undeclared argument must be rejected"),
     }
@@ -914,7 +914,7 @@ async fn a_traversal_argument_never_reaches_an_undeclared_endpoint() {
     let refused = try_plan(&prepared, &serde_json::json!({"a": "..", "b": "secrets"}));
     assert!(matches!(
         refused,
-        Err(coral_upstream::Error::InvalidArguments(_))
+        Err(coral_upstream::PlanError::InvalidArguments(_))
     ));
     server.verify().await;
 }
@@ -1668,12 +1668,12 @@ paths:
             .unwrap()
             .send(dispatch())
             .await,
-        Err(coral_upstream::Error::DestinationRejected)
+        Err(coral_upstream::SendError::DestinationRejected)
     ));
     assert!(source.received_requests().await.unwrap().is_empty());
     assert!(matches!(
         send(dispatch()).await,
-        Err(coral_upstream::Error::DestinationRejected)
+        Err(coral_upstream::SendError::DestinationRejected)
     ));
     source.verify().await;
 }
@@ -1831,10 +1831,10 @@ async fn each_method_requires_every_field() {
     ] {
         let prepared = configured("http://127.0.0.1:9", paths, authentication);
         let mut dispatch = plan(&prepared, &arguments);
-        assert!(matches!(
+        assert_eq!(
             dispatch.authorize(&missing_one),
-            Err(coral_upstream::Error::CredentialRequired)
-        ));
+            Err(coral_upstream::AuthorizeError::CredentialRequired)
+        );
         // The refusal attached nothing, so the complete set is still accepted.
         dispatch
             .authorize(&every)
@@ -1842,18 +1842,68 @@ async fn each_method_requires_every_field() {
     }
 }
 
-#[tokio::test]
-async fn a_header_credential_cannot_replace_a_planned_header() {
-    let prepared = configured(
-        "http://127.0.0.1:9",
-        POST_JSON,
-        header_credentials(&[("content-type", field_header("api_key", ""))]),
-    );
-    let mut dispatch = plan(&prepared, &serde_json::json!({"body":{}}));
-    assert!(matches!(
-        dispatch.authorize(&values(&[("api_key", "value")])),
-        Err(coral_upstream::Error::CredentialRequired)
-    ));
+/// A credential that cannot join the request is told apart from one that is
+/// missing: it collides with what the request plans, or the dispatch already
+/// holds one.
+#[test]
+fn authorize_names_a_collision_and_a_second_injection() {
+    use coral_upstream::AuthorizeError;
+    let api_key = values(&[("api_key", "value")]);
+    for (case, server, paths, authentication, arguments, values, earlier, refusal) in [
+        (
+            "a header that the request body plans",
+            "http://127.0.0.1:9",
+            POST_JSON,
+            header_credentials(&[("content-type", field_header("api_key", ""))]),
+            serde_json::json!({"body": {}}),
+            &api_key,
+            0,
+            AuthorizeError::CredentialCollision,
+        ),
+        (
+            "a query parameter that the path fixes",
+            "http://127.0.0.1:9",
+            r#"
+  "/boards?key=fixed":
+    get:
+      operationId: boards
+      responses:
+        "204": {description: done}
+"#,
+            trello(),
+            serde_json::json!({}),
+            &trello_values(),
+            0,
+            AuthorizeError::CredentialCollision,
+        ),
+        (
+            "a second header injection",
+            "http://127.0.0.1:9",
+            POST_JSON,
+            header_credentials(&[("x-api-key", field_header("api_key", ""))]),
+            serde_json::json!({"body": {}}),
+            &api_key,
+            1,
+            AuthorizeError::AlreadyAuthorized,
+        ),
+        (
+            "a second query injection",
+            "http://127.0.0.1:9",
+            GET_BOARDS,
+            trello(),
+            serde_json::json!({}),
+            &trello_values(),
+            1,
+            AuthorizeError::AlreadyAuthorized,
+        ),
+    ] {
+        let prepared = configured(server, paths, authentication);
+        let mut dispatch = plan(&prepared, &arguments);
+        for _ in 0..earlier {
+            dispatch.authorize(values).expect(case);
+        }
+        assert_eq!(dispatch.authorize(values), Err(refusal), "{case}");
+    }
 }
 
 #[tokio::test]
@@ -1935,7 +1985,7 @@ async fn basic_auth_refuses_a_colon_in_the_username() {
             ("api_token", "token"),
             ("email", "person:other")
         ])),
-        Err(coral_upstream::Error::CredentialUnusable)
+        Err(coral_upstream::AuthorizeError::CredentialUnusable)
     ));
 }
 
@@ -2015,7 +2065,10 @@ async fn a_redirect_target_cannot_shadow_a_credential_parameter() {
     let mut dispatch = plan(&prepared, &serde_json::json!({"limit": 5}));
     dispatch.authorize(&trello_values()).unwrap();
     let error = send(dispatch).await.unwrap_err();
-    assert!(matches!(error, coral_upstream::Error::CredentialUnusable));
+    assert!(matches!(
+        error,
+        coral_upstream::SendError::CredentialUnusable
+    ));
     let text = format!("{error} {error:?}");
     assert!(!text.contains("canary"), "{text}");
 }
@@ -2038,7 +2091,7 @@ fn a_query_credential_is_counted_as_the_url_carries_it() {
     let exact = dispatch(4096).url().as_str().len() + 15 + 25;
     assert!(matches!(
         dispatch(exact - 1).authorize(&trello_values()),
-        Err(coral_upstream::Error::InputTooLarge)
+        Err(coral_upstream::AuthorizeError::InputTooLarge)
     ));
     dispatch(exact)
         .authorize(&trello_values())
@@ -2153,7 +2206,7 @@ paths:
     let exact = "https://api.example.test/".len() + "x-note".len() + 100;
     assert!(matches!(
         dispatch(exact - 1),
-        Err(coral_upstream::Error::InputTooLarge)
+        Err(coral_upstream::PlanError::InputTooLarge)
     ));
     dispatch(exact).expect("the exact size fits");
 }
@@ -2181,7 +2234,7 @@ async fn a_response_over_the_budget_is_refused() {
     // The request fits, but the 202-byte body alone is over the budget.
     assert!(matches!(
         send(dispatch(201)).await,
-        Err(coral_upstream::Error::ResultTooLarge)
+        Err(coral_upstream::SendError::ResultTooLarge)
     ));
     // The body fits, but the result also carries its HTTP evidence.
     let result = send(dispatch(4096))
@@ -2192,7 +2245,7 @@ async fn a_response_over_the_budget_is_refused() {
         .len();
     assert!(matches!(
         send(dispatch(result - 1)).await,
-        Err(coral_upstream::Error::ResultTooLarge)
+        Err(coral_upstream::SendError::ResultTooLarge)
     ));
     send(dispatch(result)).await.expect("the exact size fits");
 }

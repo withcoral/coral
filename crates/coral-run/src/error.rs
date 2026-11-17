@@ -521,7 +521,8 @@ pub enum Error {
     /// Exact Tool policy rejected Invocation work.
     #[error(transparent)]
     Policy(#[from] coral_policy::Error),
-    /// The private upstream Adapter could not plan, send, or project a result.
+    /// The private upstream Adapter could not plan, authorize, send, or
+    /// project a result.
     #[error(transparent)]
     Upstream(#[from] coral_upstream::Error),
     /// Workspace authority or lifecycle rejected the operation.
