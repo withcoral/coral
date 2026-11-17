@@ -742,7 +742,7 @@ fn start_passes(
             async move {
                 // The collector answering late or not at all is no failure:
                 // the reports wait for the next check.
-                data.send_due(&client, coral_usage::COLLECTOR_URL, || clock.now().get())
+                data.send_due(&client, coral_usage::COLLECTOR_URL, || clock.now())
                     .await
                     .map_err(|error| error.code())?;
                 Ok(())
