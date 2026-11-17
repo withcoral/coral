@@ -67,8 +67,8 @@ function listed() {
     .map((row) => within(row).queryAllByRole('cell'))
     .filter((cells) => cells.length > 0)
     .map(([name, , role, state, actions]) => [
-      // The avatar beside the name shows its initial; the name is the longer text.
-      within(name).getByText(/\w{2,}/).textContent,
+      // The avatar beside the name shows its initials, hidden from assistive technology.
+      within(name).getByText(/\w/, { ignore: '[aria-hidden]' }).textContent,
       role.textContent,
       state.textContent,
       within(actions).queryByRole('button') !== null,

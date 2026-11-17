@@ -13,13 +13,8 @@ export interface AvatarProps {
    */
   delayMs?: number
   /**
-   * How many letters the fallback shows. Two suit a person: the first letters
-   * of the first and last words of the name, or the first two of a single word.
-   * @default 1
-   */
-  letters?: 1 | 2
-  /**
    * The name to display as fallback (its first letters) and for the alt text.
+   * Pass a real name: a placeholder such as "Local user" would show initials.
    */
   name: string
   ref?: React.Ref<HTMLSpanElement>
@@ -29,6 +24,8 @@ export interface AvatarProps {
    */
   seed?: string
   /**
+   * A circle is a person and shows two initials. A square is a place, such as
+   * a workspace, and shows one letter.
    * @default "circle"
    */
   shape?: AvatarShape
@@ -46,18 +43,19 @@ export type AvatarSize = '20' | '28'
 export type AvatarShape = 'circle' | 'square'
 
 /**
- * The letters that stand in for an image. CSS sets them in capitals. Two
- * letters are the initials of the first and last words that start with a
- * letter or a digit, so "Jane Doe (Acme)" gives "JD". One word, or a name with
- * no such word, gives its first two characters.
+ * The letters that stand in for an image. CSS sets them in capitals. A square
+ * shows the first letter of the name. A circle shows two: the initials of the
+ * first and last words that start with a letter or a digit, so
+ * "Jane Doe (Acme)" gives "JD". One word, or a name with no such word, gives
+ * its first two characters.
  */
-function fallbackLetters(name: string, letters: 1 | 2) {
+function fallbackLetters(name: string, shape: AvatarShape) {
   // By character, not UTF-16 unit, so a letter outside the basic plane stays whole.
   const all = name
     .trim()
     .split(/\s+/)
     .map((word) => Array.from(word))
-  if (letters === 1) return all[0][0] ?? ''
+  if (shape === 'square') return all[0][0] ?? ''
   const words = all.filter((word) => /^[\p{L}\p{N}]/u.test(word[0] ?? ''))
   if (words.length > 1) return words[0][0] + words.at(-1)![0]
   return (words[0] ?? all[0]).slice(0, 2).join('')
@@ -66,7 +64,6 @@ function fallbackLetters(name: string, letters: 1 | 2) {
 export function Avatar({
   className,
   delayMs = 80,
-  letters = 1,
   name,
   ref,
   seed,
@@ -90,7 +87,7 @@ export function Avatar({
         className={styles.avatarFallback({ color, size })}
         delay={src ? delayMs : undefined}
       >
-        {fallbackLetters(name, letters)}
+        {fallbackLetters(name, shape)}
       </BaseAvatar.Fallback>
       <span className={styles.avatarBorderOverlay} />
     </BaseAvatar.Root>
