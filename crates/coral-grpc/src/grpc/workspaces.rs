@@ -1,23 +1,59 @@
 use super::status::{self, invalid, safe_status};
-use super::{GrpcServices, PrivateAudience, management as wire, now};
+use super::{GrpcServices, PrivateAudience, management as wire};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
-use coral_db::{PageKey, PageRequest, PageSize};
+use coral_db::{PageKey, PageRequest, PageSize, UnixNanos};
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, ResourceMetadata, TraceId, WorkspaceDisplayName,
     WorkspaceEvidence, WorkspaceId,
 };
 use tonic::{Request, Response, Status};
 
+/// The User a management request authenticated as, with the request's time:
+/// the instant its authentication read the server's clock.
+///
+/// That one reading dates everything the handler decides before it waits on
+/// outside work: [`change`] dates the change by it, and a handler that needs
+/// the time again takes [`Self::now`]. It stands for its User wherever a
+/// domain call borrows one.
+#[derive(Clone)]
+pub(super) struct ManagementUser {
+    user: AuthenticatedUser,
+    now: UnixNanos,
+}
+
+impl ManagementUser {
+    /// The request's time.
+    pub(super) const fn now(&self) -> UnixNanos {
+        self.now
+    }
+
+    /// The User alone, for a domain call that takes one by value.
+    pub(super) fn into_user(self) -> AuthenticatedUser {
+        self.user
+    }
+}
+
+impl std::ops::Deref for ManagementUser {
+    type Target = AuthenticatedUser;
+
+    fn deref(&self) -> &AuthenticatedUser {
+        &self.user
+    }
+}
+
 impl GrpcServices {
     pub(super) async fn management_user<T>(
         &self,
         request: &Request<T>,
-    ) -> Result<AuthenticatedUser, Status> {
-        self.principal(request, None, PrivateAudience::Reef)
-            .await?
+    ) -> Result<ManagementUser, Status> {
+        let (principal, now) = self
+            .principal_at(request, None, PrivateAudience::Reef)
+            .await?;
+        let user = principal
             .authenticated_user()
             .cloned()
-            .ok_or_else(status::unauthenticated)
+            .ok_or_else(status::unauthenticated)?;
+        Ok(ManagementUser { user, now })
     }
     async fn workspace_view(
         &self,
@@ -62,8 +98,9 @@ impl GrpcServices {
     }
 }
 
-pub(super) fn change(user: AuthenticatedUser) -> ChangeContext {
-    ChangeContext::new(user, now(), TraceId::current_or_new())
+/// The context of the change `user`'s request makes, dated by the request's time.
+pub(super) fn change(user: ManagementUser) -> ChangeContext {
+    ChangeContext::new(user.user, user.now.get(), TraceId::current_or_new())
 }
 pub(super) fn workspace_id(name: &str) -> Result<WorkspaceId, Status> {
     let Some(id) = name.strip_prefix("workspaces/") else {

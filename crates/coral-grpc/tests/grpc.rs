@@ -54,6 +54,8 @@ struct Fixture {
     /// Tells the services that the listener is stopping, as bootstrap does.
     stop: tokio::sync::watch::Sender<bool>,
     issuer: SessionTokenIssuer,
+    /// The server's clock, which also dates the tokens [`Self::token`] issues.
+    clock: Arc<dyn coral_db::Clock>,
     owner: AuthenticatedUser,
     member: AuthenticatedUser,
     workspace: Workspace,
@@ -124,14 +126,40 @@ impl Fixture {
         Self::compose(enabled, None, coral_secret_store::SecretStores::default()).await
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "composes the real domain graph and authenticated test principals once"
-    )]
+    /// A server with sign-in that reads `clock`, for a test that moves time.
+    async fn at(clock: coral_test_support::ManualClock) -> Self {
+        Self::compose_at(
+            true,
+            None,
+            coral_secret_store::SecretStores::default(),
+            Arc::new(clock),
+        )
+        .await
+    }
+
     async fn compose(
         enabled: bool,
         releases: Option<coral_release::ReleaseCheck>,
         secret_stores: coral_secret_store::SecretStores,
+    ) -> Self {
+        Self::compose_at(
+            enabled,
+            releases,
+            secret_stores,
+            Arc::new(coral_db::SystemClock),
+        )
+        .await
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "composes the real domain graph and authenticated test principals once"
+    )]
+    async fn compose_at(
+        enabled: bool,
+        releases: Option<coral_release::ReleaseCheck>,
+        secret_stores: coral_secret_store::SecretStores,
+        clock: Arc<dyn coral_db::Clock>,
     ) -> Self {
         let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let database = fixture.database();
@@ -174,14 +202,9 @@ impl Fixture {
             .unwrap();
         let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
         let authentication = if enabled {
-            PrincipalAuthentication::new(
-                &issuer,
-                organization,
-                workspaces.clone(),
-                Arc::new(coral_db::SystemClock),
-            )
+            PrincipalAuthentication::new(&issuer, organization, workspaces.clone(), clock.clone())
         } else {
-            PrincipalAuthentication::local(workspaces.clone(), Arc::new(coral_db::SystemClock))
+            PrincipalAuthentication::local(workspaces.clone(), clock.clone())
         };
         let vault_dir = tempfile::tempdir().unwrap();
         let vault =
@@ -314,6 +337,7 @@ impl Fixture {
             },
             coral_grpc::TransportContext {
                 authentication,
+                clock: clock.clone(),
                 mcp_origin: mcp_origin.clone(),
                 readiness: Arc::new(move || {
                     Box::pin(std::future::ready(
@@ -333,6 +357,7 @@ impl Fixture {
             ready,
             stop,
             issuer,
+            clock,
             owner,
             member,
             workspace,
@@ -363,7 +388,7 @@ impl Fixture {
     }
 
     fn token(&self, user: &AuthenticatedUser, audience: &str) -> String {
-        let now = coral_test_support::now_unix_nanos();
+        let now = self.clock.now().get();
         if audience == "mcp" {
             self.issuer
                 .issue_workspace_access_token(
@@ -860,6 +885,104 @@ async fn agent_management_rotates_once_and_revokes_real_credentials() {
         probe(&rotated.credential).await,
         tonic::Code::Unauthenticated
     );
+}
+
+/// Two instants for a server's clock, in 2001 and in 2100: the host's clock
+/// is decades after one and decades before the other. A handler that reads
+/// the host's clock finds a deadline set by the first long past, and one set
+/// by the second never reached.
+const CLOCK_STARTS: [coral_db::UnixNanos; 2] = [
+    coral_db::UnixNanos::new(978_307_200 * 1_000_000_000),
+    coral_db::UnixNanos::new(4_102_444_800 * 1_000_000_000),
+];
+
+fn timestamp(instant: coral_db::UnixNanos) -> prost_types::Timestamp {
+    prost_types::Timestamp {
+        seconds: i64::try_from(instant.whole_seconds()).unwrap(),
+        nanos: 0,
+    }
+}
+
+/// coral-workspace owns what blocks an Agent's access
+/// (`inspection_reports_all_coral_access_blockers_without_clearing_them`). Over the wire, the
+/// instant that decides `EXPIRED` is the request's: the server's clock as
+/// authentication read it.
+///
+/// Catches: a handler that reads the host's clock, which blocks the Agent
+/// from its first answer, or never.
+#[tokio::test]
+async fn an_agent_is_blocked_as_expired_once_the_servers_clock_reaches_its_registrations_expiry() {
+    let lifetime = std::time::Duration::from_hours(1);
+    for start in CLOCK_STARTS {
+        let clock = coral_test_support::ManualClock::starting_at(start);
+        let f = Fixture::at(clock.clone()).await;
+        let parent = format!("workspaces/{}", f.workspace.id());
+        let issued = f
+            .agents()
+            .create_agent(request(
+                management::CreateAgentRequest {
+                    parent: parent.clone(),
+                    display_name: "Worker".into(),
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    expire_time: Some(timestamp(start.checked_add(lifetime).unwrap())),
+                },
+                &f.token(&f.owner, "reef"),
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        let created = issued.agent.unwrap();
+        // The blockers `GetAgent` and `ListAgents` show at the clock's
+        // instant, to a token issued at it.
+        let shown = async || {
+            let token = f.token(&f.owner, "reef");
+            let got = f
+                .agents()
+                .get_agent(request(
+                    management::GetAgentRequest {
+                        name: created.name.clone(),
+                    },
+                    &token,
+                    "reef",
+                ))
+                .await
+                .unwrap()
+                .into_inner();
+            let listed = f
+                .agents()
+                .list_agents(request(
+                    management::ListAgentsRequest {
+                        parent: parent.clone(),
+                        page_size: 0,
+                        page_token: String::new(),
+                    },
+                    &token,
+                    "reef",
+                ))
+                .await
+                .unwrap()
+                .into_inner()
+                .agents;
+            let [listed] = listed.as_slice() else {
+                panic!("one Agent: {listed:?}")
+            };
+            [got.access_blockers, listed.access_blockers.clone()]
+        };
+        let none = Vec::<i32>::new();
+        let expired = vec![management::AgentAccessBlocker::Expired as i32];
+
+        assert_eq!(created.access_blockers, none, "created at {start:?}");
+        assert_eq!(shown().await, [none.clone(), none], "at {start:?}");
+
+        clock.advance(lifetime);
+
+        assert_eq!(
+            shown().await,
+            [expired.clone(), expired],
+            "an hour after {start:?}"
+        );
+    }
 }
 
 #[tokio::test]

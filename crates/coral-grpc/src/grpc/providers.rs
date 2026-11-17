@@ -497,15 +497,17 @@ impl GrpcServices {
         }))
     }
 
+    /// The Setup as `user` sees it at `now`, which settles its expiry.
     async fn setup_response(
         &self,
         user: &AuthenticatedUser,
         owner: &WorkspaceId,
         id: &ProviderSetupId,
+        now: i64,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
         let inspected = self
             .providers
-            .inspect_setup(user, owner, id, super::now())
+            .inspect_setup(user, owner, id, now)
             .await
             .map_err(error)?;
         self.setup_view(user, inspected).await
@@ -566,7 +568,11 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
                 .await
         }
         .map_err(error)?;
-        let mut response = self.setup_response(context.actor(), &owner, &id).await?;
+        // Confirmation may have waited on the provider.
+        let now = self.now_after_outside_work();
+        let mut response = self
+            .setup_response(context.actor(), &owner, &id, now)
+            .await?;
         // Keep the state/authentication/configuration snapshot coherent if another
         // edit wins after confirmation. Only field diagnostics belong to this action.
         if let Some(current) = response.get_mut().configuration.as_mut() {
@@ -621,7 +627,9 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
             .prepare_setup(&context, &owner, source, update_target.as_ref())
             .await
             .map_err(error)?;
-        self.setup_response(context.actor(), &owner, setup.id())
+        // Preparation may have waited on the provider for its document.
+        let now = self.now_after_outside_work();
+        self.setup_response(context.actor(), &owner, setup.id(), now)
             .await
     }
 
@@ -646,7 +654,9 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
             .start_setup_authorization(&context, &owner, &id, req.configuration_revision, client)
             .await
             .map_err(error)?;
-        self.setup_response(context.actor(), &owner, &id).await
+        // Starting it may have waited on the provider's authorization server.
+        let now = self.now_after_outside_work();
+        self.setup_response(context.actor(), &owner, &id, now).await
     }
 
     #[tracing::instrument(skip_all, name = "coral.private.retry_provider_setup_discovery")]
@@ -673,7 +683,9 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
                 .await
                 .map_err(error)?;
         }
-        self.setup_response(context.actor(), &owner, &id).await
+        // Discovery waited on the provider.
+        let now = self.now_after_outside_work();
+        self.setup_response(context.actor(), &owner, &id, now).await
     }
 
     #[tracing::instrument(skip_all, name = "coral.private.cancel_provider_setup")]
@@ -688,7 +700,8 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
             .cancel_setup(&context, &owner, &id)
             .await
             .map_err(error)?;
-        self.setup_response(context.actor(), &owner, &id).await
+        let now = context.occurred_at_unix_nanos();
+        self.setup_response(context.actor(), &owner, &id, now).await
     }
 
     #[tracing::instrument(skip_all, name = "coral.private.get_provider_setup")]
@@ -699,7 +712,8 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         let user = self.management_user(&request).await?;
         let (owner, id) = resource(&request.get_ref().name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
-        self.setup_response(&user, &owner, &id).await
+        self.setup_response(&user, &owner, &id, user.now().get())
+            .await
     }
 
     #[tracing::instrument(skip_all, name = "coral.private.authorize_provider_setup")]
@@ -722,9 +736,11 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
             )
             .await
             .map_err(error)?;
+        // Authorization may have waited on a Secret Store or the provider.
+        let now = self.now_after_outside_work();
         let mut inspected = self
             .providers
-            .inspect_setup(context.actor(), &owner, &id, super::now())
+            .inspect_setup(context.actor(), &owner, &id, now)
             .await
             .map_err(error)?;
         // Grant selection must use this mutation's receipt, never another command's

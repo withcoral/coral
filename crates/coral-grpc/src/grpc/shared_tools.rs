@@ -2,8 +2,8 @@ use super::authored_tools::{correctable, diagnostic, error, private_tool_agent};
 use super::policies::{access, access_state};
 use super::resource;
 use super::status::invalid;
-use super::workspaces::{next_after, page_request, timestamp, workspace_id};
-use super::{GrpcServices, management as wire, now};
+use super::workspaces::{change, next_after, page_request, timestamp, workspace_id};
+use super::{GrpcServices, management as wire};
 use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, PrivateToolPath, SharedTool, SharedToolId,
     SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolLifecycleEventKey,
@@ -11,8 +11,7 @@ use coral_tools::{
     SharedToolRevisionOrigin, SharedToolRevisionSummary, SharedToolSummary,
 };
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, Principal, PrincipalKind, TraceId,
-    WorkspaceId,
+    AuthenticatedPrincipal, AuthenticatedUser, Principal, PrincipalKind, WorkspaceId,
 };
 use tonic::{Request, Response, Status};
 
@@ -173,7 +172,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
             .map_err(super::providers::error)?;
         let page = self
             .shared_tools
-            .list(&AuthenticatedPrincipal::user(user), &w, &asked)
+            .list(&AuthenticatedPrincipal::user(user.into_user()), &w, &asked)
             .await
             .map_err(error)?;
         Ok(Response::new(wire::ListSharedToolsResponse {
@@ -198,7 +197,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let path = path(&input.path)?;
         let tool = self
             .shared_tools
-            .get(&AuthenticatedPrincipal::user(user), &w, &path)
+            .get(&AuthenticatedPrincipal::user(user.into_user()), &w, &path)
             .await
             .map_err(error)?;
         Ok(Response::new(shared_tool(&tool)))
@@ -214,7 +213,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let (w, id) = parse_resource_name(&input.shared_tool)?;
         let revisions = self
             .shared_tools
-            .list_revision_summaries(&AuthenticatedPrincipal::user(user), &w, &id)
+            .list_revision_summaries(&AuthenticatedPrincipal::user(user.into_user()), &w, &id)
             .await
             .map_err(error)?;
         Ok(Response::new(wire::ListSharedToolRevisionsResponse {
@@ -232,7 +231,12 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let (w, id) = parse_resource_name(&input.shared_tool)?;
         let found = self
             .shared_tools
-            .get_revision(&AuthenticatedPrincipal::user(user), &w, &id, input.revision)
+            .get_revision(
+                &AuthenticatedPrincipal::user(user.into_user()),
+                &w,
+                &id,
+                input.revision,
+            )
             .await
             .map_err(error)?;
         Ok(Response::new(revision(&found)))
@@ -261,7 +265,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         if !input.validate_only {
             publish = publish.approve(input.reviewed_declaration);
         }
-        let context = ChangeContext::new(user, now(), TraceId::current_or_new());
+        let context = change(user);
         let published = self
             .shared_tool_workflow
             .publish(&context, &w, publish)
@@ -282,7 +286,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
         let path = path(&input.path)?;
-        let context = ChangeContext::new(user, now(), TraceId::current_or_new());
+        let context = change(user);
         let removed = self
             .shared_tool_workflow
             .remove(&context, &w, &path, input.expected_revision)
@@ -314,7 +318,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let page = self
             .shared_tools
             .list_lifecycle_events(
-                &AuthenticatedPrincipal::user(user),
+                &AuthenticatedPrincipal::user(user.into_user()),
                 &w,
                 shared_tool.as_ref(),
                 &asked,
