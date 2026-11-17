@@ -317,9 +317,12 @@ pub(super) fn error(value: domain::Error) -> Status {
         E::AccountConnectionDeclined => (Code::FailedPrecondition, "ACCOUNT_CONNECTION_DECLINED"),
         E::AccountConnectionExpired => (Code::FailedPrecondition, "ACCOUNT_CONNECTION_EXPIRED"),
         E::AccountAuthorizationChanged => (Code::Aborted, "ACCOUNT_CHANGED"),
+        // A fault inside Coral, which no change to the request corrects.
+        E::Internal(_) => (Code::Internal, "INTERNAL"),
         // Retrying can succeed: an upstream, worker, or storage dependency failed.
         // Name every variant so a new domain error needs an explicit wire decision.
         E::SetupPreparationUnavailable
+        | E::DeviceLeaseLost
         | E::CredentialRefreshFailed
         | E::OAuthTokenExchange(_)
         | E::Credentials(_)
@@ -1238,6 +1241,24 @@ mod tests {
                 Code::FailedPrecondition,
                 "ACCOUNT_REQUIRED",
             ),
+            (
+                E::AccountInput,
+                Code::InvalidArgument,
+                "INVALID_PROVIDER_INPUT",
+            ),
+            // Stored data that does not decode and a fault inside Coral are
+            // not the caller's input.
+            (
+                E::CorruptData("stored token does not decode".into()),
+                Code::Unavailable,
+                "UNAVAILABLE",
+            ),
+            (
+                E::Internal(coral_provider::InternalFault::Random),
+                Code::Internal,
+                "INTERNAL",
+            ),
+            (E::DeviceLeaseLost, Code::Unavailable, "UNAVAILABLE"),
             (
                 E::Workspace(coral_workspace::Error::WorkspaceArchived),
                 Code::FailedPrecondition,

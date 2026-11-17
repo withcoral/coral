@@ -1120,7 +1120,7 @@ impl ProviderModule {
 pub(crate) fn setup_deadline(created_at_unix_nanos: i64) -> Result<i64, Error> {
     created_at_unix_nanos
         .checked_add(SETUP_CREDENTIAL_LIFETIME_NANOS)
-        .ok_or(Error::AccountInput)
+        .ok_or(Error::Internal(crate::InternalFault::Overflow))
 }
 
 /// Application controls depend on authentication metadata, not an executable catalog.

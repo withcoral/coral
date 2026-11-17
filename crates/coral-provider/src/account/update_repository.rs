@@ -33,7 +33,8 @@ pub(super) async fn save(
             .as_ref()
             .map(|(id, version)| (id.to_string(), version.clone())),
     };
-    let encoded = serde_json::to_string(&stored).map_err(|_error| Error::AccountInput)?;
+    let encoded = serde_json::to_string(&stored)
+        .map_err(|_error| Error::Internal(crate::InternalFault::Encoding))?;
     tx.execute(
         Query::update()
             .table(ProviderSetups::Table)

@@ -160,7 +160,7 @@ pub(super) fn random() -> Result<String, Error> {
     let mut bytes = [0_u8; 32];
     SystemRandom::new()
         .fill(&mut bytes)
-        .map_err(|_error| Error::AccountInput)?;
+        .map_err(|_error| Error::Internal(crate::InternalFault::Random))?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
@@ -342,7 +342,7 @@ impl AccountModule {
                 .await
         })
         .await
-        .map_err(|_error| Error::AccountInput)?
+        .map_err(|_error| Error::Internal(crate::InternalFault::TaskStopped))?
     }
 
     #[expect(
@@ -443,8 +443,8 @@ impl AccountModule {
             },
         )
         .await;
-        let elapsed =
-            i64::try_from(started.elapsed().as_nanos()).map_err(|_error| Error::AccountInput)?;
+        let elapsed = i64::try_from(started.elapsed().as_nanos())
+            .map_err(|_error| Error::Internal(crate::InternalFault::Overflow))?;
         let record_status =
             result.is_ok() || matches!(result, Err(Error::OAuthClientConfiguration));
         let client_failed = result.is_err();
@@ -514,6 +514,8 @@ pub(super) const fn authorization_failure_code(error: &Error) -> &'static str {
         | Error::ProviderSetupNotApplicable
         | Error::ProviderSetupNotReady
         | Error::AccountInput
+        | Error::DeviceLeaseLost
+        | Error::Internal(_)
         | Error::SecretReferenceNotAllowed
         | Error::SecretStoreNotGranted
         | Error::SecretStoreRead(_)

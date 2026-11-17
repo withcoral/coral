@@ -118,7 +118,7 @@ impl AccountModule {
             let result = module
                 .poll_setup_device(&context, &owner, &id, &requirement, started, &lease)
                 .await;
-            if let Some(error) = unanswered(&result) {
+            if let Some(error) = says_nothing_about_the_grant(&result) {
                 return log_worker_stop(&owner, WorkerStop::Poll, error);
             }
             let context = advanced(&context, started);
@@ -370,7 +370,7 @@ impl AccountModule {
             let result = module
                 .poll_account_device(&context, &owner, id, &requirement, started, &lease)
                 .await;
-            if let Some(error) = unanswered(&result) {
+            if let Some(error) = says_nothing_about_the_grant(&result) {
                 return log_worker_stop(&owner, WorkerStop::Poll, error);
             }
             let context = advanced(&context, started);
@@ -654,11 +654,16 @@ impl Polling<'_> {
     }
 }
 
-/// The error of a poll that stopped because the database gave no answer. That
-/// says nothing about the device grant, so the worker ends nothing and keeps
-/// its lease unfinished: recovery resumes the job once the lease lapses.
-fn unanswered(result: &Result<oauth::TokenResponse, Error>) -> Option<&Error> {
-    result.as_ref().err().filter(|error| error.is_operational())
+/// The error of a poll that stopped because the database gave no answer, or
+/// because the worker lost its lease. Neither says anything about the device
+/// grant, so the worker ends nothing. After an unanswered write it keeps its
+/// lease unfinished, and recovery resumes the job once the lease lapses. After
+/// a lost lease the job is another worker's already, or recovery's to resume.
+fn says_nothing_about_the_grant(result: &Result<oauth::TokenResponse, Error>) -> Option<&Error> {
+    result
+        .as_ref()
+        .err()
+        .filter(|error| error.is_operational() || matches!(error, Error::DeviceLeaseLost))
 }
 
 /// The step at which a device worker stopped before it settled its sign-in
@@ -686,7 +691,7 @@ fn log_worker_stop(owner: &WorkspaceId, stop: WorkerStop, error: &Error) {
         WorkerStop::Poll => tracing::warn!(
             coral.workspace.id = safe::id(owner),
             error.type = safe::kind(error.code()),
-            "a device sign-in worker stopped polling because the database gave no answer"
+            "a device sign-in worker stopped polling: the database gave no answer, or the lease was lost"
         ),
         WorkerStop::Renew => tracing::warn!(
             coral.workspace.id = safe::id(owner),
@@ -972,6 +977,34 @@ impl AccountModule {
             .store(true, std::sync::atomic::Ordering::SeqCst);
         for task in tasks.iter() {
             task.abort();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Error, says_nothing_about_the_grant};
+
+    // Catches: a worker that lost its lease, or whose write got no answer,
+    // ending a sign-in that another worker or a later recovery still holds.
+    #[test]
+    fn a_lost_lease_or_an_unanswered_write_says_nothing_about_the_grant() {
+        let stops: [(Error, bool); 4] = [
+            (Error::DeviceLeaseLost, true),
+            (Error::Database(coral_db::Error::WriterBusy), true),
+            (Error::AccountInput, false),
+            (
+                Error::CorruptData("stored token does not decode".into()),
+                false,
+            ),
+        ];
+        for (error, says_nothing) in stops {
+            let label = format!("{error:?}");
+            assert_eq!(
+                says_nothing_about_the_grant(&Err(error)).is_some(),
+                says_nothing,
+                "{label}"
+            );
         }
     }
 }

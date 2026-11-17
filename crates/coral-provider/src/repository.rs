@@ -849,7 +849,8 @@ pub(super) async fn save_setup_preview(
 pub(crate) fn encode_configuration(
     values: &coral_catalog::ProviderConfiguration,
 ) -> Result<String, Error> {
-    serde_json::to_string(values).map_err(|_invalid| Error::AccountInput)
+    serde_json::to_string(values)
+        .map_err(|_invalid| Error::Internal(crate::InternalFault::Encoding))
 }
 
 /// Rejoins separately persisted configuration to the unchanged input for preparation.
