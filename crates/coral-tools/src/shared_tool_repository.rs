@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use coral_catalog::ToolAccessState;
-use coral_db::{RowLock, Transaction};
+use coral_db::{Page, PageRequest, RowLock, Transaction, text_key_order};
 use coral_workspace::{TraceId, UserId, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query, SelectStatement};
 use sqlx::FromRow;
@@ -14,9 +14,9 @@ use crate::Error;
 use crate::repository::{access_state_from_storage, decode_diagnostics, stored_revision};
 use crate::shared_tool::{
     SharedTool, SharedToolDefault, SharedToolDependency, SharedToolId, SharedToolLifecycleAction,
-    SharedToolLifecycleEvent, SharedToolLifecycleEventId, SharedToolLifecycleEventPage,
-    SharedToolPage, SharedToolPath, SharedToolRevision, SharedToolRevisionOrigin,
-    SharedToolRevisionSummary, SharedToolSummary,
+    SharedToolLifecycleEvent, SharedToolLifecycleEventId, SharedToolLifecycleEventKey,
+    SharedToolPath, SharedToolRevision, SharedToolRevisionOrigin, SharedToolRevisionSummary,
+    SharedToolSummary,
 };
 use crate::types::{
     AuthoredToolDeclaration, AuthoredToolDeclarationFieldProjection, AuthoredToolDescription,
@@ -500,23 +500,16 @@ struct SummaryRow {
     published_at_unix_nanos: i64,
 }
 
-/// One page of live Shared Tools in path order after `after`.
+/// One page of the Workspace's live Shared Tools in path order.
 pub(crate) async fn list_live_page(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    after: Option<&SharedToolPath>,
-    page_size: u32,
-) -> Result<SharedToolPage, Error> {
-    // Match Rust string ordering regardless of the Postgres locale, so the
-    // exclusive cursor predicate agrees with the page order.
-    let path = match transaction.system() {
-        coral_db::DatabaseSystem::Sqlite => {
-            Expr::col((SharedToolRecords::Table, SharedToolRecords::Path))
-        }
-        coral_db::DatabaseSystem::Postgres => {
-            Expr::cust("\"shared_tool_records\".\"path\" COLLATE \"C\"")
-        }
-    };
+    request: &PageRequest<SharedToolPath>,
+) -> Result<Page<SharedToolSummary, SharedToolPath>, Error> {
+    let path = text_key_order(
+        transaction.system(),
+        (SharedToolRecords::Table, SharedToolRecords::Path),
+    );
     let mut statement = Query::select()
         .column((SharedToolRecords::Table, SharedToolRecords::Id))
         .column((SharedToolRecords::Table, SharedToolRecords::Path))
@@ -540,13 +533,13 @@ pub(crate) async fn list_live_page(
             .is_null(),
         )
         .order_by_expr(path.clone(), Order::Asc)
-        .limit(u64::from(page_size) + 1)
+        .limit(request.size.lookahead_limit())
         .to_owned();
-    if let Some(after) = after {
+    if let Some(after) = &request.after {
         statement.and_where(path.gt(after.as_str()));
     }
     let rows: Vec<SummaryRow> = transaction.fetch_all(statement).await?;
-    let mut summaries = rows
+    let summaries = rows
         .into_iter()
         .map(|row| {
             Ok(SharedToolSummary {
@@ -564,17 +557,9 @@ pub(crate) async fn list_live_page(
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    let page_size = usize::try_from(page_size).unwrap_or(usize::MAX);
-    let next_after = if summaries.len() > page_size {
-        summaries.truncate(page_size);
-        summaries.last().map(|summary| summary.path.clone())
-    } else {
-        None
-    };
-    Ok(SharedToolPage {
-        summaries,
-        next_after,
-    })
+    Ok(Page::from_lookahead(summaries, request.size, |summary| {
+        summary.path.clone()
+    }))
 }
 
 /// Every live Shared Tool of the Workspace with the default of its current
@@ -1040,18 +1025,16 @@ impl EventRow {
     }
 }
 
-/// One page of the Workspace's lifecycle Events, newest first after the
-/// Event `after`: those of the Shared Tool `shared_tool` alone, or of every
-/// Shared Tool, live and removed. Events that occurred together follow one
-/// another in identity order. `None` when `after` names no Event of the
-/// Workspace.
+/// One page of the Workspace's lifecycle Events, newest first: those of the
+/// Shared Tool `shared_tool` alone, or of every Shared Tool, live and
+/// removed. Events that occurred together follow one another in identity
+/// order.
 pub(crate) async fn list_lifecycle_event_page(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     shared_tool: Option<&SharedToolId>,
-    after: Option<&SharedToolLifecycleEventId>,
-    page_size: u32,
-) -> Result<Option<SharedToolLifecycleEventPage>, Error> {
+    request: &PageRequest<SharedToolLifecycleEventKey>,
+) -> Result<Page<SharedToolLifecycleEvent, SharedToolLifecycleEventKey>, Error> {
     let mut statement = Query::select()
         .columns([
             SharedToolLifecycleEvents::Id,
@@ -1067,47 +1050,32 @@ pub(crate) async fn list_lifecycle_event_page(
         .and_where(Expr::col(SharedToolLifecycleEvents::WorkspaceId).eq(workspace_id.to_string()))
         .order_by(SharedToolLifecycleEvents::OccurredAtUnixNanos, Order::Desc)
         .order_by(SharedToolLifecycleEvents::Id, Order::Desc)
-        .limit(u64::from(page_size) + 1)
+        .limit(request.size.lookahead_limit())
         .to_owned();
     if let Some(shared_tool) = shared_tool {
         statement.and_where(
             Expr::col(SharedToolLifecycleEvents::TargetSharedToolId).eq(shared_tool.to_string()),
         );
     }
-    if let Some(after) = after {
-        let position = Query::select()
-            .column(SharedToolLifecycleEvents::OccurredAtUnixNanos)
-            .from(SharedToolLifecycleEvents::Table)
-            .and_where(
-                Expr::col(SharedToolLifecycleEvents::WorkspaceId).eq(workspace_id.to_string()),
-            )
-            .and_where(Expr::col(SharedToolLifecycleEvents::Id).eq(after.to_string()))
-            .to_owned();
-        let Some((occurred_at,)): Option<(i64,)> = transaction.fetch_optional(position).await?
-        else {
-            return Ok(None);
-        };
+    if let Some(after) = &request.after {
         statement.and_where(
             Expr::col(SharedToolLifecycleEvents::OccurredAtUnixNanos)
-                .lt(occurred_at)
+                .lt(after.occurred_at_unix_nanos)
                 .or(Expr::col(SharedToolLifecycleEvents::OccurredAtUnixNanos)
-                    .eq(occurred_at)
-                    .and(Expr::col(SharedToolLifecycleEvents::Id).lt(after.to_string()))),
+                    .eq(after.occurred_at_unix_nanos)
+                    .and(Expr::col(SharedToolLifecycleEvents::Id).lt(after.id.to_string()))),
         );
     }
     let rows: Vec<EventRow> = transaction.fetch_all(statement).await?;
-    let mut events = rows
+    let events = rows
         .into_iter()
         .map(EventRow::decode)
         .collect::<Result<Vec<_>, Error>>()?;
-    let page_size = usize::try_from(page_size).unwrap_or(usize::MAX);
-    let next_after = if events.len() > page_size {
-        events.truncate(page_size);
-        events.last().map(|event| event.id.clone())
-    } else {
-        None
-    };
-    Ok(Some(SharedToolLifecycleEventPage { events, next_after }))
+    Ok(Page::from_lookahead(
+        events,
+        request.size,
+        SharedToolLifecycleEvent::key,
+    ))
 }
 
 /// A Shared Tool's first revision: the publish that made it.

@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use coral_catalog::ToolAccessState;
-use coral_db::{RowLock, Transaction};
+use coral_db::{Page, PageRequest, RowLock, Transaction, text_key_order};
 use coral_workspace::{Principal, PrincipalId, PrincipalKind};
 use coral_workspace::{TraceId, WorkspaceId};
 use sea_query::{Cond, Expr, ExprTrait as _, Iden, Order, Query};
@@ -12,8 +12,7 @@ use crate::types::{
     AUTHORED_TOOL_DIAGNOSTIC_MAX_COUNT, AUTHORED_TOOL_DIAGNOSTIC_MESSAGE_MAX_BYTES,
     AdministrativeLifecycleEvent, AuthoredToolDeclaration, AuthoredToolDeclarationFieldProjection,
     AuthoredToolDescription, AuthoredToolDiagnostic, AuthoredToolSource, LifecycleAction,
-    LifecycleOutcome, PrivateTool, PrivateToolId, PrivateToolPage, PrivateToolPath,
-    PrivateToolSummary,
+    LifecycleOutcome, PrivateTool, PrivateToolId, PrivateToolPath, PrivateToolSummary,
 };
 
 #[derive(Iden)]
@@ -499,53 +498,38 @@ pub(crate) async fn list_current_in_transaction(
     rows.into_iter().map(PrivateToolRow::decode).collect()
 }
 
-/// Reads one page of source-free summaries after `after` in path order.
+/// Reads one page of the source-free summaries of `principal`'s own Private
+/// Tools in the Workspace, in path order.
 pub(crate) async fn list_summary_page_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    after: Option<&PrivateToolPath>,
-    page_size: u32,
-) -> Result<PrivateToolPage, Error> {
-    // Match Rust string ordering regardless of the Postgres locale, so the
-    // exclusive cursor predicate agrees with the page order. SQLite's TEXT
-    // columns use BINARY by default.
-    let path = match transaction.system() {
-        coral_db::DatabaseSystem::Sqlite => Expr::col(PrivateToolRecords::Path),
-        coral_db::DatabaseSystem::Postgres => Expr::cust("\"path\" COLLATE \"C\""),
-    };
-    let mut statement = Query::select();
-    statement
-        .columns([
+    request: &PageRequest<PrivateToolPath>,
+) -> Result<Page<PrivateToolSummary, PrivateToolPath>, Error> {
+    let path = text_key_order(transaction.system(), PrivateToolRecords::Path);
+    let mut statement = owned_statement(
+        workspace_id,
+        principal,
+        [
             PrivateToolRecords::Path,
             PrivateToolRecords::Description,
             PrivateToolRecords::SavedAtUnixNanos,
-        ])
-        .from(PrivateToolRecords::Table)
-        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
-        .and_where(
-            Expr::col(PrivateToolRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
-        )
+        ],
+    );
+    statement
         .order_by_expr(path.clone(), Order::Asc)
-        // One extra row shows whether another page follows.
-        .limit(u64::from(page_size) + 1);
-    if let Some(after) = after {
+        .limit(request.size.lookahead_limit());
+    if let Some(after) = &request.after {
         statement.and_where(path.gt(after.as_str()));
     }
     let rows: Vec<PrivateToolSummaryRow> = transaction.fetch_all(statement).await?;
-    let mut summaries = rows
+    let summaries = rows
         .into_iter()
         .map(PrivateToolSummaryRow::decode)
         .collect::<Result<Vec<_>, _>>()?;
-    let page_size = usize::try_from(page_size).unwrap_or(usize::MAX);
-    let next_after = if summaries.len() > page_size {
-        summaries.truncate(page_size);
-        summaries.last().map(|summary| summary.path().clone())
-    } else {
-        None
-    };
-    Ok(PrivateToolPage::new(summaries, next_after))
+    Ok(Page::from_lookahead(summaries, request.size, |summary| {
+        summary.path().clone()
+    }))
 }
 
 pub(crate) async fn insert_current(

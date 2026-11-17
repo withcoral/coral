@@ -1,12 +1,12 @@
 use super::authored_tools::{correctable, diagnostic, error, private_tool_agent};
 use super::policies::{access, access_state};
 use super::workspaces::{
-    annotate, invalid, page_start, page_token, resource, timestamp, workspace_id,
+    annotate, invalid, next_after, page_request, resource, timestamp, workspace_id,
 };
 use super::{GrpcServices, management as wire, now};
 use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, PrivateToolPath, SharedTool, SharedToolId,
-    SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolLifecycleEventId,
+    SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolLifecycleEventKey,
     SharedToolOrigin, SharedToolPath, SharedToolPublish, SharedToolReview, SharedToolRevision,
     SharedToolRevisionOrigin, SharedToolRevisionSummary, SharedToolSummary,
 };
@@ -165,13 +165,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
-        let scope = format!("{}:{w}:sharedTools", user.user_id());
-        let (page_size, after) = page_start(input.page_size, &input.page_token, &scope)?;
-        let after = if after.is_empty() {
-            None
-        } else {
-            Some(SharedToolPath::parse(&after).map_err(|_error| invalid())?)
-        };
+        let asked = page_request::<SharedToolPath>(input.page_size, &input.after)?;
         let shared_provider = self
             .providers
             .inspect_authored_tool_provider(&user, &w, coral_catalog::AuthoredToolKind::Shared)
@@ -179,26 +173,16 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
             .map_err(super::providers::error)?;
         let page = self
             .shared_tools
-            .list(
-                &AuthenticatedPrincipal::user(user),
-                &w,
-                after.as_ref(),
-                page_size,
-            )
+            .list(&AuthenticatedPrincipal::user(user), &w, &asked)
             .await
             .map_err(error)?;
-        let next_page_token = page
-            .next_after()
-            .map(|after| page_token(&scope, after.as_str()))
-            .transpose()?
-            .unwrap_or_default();
         Ok(Response::new(wire::ListSharedToolsResponse {
             shared_tools: page
-                .summaries()
+                .items
                 .iter()
                 .map(|listed| summary(&w, listed))
                 .collect(),
-            next_page_token,
+            next_after: next_after(page.next_after.as_ref()),
             shared_provider: super::providers::provider_name(&shared_provider),
         }))
     }
@@ -326,41 +310,20 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
             }
             Some(id)
         };
-        // A page continues only the listing that began it.
-        let scope = format!(
-            "{}:{w}:sharedToolEvents:{}",
-            user.user_id(),
-            input.shared_tool
-        );
-        let (page_size, after) = page_start(input.page_size, &input.page_token, &scope)?;
-        let after = if after.is_empty() {
-            None
-        } else {
-            Some(SharedToolLifecycleEventId::parse(&after).map_err(|_error| invalid())?)
-        };
+        let asked = page_request::<SharedToolLifecycleEventKey>(input.page_size, &input.after)?;
         let page = self
             .shared_tools
             .list_lifecycle_events(
                 &AuthenticatedPrincipal::user(user),
                 &w,
                 shared_tool.as_ref(),
-                after.as_ref(),
-                page_size,
+                &asked,
             )
             .await
             .map_err(error)?;
-        let next_page_token = page
-            .next_after()
-            .map(|after| page_token(&scope, &after.to_string()))
-            .transpose()?
-            .unwrap_or_default();
         Ok(Response::new(wire::ListSharedToolEventsResponse {
-            events: page
-                .events()
-                .iter()
-                .map(|listed| event(&w, listed))
-                .collect(),
-            next_page_token,
+            events: page.items.iter().map(|listed| event(&w, listed)).collect(),
+            next_after: next_after(page.next_after.as_ref()),
         }))
     }
 }

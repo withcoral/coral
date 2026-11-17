@@ -87,6 +87,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - Open read-only work with `Database::begin_read_snapshot` and non-holding
   checks. `Database::begin` takes SQLite's write lock at `BEGIN`, so it waits
   behind every other writer.
+- A list that can grow without limit pages by a plain key in its owner, with
+  `coral_db::PageRequest` and `Page`; its cursor binds nothing
+  ([ADR 0037](docs/adr/0037-lists-page-by-a-plain-key.md)).
 - The Policy Enforcement Point and the held rechecks before it read the fact
   rows they never write (a Workspace, a Provider, a policy rule, an Account)
   with `RowLock::Shared`

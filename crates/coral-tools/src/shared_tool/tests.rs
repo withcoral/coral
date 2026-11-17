@@ -1,15 +1,17 @@
 use std::sync::Arc;
 
 use coral_catalog::{AuthoredToolKind, ToolAccessState};
-use coral_test_support::{TestDatabase, change, provision_user};
+use coral_db::PageKey as _;
+use coral_test_support::{TestDatabase, change, page_request, provision_user, read_pages};
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, WorkspaceDisplayName, WorkspaceId,
     WorkspaceModule, WorkspaceRole,
 };
 
 use super::{
-    SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolModule, SharedToolOrigin,
-    SharedToolPath, SharedToolPublication, SharedToolPublish, SharedToolRevisionOrigin,
+    SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolLifecycleEventKey,
+    SharedToolModule, SharedToolOrigin, SharedToolPath, SharedToolPublication, SharedToolPublish,
+    SharedToolRevisionOrigin,
 };
 use crate::{
     AuthoredToolDescription, AuthoredToolPath, AuthoredToolSource, Error, LinkedToolSelection,
@@ -105,6 +107,18 @@ impl SharedToolFixture {
         path: &str,
         source: &str,
     ) -> crate::PrivateTool {
+        self.save_private_in(&self.workspace, author, path, source)
+            .await
+    }
+
+    /// Saves as [`Self::save_private`] does, in `workspace`.
+    async fn save_private_in(
+        &self,
+        workspace: &WorkspaceId,
+        author: &AuthenticatedPrincipal,
+        path: &str,
+        source: &str,
+    ) -> crate::PrivateTool {
         self.private_tools
             .save(
                 &PrivateToolChangeContext::new(
@@ -112,7 +126,7 @@ impl SharedToolFixture {
                     20,
                     coral_workspace::TraceId::parse(&"b".repeat(32)).expect("trace id"),
                 ),
-                &self.workspace,
+                workspace,
                 PrivateToolSave::new(
                     PrivateToolPath::parse(path).expect("Private Tool Path"),
                     AuthoredToolDescription::parse("A private draft").expect("description"),
@@ -145,10 +159,24 @@ impl SharedToolFixture {
         source: &str,
         expected_revision: u64,
     ) -> Result<SharedToolPublication, Error> {
+        self.publish_in(&self.workspace, at, actor, path, source, expected_revision)
+            .await
+    }
+
+    /// Publishes as [`Self::publish_at`] does, in `workspace`.
+    async fn publish_in(
+        &self,
+        workspace: &WorkspaceId,
+        at: i64,
+        actor: &AuthenticatedUser,
+        path: &str,
+        source: &str,
+        expected_revision: u64,
+    ) -> Result<SharedToolPublication, Error> {
         self.shared_tools
             .publish_as_reviewed(
                 &change(actor.clone(), at, 'c'),
-                &self.workspace,
+                workspace,
                 publish(
                     path,
                     own_draft(&self.owner),
@@ -161,17 +189,40 @@ impl SharedToolFixture {
             .await
     }
 
+    /// Another Workspace of the same Owner, with the Owner's `draft` in it
+    /// and a Shared Tool published at `at` at each of `paths`.
+    async fn another_workspace(&self, at: i64, paths: &[&str]) -> WorkspaceId {
+        let workspace = WorkspaceModule::new(self.database.clone())
+            .create(
+                &change(self.owner.clone(), 40, 'a'),
+                WorkspaceDisplayName::parse("Elsewhere").expect("display name"),
+            )
+            .await
+            .expect("create another Workspace")
+            .id()
+            .clone();
+        let owner = AuthenticatedPrincipal::user(self.owner.clone());
+        self.save_private_in(&workspace, &owner, "draft", DRAFT)
+            .await;
+        for path in paths {
+            self.publish_in(&workspace, at, &self.owner, path, DRAFT, 0)
+                .await
+                .unwrap_or_else(|error| panic!("publish {path} elsewhere: {error}"));
+        }
+        workspace
+    }
+
     /// Every live Shared Tool with every revision's content hash: what a
     /// refused publish must leave unchanged.
     async fn everything(&self) -> Vec<(String, u64, Vec<String>)> {
         let reader = AuthenticatedPrincipal::user(self.owner.clone());
         let page = self
             .shared_tools
-            .list(&reader, &self.workspace, None, 100)
+            .list(&reader, &self.workspace, &page_request(None, 100))
             .await
             .expect("list Shared Tools");
         let mut everything = Vec::new();
-        for summary in page.summaries() {
+        for summary in &page.items {
             let revisions = self
                 .shared_tools
                 .list_revision_summaries(&reader, &self.workspace, summary.id())
@@ -327,13 +378,11 @@ impl SharedToolFixture {
                 &AuthenticatedPrincipal::user(self.owner.clone()),
                 &self.workspace,
                 None,
-                None,
-                100,
+                &page_request(None, 100),
             )
             .await
             .expect("list events")
-            .events()
-            .to_vec()
+            .items
     }
 }
 
@@ -1577,7 +1626,12 @@ async fn member_users_read_the_history_of_shared_tools_and_agents_cannot() {
         let events = async |shared_tool| {
             fixture
                 .shared_tools
-                .list_lifecycle_events(&reader, &fixture.workspace, shared_tool, None, 100)
+                .list_lifecycle_events(
+                    &reader,
+                    &fixture.workspace,
+                    shared_tool,
+                    &page_request(None, 100),
+                )
                 .await
         };
         let revisions = fixture
@@ -1593,13 +1647,13 @@ async fn member_users_read_the_history_of_shared_tools_and_agents_cannot() {
                 let all = events(None)
                     .await
                     .unwrap_or_else(|error| panic!("{case}: {error}"));
-                assert_eq!(read(all.events()), expected(&whole), "{case}");
-                assert!(all.next_after().is_none(), "{case}");
+                assert_eq!(read(&all.items), expected(&whole), "{case}");
+                assert!(all.next_after.is_none(), "{case}");
                 // One Shared Tool's history is its own, removed or not.
                 let one = events(Some(&reminder))
                     .await
                     .unwrap_or_else(|error| panic!("{case}: {error}"));
-                assert_eq!(read(one.events()), expected(&of_the_reminder), "{case}");
+                assert_eq!(read(&one.items), expected(&of_the_reminder), "{case}");
                 // The removed Shared Tool's revisions are still read.
                 let revisions = revisions.unwrap_or_else(|error| panic!("{case}: {error}"));
                 assert_eq!(
@@ -1658,10 +1712,15 @@ async fn member_users_read_the_history_of_shared_tools_and_agents_cannot() {
     }
     let of_none = fixture
         .shared_tools
-        .list_lifecycle_events(&owner, &fixture.workspace, Some(&unknown), None, 100)
+        .list_lifecycle_events(
+            &owner,
+            &fixture.workspace,
+            Some(&unknown),
+            &page_request(None, 100),
+        )
         .await
         .expect("list the events of no Shared Tool");
-    assert_eq!(of_none.events(), []);
+    assert_eq!(of_none.items, []);
 
     // Another Workspace of the same Owner reads none of it, by the Shared
     // Tool's real identity or from one of its Events.
@@ -1692,77 +1751,286 @@ async fn member_users_read_the_history_of_shared_tools_and_agents_cannot() {
             "{absent:?}"
         );
     }
-    for shared_tool in [None, Some(&reminder)] {
-        let page = fixture
-            .shared_tools
-            .list_lifecycle_events(&owner, &elsewhere, shared_tool, None, 100)
-            .await
-            .expect("list the other Workspace's events");
-        assert_eq!(page.events(), [], "{shared_tool:?}");
+    // The position of an Event of this Workspace only positions a page of
+    // the other Workspace, which has no Event to show.
+    for after in [None, Some(an_event.key())] {
+        for shared_tool in [None, Some(&reminder)] {
+            let page = fixture
+                .shared_tools
+                .list_lifecycle_events(
+                    &owner,
+                    &elsewhere,
+                    shared_tool,
+                    &page_request(after.clone(), 100),
+                )
+                .await
+                .expect("list the other Workspace's events");
+            assert_eq!(page.items, [], "{shared_tool:?} after {after:?}");
+        }
     }
-    let continued = fixture
-        .shared_tools
-        .list_lifecycle_events(&owner, &elsewhere, None, Some(an_event.id()), 100)
-        .await;
-    assert!(
-        matches!(continued, Err(Error::InvalidInput(_))),
-        "{continued:?}"
-    );
 }
 
-// Catches: a page that repeats or skips an Event, among Events that occurred
-// together too, or a page request that is out of bounds or continues from
-// nowhere being served.
-#[tokio::test]
-async fn pages_of_history_follow_one_another_without_a_gap_or_a_repeat() {
+/// A fixture whose Owner published one Shared Tool, then three at one
+/// instant, and one after them, with their Events, newest first.
+async fn history_of_five() -> (SharedToolFixture, Vec<SharedToolLifecycleEvent>) {
     let fixture = SharedToolFixture::new().await;
     let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
     fixture.save_private(&owner, "draft", DRAFT).await;
-    // Three Shared Tools published at one instant, and one after them.
-    for (at, path) in [(30, "a.one"), (30, "a.two"), (30, "a.three"), (31, "b.one")] {
+    for (at, path) in [
+        (29, "a.zero"),
+        (30, "a.one"),
+        (30, "a.two"),
+        (30, "a.three"),
+        (31, "b.one"),
+    ] {
         fixture
             .publish_at(at, &fixture.owner, path, DRAFT, 0)
             .await
             .unwrap_or_else(|error| panic!("publish {path}: {error}"));
     }
     let whole = fixture.events().await;
+    (fixture, whole)
+}
+
+// Catches: a page that repeats or skips an Event, among Events that occurred
+// together too, a page size over the maximum being served, or a position
+// that no Event has stopping the read.
+#[tokio::test]
+async fn pages_of_history_follow_one_another_without_a_gap_or_a_repeat() {
+    let (fixture, whole) = history_of_five().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
     assert_eq!(
         whole.first().map(|event| event.path().as_str()),
         Some("b.one"),
         "the newest Event is first"
     );
-    let page = async |after: Option<&super::SharedToolLifecycleEventId>, page_size| {
+    // Events that occurred together follow one another in identity order.
+    let position =
+        |event: &SharedToolLifecycleEvent| (event.occurred_at_unix_nanos(), event.id().to_string());
+    assert!(
+        whole
+            .iter()
+            .zip(whole.iter().skip(1))
+            .all(|(newer, older)| position(newer) > position(older)),
+        "{whole:?}"
+    );
+    let page = async |request| {
         fixture
             .shared_tools
-            .list_lifecycle_events(&owner, &fixture.workspace, None, after, page_size)
+            .list_lifecycle_events(&owner, &fixture.workspace, None, &request)
             .await
     };
 
-    let mut paged = Vec::new();
-    let mut after = None;
-    loop {
-        let one = page(after.as_ref(), 1).await.expect("list a page");
-        assert!(one.events().len() <= 1);
-        paged.extend(one.events().iter().cloned());
-        after = one.next_after().cloned();
-        if after.is_none() {
-            break;
-        }
+    // Pages of every size hold the same Events in the same order.
+    for size in [1, 2, 3, 5, 100] {
+        let pages = read_pages(size, &page).await;
+        let expected = whole
+            .chunks(usize::try_from(size).expect("size"))
+            .map(<[_]>::to_vec)
+            .collect::<Vec<_>>();
+        assert_eq!(pages, expected, "pages of {size}");
     }
-    assert_eq!(paged, whole);
+    // A page size holds one or more, so only a size over the maximum
+    // reaches the list.
+    let over = page(page_request(None, super::SHARED_TOOL_PAGE_MAX_SIZE + 1)).await;
+    assert!(matches!(over, Err(Error::InvalidInput(_))), "{over:?}");
 
-    let nowhere = super::SharedToolLifecycleEventId::parse("00000000-0000-4000-8000-000000000000")
-        .expect("id");
-    for refused in [
-        page(None, 0).await,
-        page(None, super::SHARED_TOOL_PAGE_MAX_SIZE + 1).await,
-        page(Some(&nowhere), 1).await,
-    ] {
-        assert!(
-            matches!(refused, Err(Error::InvalidInput(_))),
-            "{refused:?}"
-        );
+    // A position that no Event has still positions the page.
+    let nowhere =
+        SharedToolLifecycleEventKey::from_cursor("31/00000000-0000-4000-8000-000000000000")
+            .expect("a position");
+    let positioned = page(page_request(Some(nowhere), 100))
+        .await
+        .expect("list after a position no Event has");
+    assert_eq!(
+        positioned.items,
+        whole.iter().skip(1).cloned().collect::<Vec<_>>()
+    );
+}
+
+// Catches: a position from another Workspace or from another listing showing
+// an Event outside the request, or a page that fetches Events beyond the one
+// after its last.
+#[tokio::test]
+async fn a_page_of_history_holds_only_its_requests_events_and_fetches_only_its_rows() {
+    let (fixture, whole) = history_of_five().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    let [newest, second, third, _, oldest] = whole.as_slice() else {
+        panic!("five Events: {whole:?}");
+    };
+    assert_eq!(oldest.path().as_str(), "a.zero");
+    let page = async |shared_tool: Option<&super::SharedToolId>,
+                      after: Option<SharedToolLifecycleEventKey>,
+                      size| {
+        fixture
+            .shared_tools
+            .list_lifecycle_events(
+                &owner,
+                &fixture.workspace,
+                shared_tool,
+                &page_request(after, size),
+            )
+            .await
+    };
+
+    // A position from another Workspace's history shows no Event of that
+    // Workspace, and one from the whole history shows no other Shared Tool's
+    // Event to a request that names one Shared Tool.
+    let elsewhere = fixture.another_workspace(35, &["c.one", "c.two"]).await;
+    let foreign = fixture
+        .shared_tools
+        .list_lifecycle_events(&owner, &elsewhere, None, &page_request(None, 1))
+        .await
+        .expect("list the other Workspace's events")
+        .next_after
+        .expect("a second page in the other Workspace");
+    let positioned = page(None, Some(foreign), 100)
+        .await
+        .expect("list after the other Workspace's position");
+    assert_eq!(positioned.items, whole);
+    let of_one = page(Some(oldest.shared_tool_id()), Some(newest.key()), 100)
+        .await
+        .expect("list one Shared Tool's events after another's");
+    assert_eq!(of_one.items.iter().collect::<Vec<_>>(), [oldest]);
+    // A page sends as many statements for five Events as for two.
+    let sent = async |workspace| {
+        let before = fixture.test_database.statements_sent();
+        let request = page_request(None, 100);
+        let page = fixture
+            .shared_tools
+            .list_lifecycle_events(&owner, workspace, None, &request)
+            .await;
+        page.expect("a page");
+        fixture.test_database.statements_sent() - before
+    };
+    assert_eq!(sent(&fixture.workspace).await, sent(&elsewhere).await);
+
+    // The list fetches a page's rows and the one after them, whatever the
+    // collection holds. It fetches no row beyond those: this one fails any
+    // fetch of it.
+    let changed = fixture
+        .test_database
+        .execute_fixture_sql(
+            "UPDATE shared_tool_lifecycle_events SET target_path = 'not a path' \
+             WHERE occurred_at_unix_nanos = 29",
+        )
+        .await
+        .expect("change the path");
+    assert_eq!(changed, 1);
+    let bounded = page(None, None, 3).await.expect("a page before the row");
+    assert_eq!(
+        bounded.items.iter().collect::<Vec<_>>(),
+        [newest, second, third]
+    );
+    assert_eq!(bounded.next_after, Some(third.key()));
+    let reached = page(None, bounded.next_after, 3).await;
+    assert!(matches!(reached, Err(Error::CorruptData(_))), "{reached:?}");
+}
+
+// Catches: pages of Shared Tools that differ from the list cut into pages or
+// that order paths by the database's locale, a page size over the maximum
+// being served, a path from another Workspace showing a Shared Tool of that
+// Workspace, or a page that fetches Shared Tools beyond the one after its
+// last.
+#[tokio::test]
+async fn pages_of_shared_tools_follow_one_another_in_path_order() {
+    let fixture = SharedToolFixture::new().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    fixture.save_private(&owner, "draft", DRAFT).await;
+    // An uppercase path sorts first on both databases, as in Rust string
+    // order.
+    for path in ["reports.total", "alpha.first", "zeta.last", "Middle.upper"] {
+        fixture
+            .publish(&fixture.owner, path, DRAFT, 0)
+            .await
+            .unwrap_or_else(|error| panic!("publish {path}: {error}"));
     }
+    let whole = ["Middle.upper", "alpha.first", "reports.total", "zeta.last"];
+    let page = async |workspace: &WorkspaceId, after: Option<&str>, size| {
+        fixture
+            .shared_tools
+            .list(
+                &owner,
+                workspace,
+                &page_request(after.map(shared_path), size),
+            )
+            .await
+    };
+    let paths = |items: &[super::SharedToolSummary]| {
+        items
+            .iter()
+            .map(|summary| summary.path().as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    // Pages of every size hold the same Shared Tools in the same order.
+    for size in [1, 2, 3, 4, 100] {
+        let pages = read_pages(size, async |request| {
+            fixture
+                .shared_tools
+                .list(&owner, &fixture.workspace, &request)
+                .await
+        })
+        .await;
+        let read = pages.iter().map(|page| paths(page)).collect::<Vec<_>>();
+        let expected = whole
+            .chunks(usize::try_from(size).expect("size"))
+            .map(<[_]>::to_vec)
+            .collect::<Vec<_>>();
+        assert_eq!(read, expected, "pages of {size}");
+    }
+    let over = page(
+        &fixture.workspace,
+        None,
+        super::SHARED_TOOL_PAGE_MAX_SIZE + 1,
+    )
+    .await;
+    assert!(matches!(over, Err(Error::InvalidInput(_))), "{over:?}");
+
+    // A path that another Workspace's list returned only positions the page:
+    // it shows this Workspace's Shared Tools after it.
+    let elsewhere = fixture
+        .another_workspace(35, &["alpha.elsewhere", "omega.elsewhere"])
+        .await;
+    let foreign = page(&elsewhere, None, 1)
+        .await
+        .expect("list the other Workspace's Shared Tools")
+        .next_after
+        .expect("a second page in the other Workspace");
+    assert_eq!(foreign.as_str(), "alpha.elsewhere");
+    let positioned = page(&fixture.workspace, Some(foreign.as_str()), 100)
+        .await
+        .expect("list after the other Workspace's path");
+    assert_eq!(
+        paths(&positioned.items),
+        ["alpha.first", "reports.total", "zeta.last"]
+    );
+    // A page sends as many statements for four Shared Tools as for two.
+    let sent = async |workspace| {
+        let before = fixture.test_database.statements_sent();
+        page(workspace, None, 100).await.expect("a page");
+        fixture.test_database.statements_sent() - before
+    };
+    assert_eq!(sent(&fixture.workspace).await, sent(&elsewhere).await);
+
+    // The list fetches a page's rows and the one after them, whatever the
+    // collection holds. It fetches no row beyond those: this one fails any
+    // fetch of it.
+    let changed = fixture
+        .test_database
+        .execute_fixture_sql(
+            "UPDATE shared_tool_records SET path = 'zeta.not a path' WHERE path = 'zeta.last'",
+        )
+        .await
+        .expect("change the path");
+    assert_eq!(changed, 1);
+    let bounded = page(&fixture.workspace, None, 2)
+        .await
+        .expect("a page before the row");
+    assert_eq!(paths(&bounded.items), ["Middle.upper", "alpha.first"]);
+    assert_eq!(bounded.next_after, Some(shared_path("alpha.first")));
+    let reached = page(&fixture.workspace, Some("alpha.first"), 2).await;
+    assert!(matches!(reached, Err(Error::CorruptData(_))), "{reached:?}");
 }
 
 // Catches: a usage total that counts a tombstone or a revision as a Shared
