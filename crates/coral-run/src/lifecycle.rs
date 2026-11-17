@@ -37,6 +37,17 @@ pub(crate) struct RunRecord {
     /// The Run Trace acceptance stored; `None` for a Run accepted before it
     /// was stored, or without an OpenTelemetry layer.
     pub(crate) trace: Option<coral_telemetry::RunTrace>,
+    /// The time limit acceptance stored, which a Run stream's start adds
+    /// to its own instant; `None` for a Run accepted before it was stored.
+    pub(crate) time_limit_nanos: Option<i64>,
+    /// The Agent Registration that authenticated the accepting Agent.
+    pub(crate) agent_registration_id: Option<String>,
+    /// A take gave the Run to a Run Executor: no Run Owner's worker claim
+    /// ever fences it.
+    pub(crate) on_run_executor: bool,
+    /// The highest Run stream request number committed.
+    pub(crate) committed_request_number: Option<u64>,
+    pub(crate) last_commit_at_unix_nanos: Option<i64>,
 }
 
 impl RunRecord {
@@ -73,9 +84,15 @@ impl RunRecord {
     /// termination intent does not stop the owner recording what it applied
     /// before the intent.
     pub(crate) fn accepts_owner_chunk(&self, claim_id: &str) -> bool {
-        self.state == RunState::Running
-            && self.execution_claim_id.as_deref() == Some(claim_id)
-            && self.worker_claim_id.as_deref() == Some(claim_id)
+        self.state == RunState::Running && self.holds_owner_claim(claim_id)
+    }
+
+    /// Whether `claim_id` is the Run's execution claim and, unless a Run
+    /// Executor holds the Run, its worker claim too.
+    pub(crate) fn holds_owner_claim(&self, claim_id: &str) -> bool {
+        self.execution_claim_id.as_deref() == Some(claim_id)
+            && (self.worker_claim_id.as_deref() == Some(claim_id)
+                || (self.on_run_executor && self.worker_claim_id.is_none()))
     }
 
     /// Whether the owner holding `claim_id` may still do Program work on
@@ -92,8 +109,7 @@ impl RunRecord {
     pub(crate) fn program_work_is_current(&self, claim_id: &str, now_unix_nanos: i64) -> bool {
         self.state == RunState::Running
             && self.termination.is_none()
-            && self.execution_claim_id.as_deref() == Some(claim_id)
-            && self.worker_claim_id.as_deref() == Some(claim_id)
+            && self.holds_owner_claim(claim_id)
             && !self.deadline_passed(now_unix_nanos)
     }
 

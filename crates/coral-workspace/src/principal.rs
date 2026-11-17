@@ -173,6 +173,13 @@ impl AuthenticatedPrincipal {
         }
     }
 
+    /// Returns the Agent Registration that authenticated an Agent, which a
+    /// Run stores so that another Coral Instance can recheck it.
+    #[must_use]
+    pub fn agent_registration_id(&self) -> Option<&crate::AgentRegistrationId> {
+        self.agent_registration().map(AgentRegistration::id)
+    }
+
     pub(crate) const fn agent_registration(&self) -> Option<&AgentRegistration> {
         match &self.authority {
             PrincipalAuthority::User(_) => None,

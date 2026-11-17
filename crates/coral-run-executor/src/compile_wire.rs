@@ -37,7 +37,7 @@ impl From<ProtocolError> for CompileError {
 /// The digest a package carries: SHA-256 of the script's length as eight
 /// big-endian bytes, the script, and the source map.
 #[must_use]
-pub(crate) fn package_sha256(script: &str, source_map: &str) -> [u8; 32] {
+pub fn package_sha256(script: &str, source_map: &str) -> [u8; 32] {
     let length = u64::try_from(script.len()).unwrap_or(u64::MAX);
     Sha256::new()
         .chain_update(length.to_be_bytes())

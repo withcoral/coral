@@ -1,9 +1,9 @@
 use coral_db::Transaction;
 
 use crate::{
-    AuthenticatedPrincipal, AuthorityAction, Error, UserId, Workspace, WorkspaceAction,
-    WorkspaceEvidence, WorkspaceId, WorkspaceModule, agent_repository,
-    current_user_workspace_authority, repository, require_active_for_run,
+    AgentRegistrationId, AuthenticatedPrincipal, AuthorityAction, Error, Principal, PrincipalKind,
+    UserId, Workspace, WorkspaceAction, WorkspaceEvidence, WorkspaceId, WorkspaceModule,
+    agent_repository, current_user_workspace_authority, repository, require_active_for_run,
 };
 
 /// Live Workspace authority for a Principal's authoring, Run, or dispatch.
@@ -240,6 +240,57 @@ impl WorkspaceModule {
             now_unix_nanos,
         )
         .await
+    }
+
+    /// Rebuilds the Principal that a Run stored from current facts and
+    /// rechecks and holds its Run authority, as
+    /// [`Self::check_run_admission_in_transaction`] does: for a Coral
+    /// Instance that starts a Run another one accepted. A User is read from
+    /// its current Organization Membership, an Agent from the Registration
+    /// that authenticated it at acceptance.
+    ///
+    /// # Errors
+    ///
+    /// Applies Run admission rules. An Agent with no stored Registration
+    /// has no authority. The caller owns commit/rollback and the final time check.
+    pub async fn check_run_start_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_>,
+        principal: &Principal,
+        agent_registration_id: Option<&AgentRegistrationId>,
+        workspace_id: &WorkspaceId,
+        now_unix_nanos: i64,
+    ) -> Result<(AuthenticatedPrincipal, PrincipalWorkspaceEvidence), Error> {
+        // The holds are the ones `held_principal_authority` takes, in its
+        // order: the User's, then the Workspace's.
+        let actor = match principal.kind() {
+            PrincipalKind::User => {
+                let user_id = UserId::parse(principal.id().as_str())?;
+                let user = crate::organization::hold_user(transaction, &user_id)
+                    .await
+                    .map_err(crate::conceal_missing_user)?;
+                AuthenticatedPrincipal::user(user)
+            }
+            PrincipalKind::Agent => {
+                let id = agent_registration_id.ok_or(Error::WorkspaceNotFound)?;
+                AuthenticatedPrincipal::agent(
+                    agent_repository::registration_by_id(&mut *transaction, workspace_id, id)
+                        .await?,
+                )
+            }
+        };
+        if !repository::hold_workspace(transaction, workspace_id).await? {
+            return Err(Error::WorkspaceNotFound);
+        }
+        let evidence = principal_authority(
+            transaction,
+            &actor,
+            workspace_id,
+            WorkspaceAction::StartRun,
+            now_unix_nanos,
+        )
+        .await?;
+        Ok((actor, evidence))
     }
 
     /// Rechecks and holds Principal authoring authority in the authoring transaction.

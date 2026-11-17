@@ -166,6 +166,7 @@ impl RunModule {
                 .unwrap_or(run.accepted_at_unix_nanos),
             linked_snapshots: HashMap::new(),
             trace: run.trace.clone(),
+            start: crate::types::RunStartFacts::default(),
         };
         let run_id = run.held_id();
         let owner_task = tokio::spawn(owner::host(

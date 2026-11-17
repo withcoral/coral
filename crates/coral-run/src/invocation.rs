@@ -39,7 +39,7 @@ use crate::engine::Clock;
 use crate::execution::ExecutionStop;
 use crate::invocation_lifecycle::{FinishOutcome, InvocationState, UnfinishedInvocation};
 use crate::lifecycle::RunRecord;
-use crate::owner::{Check, ChunkWork, OwnerHandle, ParkedWait};
+use crate::owner::{Check, ChunkWork, OwnerHandle, ParkedWait, RequestTicket};
 use crate::run_repository::{OwnedEvent, OwnedEventKind};
 use crate::trace::{Gate, Step, gate_span, step_span};
 use crate::types::AcceptedRun;
@@ -309,12 +309,14 @@ impl ToolInvoker {
         Ok(ToolCall {
             invoker: self.clone(),
             child,
+            ticket: self.owner.take_request(),
         })
     }
 
     async fn invoke(
         &self,
         child: Option<OpenChild>,
+        ticket: RequestTicket,
         call_path: &str,
         arguments: serde_json::Value,
         source_location: Option<crate::SourceLocation>,
@@ -325,13 +327,14 @@ impl ToolInvoker {
         self.observer.tool_resolved().await?;
         let (admitted, trace) = self.open(
             child.as_ref(),
+            &ticket,
             target,
             call_path.to_string(),
             arguments_json,
             source_location,
         )?;
         let ended = async {
-            self.admit(&admitted, &trace).await?;
+            self.admit(&admitted, &trace, ticket).await?;
             self.invoke_admitted(&admitted, &arguments, policy, builtin, &trace)
                 .await
         }
@@ -351,6 +354,7 @@ impl ToolInvoker {
     async fn perform(
         &self,
         child: Option<OpenChild>,
+        ticket: RequestTicket,
         relative_path: &str,
         linked: crate::types::LinkedTool,
         arguments: serde_json::Value,
@@ -363,13 +367,14 @@ impl ToolInvoker {
         self.observer.tool_resolved().await?;
         let (admitted, trace) = self.open(
             child.as_ref(),
+            &ticket,
             target,
             call_path,
             arguments_json,
             source_location,
         )?;
         let permitted = async {
-            self.admit(&admitted, &trace).await?;
+            self.admit(&admitted, &trace, ticket).await?;
             let Permit { slot, progress, .. } =
                 self.permit(&admitted, &arguments, policy, None).await?;
             // The owner's own terminal state, before the body runs: a stop
@@ -407,6 +412,7 @@ impl ToolInvoker {
     fn open(
         &self,
         child: Option<&OpenChild>,
+        ticket: &RequestTicket,
         target: ResolvedInvocationTool,
         call_path: String,
         arguments_json: String,
@@ -430,6 +436,7 @@ impl ToolInvoker {
             source_location,
             parent_invocation_id: child.map(OpenChild::parent),
             admitted_at_unix_nanos: self.now()?.max(self.accepted_at_unix_nanos),
+            request_number: ticket.number(),
             span: trace.span().clone(),
         });
         Ok((admitted, trace))
@@ -441,11 +448,15 @@ impl ToolInvoker {
         &self,
         admitted: &Arc<AdmittedInvocation>,
         trace: &crate::trace::InvocationTrace,
+        ticket: RequestTicket,
     ) -> Result<(), InvocationHostError> {
         self.owner
-            .admit(Box::new(AdmissionWork {
-                admitted: admitted.clone(),
-            }))
+            .admit(
+                Box::new(AdmissionWork {
+                    admitted: admitted.clone(),
+                }),
+                ticket,
+            )
             .await?;
         trace.admitted(admitted.target.tool());
         Ok(())
@@ -1601,6 +1612,8 @@ impl ToolInvoker {
 pub(crate) struct ToolCall {
     invoker: Arc<ToolInvoker>,
     child: Option<OpenChild>,
+    /// The Run stream request that made the call, until its admission.
+    ticket: RequestTicket,
 }
 
 impl ToolCall {
@@ -1612,7 +1625,13 @@ impl ToolCall {
         source_location: Option<crate::SourceLocation>,
     ) -> Result<String, InvocationHostError> {
         self.invoker
-            .invoke(self.child, call_path, arguments, source_location)
+            .invoke(
+                self.child,
+                self.ticket,
+                call_path,
+                arguments,
+                source_location,
+            )
             .await
     }
 
@@ -1629,6 +1648,7 @@ impl ToolCall {
         self.invoker
             .perform(
                 self.child,
+                self.ticket,
                 relative_path,
                 linked,
                 arguments,
@@ -1980,6 +2000,8 @@ pub(crate) struct AdmittedInvocation {
     /// The performed call whose body made this one.
     pub(crate) parent_invocation_id: Option<InvocationId>,
     pub(crate) admitted_at_unix_nanos: i64,
+    /// The Run stream request that opened it; `None` in process.
+    pub(crate) request_number: Option<u64>,
     /// The Invocation's `coral.invocation` span. Its gates that run inside
     /// the owner's chunk commits are its children too.
     pub(crate) span: tracing::Span,

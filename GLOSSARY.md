@@ -990,10 +990,11 @@ and is separate from the request that started the Run, which it links to. _Avoid
 **Run Output Budget**: The limit on the bytes of Program Emissions, Program Logs, Tool Invocation results, and the
 Final Value that one Coral Program Run may produce. The Run Executor counts each Emission, Log and Final Value against
 the exact total as the Program produces it, and each Invocation result by the bytes Coral reports with it, so a Run
-never exceeds its budget by a byte; Coral confirms the total when it records the chunk. A refused Emission or Log is not
-Run output and the Program observes the refusal; a refused Invocation result ends that Invocation with a Tool Error; a
-Final Value that does not fit fails the Run. Tool arguments do not count. _Avoid_: approximate budget, soft limit,
-output quota, bounded overshoot
+never exceeds its budget by a byte; Coral confirms the total when it records the chunk. On a Run Executor, an
+Emission, a Log or an Invocation result that does not fit ends the Program, and the Run fails with
+`resource_limit_exceeded`. A Program in Coral's own process observes a refused Emission or Log, and a refused
+Invocation result ends that Invocation with a Tool Error. A Final Value that does not fit fails the Run. Tool arguments
+do not count. _Avoid_: approximate budget, soft limit, output quota, bounded overshoot
 
 **Run CPU Budget**: The CPU time that one Coral Program Run may use while its Program executes. Time spent waiting for a
 Tool, an approval or an answer from Coral does not count. A Run that exceeds its budget fails, and the other

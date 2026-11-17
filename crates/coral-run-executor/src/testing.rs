@@ -149,6 +149,13 @@ pub fn run_executor_config(
             .address()
             .parse()
             .expect("the scripted Coral's address"),
+        ..run_executor_config_for(max_runs_held, run_limits)
+    }
+}
+
+fn run_executor_config_for(max_runs_held: u32, run_limits: RunLimits) -> RunExecutorConfig {
+    RunExecutorConfig {
+        coral_address: "http://127.0.0.1:1".parse().expect("an address"),
         token: Token::new(RUN_EXECUTOR_TOKEN.to_owned()).expect("a valid token"),
         max_runs_held,
         compiler_heap_bytes: coral_v8::IsolateLimits::defaults().compiler_heap_bytes(),
@@ -181,7 +188,25 @@ pub fn spawn_run_executor(
     oneshot::Sender<()>,
     tokio::task::JoinHandle<Result<(), RunError>>,
 ) {
-    let config = run_executor_config(coral, max_runs_held, run_limits);
+    spawn_run_executor_at(coral.address(), max_runs_held, run_limits, health)
+}
+
+/// [`spawn_run_executor`] for a Run Executor that dials the Coral at
+/// `address`, such as a real link server.
+#[must_use]
+pub fn spawn_run_executor_at(
+    address: &str,
+    max_runs_held: u32,
+    run_limits: RunLimits,
+    health: Option<TcpListener>,
+) -> (
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<Result<(), RunError>>,
+) {
+    let config = RunExecutorConfig {
+        coral_address: address.parse().expect("the Coral address"),
+        ..run_executor_config_for(max_runs_held, run_limits)
+    };
     let (retire, retired) = oneshot::channel::<()>();
     let task = tokio::spawn(crate::run(config, health, async {
         drop(retired.await);

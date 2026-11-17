@@ -80,6 +80,30 @@ pub(crate) async fn finish_unstarted_run(
     .await
 }
 
+/// Ends a taken Run that never started, under the take's claim, which it
+/// releases: no claim stays on a Run with no start mark once it has ended.
+pub(crate) async fn finish_taken_run(
+    transaction: &mut Transaction<'_>,
+    run: &RunRecord,
+    claim_id: &str,
+    outcome: &RunTerminalOutcome,
+    terminal_at_unix_nanos: i64,
+) -> Result<(), Error> {
+    finish_terminal_run(
+        transaction,
+        run,
+        Some(claim_id),
+        &[],
+        outcome,
+        terminal_at_unix_nanos,
+        vec![(
+            ProgramRunRecords::ExecutionClaimId,
+            Expr::val(None::<String>),
+        )],
+    )
+    .await
+}
+
 /// Persists the caller-selected outcome and terminal Event under the Run hold.
 /// The caller must apply the Final Value budget in this same transaction.
 pub(crate) async fn finish_run(

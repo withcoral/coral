@@ -40,14 +40,7 @@ impl RunModule {
         time_limit: RunTimeout,
     ) {
         let (handle, mailbox) = OwnerHandle::new(run.held_id(), run.claim_id.clone());
-        let registration = self.owners.register(handle.clone());
-        self.inbox.owner_registered(
-            &self.owners,
-            &self.instance,
-            &self.clock,
-            #[cfg(test)]
-            &self.execution_observer,
-        );
+        let registration = self.register_owner(&handle);
         let supervised = run.clone();
         let owner_task = tokio::spawn(owner::host(
             self.clone(),
@@ -65,6 +58,21 @@ impl RunModule {
                     .await;
             }
         });
+    }
+
+    /// Registers the owner `handle` names, before its task starts, so a stop
+    /// that arrives first still finds it, and starts the Run Inbox reader
+    /// that delivers its outside requests.
+    pub(crate) fn register_owner(&self, handle: &OwnerHandle) -> owner::OwnerRegistration {
+        let registration = self.owners.register(handle.clone());
+        self.inbox.owner_registered(
+            &self.owners,
+            &self.instance,
+            &self.clock,
+            #[cfg(test)]
+            &self.execution_observer,
+        );
+        registration
     }
 
     /// The supervisor's answer to an owner task that ended without retiring

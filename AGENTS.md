@@ -197,10 +197,11 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   key. Use a composite primary key only when the tuple is the domain identity.
 - For Workspace-owned data, every externally influenced read or write must
   match both the Workspace and entity identity, even when the entity ID is
-  globally unique. The one exception is Agent authentication at the
-  Organization MCP Endpoint: it finds the Registration by credential verifier
-  alone, because the credential is a secret, not an ID. The Workspace it
-  returns scopes every later read.
+  globally unique. Two exceptions find a row by a secret, not an ID, and the
+  Workspace of the row found scopes every later read: Agent authentication at
+  the Organization MCP Endpoint finds the Registration by credential verifier
+  alone, and a Run stream's `Open` finds the Run by its id and the execution
+  claim a take gave the Run Executor.
 - Add every schema migration to `crates/coral-db/migrations`, the one shared
   chain. Write one portable file that both databases run. When SQLite and
   Postgres must perform a step differently, add one file with the same name to

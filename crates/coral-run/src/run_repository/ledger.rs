@@ -48,6 +48,8 @@ pub(crate) struct Chunk<'a> {
     termination: Option<&'a RequestedTermination>,
     /// The worker claim the Run row must still hold for this chunk to land.
     worker_claim_id: Option<&'a str>,
+    /// The highest Run stream request number committed with this chunk.
+    request_number: Option<u64>,
 }
 
 impl<'a> Chunk<'a> {
@@ -70,7 +72,14 @@ impl<'a> Chunk<'a> {
             lease_until_unix_nanos: None,
             termination: None,
             worker_claim_id: None,
+            request_number: None,
         }
+    }
+
+    /// Records `number` as the highest Run stream request number committed.
+    pub(crate) const fn request_number(mut self, number: u64) -> Self {
+        self.request_number = Some(number);
+        self
     }
 
     /// Predicates the chunk on the Run row still holding `claim_id` as its
@@ -162,6 +171,11 @@ pub(super) async fn commit_chunk_with(
     let mut run_values = run_values;
     if let Some(intent) = chunk.termination {
         run_values.extend(request_values(intent));
+    }
+    if let Some(number) = chunk.request_number {
+        let number = i64::try_from(number)
+            .map_err(|_error| Error::CorruptData("Run request number overflowed".to_string()))?;
+        run_values.push((ProgramRunRecords::CommittedRequestNumber, Expr::val(number)));
     }
     let head = i64::try_from(chunk.head)
         .map_err(|_error| Error::CorruptData("Run Ledger head overflowed".to_string()))?;

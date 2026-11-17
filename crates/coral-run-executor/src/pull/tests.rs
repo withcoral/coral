@@ -127,6 +127,7 @@ async fn start(timing: Timing) -> Link {
         database: database.database(),
         coral_instance_id: INSTANCE.to_owned(),
         timing,
+        run_streams: None,
     };
     let (stop, stopped) = oneshot::channel::<()>();
     tokio::spawn(server.serve(listener, async {

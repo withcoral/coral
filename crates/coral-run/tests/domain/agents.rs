@@ -106,7 +106,7 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum AgentLoss {
+pub(super) enum AgentLoss {
     AgentDisabled,
     Deleted,
     RegistrationDisabled,
@@ -115,7 +115,7 @@ enum AgentLoss {
 }
 
 impl AgentLoss {
-    const ALL: [Self; 5] = [
+    pub(super) const ALL: [Self; 5] = [
         Self::AgentDisabled,
         Self::Deleted,
         Self::RegistrationDisabled,
@@ -136,7 +136,7 @@ impl AgentLoss {
         }
     }
 
-    async fn apply(
+    pub(super) async fn apply(
         self,
         fixture: &TestModules,
         owner: &AuthenticatedPrincipal,
@@ -265,7 +265,7 @@ async fn action_queue_and_approval_decisions_agree_after_authority_or_policy_cha
     }
 }
 
-async fn agent_scope(
+pub(super) async fn agent_scope(
     fixture: &TestModules,
     owner: &AuthenticatedPrincipal,
     workspace_id: &WorkspaceId,

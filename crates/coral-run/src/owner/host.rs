@@ -70,6 +70,10 @@ pub(crate) enum OwnerStart {
         lease_until: Option<i64>,
         deadline: Option<i64>,
     },
+    /// The owner of a Run a Run Executor runs (ADR 0027): its start landed
+    /// before the owner exists and is queued in its mailbox, and the Run
+    /// stream is its Program.
+    Stream(std::sync::Arc<crate::run_stream::StreamRun>),
 }
 
 /// Hosts the owner of `accepted` until it retires.
@@ -101,7 +105,7 @@ pub(crate) async fn host(
                 Effect::Commit {
                     chunk,
                     output_total,
-                } => spawn_commit(&module, &accepted, &handle, chunk, output_total),
+                } => spawn_commit(&module, &accepted, &handle, &start, chunk, output_total),
                 Effect::ArmTimer { timer, after_nanos } => {
                     #[cfg(test)]
                     module.execution_observer.timer_armed(&timer, after_nanos);
@@ -132,6 +136,7 @@ pub(crate) async fn host(
                         .clone();
                     spawn_settle(&module, &accepted, &handle, shutdown, again, deadline, span);
                 }
+                Effect::TerminateProgram => terminate_program(&handle, &start, &state),
                 Effect::Recover(recovered) => {
                     if let OwnerStart::Recovery {
                         taken, lease_until, ..
@@ -189,6 +194,17 @@ pub(crate) async fn host(
     drop(registration);
 }
 
+/// Terminates the Program and wakes every stop-aware wait; a Run Executor
+/// learns why on the Run stream.
+fn terminate_program(handle: &OwnerHandle, start: &OwnerStart, state: &OwnerState) {
+    handle.stop().request();
+    if let OwnerStart::Stream(stream) = start {
+        stream
+            .link
+            .terminate(state.termination().map(|intent| intent.termination.kind));
+    }
+}
+
 /// The owner's memory as it begins, and its first effects: a Program owner
 /// is launched; a recovered owner applies the mailbox the sweep queued.
 fn begin(
@@ -202,7 +218,7 @@ fn begin(
         fan_out_invocations: module.fan_out_limit.invocations(),
         // A Program owner's start records the deadline.
         deadline_at_unix_nanos: match start {
-            OwnerStart::Program { .. } => NO_DEADLINE,
+            OwnerStart::Program { .. } | OwnerStart::Stream(_) => NO_DEADLINE,
             OwnerStart::Recovery { deadline, .. } => deadline.unwrap_or(NO_DEADLINE),
         },
         shutdown_grace_nanos: accepted.shutdown_grace_nanos,
@@ -222,6 +238,13 @@ fn begin(
             OwnerState::recovered(limits, accepted.accepted_at_unix_nanos),
             Vec::new(),
         ),
+        // The start landed already: its `Started` waits in the mailbox.
+        OwnerStart::Stream(_) => {
+            let mut state = OwnerState::for_run_stream(limits, accepted.accepted_at_unix_nanos);
+            let mut effects = apply(&mut state, Message::Launch, launched_at(module, accepted));
+            effects.retain(|effect| !matches!(effect, Effect::Start));
+            (state, effects)
+        }
     }
 }
 
@@ -430,20 +453,14 @@ fn run_effect(
         Effect::StartProgram {
             package,
             deadline_at_unix_nanos,
-        } => {
-            if let OwnerStart::Program { actor, time_limit } = start {
-                start_program(
-                    module,
-                    accepted,
-                    actor,
-                    handle,
-                    package,
-                    deadline_at_unix_nanos,
-                    *time_limit,
-                );
-            }
-        }
-        Effect::TerminateProgram => handle.stop().request(),
+        } => start_program(
+            module,
+            accepted,
+            start,
+            handle,
+            package,
+            deadline_at_unix_nanos,
+        ),
         Effect::Wake(parked) => parked.wake(),
         Effect::Abandon(work, error) => work.settle(Err(error)),
         Effect::CompleteExecution { completion, intent } => {
@@ -467,6 +484,7 @@ fn run_effect(
             }));
         }
         Effect::Commit { .. }
+        | Effect::TerminateProgram
         | Effect::Settle { .. }
         | Effect::Interrupt { .. }
         | Effect::Recover(_)
@@ -482,10 +500,48 @@ fn run_effect(
     }
 }
 
+/// Starts the Program: in this process's isolate, or on the Run stream of a
+/// Run a Run Executor runs. A recovered owner runs none.
+fn start_program(
+    module: &RunModule,
+    accepted: &AcceptedRun,
+    start: &OwnerStart,
+    handle: &OwnerHandle,
+    package: engine::ProgramPackage,
+    deadline_at_unix_nanos: i64,
+) {
+    match start {
+        OwnerStart::Program { actor, time_limit } => execute_package(
+            module,
+            accepted,
+            actor,
+            handle,
+            package,
+            deadline_at_unix_nanos,
+            *time_limit,
+        ),
+        OwnerStart::Stream(stream) => crate::run_stream::start_program(
+            module,
+            accepted,
+            stream,
+            handle,
+            invoker(
+                module,
+                accepted,
+                &stream.actor,
+                handle,
+                deadline_at_unix_nanos,
+            ),
+            deadline_at_unix_nanos,
+        ),
+        OwnerStart::Recovery { .. } => {}
+    }
+}
+
 /// Executes the accepted package with the Run's invoker and output, bound by
 /// the deadline its start recorded and by the Run CPU Budget when it is below
 /// `time_limit`, and reports its end into the mailbox.
-fn start_program(
+fn execute_package(
     module: &RunModule,
     accepted: &AcceptedRun,
     actor: &AuthenticatedPrincipal,
@@ -494,26 +550,7 @@ fn start_program(
     deadline_at_unix_nanos: i64,
     time_limit: RunTimeout,
 ) {
-    let invoker = ToolInvoker::new(
-        module.accounts.clone(),
-        module.providers.clone(),
-        module.policies.clone(),
-        module.provider_renamer.clone(),
-        module.search.clone(),
-        module.private_tools.clone(),
-        module.human_interface.clone(),
-        module.database.clone(),
-        module.workspaces.clone(),
-        actor.clone(),
-        accepted,
-        deadline_at_unix_nanos,
-        module.execution_policy.approval_wait_nanos(),
-        handle.clone(),
-        module.upstream.clone(),
-        module.clock.clone(),
-        #[cfg(test)]
-        module.invocation_observer.clone(),
-    );
+    let invoker = invoker(module, accepted, actor, handle, deadline_at_unix_nanos);
     let output = ProgramOutputWriter::new(handle.clone(), accepted.value_limits);
     let engine = module.engine.clone();
     let linked_snapshots = accepted.linked_snapshots.clone();
@@ -538,6 +575,36 @@ fn start_program(
         .await;
         handle.send(Message::ProgramEnded(completion));
     }));
+}
+
+/// The Tool invoker of the Program `actor` runs for the owner of `accepted`.
+fn invoker(
+    module: &RunModule,
+    accepted: &AcceptedRun,
+    actor: &AuthenticatedPrincipal,
+    handle: &OwnerHandle,
+    deadline_at_unix_nanos: i64,
+) -> ToolInvoker {
+    ToolInvoker::new(
+        module.accounts.clone(),
+        module.providers.clone(),
+        module.policies.clone(),
+        module.provider_renamer.clone(),
+        module.search.clone(),
+        module.private_tools.clone(),
+        module.human_interface.clone(),
+        module.database.clone(),
+        module.workspaces.clone(),
+        actor.clone(),
+        accepted,
+        deadline_at_unix_nanos,
+        module.execution_policy.approval_wait_nanos(),
+        handle.clone(),
+        module.upstream.clone(),
+        module.clock.clone(),
+        #[cfg(test)]
+        module.invocation_observer.clone(),
+    )
 }
 
 /// The end of a recorded termination's shutdown grace on this process's
@@ -695,16 +762,26 @@ fn spawn_commit(
     module: &RunModule,
     accepted: &AcceptedRun,
     handle: &OwnerHandle,
+    start: &OwnerStart,
     chunk: ChunkBuild,
     output_total: usize,
 ) {
     let module = module.clone();
     let accepted = accepted.clone();
     let handle = handle.clone();
+    let link = match start {
+        OwnerStart::Stream(stream) => Some(stream.link.clone()),
+        OwnerStart::Program { .. } | OwnerStart::Recovery { .. } => None,
+    };
     tokio::spawn(async move {
         let outcome = commit_until_answered(&module, &accepted, &handle, chunk, output_total).await;
         let message = match outcome {
-            Some(Ok(())) => Message::Committed,
+            Some(Ok(request_number)) => {
+                if let Some(link) = link {
+                    link.committed(request_number);
+                }
+                Message::Committed
+            }
             Some(Err(rejection)) => Message::CommitRejected(rejection),
             None => return,
         };
@@ -722,6 +799,11 @@ struct Written {
     /// renews the lease, and the owner commits one chunk at a time, so a row
     /// that carries exactly this instant carries this chunk.
     lease_until_unix_nanos: Option<i64>,
+    /// For a Run a Run Executor holds, which has no lease: the commit time
+    /// the last attempt that got to write stamped, made distinct the same way.
+    committed_at_unix_nanos: Option<i64>,
+    /// The highest Run stream request number that attempt wrote.
+    request_number: Option<u64>,
 }
 
 impl Written {
@@ -731,8 +813,22 @@ impl Written {
     /// the row, so a coarse clock cannot make the previous chunk's lease pass
     /// for this one.
     fn landed_on(self, run: &RunRecord) -> bool {
-        self.lease_until_unix_nanos.is_some()
-            && run.worker_claim_expires_at_unix_nanos == self.lease_until_unix_nanos
+        let marked = if run.on_run_executor {
+            self.committed_at_unix_nanos.is_some()
+                && run.last_commit_at_unix_nanos == self.committed_at_unix_nanos
+        } else {
+            self.lease_until_unix_nanos.is_some()
+                && run.worker_claim_expires_at_unix_nanos == self.lease_until_unix_nanos
+        };
+        marked && run.chunk_sequence > self.head_before
+    }
+
+    /// Whether another writer moved the head of a Run a Run Executor holds
+    /// under this chunk's claim: the chunk is rebuilt on the new head.
+    fn moved_on(self, run: &RunRecord, claim_id: &str) -> bool {
+        run.on_run_executor
+            && run.state == crate::RunState::Running
+            && run.execution_claim_id.as_deref() == Some(claim_id)
             && run.chunk_sequence > self.head_before
     }
 }
@@ -744,6 +840,8 @@ struct Records {
     termination: Option<crate::lifecycle::RequestedTermination>,
     inbox_rows: Vec<crate::run_inbox::InboxRow>,
     output_total: usize,
+    /// The highest Run stream request number the chunk commits.
+    request_number: Option<u64>,
 }
 
 /// How one commit attempt ended.
@@ -752,6 +850,9 @@ enum Attempt {
     Rejected(CommitRejection),
     /// The database gave no answer.
     Unanswered(Error),
+    /// Another writer moved the head of the Run a Run Executor holds, as
+    /// the row read shows.
+    Moved(Box<RunRecord>),
 }
 
 /// What the reread of the Run row says about an unanswered attempt.
@@ -759,12 +860,14 @@ enum Resolution {
     Landed,
     Rejected(CommitRejection),
     Recommit,
+    Moved(Box<RunRecord>),
 }
 
 /// Why one attempt's transaction did not reach its commit.
 enum CommitFailure {
     /// The Run row as read no longer takes this owner's chunks.
     Rejected(CommitRejection),
+    Moved(Box<RunRecord>),
     Error(Error),
 }
 
@@ -786,22 +889,33 @@ async fn commit_until_answered(
     handle: &OwnerHandle,
     chunk: ChunkBuild,
     output_total: usize,
-) -> Option<Result<(), CommitRejection>> {
+) -> Option<Result<Option<u64>, CommitRejection>> {
+    let chunk_bytes = chunk.bytes;
+    let mut bytes = chunk_bytes;
     let mut items = chunk.items;
+    let mut numbers = vec![None; items.len()];
+    for (index, number) in chunk.numbered {
+        if let Some(slot) = numbers.get_mut(index) {
+            *slot = Some(number);
+        }
+    }
     let mut enforcement = chunk.enforcement;
-    let records = Records {
+    let mut records = Records {
         termination: chunk.termination,
         inbox_rows: chunk.inbox_rows,
         output_total,
+        request_number: chunk.request_number,
     };
     let mut written = Written {
         head_before: chunk.head,
         lease_until_unix_nanos: None,
+        committed_at_unix_nanos: None,
+        request_number: None,
     };
     let held = accepted.held_id();
     let mut backoff = Backoff::new(&held, "chunk commit");
     let outcome = loop {
-        match commit_once(
+        let moved = match commit_once(
             module,
             accepted,
             &mut items,
@@ -813,6 +927,7 @@ async fn commit_until_answered(
         {
             Attempt::Landed => break Ok(()),
             Attempt::Rejected(rejection) => break Err(rejection),
+            Attempt::Moved(run) => run,
             Attempt::Unanswered(error) => {
                 let resolution =
                     reread_until_resolved(module, accepted, handle, written, &mut backoff, error)
@@ -821,10 +936,26 @@ async fn commit_until_answered(
                     None => return None,
                     Some(Resolution::Landed) => break Ok(()),
                     Some(Resolution::Rejected(rejection)) => break Err(rejection),
-                    Some(Resolution::Recommit) => {}
+                    Some(Resolution::Recommit) => continue,
+                    Some(Resolution::Moved(run)) => run,
                 }
             }
-        }
+        };
+        let Some(recorded_total) = rebase(
+            &mut items,
+            &mut numbers,
+            &mut bytes,
+            chunk_bytes,
+            &mut records,
+            &mut written,
+            &moved,
+        ) else {
+            break Err(CommitRejection::Corrupt);
+        };
+        handle.send(Message::Rebased {
+            head: written.head_before,
+            recorded_total,
+        });
     };
     if let Err(CommitRejection::Corrupt) = outcome {
         tracing::error!(
@@ -852,7 +983,52 @@ async fn commit_until_answered(
     if let Some(batch) = enforcement {
         batch.settle(outcome.map_err(CommitRejection::lost));
     }
-    Some(outcome)
+    Some(outcome.map(|()| written.request_number))
+}
+
+/// Rebuilds the chunk on the head another writer left on `run`: the items of
+/// the requests that writer committed are dropped (their work is recorded),
+/// and the output total is the row's plus what remains of this chunk's
+/// `bytes`. Returns the total the owner's record holds before this chunk
+/// lands, which then adds the chunk's `original_bytes`.
+fn rebase(
+    items: &mut Vec<ChunkItem>,
+    numbers: &mut Vec<Option<u64>>,
+    bytes: &mut usize,
+    original_bytes: usize,
+    records: &mut Records,
+    written: &mut Written,
+    run: &RunRecord,
+) -> Option<usize> {
+    let covered = run.committed_request_number.unwrap_or(0);
+    // Another writer committed an Invocation this owner admitted under the
+    // same request: two rows would answer one call. A reconnect (#2905)
+    // decides which stands; until then nothing more is written.
+    let admitted_elsewhere = items.iter().zip(numbers.iter()).any(|(item, number)| {
+        matches!(item, ChunkItem::Work(_)) && number.is_some_and(|number| number <= covered)
+    });
+    if admitted_elsewhere {
+        return None;
+    }
+    let mut kept = Vec::with_capacity(items.len());
+    let mut kept_numbers = Vec::with_capacity(items.len());
+    for (item, number) in items.drain(..).zip(numbers.drain(..)) {
+        if number.is_some_and(|number| number <= covered) {
+            if let ChunkItem::Event(event) = item {
+                *bytes = bytes.saturating_sub(event.output_bytes());
+            }
+        } else {
+            kept.push(item);
+            kept_numbers.push(number);
+        }
+    }
+    *items = kept;
+    *numbers = kept_numbers;
+    records.output_total = run.accumulated_output_bytes.saturating_add(*bytes);
+    written.head_before = run.chunk_sequence;
+    written.lease_until_unix_nanos = None;
+    written.committed_at_unix_nanos = None;
+    Some(records.output_total.saturating_sub(original_bytes))
 }
 
 /// Rereads the Run row after an attempt the database did not answer, backing
@@ -888,6 +1064,9 @@ fn resolve(run: &RunRecord, claim_id: &str, written: Written) -> Resolution {
     if written.landed_on(run) {
         return Resolution::Landed;
     }
+    if written.moved_on(run, claim_id) {
+        return Resolution::Moved(Box::new(run.clone()));
+    }
     match refusal(run, claim_id, written.head_before) {
         Some(rejection) => Resolution::Rejected(rejection),
         None => Resolution::Recommit,
@@ -909,13 +1088,48 @@ fn refusal(run: &RunRecord, claim_id: &str, head: u64) -> Option<CommitRejection
     if run.chunk_sequence < head {
         return Some(CommitRejection::Corrupt);
     }
-    if run.worker_claim_id.as_deref() != Some(claim_id) {
+    if !run.holds_owner_claim(claim_id) {
         return Some(CommitRejection::Refused);
     }
     if run.chunk_sequence != head {
         return Some(CommitRejection::Corrupt);
     }
     None
+}
+
+/// The chunk `run` takes, marked so a reread recognizes it: by the renewed
+/// lease, or, for a Run a Run Executor holds, by its commit time, with the
+/// watermark it commits. Neither mark repeats the instant on the row.
+fn marked_chunk<'a>(
+    module: &RunModule,
+    run: &'a RunRecord,
+    claim_id: &'a str,
+    now: i64,
+    records: &Records,
+    written: &mut Written,
+) -> Result<Chunk<'a>, Error> {
+    if !run.on_run_executor {
+        let mut lease_until = module.execution_policy.lease_until(now)?;
+        if Some(lease_until) == run.worker_claim_expires_at_unix_nanos {
+            lease_until = lease_until.saturating_add(1);
+        }
+        written.lease_until_unix_nanos = Some(lease_until);
+        return Ok(Chunk::new(run, Some(claim_id), now).renew_lease(lease_until));
+    }
+    let mut committed_at = now;
+    if Some(committed_at) == run.last_commit_at_unix_nanos {
+        committed_at = committed_at.saturating_add(1);
+    }
+    written.committed_at_unix_nanos = Some(committed_at);
+    // Never below the watermark another writer left.
+    written.request_number = records
+        .request_number
+        .map(|number| number.max(run.committed_request_number.unwrap_or(0)));
+    let chunk = Chunk::new(run, Some(claim_id), committed_at);
+    Ok(match written.request_number {
+        Some(number) => chunk.request_number(number),
+        None => chunk,
+    })
 }
 
 /// One attempt to commit the chunk, in one transaction that holds no Run
@@ -952,6 +1166,9 @@ async fn commit_once(
             // The attempt this one repeats landed between the reread and
             // this read.
             return Ok(());
+        }
+        if written.moved_on(&run, claim_id) {
+            return Err(CommitFailure::Moved(Box::new(run)));
         }
         let now = module.now()?.max(run.accepted_at_unix_nanos);
         if let Some(rejection) = refusal(&run, claim_id, written.head_before) {
@@ -991,22 +1208,11 @@ async fn commit_once(
                 ChunkItem::Work(_) => events.extend(produced_by_work.next().into_iter().flatten()),
             }
         }
-        // The renewed lease marks this chunk on the row; it never repeats the
-        // instant already there.
-        let mut lease_until = module.execution_policy.lease_until(now)?;
-        if Some(lease_until) == run.worker_claim_expires_at_unix_nanos {
-            lease_until = lease_until.saturating_add(1);
-        }
-        written.lease_until_unix_nanos = Some(lease_until);
-        run_repository::commit_chunk(
-            &mut transaction,
-            Chunk::new(&run, Some(claim_id), now)
-                .owned_events(events)
-                .output_bytes(records.output_total)
-                .renew_lease(lease_until)
-                .termination(records.termination.as_ref()),
-        )
-        .await?;
+        let chunk = marked_chunk(module, &run, claim_id, now, records, written)?
+            .owned_events(events)
+            .output_bytes(records.output_total)
+            .termination(records.termination.as_ref());
+        run_repository::commit_chunk(&mut transaction, chunk).await?;
         transaction.commit().await.map_err(Error::from)?;
         #[cfg(test)]
         if module.execution_observer.chunk_commit_answer_lost().await {
@@ -1018,6 +1224,7 @@ async fn commit_once(
     match outcome {
         Ok(()) => Attempt::Landed,
         Err(CommitFailure::Rejected(rejection)) => Attempt::Rejected(rejection),
+        Err(CommitFailure::Moved(run)) => Attempt::Moved(run),
         Err(CommitFailure::Error(error)) if error.is_operational() => Attempt::Unanswered(error),
         // The head update matched no row under the claim: a writer moved
         // the row between the read and the update. The row read again says
@@ -1027,6 +1234,7 @@ async fn commit_once(
             match run_repository::find_exact(&module.database, &accepted.workspace_id, &accepted.id)
                 .await
             {
+                Ok(Some(run)) if written.moved_on(&run, claim_id) => Attempt::Moved(Box::new(run)),
                 Ok(Some(run)) => Attempt::Rejected(
                     refusal(&run, claim_id, written.head_before)
                         .unwrap_or(CommitRejection::Corrupt),

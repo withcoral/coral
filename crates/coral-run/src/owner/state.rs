@@ -67,6 +67,13 @@ use super::handle::{
     StartedExecution, Timer,
 };
 
+/// The next Run stream request number to apply, and the requests that
+/// arrived before it.
+struct RequestOrder {
+    next: u64,
+    held: BTreeMap<u64, Option<Box<Message>>>,
+}
+
 /// What a recovered owner applied from its mailbox: its one chunk writes the
 /// steps in order, then the Run's end.
 #[derive(Debug, Default)]
@@ -400,6 +407,10 @@ pub(crate) struct OwnerState {
     /// What a recovered owner applied for its one chunk, until its end
     /// takes it.
     recovered: Option<Recovered>,
+    /// A Run stream owner's requests, applied in number order.
+    requests: Option<RequestOrder>,
+    /// Items pushed into chunks so far, so a request knows whether it made one.
+    pushed: u64,
 }
 
 impl OwnerState {
@@ -434,6 +445,20 @@ impl OwnerState {
             closed: VecDeque::new(),
             in_flight: None,
             recovered: None,
+            requests: None,
+            pushed: 0,
+        }
+    }
+
+    /// An owner for a Run that a Run Executor runs (ADR 0027): it applies
+    /// the stream's numbered requests in order, from one.
+    pub(crate) fn for_run_stream(limits: OwnerLimits, accepted_at_unix_nanos: i64) -> Self {
+        Self {
+            requests: Some(RequestOrder {
+                next: 1,
+                held: BTreeMap::new(),
+            }),
+            ..Self::new(limits, accepted_at_unix_nanos)
         }
     }
 
@@ -467,7 +492,6 @@ impl OwnerState {
     }
 
     /// The termination intent the owner applied.
-    #[cfg(test)]
     pub(crate) const fn termination(&self) -> Option<&RequestedTermination> {
         self.termination.as_ref()
     }
@@ -612,6 +636,7 @@ impl OwnerState {
     /// not fit and after when it fills the chunk, and returns the chunk now
     /// holding the item.
     fn push(&mut self, item: ChunkItem, events: usize, bytes: usize) -> &mut ChunkBuild {
+        self.pushed += 1;
         if !self.open.fits(events, bytes) {
             self.close_open();
         }
@@ -1606,6 +1631,72 @@ impl OwnerState {
     }
 }
 
+impl OwnerState {
+    /// Run stream request `number`: applied once every lower request was,
+    /// in number order, then marked on the chunk that holds what it made.
+    fn request(
+        &mut self,
+        number: u64,
+        message: Option<Box<Message>>,
+        now_unix_nanos: i64,
+    ) -> Vec<Effect> {
+        let Some(order) = &mut self.requests else {
+            return message.map_or_else(Vec::new, |message| {
+                apply_message(self, *message, now_unix_nanos)
+            });
+        };
+        if number < order.next {
+            return Vec::new();
+        }
+        order.held.insert(number, message);
+        let mut effects = Vec::new();
+        while let Some(order) = &mut self.requests
+            && let Some(message) = order.held.remove(&order.next)
+        {
+            let number = order.next;
+            order.next += 1;
+            let pushed = self.pushed;
+            // `Finish` is recorded by the terminal write, not by a chunk: a
+            // reopen before that write lands resends it.
+            let finishes = matches!(message.as_deref(), Some(Message::ProgramEnded(_)));
+            if let Some(message) = message {
+                effects.extend(apply_message(self, *message, now_unix_nanos));
+            }
+            if !finishes {
+                self.mark_request(number, self.pushed > pushed);
+            }
+        }
+        effects
+    }
+
+    /// Marks request `number` on the chunk that holds the item it `made`,
+    /// or, for one that made none, on the last chunk not yet committed.
+    fn mark_request(&mut self, number: u64, made: bool) {
+        let chunk = match self.closed.back_mut() {
+            Some(back) if self.open.items.is_empty() && (made || self.open.is_empty()) => back,
+            _ => &mut self.open,
+        };
+        if made && let Some(index) = chunk.items.len().checked_sub(1) {
+            chunk.numbered.push((index, number));
+        }
+        chunk.request_number = Some(number);
+    }
+
+    /// The Run stream is gone: no more Program requests; what is applied
+    /// commits, and the owner retires with no terminal write.
+    fn detached(&mut self) -> Vec<Effect> {
+        if self.phase != Phase::Running {
+            return Vec::new();
+        }
+        self.stop_requested = true;
+        self.phase = Phase::Ending;
+        self.completion = None;
+        let mut effects = self.release_waiting(|| Error::ProgramHostTerminated);
+        effects.extend(self.advance_ending());
+        effects
+    }
+}
+
 /// Arms `timer` for `at_unix_nanos`: the host sleeps the rest of the way
 /// from `now_unix_nanos` on its own clock.
 fn arm_at(timer: Timer, at_unix_nanos: i64, now_unix_nanos: i64) -> Effect {
@@ -1732,5 +1823,15 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         Message::CommitRejected(rejection) => state.rejected(rejection),
         Message::Stop => state.stop(),
         Message::Drained => state.commit_when_free(),
+        Message::Request { number, message } => state.request(number, message, now_unix_nanos),
+        Message::Rebased {
+            head,
+            recorded_total,
+        } => {
+            state.head = head;
+            state.recorded_total = recorded_total;
+            Vec::new()
+        }
+        Message::Detached => state.detached(),
     }
 }

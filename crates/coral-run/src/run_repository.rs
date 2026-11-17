@@ -18,6 +18,7 @@ mod inbox;
 mod ledger;
 mod retention;
 mod run_row;
+mod stream;
 mod take;
 mod termination;
 mod usage;
@@ -38,14 +39,15 @@ pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention_activity};
 use run_row::RunRow;
 pub(crate) use run_row::UndecodableRun;
+pub(crate) use stream::{find_taken, linked_tools, start_taken};
 pub(crate) use take::{Claimed, Taker, any_waiting, take_oldest};
 pub(crate) use termination::{
-    Takeover, finish_run, finish_termination, finish_unstarted_run, interrupt_run,
-    request_termination,
+    Takeover, finish_run, finish_taken_run, finish_termination, finish_unstarted_run,
+    interrupt_run, request_termination,
 };
 pub(crate) use usage::{first_success_before, private_tool_calls, run_endings, shared_tool_calls};
 
-#[derive(Iden)]
+#[derive(Iden, Clone, Copy)]
 enum ProgramRunRecords {
     Table,
     Id,
@@ -81,6 +83,9 @@ enum ProgramRunRecords {
     TakenAtUnixNanos,
     RunExecutorId,
     RunExecutorKind,
+    CommittedRequestNumber,
+    TimeLimitNanos,
+    AgentRegistrationId,
 }
 
 /// Reads the Run row in one statement, outside any transaction and without
@@ -213,7 +218,7 @@ fn exact_run_statement(workspace_id: &WorkspaceId, run_id: &RunId) -> sea_query:
 }
 
 /// The columns `RunRow` decodes, shared by Run reads and retention's hold.
-const RUN_COLUMNS: [ProgramRunRecords; 28] = [
+const RUN_COLUMNS: [ProgramRunRecords; 33] = [
     ProgramRunRecords::Id,
     ProgramRunRecords::WorkspaceId,
     ProgramRunRecords::PrincipalId,
@@ -242,6 +247,11 @@ const RUN_COLUMNS: [ProgramRunRecords; 28] = [
     ProgramRunRecords::ValueLimitsJson,
     ProgramRunRecords::AccumulatedOutputBytes,
     ProgramRunRecords::ChunkSequence,
+    ProgramRunRecords::TimeLimitNanos,
+    ProgramRunRecords::AgentRegistrationId,
+    ProgramRunRecords::RunExecutorKind,
+    ProgramRunRecords::CommittedRequestNumber,
+    ProgramRunRecords::LastCommitAtUnixNanos,
 ];
 
 /// Columns a Run read computes beside the row, named as `RunRow` decodes them.
