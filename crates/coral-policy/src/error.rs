@@ -34,6 +34,27 @@ pub enum Error {
     EventFields(#[from] serde_json::Error),
 }
 
+impl Error {
+    /// The database error behind this one, directly or through the Provider
+    /// or Workspace error that wraps it. A module that wraps this error asks
+    /// here, so it never lists another module's variants.
+    #[must_use]
+    pub const fn database_error(&self) -> Option<&coral_db::Error> {
+        match self {
+            Self::Database(error) => Some(error),
+            Self::Provider(error) => error.database_error(),
+            Self::Workspace(error) => error.database_error(),
+            // Name every variant so a new one that holds a database error
+            // is found here.
+            Self::InvalidBatch
+            | Self::ToolNotFound
+            | Self::RefusedToolPaths { .. }
+            | Self::CorruptData(_)
+            | Self::EventFields(_) => None,
+        }
+    }
+}
+
 /// Names each kind of refused path that has any, such as
 /// `not found coral.providers.github.x; Built-in coral.search`.
 fn refused_paths(missing: &[String], builtin: &[String]) -> String {
@@ -43,4 +64,49 @@ fn refused_paths(missing: &[String], builtin: &[String]) -> String {
         .map(|(kind, paths)| format!("{kind} {}", paths.join(", ")))
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    // Catches: a database error that a caller of Policy cannot find, so an
+    // unanswered write reads as a definite answer.
+    #[test]
+    fn a_policy_error_states_the_database_error_behind_it() {
+        let unanswered = || coral_db::Error::WriterBusy;
+        let found: [(Error, &str); 4] = [
+            (Error::Database(unanswered()), "policy"),
+            (
+                Error::Workspace(coral_workspace::Error::Database(unanswered())),
+                "workspace",
+            ),
+            (
+                Error::Provider(coral_provider::Error::Database(unanswered())),
+                "provider",
+            ),
+            (
+                Error::Provider(coral_provider::Error::Catalog(
+                    coral_catalog::Error::Database(unanswered()),
+                )),
+                "provider catalog",
+            ),
+        ];
+        for (error, label) in found {
+            assert!(
+                error
+                    .database_error()
+                    .is_some_and(coral_db::Error::is_unanswered),
+                "{label}"
+            );
+        }
+        for error in [
+            Error::ToolNotFound,
+            Error::CorruptData("row".into()),
+            Error::Workspace(coral_workspace::Error::WorkspaceArchived),
+            Error::Provider(coral_provider::Error::ProviderNotFound),
+        ] {
+            assert!(error.database_error().is_none(), "{error:?}");
+        }
+    }
 }

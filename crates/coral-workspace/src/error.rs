@@ -73,26 +73,229 @@ pub enum Error {
 }
 
 impl Error {
+    /// The refusal this error is, when it says the caller's current
+    /// authority does not reach the Workspace or the action. Every other
+    /// error is a refused change, corrupt data or a host failure.
+    #[must_use]
+    pub const fn refusal(&self) -> Option<AuthorityRefusal> {
+        match self {
+            Self::WorkspaceNotFound => Some(AuthorityRefusal::WorkspaceNotFound),
+            Self::PermissionDenied(_) => Some(AuthorityRefusal::PermissionDenied),
+            Self::WorkspaceArchived => Some(AuthorityRefusal::WorkspaceArchived),
+            Self::AgentNotFound => Some(AuthorityRefusal::AgentNotFound),
+            Self::AgentDisabled => Some(AuthorityRefusal::AgentDisabled),
+            Self::AgentRegistrationExpired => Some(AuthorityRefusal::AgentRegistrationExpired),
+            Self::InvalidAgentCredential => Some(AuthorityRefusal::InvalidAgentCredential),
+            // Name every variant so a new one needs a decision here.
+            Self::InvalidInput(_)
+            | Self::OrganizationAuthorityConflict
+            | Self::EtagMismatch
+            | Self::RequestAlreadyApplied
+            | Self::MembershipAlreadyExists
+            | Self::AmbiguousEmail
+            | Self::WorkspaceAlreadyActive
+            | Self::WorkspaceAlreadyArchived
+            | Self::MembershipNotFound
+            | Self::LastWorkspaceOwner
+            | Self::OwnerTransferRequired
+            | Self::OwnerTargetNotEnabled
+            | Self::CredentialGeneration
+            | Self::CorruptData(_)
+            | Self::Database(_)
+            | Self::EventFields(_) => None,
+        }
+    }
+
+    /// The database error this one is, if any. A module that wraps this
+    /// error asks here, so it never lists another module's variants.
+    #[must_use]
+    pub const fn database_error(&self) -> Option<&coral_db::Error> {
+        match self {
+            Self::Database(error) => Some(error),
+            // Name every variant so a new one that holds a database error
+            // is found here.
+            Self::InvalidInput(_)
+            | Self::OrganizationAuthorityConflict
+            | Self::EtagMismatch
+            | Self::RequestAlreadyApplied
+            | Self::MembershipAlreadyExists
+            | Self::AmbiguousEmail
+            | Self::WorkspaceNotFound
+            | Self::PermissionDenied(_)
+            | Self::WorkspaceArchived
+            | Self::WorkspaceAlreadyActive
+            | Self::WorkspaceAlreadyArchived
+            | Self::MembershipNotFound
+            | Self::LastWorkspaceOwner
+            | Self::OwnerTransferRequired
+            | Self::OwnerTargetNotEnabled
+            | Self::AgentNotFound
+            | Self::AgentDisabled
+            | Self::AgentRegistrationExpired
+            | Self::InvalidAgentCredential
+            | Self::CredentialGeneration
+            | Self::CorruptData(_)
+            | Self::EventFields(_) => None,
+        }
+    }
+
     /// Safe current-authority rejection, excluding host and persistence uncertainty.
     #[must_use]
     pub const fn safe_rejection(&self) -> Option<(&'static str, &'static str)> {
-        Some(match self {
-            Self::WorkspaceNotFound => ("workspace_not_found", "Workspace was not found"),
-            Self::PermissionDenied(_) => (
+        match self.refusal() {
+            Some(refusal) => Some((refusal.code(), refusal.message())),
+            None => None,
+        }
+    }
+}
+
+/// Why the caller's current authority does not reach a Workspace or an
+/// action in it. The set is closed, so a module that treats some of these
+/// alike names each one, and a new refusal needs a decision there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorityRefusal {
+    /// The Workspace is absent or concealed from the caller.
+    WorkspaceNotFound,
+    /// The caller cannot perform the action.
+    PermissionDenied,
+    /// The Workspace is archived.
+    WorkspaceArchived,
+    /// The Agent or its Registration is absent in the Workspace.
+    AgentNotFound,
+    /// The Agent or its Registration is disabled.
+    AgentDisabled,
+    /// The Registration reached its deadline.
+    AgentRegistrationExpired,
+    /// The credential is invalid, rotated or scoped to something else.
+    InvalidAgentCredential,
+}
+
+impl AuthorityRefusal {
+    /// Whether work that runs for an authenticated Principal has lost its
+    /// authority: the Principal can no longer act in the Workspace. An
+    /// invalid credential is not that. Only a credential check returns it,
+    /// and such work makes none, so there it is a defect.
+    #[must_use]
+    pub const fn ends_authority(self) -> bool {
+        match self {
+            Self::WorkspaceNotFound
+            | Self::PermissionDenied
+            | Self::WorkspaceArchived
+            | Self::AgentNotFound
+            | Self::AgentDisabled
+            | Self::AgentRegistrationExpired => true,
+            Self::InvalidAgentCredential => false,
+        }
+    }
+
+    /// The refusal's stable code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::WorkspaceNotFound => "workspace_not_found",
+            Self::PermissionDenied => "permission_denied",
+            Self::WorkspaceArchived => "workspace_archived",
+            Self::AgentNotFound => "agent_not_found",
+            Self::AgentDisabled => "agent_disabled",
+            Self::AgentRegistrationExpired => "agent_registration_expired",
+            Self::InvalidAgentCredential => "invalid_agent_credential",
+        }
+    }
+
+    /// What the refusal says to the caller. It names no reason beyond the
+    /// code's.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::WorkspaceNotFound => "Workspace was not found",
+            Self::PermissionDenied => "Current authority does not permit this action",
+            Self::WorkspaceArchived => "Workspace is archived",
+            Self::AgentNotFound => "Agent was not found",
+            Self::AgentDisabled => "Agent is disabled",
+            Self::AgentRegistrationExpired => "Agent Registration has expired",
+            Self::InvalidAgentCredential => "Agent credential is invalid",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AuthorityRefusal, Error};
+
+    // Catches: a refusal whose code or message changes under the clients
+    // that read it, an error that starts or stops being a refusal, and a
+    // database error that its wrapper cannot find.
+    #[test]
+    fn each_error_states_its_refusal_and_its_database_error() {
+        let refusals = [
+            (
+                Error::WorkspaceNotFound,
+                AuthorityRefusal::WorkspaceNotFound,
+                "workspace_not_found",
+                "Workspace was not found",
+            ),
+            (
+                Error::PermissionDenied("Workspace Owner authority is required"),
+                AuthorityRefusal::PermissionDenied,
                 "permission_denied",
                 "Current authority does not permit this action",
             ),
-            Self::WorkspaceArchived => ("workspace_archived", "Workspace is archived"),
-            Self::AgentNotFound => ("agent_not_found", "Agent was not found"),
-            Self::AgentDisabled => ("agent_disabled", "Agent is disabled"),
-            Self::AgentRegistrationExpired => (
+            (
+                Error::WorkspaceArchived,
+                AuthorityRefusal::WorkspaceArchived,
+                "workspace_archived",
+                "Workspace is archived",
+            ),
+            (
+                Error::AgentNotFound,
+                AuthorityRefusal::AgentNotFound,
+                "agent_not_found",
+                "Agent was not found",
+            ),
+            (
+                Error::AgentDisabled,
+                AuthorityRefusal::AgentDisabled,
+                "agent_disabled",
+                "Agent is disabled",
+            ),
+            (
+                Error::AgentRegistrationExpired,
+                AuthorityRefusal::AgentRegistrationExpired,
                 "agent_registration_expired",
                 "Agent Registration has expired",
             ),
-            Self::InvalidAgentCredential => {
-                ("invalid_agent_credential", "Agent credential is invalid")
-            }
-            _ => return None,
-        })
+            (
+                Error::InvalidAgentCredential,
+                AuthorityRefusal::InvalidAgentCredential,
+                "invalid_agent_credential",
+                "Agent credential is invalid",
+            ),
+        ];
+        for (error, refusal, code, message) in refusals {
+            assert_eq!(
+                refusal.ends_authority(),
+                refusal != AuthorityRefusal::InvalidAgentCredential,
+                "{error:?}"
+            );
+            assert_eq!(error.refusal(), Some(refusal), "{error:?}");
+            assert_eq!(error.safe_rejection(), Some((code, message)), "{error:?}");
+            assert!(error.database_error().is_none(), "{error:?}");
+        }
+        for error in [
+            Error::InvalidInput("name".to_owned()),
+            Error::EtagMismatch,
+            Error::MembershipNotFound,
+            Error::LastWorkspaceOwner,
+            Error::CorruptData("row".to_owned()),
+            Error::Database(coral_db::Error::WriterBusy),
+        ] {
+            assert_eq!(error.refusal(), None, "{error:?}");
+            assert_eq!(error.safe_rejection(), None, "{error:?}");
+            assert_eq!(
+                error.database_error().is_some(),
+                matches!(error, Error::Database(_)),
+                "{error:?}"
+            );
+        }
     }
 }
