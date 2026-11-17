@@ -1773,8 +1773,11 @@ export const AddMembersTypedAndPicked: Story = {
         name: /Priya Natarajan/,
       }),
     )
-    await userEvent.keyboard('{Escape}')
-    const submit = dialog.getByRole('button', { name: 'Add 3 members' }) as HTMLButtonElement
+    // A pick from typed text closes the list. Escape then is not for the list: it
+    // closes the dialog, or clears every pick once the list has faded out.
+    const submit = (await dialog.findByRole('button', {
+      name: 'Add 3 members',
+    })) as HTMLButtonElement
     await expect(new FormData(submit.form!).getAll('email')).toEqual([
       'sam@example.com',
       'new@example.com',
@@ -1792,7 +1795,6 @@ export const AddMembersTypedTwice: Story = {
     const input = dialog.getByRole('combobox', { name: 'People' })
     await slow.type(input, 'one@example.com{Enter}')
     await slow.type(input, 'two@example.com{Enter}')
-    await userEvent.keyboard('{Escape}')
     const submit = (await dialog.findByRole('button', {
       name: 'Add 2 members',
     })) as HTMLButtonElement
@@ -1815,8 +1817,8 @@ export const AddMembersTypedPicked: Story = {
     const body = within(canvasElement.ownerDocument.body)
     await expect(await body.findByRole('option', { name: 'new@example.com' })).toBeVisible()
     await expect(body.queryByRole('option', { name: /^Add / })).toBeNull()
-    await userEvent.keyboard('{Enter}{Escape}')
-    await expect(dialog.getByRole('button', { name: 'Add member' })).toBeDisabled()
+    await userEvent.keyboard('{Enter}')
+    await expect(await dialog.findByRole('button', { name: 'Add member' })).toBeDisabled()
   },
 }
 export const AddMemberError: Story = {
