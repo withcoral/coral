@@ -314,6 +314,63 @@ impl SharedToolRevision {
     }
 }
 
+/// One revision of a Shared Tool as its history lists it: without its
+/// source, declaration or diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedToolRevisionSummary {
+    pub(crate) revision: u64,
+    pub(crate) description: AuthoredToolDescription,
+    pub(crate) content_hash: String,
+    pub(crate) default_access_state: ToolAccessState,
+    pub(crate) published_by: UserId,
+    pub(crate) origin: SharedToolRevisionOrigin,
+    pub(crate) published_at_unix_nanos: i64,
+}
+
+impl SharedToolRevisionSummary {
+    /// Returns the revision number, from 1.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Returns the exact published description.
+    #[must_use]
+    pub const fn description(&self) -> &AuthoredToolDescription {
+        &self.description
+    }
+
+    /// Returns the lowercase hex SHA-256 of the description and source.
+    #[must_use]
+    pub fn content_hash(&self) -> &str {
+        &self.content_hash
+    }
+
+    /// Returns the default Tool Access State the Owner chose at publish.
+    #[must_use]
+    pub const fn default_access_state(&self) -> ToolAccessState {
+        self.default_access_state
+    }
+
+    /// Returns the Workspace Owner who published it: attribution only.
+    #[must_use]
+    pub const fn published_by(&self) -> &UserId {
+        &self.published_by
+    }
+
+    /// Returns what it copied.
+    #[must_use]
+    pub const fn origin(&self) -> &SharedToolRevisionOrigin {
+        &self.origin
+    }
+
+    /// Returns when it was published.
+    #[must_use]
+    pub const fn published_at_unix_nanos(&self) -> i64 {
+        self.published_at_unix_nanos
+    }
+}
+
 /// One live Shared Tool with its current revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SharedTool {
@@ -975,14 +1032,44 @@ impl SharedToolModule {
     }
 
     /// Lists every revision of the Shared Tool `id`, newest first, to a
-    /// Member User. Its identity names it whether it is live or removed: a
-    /// removal keeps its revisions.
+    /// Member User, without the source, declaration or diagnostics of any:
+    /// [`Self::get_revision`] reads those of one. Its identity names it
+    /// whether it is live or removed: a removal keeps its revisions.
     ///
     /// # Errors
     ///
     /// Returns [`Error::PermissionDenied`] to an Agent, and
     /// [`Error::NotFound`] when the Workspace has no such Shared Tool or the
     /// caller cannot inspect the Workspace.
+    pub async fn list_revision_summaries(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        id: &SharedToolId,
+    ) -> Result<Vec<SharedToolRevisionSummary>, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        self.authorize_history(&mut transaction, actor, workspace_id)
+            .await?;
+        let revisions =
+            shared_tool_repository::list_revision_summaries(&mut transaction, workspace_id, id)
+                .await?;
+        transaction.commit().await?;
+        // Every Shared Tool has its first revision.
+        if revisions.is_empty() {
+            return Err(Error::NotFound(AuthoredToolKind::Shared));
+        }
+        Ok(revisions)
+    }
+
+    /// Lists every revision of the Shared Tool `id` as
+    /// [`Self::list_revision_summaries`] does, each with its whole
+    /// definition, for tests: a Shared Tool's revisions have no bound, and
+    /// each may hold megabytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`Self::list_revision_summaries`].
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn list_revisions(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -1287,7 +1374,8 @@ impl SharedToolModule {
         {
             return Err(Error::SharedToolHasDependents { dependent });
         }
-        let current = shared_tool_repository::find_revision(
+        // The Event names the content removed, and nothing else of it.
+        let content_hash = shared_tool_repository::find_revision_content_hash(
             transaction,
             workspace_id,
             &record.id,
@@ -1312,7 +1400,7 @@ impl SharedToolModule {
                 target_id: &record.id,
                 target_path: &record.path,
                 revision: record.current_revision,
-                content_hash: current.content_hash(),
+                content_hash: &content_hash,
                 occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
                 trace_id: context.trace_id(),
             },
@@ -1483,13 +1571,17 @@ async fn read_origin(
             if !readable {
                 return Err(Error::SharedToolSourceUnreadable);
             }
-            let private_tool =
-                repository::find_current_in_transaction(transaction, workspace_id, owner, path)
-                    .await?
-                    .ok_or(Error::SharedToolSourceUnreadable)?;
-            Ok(SharedToolRevisionOrigin::PrivateTool(
-                private_tool.id().clone(),
-            ))
+            // The revision records which Private Tool it copied, and the
+            // publish carries the content.
+            let private_tool = repository::find_current_record_in_transaction(
+                transaction,
+                workspace_id,
+                owner,
+                path,
+            )
+            .await?
+            .ok_or(Error::SharedToolSourceUnreadable)?;
+            Ok(SharedToolRevisionOrigin::PrivateTool(private_tool.id))
         }
         SharedToolOrigin::Revision(revision) => {
             let record =

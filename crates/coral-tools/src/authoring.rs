@@ -365,24 +365,27 @@ impl Authoring {
     ) -> Option<Vec<CallableDeclaration>> {
         let read = async {
             let mut transaction = self.database.begin_read_snapshot().await?;
-            let mut declarations = Vec::new();
-            for path in paths {
-                if let Some(tool) = repository::find_current_in_transaction(
-                    &mut transaction,
-                    workspace_id,
-                    owner,
-                    path,
-                )
-                .await?
-                {
-                    declarations.push(CallableDeclaration::new(
-                        path.segments(),
-                        tool.declaration().as_str().to_string(),
-                    ));
-                }
-            }
+            let current = repository::current_declarations_in_transaction(
+                &mut transaction,
+                workspace_id,
+                owner,
+                paths,
+            )
+            .await?;
             transaction.commit().await?;
-            Ok::<_, Error>(declarations)
+            Ok::<_, Error>(
+                paths
+                    .iter()
+                    .filter_map(|path| {
+                        current.get(*path).map(|declaration| {
+                            CallableDeclaration::new(
+                                path.segments(),
+                                declaration.as_str().to_string(),
+                            )
+                        })
+                    })
+                    .collect(),
+            )
         };
         untyped_on_failure(read.await)
     }
@@ -397,20 +400,23 @@ impl Authoring {
     ) -> Option<Vec<CallableDeclaration>> {
         let read = async {
             let mut transaction = self.database.begin_read_snapshot().await?;
-            let mut declarations = Vec::new();
-            for path in paths {
-                if let Some(tool) =
-                    shared_tool_repository::find_live_tool(&mut transaction, workspace_id, path)
-                        .await?
-                {
-                    declarations.push(CallableDeclaration::new(
-                        path.segments(),
-                        tool.current.declaration.as_str().to_string(),
-                    ));
-                }
-            }
+            let current =
+                shared_tool_repository::live_declarations(&mut transaction, workspace_id, paths)
+                    .await?;
             transaction.commit().await?;
-            Ok::<_, Error>(declarations)
+            Ok::<_, Error>(
+                paths
+                    .iter()
+                    .filter_map(|path| {
+                        current.get(*path).map(|declaration| {
+                            CallableDeclaration::new(
+                                path.segments(),
+                                declaration.as_str().to_string(),
+                            )
+                        })
+                    })
+                    .collect(),
+            )
         };
         untyped_on_failure(read.await)
     }

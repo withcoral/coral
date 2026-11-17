@@ -76,7 +76,8 @@ pub use error::Error;
 pub use inspection::PrivateToolInspection;
 pub use linking::{
     InvalidLinkedToolReference, LinkedToolReference, LinkedToolSelection,
-    hold_linked_tools_in_transaction, select_linked_tool_in_transaction,
+    authored_tool_key_in_transaction, hold_linked_tools_in_transaction,
+    select_linked_tool_in_transaction,
 };
 pub use private_tool::{
     PreparedSave, PrivateToolModule, delete_current_for_access_removal_in_transaction,
@@ -86,7 +87,7 @@ pub use shared_tool::{
     SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolLifecycleEventId,
     SharedToolLifecycleEventPage, SharedToolModule, SharedToolOrigin, SharedToolPage,
     SharedToolPath, SharedToolPublication, SharedToolPublish, SharedToolReview, SharedToolRevision,
-    SharedToolRevisionOrigin, SharedToolSummary,
+    SharedToolRevisionOrigin, SharedToolRevisionSummary, SharedToolSummary,
 };
 pub use tool_typing::{ToolDeclaration, ToolDeclarationReader};
 pub use types::{

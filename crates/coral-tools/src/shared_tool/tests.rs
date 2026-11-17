@@ -14,13 +14,14 @@ use super::{
 use crate::{
     AuthoredToolDescription, AuthoredToolPath, AuthoredToolSource, Error, LinkedToolSelection,
     PrivateToolChangeContext, PrivateToolModule, PrivateToolPath, PrivateToolSave,
-    hold_linked_tools_in_transaction, select_linked_tool_in_transaction,
+    authored_tool_key_in_transaction, hold_linked_tools_in_transaction, repository,
+    select_linked_tool_in_transaction, shared_tool_repository,
 };
 
 /// One Workspace with an Owner, an ordinary Member and an Agent, each of
 /// which can save Private Tools.
 struct SharedToolFixture {
-    _fixture: TestDatabase,
+    test_database: TestDatabase,
     database: Arc<coral_db::Database>,
     private_tools: PrivateToolModule,
     shared_tools: SharedToolModule,
@@ -86,7 +87,7 @@ impl SharedToolFixture {
             .await
             .expect("authenticate Agent");
         Self {
-            _fixture: fixture,
+            test_database: fixture,
             database,
             private_tools,
             shared_tools,
@@ -1843,5 +1844,563 @@ async fn usage_data_counts_live_shared_tools_and_each_one_published_or_removed()
         usage(0, 60).await,
         (before + 1, 1, 1),
         "before the second publish"
+    );
+}
+
+/// What a narrow read returns of a whole Private Tool.
+fn record_of(tool: &crate::PrivateTool) -> repository::PrivateToolRecord {
+    repository::PrivateToolRecord {
+        id: tool.id().clone(),
+        path: tool.path().clone(),
+        revision: tool.revision(),
+        default_access_state: tool.default_access_state(),
+    }
+}
+
+/// What a history listing returns of a whole revision.
+fn summary_of(revision: &super::SharedToolRevision) -> super::SharedToolRevisionSummary {
+    super::SharedToolRevisionSummary {
+        revision: revision.revision(),
+        description: revision.description().clone(),
+        content_hash: revision.content_hash().to_owned(),
+        default_access_state: revision.default_access_state(),
+        published_by: revision.published_by().clone(),
+        origin: revision.origin().clone(),
+        published_at_unix_nanos: revision.published_at_unix_nanos(),
+    }
+}
+
+// Catches: a read of a path, an identity, a revision or a declaration that
+// answers differently from the whole definition it stands in for: with
+// another owner's or another Workspace's Tool, a removed Shared Tool, or a
+// superseded revision.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture compares every narrow read with the whole read beside it"
+)]
+async fn each_narrow_read_agrees_with_the_whole_definition() {
+    let fixture = SharedToolFixture::new().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    let member = AuthenticatedPrincipal::user(fixture.member.clone());
+    let elsewhere = WorkspaceModule::new(fixture.database.clone())
+        .create(
+            &change(fixture.owner.clone(), 14, 'a'),
+            WorkspaceDisplayName::parse("Elsewhere").expect("display name"),
+        )
+        .await
+        .expect("create another Workspace")
+        .id()
+        .clone();
+    let takes_a_name = "export default async function greet(input: { name: string }): Promise<string> { return input.name; }";
+    // Each save: its author, Workspace, path, source and declared default.
+    // The Owner's `mail.send` is saved twice, so it is at revision 2.
+    for (author, workspace, path, source, default) in [
+        (&owner, &fixture.workspace, "draft", DRAFT, None),
+        (&owner, &fixture.workspace, "mail.send", DRAFT, None),
+        (
+            &owner,
+            &fixture.workspace,
+            "mail.send",
+            takes_a_name,
+            Some(ToolAccessState::ApprovalRequired),
+        ),
+        (&member, &fixture.workspace, "draft", takes_a_name, None),
+        (
+            &fixture.agent,
+            &fixture.workspace,
+            "agent.work",
+            DRAFT,
+            None,
+        ),
+        (&owner, &elsewhere, "draft", takes_a_name, None),
+    ] {
+        fixture
+            .private_tools
+            .save(
+                &PrivateToolChangeContext::new(
+                    author.clone(),
+                    20,
+                    coral_workspace::TraceId::parse(&"b".repeat(32)).expect("trace id"),
+                ),
+                workspace,
+                PrivateToolSave::new(
+                    PrivateToolPath::parse(path).expect("Private Tool Path"),
+                    AuthoredToolDescription::parse("A private draft").expect("description"),
+                    AuthoredToolSource::parse(source).expect("source"),
+                )
+                .declaring_default(default),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("save {path}: {error}"));
+    }
+    // `mail.remind` is at revision 2, and `ops.page` is removed.
+    let mut shared_ids = Vec::new();
+    for (at, path, source, expected_revision) in [
+        (30, "mail.remind", DRAFT, 0),
+        (31, "mail.remind", REVIEWED, 1),
+        (32, "ops.page", DRAFT, 0),
+    ] {
+        let published = fixture
+            .publish_at(at, &fixture.owner, path, source, expected_revision)
+            .await
+            .unwrap_or_else(|error| panic!("publish {path}: {error}"));
+        shared_ids.push(published.published().expect("the Shared Tool").id().clone());
+    }
+    fixture
+        .shared_tools
+        .remove(
+            &change(fixture.owner.clone(), 33, 'e'),
+            &fixture.workspace,
+            &shared_path("ops.page"),
+            1,
+        )
+        .await
+        .expect("remove a Shared Tool");
+    // An identity that names no Shared Tool.
+    shared_ids
+        .push(super::SharedToolId::parse("00000000-0000-4000-8000-000000000000").expect("id"));
+
+    let private_paths = ["agent.work", "draft", "mail.send", "nothing.here"]
+        .map(|path| PrivateToolPath::parse(path).expect("Private Tool Path"));
+    let named = private_paths.iter().collect::<Vec<_>>();
+    let mut transaction = fixture.database.begin_read_snapshot().await.expect("begin");
+    // (owner, Workspace, the paths it owns there)
+    let owners: [(&AuthenticatedPrincipal, &WorkspaceId, &[&str]); 5] = [
+        (&owner, &fixture.workspace, &["draft", "mail.send"]),
+        (&member, &fixture.workspace, &["draft"]),
+        (&fixture.agent, &fixture.workspace, &["agent.work"]),
+        (&owner, &elsewhere, &["draft"]),
+        (&member, &elsewhere, &[]),
+    ];
+    for (principal, workspace, owned) in owners {
+        let principal = principal.principal();
+        let case = format!("{principal:?} in {workspace}");
+        let whole = repository::list_current_in_transaction(&mut transaction, workspace, principal)
+            .await
+            .expect("list whole Private Tools");
+        assert_eq!(
+            whole
+                .iter()
+                .map(|tool| tool.path().as_str())
+                .collect::<Vec<_>>(),
+            owned,
+            "{case}"
+        );
+        assert_eq!(
+            repository::list_current_records_in_transaction(&mut transaction, workspace, principal)
+                .await
+                .expect("list records"),
+            whole.iter().map(record_of).collect::<Vec<_>>(),
+            "{case}"
+        );
+        let mut declarations = std::collections::BTreeMap::new();
+        for path in &private_paths {
+            let whole = repository::find_current_in_transaction(
+                &mut transaction,
+                workspace,
+                principal,
+                path,
+            )
+            .await
+            .expect("find the whole Private Tool");
+            assert_eq!(
+                repository::find_current_record_in_transaction(
+                    &mut transaction,
+                    workspace,
+                    principal,
+                    path
+                )
+                .await
+                .expect("find the record"),
+                whole.as_ref().map(record_of),
+                "{case}: {path:?}"
+            );
+            let path = AuthoredToolPath::Private(path.clone());
+            assert_eq!(
+                authored_tool_key_in_transaction(&mut transaction, workspace, principal, &path)
+                    .await
+                    .expect("read the Tool Key"),
+                select_linked_tool_in_transaction(&mut transaction, workspace, principal, &path)
+                    .await
+                    .expect("select")
+                    .map(|selection| selection.tool_key().clone()),
+                "{case}: {path:?}"
+            );
+            if let Some(whole) = whole {
+                declarations.insert(whole.path().clone(), whole.declaration().clone());
+            }
+        }
+        assert_eq!(
+            repository::current_declarations_in_transaction(
+                &mut transaction,
+                workspace,
+                principal,
+                &named
+            )
+            .await
+            .expect("read declarations"),
+            declarations,
+            "{case}"
+        );
+    }
+
+    let shared_paths = ["mail.remind", "ops.page", "nothing.here"].map(shared_path);
+    let named = shared_paths.iter().collect::<Vec<_>>();
+    // (Workspace, how many of the paths name a live Shared Tool there)
+    for (workspace, live) in [(&fixture.workspace, 1), (&elsewhere, 0)] {
+        let mut declarations = std::collections::BTreeMap::new();
+        for path in &shared_paths {
+            if let Some(whole) =
+                shared_tool_repository::find_live_tool(&mut transaction, workspace, path)
+                    .await
+                    .expect("find the whole Shared Tool")
+            {
+                declarations.insert(path.clone(), whole.current().declaration().clone());
+            }
+            let path = AuthoredToolPath::Shared(path.clone());
+            assert_eq!(
+                authored_tool_key_in_transaction(
+                    &mut transaction,
+                    workspace,
+                    owner.principal(),
+                    &path
+                )
+                .await
+                .expect("read the Tool Key"),
+                select_linked_tool_in_transaction(
+                    &mut transaction,
+                    workspace,
+                    owner.principal(),
+                    &path
+                )
+                .await
+                .expect("select")
+                .map(|selection| selection.tool_key().clone()),
+                "{workspace}: {path:?}"
+            );
+        }
+        assert_eq!(declarations.len(), live, "{workspace}");
+        assert_eq!(
+            shared_tool_repository::live_declarations(&mut transaction, workspace, &named)
+                .await
+                .expect("read declarations"),
+            declarations,
+            "{workspace}"
+        );
+        for id in &shared_ids {
+            let whole = shared_tool_repository::list_revisions(&mut transaction, workspace, id)
+                .await
+                .expect("list whole revisions");
+            assert_eq!(
+                shared_tool_repository::list_revision_summaries(&mut transaction, workspace, id)
+                    .await
+                    .expect("list revision summaries"),
+                whole.iter().map(summary_of).collect::<Vec<_>>(),
+                "{workspace}: {id}"
+            );
+            for revision in 1..=3 {
+                assert_eq!(
+                    shared_tool_repository::find_revision_content_hash(
+                        &mut transaction,
+                        workspace,
+                        id,
+                        revision
+                    )
+                    .await
+                    .expect("read the content hash"),
+                    shared_tool_repository::find_revision(
+                        &mut transaction,
+                        workspace,
+                        id,
+                        revision
+                    )
+                    .await
+                    .expect("find the whole revision")
+                    .map(|whole| whole.content_hash().to_owned()),
+                    "{workspace}: {id} at {revision}"
+                );
+            }
+        }
+    }
+    // The history lists both revisions of the live Shared Tool and the one
+    // of the removed Shared Tool, newest first.
+    let [reminder, _, page, _] = shared_ids.as_slice() else {
+        panic!("one identity for each publish, and the one that names nothing");
+    };
+    for (id, revisions) in [(reminder, vec![2, 1]), (page, vec![1])] {
+        assert_eq!(
+            shared_tool_repository::list_revision_summaries(
+                &mut transaction,
+                &fixture.workspace,
+                id
+            )
+            .await
+            .expect("list revision summaries")
+            .iter()
+            .map(super::SharedToolRevisionSummary::revision)
+            .collect::<Vec<_>>(),
+            revisions
+        );
+    }
+    transaction.rollback().await.expect("finish");
+}
+
+// Catches: a save, a delete, a publish, a removal, a history listing or an
+// access removal that decodes a definition it only names, so that one
+// definition Coral cannot read fails work that never reads it.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture takes each caller of a narrow read past the same unreadable definitions"
+)]
+async fn work_that_only_names_a_tool_decodes_no_definition() {
+    let fixture = SharedToolFixture::new().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    let member = AuthenticatedPrincipal::user(fixture.member.clone());
+    let workspaces = WorkspaceModule::new(fixture.database.clone());
+    let private_path = |path| PrivateToolPath::parse(path).expect("Private Tool Path");
+    let mut ids = std::collections::BTreeMap::new();
+    for (author, path) in [
+        (&owner, "draft"),
+        (&owner, "mail.send"),
+        (&owner, "mail.digest"),
+        (&member, "draft"),
+        (&fixture.agent, "agent.work"),
+    ] {
+        fixture.save_private(author, path, DRAFT).await;
+        let saved = fixture
+            .private_tools
+            .get(author, &fixture.workspace, &private_path(path))
+            .await
+            .expect("read the saved Private Tool");
+        ids.insert(
+            (author.principal().id().as_str().to_owned(), path),
+            saved.id().clone(),
+        );
+    }
+    let id_of = |author: &AuthenticatedPrincipal, path| {
+        ids.get(&(author.principal().id().as_str().to_owned(), path))
+            .expect("a saved Private Tool")
+    };
+    let published = fixture
+        .publish(&fixture.owner, "mail.remind", DRAFT, 0)
+        .await
+        .expect("publish");
+    let reminder = published.published().expect("the Shared Tool").clone();
+    let history = fixture
+        .shared_tools
+        .list_revision_summaries(&owner, &fixture.workspace, reminder.id())
+        .await
+        .expect("list the history");
+
+    // Every stored definition now fails its decoder, and its path, identity,
+    // revision and declaration are as they were.
+    for table in ["private_tool_records", "shared_tool_revisions"] {
+        let changed = fixture
+            .test_database
+            .execute_fixture_sql(&format!("UPDATE {table} SET diagnostics_json = 'not json'"))
+            .await
+            .expect("store unreadable diagnostics");
+        assert!(changed > 0, "{table}");
+    }
+    let whole = fixture
+        .private_tools
+        .get(&owner, &fixture.workspace, &private_path("draft"))
+        .await;
+    assert!(matches!(whole, Err(Error::CorruptData(_))), "{whole:?}");
+    let whole = fixture
+        .shared_tools
+        .list_revisions(&owner, &fixture.workspace, reminder.id())
+        .await;
+    assert!(matches!(whole, Err(Error::CorruptData(_))), "{whole:?}");
+
+    let context = |at| {
+        PrivateToolChangeContext::new(
+            owner.clone(),
+            at,
+            coral_workspace::TraceId::parse(&"c".repeat(32)).expect("trace id"),
+        )
+    };
+    let save = |path, source| {
+        PrivateToolSave::new(
+            private_path(path),
+            AuthoredToolDescription::parse("A private draft").expect("description"),
+            AuthoredToolSource::parse(source).expect("source"),
+        )
+    };
+
+    // A save at a free path decides its namespace by the paths its author
+    // owns, and is typed by the declarations of the Tools it names: it
+    // passes each an argument that Tool does not take.
+    let typed = fixture
+        .private_tools
+        .save(
+            &context(40),
+            &fixture.workspace,
+            save(
+                "typed",
+                "export default async function typed() {
+                    await coral.private.draft(1);
+                    return coral.shared.mail.remind(1);
+                }",
+            ),
+        )
+        .await
+        .expect("save beside unreadable definitions");
+    assert_eq!(
+        typed
+            .diagnostics()
+            .iter()
+            .map(crate::AuthoredToolDiagnostic::code)
+            .collect::<Vec<_>>(),
+        [2554, 2554],
+        "{:?}",
+        typed.diagnostics()
+    );
+    let conflict = fixture
+        .private_tools
+        .save(&context(41), &fixture.workspace, save("mail", DRAFT))
+        .await;
+    assert!(
+        matches!(
+            conflict,
+            Err(Error::PathConflict(AuthoredToolKind::Private))
+        ),
+        "{conflict:?}"
+    );
+
+    // A conditional save reads the revision it expects, and replaces the
+    // Private Tool under its identity.
+    let replaced = fixture
+        .private_tools
+        .save(
+            &context(42),
+            &fixture.workspace,
+            save("mail.send", REVIEWED).replace_only(Some(1)),
+        )
+        .await
+        .expect("replace an unreadable definition");
+    assert_eq!(
+        (replaced.id(), replaced.revision()),
+        (id_of(&owner, "mail.send"), 2)
+    );
+
+    // A publish records the identity of the Private Tool it copies.
+    let copied = fixture
+        .publish_at(43, &fixture.owner, "mail.fresh", DRAFT, 0)
+        .await
+        .expect("publish from an unreadable Private Tool");
+    assert_eq!(
+        copied
+            .published()
+            .expect("the Shared Tool")
+            .current()
+            .origin(),
+        &SharedToolRevisionOrigin::PrivateTool(id_of(&owner, "draft").clone())
+    );
+
+    // A policy target names the Tool by its Tool Key.
+    let mut transaction = fixture.database.begin_read_snapshot().await.expect("begin");
+    let key = authored_tool_key_in_transaction(
+        &mut transaction,
+        &fixture.workspace,
+        owner.principal(),
+        &AuthoredToolPath::Private(private_path("mail.digest")),
+    )
+    .await
+    .expect("read the Tool Key");
+    transaction.rollback().await.expect("finish");
+    let digest = id_of(&owner, "mail.digest");
+    assert_eq!(key, Some(digest.tool_key()));
+
+    // A removal's Event names the content removed, and the history still
+    // lists every revision.
+    fixture
+        .shared_tools
+        .remove(
+            &change(fixture.owner.clone(), 44, 'e'),
+            &fixture.workspace,
+            &shared_path("mail.remind"),
+            1,
+        )
+        .await
+        .expect("remove a Shared Tool with an unreadable revision");
+    let removal = fixture.events().await.swap_remove(0);
+    assert_eq!(
+        (
+            removal.action(),
+            removal.shared_tool_id(),
+            removal.content_hash()
+        ),
+        (
+            SharedToolLifecycleAction::Removed,
+            reminder.id(),
+            reminder.current().content_hash()
+        )
+    );
+    assert_eq!(
+        fixture
+            .shared_tools
+            .list_revision_summaries(&owner, &fixture.workspace, reminder.id())
+            .await
+            .expect("list the history of unreadable revisions"),
+        history
+    );
+
+    // A delete names the Private Tool: the owner's own, an Agent's for a
+    // Workspace Owner, and each one of a Member who loses access.
+    assert_eq!(
+        &fixture
+            .private_tools
+            .delete(
+                &context(45),
+                &fixture.workspace,
+                &private_path("mail.digest")
+            )
+            .await
+            .expect("delete an unreadable Private Tool"),
+        digest
+    );
+    let mut transaction = fixture.database.begin().await.expect("begin");
+    let deleted = crate::PrivateToolDeletion::new(workspaces.clone())
+        .delete_agent_in_transaction(
+            &mut transaction,
+            &context(46),
+            &fixture.workspace,
+            fixture.agent.principal().id(),
+            &private_path("agent.work"),
+        )
+        .await
+        .expect("delete an Agent's unreadable Private Tool");
+    transaction.commit().await.expect("commit");
+    assert_eq!(&deleted, id_of(&fixture.agent, "agent.work"));
+    let departure = change(fixture.owner.clone(), 47, 'f');
+    let mut transaction = fixture.database.begin().await.expect("begin");
+    let prepared = workspaces
+        .prepare_access_removal_in_transaction(
+            &mut transaction,
+            &departure,
+            coral_workspace::AccessRemovalTarget::WorkspaceMember(
+                &fixture.workspace,
+                fixture.member.user_id(),
+            ),
+        )
+        .await
+        .expect("prepare the Member's removal");
+    let lost = crate::delete_current_for_access_removal_in_transaction(
+        &mut transaction,
+        &departure,
+        &prepared,
+    )
+    .await
+    .expect("delete the departing Member's unreadable Private Tools");
+    transaction.rollback().await.expect("finish");
+    assert_eq!(
+        lost,
+        [(
+            fixture.workspace.clone(),
+            vec![id_of(&member, "draft").clone()]
+        )]
     );
 }
