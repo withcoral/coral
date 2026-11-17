@@ -266,6 +266,15 @@ Program that states the goal instead of naming a Task. Coral never infers which 
 _Avoid_: Single call, synthetic Run wrapper, Principal-owned Task, Workspace-shared Task, using Episode or session as
 aliases for Task
 
+**Sub-agent**: A model that Coral runs to do data work for an agent that calls it. A Sub-agent has no identity and no
+permissions of its own. It runs with the calling agent's permissions, inside the calling agent's Task, and every Run it
+starts is recorded as the calling agent's Run. It keeps its conversation between messages, and the caller addresses it
+by its own ID. It is an Enterprise Feature. _Avoid_: delegate, data agent, worker, treating a Sub-agent as a Principal
+
+**Turn**: The work a Sub-agent does between receiving one message and sending its response, including every model call
+and tool call. A Sub-agent runs at most one Turn at a time. A caller addresses the Sub-agent and never a Turn. _Avoid_:
+Sub-agent Invocation, Run (for a Turn), step
+
 **Task identifier**: The name Coral gives a Task when it starts it: four words from Coral's word list, lowercase and
 joined by hyphens, such as `random-big-business-store`. Coral draws the words at random and inserts the Task with them
 as its primary key. When the name is already in use, Coral draws again. Thus no two Tasks in one deployment share one. A
