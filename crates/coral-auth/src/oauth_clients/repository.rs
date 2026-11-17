@@ -76,6 +76,7 @@ enum Admission {
 
 pub(super) struct AdmissionEvidence {
     pub total: i64,
+    /// The whole Unix second the window started in, as the row holds it.
     pub window_started_at: i64,
     pub accepted: i64,
 }

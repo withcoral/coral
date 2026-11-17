@@ -400,13 +400,18 @@ impl Fixture {
                     "test",
                     audience,
                     self.workspace.id(),
-                    now,
+                    coral_db::UnixNanos::new(now),
                 )
                 .unwrap()
                 .access_token
         } else {
             self.issuer
-                .issue_access_token(user.user_id().as_str(), "test", audience, now)
+                .issue_access_token(
+                    user.user_id().as_str(),
+                    "test",
+                    audience,
+                    coral_db::UnixNanos::new(now),
+                )
                 .unwrap()
                 .access_token
         }
@@ -1263,7 +1268,7 @@ async fn task_concealment_and_live_membership_survive_both_audiences() {
             f.member.user_id().as_str(),
             "test",
             "mcp",
-            coral_test_support::now_unix_nanos(),
+            coral_db::UnixNanos::new(coral_test_support::now_unix_nanos()),
         )
         .unwrap()
         .access_token;

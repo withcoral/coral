@@ -120,7 +120,7 @@ async fn redeem_code(
     // credential elsewhere, and whatever mints one declares it there.
     state
         .tokens
-        .redeem_code(code, redemption, target, now.get())
+        .redeem_code(code, redemption, target, now)
         .await
         .map_err(refused)
 }
@@ -158,7 +158,7 @@ async fn refresh(
     };
     state
         .tokens
-        .refresh(refresh_token, request, now.get())
+        .refresh(refresh_token, request, now)
         .await
         .map_err(refused)
 }
@@ -511,7 +511,7 @@ pub(super) mod tests {
                         workspace_id: chosen.clone(),
                         refresh_eligible: false,
                     },
-                    coral_test_support::now_unix_nanos(),
+                    UnixNanos::new(coral_test_support::now_unix_nanos()),
                 )
                 .await
                 .unwrap();
@@ -586,7 +586,7 @@ pub(super) mod tests {
                     workspace_id: None,
                     refresh_eligible: false,
                 },
-                coral_test_support::now_unix_nanos(),
+                UnixNanos::new(coral_test_support::now_unix_nanos()),
             )
             .await
             .expect("seed code");
@@ -945,7 +945,7 @@ pub(super) mod tests {
             // is still that second.
             let now_unix_nanos = now_secs * 1_000_000_000 + 999_999_999;
             let access_token = session
-                .issue_access_token(MEMBER, CLIENT, RESOURCE, now_unix_nanos)
+                .issue_access_token(MEMBER, CLIENT, RESOURCE, UnixNanos::new(now_unix_nanos))
                 .expect("issued token");
             let issued = IssuedTokens {
                 access_token,
@@ -992,7 +992,7 @@ pub(super) mod tests {
                     workspace_id: None,
                     refresh_eligible: true,
                 },
-                coral_test_support::now_unix_nanos(),
+                UnixNanos::new(coral_test_support::now_unix_nanos()),
             )
             .await
             .unwrap();
@@ -1118,9 +1118,14 @@ pub(super) mod tests {
             "token_endpoint_auth_method": "client_secret_post",
         }))
         .unwrap();
-        let registered =
-            serde_json::to_value(state.clients.register(registration, 1000).await.unwrap())
-                .unwrap();
+        let registered = serde_json::to_value(
+            state
+                .clients
+                .register(registration, UnixNanos::new(1000 * 1_000_000_000))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         let client = registered["client_id"].as_str().unwrap().to_owned();
         let secret = registered["client_secret"].as_str().unwrap().to_owned();
         coral_test_support::provision_user(
@@ -1141,7 +1146,12 @@ pub(super) mod tests {
         let code = format!("confidential-{client}");
         state
             .codes
-            .issue(&code, &code, &grant, coral_test_support::now_unix_nanos())
+            .issue(
+                &code,
+                &code,
+                &grant,
+                UnixNanos::new(coral_test_support::now_unix_nanos()),
+            )
             .await
             .unwrap();
         let redeem = form(&code, &client, REDIRECT, VERIFIER);

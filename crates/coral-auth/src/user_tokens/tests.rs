@@ -164,7 +164,7 @@ impl Fixture {
             refresh_eligible,
         };
         self.codes
-            .issue(&code, &sign_in, &grant, now)
+            .issue(&code, &sign_in, &grant, coral_db::UnixNanos::new(now))
             .await
             .unwrap();
         code
@@ -191,7 +191,7 @@ impl Fixture {
                     resource,
                 },
                 target,
-                now,
+                coral_db::UnixNanos::new(now),
             )
             .await
     }
@@ -226,7 +226,11 @@ impl Fixture {
         now: i64,
     ) -> Result<IssuedTokens, TokenRefusal> {
         self.tokens
-            .refresh(token, plain_refresh(&self.client), now)
+            .refresh(
+                token,
+                plain_refresh(&self.client),
+                coral_db::UnixNanos::new(now),
+            )
             .await
     }
 
@@ -390,7 +394,10 @@ async fn a_refresh_must_repeat_the_grants_bindings_and_a_mismatch_spends_nothing
         ),
     ] {
         at += SECOND;
-        let outcome = fixture.tokens.refresh(&token, request, at).await;
+        let outcome = fixture
+            .tokens
+            .refresh(&token, request, coral_db::UnixNanos::new(at))
+            .await;
         if accepted {
             token = refresh_token(&outcome.expect(case));
         } else {
@@ -497,7 +504,11 @@ async fn concurrent_rotations_of_one_token_never_both_succeed() {
         let (token, client) = (token.clone(), fixture.client.clone());
         refreshes.spawn(async move {
             tokens
-                .refresh(&token, plain_refresh(&client), NOW + SECOND)
+                .refresh(
+                    &token,
+                    plain_refresh(&client),
+                    coral_db::UnixNanos::new(NOW + SECOND),
+                )
                 .await
         });
     }
@@ -511,9 +522,13 @@ async fn concurrent_rotations_of_one_token_never_both_succeed() {
     assert!(successors.len() <= 1, "{} rotations won", successors.len());
     for successor in successors {
         assert_eq!(
-            peer.refresh(&successor, plain_refresh(&fixture.client), NOW + 2 * SECOND)
-                .await
-                .err(),
+            peer.refresh(
+                &successor,
+                plain_refresh(&fixture.client),
+                coral_db::UnixNanos::new(NOW + 2 * SECOND)
+            )
+            .await
+            .err(),
             Some(TokenRefusal::InvalidGrant)
         );
     }
@@ -692,7 +707,7 @@ async fn a_user_holds_a_bounded_number_of_grants_per_client() {
                 client: &fixture.other,
                 ..plain_refresh(&fixture.client)
             },
-            later,
+            coral_db::UnixNanos::new(later),
         )
         .await
         .expect("another client's grant survives");

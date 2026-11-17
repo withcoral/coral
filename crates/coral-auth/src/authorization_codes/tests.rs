@@ -8,8 +8,9 @@ use super::{
 };
 use crate::oauth_clients::AuthenticatedClient;
 use crate::oauth_clients::test_support::authenticated;
+use coral_db::UnixNanos;
 
-const NOW: i64 = 1_800_000_000_000_000_000;
+const NOW: UnixNanos = UnixNanos::new(1_800_000_000_000_000_000);
 const CLIENT: &str = "https://client.example.test/oauth/client.json";
 const OTHER_CLIENT: &str = "https://other.example.test/oauth/client.json";
 
@@ -36,6 +37,11 @@ fn redemption<'a>(
         code_challenge: &grant.code_challenge,
         resource: &grant.resource,
     }
+}
+
+/// The instant `nanos` nanoseconds after [`NOW`].
+fn after(nanos: i64) -> UnixNanos {
+    UnixNanos::new(NOW.get() + nanos)
 }
 
 fn ttl_nanos() -> i64 {
@@ -68,7 +74,7 @@ async fn a_code_issued_by_one_process_is_redeemed_once_by_any() {
         redemptions.spawn(async move {
             let grant = grant();
             module
-                .redeem("code", redemption(&grant, &client), NOW + 1)
+                .redeem("code", redemption(&grant, &client), after(1))
                 .await
         });
     }
@@ -95,7 +101,7 @@ async fn a_code_carries_the_workspace_its_sign_in_chose() {
     };
     codes.issue("code", "sign-in", &chosen, NOW).await.unwrap();
     assert_eq!(
-        peer.redeem("code", redemption(&chosen, &client), NOW + 1)
+        peer.redeem("code", redemption(&chosen, &client), after(1))
             .await,
         Ok(Some(chosen))
     );
@@ -125,7 +131,7 @@ async fn an_unspendable_code_is_refused_without_the_writer() {
     ] {
         let answer = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            codes.redeem(code, redemption, NOW + 1),
+            codes.redeem(code, redemption, after(1)),
         )
         .await;
         assert_eq!(answer, Ok(Ok(None)), "{case}");
@@ -133,7 +139,7 @@ async fn an_unspendable_code_is_refused_without_the_writer() {
     drop(writer);
     assert_eq!(
         codes
-            .redeem("code", redemption(&issued, &client), NOW + 1)
+            .redeem("code", redemption(&issued, &client), after(1))
             .await,
         Ok(Some(grant()))
     );
@@ -177,14 +183,14 @@ async fn a_redemption_must_repeat_every_binding_and_a_mismatch_spends_nothing() 
         ),
     ] {
         assert_eq!(
-            codes.redeem("code", mismatched, NOW + 1).await,
+            codes.redeem("code", mismatched, after(1)).await,
             Ok(None),
             "{binding}"
         );
     }
     assert_eq!(
         codes
-            .redeem("code", redemption(&issued, &client), NOW + 1)
+            .redeem("code", redemption(&issued, &client), after(1))
             .await,
         Ok(Some(grant()))
     );
@@ -203,26 +209,32 @@ async fn a_sign_in_issues_at_most_one_code() {
     );
     let refuse_replay = async |replay: &str, at: i64| {
         assert_eq!(
-            codes.issue(replay, "sign-in", &grant(), at).await,
+            codes
+                .issue(replay, "sign-in", &grant(), UnixNanos::new(at))
+                .await,
             Ok(CodeIssue::SignInAlreadyUsed),
             "{replay}"
         );
         assert_eq!(
             codes
-                .redeem(replay, redemption(&grant(), &client), at + 1)
+                .redeem(
+                    replay,
+                    redemption(&grant(), &client),
+                    UnixNanos::new(at + 1)
+                )
                 .await,
             Ok(None),
             "{replay}: the refused code must not be redeemable"
         );
     };
-    refuse_replay("before-redemption", NOW + 1).await;
+    refuse_replay("before-redemption", NOW.get() + 1).await;
     assert_eq!(
         codes
-            .redeem("first", redemption(&issued, &client), NOW + 3)
+            .redeem("first", redemption(&issued, &client), after(3))
             .await,
         Ok(Some(grant()))
     );
-    refuse_replay("after-redemption", NOW + 4).await;
+    refuse_replay("after-redemption", NOW.get() + 4).await;
 }
 
 #[tokio::test]
@@ -237,14 +249,14 @@ async fn codes_expire_after_their_lifetime() {
             .redeem(
                 "last-moment",
                 redemption(&issued, &client),
-                NOW + ttl_nanos() - 1
+                after(ttl_nanos() - 1)
             )
             .await,
         Ok(Some(grant()))
     );
     assert_eq!(
         codes
-            .redeem("too-late", redemption(&issued, &client), NOW + ttl_nanos())
+            .redeem("too-late", redemption(&issued, &client), after(ttl_nanos()))
             .await,
         Ok(None)
     );
@@ -319,7 +331,7 @@ async fn a_code_that_does_not_decode_is_corrupt_and_stays_unspent() {
     for attempt in 1..=2 {
         assert_eq!(
             codes
-                .redeem("code", redemption(&issued, &client), NOW + attempt)
+                .redeem("code", redemption(&issued, &client), after(attempt))
                 .await,
             Err(AuthorizationCodeError::Corrupt("corrupt_code_workspace")),
             "attempt {attempt}"
@@ -334,7 +346,7 @@ async fn a_code_that_does_not_decode_is_corrupt_and_stays_unspent() {
     assert_eq!(repaired, 1);
     assert_eq!(
         codes
-            .redeem("code", redemption(&issued, &client), NOW + 3)
+            .redeem("code", redemption(&issued, &client), after(3))
             .await,
         Ok(Some(issued))
     );
