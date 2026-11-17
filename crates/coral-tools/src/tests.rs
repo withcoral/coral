@@ -2362,6 +2362,15 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
         let positioned = list(&member, Some(foreign), 100).await.expect(case);
         assert_eq!(paths(&positioned), ["reports.total", "zeta.last"], "{case}");
     }
+    // A page sends as many statements for four Private Tools as for one.
+    let sent = async |workspace| {
+        let before = fixture.fixture.statements_sent();
+        let request = page_request(None, 100);
+        let page = inspection.list(&member, workspace, &request).await;
+        page.expect("a page");
+        fixture.fixture.statements_sent() - before
+    };
+    assert_eq!(sent(&workspace_id).await, sent(&other_workspace).await);
     // The list fetches a page's rows and the one after them, whatever the
     // collection holds. It fetches no row beyond those: this one fails any
     // fetch of it.

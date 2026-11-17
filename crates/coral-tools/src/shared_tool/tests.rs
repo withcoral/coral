@@ -1892,6 +1892,18 @@ async fn a_page_of_history_holds_only_its_requests_events_and_fetches_only_its_r
         .await
         .expect("list one Shared Tool's events after another's");
     assert_eq!(of_one.items.iter().collect::<Vec<_>>(), [oldest]);
+    // A page sends as many statements for five Events as for two.
+    let sent = async |workspace| {
+        let before = fixture.test_database.statements_sent();
+        let request = page_request(None, 100);
+        let page = fixture
+            .shared_tools
+            .list_lifecycle_events(&owner, workspace, None, &request)
+            .await;
+        page.expect("a page");
+        fixture.test_database.statements_sent() - before
+    };
+    assert_eq!(sent(&fixture.workspace).await, sent(&elsewhere).await);
 
     // The list fetches a page's rows and the one after them, whatever the
     // collection holds. It fetches no row beyond those: this one fails any
@@ -1993,6 +2005,13 @@ async fn pages_of_shared_tools_follow_one_another_in_path_order() {
         paths(&positioned.items),
         ["alpha.first", "reports.total", "zeta.last"]
     );
+    // A page sends as many statements for four Shared Tools as for two.
+    let sent = async |workspace| {
+        let before = fixture.test_database.statements_sent();
+        page(workspace, None, 100).await.expect("a page");
+        fixture.test_database.statements_sent() - before
+    };
+    assert_eq!(sent(&fixture.workspace).await, sent(&elsewhere).await);
 
     // The list fetches a page's rows and the one after them, whatever the
     // collection holds. It fetches no row beyond those: this one fails any
