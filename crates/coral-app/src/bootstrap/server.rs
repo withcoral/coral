@@ -441,6 +441,7 @@ impl PreparedServerBuilder {
             state_lock,
             instance,
             readiness,
+            clock: Arc::clone(&clock),
             policy,
             runtime_limits: deployment_config.runtime_limits(),
             credentials: CredentialParts {
