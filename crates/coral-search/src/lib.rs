@@ -766,10 +766,15 @@ pub(crate) fn unix_now_nanos() -> Option<i64> {
 
 fn conceal_description_error(error: Error) -> Error {
     match error {
-        Error::PermissionDenied(_)
-        | Error::Workspace(
-            coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_),
-        ) => Error::AuthoringDescriptionNotFound,
+        Error::PermissionDenied(_) => Error::AuthoringDescriptionNotFound,
+        // Through any module's error that wraps the refusal.
+        other
+            if other
+                .workspace_refusal()
+                .is_some_and(coral_workspace::AuthorityRefusal::denies_access) =>
+        {
+            Error::AuthoringDescriptionNotFound
+        }
         other => other,
     }
 }

@@ -126,6 +126,16 @@ impl Error {
         }
     }
 
+    /// Whether the caller has no access: [`AuthorityRefusal::denies_access`]
+    /// for the refusal this error is, and `false` for an error that is none.
+    #[must_use]
+    pub const fn denies_access(&self) -> bool {
+        match self.refusal() {
+            Some(refusal) => refusal.denies_access(),
+            None => false,
+        }
+    }
+
     /// The database error this one is, if any. A module that wraps this
     /// error asks here, so it never lists another module's variants.
     #[must_use]
@@ -233,6 +243,23 @@ impl AuthorityRefusal {
         }
     }
 
+    /// Whether the caller has no access to the Workspace, or to the action
+    /// in it: the Workspace is absent or concealed, or the caller is denied.
+    /// A module that conceals its own resource from such a caller reports
+    /// the resource as not found. Every other refusal says something the
+    /// caller may know: the Workspace is archived, or its Agent has ended.
+    #[must_use]
+    pub const fn denies_access(self) -> bool {
+        match self {
+            Self::WorkspaceNotFound | Self::PermissionDenied => true,
+            Self::WorkspaceArchived
+            | Self::AgentNotFound
+            | Self::AgentDisabled
+            | Self::AgentRegistrationExpired
+            | Self::InvalidAgentCredential => false,
+        }
+    }
+
     /// The refusal's stable code.
     #[must_use]
     pub const fn code(self) -> &'static str {
@@ -322,6 +349,17 @@ mod tests {
                 refusal != AuthorityRefusal::InvalidAgentCredential,
                 "{error:?}"
             );
+            assert_eq!(
+                (refusal.denies_access(), error.denies_access()),
+                (
+                    matches!(
+                        refusal,
+                        AuthorityRefusal::WorkspaceNotFound | AuthorityRefusal::PermissionDenied
+                    ),
+                    refusal.denies_access()
+                ),
+                "{error:?}"
+            );
             assert_eq!(error.refusal(), Some(refusal), "{error:?}");
             assert_eq!(
                 (refusal.code(), refusal.message()),
@@ -339,6 +377,7 @@ mod tests {
             Error::Database(coral_db::Error::WriterBusy),
         ] {
             assert_eq!(error.refusal(), None, "{error:?}");
+            assert!(!error.denies_access(), "{error:?}");
             assert_eq!(
                 error.database_error().is_some(),
                 matches!(error, Error::Database(_)),

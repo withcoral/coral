@@ -134,10 +134,20 @@ impl ChoiceFailure {
     }
 
     fn from_domain(error: &coral_workspace::Error) -> Self {
-        match error {
-            coral_workspace::Error::PermissionDenied(_) => Self::Denied,
-            coral_workspace::Error::WorkspaceNotFound => Self::NotAvailable,
-            _ => {
+        use coral_workspace::AuthorityRefusal as Refusal;
+        match error.refusal() {
+            Some(Refusal::PermissionDenied) => Self::Denied,
+            Some(Refusal::WorkspaceNotFound) => Self::NotAvailable,
+            // The picker reads for a User and lists active Workspaces, so
+            // no other refusal is an answer here.
+            Some(
+                Refusal::WorkspaceArchived
+                | Refusal::AgentNotFound
+                | Refusal::AgentDisabled
+                | Refusal::AgentRegistrationExpired
+                | Refusal::InvalidAgentCredential,
+            )
+            | None => {
                 tracing::warn!("Workspace picker could not read the User's Workspaces");
                 Self::Unavailable
             }

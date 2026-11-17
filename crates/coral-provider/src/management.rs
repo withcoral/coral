@@ -193,10 +193,10 @@ impl ProviderModule {
                 Ok(_evidence) => {
                     names.insert(workspace.clone(), Vec::new());
                 }
-                Err(Error::Workspace(
-                    coral_workspace::Error::WorkspaceNotFound
-                    | coral_workspace::Error::PermissionDenied(_),
-                )) => {}
+                Err(error)
+                    if error
+                        .workspace_refusal()
+                        .is_some_and(coral_workspace::AuthorityRefusal::denies_access) => {}
                 Err(error) => return Err(error),
             }
         }

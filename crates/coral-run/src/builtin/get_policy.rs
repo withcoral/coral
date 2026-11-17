@@ -32,9 +32,7 @@ impl GetPolicy {
             )
             .await
             .map_err(|error| match error {
-                coral_policy::Error::Workspace(error)
-                    if crate::enforcement::loses_authority(&error) =>
-                {
+                error if crate::enforcement::ended_authority(error.workspace_refusal()) => {
                     Error::InvocationRejected(CoralFailure::AuthorityLost.into())
                 }
                 other => other.into(),
