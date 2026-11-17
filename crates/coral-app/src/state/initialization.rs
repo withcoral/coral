@@ -322,11 +322,11 @@ mod tests {
             for dimension in [3, 4] {
                 let layout = AppStateLayout::discover(Some(temp.path().to_path_buf())).unwrap();
                 let options = options.clone();
-                let state = super::initialize(
+                let (state, ()) = super::initialize(
                     layout,
                     "",
                     |_, _| Ok(options),
-                    || Ok(coral_search::VectorStorage::On { dimension }),
+                    || Ok(((), coral_search::VectorStorage::On { dimension })),
                     &|_| {},
                 )
                 .await

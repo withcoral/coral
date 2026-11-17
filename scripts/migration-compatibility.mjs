@@ -1,22 +1,25 @@
 #!/usr/bin/env node
-// Reads migrations and names each statement that can break a Coral release
-// that still runs while a newer one migrates the database, during a rolling
-// upgrade. scripts/check-migrations.sh runs it on the migrations a checkout
-// adds.
+// Reads migrations and names each statement that can break a Coral that still
+// runs while a newer one migrates the database, during a rolling upgrade.
+// scripts/check-migrations.sh runs it on the migrations a checkout adds.
 //
-//   node scripts/migration-compatibility.mjs [--releases "v1.8.0 v1.9.0"] <file>...
+//   node scripts/migration-compatibility.mjs [--released "1 2 3"] <file>...
 //
 // A migration whose statements are named declares, in a comment, why an older
-// release keeps working:
+// Coral keeps working:
 //
-//   -- rolling-upgrade: unused since v1.9.0. <what stopped using it>
-//   -- rolling-upgrade: compatible. <why no statement breaks an older release>
+//   -- rolling-upgrade: unused since step 0081. <what stopped using it>
+//   -- rolling-upgrade: compatible. <why no statement breaks an older Coral>
 //
-// Coral reads the first form too: on Postgres it applies the migration only
-// when the named release or a newer one has started on the database, and on
-// both databases no older release starts afterwards
-// (crates/coral-db/src/upgrade.rs). So the named release must
-// be one that records itself there, which `--releases` lists, oldest first.
+// The first form names an earlier step: the migration of the change that
+// stopped using what this one removes. Coral reads that form too
+// (crates/coral-db/src/upgrade.rs). On Postgres it applies the migration only
+// where the named step is applied already, and on both databases no Coral
+// whose plan lacks the named step starts afterwards.
+//
+// A release user upgrades from one release to the next. So the named step must
+// be in a release, which then has stopped using what is removed and does not
+// remove it yet. `--released` lists the steps of the newest release.
 //
 // One declaration covers the file. `compatible` does not cover a statement
 // that removes, renames or retypes a table or a column, or that drops a view
@@ -116,9 +119,9 @@ const IDENTIFIER = `(${PART}(?:\\.${PART})*)`
 const name = (identifier) => identifier.replaceAll('"', '')
 const match = (statement, pattern) => new RegExp(pattern).exec(statement)
 
-// One way a statement can break an older release. A `certain` one breaks every
-// release that uses what it removes, so no `compatible` declaration covers
-// it: the migration names the release that stopped.
+// One way a statement can break an older Coral. A `certain` one breaks every
+// Coral that uses what it removes, so no `compatible` declaration covers it:
+// the migration names the step of the change that stopped.
 const may = (text) => ({ text, certain: false })
 const will = (text) => ({ text, certain: true })
 const REWRITES = may('rewrites values that an older release reads')
@@ -279,27 +282,30 @@ function breakingStatements(sql, quoted) {
 }
 
 // Why `declaration` does not stand for `breaking`, or nothing.
-function declarationProblem(declaration, releases, breaking) {
-  const unused = /^unused since (\S+?)\.\s+\S/i.exec(declaration)
+function declarationProblem(declaration, released, breaking) {
+  const unused = /^unused since step (\d+)\.\s+\S/i.exec(declaration)
   if (unused) {
-    if (releases.includes(unused[1])) return null
-    const oldest = releases.length > 0 ? `the oldest is ${releases[0]}` : 'none does yet, so this migration waits for one'
+    if (released.includes(Number(unused[1]))) return null
+    const newest =
+      released.length > 0
+        ? `the newest release ends at step ${String(Math.max(...released)).padStart(4, '0')}`
+        : 'this checkout builds on no release'
     return (
-      `names ${unused[1]}, which is not a release this checkout builds on that records itself in the ` +
-      `database (${oldest}). Coral cannot keep an upgrade from skipping any other release`
+      `names step ${unused[1]}, which no release has (${newest}). A release user upgrades from one ` +
+      'release to the next, so this migration waits for a release that has the step'
     )
   }
   if (/^compatible\.\s+\S/i.test(declaration)) {
     return breaking.some(({ certain }) => certain)
-      ? 'cannot be `compatible`: a statement below breaks every release that uses what it removes. ' +
-          'Declare `unused since vX.Y.Z. <what stopped using it>` instead'
+      ? 'cannot be `compatible`: a statement below breaks every Coral that uses what it removes. ' +
+          'Declare `unused since step NNNN. <what stopped using it>` instead'
       : null
   }
-  return 'must read `unused since vX.Y.Z. <what stopped using it>` or `compatible. <why>`'
+  return 'must read `unused since step NNNN. <what stopped using it>` or `compatible. <why>`'
 }
 
 // The problems of one migration, as lines to print. Empty when it passes.
-export function check(file, text, releases) {
+export function check(file, text, released) {
   const { sql, comments, quoted } = strip(text)
   const breaking = breakingStatements(sql, quoted)
   const declarations = comments.flatMap((comment) => {
@@ -315,24 +321,25 @@ export function check(file, text, releases) {
   }
   const lines = (statements) => statements.map(({ reason, statement }) => `  ${reason}: ${statement}`)
   if (declaration !== undefined) {
-    const problem = declarationProblem(declaration, releases, breaking)
+    const problem = declarationProblem(declaration, released, breaking)
     if (!problem) return []
     return [
       `${file}: its rolling-upgrade declaration ${problem}`,
       ...lines(breaking.filter(({ certain }) => certain && /^compatible/i.test(declaration))),
     ]
   }
-  return [`${file} can break a Coral release that still runs during a rolling upgrade:`, ...lines(breaking)]
+  return [`${file} can break an older Coral that still runs during a rolling upgrade:`, ...lines(breaking)]
 }
 
-const HELP = `an older Coral release must keep working after a migration runs.
+const HELP = `an older Coral must keep working after a migration runs.
   Keep the step additive: a new table, a new index, a new column that is nullable or has a default.
-  To remove or tighten something, stagger it. First ship a release that no longer uses it. Then add
-  the migration in a later release, and declare in it:
-    -- rolling-upgrade: unused since vX.Y.Z. <what stopped using it>
-  Coral enforces that: a Postgres upgrade cannot skip past vX.Y.Z, and no older release starts
-  after the migration. Name the oldest release for which it is true.
-  If no statement named above breaks an older release, declare:
+  To remove or tighten something, stagger it. First stop using it. Give that change a migration: if
+  it has none, add a marker, a migration that holds only a comment. When a release has that step,
+  add the removal, and declare in it:
+    -- rolling-upgrade: unused since step NNNN. <what stopped using it>
+  Coral enforces that: on Postgres it applies the removal only where step NNNN is applied already,
+  and no Coral whose plan lacks step NNNN starts afterwards. Name the first step for which it is true.
+  If no statement named above breaks an older Coral, declare:
     -- rolling-upgrade: compatible. <why>
   That covers a constraint, a rewrite of rows, and a dropped index, function, trigger, type or
   sequence. It does not cover a dropped or renamed table or column, a dropped view or schema, or a
@@ -341,13 +348,13 @@ const HELP = `an older Coral release must keep working after a migration runs.
   A step with a postgres/ and a sqlite/ half declares in the postgres/ half.`
 
 function main(args) {
-  let releases = []
+  let released = []
   let files = args
-  if (args[0] === '--releases') {
-    releases = args[1].split(/\s+/).filter(Boolean)
+  if (args[0] === '--released') {
+    released = args[1].split(/\s+/).filter(Boolean).map(Number)
     files = args.slice(2)
   }
-  const problems = files.flatMap((file) => check(file, readFileSync(file, 'utf8'), releases))
+  const problems = files.flatMap((file) => check(file, readFileSync(file, 'utf8'), released))
   if (problems.length === 0) return 0
   for (const problem of problems) console.error(`check-migrations: ${problem}`)
   console.error(`check-migrations: ${HELP}`)

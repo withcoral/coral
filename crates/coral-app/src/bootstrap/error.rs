@@ -52,8 +52,8 @@ impl From<coral_db::Error> for AppError {
         match error {
             coral_db::Error::Config(_)
             | coral_db::Error::MissingDatabaseParent(_)
-            | coral_db::Error::SkippedRelease { .. }
-            | coral_db::Error::ReleaseTooOld { .. } => Self::FailedPrecondition(error.to_string()),
+            | coral_db::Error::SkippedStep { .. }
+            | coral_db::Error::CoralTooOld { .. } => Self::FailedPrecondition(error.to_string()),
             coral_db::Error::Io(error) => Self::Io(error),
             coral_db::Error::Sqlx(_)
             | coral_db::Error::WriterBusy
@@ -109,23 +109,18 @@ mod tests {
         ));
         assert!(matches!(migration, AppError::Database(_)));
 
-        // An operator ends each of these by starting another release.
-        let release = |text| coral_db::Release::parse(text).expect("a release");
+        // An operator ends each of these by starting another Coral version.
         for (refusal, names) in [
             (
-                Error::SkippedRelease {
-                    migration: 80,
-                    required: release("1.9.0"),
-                    newest: Some(release("1.8.0")),
+                Error::SkippedStep {
+                    migration: 82,
+                    required: 81,
                 },
-                "Start Coral v1.9.0 on this database first",
+                "Start each Coral version between the one that runs now and this one",
             ),
             (
-                Error::ReleaseTooOld {
-                    release: release("1.8.0"),
-                    oldest: release("1.9.0"),
-                },
-                "Start Coral v1.9.0 or newer",
+                Error::CoralTooOld { required: 81 },
+                "Start the newest Coral version that has run on this database",
             ),
         ] {
             let refusal = AppError::from(refusal);

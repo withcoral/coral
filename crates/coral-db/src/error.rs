@@ -35,42 +35,32 @@ pub enum Error {
         /// The tables that hold those rows, comma-separated.
         tables: String,
     },
-    /// A pending migration removes what releases before `required` use, and
-    /// `required` has not started on a database that an older release may
-    /// still be serving. No migration was applied.
+    /// A pending migration removes what Corals without step `required` use,
+    /// and no Coral with that step has started on a database that an older
+    /// Coral may still be serving. No migration was applied.
     #[error(
-        "this upgrade skips Coral {required}: database migration {migration:04} removes what \
-         older releases use, and {}. Start Coral {required} on this database first, then start \
-         this version again. No migration was applied.",
-        newest_release(*.newest)
+        "this upgrade skips a Coral version: database migration {migration:04} removes what \
+         older versions use, and no Coral that has migration {required:04} has started on this \
+         database. Start each Coral version between the one that runs now and this one, in \
+         order, then start this version again. No migration was applied."
     )]
-    SkippedRelease {
+    SkippedStep {
         /// The migration's version.
         migration: i64,
-        /// The release that stopped using what the migration removes.
-        required: crate::Release,
-        /// The newest release that started on the database. `None` when no
-        /// release that records itself has.
-        newest: Option<crate::Release>,
+        /// The step of the change that stopped using what the migration
+        /// removes.
+        required: i64,
     },
-    /// A newer Coral removed what this release uses. Nothing was changed.
+    /// A newer Coral removed what this one uses. Nothing was changed.
     #[error(
-        "this database needs Coral {oldest} or newer: a newer release removed what Coral \
-         {release} uses. Start Coral {oldest} or newer. Nothing was changed."
+        "this Coral is too old for its database: a newer version removed what this version \
+         uses, and this version lacks database migration {required:04}. Start the newest Coral \
+         version that has run on this database. Nothing was changed."
     )]
-    ReleaseTooOld {
-        /// This Coral's release.
-        release: crate::Release,
-        /// The oldest release that runs on the database's schema.
-        oldest: crate::Release,
+    CoralTooOld {
+        /// The step that the database requires of every Coral's plan.
+        required: i64,
     },
-}
-
-fn newest_release(newest: Option<crate::Release>) -> String {
-    newest.map_or_else(
-        || "no release that records itself has started on this database".to_string(),
-        |newest| format!("the newest release that has started on this database is {newest}"),
-    )
 }
 
 impl Error {
@@ -88,8 +78,8 @@ impl Error {
             Self::Sqlx { .. } => "sqlx",
             Self::Migration { .. } => "migration",
             Self::MigrationForeignKeys { .. } => "migration_foreign_keys",
-            Self::SkippedRelease { .. } => "skipped_release",
-            Self::ReleaseTooOld { .. } => "release_too_old",
+            Self::SkippedStep { .. } => "skipped_step",
+            Self::CoralTooOld { .. } => "coral_too_old",
         }
     }
 

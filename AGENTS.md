@@ -235,12 +235,18 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   `scripts/check-migrations.sh` names each statement in a new migration that
   can break an older release, and says how to declare one that does not. It
   reads SQL text in the shared files and the Postgres halves, not stored
-  values: keep the values rule yourself. Coral acts on a declaration that
-  names a release (`crates/coral-db/src/upgrade.rs`). On Postgres it applies
-  the migration only when that release or a newer one has started on the
-  database, so a Postgres upgrade cannot skip past it. On both databases, no
-  older release starts afterwards. Name the oldest release for which the
-  claim is true.
+  values: keep the values rule yourself.
+
+  A deployment may run any build of `main`, and two builds between two
+  releases have one version. So a removal names a step, not a release: the
+  migration of the change that stopped using what it removes. Give that
+  change a migration. If it needs none, add a marker, a migration that holds
+  only a comment. Coral acts on the name (`crates/coral-db/src/upgrade.rs`).
+  On Postgres it applies the removal only where the named step is applied
+  already, so an upgrade cannot skip the build that stopped. On both
+  databases, no Coral whose plan lacks the named step starts afterwards. The
+  check accepts a named step only when a release has it, because a release
+  user upgrades from one release to the next.
 - Keep schemas portable across SQLite and Postgres and fail on schema drift;
   do not use `IF NOT EXISTS` to hide unexpected state.
 - When a migration needs a database feature whose availability it cannot

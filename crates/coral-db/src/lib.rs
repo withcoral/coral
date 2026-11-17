@@ -73,4 +73,3 @@ pub use migration::{MigrationPlan, MigrationProgress, MigrationReport, migration
 pub use options::DatabaseOptions;
 pub use query::{col, column};
 pub use transaction::{RowLock, Transaction, TransactionToken};
-pub use upgrade::Release;

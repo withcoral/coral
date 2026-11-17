@@ -18,7 +18,6 @@ coral-sqlite-vec.workspace = true
 coral-telemetry.workspace = true
 sea-query.workspace = true
 sea-query-sqlx.workspace = true
-semver.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

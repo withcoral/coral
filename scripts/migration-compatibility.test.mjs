@@ -4,7 +4,7 @@ import test from 'node:test'
 import { check } from './migration-compatibility.mjs'
 
 const file = '0010_runs.sql'
-const problems = (sql) => check(file, sql, ['v1.0.0']).join('\n')
+const problems = (sql) => check(file, sql, [1, 2, 3]).join('\n')
 
 // What each statement does to a Coral release that runs while it is applied.
 const breaking = {
@@ -80,7 +80,7 @@ const breaking = {
 for (const [sql, reason] of Object.entries(breaking)) {
   test(`a migration that runs \`${sql}\` can break an older release`, () => {
     const found = problems(sql)
-    assert.match(found, /0010_runs\.sql can break a Coral release/)
+    assert.match(found, /0010_runs\.sql can break an older Coral/)
     assert.match(found, reason)
   })
 }
@@ -129,8 +129,8 @@ const compatible = {
   'a dropped index, function and type that it declares compatible':
     '-- rolling-upgrade: compatible. No query names the index in ON CONFLICT or calls the function.\n' +
     'DROP INDEX workspaces_name;\nDROP FUNCTION lexemes(tsvector);\nDROP TYPE workspace_kind;\n',
-  'a removal that names the release that stopped using it':
-    '-- rolling-upgrade: unused since v1.0.0. No query names the column.\nALTER TABLE workspaces DROP COLUMN name;\n',
+  'a removal that names a released step, the one that stopped using it':
+    '-- rolling-upgrade: unused since step 0003. No query names the column.\nALTER TABLE workspaces DROP COLUMN name;\n',
 }
 
 for (const [name, sql] of Object.entries(compatible)) {
@@ -141,10 +141,12 @@ for (const [name, sql] of Object.entries(compatible)) {
 
 const drop = 'ALTER TABLE workspaces DROP COLUMN name;\n'
 const declarations = {
-  'names a release the checkout does not build on': [
-    `-- rolling-upgrade: unused since v9.9.9. No query names the column.\n${drop}`,
-    /names v9\.9\.9, which is not a release .* \(the oldest is v1\.0\.0\)/,
+  'names a step that no release has': [
+    `-- rolling-upgrade: unused since step 0004. No query names the column.\n${drop}`,
+    /names step 0004, which no release has \(the newest release ends at step 0003\)/,
   ],
+  // A release is a build, not a step: Coral orders Corals by their steps.
+  'names a release': [`-- rolling-upgrade: unused since v1.0.0. No query names the column.\n${drop}`, /must read/],
   'gives no reason': [`-- rolling-upgrade: compatible.\n${drop}`, /must read/],
   'has an unknown form': [`-- rolling-upgrade: safe. Nobody reads it.\n${drop}`, /must read/],
   'is repeated': [`-- rolling-upgrade: compatible. One.\n-- rolling-upgrade: compatible. Two.\n${drop}`, /more than once/],
@@ -176,7 +178,7 @@ const declarations = {
     /cannot be `compatible`/,
   ],
   // Coral reads a declaration only from a comment that has its own line.
-  'trails a statement': [`${drop.trimEnd()} -- rolling-upgrade: unused since v1.0.0. No query names it.\n`, /can break a Coral release/],
+  'trails a statement': [`${drop.trimEnd()} -- rolling-upgrade: unused since step 0003. No query names it.\n`, /can break an older Coral/],
   'has nothing to declare': [
     '-- rolling-upgrade: compatible. Adds a table.\nCREATE TABLE runs (id TEXT PRIMARY KEY);\n',
     /remove it/,
@@ -189,7 +191,7 @@ for (const [name, [sql, problem]] of Object.entries(declarations)) {
   })
 }
 
-test('a removal waits when no release records itself yet', () => {
-  const found = check(file, `-- rolling-upgrade: unused since v1.0.0. No query names the column.\n${drop}`, []).join('\n')
-  assert.match(found, /names v1\.0\.0, which is not a release .* \(none does yet, so this migration waits for one\)/)
+test('a removal waits when the checkout builds on no release', () => {
+  const found = check(file, `-- rolling-upgrade: unused since step 0003. No query names the column.\n${drop}`, []).join('\n')
+  assert.match(found, /names step 0003, which no release has \(this checkout builds on no release\)/)
 })
