@@ -62,6 +62,34 @@ fn only_a_lost_workspace_counts_as_lost_authority() {
             true,
         ),
         (
+            Error::Provider(coral_provider::Error::Workspace(
+                coral_workspace::Error::WorkspaceNotFound,
+            )),
+            true,
+        ),
+        (
+            Error::Policy(coral_policy::Error::Provider(
+                coral_provider::Error::Workspace(coral_workspace::Error::AgentDisabled),
+            )),
+            true,
+        ),
+        (
+            Error::Tools(coral_tools::Error::Workspace(
+                coral_workspace::Error::PermissionDenied("inspect"),
+            )),
+            true,
+        ),
+        (
+            Error::Provider(coral_provider::Error::Workspace(
+                coral_workspace::Error::WorkspaceArchived,
+            )),
+            false,
+        ),
+        (
+            Error::Provider(coral_provider::Error::ProviderNotFound),
+            false,
+        ),
+        (
             Error::Workspace(coral_workspace::Error::WorkspaceArchived),
             false,
         ),
