@@ -407,7 +407,7 @@ it('regenerates the runtime configuration on every launch', async () => {
 })
 
 describe('database', () => {
-  const url = 'postgres://coral:secret@127.0.0.1:5433/coral'
+  const url = 'postgres://coral:db-password@127.0.0.1:5433/coral'
 
   async function runtimeLaunch(mcp: string) {
     const response = await fetch(`${mcp}/launch`)
@@ -425,7 +425,7 @@ describe('database', () => {
     expect(config).toContain(
       '\n[database]\nbackend = "postgres"\nurl_env = "CORAL_DESKTOP_DATABASE_URL"\n',
     )
-    expect(config).not.toContain('secret')
+    expect(config).not.toContain('db-password')
     expect(env.CORAL_DESKTOP_DATABASE_URL).toBe(url)
   })
 

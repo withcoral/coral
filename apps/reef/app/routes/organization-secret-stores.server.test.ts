@@ -17,10 +17,12 @@ const closed = 'workspaces/00000000-0000-4000-8000-000000000002'
 const requestId = '00000000-0000-4000-8000-0000000000aa'
 const load = () => loader(authRouteTestArgs(new Request(url), {}, null))
 let refuse: ConnectError | null
+let disabled: boolean
 let calls: { method: string; workspace: string; secretStore: string; requestId: string }[]
 
 beforeEach(() => {
   refuse = null
+  disabled = false
   calls = []
   const change = (method: string) => (request: Omit<(typeof calls)[number], 'method'>) => {
     if (refuse) throw refuse
@@ -36,6 +38,7 @@ beforeEach(() => {
     secretStores: {
       listSecretStores: () => {
         if (refuse) throw refuse
+        if (disabled) return { secretStores: [], disabled }
         return {
           secretStores: [
             {
@@ -137,6 +140,13 @@ it('passes on the refusal when the caller is not an organization owner', async (
   refuse = new ConnectError('permission denied', Code.PermissionDenied)
   const failure: unknown = await load().catch((error: unknown) => error)
   expect(failure).toMatchObject({ status: 403 })
+})
+
+// Catches: Desktop, which turned secret stores off, still opening the page by its URL.
+it('does not exist where the deployment turned secret stores off', async () => {
+  disabled = true
+  const failure: unknown = await load().catch((error: unknown) => error)
+  expect(failure).toMatchObject({ status: 404 })
 })
 
 // Catches: the form's one key reused across rows, so the second change on a page

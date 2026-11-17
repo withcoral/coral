@@ -46,6 +46,13 @@ mod tests;
 /// one of about 276 MiB. The graphs of the Built-in, Private and Shared
 /// Providers are Coral's own, and each is under 1 MiB.
 ///
+/// The budget does not count the validators that the cached graphs compile
+/// for their Tools' responses. The cache keeps those in a store with a budget
+/// of its own, 128 MiB for all of them, so a validator never evicts a graph
+/// and a graph never evicts a validator. A graph's validators leave the store
+/// when the graph is dropped: once the cache has evicted it and the last Tool
+/// call that uses it has ended.
+///
 /// Entries are keyed by Generation alone, with no Workspace. Ask only for a
 /// Generation that a Workspace-scoped read in the same transaction just
 /// returned, as Invocation admission does, and never for an id from outside.
@@ -107,9 +114,14 @@ struct Entries {
     by_last_use: BTreeMap<u64, ProviderGenerationId>,
     last_tick: u64,
     weight_bytes: usize,
+    /// The store that every graph kept here compiles its validators into. It
+    /// has a budget and a lock of its own: this lock guards only the handle,
+    /// which each load clones.
+    validators: crate::validators::ValidatorStore,
 }
 
-/// One Generation's graph. The validators compiled from it can join it here.
+/// One Generation's graph. The validators compiled from it are in the
+/// cache's store, and this weight does not count them.
 struct Entry {
     graph: Arc<SchemaGraph>,
     weight_bytes: usize,
@@ -165,7 +177,9 @@ impl SchemaGraphCache {
     ///
     /// One load of a Generation runs at a time. A caller that finds a load
     /// under way waits for it and then uses the graph it cached, so
-    /// concurrent first calls read and parse the Generation once. A load that
+    /// concurrent first calls read and parse the Generation once. A waiter
+    /// loads it again only when the cache evicted that graph, to make room
+    /// for another Generation's graph, before the waiter's turn. A load that
     /// fails reaches its own caller alone: the next caller in turn loads
     /// through its own transaction. So does the next caller when the one
     /// whose turn it was goes away before it has read the row; once the row
@@ -261,6 +275,9 @@ impl SchemaGraphCache {
         generation_id: &ProviderGenerationId,
         loaded: SchemaGraph,
     ) -> Arc<SchemaGraph> {
+        let validators = self.entries().validators.clone();
+        let mut loaded = loaded;
+        loaded.keep_validators_in(&validators);
         // The walk of a large graph takes milliseconds, so it runs here,
         // before the lock.
         let weight_bytes = weight_bytes(&loaded);
@@ -396,7 +413,7 @@ const GRAPH_BASE_BYTES: usize = 2048;
 
 /// The bytes of heap that `value` holds room for, by capacity: a string's
 /// bytes, an array's values, an object's entries and index table.
-fn held_bytes(value: &Value) -> usize {
+pub(crate) fn held_bytes(value: &Value) -> usize {
     match value {
         Value::Null | Value::Bool(_) | Value::Number(_) => 0,
         Value::String(text) => text.capacity(),

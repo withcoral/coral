@@ -166,13 +166,14 @@ impl LoadedServerConfig {
         policy: coral_outbound::DestinationPolicy,
         env: &coral_secret_store::EnvReader,
     ) -> Result<coral_secret_store::SecretStores, AppError> {
-        super::secret_store_config::build(
-            &self.raw,
-            &self.parse()?.secret_stores,
-            kinds,
-            policy,
-            env,
-        )
+        let config = self.parse()?;
+        let Some(defined) = config
+            .credentials
+            .defined_secret_stores(&config.secret_stores)?
+        else {
+            return Ok(coral_secret_store::SecretStores::disabled());
+        };
+        super::secret_store_config::build(&self.raw, defined, kinds, policy, env)
     }
 
     /// Validates all deployment sections after the persistent-state fence.
@@ -191,7 +192,12 @@ impl LoadedServerConfig {
         config.runtime.resolve()?;
         config.search.reconcile_interval()?;
         config.credentials.key_env()?;
-        super::secret_store_config::validate(&self.raw, &config.secret_stores, secret_store_kinds)?;
+        if let Some(defined) = config
+            .credentials
+            .defined_secret_stores(&config.secret_stores)?
+        {
+            super::secret_store_config::validate(&self.raw, defined, secret_store_kinds)?;
+        }
         self.auth_settings()?;
         crate::telemetry::TelemetryConfig::from_toml(&self.raw)?;
         Ok(())
@@ -451,9 +457,30 @@ impl OutboundSettings {
 #[serde(default, deny_unknown_fields)]
 struct CredentialSettings {
     key_env: Option<String>,
+    /// Turns Secret Stores off, for a deployment that cannot offer them, such
+    /// as Desktop, whose generated config no operator edits. Reef then hides
+    /// them instead of showing how to define one.
+    disable_secret_stores: bool,
 }
 
 impl CredentialSettings {
+    /// The `[[secret_stores]]` tables to build, or `None` when the deployment
+    /// turned Secret Stores off. Refuses a config that does both, so the file
+    /// cannot say both.
+    fn defined_secret_stores<'a>(
+        &self,
+        secret_stores: &'a [toml::Value],
+    ) -> Result<Option<&'a [toml::Value]>, AppError> {
+        match (self.disable_secret_stores, secret_stores.is_empty()) {
+            (false, _) => Ok(Some(secret_stores)),
+            (true, true) => Ok(None),
+            (true, false) => Err(AppError::FailedPrecondition(
+                "credentials.disable_secret_stores is set, so remove the [[secret_stores]] tables"
+                    .into(),
+            )),
+        }
+    }
+
     fn key_env(&self) -> Result<Option<String>, AppError> {
         self.key_env
             .as_deref()
@@ -1658,6 +1685,15 @@ client_secret = 'test-secret'
                 "[credentials]\nkey_env = 1",
                 "credentials.key_env: unsupported value",
             ),
+            (
+                "[credentials]\ndisable_secret_stores = 'yes'",
+                "credentials.disable_secret_stores",
+            ),
+            (
+                "[credentials]\ndisable_secret_stores = true\n\
+                 [[secret_stores]]\nname = 'env'\nkind = 'env'\nprefix = 'MYCO_'",
+                "credentials.disable_secret_stores is set, so remove the [[secret_stores]] tables",
+            ),
         ] {
             let error = load(raw)
                 .1
@@ -1667,6 +1703,28 @@ client_secret = 'test-secret'
                 matches!(&error, AppError::FailedPrecondition(message) if message.contains(expected)),
                 "{raw}: {error}"
             );
+        }
+    }
+
+    // Catches: Reef treating a deployment that defines no store yet like one
+    // that turned Secret Stores off, which would hide how to define one.
+    #[test]
+    fn only_disable_secret_stores_turns_them_off() {
+        for (raw, disabled) in [
+            ("", false),
+            ("[credentials]\ndisable_secret_stores = false", false),
+            ("[credentials]\ndisable_secret_stores = true", true),
+        ] {
+            let stores = load(raw)
+                .1
+                .secret_stores_from(
+                    &coral_secret_store::SecretStoreKinds::default(),
+                    coral_outbound::DestinationPolicy::default(),
+                    &(std::sync::Arc::new(|_: &str| Ok(None)) as coral_secret_store::EnvReader),
+                )
+                .expect(raw);
+            assert_eq!(stores.is_disabled(), disabled, "{raw:?}");
+            assert_eq!(stores.list().count(), 0, "{raw:?}");
         }
     }
 

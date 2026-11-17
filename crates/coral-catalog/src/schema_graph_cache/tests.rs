@@ -169,6 +169,47 @@ async fn a_corrupt_stored_graph_is_reported_and_not_cached() {
     );
 }
 
+// Catches: a graph that the cache keeps having no place in the cache's store,
+// so that every Tool call on it bundles and compiles its response schema,
+// and a graph read without the cache keeping validators that no budget
+// counts.
+#[tokio::test]
+async fn a_cached_graph_keeps_its_validators_and_a_graph_read_without_the_cache_keeps_none() {
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let generation = publish(&fixture, &[http_input()])
+        .await
+        .pop()
+        .expect("one Generation");
+    let cache = SchemaGraphCache::with_default_budget();
+    let (root, _schema) = generation.graph.schemas().next().expect("a schema");
+    let direction = crate::types::SchemaValidationDirection::Output;
+    let builds = |graph: &SchemaGraph| {
+        let built = std::cell::Cell::new(0);
+        for _use in 0..2 {
+            let validator = graph.validators().validator(root, direction, || {
+                built.set(built.get() + 1);
+                Some(serde_json::json!({"type": "object"}))
+            });
+            assert!(validator.is_some());
+        }
+        built.get()
+    };
+
+    let kept = cached(&fixture, &cache, &generation.id).await.unwrap();
+    assert_eq!(builds(&kept), 1, "the cached graph builds a validator once");
+    let again = cached(&fixture, &cache, &generation.id).await.unwrap();
+    assert_eq!(builds(&again), 0, "a later call finds it kept");
+
+    let direct = uncached(&fixture, &generation.id).await.unwrap();
+    assert_eq!(builds(&direct), 2, "a graph read without the cache");
+    assert_eq!(builds(&generation.graph), 2, "a materialized graph");
+    assert_eq!(
+        builds(&SchemaGraph::clone(&kept)),
+        2,
+        "a copy of the cached graph"
+    );
+}
+
 struct BudgetCase {
     name: &'static str,
     /// The budget, from the weights of an HTTP graph and the smaller MCP graph.
