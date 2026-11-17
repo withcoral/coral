@@ -249,17 +249,20 @@ impl PublicationRow {
             .map_err(|_error| {
                 Error::CorruptData("Provider Publication has invalid Provider identity".to_string())
             })?;
-        let published_provider = match (
+        match (
+            outcome,
+            diagnostic,
             provider_id,
             self.provider_display_name,
             self.provider_account_setting_version,
         ) {
-            (Some(provider_id), Some(display_name), Some(version))
-                if outcome == ProviderPublicationOutcome::Succeeded
-                    && diagnostic.is_none()
-                    && !display_name.is_empty()
-                    && version > 0 =>
-            {
+            (
+                ProviderPublicationOutcome::Succeeded,
+                None,
+                Some(provider_id),
+                Some(display_name),
+                Some(version),
+            ) if !display_name.is_empty() && version > 0 => {
                 let display_name = ProviderDisplayName::parse(&display_name).map_err(|_error| {
                     Error::CorruptData(
                         "Provider Publication has invalid display-name snapshot".to_string(),
@@ -272,27 +275,20 @@ impl PublicationRow {
                     request.credential_route(),
                     version,
                 );
-                Some(Provider::new(access, display_name, ProviderState::Active))
+                Ok(ProviderPublication::succeeded(
+                    id,
+                    request,
+                    Provider::new(access, display_name, ProviderState::Active),
+                    self.completed_at_unix_nanos,
+                ))
             }
-            (None, None, None)
-                if outcome == ProviderPublicationOutcome::Failed && diagnostic.is_some() =>
-            {
-                None
-            }
-            _ => {
-                return Err(Error::CorruptData(
-                    "Provider Publication has inconsistent terminal snapshot".to_string(),
-                ));
-            }
-        };
-        Ok(ProviderPublication::new(
-            id,
-            request,
-            outcome,
-            diagnostic,
-            published_provider,
-            self.completed_at_unix_nanos,
-        ))
+            (ProviderPublicationOutcome::Failed, Some(diagnostic), None, None, None) => Ok(
+                ProviderPublication::failed(id, request, diagnostic, self.completed_at_unix_nanos),
+            ),
+            _ => Err(Error::CorruptData(
+                "Provider Publication has inconsistent terminal snapshot".to_string(),
+            )),
+        }
     }
 }
 #[derive(Debug, FromRow)]
@@ -350,24 +346,26 @@ impl RegenerationPublicationRow {
             request
         };
         let outcome = ProviderPublicationOutcome::from_storage_str(&self.outcome)?;
-        let diagnostic = match (self.diagnostic_code, self.diagnostic_message, outcome) {
-            (None, None, ProviderPublicationOutcome::Succeeded) => None,
+        match (self.diagnostic_code, self.diagnostic_message, outcome) {
+            (None, None, ProviderPublicationOutcome::Succeeded) => {
+                Ok(ProviderRegenerationPublication::succeeded(
+                    id,
+                    request,
+                    self.completed_at_unix_nanos,
+                ))
+            }
             (Some(code), Some(message), ProviderPublicationOutcome::Failed) => {
-                Some(PublicationDiagnostic::from_storage(code, message)?)
+                Ok(ProviderRegenerationPublication::failed(
+                    id,
+                    request,
+                    PublicationDiagnostic::from_storage(code, message)?,
+                    self.completed_at_unix_nanos,
+                ))
             }
-            _ => {
-                return Err(Error::CorruptData(
-                    "Provider regeneration has inconsistent terminal evidence".to_string(),
-                ));
-            }
-        };
-        Ok(ProviderRegenerationPublication::new(
-            id,
-            request,
-            outcome,
-            diagnostic,
-            self.completed_at_unix_nanos,
-        ))
+            _ => Err(Error::CorruptData(
+                "Provider regeneration has inconsistent terminal evidence".to_string(),
+            )),
+        }
     }
 }
 
