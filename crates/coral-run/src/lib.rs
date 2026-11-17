@@ -219,7 +219,8 @@ pub use types::{
     PROGRAM_SOURCE_MAX_BYTES, ProgramLogLevel, ProgramSource, ProgramValue, RUN_EVENT_PAGE_MAX,
     RUN_TIMEOUT_MAX_MS, RunCpuBudget, RunCursor, RunEvent, RunEventKind, RunFailure,
     RunFailureCode, RunId, RunObservation, RunState, RunSubmission, RunTerminalOutcome, RunTimeout,
-    RunUpdate, RuntimeLimits, SOURCE_MAP_MAX_BYTES, ShutdownDrain, SourceDocument, SourceLocation,
+    RunUpdate, RunUpdatePage, RuntimeLimits, SOURCE_MAP_MAX_BYTES, ShutdownDrain, SourceDocument,
+    SourceLocation,
 };
 
 #[cfg(test)]
