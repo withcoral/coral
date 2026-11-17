@@ -146,29 +146,45 @@ async fn listeners_report_readiness_separately_from_process_liveness() {
 
 #[tokio::test]
 async fn configured_local_auth_bind_is_honored_without_enabling_oauth() {
+    // Between the release of the address and the server's bind of it, any
+    // socket on the host can take the port. The server then fails as it does
+    // for an occupied address, and the test tries another address. A server
+    // that ignored the bind never fails that way: it starts on an address of
+    // its own and fails the comparison below.
+    const ADDRESSES: usize = 5;
     let temp = TempDir::new().unwrap();
-    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = occupied.local_addr().unwrap();
-    std::fs::write(
-        temp.path().join("config.toml"),
-        format!("[listeners.auth]\nbind = '{address}'\n{WEB}"),
-    )
-    .unwrap();
-    let error = match start(ServerBuilder::new().with_config_dir(temp.path())).await {
-        Err(error) => error,
-        Ok(server) => {
-            server.shutdown().await.unwrap();
-            panic!("configured auth bind was ignored");
+    let mut lost = 0;
+    let (server, address) = loop {
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = occupied.local_addr().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            format!("[listeners.auth]\nbind = '{address}'\n{WEB}"),
+        )
+        .unwrap();
+        let error = match start(ServerBuilder::new().with_config_dir(temp.path())).await {
+            Err(error) => error,
+            Ok(server) => {
+                server.shutdown().await.unwrap();
+                panic!("configured auth bind was ignored");
+            }
+        };
+        assert!(
+            matches!(*error.0, ServeErrorKind::AuthSupportStart(_)),
+            "{error}"
+        );
+        drop(occupied);
+        match start(ServerBuilder::new().with_config_dir(temp.path())).await {
+            Ok(server) => break (server, address),
+            Err(error) => {
+                lost += 1;
+                assert!(
+                    matches!(*error.0, ServeErrorKind::AuthSupportStart(_)) && lost < ADDRESSES,
+                    "{lost} of {ADDRESSES} released addresses: {error}"
+                );
+            }
         }
     };
-    assert!(
-        matches!(*error.0, ServeErrorKind::AuthSupportStart(_)),
-        "{error}"
-    );
-    drop(occupied);
-    let server = start(ServerBuilder::new().with_config_dir(temp.path()))
-        .await
-        .unwrap();
     assert_eq!(server.auth_support.as_ref().unwrap().local_addr(), address);
     let client = reqwest::Client::new();
     assert_eq!(

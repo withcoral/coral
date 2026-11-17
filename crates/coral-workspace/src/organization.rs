@@ -138,7 +138,8 @@ impl OrganizationModule {
     ///
     /// This host-only seam is not a self-service role setter. The Adapter must
     /// select Member unless this exact verified identity is the configured
-    /// bootstrap Owner. A repeated login cannot promote or re-enable a User.
+    /// bootstrap Owner. A repeated login cannot promote or re-enable a User,
+    /// and a rejoin keeps the disablement recorded before the removal.
     /// # Errors
     /// Returns invalid input or persistence failure.
     pub async fn provision_login(

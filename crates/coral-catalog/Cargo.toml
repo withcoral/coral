@@ -31,6 +31,7 @@ serde_yaml.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
+tokio.workspace = true
 unicode-id-start.workspace = true
 url.workspace = true
 uuid.workspace = true
@@ -43,4 +44,3 @@ coral-v8.workspace = true
 # The index map `serde_json` keeps an object in: a test checks the room the
 # schema graph cache weighs an object at against it.
 indexmap.workspace = true
-tokio.workspace = true
