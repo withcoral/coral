@@ -13,7 +13,7 @@ pub use authorization_server::{CoralAuthorizationServer, RunningCoralAuthorizati
 pub use config::AuthSettings;
 /// Visible to the crate so the bootstrap composition root can build the services
 /// these settings configure; resolution still happens only in this module.
-pub(crate) use config::{AuthListenerSettings, ResolvedAuthSettings, WebSettings};
+pub(crate) use config::{AuthListenerSettings, AuthSection, ResolvedAuthSettings, WebSettings};
 pub use error::AuthServerError;
 
 /// Path the authorization server answers the upstream provider's callback on.
@@ -92,7 +92,7 @@ pub(super) mod test_config {
     use base64::engine::general_purpose::STANDARD;
     use coral_auth::SessionTokenIssuer;
 
-    use super::config::{AuthSettings, ResolvedAuthSettings};
+    use super::config::ResolvedAuthSettings;
 
     pub(crate) const SESSION: &str = "[auth.session]\nsigning_key_file = 'session.key'\n";
     pub(crate) const AUTHORIZATION_SERVER: &str =
@@ -123,7 +123,7 @@ pub(super) mod test_config {
         provider_issuer: &str,
         extra: &str,
     ) -> (ResolvedAuthSettings, SessionTokenIssuer) {
-        let settings = AuthSettings::from_toml(&format!(
+        let settings = crate::bootstrap::auth_settings(&format!(
             "[auth.session]\n[listeners.auth]\npublic_url = '{AUTH_ISSUER}'\n\
              [auth.provider]\nissuer = '{provider_issuer}'\n\
              client_id = 'provider-client'\nclient_secret = '{PROVIDER_SECRET}'\n{extra}"

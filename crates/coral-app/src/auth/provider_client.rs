@@ -717,7 +717,6 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::auth::config::AuthSettings;
     use crate::auth::id_token::tests::{
         claims as id_token_claims, rsa_key, set_claim, token as id_token,
     };
@@ -729,7 +728,7 @@ mod tests {
     }
 
     fn provider_with(issuer: &str, extra: &str) -> ResolvedOidcProvider {
-        let settings = AuthSettings::from_toml(&format!(
+        let settings = crate::bootstrap::auth_settings(&format!(
             "[auth]
              [auth.session]
              [listeners.auth]

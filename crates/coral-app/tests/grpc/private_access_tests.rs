@@ -75,15 +75,14 @@ async fn auth_disabled_grpc_configuration_rejects_non_loopback() {
             format!("[listeners.grpc]\nbind = '{bind}'\n"),
         )
         .unwrap();
-        let prepared = ServerBuilder::configured_standalone_grpc()
+        let Err(error) = ServerBuilder::configured_standalone_grpc()
             .with_config_dir(temp.path())
             .prepare()
             .await
-            .unwrap();
-
-        let Err(error) = prepared.serve_settings() else {
+        else {
             panic!("auth-disabled gRPC configuration must reject {bind}");
         };
+
         assert!(
             matches!(error, AppError::FailedPrecondition(ref message)
                 if message == "auth-disabled listeners.grpc.bind must be loopback"),

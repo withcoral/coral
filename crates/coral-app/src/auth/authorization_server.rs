@@ -60,8 +60,8 @@ pub struct CoralAuthorizationServer {
 impl CoralAuthorizationServer {
     /// Builds the Coral authorization server from validated auth settings.
     ///
-    /// [`AuthSettings`] can only be produced by [`AuthSettings::from_toml`],
-    /// so the settings arrive already validated and are not rechecked here.
+    /// [`AuthSettings`] has one constructor, which validates, so the settings
+    /// arrive already validated and are not rechecked here.
     /// This resolves what parsing cannot: the provider secret and the session
     /// signing key.
     ///
@@ -652,7 +652,7 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::test_state::database;
-    use super::{Arc, AuthSettings, CoralAuthorizationServer};
+    use super::{Arc, CoralAuthorizationServer};
 
     use crate::auth::test_config::{AUTHORIZATION_SERVER, PROVIDER, SESSION};
 
@@ -660,7 +660,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let signing_key = coral_test_support::p256_pkcs8();
         fs::write(dir.path().join("session.key"), &signing_key).expect("session key");
-        let config = format!("unowned = 'preserved'\n[auth]\n{auth}{SESSION}");
+        // A section auth does not own stands beside it.
+        let config = format!("[otel]\nservice_name = 'preserved'\n[auth]\n{auth}{SESSION}");
         fs::write(dir.path().join("config.toml"), config).expect("config");
         dir
     }
@@ -672,7 +673,7 @@ mod tests {
     fn server(dir: &tempfile::TempDir, database: Arc<Database>) -> CoralAuthorizationServer {
         let config_path = dir.path().join("config.toml");
         let raw = fs::read_to_string(&config_path).expect("config snapshot");
-        let settings = AuthSettings::from_toml(&raw)
+        let settings = crate::bootstrap::auth_settings(&raw)
             .expect("valid config")
             .expect("auth settings");
         CoralAuthorizationServer::from_settings(&config_path, settings, loopback_policy(), database)
@@ -691,7 +692,7 @@ mod tests {
         let dir = authorization_server("");
         let config_path = dir.path().join("config.toml");
         let raw = fs::read_to_string(&config_path).expect("config snapshot");
-        let settings = AuthSettings::from_toml(&raw)
+        let settings = crate::bootstrap::auth_settings(&raw)
             .expect("valid config")
             .expect("auth settings");
         fs::remove_file(&config_path).expect("remove config after parsing");
@@ -711,7 +712,7 @@ mod tests {
         let dir = authorization_server("");
         let config_path = dir.path().join("config.toml");
         let raw = fs::read_to_string(&config_path).expect("config snapshot");
-        let (settings, _issuer) = AuthSettings::from_toml(&raw)
+        let (settings, _issuer) = crate::bootstrap::auth_settings(&raw)
             .expect("valid config")
             .expect("auth settings")
             .resolve_runtime_dependencies(&config_path, &|_| Ok(None))
