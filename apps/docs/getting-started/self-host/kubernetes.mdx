@@ -3,15 +3,15 @@ title: "Deploying Coral with Kubernetes"
 sidebarTitle: "Kubernetes"
 ---
 
-This guide will explain how to deploy Coral in your Kubernetes cluster. We assume that you have an ingress controller installed and that you have a cert-manager installed or equivalent to issue TLS certificates. You may choose to do your TLS termination differently according to your needs.
+Deploy Coral in your Kubernetes cluster. This guide assumes that your cluster has an ingress controller, and cert-manager or an equivalent to issue TLS certificates. You can terminate TLS in another way if you need to.
 
-We will use `<coral-host>` as the placeholder for the domain of your Coral deployment.
+`<coral-host>` is the placeholder for the domain of your Coral deployment.
 
-- See the [Configuration Reference](/reference/configuration) for more details on the configuration options.
+The [configuration reference](/reference/configuration) describes the configuration options.
 
 ## Common setup
 
-1. Create the namespace, secrets, services and coral-web deployment. Save this to `common.yaml`. The gRPC server of the Coral deployment is plaintext and not exposed outside the cluster.
+1. Create the namespace, the secrets, the services and the `coral-web` deployment. Save this manifest to `common.yaml`. Coral's gRPC server is plaintext, and this manifest does not expose it outside the cluster.
 
 ```yaml
 apiVersion: v1
@@ -169,12 +169,12 @@ spec:
 
 ## Coral deployment
 
-Choose whether you want to use SQLite or Postgres as the backing storage.
+Choose SQLite or Postgres as Coral's database.
 
 <Tabs>
 <Tab title="With SQLite">
 
-2. Create the config and coral server deployment. A PVC will be used to store the SQLite data and the credential encryption key. Save this to `coral.yaml`.
+2. Create the config and the Coral server deployment. A PVC stores the SQLite data and the credential encryption key. Save this manifest to `coral.yaml`.
 
 ```yaml
 apiVersion: v1
@@ -293,7 +293,7 @@ spec:
 </Tab>
 <Tab title="With Postgres">
 
-2. Create the config and coral server deployment. Save this to `coral.yaml`.
+2. Create the config and the Coral server deployment. Save this manifest to `coral.yaml`.
 
 ```yaml
 apiVersion: v1
@@ -410,7 +410,7 @@ spec:
           emptyDir: {}
 ```
 
-If your Postgres server uses a custom CA for TLS, add the CA bundle to the Coral deployment so Coral knows it can trust the certificate. For example, if you're using AWS RDS:
+If your Postgres server uses a custom CA for TLS, add the CA bundle to the Coral deployment, so that Coral can trust the certificate. For example, with AWS RDS:
 
 - Download the CA bundle and put it in a ConfigMap:
   ```bash
@@ -435,7 +435,7 @@ If your Postgres server uses a custom CA for TLS, add the CA bundle to the Coral
             name: rds-ca
   ```
 
-- Refer to the CA bundle on Coral's DB secret:
+- Refer to the CA bundle in Coral's database secret:
   ```yaml
   CORAL_DATABASE_URL: "postgres://coral:PASSWORD@<rds-endpoint>:5432/coral?sslmode=verify-full&sslrootcert=/etc/coral/rds-ca.pem"
   ```
@@ -445,14 +445,14 @@ If your Postgres server uses a custom CA for TLS, add the CA bundle to the Coral
 
 ### Apply
 
-3. Apply your Kubernetes manifests
+3. Apply your Kubernetes manifests:
 
 ```shell
 kubectl apply -f common.yaml
 kubectl apply -f coral.yaml
 ```
 
-4. Wait for the deployments to stabilize. You should be able to open the UI in your browser in `https://<coral-host>`. After you create your first workspace you can use the UI instructions to connect an MCP client via `https://mcp.<coral-host>`.
+4. Wait for the deployments to become stable. Then open the Coral UI in your browser at `https://<coral-host>`. After you create your first workspace, follow the instructions in the Coral UI to connect an MCP client through `https://mcp.<coral-host>`.
 
 ## Upgrade
 
@@ -502,7 +502,7 @@ The onboarding prompt can tell some MCP clients to look for a Coral plugin. To o
               value: "claude, chatgpt"
 ```
 
-- A listed client that can find and install plugins looks for the plugin. It installs the plugin only after your user confirms, then adds the MCP server through it.
+- A listed client that can find and install plugins looks for the plugin. It installs the plugin only after your user confirms. Then it adds the MCP server through the plugin.
 - A listed client adds the MCP server directly if it cannot find or install the plugin, or if your user declines. Every other client adds it directly too.
 - The list only advertises a plugin. Coral does not check that the plugin exists.
 - Leave the variable unset to offer no plugin.

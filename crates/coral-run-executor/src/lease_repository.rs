@@ -31,10 +31,7 @@ pub(crate) async fn renew(
         ])
         .values_panic([
             Expr::val(id),
-            Expr::val(match kind {
-                Kind::Local => "local",
-                Kind::Dialed => "dialed",
-            }),
+            Expr::val(kind.as_storage_str()),
             Expr::val(lease_until),
         ])
         .on_conflict(

@@ -9,7 +9,11 @@
 //! Ledger on every path the Program takes, in chunks, and runs the Run-bound
 //! Tool Invocation and Policy Enforcement Point choreography inside its
 //! commits. A Run accepted in a caller's transaction and never launched keeps
-//! its claim until the expired-lease sweep ends it.
+//! its claim until the expired-lease sweep ends it. A Run accepted for Run
+//! streams ([`RunModule::with_run_streams`], ADR 0027) gets neither the
+//! worker claim nor a Run Owner: it waits, `running`, until a take claims it.
+//! The invariants below that name the worker claim or the owner hold for the
+//! owner path.
 //!
 //! # Interface
 //!
@@ -70,7 +74,7 @@
 //! Exact submitted and linked source, emitted JavaScript, source map, compiler
 //! provenance, limits, Run, and `run.started` evidence commit together.
 //! Execution code is always reloaded from that durable package. Acceptance
-//! writes the Run's worker claim, so no running Run is unclaimed; the Run
+//! writes the Run's worker claim, so no owned Run is unclaimed; the Run
 //! Owner's first chunk is the execution-start mark, and after it JavaScript is
 //! never resumed or replayed. The owner applies `coral.emit`, the bounded
 //! console, admission and Invocation results in arrival order against its
@@ -177,6 +181,7 @@ mod shutdown;
 mod source_location_repository;
 mod summary;
 mod summary_repository;
+mod take;
 mod termination;
 mod tool_result_shape;
 pub use tool_result_shape::{ToolResultShape, ToolResultShapes};
@@ -267,6 +272,9 @@ pub struct RunModule {
     instance: CoralInstanceId,
     /// Where outside Run Requests wait for the Run Owner of their Run.
     inbox: RunInbox,
+    /// Accepted Runs wait for a take and a Run stream instead of a Run Owner
+    /// (ADR 0027). Only tests set it until production switches over.
+    run_streams: bool,
     owners: Owners,
     admission: shutdown::Admission,
     /// Bounds the recovered owners' writes at once, so a mass recovery after
@@ -351,6 +359,7 @@ impl RunModule {
             compilation_timeout: limits.compilation_timeout(),
             instance,
             inbox,
+            run_streams: false,
             owners: Owners::default(),
             admission: shutdown::Admission::default(),
             recovery_writes: recovery::write_permits(),
@@ -394,12 +403,22 @@ impl RunModule {
             compilation_timeout: coral_test_support::TEST_COMPILATION_TIMEOUT,
             instance: CoralInstanceId::generate(),
             inbox,
+            run_streams: false,
             owners: Owners::default(),
             admission: shutdown::Admission::default(),
             recovery_writes: recovery::write_permits(),
             invocation_observer: observers.invocation,
             execution_observer: observers.execution,
         }
+    }
+
+    /// Accepts each Run for Run streams (ADR 0027): acceptance writes no
+    /// worker claim, lease or holder and creates no Run Owner, and the Run
+    /// waits, `running`, until a take claims it.
+    #[must_use]
+    pub fn with_run_streams(mut self) -> Self {
+        self.run_streams = true;
+        self
     }
 
     /// Enables fixed/caller credential resolution and User connection waits.

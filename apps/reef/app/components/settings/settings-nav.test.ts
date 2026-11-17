@@ -4,9 +4,9 @@ import { currentSettingsItem, settingsNav } from './settings-nav'
 const sections = (reader: Parameters<typeof settingsNav>[0]) =>
   settingsNav(reader).map((item) => [item.label, item.to])
 
-// Catches: a member offered a section Coral refuses, a local deployment, where
-// nobody else can sign in, offered people to manage, or a deployment that turned
-// secret stores off, such as Desktop, offered a page that does not exist.
+// Catches: a member offered a section Coral refuses them, a local deployment,
+// where nobody else can sign in, offered people to manage, or a deployment that
+// turned secret stores off, such as Desktop, offered a page that does not exist.
 test.each([
   [
     'an organization owner',
@@ -21,7 +21,7 @@ test.each([
   [
     'an organization member',
     { organizationOwner: false, people: true, secretStoresEnabled: true },
-    [['Usage data', '/usage-data']],
+    [],
   ],
   [
     'a local deployment',

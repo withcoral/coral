@@ -236,6 +236,8 @@ function SidebarNavigation({
   const people = auth.mode === 'required'
   const inSettings = area === 'settings'
   const reader = { organizationOwner, people, secretStoresEnabled }
+  // The section Settings opens: the first one this reader has.
+  const firstSection = settingsNav(reader)[0]
   // A tab that opened on the settings goes back home.
   const back = useReturnTo(inSettings, '/')
   // The brand opens the Overview of the workspace you are in. In the settings
@@ -399,7 +401,7 @@ function SidebarNavigation({
             render={
               <SidebarButton
                 aria-label={`Open account menu for ${accountLabel}`}
-                icon={name ? <Avatar name={name} letters={2} /> : 'User'}
+                icon={name ? <Avatar name={name} /> : 'User'}
                 isMinimized={isMinimized}
                 title={accountLabel}
               />
@@ -410,11 +412,15 @@ function SidebarNavigation({
           <Menu.Content align={isMinimized ? 'end' : 'start'} side={isMinimized ? 'right' : 'top'}>
             <AppearanceMenu />
             <Menu.Separator />
-            {/* Every member can read the usage data; an organization owner administers the rest. */}
-            <Menu.Item to={settingsNav(reader)[0].to} icon="Settings">
-              Settings
-            </Menu.Item>
-            <Menu.Separator />
+            {/* Only an organization owner has settings. */}
+            {firstSection && (
+              <>
+                <Menu.Item to={firstSection.to} icon="Settings">
+                  Settings
+                </Menu.Item>
+                <Menu.Separator />
+              </>
+            )}
             {auth.mode === 'required' ? (
               <Form action="/logout" method="post" ref={logout}>
                 <input name="csrf" type="hidden" value={auth.csrfToken} />

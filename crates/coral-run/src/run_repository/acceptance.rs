@@ -66,13 +66,13 @@ impl PackageRow {
 
 /// Inserts the Run row, claimed by `holder` and with no deadline (its start
 /// records one), and its package, which records the `compilation_timeout` it
-/// was compiled under. `false` means a
-/// Run with this identifier already exists and nothing was written: the
-/// caller draws a new identifier.
+/// was compiled under. With no `holder` the Run waits for a take, with no
+/// worker claim and no lease. `false` means a Run with this identifier
+/// already exists and nothing was written: the caller draws a new identifier.
 pub(crate) async fn insert_acceptance(
     transaction: &mut Transaction<'_>,
     run: &AcceptedRun,
-    holder: &CoralInstanceId,
+    holder: Option<&CoralInstanceId>,
     source: &ProgramSource,
     package: &ProgramPackage,
     linked: &[LinkedToolSelection],
@@ -157,8 +157,14 @@ pub(crate) async fn insert_acceptance(
 async fn insert_record(
     transaction: &mut Transaction<'_>,
     run: &AcceptedRun,
-    holder: &CoralInstanceId,
+    holder: Option<&CoralInstanceId>,
 ) -> Result<bool, Error> {
+    let worker_claim = holder.map(|_holder| {
+        (
+            run.claim_id.as_str(),
+            run.worker_claim_expires_at_unix_nanos,
+        )
+    });
     let statement = Query::insert()
         .into_table(ProgramRunRecords::Table)
         .columns([
@@ -187,10 +193,10 @@ async fn insert_record(
             Expr::val(run.accepted_at_unix_nanos),
             Expr::val(run.shutdown_grace_nanos),
             // The Run Owner's worker claim: written with acceptance, so no
-            // running Run is ever unclaimed, and renewed by every chunk.
-            Expr::val(run.claim_id.as_str()),
-            Expr::val(run.worker_claim_expires_at_unix_nanos),
-            Expr::val(holder.as_str()),
+            // owned Run is ever unclaimed, and renewed by every chunk.
+            Expr::val(worker_claim.map(|(claim, _lease)| claim)),
+            Expr::val(worker_claim.map(|(_claim, lease)| lease)),
+            Expr::val(holder.map(CoralInstanceId::as_str)),
             Expr::val(run.trace.as_ref().map(|trace| trace.as_str().to_string())),
             Expr::val(serde_json::to_string(&run.value_limits).map_err(Error::ProgramValueJson)?),
             // The previous release's Event counter: this release advances it per

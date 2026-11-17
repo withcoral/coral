@@ -510,6 +510,31 @@ impl Transaction<'_> {
         self.fetch_first(statement).await
     }
 
+    /// [`Self::fetch_all`], holding the matched rows as `lock` says, as
+    /// [`Self::fetch_optional_locked`] does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReadSnapshotHold`], before any statement runs, when
+    /// this transaction is a read snapshot and `lock` asks for a hold.
+    /// Otherwise returns a backend query or row-decoding error.
+    pub async fn fetch_all_locked<T>(
+        &mut self,
+        mut statement: SelectStatement,
+        lock: RowLock,
+    ) -> Result<Vec<T>, Error>
+    where
+        T: Send + Unpin,
+        for<'row> T: FromRow<'row, SqliteRow>,
+        for<'row> T: FromRow<'row, PgRow>,
+    {
+        if lock != RowLock::None && !self.read_write {
+            return Err(Error::ReadSnapshotHold);
+        }
+        self.apply_lock(&mut statement, lock);
+        self.fetch_all(statement).await
+    }
+
     /// The backend idiom for `lock`: Postgres appends `FOR SHARE`,
     /// `FOR NO KEY UPDATE` or `FOR UPDATE SKIP LOCKED`; `SQLite` relies on
     /// the writer lock its read-write transaction already holds.

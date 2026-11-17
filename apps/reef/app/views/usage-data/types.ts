@@ -8,8 +8,6 @@ export type SendBlock =
 export interface UsageDataView {
   /** The deployment's one setting. It is on until an organization owner turns it off. */
   choice: UsageChoice
-  /** Only organization owners can change the setting. */
-  canChange: boolean
   block?: SendBlock
   /** Desktop sends from the user's computer; a self-hosted server from itself. */
   kind: 'desktop' | 'server'

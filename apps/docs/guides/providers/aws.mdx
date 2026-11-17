@@ -9,7 +9,7 @@ The [AWS MCP Server](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/
 - **OAuth.** The **AWS** provider in Coral's catalog signs each member in with AWS. Use it when each member has an AWS sign-in. AWS keeps a sign-in for [at most 12 hours](https://docs.aws.amazon.com/agent-toolkit/latest/userguide/oauth-authentication.html#oauth-token-lifecycle). After that, you reconnect the account in Coral.
 - **IAM.** Coral calls AWS with one IAM role. Use it when you want a fixed identity with its own IAM policies, or access that does not need a new sign-in every 12 hours. This guide covers this option.
 
-With IAM, each request to the AWS MCP Server is signed with [AWS Signature Version 4](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_aws-signing.html) (SigV4). You'll need a small bridge next to Coral so requests going to the AWS MCP Server are signed with SigV4.
+With IAM, each request to the AWS MCP Server is signed with [AWS Signature Version 4](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_aws-signing.html) (SigV4). You need a small bridge next to Coral that signs the requests.
 
 The bridge uses two existing tools in one container.
 
@@ -25,8 +25,8 @@ flowchart LR
 
 <Warning>
   Every call through this provider uses the bridge's IAM role, whoever the Coral
-  member is. Give that role only the AWS permissions you want every member of
-  the provider to have, and use [permissions](/guides/permissions) to decide who
+  member is. Give that role only the AWS permissions that you want every member
+  of the provider to have. Use [permissions](/guides/permissions) to decide who
   can call which tools.
 </Warning>
 
@@ -227,7 +227,7 @@ flowchart LR
 
   </Step>
   <Step title="Add the provider to Coral">
-    1. Go to your workspace's **Providers** page.
+    1. Go to your workspace's **Tools** page.
     1. Click **Add provider**, then **Add custom**.
     1. Enter the bridge's MCP server URL, then click **Connect**.
     1. Enter a display name and a namespace, such as `AWS` and `aws`. You cannot change the namespace later.

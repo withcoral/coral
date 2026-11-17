@@ -677,9 +677,9 @@ async fn read_snapshots_cannot_write() {
     assert_eq!(record(&*database, "snapshot").await, None);
 }
 
-/// A hold reads like `fetch_optional` in a read-write transaction. A read
-/// snapshot holds nothing on either database, so it refuses the hold before
-/// it sends a statement, and stays usable.
+/// A hold reads like `fetch_optional` or `fetch_all` in a read-write
+/// transaction. A read snapshot holds nothing on either database, so it
+/// refuses the hold before it sends a statement, and stays usable.
 #[tokio::test]
 async fn a_hold_reads_its_row_in_a_read_write_transaction_and_a_read_snapshot_refuses_it() {
     let fixture = TestDatabase::new(&MIGRATOR)
@@ -712,6 +712,15 @@ async fn a_hold_reads_its_row_in_a_read_write_transaction_and_a_read_snapshot_re
             None,
             "{lock:?}"
         );
+        assert_eq!(
+            transaction
+                .fetch_all_locked::<Record>(select_record("held"), lock)
+                .await
+                .expect("hold the rows")
+                .as_slice(),
+            held.as_slice(),
+            "{lock:?}"
+        );
         transaction.commit().await.expect("commit the holder");
 
         let mut snapshot = database
@@ -722,6 +731,14 @@ async fn a_hold_reads_its_row_in_a_read_write_transaction_and_a_read_snapshot_re
             .fetch_optional_locked::<Record>(select_record("held"), lock)
             .await
             .expect_err("a read snapshot must refuse a hold");
+        assert!(
+            matches!(error, Error::ReadSnapshotHold),
+            "{lock:?}: {error:?}"
+        );
+        let error = snapshot
+            .fetch_all_locked::<Record>(select_record("held"), lock)
+            .await
+            .expect_err("a read snapshot must refuse a hold of rows");
         assert!(
             matches!(error, Error::ReadSnapshotHold),
             "{lock:?}: {error:?}"

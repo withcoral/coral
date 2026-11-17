@@ -4,13 +4,13 @@ package coral.management.v1;
 import "google/protobuf/timestamp.proto";
 
 // The deployment's anonymous usage data: the one sharing setting, and the
-// Usage Reports Coral sends.
+// Usage Reports Coral sends. Only an Organization Owner can read or change it.
 service UsageDataService {
-  // Any Organization Member can read the setting and the reports.
+  // Reads the setting and the reports.
   rpc GetUsageData(GetUsageDataRequest) returns (UsageData) {
     option idempotency_level = NO_SIDE_EFFECTS;
   }
-  // Only an Organization Owner can change the setting.
+  // Changes the setting.
   rpc SetUsageDataSharing(SetUsageDataSharingRequest) returns (UsageData);
 }
 
@@ -25,10 +25,11 @@ message SetUsageDataSharingRequest {
 
 // The deployment's usage data, as the Usage data page shows it.
 message UsageData {
+  // Every caller who can read this message can change `sharing`.
+  reserved 2;
+  reserved "can_change";
   // On until an Organization Owner turns it off.
   bool sharing = 1;
-  // Whether the caller is an Organization Owner, who can change `sharing`.
-  bool can_change = 2;
   // What stops this process from sending, whatever `sharing` says.
   UsageSendBlock block = 3;
   // Where Coral runs.
