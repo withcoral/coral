@@ -465,38 +465,90 @@ pub(super) struct ApprovalTarget {
     pub arguments: serde_json::Value,
 }
 
+/// The Invocation columns an [`ApprovalTarget`] is read from.
+const APPROVAL_TARGET_COLUMNS: [ToolInvocations; 9] = [
+    ToolInvocations::ProviderGenerationId,
+    ToolInvocations::ToolKey,
+    ToolInvocations::ProviderId,
+    ToolInvocations::ProviderAccountSettingVersion,
+    ToolInvocations::CredentialRoute,
+    ToolInvocations::ProviderAccountId,
+    ToolInvocations::CallPath,
+    ToolInvocations::ArgumentsJson,
+    ToolInvocations::DeclaredDefaultAccessState,
+];
+
+/// Joins to `select` the Invocation that matches `on`, aliased `i`, and
+/// selects the columns an [`ApprovalTargetRow`] decodes.
+pub(super) fn join_approval_target(select: &mut SelectStatement, on: SimpleExpr) {
+    use sea_query::Alias;
+    select
+        .join_as(
+            sea_query::JoinType::InnerJoin,
+            ToolInvocations::Table,
+            Alias::new("i"),
+            on,
+        )
+        .columns(APPROVAL_TARGET_COLUMNS.map(|column| (Alias::new("i"), column)));
+}
+
+/// One Invocation's [`APPROVAL_TARGET_COLUMNS`], before decoding.
+#[derive(FromRow)]
+pub(super) struct ApprovalTargetRow {
+    provider_generation_id: String,
+    tool_key: String,
+    provider_id: String,
+    provider_account_setting_version: i64,
+    credential_route: String,
+    provider_account_id: Option<String>,
+    call_path: String,
+    arguments_json: String,
+    declared_default_access_state: Option<String>,
+}
+
+impl ApprovalTargetRow {
+    pub(super) fn decode(self) -> Result<ApprovalTarget, Error> {
+        let declared_default = self
+            .declared_default_access_state
+            .map(|state| {
+                coral_catalog::ToolAccessState::from_storage_str(&state).ok_or_else(|| {
+                    Error::CorruptData("Invocation has an invalid declared default".to_owned())
+                })
+            })
+            .transpose()?;
+        Ok(ApprovalTarget {
+            generation: coral_catalog::ProviderGenerationId::parse(&self.provider_generation_id)
+                .map_err(coral_provider::Error::from)?,
+            declared_default,
+            tool: coral_catalog::ToolKey::parse(&self.tool_key)
+                .map_err(coral_provider::Error::from)?,
+            provider_id: coral_provider::ProviderId::parse(&self.provider_id)?,
+            provider_account_setting_version: self.provider_account_setting_version,
+            credential_route: coral_provider::access::CredentialRoute::from_storage_str(
+                &self.credential_route,
+            )?,
+            provider_account_id: self
+                .provider_account_id
+                .map(|id| coral_provider::account::ProviderAccountId::parse(&id))
+                .transpose()?,
+            call_path: self.call_path,
+            arguments: serde_json::from_str(&self.arguments_json).map_err(|error| {
+                Error::CorruptData(format!("Invocation has invalid arguments JSON: {error}"))
+            })?,
+        })
+    }
+}
+
 pub(super) async fn approval_target(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     run: &RunId,
     invocation: &InvocationId,
 ) -> Result<ApprovalTarget, Error> {
-    #[derive(FromRow)]
-    struct Row {
-        provider_generation_id: String,
-        tool_key: String,
-        provider_id: String,
-        provider_account_setting_version: i64,
-        credential_route: String,
-        provider_account_id: Option<String>,
-        call_path: String,
-        arguments_json: String,
-        declared_default_access_state: Option<String>,
-    }
-    let row: Row = tx
+    let row: ApprovalTargetRow = tx
         .fetch_optional(
             Query::select()
-                .columns([
-                    ToolInvocations::ProviderGenerationId,
-                    ToolInvocations::ToolKey,
-                    ToolInvocations::ProviderId,
-                    ToolInvocations::ProviderAccountSettingVersion,
-                    ToolInvocations::CredentialRoute,
-                    ToolInvocations::ProviderAccountId,
-                    ToolInvocations::CallPath,
-                    ToolInvocations::ArgumentsJson,
-                    ToolInvocations::DeclaredDefaultAccessState,
-                ])
+                .columns(APPROVAL_TARGET_COLUMNS)
                 .from(ToolInvocations::Table)
                 .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace.to_string()))
                 .and_where(Expr::col(ToolInvocations::RunId).eq(run.to_string()))
@@ -505,33 +557,7 @@ pub(super) async fn approval_target(
         )
         .await?
         .ok_or(Error::ApprovalNotFound)?;
-    let declared_default = row
-        .declared_default_access_state
-        .map(|state| {
-            coral_catalog::ToolAccessState::from_storage_str(&state).ok_or_else(|| {
-                Error::CorruptData("Invocation has an invalid declared default".to_owned())
-            })
-        })
-        .transpose()?;
-    Ok(ApprovalTarget {
-        generation: coral_catalog::ProviderGenerationId::parse(&row.provider_generation_id)
-            .map_err(coral_provider::Error::from)?,
-        declared_default,
-        tool: coral_catalog::ToolKey::parse(&row.tool_key).map_err(coral_provider::Error::from)?,
-        provider_id: coral_provider::ProviderId::parse(&row.provider_id)?,
-        provider_account_setting_version: row.provider_account_setting_version,
-        credential_route: coral_provider::access::CredentialRoute::from_storage_str(
-            &row.credential_route,
-        )?,
-        provider_account_id: row
-            .provider_account_id
-            .map(|id| coral_provider::account::ProviderAccountId::parse(&id))
-            .transpose()?,
-        call_path: row.call_path,
-        arguments: serde_json::from_str(&row.arguments_json).map_err(|error| {
-            Error::CorruptData(format!("Invocation has invalid arguments JSON: {error}"))
-        })?,
-    })
+    row.decode()
 }
 
 pub(super) async fn completed_failure(

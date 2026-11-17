@@ -146,37 +146,77 @@ fn user_principal(id: &str) -> Result<Principal, Error> {
     ))
 }
 
+/// The columns an [`ApprovalRow`] decodes.
+const APPROVAL_COLUMNS: [InvocationApprovals; 8] = [
+    InvocationApprovals::Id,
+    InvocationApprovals::InvocationId,
+    InvocationApprovals::RunId,
+    InvocationApprovals::DeadlineAtUnixNanos,
+    InvocationApprovals::State,
+    InvocationApprovals::DecidedAtUnixNanos,
+    InvocationApprovals::ApproverId,
+    InvocationApprovals::Comment,
+];
+
 fn select(workspace: &WorkspaceId) -> sea_query::SelectStatement {
     Query::select()
-        .columns([
-            InvocationApprovals::Id,
-            InvocationApprovals::InvocationId,
-            InvocationApprovals::RunId,
-            InvocationApprovals::DeadlineAtUnixNanos,
-            InvocationApprovals::State,
-            InvocationApprovals::DecidedAtUnixNanos,
-            InvocationApprovals::ApproverId,
-            InvocationApprovals::Comment,
-        ])
+        .columns(APPROVAL_COLUMNS)
         .from(InvocationApprovals::Table)
         .and_where(Expr::col(InvocationApprovals::WorkspaceId).eq(workspace.to_string()))
         .to_owned()
 }
 
-pub(super) async fn list_for_run(
+/// One Approval Request with what its detail shows of its Invocation.
+pub(super) struct StoredApprovalDetail {
+    pub approval: StoredApproval,
+    pub target: crate::invocation_repository::ApprovalTarget,
+    /// Current safe Provider label, absent after the Provider is removed.
+    pub provider_label: Option<String>,
+    /// Safe retained label of the invoking Agent, absent for User work.
+    pub agent_label: Option<String>,
+}
+
+#[derive(FromRow)]
+struct ApprovalDetailRow {
+    #[sqlx(flatten)]
+    approval: ApprovalRow,
+    #[sqlx(flatten)]
+    target: crate::invocation_repository::ApprovalTargetRow,
+    provider_label: Option<String>,
+    agent_label: Option<String>,
+}
+
+/// Every Approval Request of the Run `run` in `workspace`, in identity
+/// order, each with its Invocation's target and labels: one statement,
+/// however many requests the Run has. A request's Invocation is a call of
+/// the request's Run.
+pub(super) async fn details_for_run(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     run: &RunId,
-) -> Result<Vec<StoredApproval>, Error> {
-    let rows: Vec<ApprovalRow> = tx
-        .fetch_all(
-            select(workspace)
-                .and_where(Expr::col(InvocationApprovals::RunId).eq(run.to_string()))
-                .order_by(InvocationApprovals::Id, Order::Asc)
-                .to_owned(),
-        )
-        .await?;
-    rows.into_iter().map(StoredApproval::try_from).collect()
+) -> Result<Vec<StoredApprovalDetail>, Error> {
+    let request = |column| Expr::col((Alias::new("a"), column));
+    let mut select = Query::select();
+    select
+        .from_as(InvocationApprovals::Table, Alias::new("a"))
+        .columns(APPROVAL_COLUMNS.map(|column| (Alias::new("a"), column)));
+    crate::invocation_repository::join_approval_target(&mut select, own_invocation());
+    crate::inspection_repository::select_approval_labels(&mut select, "i");
+    select
+        .and_where(request(InvocationApprovals::WorkspaceId).eq(workspace.to_string()))
+        .and_where(request(InvocationApprovals::RunId).eq(run.to_string()))
+        .order_by((Alias::new("a"), InvocationApprovals::Id), Order::Asc);
+    let rows: Vec<ApprovalDetailRow> = tx.fetch_all(select).await?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(StoredApprovalDetail {
+                approval: row.approval.try_into()?,
+                target: row.target.decode()?,
+                provider_label: row.provider_label,
+                agent_label: row.agent_label,
+            })
+        })
+        .collect()
 }
 
 pub(super) async fn load(
@@ -227,6 +267,16 @@ pub(super) async fn find_for_run_invocation(
     row.map(StoredApproval::try_from).transpose()
 }
 
+/// The Invocation `i` is the one the request `a` asks about: the same
+/// Workspace, the request's Invocation, and a call of the request's Run.
+fn own_invocation() -> SimpleExpr {
+    use coral_db::col;
+    col("a", "workspace_id")
+        .eq(col("i", "workspace_id"))
+        .and(col("a", "invocation_id").eq(col("i", "id")))
+        .and(col("a", "run_id").eq(col("i", "run_id")))
+}
+
 /// Complete pending-approval match for repository queries using `a` (approval)
 /// and `i` (Invocation). Queue existence, card pages and Run Updates share it.
 /// A request stays pending until its Run Owner records its expiry: readers
@@ -234,10 +284,7 @@ pub(super) async fn find_for_run_invocation(
 /// clock.
 pub(super) fn pending_invocation() -> SimpleExpr {
     use coral_db::col;
-    col("a", "workspace_id")
-        .eq(col("i", "workspace_id"))
-        .and(col("a", "invocation_id").eq(col("i", "id")))
-        .and(col("a", "run_id").eq(col("i", "run_id")))
+    own_invocation()
         .and(crate::history_repository::invocation_pending())
         .and(col("a", "state").eq(ApprovalState::Pending.storage()))
         .and(approval_required())

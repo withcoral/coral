@@ -314,20 +314,22 @@ impl crate::RunModule {
             limit,
         )
         .await?;
-        let mut actions = Vec::with_capacity(rows.len());
-        for row in rows {
-            actions.push(QueuedAction {
-                run: crate::history_repository::run_summary(
-                    tx,
-                    authority,
-                    &row.workspace,
-                    &row.run,
-                    now,
-                )
-                .await?,
-                action: summary(row.action),
-            });
-        }
+        let runs = crate::history_repository::run_summaries(
+            tx,
+            authority,
+            rows.iter().map(|row| (&row.workspace, &row.run)),
+            now,
+        )
+        .await?;
+        let actions = rows
+            .into_iter()
+            .map(|row| {
+                Ok(QueuedAction {
+                    run: runs.of(&row.workspace, &row.run)?,
+                    action: summary(row.action),
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
         let next = actions.last().filter(|_| has_more).map(|last| QueueCursor {
             deadline_at_unix_nanos: last.action.deadline_at_unix_nanos,
             request: last.action.request.clone(),
