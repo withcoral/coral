@@ -7,6 +7,7 @@ pub use crate::repository::tasks_started;
 
 #[cfg(test)]
 mod tests {
+    use coral_db::UnixNanos;
     use coral_test_support::{TestDatabase, provision_user};
     use coral_workspace::OrganizationRole;
 
@@ -48,7 +49,9 @@ mod tests {
         let mut tx = database.begin_read_snapshot().await.expect("snapshot");
         for (start, end, started) in [(10, 20, 2), (0, 21, 4), (20, 30, 1), (11, 19, 0)] {
             assert_eq!(
-                tasks_started(&mut tx, start, end).await.expect("count"),
+                tasks_started(&mut tx, UnixNanos::new(start), UnixNanos::new(end))
+                    .await
+                    .expect("count"),
                 started,
                 "[{start}, {end})"
             );

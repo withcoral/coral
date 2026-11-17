@@ -173,8 +173,8 @@ fn task(task: &coral_task::Task) -> wire::ActivityTask {
             Some(TaskOutcome::Failure) => "failure",
         }
         .into(),
-        started_at_unix_nanos: task.started_at_unix_nanos(),
-        ended_at_unix_nanos: task.ended_at_unix_nanos(),
+        started_at_unix_nanos: task.started_at().get(),
+        ended_at_unix_nanos: task.ended_at().map(coral_db::UnixNanos::get),
         actor: task.principal().id().to_string(),
         agent: execution::agent(task.workspace_id(), task.principal()),
     }
@@ -200,8 +200,8 @@ fn interaction(parent: &str, value: &coral_task::InteractionSummary) -> wire::Ac
             AttemptOutcome::Rejected => "rejected",
         }
         .into(),
-        started_at_unix_nanos: value.started_at_unix_nanos,
-        completed_at_unix_nanos: value.completed_at_unix_nanos,
+        started_at_unix_nanos: value.started_at.get(),
+        completed_at_unix_nanos: value.completed_at.map(coral_db::UnixNanos::get),
         run: None,
         accepted_run: value.run.as_ref().map_or_default(|id| {
             format!(

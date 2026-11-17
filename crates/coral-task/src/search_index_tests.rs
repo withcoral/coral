@@ -717,7 +717,7 @@ async fn principal_call(fixture: &Fixture, actor: AuthenticatedPrincipal) -> Att
             &actor,
             &fixture.workspace,
             TaskIntent::parse("Save work").unwrap(),
-            50,
+            UnixNanos::new(50),
         )
         .await
         .unwrap();

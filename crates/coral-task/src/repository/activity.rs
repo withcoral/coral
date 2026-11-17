@@ -1,5 +1,5 @@
 use crate::{ActivityIdentity, ActivityWindow, Error, TaskId};
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::{HistoryAuthority, WorkspaceId};
 mod window;
 use sea_query::{Alias, Expr, ExprTrait as _, IntoColumnRef as _, Order, Query, UnionType};
@@ -88,7 +88,7 @@ pub(crate) async fn context_totals(
 pub(crate) async fn discovery_context(
     tx: &mut Transaction<'_>,
     authority: &HistoryAuthority,
-    since: i64,
+    since: UnixNanos,
 ) -> Result<Vec<coral_run::ActorContext>, Error> {
     use coral_db::{col, column};
     use sea_query::Func;

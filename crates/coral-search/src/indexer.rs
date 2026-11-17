@@ -22,7 +22,7 @@ use async_trait::async_trait;
 
 use crate::SearchIndexFailure;
 use crate::retriever::plan::split_words;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::WorkspaceId;
 
 /// The revision of the indexed text that this indexer writes. Raise it with
@@ -117,12 +117,12 @@ pub(crate) enum IndexEffect {
     Updated,
     FirstVisible {
         target: IndexedCatalog,
-        published_at_unix_nanos: i64,
+        published_at: UnixNanos,
         path: coral_telemetry::metric::VisibilityPath,
     },
     Recovered {
         target: IndexedCatalog,
-        unavailable_since_unix_nanos: i64,
+        unavailable_since: UnixNanos,
     },
 }
 
@@ -190,7 +190,7 @@ pub(crate) trait EntityIndexer: Send + Sync {
     /// Compares the index with `expected`, everything the owners hold now,
     /// and returns what `expected` holds and the index lacks, holds stale, or
     /// holds as failed; a failure whose retry rule is not due at
-    /// `now_unix_nanos` is left for a later pass. Reads only, so a read
+    /// `now` is left for a later pass. Reads only, so a read
     /// snapshot serves it.
     ///
     /// The caller indexes each returned item in a transaction of its own, so
@@ -200,7 +200,7 @@ pub(crate) trait EntityIndexer: Send + Sync {
         &self,
         transaction: &mut Transaction<'_>,
         expected: &'e [Self::Expected],
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<Vec<&'e Self::Expected>, IndexError>;
 }
 

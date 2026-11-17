@@ -1010,7 +1010,7 @@ async fn save_answer(
         .save(
             &PrivateToolChangeContext::new(
                 actor.clone(),
-                100,
+                coral_db::UnixNanos::new(100),
                 TraceId::parse("11111111111111111111111111111111").unwrap(),
             ),
             workspace,

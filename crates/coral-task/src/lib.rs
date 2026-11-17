@@ -74,11 +74,11 @@ pub use interaction::{
     AttemptEvidence, AttemptFailure, AttemptKind, AttemptOutcome, AttributedCommand,
     DiscoveryContext, InteractionDetail, InteractionId, InteractionSummary, NewTaskCommand,
 };
-pub use retention::HISTORY_RETENTION_NANOS;
+pub use retention::HISTORY_RETENTION;
 
 use std::sync::Arc;
 
-use coral_db::Database;
+use coral_db::{Database, UnixNanos};
 use coral_workspace::{
     AuthenticatedPrincipal, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
@@ -120,17 +120,11 @@ impl TaskModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         intent: TaskIntent,
-        started_at_unix_nanos: i64,
+        started_at: UnixNanos,
     ) -> Result<Task, Error> {
         let mut transaction = self.database.begin().await?;
         let task = self
-            .start_in_transaction(
-                &mut transaction,
-                actor,
-                workspace_id,
-                intent,
-                started_at_unix_nanos,
-            )
+            .start_in_transaction(&mut transaction, actor, workspace_id, intent, started_at)
             .await?;
         transaction.commit().await?;
         Ok(task)
@@ -144,17 +138,12 @@ impl TaskModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         intent: TaskIntent,
-        started_at_unix_nanos: i64,
+        started_at: UnixNanos,
     ) -> Result<Task, Error> {
         self.workspaces
-            .check_principal_inspection_in_transaction(
-                transaction,
-                actor,
-                workspace_id,
-                coral_db::UnixNanos::new(started_at_unix_nanos),
-            )
+            .check_principal_inspection_in_transaction(transaction, actor, workspace_id, started_at)
             .await?
-            .require_current_at(coral_db::UnixNanos::new(commands::now()))?;
+            .require_current_at(commands::now())?;
         // The primary key proves the identifier unused: a conflict writes
         // nothing, and the next attempt draws fresh words.
         let mut attempts = 0;
@@ -166,7 +155,7 @@ impl TaskModule {
                 intent.clone(),
                 None,
                 None,
-                started_at_unix_nanos,
+                started_at,
                 None,
             );
             if repository::insert(transaction, &task).await? {
@@ -263,7 +252,7 @@ impl TaskModule {
         task_id: &TaskId,
         outcome: TaskOutcome,
         feedback: Option<&str>,
-        ended_at_unix_nanos: i64,
+        ended_at: UnixNanos,
     ) -> Result<Task, Error> {
         if let Some(value) = feedback {
             types::validate_feedback(value)?;
@@ -277,7 +266,7 @@ impl TaskModule {
                 &mut transaction,
                 actor,
                 workspace_id,
-                coral_db::UnixNanos::new(ended_at_unix_nanos),
+                ended_at,
             )
             .await
             .map_err(|error| {
@@ -287,7 +276,7 @@ impl TaskModule {
                     error.into()
                 }
             })?
-            .require_current_at(coral_db::UnixNanos::new(commands::now()))?;
+            .require_current_at(commands::now())?;
         let task = repository::complete_for_principal(
             &mut transaction,
             workspace_id,
@@ -295,7 +284,7 @@ impl TaskModule {
             actor.principal(),
             outcome,
             feedback,
-            ended_at_unix_nanos,
+            ended_at,
         )
         .await?
         .ok_or(Error::TaskNotFound)?;

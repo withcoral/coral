@@ -703,7 +703,7 @@ async fn the_servers_clock_dates_a_request() {
             &owner,
             &tracer.workspace_a,
             coral_task::TaskIntent::parse("Dated by the clock").expect("Task intent"),
-            start.get(),
+            start,
         )
         .await
         .expect("start the Task");
@@ -725,8 +725,8 @@ async fn the_servers_clock_dates_a_request() {
         .await
         .expect("read the ended Task");
     assert_eq!(
-        recorded.ended_at_unix_nanos(),
-        Some(start.get() + 60 * 1_000_000_000)
+        recorded.ended_at(),
+        start.checked_add(Duration::from_mins(1))
     );
 
     clock.set(start.checked_add(lifetime).expect("expiry"));

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coral_catalog::{AuthoredToolKind, ToolAccessState};
-use coral_db::{Database, Page, PageRequest, Transaction};
+use coral_db::{Database, Page, PageRequest, Transaction, UnixNanos};
 use coral_run_executor::CompilerClient;
 use coral_workspace::{
     AuthenticatedPrincipal, AuthoritySource, ChangeContext, Principal, PrincipalKind, UserId,
@@ -29,8 +29,8 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use crate::authoring::{
-    Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, now_unix_nanos,
-    tool_paths_overlap, v8_compiler,
+    Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, now, tool_paths_overlap,
+    v8_compiler,
 };
 use crate::tool_typing::ToolDeclarationReader;
 use crate::types::AuthoredToolPath;
@@ -243,7 +243,7 @@ pub struct SharedToolRevision {
     pub(crate) default_access_state: ToolAccessState,
     pub(crate) published_by: UserId,
     pub(crate) origin: SharedToolRevisionOrigin,
-    pub(crate) published_at_unix_nanos: i64,
+    pub(crate) published_at: UnixNanos,
 }
 
 impl SharedToolRevision {
@@ -321,8 +321,8 @@ impl SharedToolRevision {
 
     /// Returns when it was published.
     #[must_use]
-    pub const fn published_at_unix_nanos(&self) -> i64 {
-        self.published_at_unix_nanos
+    pub const fn published_at(&self) -> UnixNanos {
+        self.published_at
     }
 }
 
@@ -336,7 +336,7 @@ pub struct SharedToolRevisionSummary {
     pub(crate) default_access_state: ToolAccessState,
     pub(crate) published_by: UserId,
     pub(crate) origin: SharedToolRevisionOrigin,
-    pub(crate) published_at_unix_nanos: i64,
+    pub(crate) published_at: UnixNanos,
 }
 
 impl SharedToolRevisionSummary {
@@ -378,8 +378,8 @@ impl SharedToolRevisionSummary {
 
     /// Returns when it was published.
     #[must_use]
-    pub const fn published_at_unix_nanos(&self) -> i64 {
-        self.published_at_unix_nanos
+    pub const fn published_at(&self) -> UnixNanos {
+        self.published_at
     }
 }
 
@@ -390,7 +390,7 @@ pub struct SharedTool {
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) path: SharedToolPath,
     pub(crate) created_by: UserId,
-    pub(crate) created_at_unix_nanos: i64,
+    pub(crate) created_at: UnixNanos,
     pub(crate) current: SharedToolRevision,
 }
 
@@ -421,8 +421,8 @@ impl SharedTool {
 
     /// Returns when it was first published.
     #[must_use]
-    pub const fn created_at_unix_nanos(&self) -> i64 {
-        self.created_at_unix_nanos
+    pub const fn created_at(&self) -> UnixNanos {
+        self.created_at
     }
 
     /// Returns its current revision.
@@ -555,7 +555,7 @@ pub struct SharedToolSummary {
     pub(crate) path: SharedToolPath,
     pub(crate) description: AuthoredToolDescription,
     pub(crate) current_revision: u64,
-    pub(crate) published_at_unix_nanos: i64,
+    pub(crate) published_at: UnixNanos,
 }
 
 impl SharedToolSummary {
@@ -585,8 +585,8 @@ impl SharedToolSummary {
 
     /// Returns when its current revision was published.
     #[must_use]
-    pub const fn published_at_unix_nanos(&self) -> i64 {
-        self.published_at_unix_nanos
+    pub const fn published_at(&self) -> UnixNanos {
+        self.published_at
     }
 }
 
@@ -689,7 +689,7 @@ pub struct SharedToolLifecycleEvent {
     pub(crate) path: SharedToolPath,
     pub(crate) revision: u64,
     pub(crate) content_hash: String,
-    pub(crate) occurred_at_unix_nanos: i64,
+    pub(crate) occurred_at: UnixNanos,
 }
 
 impl SharedToolLifecycleEvent {
@@ -739,8 +739,8 @@ impl SharedToolLifecycleEvent {
 
     /// Returns when it happened.
     #[must_use]
-    pub const fn occurred_at_unix_nanos(&self) -> i64 {
-        self.occurred_at_unix_nanos
+    pub const fn occurred_at(&self) -> UnixNanos {
+        self.occurred_at
     }
 
     /// Returns its position in the Workspace's history, which a page of
@@ -748,7 +748,7 @@ impl SharedToolLifecycleEvent {
     #[must_use]
     pub fn key(&self) -> SharedToolLifecycleEventKey {
         SharedToolLifecycleEventKey {
-            occurred_at_unix_nanos: self.occurred_at_unix_nanos,
+            occurred_at: self.occurred_at,
             id: self.id.clone(),
         }
     }
@@ -761,24 +761,24 @@ impl SharedToolLifecycleEvent {
 /// cursor came from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SharedToolLifecycleEventKey {
-    pub(crate) occurred_at_unix_nanos: i64,
+    pub(crate) occurred_at: UnixNanos,
     pub(crate) id: SharedToolLifecycleEventId,
 }
 
 impl coral_db::PageKey for SharedToolLifecycleEventKey {
     fn to_cursor(&self) -> String {
-        format!("{}/{}", self.occurred_at_unix_nanos, self.id)
+        format!("{}/{}", self.occurred_at.get(), self.id)
     }
 
     fn from_cursor(text: &str) -> Option<Self> {
         let (occurred_at, id) = text.split_once('/')?;
-        let occurred_at_unix_nanos = occurred_at.parse::<i64>().ok()?;
+        let unix_nanos = occurred_at.parse::<i64>().ok()?;
         // One time has one spelling, as one identity has.
-        if occurred_at_unix_nanos.to_string() != occurred_at {
+        if unix_nanos.to_string() != occurred_at {
             return None;
         }
         Some(Self {
-            occurred_at_unix_nanos,
+            occurred_at: UnixNanos::new(unix_nanos),
             id: SharedToolLifecycleEventId::parse(id).ok()?,
         })
     }
@@ -1301,7 +1301,7 @@ impl SharedToolModule {
                 target_path: &tool.path,
                 revision,
                 content_hash: tool.current.content_hash(),
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                occurred_at: context.occurred_at(),
                 trace_id: context.trace_id(),
             },
         )
@@ -1361,7 +1361,7 @@ impl SharedToolModule {
             workspace_id,
             &record.id,
             record.current_revision,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
         )
         .await?;
         shared_tool_repository::insert_lifecycle_event(
@@ -1374,7 +1374,7 @@ impl SharedToolModule {
                 target_path: &record.path,
                 revision: record.current_revision,
                 content_hash: &content_hash,
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                occurred_at: context.occurred_at(),
                 trace_id: context.trace_id(),
             },
         )
@@ -1437,12 +1437,7 @@ impl SharedToolModule {
         workspace_id: &WorkspaceId,
     ) -> Result<(), Error> {
         self.workspaces
-            .check_principal_inspection_in_snapshot(
-                transaction,
-                actor,
-                workspace_id,
-                coral_db::UnixNanos::new(now_unix_nanos()),
-            )
+            .check_principal_inspection_in_snapshot(transaction, actor, workspace_id, now())
             .await
             .map(drop)
             .map_err(|error| {
@@ -1466,7 +1461,7 @@ fn next_revision(
     compiled: PreparedAuthoredTool,
     origin: SharedToolRevisionOrigin,
 ) -> Result<SharedTool, Error> {
-    let occurred_at = context.occurred_at_unix_nanos();
+    let occurred_at = context.occurred_at();
     let (id, revision, created_by, created_at) = match record {
         None => (
             SharedToolId::generate(),
@@ -1481,14 +1476,14 @@ fn next_revision(
                 .checked_add(1)
                 .ok_or_else(|| Error::CorruptData("Shared Tool revision overflowed".to_string()))?,
             record.created_by.clone(),
-            record.created_at_unix_nanos,
+            record.created_at,
         ),
     };
     Ok(SharedTool {
         workspace_id: workspace_id.clone(),
         path: publish.path.clone(),
         created_by,
-        created_at_unix_nanos: created_at,
+        created_at,
         current: SharedToolRevision {
             shared_tool_id: id.clone(),
             revision,
@@ -1502,7 +1497,7 @@ fn next_revision(
             default_access_state: publish.default_access_state,
             published_by: context.actor().user_id().clone(),
             origin,
-            published_at_unix_nanos: occurred_at,
+            published_at: occurred_at,
         },
         id,
     })

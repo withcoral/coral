@@ -89,7 +89,7 @@ async fn sqlite_text_index_follows_a_private_tool_removal() {
         .modules
         .private_tools
         .delete(
-            &PrivateToolChangeContext::new(principal, 50, trace('5')),
+            &PrivateToolChangeContext::new(principal, coral_db::UnixNanos::new(50), trace('5')),
             &tracer.workspace,
             &PrivateToolPath::parse("internal.formatForecast").unwrap(),
         )

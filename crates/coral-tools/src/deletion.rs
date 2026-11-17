@@ -3,7 +3,7 @@ use coral_db::Transaction;
 use coral_workspace::{Principal, PrincipalId, PrincipalKind, WorkspaceId, WorkspaceModule};
 
 use crate::Error;
-use crate::authoring::now_unix_nanos;
+use crate::authoring::now;
 use crate::private_tool::delete_current_with_event;
 use crate::repository;
 use crate::types::{PrivateToolChangeContext, PrivateToolId, PrivateToolPath};
@@ -83,19 +83,14 @@ impl PrivateToolDeletion {
     ) -> Result<PrivateToolId, Error> {
         let authority = self
             .workspaces
-            .check_authoring_in_transaction(
-                transaction,
-                context.actor(),
-                workspace_id,
-                coral_db::UnixNanos::new(now_unix_nanos()),
-            )
+            .check_authoring_in_transaction(transaction, context.actor(), workspace_id, now())
             .await?;
         let owner = context.actor().principal();
         let tool =
             repository::find_current_record_in_transaction(transaction, workspace_id, owner, path)
                 .await?
                 .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
-        authority.require_current_at(coral_db::UnixNanos::new(now_unix_nanos()))?;
+        authority.require_current_at(now())?;
         delete_current_with_event(transaction, context, &tool).await
     }
 }

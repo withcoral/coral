@@ -12,7 +12,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_tools::{AuthoredToolEntry, AuthoredToolId, AuthoredToolIndexRevision};
 use coral_workspace::WorkspaceId;
 
@@ -67,7 +67,7 @@ impl EntityIndexer for AuthoredToolIndexer {
         entry: &AuthoredToolEntry,
         row: &AuthoredToolRow<'_>,
     ) -> Result<super::IndexEffect, IndexError> {
-        repository::upsert_authored_tool_row(transaction, row, crate::now_unix_nanos()).await?;
+        repository::upsert_authored_tool_row(transaction, row, crate::now()).await?;
         repository::delete_authored_tool_state(transaction, entry.workspace_id(), entry.id())
             .await?;
         Ok(super::IndexEffect::Updated)
@@ -88,7 +88,7 @@ impl EntityIndexer for AuthoredToolIndexer {
 
     /// Returns each current Authored Tool to index again:
     /// - one with a `failed` state row that another revision recorded, or
-    ///   whose retry rule is due at `now_unix_nanos`;
+    ///   whose retry rule is due at `now`;
     /// - one without such a row whose row is missing, or whose fingerprint is
     ///   not [`repository::authored_tool_fingerprint`] of its revision.
     ///
@@ -105,7 +105,7 @@ impl EntityIndexer for AuthoredToolIndexer {
         &self,
         transaction: &mut Transaction<'_>,
         expected: &'e [AuthoredToolEntry],
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<Vec<&'e AuthoredToolEntry>, IndexError> {
         let fingerprints = repository::recorded_authored_tools(transaction)
             .await?
@@ -128,7 +128,7 @@ impl EntityIndexer for AuthoredToolIndexer {
                     failures.get(&key),
                     fingerprints.get(&key).map(String::as_str),
                     entry,
-                    now_unix_nanos,
+                    now,
                 )
             })
             .collect())
@@ -141,12 +141,10 @@ fn needs_indexing(
     failure: Option<&AuthoredToolFailure>,
     fingerprint: Option<&str>,
     entry: &AuthoredToolEntry,
-    now_unix_nanos: i64,
+    now: UnixNanos,
 ) -> bool {
     match failure {
-        Some(failure) => {
-            failure.revision != Some(entry.revision()) || failure.retry.is_due(now_unix_nanos)
-        }
+        Some(failure) => failure.revision != Some(entry.revision()) || failure.retry.is_due(now),
         None => {
             fingerprint != Some(repository::authored_tool_fingerprint(entry.revision()).as_str())
         }
@@ -164,7 +162,7 @@ impl AuthoredToolIndexer {
         transaction: &mut Transaction<'_>,
         workspace_id: &WorkspaceId,
         id: &AuthoredToolId,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<AuthoredToolSync, IndexError> {
         let entry =
             coral_tools::authored_tool_entry_in_transaction(transaction, workspace_id, id).await?;
@@ -173,12 +171,7 @@ impl AuthoredToolIndexer {
             repository::recorded_authored_tool_fingerprint(transaction, workspace_id, id).await?;
         Ok(match entry {
             Some(entry)
-                if needs_indexing(
-                    failure.as_ref(),
-                    fingerprint.as_deref(),
-                    &entry,
-                    now_unix_nanos,
-                ) =>
+                if needs_indexing(failure.as_ref(), fingerprint.as_deref(), &entry, now) =>
             {
                 AuthoredToolSync::Index(Box::new(entry))
             }
@@ -246,14 +239,14 @@ pub(crate) async fn record_failed_attempt(
         .map(|failure| failure.retry);
     let removed =
         repository::delete_authored_tool_row(transaction, entry.workspace_id(), entry.id()).await?;
-    let attempted_at = crate::now_unix_nanos();
+    let attempted_at = crate::now();
     repository::write_failed_authored_tool_state(
         transaction,
         FailedAuthoredToolState {
             workspace_id: entry.workspace_id(),
             id: entry.id(),
             principal: entry.principal(),
-            attempted_at_unix_nanos: attempted_at,
+            attempted_at,
             error: error.to_string(),
             retry: RetryRule::after_failure(
                 prior.as_ref(),

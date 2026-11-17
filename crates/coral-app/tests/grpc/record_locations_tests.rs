@@ -49,7 +49,7 @@ async fn record_run(
     .save(
         &coral_tools::PrivateToolChangeContext::new(
             principal.clone(),
-            1,
+            coral_db::UnixNanos::new(1),
             TraceId::current_or_new(),
         ),
         &workspace,

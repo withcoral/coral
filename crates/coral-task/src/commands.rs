@@ -5,7 +5,7 @@ use crate::{
 };
 use crate::{interaction_repository, repository};
 use coral_db::Clock as _;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_run::RunModule;
 use coral_search::{SearchPage, SearchRequest, UniversalSearchModule as SearchModule};
 use coral_telemetry::safe;
@@ -318,11 +318,7 @@ impl TaskCommands {
         let observed_at = now();
         self.tasks
             .workspaces
-            .check_principal_inspection(
-                &call.actor,
-                &call.workspace_id,
-                coral_db::UnixNanos::new(observed_at),
-            )
+            .check_principal_inspection(&call.actor, &call.workspace_id, observed_at)
             .await?;
         #[cfg(test)]
         self.control
@@ -339,7 +335,7 @@ impl TaskCommands {
                 &mut transaction,
                 &call.actor,
                 &call.workspace_id,
-                coral_db::UnixNanos::new(now()),
+                now(),
             )
             .await?;
         let task = repository::find_attributed(
@@ -361,13 +357,13 @@ impl TaskCommands {
             .fault(crate::command_tests::Checkpoint::Begin, &mut transaction)
             .await?;
         let now = now();
-        authority.require_current_at(coral_db::UnixNanos::new(now))?;
+        authority.require_current_at(now)?;
         interaction_repository::insert(
             &mut transaction,
             call,
             &id,
             kind,
-            now.max(task.started_at_unix_nanos()),
+            now.max(task.started_at()),
         )
         .await?;
         repository::touch(&mut transaction, &call.workspace_id, &call.task_id, now).await?;
@@ -414,8 +410,8 @@ impl TaskCommands {
     }
 }
 
-pub(super) fn now() -> i64 {
-    coral_db::SystemClock.now().get()
+pub(super) fn now() -> UnixNanos {
+    coral_db::SystemClock.now()
 }
 
 /// One retained authoring Attempt: a `save` or `delete` that Task history

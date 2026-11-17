@@ -586,7 +586,7 @@ impl Fixture {
                 actor,
                 self.workspace.id(),
                 coral_task::TaskIntent::parse("private-intent").unwrap(),
-                1,
+                coral_db::UnixNanos::new(1),
             )
             .await
             .unwrap()
@@ -1022,7 +1022,7 @@ async fn local_agent_authentication_reports_database_outages_as_unavailable() {
             &principal,
             f.workspace.id(),
             coral_task::TaskIntent::parse("Private goal").unwrap(),
-            1,
+            coral_db::UnixNanos::new(1),
         )
         .await
         .unwrap();

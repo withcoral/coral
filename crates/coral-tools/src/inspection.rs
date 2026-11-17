@@ -174,7 +174,7 @@ impl PrivateToolInspection {
                 transaction,
                 actor,
                 workspace_id,
-                coral_db::UnixNanos::new(crate::authoring::now_unix_nanos()),
+                crate::authoring::now(),
             )
             .await?;
         Ok(())

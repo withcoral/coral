@@ -78,7 +78,7 @@ mod types;
 use std::sync::Arc;
 
 use coral_db::Clock as _;
-use coral_db::{Database, Transaction};
+use coral_db::{Database, Transaction, UnixNanos};
 use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
@@ -361,12 +361,7 @@ impl UniversalSearchModule {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
             .workspaces
-            .check_principal_inspection_in_snapshot(
-                &mut transaction,
-                actor,
-                workspace_id,
-                coral_db::UnixNanos::new(now_unix_nanos()),
-            )
+            .check_principal_inspection_in_snapshot(&mut transaction, actor, workspace_id, now())
             .await?;
         let searchable = retriever::tools::searchable_providers(
             &mut transaction,
@@ -586,12 +581,7 @@ impl UniversalSearchModule {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
             .workspaces
-            .check_principal_inspection_in_snapshot(
-                &mut transaction,
-                actor,
-                workspace_id,
-                coral_db::UnixNanos::new(now_unix_nanos()),
-            )
+            .check_principal_inspection_in_snapshot(&mut transaction, actor, workspace_id, now())
             .await
             .map_err(Error::from)
             .map_err(conceal_description_error)?;
@@ -670,12 +660,7 @@ impl UniversalSearchModule {
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         Ok(self
             .workspaces
-            .check_discovery_in_transaction(
-                transaction,
-                actor,
-                workspace_id,
-                coral_db::UnixNanos::new(now_unix_nanos()),
-            )
+            .check_discovery_in_transaction(transaction, actor, workspace_id, now())
             .await?)
     }
 }
@@ -756,9 +741,9 @@ const fn ranked_status(retriever: EntityKind, coverage: RetrieverCoverage) -> Re
     RetrieverStatus::new(retriever, state, coverage)
 }
 
-/// The current time in Unix nanoseconds.
-pub(crate) fn now_unix_nanos() -> i64 {
-    coral_db::SystemClock.now().get()
+/// The current time.
+pub(crate) fn now() -> UnixNanos {
+    coral_db::SystemClock.now()
 }
 
 fn conceal_description_error(error: Error) -> Error {

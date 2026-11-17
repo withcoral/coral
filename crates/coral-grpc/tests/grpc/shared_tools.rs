@@ -23,7 +23,7 @@ async fn save_draft(f: &Fixture, user: &AuthenticatedUser) {
         .save(
             &PrivateToolChangeContext::new(
                 AuthenticatedPrincipal::user(user.clone()),
-                1_700_000_000_000_000_007,
+                coral_db::UnixNanos::new(1_700_000_000_000_000_007),
                 TraceId::current_or_new(),
             ),
             f.workspace.id(),

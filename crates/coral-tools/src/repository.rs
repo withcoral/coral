@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use coral_catalog::ToolAccessState;
-use coral_db::{Page, PageRequest, RowLock, Transaction, text_key_order};
+use coral_db::{Page, PageRequest, RowLock, Transaction, UnixNanos, text_key_order};
 use coral_workspace::{Principal, PrincipalId, PrincipalKind};
 use coral_workspace::{TraceId, WorkspaceId};
 use sea_query::{Cond, Expr, ExprTrait as _, Iden, Order, Query};
@@ -70,7 +70,7 @@ struct PrivateToolRow {
     declaration_fields_failure: Option<String>,
     diagnostics_json: String,
     diagnostics_truncated: bool,
-    saved_at_unix_nanos: i64,
+    saved_at_unix_nanos: UnixNanos,
     definition_revision: i64,
     default_access_state: String,
 }
@@ -128,7 +128,7 @@ impl PrivateToolRow {
 struct PrivateToolSummaryRow {
     path: String,
     description: String,
-    saved_at_unix_nanos: i64,
+    saved_at_unix_nanos: UnixNanos,
 }
 
 impl PrivateToolSummaryRow {
@@ -157,7 +157,7 @@ struct LifecycleEventRow {
     target_path: String,
     outcome: String,
     changed_field_paths: String,
-    occurred_at_unix_nanos: i64,
+    occurred_at_unix_nanos: UnixNanos,
     trace_id: String,
 }
 
@@ -579,7 +579,7 @@ pub(crate) async fn insert_current(
             Expr::val(tool.declaration_field_projection().failure_reason()),
             Expr::val(diagnostics_json),
             Expr::val(tool.diagnostics_truncated()),
-            Expr::val(tool.saved_at_unix_nanos()),
+            Expr::val(tool.saved_at()),
             Expr::val(revision),
             Expr::val(tool.default_access_state().as_storage_str()),
         ])
@@ -645,7 +645,7 @@ pub(crate) async fn replace_current(
             ),
             (
                 PrivateToolRecords::SavedAtUnixNanos,
-                Expr::val(replacement.saved_at_unix_nanos()),
+                Expr::val(replacement.saved_at()),
             ),
             (
                 PrivateToolRecords::DefaultAccessState,
@@ -707,7 +707,7 @@ pub(crate) struct NewLifecycleEvent<'a> {
     pub(crate) target_id: &'a PrivateToolId,
     pub(crate) target_path: &'a PrivateToolPath,
     pub(crate) changed_field_paths: &'a [&'a str],
-    pub(crate) occurred_at_unix_nanos: i64,
+    pub(crate) occurred_at: UnixNanos,
     pub(crate) trace_id: &'a TraceId,
 }
 
@@ -743,7 +743,7 @@ pub(crate) async fn insert_lifecycle_event(
             Expr::val(event.target_path.as_str()),
             Expr::val(LifecycleOutcome::Accepted.as_storage_str()),
             Expr::val(changed_field_paths),
-            Expr::val(event.occurred_at_unix_nanos),
+            Expr::val(event.occurred_at),
             Expr::val(event.trace_id.as_str()),
         ])
         .to_owned();
@@ -901,7 +901,7 @@ fn decode_revision(stored: i64) -> Result<u64, Error> {
         })
 }
 
-/// Counts the Private Tools created in `[start, end)` unix nanoseconds,
+/// Counts the Private Tools created in `[start, end)`,
 /// across every Workspace. A replacement is not a new one. The caller
 /// authorizes the read.
 ///
@@ -910,8 +910,8 @@ fn decode_revision(stored: i64) -> Result<u64, Error> {
 /// Returns a database failure.
 pub async fn private_tools_created(
     tx: &mut Transaction<'_>,
-    start: i64,
-    end: i64,
+    start: UnixNanos,
+    end: UnixNanos,
 ) -> Result<u64, Error> {
     let created: Option<(i64,)> = tx
         .fetch_optional(
@@ -930,7 +930,7 @@ pub async fn private_tools_created(
     Ok(created.map_or(0, |(created,)| u64::try_from(created).unwrap_or_default()))
 }
 
-/// When the first Private Tool was created, before `end` unix nanoseconds.
+/// When the first Private Tool was created, before `end`.
 /// The caller authorizes the read.
 ///
 /// # Errors
@@ -938,9 +938,9 @@ pub async fn private_tools_created(
 /// Returns a database failure.
 pub async fn first_created_before(
     tx: &mut Transaction<'_>,
-    end: i64,
-) -> Result<Option<i64>, Error> {
-    let first: Option<(Option<i64>,)> = tx
+    end: UnixNanos,
+) -> Result<Option<UnixNanos>, Error> {
+    let first: Option<(Option<UnixNanos>,)> = tx
         .fetch_optional(
             Query::select()
                 .expr(Expr::col(PrivateToolLifecycleEvents::OccurredAtUnixNanos).min())

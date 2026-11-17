@@ -37,7 +37,7 @@ async fn activity_observation_wakes_for_task_creation_interactions_and_ending() 
             goal.id(),
             TaskOutcome::Success,
             None,
-            wall_time(),
+            UnixNanos::new(wall_time()),
         )
         .await
         .unwrap();
@@ -89,7 +89,7 @@ async fn context_impact_task_total_includes_unloaded_measurements_and_ignores_no
             goal.id(),
             TaskOutcome::Success,
             Some("Found an answer"),
-            wall_time(),
+            UnixNanos::new(wall_time()),
         )
         .await
         .unwrap();
@@ -198,7 +198,7 @@ async fn activity_summary_counts_context_as_the_task_total_does() {
             &agent,
             &f.workspace,
             TaskIntent::parse("Agent goal").unwrap(),
-            3,
+            UnixNanos::new(3),
         )
         .await
         .unwrap();
@@ -469,7 +469,7 @@ async fn filled_task(f: &Fixture, workspace: &coral_workspace::WorkspaceId, runs
     let intent = TaskIntent::parse("Fill the task history").unwrap();
     let goal = f
         .tasks
-        .start(&f.actor, workspace, intent.clone(), 20)
+        .start(&f.actor, workspace, intent.clone(), UnixNanos::new(20))
         .await
         .unwrap();
     let call = AttributedCommand::new(
@@ -611,7 +611,7 @@ impl TiedRoots {
                             &f.actor,
                             workspace,
                             TaskIntent::parse("Equal intent É_%").unwrap(),
-                            10,
+                            UnixNanos::new(10),
                         )
                         .await
                         .unwrap(),
@@ -710,7 +710,7 @@ async fn root_windows_keep_their_rows_when_new_roots_arrive() {
             &f.actor,
             &f.workspace,
             TaskIntent::parse("New arrival").unwrap(),
-            20,
+            UnixNanos::new(20),
         )
         .await
         .unwrap();
@@ -763,7 +763,7 @@ async fn root_windows_conceal_another_users_private_anchor() {
             &AuthenticatedPrincipal::user(owner),
             &f.workspace,
             TaskIntent::parse("Other User's private goal").unwrap(),
-            30,
+            UnixNanos::new(30),
         )
         .await
         .unwrap();
@@ -914,7 +914,11 @@ async fn empty_root_windows_distinguish_boundaries_from_lost_retained_identities
     assert!(!retained.anchor_unavailable && !retained.has_before && !retained.has_after);
     assert!(
         f.tasks
-            .expire_group(&f.workspace, goal.id(), 20 + HISTORY_RETENTION_NANOS)
+            .expire_group(
+                &f.workspace,
+                goal.id(),
+                UnixNanos::new(20 + HISTORY_RETENTION_NANOS)
+            )
             .await
             .unwrap()
     );
@@ -968,7 +972,11 @@ async fn root_and_child_reads_do_not_renew_retention_and_expired_anchors_do_not_
     assert!(children.rows.is_empty() && children.next_after.is_none());
     assert!(
         f.tasks
-            .expire_group(&f.workspace, goal.id(), 20 + HISTORY_RETENTION_NANOS)
+            .expire_group(
+                &f.workspace,
+                goal.id(),
+                UnixNanos::new(20 + HISTORY_RETENTION_NANOS)
+            )
             .await
             .unwrap()
     );
@@ -1035,7 +1043,7 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
             &agent,
             &f.workspace,
             TaskIntent::parse("Agent goal").unwrap(),
-            3,
+            UnixNanos::new(3),
         )
         .await
         .unwrap();
