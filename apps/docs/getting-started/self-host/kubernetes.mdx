@@ -9,6 +9,8 @@ Deploy Coral in your Kubernetes cluster. This guide assumes that your cluster ha
 
 The [configuration reference](/reference/configuration) describes the configuration options.
 
+The `coral` image holds the model for [semantic search](/getting-started/self-host#semantic-search), so the pod needs no network access to get it. If you set a memory limit on the `coral` container, add about 360 MiB for semantic search.
+
 ## Common setup
 
 1. Create the namespace, the secrets, the services and the `coral-web` deployment. Save this manifest to `common.yaml`. Coral's gRPC server is plaintext, and this manifest does not expose it outside the cluster.
@@ -292,6 +294,8 @@ spec:
 
 </Tab>
 <Tab title="With Postgres">
+
+Your Postgres server needs pgvector 0.7 or later. If it does not have pgvector, set `semantic_search_enabled = false` in `[search]`. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector).
 
 2. Create the config and the Coral server deployment. Save this manifest to `coral.yaml`.
 
