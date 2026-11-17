@@ -26,7 +26,10 @@ export default defineConfig({
     ],
     fileParallelism: false,
     maxWorkers: 1,
-    testTimeout: 60_000,
+    // A desktop scenario launches the app up to twice and reads the OS process
+    // and socket tables up to three times. On the Windows runner that takes
+    // about 40 s, and a slow runner there doubles it.
+    testTimeout: suite === 'desktop' ? 120_000 : 60_000,
     hookTimeout: 90_000,
     teardownTimeout: 30_000,
     // `expect.poll` waits 1 s by default, less than a Reef action and Coral
