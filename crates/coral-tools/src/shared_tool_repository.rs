@@ -321,6 +321,36 @@ pub(crate) async fn hold_live_record(
     row.map(RecordRow::decode).transpose()
 }
 
+/// Every live Shared Tool of the Workspace that has its current revision,
+/// joined to that revision: the Shared Tools a Run links. A read selects
+/// its columns from the record and the revision, and narrows the paths.
+fn linkable_statement(workspace_id: &WorkspaceId) -> SelectStatement {
+    Query::select()
+        .from(SharedToolRecords::Table)
+        .inner_join(SharedToolRevisions::Table, is_current_revision())
+        .and_where(
+            Expr::col((SharedToolRecords::Table, SharedToolRecords::WorkspaceId))
+                .eq(workspace_id.to_string()),
+        )
+        .and_where(
+            Expr::col((
+                SharedToolRecords::Table,
+                SharedToolRecords::RemovedAtUnixNanos,
+            ))
+            .is_null(),
+        )
+        .to_owned()
+}
+
+/// The Shared Tool a Run links at `path`, of [`linkable_statement`].
+fn linkable_at_statement(workspace_id: &WorkspaceId, path: &SharedToolPath) -> SelectStatement {
+    let mut statement = linkable_statement(workspace_id);
+    statement.and_where(
+        Expr::col((SharedToolRecords::Table, SharedToolRecords::Path)).eq(path.as_str()),
+    );
+    statement
+}
+
 /// The identity of the live Shared Tool at `path` that has its current
 /// revision: the Shared Tool a Run links there. It reads no column of the
 /// revision.
@@ -329,23 +359,8 @@ pub(crate) async fn find_live_id(
     workspace_id: &WorkspaceId,
     path: &SharedToolPath,
 ) -> Result<Option<SharedToolId>, Error> {
-    let statement = Query::select()
-        .column((SharedToolRecords::Table, SharedToolRecords::Id))
-        .from(SharedToolRecords::Table)
-        .inner_join(SharedToolRevisions::Table, is_current_revision())
-        .and_where(
-            Expr::col((SharedToolRecords::Table, SharedToolRecords::WorkspaceId))
-                .eq(workspace_id.to_string()),
-        )
-        .and_where(Expr::col((SharedToolRecords::Table, SharedToolRecords::Path)).eq(path.as_str()))
-        .and_where(
-            Expr::col((
-                SharedToolRecords::Table,
-                SharedToolRecords::RemovedAtUnixNanos,
-            ))
-            .is_null(),
-        )
-        .to_owned();
+    let mut statement = linkable_at_statement(workspace_id, path);
+    statement.column((SharedToolRecords::Table, SharedToolRecords::Id));
     let row: Option<(String,)> = transaction.fetch_optional(statement).await?;
     row.map(|(id,)| decode_id(&id)).transpose()
 }
@@ -430,27 +445,14 @@ pub(crate) async fn live_declarations(
     if paths.is_empty() {
         return Ok(BTreeMap::new());
     }
-    let statement = Query::select()
+    let mut statement = linkable_statement(workspace_id);
+    statement
         .column((SharedToolRecords::Table, SharedToolRecords::Path))
         .column((SharedToolRevisions::Table, SharedToolRevisions::Declaration))
-        .from(SharedToolRecords::Table)
-        .inner_join(SharedToolRevisions::Table, is_current_revision())
-        .and_where(
-            Expr::col((SharedToolRecords::Table, SharedToolRecords::WorkspaceId))
-                .eq(workspace_id.to_string()),
-        )
         .and_where(
             Expr::col((SharedToolRecords::Table, SharedToolRecords::Path))
                 .is_in(paths.iter().map(|path| path.as_str())),
-        )
-        .and_where(
-            Expr::col((
-                SharedToolRecords::Table,
-                SharedToolRecords::RemovedAtUnixNanos,
-            ))
-            .is_null(),
-        )
-        .to_owned();
+        );
     let rows: Vec<(String, String)> = transaction.fetch_all(statement).await?;
     rows.into_iter()
         .map(|(path, declaration)| {
@@ -680,29 +682,15 @@ pub(crate) async fn select_current_source(
     workspace_id: &WorkspaceId,
     path: &SharedToolPath,
 ) -> Result<Option<CurrentRevision>, Error> {
-    let statement = Query::select()
+    let mut statement = linkable_at_statement(workspace_id, path);
+    statement
         .column((SharedToolRecords::Table, SharedToolRecords::Id))
         .column((SharedToolRecords::Table, SharedToolRecords::CurrentRevision))
         .column((SharedToolRevisions::Table, SharedToolRevisions::Source))
         .column((
             SharedToolRevisions::Table,
             SharedToolRevisions::DefaultAccessState,
-        ))
-        .from(SharedToolRecords::Table)
-        .inner_join(SharedToolRevisions::Table, is_current_revision())
-        .and_where(
-            Expr::col((SharedToolRecords::Table, SharedToolRecords::WorkspaceId))
-                .eq(workspace_id.to_string()),
-        )
-        .and_where(Expr::col((SharedToolRecords::Table, SharedToolRecords::Path)).eq(path.as_str()))
-        .and_where(
-            Expr::col((
-                SharedToolRecords::Table,
-                SharedToolRecords::RemovedAtUnixNanos,
-            ))
-            .is_null(),
-        )
-        .to_owned();
+        ));
     let row: Option<SelectionRow> = transaction.fetch_optional(statement).await?;
     row.map(|row| {
         Ok(CurrentRevision {
