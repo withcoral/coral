@@ -365,7 +365,7 @@ impl UniversalSearchModule {
                 &mut transaction,
                 actor,
                 workspace_id,
-                now_unix_nanos(),
+                coral_db::UnixNanos::new(now_unix_nanos()),
             )
             .await?;
         let searchable = retriever::tools::searchable_providers(
@@ -590,7 +590,7 @@ impl UniversalSearchModule {
                 &mut transaction,
                 actor,
                 workspace_id,
-                now_unix_nanos(),
+                coral_db::UnixNanos::new(now_unix_nanos()),
             )
             .await
             .map_err(Error::from)
@@ -670,7 +670,12 @@ impl UniversalSearchModule {
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         Ok(self
             .workspaces
-            .check_discovery_in_transaction(transaction, actor, workspace_id, now_unix_nanos())
+            .check_discovery_in_transaction(
+                transaction,
+                actor,
+                workspace_id,
+                coral_db::UnixNanos::new(now_unix_nanos()),
+            )
             .await?)
     }
 }

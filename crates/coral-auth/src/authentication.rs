@@ -222,7 +222,6 @@ impl PrincipalAuthentication {
         credential: &str,
         now: UnixNanos,
     ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
-        let now = now.get();
         Ok(match fixed_by {
             WorkspaceFixedBy::Url(workspace) => (
                 self.workspaces

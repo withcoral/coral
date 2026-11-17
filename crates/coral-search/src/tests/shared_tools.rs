@@ -53,7 +53,11 @@ impl SharedScope {
             .expect("create the Agent");
         let agent = fixture
             .workspaces
-            .authenticate_agent(&scope.workspace_id, issued.credential.expose(), 52)
+            .authenticate_agent(
+                &scope.workspace_id,
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(52),
+            )
             .await
             .expect("authenticate the Agent");
         Self {

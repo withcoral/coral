@@ -57,7 +57,7 @@ async fn complete(
 ) -> Result<(), coral_provider::Error> {
     let context = coral_workspace::ChangeContext::new(
         coral_workspace::local_organization_owner(),
-        now.get(),
+        now,
         coral_telemetry::TraceId::current_or_new(),
     );
     accounts.complete_callback(&context, query).await?;
@@ -112,8 +112,11 @@ mod tests {
             coral_catalog::SchemaGraphCache::with_default_budget(),
         );
         let now = coral_test_support::now_unix_nanos();
-        let context =
-            ChangeContext::new(local_organization_owner(), now, TraceId::current_or_new());
+        let context = ChangeContext::new(
+            local_organization_owner(),
+            UnixNanos::new(now),
+            TraceId::current_or_new(),
+        );
         let workspace = workspaces
             .create(&context, WorkspaceDisplayName::parse("Callback").unwrap())
             .await

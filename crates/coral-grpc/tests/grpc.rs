@@ -68,7 +68,11 @@ struct Fixture {
 }
 
 fn change(user: &AuthenticatedUser) -> ChangeContext {
-    ChangeContext::new(user.clone(), 1, TraceId::current_or_new())
+    ChangeContext::new(
+        user.clone(),
+        coral_db::UnixNanos::new(1),
+        TraceId::current_or_new(),
+    )
 }
 
 fn request<T>(message: T, token: &str, audience: &str) -> tonic::Request<T> {
@@ -540,7 +544,7 @@ impl Fixture {
                     Some(*verified),
                     None,
                 ),
-                1,
+                coral_db::UnixNanos::new(1),
             )
             .await
             .unwrap();
@@ -1000,7 +1004,11 @@ async fn local_agent_authentication_reports_database_outages_as_unavailable() {
         .unwrap();
     let principal = f
         .workspaces
-        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 1)
+        .authenticate_agent(
+            f.workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(1),
+        )
         .await
         .unwrap();
     let task = f

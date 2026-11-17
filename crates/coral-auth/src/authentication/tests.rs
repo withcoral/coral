@@ -258,7 +258,7 @@ async fn agent_authentication_uses_workspace_registration_not_user_authority() {
                 &fixture.workspace,
                 issued.registration.id(),
                 enabled,
-                expiry,
+                expiry.map(UnixNanos::new),
             )
             .await
             .unwrap();
@@ -286,7 +286,7 @@ async fn a_credential_expires_when_the_clock_passes_its_expiry() {
             &fixture.workspace,
             agent.registration.id(),
             true,
-            Some(fixture.now_unix_nanos() + 30 * SECOND),
+            Some(UnixNanos::new(fixture.now_unix_nanos() + 30 * SECOND)),
         )
         .await
         .unwrap();
@@ -572,7 +572,7 @@ impl Fixture {
 fn change(id: &str) -> ChangeContext {
     ChangeContext::new(
         AuthenticatedUser::organization_member(UserId::parse(id).unwrap(), OrganizationRole::Owner),
-        1,
+        UnixNanos::new(1),
         TraceId::current_or_new(),
     )
 }

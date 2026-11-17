@@ -2,7 +2,7 @@
 //! Callers supply the owning domain transaction.
 use std::collections::HashMap;
 
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 
 use crate::list_repository::{ResourceScope, Resources};
@@ -84,7 +84,7 @@ pub(super) async fn metadata(
     kind: LifecycleTargetKind,
     id: &str,
 ) -> Result<ResourceMetadata, Error> {
-    let row: Option<(String, i64, i64)> = tx
+    let row: Option<(String, UnixNanos, UnixNanos)> = tx
         .fetch_optional(
             Query::select()
                 .columns([
@@ -158,7 +158,7 @@ pub(super) async fn listed_metadata(
                 );
         }
     }
-    let rows: Vec<(String, String, i64, i64)> = tx.fetch_all(statement).await?;
+    let rows: Vec<(String, String, UnixNanos, UnixNanos)> = tx.fetch_all(statement).await?;
     Ok(ListedMetadata(
         rows.into_iter()
             .map(|(id, etag, created_at, updated_at)| {
@@ -181,7 +181,7 @@ pub(super) async fn upsert_metadata(
     kind: LifecycleTargetKind,
     id: &str,
     etag: &str,
-    occurred_at_unix_nanos: i64,
+    occurred_at: UnixNanos,
 ) -> Result<(), Error> {
     tx.execute(
         Query::insert()
@@ -199,8 +199,8 @@ pub(super) async fn upsert_metadata(
                 kind.as_storage_str().into(),
                 id.into(),
                 etag.into(),
-                occurred_at_unix_nanos.into(),
-                occurred_at_unix_nanos.into(),
+                occurred_at.into(),
+                occurred_at.into(),
             ])
             .on_conflict(
                 OnConflict::columns([

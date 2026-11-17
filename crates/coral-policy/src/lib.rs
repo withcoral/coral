@@ -274,7 +274,7 @@ impl ToolPolicyModule {
                 &mut transaction,
                 actor,
                 workspace_id,
-                now_unix_nanos,
+                coral_db::UnixNanos::new(now_unix_nanos),
             )
             .await?;
         let owner = PrivateToolOwner::of(actor.principal().kind(), evidence.effective_user_role());

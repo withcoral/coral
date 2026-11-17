@@ -829,7 +829,7 @@ mod tests {
             .create(
                 &ChangeContext::new(
                     owner.clone(),
-                    coral_test_support::now_unix_nanos(),
+                    coral_db::UnixNanos::new(coral_test_support::now_unix_nanos()),
                     TraceId::current_or_new(),
                 ),
                 WorkspaceDisplayName::parse("Launched").unwrap(),

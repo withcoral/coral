@@ -16,7 +16,11 @@ async fn duplicate_metadata_rejects_an_otherwise_valid_agent_in_both_authenticat
             .unwrap();
         let principal = f
             .workspaces
-            .authenticate_agent(f.workspace.id(), issued.credential.expose(), 1)
+            .authenticate_agent(
+                f.workspace.id(),
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(1),
+            )
             .await
             .unwrap();
         let task = f

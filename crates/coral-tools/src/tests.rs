@@ -2107,7 +2107,11 @@ async fn registered_agent(
         .await
         .expect("create Agent");
     workspaces
-        .authenticate_agent(workspace_id, issued.credential.expose(), 11)
+        .authenticate_agent(
+            workspace_id,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(11),
+        )
         .await
         .expect("authenticate Agent")
 }
@@ -2187,7 +2191,7 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
                     &workspace_id,
                     registration.id(),
                     true,
-                    Some(0),
+                    Some(coral_db::UnixNanos::new(0)),
                 )
                 .await
                 .unwrap();

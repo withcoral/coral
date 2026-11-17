@@ -946,7 +946,11 @@ impl ProviderModule {
         id: &ProviderSetupId,
         now: i64,
     ) -> Result<ProviderSetupInspection, Error> {
-        let context = ChangeContext::new(actor.clone(), now, TraceId::current_or_new());
+        let context = ChangeContext::new(
+            actor.clone(),
+            coral_db::UnixNanos::new(now),
+            TraceId::current_or_new(),
+        );
         let mut tx = self.database.begin().await?;
         // Acquire the write lock before snapshot reads: settling expiry may write.
         let exists = providers::lock_setup_for_publication(&mut tx, owner, id).await?;

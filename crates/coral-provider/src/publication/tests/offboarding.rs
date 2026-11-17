@@ -235,7 +235,7 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
             assert_eq!(removed.len(), 1);
             for event in removed {
                 assert_eq!(event.trace_id(), cleanup.trace_id());
-                assert_eq!(event.occurred_at_unix_nanos(), 30);
+                assert_eq!(event.occurred_at(), coral_db::UnixNanos::new(30));
             }
         }
         Removal::Organization => {
@@ -252,7 +252,7 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
             assert_eq!(removed.len(), 1);
             for event in removed {
                 assert_eq!(&event.trace_id, cleanup.trace_id());
-                assert_eq!(event.occurred_at_unix_nanos, 30);
+                assert_eq!(event.occurred_at, coral_db::UnixNanos::new(30));
             }
         }
     }

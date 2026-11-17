@@ -135,7 +135,11 @@ impl Fixture {
             provision_user(database.clone(), "user:commands", OrganizationRole::Member).await;
         let workspace = workspaces
             .create(
-                &ChangeContext::new(user.clone(), 10, coral_test_support::trace('1')),
+                &ChangeContext::new(
+                    user.clone(),
+                    coral_db::UnixNanos::new(10),
+                    coral_test_support::trace('1'),
+                ),
                 WorkspaceDisplayName::parse("Commands").unwrap(),
             )
             .await
@@ -209,7 +213,11 @@ impl Fixture {
             WorkspaceModule::new(database),
         )
         .publish_openapi_fixture(
-            &ChangeContext::new(self.user.clone(), 15, coral_test_support::trace('2')),
+            &ChangeContext::new(
+                self.user.clone(),
+                coral_db::UnixNanos::new(15),
+                coral_test_support::trace('2'),
+            ),
             &self.workspace,
             coral_catalog::OpenApiDocument::parse(&document.to_string()).unwrap(),
             namespace,
@@ -232,7 +240,7 @@ impl Fixture {
             .set_membership(
                 &ChangeContext::new(
                     self.actor.authenticated_user().unwrap().clone(),
-                    wall_time(),
+                    coral_db::UnixNanos::new(wall_time()),
                     coral_test_support::trace('1'),
                 ),
                 &self.workspace,
@@ -250,7 +258,11 @@ impl Fixture {
             .tasks
             .workspaces
             .create(
-                &ChangeContext::new(self.user.clone(), 1, coral_test_support::trace('1')),
+                &ChangeContext::new(
+                    self.user.clone(),
+                    coral_db::UnixNanos::new(1),
+                    coral_test_support::trace('1'),
+                ),
                 WorkspaceDisplayName::parse(name).unwrap(),
             )
             .await
@@ -326,7 +338,7 @@ async fn archived_workspace_description_rejection_remains_in_authorized_task_his
         .unwrap();
     let change = ChangeContext::new(
         fixture.actor.authenticated_user().unwrap().clone(),
-        wall_time(),
+        coral_db::UnixNanos::new(wall_time()),
         coral_test_support::trace('1'),
     );
     fixture
@@ -431,7 +443,7 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
     .await;
     let change = ChangeContext::new(
         fixture.actor.authenticated_user().unwrap().clone(),
-        wall_time(),
+        coral_db::UnixNanos::new(wall_time()),
         coral_test_support::trace('1'),
     );
     fixture
@@ -744,7 +756,7 @@ async fn completion_requires_exact_workspace_principal_and_current_authority() {
     let f = Fixture::new().await;
     let change = ChangeContext::new(
         f.actor.authenticated_user().unwrap().clone(),
-        wall_time(),
+        coral_db::UnixNanos::new(wall_time()),
         coral_test_support::trace('1'),
     );
     let issued = f
@@ -761,7 +773,11 @@ async fn completion_requires_exact_workspace_principal_and_current_authority() {
     let agent = f
         .tasks
         .workspaces
-        .authenticate_agent(&f.workspace, issued.credential.expose(), wall_time())
+        .authenticate_agent(
+            &f.workspace,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(wall_time()),
+        )
         .await
         .unwrap();
     let goal = f
@@ -1268,7 +1284,7 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
     .await;
     let change = ChangeContext::new(
         fixture.actor.authenticated_user().unwrap().clone(),
-        30,
+        coral_db::UnixNanos::new(30),
         coral_test_support::trace('1'),
     );
     fixture
@@ -1427,7 +1443,11 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
     let agent = fixture
         .tasks
         .workspaces
-        .authenticate_agent(&fixture.workspace, issued.credential.expose(), 40)
+        .authenticate_agent(
+            &fixture.workspace,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(40),
+        )
         .await
         .unwrap();
     let goal = fixture
@@ -1637,7 +1657,7 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_run_acceptan
         let expiry = wall_time() + 1_000_000_000;
         let change = ChangeContext::new(
             fixture.actor.authenticated_user().unwrap().clone(),
-            wall_time(),
+            coral_db::UnixNanos::new(wall_time()),
             coral_test_support::trace('1'),
         );
         let issued = fixture
@@ -1647,14 +1667,18 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_run_acceptan
                 &change,
                 &fixture.workspace,
                 coral_workspace::AgentDisplayName::parse("Expiring worker").unwrap(),
-                Some(expiry),
+                Some(coral_db::UnixNanos::new(expiry)),
             )
             .await
             .unwrap();
         let agent = fixture
             .tasks
             .workspaces
-            .authenticate_agent(&fixture.workspace, issued.credential.expose(), wall_time())
+            .authenticate_agent(
+                &fixture.workspace,
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(wall_time()),
+            )
             .await
             .unwrap();
         let goal = fixture
@@ -1697,7 +1721,7 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_run_acceptan
                 &mut blocker,
                 &fixture.actor,
                 &fixture.workspace,
-                wall_time(),
+                coral_db::UnixNanos::new(wall_time()),
             )
             .await
             .unwrap();
@@ -2263,7 +2287,11 @@ async fn install_private_provider(
     providers
         .install_coral_defined_in_transaction(
             &mut transaction,
-            &ChangeContext::new(owner.clone(), 10, coral_test_support::trace('1')),
+            &ChangeContext::new(
+                owner.clone(),
+                coral_db::UnixNanos::new(10),
+                coral_test_support::trace('1'),
+            ),
             workspace,
             coral_provider::CoralDefinedProvider::Private,
         )

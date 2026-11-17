@@ -1,7 +1,7 @@
 //! Organization persistence mechanics. All operations join the caller's transaction;
 //! authority policy, sequencing, and commit/rollback belong to `OrganizationModule`.
 
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 
 use super::{OrganizationLifecycleAction, OrganizationLifecycleEvent, OrganizationMembership};
@@ -353,7 +353,7 @@ pub(super) async fn record_event(
                 context.actor().user_id().as_str().into(),
                 target.as_str().into(),
                 action.as_str().into(),
-                context.occurred_at_unix_nanos().into(),
+                context.occurred_at().into(),
                 context.trace_id().as_str().into(),
             ])
             .to_owned(),
@@ -401,7 +401,7 @@ struct EventRow {
     actor_user_id: String,
     target_user_id: String,
     action: String,
-    occurred_at_unix_nanos: i64,
+    occurred_at_unix_nanos: UnixNanos,
     trace_id: String,
 }
 impl EventRow {
@@ -420,7 +420,7 @@ impl EventRow {
             target_user_id: UserId::parse(&self.target_user_id).map_err(|_error| corrupt())?,
             action,
             outcome: crate::LifecycleOutcome::Accepted,
-            occurred_at_unix_nanos: self.occurred_at_unix_nanos,
+            occurred_at: self.occurred_at_unix_nanos,
             trace_id: crate::TraceId::parse(&self.trace_id).map_err(|_error| corrupt())?,
         })
     }

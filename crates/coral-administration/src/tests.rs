@@ -664,11 +664,15 @@ async fn member_removal_keeps_the_agents_they_provisioned() {
     assert_eq!(agent_account().await, provisioned);
     let agent = f
         .workspaces
-        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 100)
+        .authenticate_agent(
+            f.workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(100),
+        )
         .await
         .unwrap();
     f.workspaces
-        .check_run_admission(&agent, f.workspace.id(), 100)
+        .check_run_admission(&agent, f.workspace.id(), coral_db::UnixNanos::new(100))
         .await
         .unwrap();
 }
@@ -743,7 +747,11 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
             .await
             .unwrap();
         let agent = workspaces
-            .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
+            .authenticate_agent(
+                workspace.id(),
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(100),
+            )
             .await
             .unwrap();
         let owner_principal = AuthenticatedPrincipal::user(owner.clone());
@@ -903,7 +911,11 @@ async fn a_shared_tool_survives_the_loss_of_its_author() {
             .await
             .unwrap();
         let agent = workspaces
-            .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
+            .authenticate_agent(
+                workspace.id(),
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(100),
+            )
             .await
             .unwrap();
         // The publisher and the Principal whose Private Tool it copies: the
@@ -1188,7 +1200,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
     }
     let fault = ChangeContext::new(
         owner.clone(),
-        200,
+        coral_db::UnixNanos::new(200),
         TraceId::parse("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").unwrap(),
     );
     assert!(matches!(
@@ -1316,7 +1328,11 @@ async fn agent_removal_rolls_back_registration_private_tools_and_events_together
         .await
         .unwrap();
     let agent = workspaces
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(100),
+        )
         .await
         .unwrap();
     let providers = coral_provider::ProviderModule::with_running_catalog(
@@ -1443,7 +1459,11 @@ async fn agent_removal_rolls_back_registration_private_tools_and_events_together
             registration
         );
         workspaces
-            .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
+            .authenticate_agent(
+                workspace.id(),
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(100),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1503,7 +1523,11 @@ async fn agent_removal_rolls_back_registration_private_tools_and_events_together
         .await
         .unwrap();
     workspaces
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(100),
+        )
         .await
         .unwrap_err();
     for authorization in [pending.id, reconnect.id] {

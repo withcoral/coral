@@ -405,7 +405,12 @@ impl ProviderModule {
         let mut tx = self.database.begin_read_snapshot().await?;
         let role = self
             .workspaces
-            .check_principal_inspection_in_snapshot(&mut tx, actor, owner, now)
+            .check_principal_inspection_in_snapshot(
+                &mut tx,
+                actor,
+                owner,
+                coral_db::UnixNanos::new(now),
+            )
             .await?
             .effective_user_role();
         let Some(user) = actor

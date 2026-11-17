@@ -1035,9 +1035,7 @@ fn flow_of(policy: coral_outbound::DestinationPolicy, loaded: &LoadedSetup) -> R
 pub(super) fn advanced(context: &ChangeContext, started: super::Started<'_>) -> ChangeContext {
     ChangeContext::new(
         context.actor().clone(),
-        started
-            .now_from(coral_db::UnixNanos::new(context.occurred_at_unix_nanos()))
-            .get(),
+        started.now_from(context.occurred_at()),
         context.trace_id().clone(),
     )
 }

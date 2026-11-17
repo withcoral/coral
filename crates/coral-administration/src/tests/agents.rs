@@ -18,7 +18,11 @@ pub(super) async fn registered_agent(
         .await
         .unwrap();
     workspaces
-        .authenticate_agent(workspace, issued.credential.expose(), 100)
+        .authenticate_agent(
+            workspace,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(100),
+        )
         .await
         .unwrap()
 }

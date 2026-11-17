@@ -7,6 +7,7 @@ mod management;
 #[path = "secret_store_grant_tests.rs"]
 mod secret_store_grants;
 
+use coral_db::UnixNanos;
 use coral_test_support::TestDatabase;
 
 use crate::{
@@ -1044,7 +1045,11 @@ async fn agent_creation_returns_one_credential_and_safe_durable_attribution() {
         .await
         .expect("create Agent, Registration, and credential together");
     let actor = module
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 11)
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            UnixNanos::new(11),
+        )
         .await
         .unwrap();
     assert_eq!(actor.principal(), issued.agent.principal());
@@ -1222,7 +1227,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
             &context,
             workspace.id(),
             crate::AgentDisplayName::parse("Worker").unwrap(),
-            Some(100),
+            Some(UnixNanos::new(100)),
         )
         .await
         .unwrap();
@@ -1250,12 +1255,12 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
         actor
     );
     module
-        .check_run_admission(&actor, workspace.id(), 99)
+        .check_run_admission(&actor, workspace.id(), UnixNanos::new(99))
         .await
         .unwrap();
     assert!(matches!(
         module
-            .check_run_admission(&actor, workspace.id(), 100)
+            .check_run_admission(&actor, workspace.id(), UnixNanos::new(100))
             .await,
         Err(Error::AgentRegistrationExpired)
     ));
@@ -1274,7 +1279,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
         .await
         .unwrap();
     module
-        .check_run_admission(&actor, workspace.id(), 101)
+        .check_run_admission(&actor, workspace.id(), UnixNanos::new(101))
         .await
         .unwrap();
     module
@@ -1288,7 +1293,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
         .unwrap();
     assert!(matches!(
         module
-            .check_run_admission(&actor, workspace.id(), 101)
+            .check_run_admission(&actor, workspace.id(), UnixNanos::new(101))
             .await,
         Err(Error::AgentDisabled)
     ));
@@ -1313,7 +1318,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
         .unwrap();
     assert!(matches!(
         module
-            .check_run_admission(&actor, workspace.id(), 101)
+            .check_run_admission(&actor, workspace.id(), UnixNanos::new(101))
             .await,
         Err(Error::AgentDisabled)
     ));
@@ -1358,10 +1363,10 @@ async fn authenticate_both(
     now_unix_nanos: i64,
 ) -> Result<crate::AuthenticatedPrincipal, Error> {
     let scoped = module
-        .authenticate_agent(workspace, credential, now_unix_nanos)
+        .authenticate_agent(workspace, credential, UnixNanos::new(now_unix_nanos))
         .await;
     let alone = module
-        .authenticate_agent_credential(credential, now_unix_nanos)
+        .authenticate_agent_credential(credential, UnixNanos::new(now_unix_nanos))
         .await
         .map(|(principal, resolved)| {
             assert_eq!(&resolved, workspace);
@@ -1409,7 +1414,7 @@ async fn organization_user(
     crate::OrganizationModule::new(database)
         .provision_login(&crate::ChangeContext::new(
             user.clone(),
-            1,
+            UnixNanos::new(1),
             crate::TraceId::current_or_new(),
         ))
         .await
@@ -1420,7 +1425,7 @@ async fn organization_user(
 fn change(actor: crate::AuthenticatedUser, at: i64, trace_digit: char) -> ChangeContext {
     ChangeContext::new(
         actor,
-        at,
+        UnixNanos::new(at),
         TraceId::parse(&trace_digit.to_string().repeat(32)).expect("trace id"),
     )
 }

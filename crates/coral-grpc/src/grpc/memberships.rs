@@ -23,8 +23,8 @@ fn membership(
         user: format!("users/{}", m.user_id()),
         role: role(m.role()).into(),
         etag: meta.etag,
-        create_time: Some(timestamp(meta.created_at)),
-        update_time: Some(timestamp(meta.updated_at)),
+        create_time: Some(timestamp(meta.created_at.get())),
+        update_time: Some(timestamp(meta.updated_at.get())),
         profile: None,
         enabled,
     }

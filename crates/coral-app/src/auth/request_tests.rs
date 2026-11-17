@@ -290,7 +290,7 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
                 &fixture.workspace,
                 issued.registration.id(),
                 enabled,
-                expiry,
+                expiry.map(coral_db::UnixNanos::new),
             )
             .await
             .unwrap();
@@ -779,7 +779,7 @@ fn initialize_request(url: &str) -> reqwest::RequestBuilder {
 fn change(id: &str, role: OrganizationRole) -> ChangeContext {
     ChangeContext::new(
         AuthenticatedUser::organization_member(UserId::parse(id).unwrap(), role),
-        1,
+        coral_db::UnixNanos::new(1),
         TraceId::parse(&"a".repeat(32)).unwrap(),
     )
 }

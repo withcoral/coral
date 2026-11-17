@@ -100,7 +100,7 @@ impl GrpcServices {
 
 /// The context of the change `user`'s request makes, dated by the request's time.
 pub(super) fn change(user: ManagementUser) -> ChangeContext {
-    ChangeContext::new(user.user, user.now.get(), TraceId::current_or_new())
+    ChangeContext::new(user.user, user.now, TraceId::current_or_new())
 }
 pub(super) fn workspace_id(name: &str) -> Result<WorkspaceId, Status> {
     let Some(id) = name.strip_prefix("workspaces/") else {
@@ -126,8 +126,8 @@ fn workspace(evidence: &WorkspaceEvidence, meta: ResourceMetadata) -> wire::Work
         mcp_endpoint: String::new(),
         organization_mcp_endpoint: String::new(),
         etag: meta.etag,
-        create_time: Some(timestamp(meta.created_at)),
-        update_time: Some(timestamp(meta.updated_at)),
+        create_time: Some(timestamp(meta.created_at.get())),
+        update_time: Some(timestamp(meta.updated_at.get())),
         effective_role: role(evidence.effective_role()).into(),
     }
 }

@@ -93,7 +93,7 @@ impl EventFault {
     ) -> coral_workspace::ChangeContext {
         coral_workspace::ChangeContext::new(
             actor.clone(),
-            200,
+            coral_db::UnixNanos::new(200),
             coral_workspace::TraceId::parse(&self.target().2.to_string().repeat(32)).unwrap(),
         )
     }

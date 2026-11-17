@@ -1,7 +1,7 @@
 use sea_query::{Alias, Condition, Expr, ExprTrait as _, Iden, OnConflict, Order, Query};
 use sqlx::FromRow;
 
-use coral_db::{Database, QueryExecutor, Transaction};
+use coral_db::{Database, QueryExecutor, Transaction, UnixNanos};
 
 use crate::{
     AdministrativeLifecycleEvent, AuthoritySource, Error, LifecycleAction, LifecycleOutcome,
@@ -139,7 +139,7 @@ struct LifecycleEventRow {
     target_id: String,
     outcome: String,
     changed_field_paths: String,
-    occurred_at_unix_nanos: i64,
+    occurred_at_unix_nanos: UnixNanos,
     trace_id: String,
 }
 
@@ -284,7 +284,7 @@ async fn workspace_held(
 pub(super) async fn insert_workspace(
     transaction: &mut Transaction<'_>,
     workspace: &Workspace,
-    occurred_at_unix_nanos: i64,
+    occurred_at: UnixNanos,
 ) -> Result<(), Error> {
     let statement = Query::insert()
         .into_table(WorkspaceRecords::Table)
@@ -301,8 +301,8 @@ pub(super) async fn insert_workspace(
             Expr::val(workspace.display_name().as_str()),
             Expr::val(workspace.state().as_storage_str()),
             Expr::val(workspace.lifecycle_version()),
-            Expr::val(occurred_at_unix_nanos),
-            Expr::val(occurred_at_unix_nanos),
+            Expr::val(occurred_at),
+            Expr::val(occurred_at),
         ])
         .to_owned();
     transaction.execute(statement).await?;
@@ -313,7 +313,7 @@ pub(super) async fn update_display_name(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     display_name: &WorkspaceDisplayName,
-    updated_at_unix_nanos: i64,
+    updated_at: UnixNanos,
 ) -> Result<(), Error> {
     let statement = Query::update()
         .table(WorkspaceRecords::Table)
@@ -322,10 +322,7 @@ pub(super) async fn update_display_name(
                 WorkspaceRecords::DisplayName,
                 Expr::val(display_name.as_str()),
             ),
-            (
-                WorkspaceRecords::UpdatedAtUnixNanos,
-                Expr::val(updated_at_unix_nanos),
-            ),
+            (WorkspaceRecords::UpdatedAtUnixNanos, Expr::val(updated_at)),
         ])
         .and_where(Expr::col(WorkspaceRecords::Id).eq(workspace_id.to_string()))
         .to_owned();
@@ -338,7 +335,7 @@ pub(super) async fn update_lifecycle(
     workspace_id: &WorkspaceId,
     state: WorkspaceState,
     lifecycle_version: i64,
-    updated_at_unix_nanos: i64,
+    updated_at: UnixNanos,
 ) -> Result<(), Error> {
     let statement = Query::update()
         .table(WorkspaceRecords::Table)
@@ -348,10 +345,7 @@ pub(super) async fn update_lifecycle(
                 WorkspaceRecords::LifecycleVersion,
                 Expr::val(lifecycle_version),
             ),
-            (
-                WorkspaceRecords::UpdatedAtUnixNanos,
-                Expr::val(updated_at_unix_nanos),
-            ),
+            (WorkspaceRecords::UpdatedAtUnixNanos, Expr::val(updated_at)),
         ])
         .and_where(Expr::col(WorkspaceRecords::Id).eq(workspace_id.to_string()))
         .to_owned();
@@ -381,7 +375,7 @@ pub(super) async fn upsert_membership(
     workspace_id: &WorkspaceId,
     user_id: &UserId,
     role: WorkspaceRole,
-    occurred_at_unix_nanos: i64,
+    occurred_at: UnixNanos,
 ) -> Result<(), Error> {
     let statement = Query::insert()
         .into_table(WorkspaceMemberships::Table)
@@ -396,8 +390,8 @@ pub(super) async fn upsert_membership(
             Expr::val(workspace_id.to_string()),
             Expr::val(user_id.as_str()),
             Expr::val(role.as_storage_str()),
-            Expr::val(occurred_at_unix_nanos),
-            Expr::val(occurred_at_unix_nanos),
+            Expr::val(occurred_at),
+            Expr::val(occurred_at),
         ])
         .on_conflict(
             OnConflict::columns([
@@ -693,7 +687,7 @@ pub(super) struct NewLifecycleEvent<'a> {
     pub(super) target_kind: LifecycleTargetKind,
     pub(super) target_id: &'a str,
     pub(super) changed_field_paths: &'a [&'a str],
-    pub(super) occurred_at_unix_nanos: i64,
+    pub(super) occurred_at: UnixNanos,
     pub(super) trace_id: &'a TraceId,
 }
 
@@ -727,7 +721,7 @@ pub(super) async fn insert_lifecycle_event(
             Expr::val(event.target_id),
             Expr::val(LifecycleOutcome::Accepted.as_storage_str()),
             Expr::val(fields),
-            Expr::val(event.occurred_at_unix_nanos),
+            Expr::val(event.occurred_at),
             Expr::val(event.trace_id.as_str()),
         ])
         .to_owned();

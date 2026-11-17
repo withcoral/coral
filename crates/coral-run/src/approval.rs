@@ -353,7 +353,12 @@ impl ApprovalModule {
             if row.state == ApprovalState::Pending {
                 let authority = self
                     .workspaces
-                    .check_principal_inspection_in_snapshot(&mut tx, actor, workspace, now)
+                    .check_principal_inspection_in_snapshot(
+                        &mut tx,
+                        actor,
+                        workspace,
+                        coral_db::UnixNanos::new(now),
+                    )
                     .await
                     .map_err(conceal)?;
                 // Agent approval requires the live Membership role, not the role in
@@ -515,7 +520,12 @@ async fn decision_required(
     now: i64,
 ) -> Result<bool, Error> {
     let role = match workspaces
-        .check_invoking_principal_in_snapshot(tx, &run.workspace_id, &run.principal, now)
+        .check_invoking_principal_in_snapshot(
+            tx,
+            &run.workspace_id,
+            &run.principal,
+            coral_db::UnixNanos::new(now),
+        )
         .await
     {
         Ok(role) => role,

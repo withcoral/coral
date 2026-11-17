@@ -1,5 +1,6 @@
 //! Current hierarchy contracts, replacing tests for superseded filters and sort modes.
 use super::*;
+use coral_db::UnixNanos;
 use coral_workspace::{HistoryScope, WorkspaceRole};
 
 #[tokio::test]
@@ -166,7 +167,7 @@ async fn activity_summary_counts_context_as_the_task_total_does() {
         .tasks
         .workspaces
         .create_agent(
-            &ChangeContext::new(owner, 1, coral_test_support::trace('1')),
+            &ChangeContext::new(owner, UnixNanos::new(1), coral_test_support::trace('1')),
             &f.workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -176,7 +177,7 @@ async fn activity_summary_counts_context_as_the_task_total_does() {
     let agent = f
         .tasks
         .workspaces
-        .authenticate_agent(&f.workspace, issued.credential.expose(), 2)
+        .authenticate_agent(&f.workspace, issued.credential.expose(), UnixNanos::new(2))
         .await
         .unwrap();
     let goal = f.goal().await;
@@ -792,7 +793,7 @@ async fn root_windows_reauthorize_rows_and_anchors_after_membership_loss() {
         f.tasks.workspaces.clone(),
     )
     .remove_workspace_member(
-        &ChangeContext::new(owner, 40, coral_test_support::trace('1')),
+        &ChangeContext::new(owner, UnixNanos::new(40), coral_test_support::trace('1')),
         &f.workspace,
         f.actor.authenticated_user().unwrap().user_id(),
     )
@@ -1011,7 +1012,11 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
         .tasks
         .workspaces
         .create_agent(
-            &ChangeContext::new(owner.clone(), 1, coral_test_support::trace('1')),
+            &ChangeContext::new(
+                owner.clone(),
+                UnixNanos::new(1),
+                coral_test_support::trace('1'),
+            ),
             &f.workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -1021,7 +1026,7 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
     let agent = f
         .tasks
         .workspaces
-        .authenticate_agent(&f.workspace, issued.credential.expose(), 2)
+        .authenticate_agent(&f.workspace, issued.credential.expose(), UnixNanos::new(2))
         .await
         .unwrap();
     let goal = f
@@ -1183,7 +1188,11 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
     f.tasks
         .workspaces
         .set_membership(
-            &ChangeContext::new(second.clone(), 10, coral_test_support::trace('1')),
+            &ChangeContext::new(
+                second.clone(),
+                UnixNanos::new(10),
+                coral_test_support::trace('1'),
+            ),
             &f.workspace,
             &owner,
             WorkspaceRole::Member,
@@ -1218,7 +1227,7 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
         f.tasks.workspaces.clone(),
     )
     .delete_agent(
-        &ChangeContext::new(second, 20, coral_test_support::trace('1')),
+        &ChangeContext::new(second, UnixNanos::new(20), coral_test_support::trace('1')),
         &f.workspace,
         agent.principal().id(),
     )

@@ -180,7 +180,7 @@ impl SharedFacts {
                 transaction,
                 scope.actor,
                 scope.workspace_id,
-                now_unix_nanos,
+                coral_db::UnixNanos::new(now_unix_nanos),
                 lock,
             )
             .await
@@ -254,7 +254,10 @@ impl SharedFacts {
             Ok(authority) => authority,
             Err(failure) => return Err(Refusal::Deny(*failure)),
         };
-        if authority.require_current_at(now_unix_nanos).is_err() {
+        if authority
+            .require_current_at(coral_db::UnixNanos::new(now_unix_nanos))
+            .is_err()
+        {
             return Err(Refusal::Deny(CoralFailure::AuthorityLost));
         }
         let policy = match self.tools.get(&verdict_key(&target.admitted.target)) {
@@ -277,7 +280,8 @@ impl SharedFacts {
             policy,
             account,
             until_unix_nanos: authority
-                .expires_at_unix_nanos()
+                .expires_at()
+                .map(coral_db::UnixNanos::get)
                 .map_or(run.deadline_at_unix_nanos, |expiry| {
                     expiry.min(run.deadline_at_unix_nanos)
                 }),

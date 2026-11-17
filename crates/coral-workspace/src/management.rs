@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use crate::list_repository::{Resources, Users};
 use crate::management_repository::{self as repository, listed_metadata, metadata};
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 
 use crate::{
     AuthenticatedUser, ChangeContext, Error, LifecycleTargetKind, WorkspaceAction,
@@ -17,9 +17,9 @@ pub struct ResourceMetadata {
     /// Opaque current version, bound to one resource.
     pub etag: String,
     /// Initial creation timestamp.
-    pub created_at: i64,
+    pub created_at: UnixNanos,
     /// Latest accepted configuration timestamp.
-    pub updated_at: i64,
+    pub updated_at: UnixNanos,
 }
 
 pub(super) fn require_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
@@ -73,7 +73,7 @@ pub enum AgentAccessBlocker {
 impl AgentInspection {
     /// All current blockers; fixing one never implies the others are cleared.
     #[must_use]
-    pub fn access_blockers(&self, now_unix_nanos: i64) -> Vec<AgentAccessBlocker> {
+    pub fn access_blockers(&self, now: UnixNanos) -> Vec<AgentAccessBlocker> {
         let mut blockers = Vec::new();
         if self.workspace_state == crate::WorkspaceState::Archived {
             blockers.push(AgentAccessBlocker::WorkspaceArchived);
@@ -86,8 +86,8 @@ impl AgentInspection {
         }
         if self
             .registration
-            .expires_at_unix_nanos()
-            .is_some_and(|expires| expires <= now_unix_nanos)
+            .expires_at()
+            .is_some_and(|expires| expires <= now)
         {
             blockers.push(AgentAccessBlocker::Expired);
         }
@@ -108,7 +108,7 @@ pub(super) async fn record_change(
         kind,
         id,
         &uuid::Uuid::new_v4().to_string(),
-        context.occurred_at_unix_nanos(),
+        context.occurred_at(),
     )
     .await
 }

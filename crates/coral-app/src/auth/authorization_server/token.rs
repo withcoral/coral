@@ -888,7 +888,7 @@ pub(super) mod tests {
         organization
             .provision_login(&coral_workspace::ChangeContext::new(
                 user.clone(),
-                1,
+                UnixNanos::new(1),
                 coral_workspace::TraceId::current_or_new(),
             ))
             .await

@@ -1,4 +1,4 @@
-use coral_db::{QueryExecutor, Transaction};
+use coral_db::{QueryExecutor, Transaction, UnixNanos};
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 use sqlx::FromRow;
 
@@ -75,7 +75,7 @@ struct RegistrationRow {
     workspace_id: String,
     agent_id: String,
     enabled: i64,
-    expires_at_unix_nanos: Option<i64>,
+    expires_at_unix_nanos: Option<UnixNanos>,
 }
 
 impl RegistrationRow {
@@ -89,7 +89,7 @@ impl RegistrationRow {
                 1 => true,
                 _ => return Err(Error::CorruptData("invalid Registration state".to_string())),
             },
-            expires_at_unix_nanos: self.expires_at_unix_nanos,
+            expires_at: self.expires_at_unix_nanos,
         })
     }
 }
@@ -138,7 +138,7 @@ pub(super) async fn insert(
                     Expr::val(registration.workspace_id().to_string()),
                     Expr::val(registration.agent_id().as_str()),
                     Expr::val(i64::from(registration.is_enabled())),
-                    Expr::val(registration.expires_at_unix_nanos()),
+                    Expr::val(registration.expires_at()),
                     Expr::val(verifier),
                 ])
                 .to_owned(),
@@ -369,7 +369,7 @@ pub(super) async fn update_registration(
                 )
                 .value(
                     AgentRegistrations::ExpiresAtUnixNanos,
-                    registration.expires_at_unix_nanos(),
+                    registration.expires_at(),
                 )
                 .and_where(
                     Expr::col(AgentRegistrations::WorkspaceId)

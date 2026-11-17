@@ -651,7 +651,7 @@ impl UserTokens {
                     tx,
                     &AuthenticatedPrincipal::user(user),
                     workspace,
-                    now_unix_nanos,
+                    coral_db::UnixNanos::new(now_unix_nanos),
                 )
                 .await
                 .map_err(|error| refusal(&error))?;

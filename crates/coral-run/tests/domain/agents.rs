@@ -177,7 +177,13 @@ impl AgentLoss {
             Self::ExpirationSet => {
                 fixture
                     .workspaces
-                    .update_agent_registration(&context, workspace_id, registration, true, Some(0))
+                    .update_agent_registration(
+                        &context,
+                        workspace_id,
+                        registration,
+                        true,
+                        Some(coral_db::UnixNanos::new(0)),
+                    )
                     .await
                     .unwrap();
             }
@@ -276,13 +282,17 @@ async fn agent_scope(
             &change(owner.authenticated_user().unwrap().clone(), 10, '1'),
             workspace_id,
             AgentDisplayName::parse("Worker").unwrap(),
-            Some(1_000_000),
+            Some(coral_db::UnixNanos::new(1_000_000)),
         )
         .await
         .unwrap();
     let actor = fixture
         .workspaces
-        .authenticate_agent(workspace_id, issued.credential.expose(), 11)
+        .authenticate_agent(
+            workspace_id,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(11),
+        )
         .await
         .unwrap();
     (actor, issued.registration.id().clone())
@@ -633,7 +643,11 @@ async fn rotation_during_a_pending_invocation_changes_neither_authority_nor_hist
     );
     let new_authentication = fixture
         .workspaces
-        .authenticate_agent(&tool.workspace_id, rotated.credential.expose(), 31)
+        .authenticate_agent(
+            &tool.workspace_id,
+            rotated.credential.expose(),
+            coral_db::UnixNanos::new(31),
+        )
         .await
         .unwrap();
     assert_eq!(agent, new_authentication);

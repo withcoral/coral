@@ -880,7 +880,7 @@ impl AccountModule {
             Err(error) => return Err(error.into()),
         };
         let trace = job.trace_id;
-        let context = ChangeContext::new(actor, now_unix_nanos, trace);
+        let context = ChangeContext::new(actor, UnixNanos::new(now_unix_nanos), trace);
         let mut tx = self.providers.database.begin().await?;
         if let device_repository::Target::Setup(id) = &job.target {
             if let Some(row) = setup_repository::load(&mut tx, &owner, id).await?

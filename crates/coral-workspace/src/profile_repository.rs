@@ -2,7 +2,7 @@
 use super::profile::VerifiedUserProfile;
 use crate::list_repository::Users;
 use crate::{Error, UserId};
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use sea_query::{Alias, Expr, ExprTrait as _, Iden, OnConflict, Query};
 use std::collections::HashMap;
 
@@ -29,7 +29,7 @@ pub(super) async fn upsert(
     user: &UserId,
     profile: &VerifiedUserProfile<'_>,
     email_key: Option<String>,
-    observed_at: i64,
+    observed_at: UnixNanos,
 ) -> Result<(), Error> {
     tx.execute(
         Query::insert()

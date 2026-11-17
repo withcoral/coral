@@ -1987,7 +1987,11 @@ async fn settled_approvals_follow_who_invoked_the_run() {
         .unwrap();
     let agent = f
         .workspaces
-        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 2)
+        .authenticate_agent(
+            f.workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(2),
+        )
         .await
         .unwrap();
     let member = AuthenticatedPrincipal::user(f.member.clone());

@@ -1,5 +1,6 @@
 use std::fmt;
 
+use coral_db::UnixNanos;
 use coral_telemetry::TraceId;
 use uuid::Uuid;
 
@@ -486,23 +487,19 @@ pub struct ChangeContext {
     expected_etag: Option<String>,
     request_id: Option<String>,
     actor: AuthenticatedUser,
-    occurred_at_unix_nanos: i64,
+    occurred_at: UnixNanos,
     trace_id: TraceId,
 }
 
 impl ChangeContext {
     /// Builds explicit change context supplied by an Adapter.
     #[must_use]
-    pub const fn new(
-        actor: AuthenticatedUser,
-        occurred_at_unix_nanos: i64,
-        trace_id: TraceId,
-    ) -> Self {
+    pub const fn new(actor: AuthenticatedUser, occurred_at: UnixNanos, trace_id: TraceId) -> Self {
         Self {
             expected_etag: None,
             request_id: None,
             actor,
-            occurred_at_unix_nanos,
+            occurred_at,
             trace_id,
         }
     }
@@ -545,8 +542,17 @@ impl ChangeContext {
 
     /// Returns the Adapter-supplied accepted-change timestamp.
     #[must_use]
+    pub const fn occurred_at(&self) -> UnixNanos {
+        self.occurred_at
+    }
+
+    /// Returns [`Self::occurred_at`] as its count of nanoseconds, for the
+    /// crates that still carry an instant as an `i64`. A crate drops its
+    /// calls when it moves to [`UnixNanos`], and the accessor goes with the
+    /// last of them.
+    #[must_use]
     pub const fn occurred_at_unix_nanos(&self) -> i64 {
-        self.occurred_at_unix_nanos
+        self.occurred_at.get()
     }
 
     /// Returns the safe trace correlation identifier.
@@ -711,7 +717,7 @@ pub struct AdministrativeLifecycleEvent {
     target_id: String,
     outcome: LifecycleOutcome,
     changed_field_paths: Vec<String>,
-    occurred_at_unix_nanos: i64,
+    occurred_at: UnixNanos,
     trace_id: TraceId,
 }
 
@@ -729,7 +735,7 @@ impl AdministrativeLifecycleEvent {
         target_id: String,
         outcome: LifecycleOutcome,
         changed_field_paths: Vec<String>,
-        occurred_at_unix_nanos: i64,
+        occurred_at: UnixNanos,
         trace_id: TraceId,
     ) -> Self {
         Self {
@@ -741,7 +747,7 @@ impl AdministrativeLifecycleEvent {
             target_id,
             outcome,
             changed_field_paths,
-            occurred_at_unix_nanos,
+            occurred_at,
             trace_id,
         }
     }
@@ -796,8 +802,8 @@ impl AdministrativeLifecycleEvent {
 
     /// Returns the accepted-change timestamp.
     #[must_use]
-    pub const fn occurred_at_unix_nanos(&self) -> i64 {
-        self.occurred_at_unix_nanos
+    pub const fn occurred_at(&self) -> UnixNanos {
+        self.occurred_at
     }
 
     /// Returns the safe trace identifier.

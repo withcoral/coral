@@ -258,7 +258,7 @@ impl Tracer {
         coral_workspace::OrganizationModule::new(db.clone())
             .provision_login(&ChangeContext::new(
                 local_user.clone(),
-                1,
+                coral_db::UnixNanos::new(1),
                 TraceId::current_or_new(),
             ))
             .await
@@ -678,7 +678,7 @@ async fn the_servers_clock_dates_a_request() {
             &change(tracer.local_user.clone(), 70, 'c'),
             &tracer.workspace_a,
             coral_workspace::AgentDisplayName::parse("Expiring Agent").expect("Agent name"),
-            Some(start.checked_add(lifetime).expect("expiry").get()),
+            Some(start.checked_add(lifetime).expect("expiry")),
         )
         .await
         .expect("register the expiring Agent");
@@ -3719,7 +3719,7 @@ fn change(
 ) -> ChangeContext {
     ChangeContext::new(
         actor,
-        occurred_at_unix_nanos,
+        coral_db::UnixNanos::new(occurred_at_unix_nanos),
         TraceId::parse(&trace_digit.to_string().repeat(32)).expect("trace id"),
     )
 }

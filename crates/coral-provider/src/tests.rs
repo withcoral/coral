@@ -436,7 +436,7 @@ pub(crate) fn change_context(
 ) -> ChangeContext {
     ChangeContext::new(
         actor,
-        occurred_at_unix_nanos,
+        coral_db::UnixNanos::new(occurred_at_unix_nanos),
         TraceId::parse(&trace_digit.to_string().repeat(32)).expect("trace id"),
     )
 }

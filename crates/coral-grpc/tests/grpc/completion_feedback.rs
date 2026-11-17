@@ -2,6 +2,10 @@ use super::{Fixture, change, management as wire, request};
 use coral_workspace::AuthenticatedPrincipal;
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Task for each kind of caller is inspected, ended and inspected again over the wire"
+)]
 async fn completion_feedback_is_exact_task_detail_with_no_owner_exception_for_users() {
     let f = Fixture::new().await;
     let issued = f
@@ -16,7 +20,11 @@ async fn completion_feedback_is_exact_task_detail_with_no_owner_exception_for_us
         .unwrap();
     let agent = f
         .workspaces
-        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 1)
+        .authenticate_agent(
+            f.workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(1),
+        )
         .await
         .unwrap();
     let mut client = f.activity();

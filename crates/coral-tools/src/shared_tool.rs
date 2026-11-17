@@ -1441,7 +1441,7 @@ impl SharedToolModule {
                 transaction,
                 actor,
                 workspace_id,
-                now_unix_nanos(),
+                coral_db::UnixNanos::new(now_unix_nanos()),
             )
             .await
             .map(drop)
