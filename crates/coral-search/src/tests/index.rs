@@ -188,7 +188,7 @@ async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() 
         let _stopped = background.await;
 
         // Repeated failures retain the original outage clock.
-        let five_seconds_ago = crate::now_unix_nanos() - 5_000_000_000;
+        let five_seconds_ago = crate::now().get() - 5_000_000_000;
         world.set_outage_start(five_seconds_ago).await;
         world.make_retries_due().await;
         world.reconcile_and_settle().await;
@@ -733,7 +733,7 @@ async fn a_generation_replaced_after_a_pass_read_it_is_no_longer_stale() {
         let database = &world.modules.search.database;
         let mut transaction = database.begin_read_snapshot().await.unwrap();
         ToolIndexer
-            .still_needs_indexing(&mut transaction, generation, crate::now_unix_nanos())
+            .still_needs_indexing(&mut transaction, generation, crate::now())
             .await
             .unwrap()
     }

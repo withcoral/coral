@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::hash::Hash;
 
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_embed::{MANIFEST, Merge};
 use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
@@ -120,13 +120,13 @@ impl Semantic {
 /// Entity's key and the source stamp the vector was made from.
 pub(crate) struct NearestVector {
     pub(crate) doc_id: String,
-    pub(crate) source_indexed_at_unix_nanos: i64,
+    pub(crate) source_indexed_at: UnixNanos,
 }
 
 /// One Search Entity's row as it stands now: its source stamp, and the
 /// retriever's entry for it.
 pub(crate) struct CurrentRow<T> {
-    pub(crate) indexed_at_unix_nanos: i64,
+    pub(crate) indexed_at: UnixNanos,
     pub(crate) entry: T,
 }
 
@@ -141,9 +141,7 @@ pub(crate) fn keep_current<T>(
     nearest
         .into_iter()
         .filter_map(|vector| match rows.remove(&vector.doc_id) {
-            Some(row) if row.indexed_at_unix_nanos == vector.source_indexed_at_unix_nanos => {
-                Some(row.entry)
-            }
+            Some(row) if row.indexed_at == vector.source_indexed_at => Some(row.entry),
             Some(_) | None => None,
         })
         .collect()

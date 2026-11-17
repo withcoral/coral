@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use coral_catalog::{CatalogDiagnostic, ProviderGenerationId, ToolKey};
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_provider::{ActiveGeneration, GenerationEntries, ProviderId, ToolEntry};
 use coral_workspace::WorkspaceId;
 
@@ -77,7 +77,7 @@ impl EntityIndexer for ToolIndexer {
         let generation_id = entries.generation_id();
         let visibility =
             repository::generation_visibility(transaction, workspace_id, generation_id).await?;
-        let attempted_at = crate::now_unix_nanos();
+        let attempted_at = crate::now();
         repository::upsert_tool_rows(transaction, rows, attempted_at).await?;
         // A Generation keeps its Tools, but the reconcile task prepares
         // entries under the current rules, which may leave one out; a rewrite
@@ -95,13 +95,13 @@ impl EntityIndexer for ToolIndexer {
         Ok(match visibility {
             None => super::IndexEffect::FirstVisible {
                 target: target(),
-                published_at_unix_nanos: entries.published_at_unix_nanos(),
+                published_at: UnixNanos::new(entries.published_at_unix_nanos()),
                 path: coral_telemetry::metric::VisibilityPath::Initial,
             },
             Some(repository::RecordedVisibility::NeverVisible) => {
                 super::IndexEffect::FirstVisible {
                     target: target(),
-                    published_at_unix_nanos: entries.published_at_unix_nanos(),
+                    published_at: UnixNanos::new(entries.published_at_unix_nanos()),
                     path: coral_telemetry::metric::VisibilityPath::Retried,
                 }
             }
@@ -109,7 +109,7 @@ impl EntityIndexer for ToolIndexer {
                 unavailable_since: Some(since),
             }) => super::IndexEffect::Recovered {
                 target: target(),
-                unavailable_since_unix_nanos: since,
+                unavailable_since: since,
             },
             Some(
                 repository::RecordedVisibility::Visible {
@@ -155,7 +155,7 @@ impl EntityIndexer for ToolIndexer {
     /// Returns each active Generation with no state row, one whose state row
     /// an older indexer revision wrote, a `complete` one under another
     /// Provider display name, or a `failed` one whose retry rule is due at
-    /// `now_unix_nanos`.
+    /// `now`.
     ///
     /// A state row of a newer revision is left as it is: during a rolling
     /// update, two releases would otherwise index each other's Generations
@@ -164,7 +164,7 @@ impl EntityIndexer for ToolIndexer {
         &self,
         transaction: &mut Transaction<'_>,
         expected: &'e [ActiveGeneration],
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<Vec<&'e ActiveGeneration>, IndexError> {
         let states = repository::recorded_generations(transaction)
             .await?
@@ -174,11 +174,7 @@ impl EntityIndexer for ToolIndexer {
         Ok(expected
             .iter()
             .filter(|generation| {
-                needs_indexing(
-                    states.get(generation.generation_id()),
-                    generation,
-                    now_unix_nanos,
-                )
+                needs_indexing(states.get(generation.generation_id()), generation, now)
             })
             .collect())
     }
@@ -189,7 +185,7 @@ impl EntityIndexer for ToolIndexer {
 fn needs_indexing(
     state: Option<&repository::RecordedGeneration>,
     generation: &ActiveGeneration,
-    now_unix_nanos: i64,
+    now: UnixNanos,
 ) -> bool {
     let Some(state) = state else {
         return true;
@@ -202,7 +198,7 @@ fn needs_indexing(
         // A rename keeps the Generation, so the name is compared on
         // its own.
         RecordedOutcome::Complete { .. } => !current_projection(state, generation),
-        RecordedOutcome::Failed { retry } => retry.is_due(now_unix_nanos),
+        RecordedOutcome::Failed { retry } => retry.is_due(now),
     }
 }
 
@@ -218,7 +214,7 @@ pub(super) fn current_projection(
 
 impl ToolIndexer {
     /// Whether a pass that read `generation` as stale must still index it at
-    /// `now_unix_nanos`: a notified write may have indexed it since, and a
+    /// `now`: a notified write may have indexed it since, and a
     /// publication may have replaced it. A replaced Generation answers
     /// `false`: its replacement's notification indexes the new one, or a
     /// later pass does. The rule of [`Self::reconcile`], for one Generation
@@ -228,7 +224,7 @@ impl ToolIndexer {
         &self,
         transaction: &mut Transaction<'_>,
         generation: &ActiveGeneration,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<bool, IndexError> {
         let active = coral_provider::workspace_active_generations_in_transaction(
             transaction,
@@ -248,7 +244,7 @@ impl ToolIndexer {
             active.generation_id(),
         )
         .await?;
-        Ok(needs_indexing(state.as_ref(), active, now_unix_nanos))
+        Ok(needs_indexing(state.as_ref(), active, now))
     }
 
     /// Whether the index holds `generation` as `complete`, as this indexer
@@ -386,7 +382,7 @@ pub(crate) async fn record_failed_attempt(
         generation.generation_id,
     )
     .await?;
-    let attempted_at = crate::now_unix_nanos();
+    let attempted_at = crate::now();
     let state = AttemptState::Failed {
         error: error.to_string(),
         failure: error.failure(),
@@ -402,7 +398,7 @@ pub(crate) async fn record_failed_attempt(
 
 fn generation_state(
     generation: AttemptedGeneration<'_>,
-    attempted_at_unix_nanos: i64,
+    attempted_at: UnixNanos,
     state: AttemptState,
 ) -> GenerationState<'_> {
     GenerationState {
@@ -410,7 +406,7 @@ fn generation_state(
         provider_id: generation.provider_id,
         generation_id: generation.generation_id,
         display_name: generation.display_name,
-        attempted_at_unix_nanos,
+        attempted_at,
         state,
     }
 }
