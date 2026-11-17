@@ -100,6 +100,20 @@ impl SharedToolFixture {
 
     /// Saves `source` as `author`'s Private Tool at `path`.
     async fn save_private(&self, author: &AuthenticatedPrincipal, path: &str, source: &str) {
+        self.save_private_in(author, &self.workspace, path, source, None)
+            .await;
+    }
+
+    /// Saves `source` as `author`'s Private Tool at `path` in `workspace`,
+    /// declaring `default` as its default Tool Access State, if any.
+    async fn save_private_in(
+        &self,
+        author: &AuthenticatedPrincipal,
+        workspace: &WorkspaceId,
+        path: &str,
+        source: &str,
+        default: Option<ToolAccessState>,
+    ) -> crate::PrivateTool {
         self.private_tools
             .save(
                 &PrivateToolChangeContext::new(
@@ -107,15 +121,16 @@ impl SharedToolFixture {
                     20,
                     coral_workspace::TraceId::parse(&"b".repeat(32)).expect("trace id"),
                 ),
-                &self.workspace,
+                workspace,
                 PrivateToolSave::new(
                     PrivateToolPath::parse(path).expect("Private Tool Path"),
                     AuthoredToolDescription::parse("A private draft").expect("description"),
                     AuthoredToolSource::parse(source).expect("source"),
-                ),
+                )
+                .declaring_default(default),
             )
             .await
-            .expect("save the Private Tool");
+            .unwrap_or_else(|error| panic!("save the Private Tool {path}: {error}"))
     }
 
     /// Publishes `source` at `coral.shared.<path>` as `actor`, from the
@@ -1916,23 +1931,8 @@ async fn each_narrow_read_agrees_with_the_whole_definition() {
         (&owner, &elsewhere, "draft", takes_a_name, None),
     ] {
         fixture
-            .private_tools
-            .save(
-                &PrivateToolChangeContext::new(
-                    author.clone(),
-                    20,
-                    coral_workspace::TraceId::parse(&"b".repeat(32)).expect("trace id"),
-                ),
-                workspace,
-                PrivateToolSave::new(
-                    PrivateToolPath::parse(path).expect("Private Tool Path"),
-                    AuthoredToolDescription::parse("A private draft").expect("description"),
-                    AuthoredToolSource::parse(source).expect("source"),
-                )
-                .declaring_default(default),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("save {path}: {error}"));
+            .save_private_in(author, workspace, path, source, default)
+            .await;
     }
     // `mail.remind` is at revision 2, and `ops.page` is removed.
     let mut shared_ids = Vec::new();
@@ -2168,12 +2168,9 @@ async fn work_that_only_names_a_tool_decodes_no_definition() {
         (&member, "draft"),
         (&fixture.agent, "agent.work"),
     ] {
-        fixture.save_private(author, path, DRAFT).await;
         let saved = fixture
-            .private_tools
-            .get(author, &fixture.workspace, &private_path(path))
-            .await
-            .expect("read the saved Private Tool");
+            .save_private_in(author, &fixture.workspace, path, DRAFT, None)
+            .await;
         ids.insert(
             (author.principal().id().as_str().to_owned(), path),
             saved.id().clone(),
@@ -2194,14 +2191,18 @@ async fn work_that_only_names_a_tool_decodes_no_definition() {
         .await
         .expect("list the history");
 
-    // Every stored definition now fails its decoder, and its path, identity,
-    // revision and declaration are as they were.
+    // Every stored definition now fails its decoder: its diagnostics are not
+    // JSON, and its source is one byte over the authoring bound. Its path,
+    // identity, revision and declaration are as they were.
+    let oversized = "s".repeat(crate::AUTHORED_TOOL_SOURCE_MAX_BYTES + 1);
     for table in ["private_tool_records", "shared_tool_revisions"] {
         let changed = fixture
             .test_database
-            .execute_fixture_sql(&format!("UPDATE {table} SET diagnostics_json = 'not json'"))
+            .execute_fixture_sql(&format!(
+                "UPDATE {table} SET diagnostics_json = 'not json', source = '{oversized}'"
+            ))
             .await
-            .expect("store unreadable diagnostics");
+            .expect("store an unreadable definition");
         assert!(changed > 0, "{table}");
     }
     let whole = fixture
@@ -2300,19 +2301,45 @@ async fn work_that_only_names_a_tool_decodes_no_definition() {
         &SharedToolRevisionOrigin::PrivateTool(id_of(&owner, "draft").clone())
     );
 
-    // A policy target names the Tool by its Tool Key.
-    let mut transaction = fixture.database.begin_read_snapshot().await.expect("begin");
-    let key = authored_tool_key_in_transaction(
-        &mut transaction,
-        &fixture.workspace,
-        owner.principal(),
-        &AuthoredToolPath::Private(private_path("mail.digest")),
-    )
-    .await
-    .expect("read the Tool Key");
-    transaction.rollback().await.expect("finish");
+    // A policy target names a Tool of either kind by its Tool Key, where a
+    // linked selection of the Tool reads its source.
     let digest = id_of(&owner, "mail.digest");
-    assert_eq!(key, Some(digest.tool_key()));
+    let mut transaction = fixture.database.begin_read_snapshot().await.expect("begin");
+    for (path, key) in [
+        (
+            AuthoredToolPath::Private(private_path("mail.digest")),
+            digest.tool_key(),
+        ),
+        (
+            AuthoredToolPath::Shared(shared_path("mail.remind")),
+            reminder.id().tool_key(),
+        ),
+    ] {
+        let selection = select_linked_tool_in_transaction(
+            &mut transaction,
+            &fixture.workspace,
+            owner.principal(),
+            &path,
+        )
+        .await;
+        assert!(
+            matches!(selection, Err(Error::CorruptData(_))),
+            "{path:?}: {selection:?}"
+        );
+        assert_eq!(
+            authored_tool_key_in_transaction(
+                &mut transaction,
+                &fixture.workspace,
+                owner.principal(),
+                &path,
+            )
+            .await
+            .expect("read the Tool Key"),
+            Some(key),
+            "{path:?}"
+        );
+    }
+    transaction.rollback().await.expect("finish");
 
     // A removal's Event names the content removed, and the history still
     // lists every revision.
@@ -2403,4 +2430,94 @@ async fn work_that_only_names_a_tool_decodes_no_definition() {
             vec![id_of(&member, "draft").clone()]
         )]
     );
+}
+
+// Catches: a save that goes untyped, or that types the call, because a
+// Shared Tool it names has a record without its current revision; and a
+// policy target that stops naming that Shared Tool.
+#[tokio::test]
+async fn a_live_shared_tool_without_its_current_revision_types_as_no_tool_and_keeps_its_key() {
+    let fixture = SharedToolFixture::new().await;
+    let owner = AuthenticatedPrincipal::user(fixture.owner.clone());
+    fixture.save_private(&owner, "draft", DRAFT).await;
+    let mut ids = Vec::new();
+    for path in ["mail.remind", "ops.page"] {
+        let published = fixture
+            .publish(&fixture.owner, path, DRAFT, 0)
+            .await
+            .unwrap_or_else(|error| panic!("publish {path}: {error}"));
+        ids.push(published.published().expect("the Shared Tool").id().clone());
+    }
+    let [_, page] = ids.as_slice() else {
+        panic!("one identity for each publish");
+    };
+
+    // The record of `ops.page` now names a revision it never had.
+    let changed = fixture
+        .test_database
+        .execute_fixture_sql(
+            "UPDATE shared_tool_records SET current_revision = 7 WHERE path = 'ops.page'",
+        )
+        .await
+        .expect("point the record at a missing revision");
+    assert_eq!(changed, 1);
+    let whole = fixture
+        .shared_tools
+        .get(&owner, &fixture.workspace, &shared_path("ops.page"))
+        .await;
+    assert!(matches!(whole, Err(Error::CorruptData(_))), "{whole:?}");
+
+    // A source that calls `mail.remind` with an argument it does not take,
+    // and then the Shared Tool of each case. The save types the first call
+    // (2554) and finds no Shared Tool to type the second (2339), alike for
+    // the record without its revision and for the path that names nothing.
+    for (case, second) in [
+        ("a record without its current revision", "ops.page"),
+        ("a path that names no Shared Tool", "nothing.here"),
+    ] {
+        let saved = fixture
+            .save_private_in(
+                &owner,
+                &fixture.workspace,
+                "typed",
+                &format!(
+                    "export default async function typed() {{
+                        await coral.shared.mail.remind(1);
+                        return coral.shared.{second}(1);
+                    }}"
+                ),
+                None,
+            )
+            .await;
+        let mut codes = saved
+            .diagnostics()
+            .iter()
+            .map(crate::AuthoredToolDiagnostic::code)
+            .collect::<Vec<_>>();
+        codes.sort_unstable();
+        assert_eq!(codes, [2339, 2554], "{case}: {:?}", saved.diagnostics());
+    }
+
+    // Its record still names it to a policy target, and nothing links it.
+    let path = AuthoredToolPath::Shared(shared_path("ops.page"));
+    let mut transaction = fixture.database.begin_read_snapshot().await.expect("begin");
+    let key = authored_tool_key_in_transaction(
+        &mut transaction,
+        &fixture.workspace,
+        owner.principal(),
+        &path,
+    )
+    .await
+    .expect("read the Tool Key");
+    let selection = select_linked_tool_in_transaction(
+        &mut transaction,
+        &fixture.workspace,
+        owner.principal(),
+        &path,
+    )
+    .await
+    .expect("select");
+    transaction.rollback().await.expect("finish");
+    assert_eq!(key, Some(page.tool_key()));
+    assert!(selection.is_none(), "{selection:?}");
 }

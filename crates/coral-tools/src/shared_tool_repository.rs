@@ -114,55 +114,6 @@ impl RecordRow {
     }
 }
 
-#[derive(Debug, FromRow)]
-struct RevisionRow {
-    shared_tool_id: String,
-    revision: i64,
-    description: String,
-    source: String,
-    declaration: String,
-    declaration_fields_format: String,
-    declaration_fields_status: String,
-    declaration_fields_json: Option<String>,
-    declaration_fields_failure: Option<String>,
-    diagnostics_json: String,
-    diagnostics_truncated: bool,
-    content_hash: String,
-    default_access_state: String,
-    published_by_user_id: String,
-    source_private_tool_id: Option<String>,
-    restored_from_revision: Option<i64>,
-    published_at_unix_nanos: i64,
-}
-
-impl RevisionRow {
-    fn decode(self) -> Result<SharedToolRevision, Error> {
-        let corrupt = |what: &str| Error::CorruptData(format!("Shared Tool revision has {what}"));
-        Ok(SharedToolRevision {
-            shared_tool_id: decode_id(&self.shared_tool_id)?,
-            revision: decode_revision(self.revision)?,
-            description: AuthoredToolDescription::parse(&self.description)
-                .map_err(|_error| corrupt("an invalid description"))?,
-            source: AuthoredToolSource::parse(&self.source)
-                .map_err(|_error| corrupt("an invalid source"))?,
-            declaration: AuthoredToolDeclaration::from_persisted(&self.declaration)?,
-            declaration_field_projection: AuthoredToolDeclarationFieldProjection::from_storage(
-                &self.declaration_fields_format,
-                &self.declaration_fields_status,
-                self.declaration_fields_json.as_deref(),
-                self.declaration_fields_failure.as_deref(),
-            )?,
-            diagnostics: decode_diagnostics(&self.diagnostics_json, self.diagnostics_truncated)?,
-            diagnostics_truncated: self.diagnostics_truncated,
-            content_hash: self.content_hash,
-            default_access_state: access_state_from_storage(&self.default_access_state)?,
-            published_by: decode_user(&self.published_by_user_id)?,
-            origin: decode_origin(self.source_private_tool_id, self.restored_from_revision)?,
-            published_at_unix_nanos: self.published_at_unix_nanos,
-        })
-    }
-}
-
 /// One revision without its source, declaration, declaration fields or
 /// diagnostics.
 #[derive(Debug, FromRow)]
@@ -189,6 +140,51 @@ impl RevisionSummaryRow {
             published_by: decode_user(&self.published_by_user_id)?,
             origin: decode_origin(self.source_private_tool_id, self.restored_from_revision)?,
             published_at_unix_nanos: self.published_at_unix_nanos,
+        })
+    }
+}
+
+/// One whole revision: its summary, which decodes as every summary does,
+/// and its definition.
+#[derive(Debug, FromRow)]
+struct RevisionRow {
+    shared_tool_id: String,
+    #[sqlx(flatten)]
+    summary: RevisionSummaryRow,
+    source: String,
+    declaration: String,
+    declaration_fields_format: String,
+    declaration_fields_status: String,
+    declaration_fields_json: Option<String>,
+    declaration_fields_failure: Option<String>,
+    diagnostics_json: String,
+    diagnostics_truncated: bool,
+}
+
+impl RevisionRow {
+    fn decode(self) -> Result<SharedToolRevision, Error> {
+        let summary = self.summary.decode()?;
+        Ok(SharedToolRevision {
+            shared_tool_id: decode_id(&self.shared_tool_id)?,
+            revision: summary.revision,
+            description: summary.description,
+            source: AuthoredToolSource::parse(&self.source).map_err(|_error| {
+                Error::CorruptData("Shared Tool revision has an invalid source".to_string())
+            })?,
+            declaration: AuthoredToolDeclaration::from_persisted(&self.declaration)?,
+            declaration_field_projection: AuthoredToolDeclarationFieldProjection::from_storage(
+                &self.declaration_fields_format,
+                &self.declaration_fields_status,
+                self.declaration_fields_json.as_deref(),
+                self.declaration_fields_failure.as_deref(),
+            )?,
+            diagnostics: decode_diagnostics(&self.diagnostics_json, self.diagnostics_truncated)?,
+            diagnostics_truncated: self.diagnostics_truncated,
+            content_hash: summary.content_hash,
+            default_access_state: summary.default_access_state,
+            published_by: summary.published_by,
+            origin: summary.origin,
+            published_at_unix_nanos: summary.published_at_unix_nanos,
         })
     }
 }
@@ -243,11 +239,22 @@ fn record_columns() -> [SharedToolRecords; 5] {
     ]
 }
 
-fn revision_columns() -> [SharedToolRevisions; 17] {
-    [
+/// The columns of a [`RevisionSummaryRow`].
+const REVISION_SUMMARY_COLUMNS: [SharedToolRevisions; 8] = [
+    SharedToolRevisions::Revision,
+    SharedToolRevisions::Description,
+    SharedToolRevisions::ContentHash,
+    SharedToolRevisions::DefaultAccessState,
+    SharedToolRevisions::PublishedByUserId,
+    SharedToolRevisions::SourcePrivateToolId,
+    SharedToolRevisions::RestoredFromRevision,
+    SharedToolRevisions::PublishedAtUnixNanos,
+];
+
+/// The columns of a [`RevisionRow`]: its summary's and its definition's.
+fn revision_columns() -> impl Iterator<Item = SharedToolRevisions> {
+    REVISION_SUMMARY_COLUMNS.into_iter().chain([
         SharedToolRevisions::SharedToolId,
-        SharedToolRevisions::Revision,
-        SharedToolRevisions::Description,
         SharedToolRevisions::Source,
         SharedToolRevisions::Declaration,
         SharedToolRevisions::DeclarationFieldsFormat,
@@ -256,13 +263,7 @@ fn revision_columns() -> [SharedToolRevisions; 17] {
         SharedToolRevisions::DeclarationFieldsFailure,
         SharedToolRevisions::DiagnosticsJson,
         SharedToolRevisions::DiagnosticsTruncated,
-        SharedToolRevisions::ContentHash,
-        SharedToolRevisions::DefaultAccessState,
-        SharedToolRevisions::PublishedByUserId,
-        SharedToolRevisions::SourcePrivateToolId,
-        SharedToolRevisions::RestoredFromRevision,
-        SharedToolRevisions::PublishedAtUnixNanos,
-    ]
+    ])
 }
 
 /// Joins a record to its current revision, in the record's own Workspace.
@@ -380,16 +381,7 @@ pub(crate) async fn list_revision_summaries(
     id: &SharedToolId,
 ) -> Result<Vec<SharedToolRevisionSummary>, Error> {
     let statement = Query::select()
-        .columns([
-            SharedToolRevisions::Revision,
-            SharedToolRevisions::Description,
-            SharedToolRevisions::ContentHash,
-            SharedToolRevisions::DefaultAccessState,
-            SharedToolRevisions::PublishedByUserId,
-            SharedToolRevisions::SourcePrivateToolId,
-            SharedToolRevisions::RestoredFromRevision,
-            SharedToolRevisions::PublishedAtUnixNanos,
-        ])
+        .columns(REVISION_SUMMARY_COLUMNS)
         .from(SharedToolRevisions::Table)
         .and_where(Expr::col(SharedToolRevisions::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(SharedToolRevisions::SharedToolId).eq(id.to_string()))

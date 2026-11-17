@@ -1068,7 +1068,9 @@ impl SharedToolModule {
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`Self::list_revision_summaries`].
+    /// Returns the errors of [`Self::list_revision_summaries`], and
+    /// [`Error::CorruptData`] when the source, declaration, declaration
+    /// fields or diagnostics of any revision cannot be decoded.
     #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn list_revisions(
         &self,
