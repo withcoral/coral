@@ -466,6 +466,9 @@ struct Loads {
     awaiting_turn: tokio::sync::mpsc::UnboundedReceiver<()>,
     /// One signal for each parse, sent before it starts: where it runs.
     parsing: tokio::sync::mpsc::UnboundedReceiver<ParseThread>,
+    /// One signal for each parse, sent once its load has given up its turn
+    /// and its place.
+    turn_ended: tokio::sync::mpsc::UnboundedReceiver<()>,
     /// Each parse on a thread of its own waits here for one message before
     /// it starts.
     release: std::sync::mpsc::Sender<()>,
@@ -484,6 +487,7 @@ enum ParseThread {
 struct LoadSignals {
     awaiting_turn: tokio::sync::mpsc::UnboundedSender<()>,
     parsing: tokio::sync::mpsc::UnboundedSender<ParseThread>,
+    turn_ended: tokio::sync::mpsc::UnboundedSender<()>,
     release: Mutex<std::sync::mpsc::Receiver<()>>,
 }
 
@@ -504,24 +508,31 @@ impl LoadObserver for LoadSignals {
         let release = self.release.lock().unwrap_or_else(PoisonError::into_inner);
         let _test_gone = release.recv().is_err();
     }
+
+    fn after_turn(&self) {
+        let _test_gone = self.turn_ended.send(()).is_err();
+    }
 }
 
 /// A cache whose loads the test observes and holds.
 fn observed_cache() -> (SchemaGraphCache, Loads) {
     let (awaiting_turn, awaiting_turn_seen) = tokio::sync::mpsc::unbounded_channel();
     let (parsing, parsing_seen) = tokio::sync::mpsc::unbounded_channel();
+    let (turn_ended, turn_ended_seen) = tokio::sync::mpsc::unbounded_channel();
     let (release, released) = std::sync::mpsc::channel();
     let cache = SchemaGraphCache::observed(
         SchemaGraphCache::DEFAULT_BUDGET_BYTES,
         Arc::new(LoadSignals {
             awaiting_turn,
             parsing,
+            turn_ended,
             release: Mutex::new(released),
         }),
     );
     let loads = Loads {
         awaiting_turn: awaiting_turn_seen,
         parsing: parsing_seen,
+        turn_ended: turn_ended_seen,
         release,
     };
     (cache, loads)
@@ -696,6 +707,11 @@ async fn concurrent_first_loads_of_a_generation_take_turns_and_share_the_first_g
             parses += 1;
         }
         assert_eq!(parses, (case.parses)(CALLERS), "{}: parses", case.name);
+        // A load holds its turn on its own thread, and a canceled caller ends
+        // before its load does: only the load's signal says the turn is over.
+        for _parse in 0..parses {
+            loads.turn_ended.recv().await.expect("the load ends");
+        }
         assert_eq!(
             cache.shared.turns().len(),
             0,
