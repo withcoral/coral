@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use coral_db::Transaction;
 use serde_json::Value;
+use tokio::sync::{OwnedMutexGuard, oneshot};
 
+use crate::repository::StoredSchemaGraph;
 use crate::{Error, ProviderGenerationId, SchemaGraph, SchemaId, repository};
 
 #[cfg(test)]
@@ -64,6 +66,45 @@ pub struct SchemaGraphCache {
 struct Shared {
     budget_bytes: usize,
     entries: Mutex<Entries>,
+    /// The turn to load each Generation that a caller loads or waits to load.
+    turns: Mutex<HashMap<ProviderGenerationId, Turn>>,
+    #[cfg(test)]
+    observer: Option<Arc<dyn LoadObserver>>,
+}
+
+/// One Generation's turn to load, and the count of the callers that hold it
+/// or wait for it.
+struct Turn {
+    lock: Arc<tokio::sync::Mutex<()>>,
+    callers: usize,
+}
+
+/// A caller's turn to load one Generation. No other caller loads it until
+/// this is dropped.
+struct LoadTurn {
+    // Dropped in this order: the turn passes on, then the caller leaves.
+    _held: OwnedMutexGuard<()>,
+    _place: Place,
+}
+
+/// A caller's place among those that hold or wait for one Generation's turn.
+/// The cache forgets the turn when the last of them leaves.
+struct Place {
+    shared: Arc<Shared>,
+    generation_id: ProviderGenerationId,
+}
+
+/// Where a test meets the loads of a cache it observes. A hook signals the
+/// test or holds the load for it, and changes no outcome.
+#[cfg(test)]
+trait LoadObserver: Send + Sync {
+    /// A caller found its Generation not cached and is about to wait for its
+    /// turn to load it.
+    fn awaiting_turn(&self);
+
+    /// A load's own thread is about to parse the stored graph. Blocking here
+    /// holds the load, and no Tokio task.
+    fn before_parse(&self);
 }
 
 #[derive(Default)]
@@ -102,6 +143,22 @@ impl SchemaGraphCache {
             shared: Arc::new(Shared {
                 budget_bytes,
                 entries: Mutex::default(),
+                turns: Mutex::default(),
+                #[cfg(test)]
+                observer: None,
+            }),
+        }
+    }
+
+    /// Builds an empty cache whose loads `observer` sees.
+    #[cfg(test)]
+    fn observed(budget_bytes: usize, observer: Arc<dyn LoadObserver>) -> Self {
+        Self {
+            shared: Arc::new(Shared {
+                budget_bytes,
+                entries: Mutex::default(),
+                turns: Mutex::default(),
+                observer: Some(observer),
             }),
         }
     }
@@ -118,8 +175,23 @@ impl SchemaGraphCache {
     /// stored one, read through `transaction`, parsed, checked and then
     /// cached. A cached graph costs no query.
     ///
-    /// Two concurrent loads of a Generation that is not cached may both read
-    /// and parse it. Both then return the graph that reached the cache first.
+    /// One load of a Generation runs at a time. A caller that finds a load
+    /// under way waits for it and then uses the graph it cached, so
+    /// concurrent first calls read and parse the Generation once. A load that
+    /// fails reaches its own caller alone: the next caller in turn loads
+    /// through its own transaction. So does the next caller when the one
+    /// whose turn it was goes away before it has read the row; once the row
+    /// is read, the load finishes and caches its graph without its caller.
+    ///
+    /// A waiting caller keeps `transaction` open for as long as the load it
+    /// waits for takes. Pass a read snapshot, as a Tool call does: it holds a
+    /// connection and no lock, where a write transaction would hold
+    /// `SQLite`'s one writer for that long.
+    ///
+    /// The parse and the check run on a thread of their own, which lives for
+    /// that load: not on the caller's task, whose worker would run no other
+    /// task meanwhile, and not on the runtime's blocking pool, which running
+    /// Programs fill.
     ///
     /// # Errors
     ///
@@ -133,12 +205,69 @@ impl SchemaGraphCache {
         if let Some(graph) = cached {
             return Ok(graph);
         }
-        let loaded = repository::load_schema_graph(transaction, generation_id).await?;
-        Ok(self.keep_loaded(generation_id, loaded))
+        let turn = self.load_turn(generation_id).await;
+        // The load that had the turn before this one cached the graph,
+        // unless it failed.
+        let cached = self.entries().mark_used(generation_id);
+        if let Some(graph) = cached {
+            return Ok(graph);
+        }
+        let stored = repository::load_stored_schema_graph(transaction, generation_id).await?;
+        self.parse_and_keep(generation_id.clone(), stored, turn)
+            .await
+    }
+
+    /// Waits for this caller's turn to load `generation_id`. A caller that
+    /// goes away while it waits gives up its place.
+    async fn load_turn(&self, generation_id: &ProviderGenerationId) -> LoadTurn {
+        let (place, lock) = Place::take(&self.shared, generation_id);
+        #[cfg(test)]
+        if let Some(observer) = &self.shared.observer {
+            observer.awaiting_turn();
+        }
+        LoadTurn {
+            _held: lock.lock_owned().await,
+            _place: place,
+        }
+    }
+
+    /// Parses and checks `stored` on a thread of its own, caches the graph
+    /// and returns the graph to use.
+    ///
+    /// The thread holds `turn` until the graph is cached. So the load ends
+    /// the same way when its caller goes away meanwhile, and the next caller
+    /// in turn finds the graph cached.
+    async fn parse_and_keep(
+        &self,
+        generation_id: ProviderGenerationId,
+        stored: StoredSchemaGraph,
+        turn: LoadTurn,
+    ) -> Result<Arc<SchemaGraph>, Error> {
+        let (answer, answered) = oneshot::channel();
+        let cache = self.clone();
+        on_own_thread(move || {
+            #[cfg(test)]
+            if let Some(observer) = &cache.shared.observer {
+                observer.before_parse();
+            }
+            let loaded = stored
+                .parse()
+                .map(|loaded| cache.keep_loaded(&generation_id, loaded));
+            drop(turn);
+            // The caller may be gone. Its graph is cached all the same.
+            drop(answer.send(loaded));
+        });
+        // The thread drops the answer unsent only when the parse panics,
+        // which the panic hook reports. Nothing is cached then.
+        answered.await.unwrap_or_else(|_unanswered| {
+            Err(Error::CorruptData(
+                "Provider schema graph could not be parsed".to_string(),
+            ))
+        })
     }
 
     /// Caches the graph just loaded for `generation_id` and returns the graph
-    /// to use: `loaded`, or the one that a concurrent load cached first.
+    /// to use: `loaded`, or the one the cache already holds for it.
     fn keep_loaded(
         &self,
         generation_id: &ProviderGenerationId,
@@ -171,6 +300,78 @@ impl SchemaGraphCache {
             .entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl Shared {
+    /// The turns, locked. Hold them for map operations only, as the entries.
+    fn turns(&self) -> MutexGuard<'_, HashMap<ProviderGenerationId, Turn>> {
+        // No map operation leaves the turns half-changed, so a poisoned lock
+        // still guards a coherent map.
+        self.turns.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl Place {
+    /// Takes a place for `generation_id`, and returns it with the lock that
+    /// is the Generation's turn.
+    fn take(
+        shared: &Arc<Shared>,
+        generation_id: &ProviderGenerationId,
+    ) -> (Self, Arc<tokio::sync::Mutex<()>>) {
+        let mut turns = shared.turns();
+        let turn = turns.entry(generation_id.clone()).or_insert_with(|| Turn {
+            lock: Arc::default(),
+            callers: 0,
+        });
+        turn.callers += 1;
+        let place = Self {
+            shared: Arc::clone(shared),
+            generation_id: generation_id.clone(),
+        };
+        (place, Arc::clone(&turn.lock))
+    }
+}
+
+impl Drop for Place {
+    fn drop(&mut self) {
+        let mut turns = self.shared.turns();
+        if let Some(turn) = turns.get_mut(&self.generation_id) {
+            turn.callers -= 1;
+            if turn.callers == 0 {
+                turns.remove(&self.generation_id);
+            }
+        }
+    }
+}
+
+/// Runs `work`, which computes without awaiting, on a thread of its own.
+///
+/// Not on the caller's task: the parse and the check of the largest graph
+/// take 0.3 s, and the worker that ran them would run no other task for that
+/// long. Not on the runtime's blocking pool either. A running Program holds
+/// one of that pool's threads while it waits for its Tool call, so a first
+/// call that needed another would wait, in a full pool, for a thread that
+/// only the Programs waiting beside it can free. The thread lives for one
+/// load, and a Generation has one load at a time.
+///
+/// When the operating system gives no thread, `work` runs where it is.
+fn on_own_thread<Work: FnOnce() + Send + 'static>(work: Work) {
+    let (hand_over, handed) = oneshot::channel::<Work>();
+    let started = std::thread::Builder::new()
+        .name("coral-schemas".to_owned())
+        .spawn(move || {
+            if let Ok(work) = handed.blocking_recv() {
+                work();
+            }
+        });
+    // Detached: the thread ends with its load.
+    let unsent = match started {
+        Ok(_detached) => hand_over.send(work).err(),
+        Err(_no_thread) => Some(work),
+    };
+    if let Some(work) = unsent {
+        work();
     }
 }
 

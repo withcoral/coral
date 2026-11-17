@@ -120,7 +120,15 @@ pub(super) fn validate_id_token(
         advertised_algorithms,
         jwks,
     )?;
-    validate_claims(provider, expected_nonce, &claims)
+    validate_claims(provider, expected_nonce, &claims, unix_now_seconds()?)
+}
+
+/// One reading of the clock for a token's time claims, in Unix seconds.
+fn unix_now_seconds() -> Result<u64, TokenRejection> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since_epoch| since_epoch.as_secs())
+        .map_err(|_error| TokenRejection::Times)
 }
 
 /// Admission-only evidence from the same upstream code exchange. No claim or
@@ -144,7 +152,7 @@ pub(super) fn validate_access_token_admission(
         jwks,
     )?;
     let claims = claims.as_object().ok_or(TokenRejection::Malformed)?;
-    validate_token_times(claims)?;
+    validate_token_times(claims, unix_now_seconds()?)?;
     if claims.get("iss").and_then(Value::as_str) != Some(identity.issuer.as_str()) {
         return Err(TokenRejection::Issuer);
     }
@@ -290,13 +298,16 @@ fn valid_key(key: &Jwk, algorithm: Algorithm) -> bool {
         }
 }
 
+/// Checks the claims of a token whose signature is verified, at `now`, the
+/// caller's one reading of the clock in Unix seconds.
 fn validate_claims(
     provider: &ResolvedOidcProvider,
     expected_nonce: &str,
     claims: &Value,
+    now: u64,
 ) -> Result<ValidatedOidcIdentity, TokenRejection> {
     let claims = claims.as_object().ok_or(TokenRejection::Malformed)?;
-    validate_token_times(claims)?;
+    validate_token_times(claims, now)?;
     if claims.get("iss").and_then(Value::as_str) != Some(provider.issuer.as_str()) {
         return Err(TokenRejection::Issuer);
     }
@@ -375,11 +386,7 @@ fn profile_text(claims: &Map<String, Value>, claim: &str, max_bytes: usize) -> O
 }
 
 /// Every failure here is [`TokenRejection::Times`].
-fn validate_token_times(claims: &Map<String, Value>) -> Result<(), TokenRejection> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_error| TokenRejection::Times)?
-        .as_secs();
+fn validate_token_times(claims: &Map<String, Value>, now: u64) -> Result<(), TokenRejection> {
     let issued_at = claim_numeric_date(claims, "iat")?;
     let expires_at = claim_numeric_date(claims, "exp")?;
     if expires_at <= issued_at
@@ -834,6 +841,7 @@ pub(in crate::auth) mod tests {
     fn validates_mandatory_oidc_claims_and_time_types() {
         let provider = provider("");
         let base = claims();
+        let now = get_current_timestamp();
         let mut invalid = Vec::new();
         for (field, value, expected) in [
             ("iss", json!("wrong"), TokenRejection::Issuer),
@@ -862,21 +870,6 @@ pub(in crate::auth) mod tests {
                 Value::String("x".repeat(MAX_SUBJECT_BYTES + 1)),
                 TokenRejection::Subject,
             ),
-            (
-                "iat",
-                json!(get_current_timestamp() + 61),
-                TokenRejection::Times,
-            ),
-            (
-                "exp",
-                json!(get_current_timestamp() - 61),
-                TokenRejection::Times,
-            ),
-            (
-                "nbf",
-                json!(get_current_timestamp() + 61),
-                TokenRejection::Times,
-            ),
             ("sub", json!("x".repeat(256)), TokenRejection::Subject),
         ] {
             let mut claims = base.clone();
@@ -889,39 +882,110 @@ pub(in crate::auth) mod tests {
         invalid.push(("iat", reversed, TokenRejection::Times));
         for (field, claims, expected) in invalid {
             assert_eq!(
-                validate_claims(&provider, "expected-nonce", &claims).map(|_identity| ()),
+                validate_claims(&provider, "expected-nonce", &claims, now).map(|_identity| ()),
                 Err(expected),
                 "{field} in {claims}"
             );
         }
         assert_eq!(
-            validate_claims(&provider, "expected-nonce", &json!(["not", "an", "object"]))
-                .map(|_identity| ()),
+            validate_claims(
+                &provider,
+                "expected-nonce",
+                &json!(["not", "an", "object"]),
+                now
+            )
+            .map(|_identity| ()),
             Err(TokenRejection::Malformed)
         );
-        let now = Duration::from_secs(get_current_timestamp()).as_secs_f64();
+        let seconds = Duration::from_secs(now).as_secs_f64();
         let mut fractional = base.clone();
-        set_claim(&mut fractional, "iat", json!(now - 0.75));
-        set_claim(&mut fractional, "exp", json!(now + 300.25));
-        set_claim(&mut fractional, "nbf", json!(now - 0.25));
-        validate_claims(&provider, "expected-nonce", &fractional)
+        set_claim(&mut fractional, "iat", json!(seconds - 0.75));
+        set_claim(&mut fractional, "exp", json!(seconds + 300.25));
+        set_claim(&mut fractional, "nbf", json!(seconds - 0.25));
+        validate_claims(&provider, "expected-nonce", &fractional, now)
             .expect("fractional NumericDate claims");
         let mut multiple = base;
         set_claim(&mut multiple, "aud", json!(["provider-client", "other"]));
         set_claim(&mut multiple, "azp", json!("provider-client"));
-        validate_claims(&provider, "expected-nonce", &multiple)
+        validate_claims(&provider, "expected-nonce", &multiple, now)
             .expect("matching authorized party must allow multiple audiences");
+    }
+
+    /// The time claims are checked against the caller's one reading of the
+    /// clock, so a claim one second past the allowed skew is past it however
+    /// long the check takes to start.
+    #[test]
+    fn token_times_allow_the_clock_skew_and_no_more() {
+        const NOW: u64 = 1_800_000_000;
+        const SKEW: u64 = CLOCK_SKEW_SECONDS;
+        let provider = provider("");
+        for (case, issued_at, expires_at, not_before, accepted) in [
+            ("issued at the skew", NOW + SKEW, NOW + 300, None, true),
+            (
+                "issued past the skew",
+                NOW + SKEW + 1,
+                NOW + 300,
+                None,
+                false,
+            ),
+            (
+                "not before the skew",
+                NOW - 1,
+                NOW + 300,
+                Some(NOW + SKEW),
+                true,
+            ),
+            (
+                "not before a time past the skew",
+                NOW - 1,
+                NOW + 300,
+                Some(NOW + SKEW + 1),
+                false,
+            ),
+            // Issued before it expired, so only the skew decides these two.
+            (
+                "expired at the skew",
+                NOW - SKEW - 2,
+                NOW - SKEW,
+                None,
+                true,
+            ),
+            (
+                "expired past the skew",
+                NOW - SKEW - 2,
+                NOW - SKEW - 1,
+                None,
+                false,
+            ),
+        ] {
+            let mut claims = claims();
+            set_claim(&mut claims, "iat", json!(issued_at));
+            set_claim(&mut claims, "exp", json!(expires_at));
+            if let Some(not_before) = not_before {
+                set_claim(&mut claims, "nbf", json!(not_before));
+            }
+            assert_eq!(
+                validate_claims(&provider, "expected-nonce", &claims, NOW).map(|_identity| ()),
+                if accepted {
+                    Ok(())
+                } else {
+                    Err(TokenRejection::Times)
+                },
+                "{case}"
+            );
+        }
     }
 
     /// OIDC subjects remain opaque upstream identifiers, not Coral User IDs.
     #[test]
     fn keeps_verified_issuer_and_raw_subject_independent_of_other_claims() {
         let provider = provider("");
+        let now = get_current_timestamp();
         let mut claims = claims();
         set_claim(&mut claims, "sub", json!("upstream sub/with spaces"));
         set_claim(&mut claims, "uid", json!(LOCAL_PRINCIPAL_ID));
         let identity =
-            validate_claims(&provider, "expected-nonce", &claims).expect("verified identity");
+            validate_claims(&provider, "expected-nonce", &claims, now).expect("verified identity");
         assert_eq!(identity.issuer, "http://localhost/issuer");
         assert_eq!(identity.subject, "upstream sub/with spaces");
     }
@@ -934,21 +998,22 @@ pub(in crate::auth) mod tests {
         set_claim(&mut older, "iat", json!(now - 30));
         let mut newer = older.clone();
         set_claim(&mut newer, "iat", json!(now - 10));
-        let newer = validate_claims(&provider, "expected-nonce", &newer).unwrap();
-        let older = validate_claims(&provider, "expected-nonce", &older).unwrap();
+        let newer = validate_claims(&provider, "expected-nonce", &newer, now).unwrap();
+        let older = validate_claims(&provider, "expected-nonce", &older, now).unwrap();
         assert!(older.profile_observed_at_unix_nanos < newer.profile_observed_at_unix_nanos);
     }
 
     #[test]
     fn profile_claims_are_separate_and_email_verification_is_not_login_admission() {
         let provider = provider("display_name_claim = 'email'");
+        let now = get_current_timestamp();
         for verified in [Value::Null, json!(false), json!(true)] {
             let mut claims = claims();
             set_claim(&mut claims, "name", json!("Ada"));
             set_claim(&mut claims, "email", json!("Ada@Example.test"));
             set_claim(&mut claims, "email_verified", verified.clone());
             set_claim(&mut claims, "hd", json!("example.test"));
-            let identity = validate_claims(&provider, "expected-nonce", &claims)
+            let identity = validate_claims(&provider, "expected-nonce", &claims, now)
                 .expect("verification does not gate eligible login");
             assert_eq!(identity.profile_name.as_deref(), Some("Ada"));
             assert_eq!(identity.email.as_deref(), Some("Ada@Example.test"));
@@ -965,12 +1030,13 @@ pub(in crate::auth) mod tests {
              tenant = 'one'
              groups = ['admin', 'dev']",
         );
+        let now = get_current_timestamp();
         let mut claims = claims();
         set_claim(&mut claims, "name", json!("  Coral User  "));
         set_claim(&mut claims, "tenant", json!(["one", "two"]));
         set_claim(&mut claims, "groups", json!(["dev", "other", "admin"]));
         let identity =
-            validate_claims(&provider, "expected-nonce", &claims).expect("projected identity");
+            validate_claims(&provider, "expected-nonce", &claims, now).expect("projected identity");
         assert_eq!(identity.display_name.as_deref(), Some("Coral User"));
         // Presentation and admission claims cannot select another identity.
         assert_eq!(identity.issuer, "http://localhost/issuer");
@@ -978,7 +1044,7 @@ pub(in crate::auth) mod tests {
         for display in [Value::Null, json!("   ")] {
             set_claim(&mut claims, "name", display);
             assert!(
-                validate_claims(&provider, "expected-nonce", &claims)
+                validate_claims(&provider, "expected-nonce", &claims, now)
                     .expect("optional display")
                     .display_name
                     .is_none()
@@ -986,7 +1052,7 @@ pub(in crate::auth) mod tests {
         }
         set_claim(&mut claims, "name", json!("Renée Coral"));
         assert_eq!(
-            validate_claims(&provider, "expected-nonce", &claims)
+            validate_claims(&provider, "expected-nonce", &claims, now)
                 .expect("internationalized display name")
                 .display_name
                 .as_deref(),
@@ -1006,7 +1072,7 @@ pub(in crate::auth) mod tests {
             let mut rejected = claims.clone();
             set_claim(&mut rejected, field, value);
             assert_eq!(
-                validate_claims(&provider, "expected-nonce", &rejected).map(|_identity| ()),
+                validate_claims(&provider, "expected-nonce", &rejected, now).map(|_identity| ()),
                 Err(expected),
                 "{field}"
             );

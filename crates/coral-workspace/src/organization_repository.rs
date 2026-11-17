@@ -81,6 +81,8 @@ pub(super) async fn removed_revision(
     row.map(|(revision,)| decode_revision(revision)).transpose()
 }
 
+/// Restores a removed Membership with the sign-in's role. The recorded
+/// disablement stays as removal left it, so removal never lifts it.
 pub(super) async fn rejoin_membership(
     tx: &mut Transaction<'_>,
     user_id: &UserId,
@@ -92,7 +94,6 @@ pub(super) async fn rejoin_membership(
             Query::update()
                 .table(OrganizationAuthorityRecords::Table)
                 .value(OrganizationAuthorityRecords::Role, role_str(role))
-                .value(OrganizationAuthorityRecords::Enabled, 1_i64)
                 .value(OrganizationAuthorityRecords::Removed, 0_i64)
                 .value(OrganizationAuthorityRecords::Revision, revision)
                 .and_where(Expr::col(OrganizationAuthorityRecords::UserId).eq(user_id.as_str()))

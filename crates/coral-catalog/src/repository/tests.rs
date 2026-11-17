@@ -775,3 +775,404 @@ fn shared_contract(
     );
     std::sync::Arc::clone(first)
 }
+
+/// An OpenAPI document of `operations` Tools, each with `parameters` query
+/// parameters. Every name is as long as the next, so every Tool's row holds
+/// the same bytes.
+fn sized_document(operations: usize, parameters: usize) -> String {
+    use std::fmt::Write as _;
+    let mut declared = String::new();
+    for index in 0..parameters {
+        writeln!(
+            declared,
+            "        - {{ name: p{index:04}, in: query, schema: {{ type: string }} }}"
+        )
+        .unwrap();
+    }
+    let mut paths = String::new();
+    for index in 0..operations {
+        write!(
+            paths,
+            "  /items/{index:04}:\n    get:\n      operationId: item{index:04}\n      \
+             parameters:\n{declared}      \
+             responses: {{ \"200\": {{ description: ok }} }}\n"
+        )
+        .unwrap();
+    }
+    format!(
+        "openapi: 3.1.0\ninfo: {{ title: Sized, version: \"1\" }}\n\
+         servers: [{{ url: https://api.example.test }}]\npaths:\n{paths}"
+    )
+}
+
+/// Tool counts and sizes on each side of what one insert holds.
+struct InsertCase {
+    name: &'static str,
+    tools: usize,
+    /// Query parameters per Tool: a Tool's row grows with them.
+    parameters: usize,
+}
+
+const INSERT_CASES: [InsertCase; 6] = [
+    InsertCase {
+        name: "one Tool",
+        tools: 1,
+        parameters: 0,
+    },
+    InsertCase {
+        name: "fewer Tools than one insert holds",
+        tools: TOOL_ROWS_PER_INSERT - 1,
+        parameters: 0,
+    },
+    InsertCase {
+        name: "the Tools of one full insert",
+        tools: TOOL_ROWS_PER_INSERT,
+        parameters: 0,
+    },
+    InsertCase {
+        name: "one Tool more than a full insert",
+        tools: TOOL_ROWS_PER_INSERT + 1,
+        parameters: 0,
+    },
+    InsertCase {
+        name: "full inserts and a part of one",
+        tools: 2 * TOOL_ROWS_PER_INSERT + 7,
+        parameters: 0,
+    },
+    InsertCase {
+        name: "more text than one insert holds",
+        tools: 12,
+        parameters: 1_500,
+    },
+];
+
+impl InsertCase {
+    fn prepare(&self) -> (ProviderSetupInput, PreparedProviderCatalog) {
+        let input = ProviderSetupInput::from(
+            OpenApiDocument::parse(&sized_document(self.tools, self.parameters)).unwrap(),
+        );
+        let MaterializationOutcome::Ready(prepared) =
+            crate::materialize(DestinationPolicy::default(), &input, &[])
+        else {
+            panic!("{}: the fixture materializes", self.name);
+        };
+        assert_eq!(prepared.tools().len(), self.tools, "{}", self.name);
+        (input, prepared)
+    }
+
+    /// The rows each insert of this case's Tools holds, in order: an insert
+    /// takes Tools until it has all its rows or its text reaches the limit.
+    fn rows_per_insert(&self, prepared: &PreparedProviderCatalog) -> Vec<usize> {
+        let generation = ProviderGenerationId::generate().to_string();
+        let row_bytes = prepared
+            .tools()
+            .iter()
+            .map(|tool| {
+                tool_values(&generation, tool)
+                    .unwrap()
+                    .iter()
+                    .map(text_bytes_of)
+                    .sum::<usize>()
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(row_bytes.len(), 1, "{}: every row is one size", self.name);
+        let row_bytes = row_bytes.into_iter().next().unwrap();
+        let rows = TOOL_ROWS_PER_INSERT.min(TOOL_TEXT_BYTES_PER_INSERT.div_ceil(row_bytes));
+        (0..self.tools)
+            .step_by(rows)
+            .map(|written| rows.min(self.tools - written))
+            .collect()
+    }
+}
+
+/// Stores the Generation row of `prepared` and none of its Tools.
+async fn a_generation_without_its_tools(
+    transaction: &mut Transaction<'_>,
+    input: &ProviderSetupInput,
+    prepared: &PreparedProviderCatalog,
+) -> ProviderGenerationId {
+    let generation = ProviderGenerationId::generate();
+    let contract = prepared.credential_contract().to_storage().unwrap();
+    let parts = prepared.clone().into_parts();
+    insert_generation(
+        transaction,
+        &generation,
+        GenerationInput::Setup(input),
+        &ProviderSetupInputDigest::of_setup_input(input),
+        &contract,
+        &parts.schema_graph_json,
+        &parts.typescript_view,
+        "tool-per-statement-fixture",
+        1,
+    )
+    .await
+    .unwrap();
+    generation
+}
+
+/// Stores `prepared` as a Generation with one statement per Tool, as Coral
+/// did before it wrote several Tools per statement.
+async fn publish_a_tool_per_statement(
+    transaction: &mut Transaction<'_>,
+    input: &ProviderSetupInput,
+    prepared: &PreparedProviderCatalog,
+) -> ProviderGenerationId {
+    let generation = a_generation_without_its_tools(transaction, input, prepared).await;
+    for tool in prepared.tools() {
+        insert_tools(transaction, &generation, std::slice::from_ref(tool))
+            .await
+            .unwrap();
+    }
+    generation
+}
+
+/// Every column a Generation stores for each Tool, in Tool Key order.
+async fn stored_tool_rows(
+    transaction: &mut Transaction<'_>,
+    generation: &ProviderGenerationId,
+) -> Vec<ToolRow> {
+    transaction
+        .fetch_all(
+            Query::select()
+                .columns(tool_columns())
+                .from(MaterializedTools::Table)
+                .and_where(
+                    Expr::col(MaterializedTools::ProviderGenerationId).eq(generation.to_string()),
+                )
+                .order_by(MaterializedTools::ToolKey, Order::Asc)
+                .to_owned(),
+        )
+        .await
+        .unwrap()
+}
+
+// Catches: an insert of several Tools that drops, repeats or changes a row
+// where one insert ends and the next begins, at its row limit or its text
+// limit, so that a Generation no longer stores what a statement per Tool
+// stored.
+#[tokio::test]
+async fn a_generation_stores_the_same_tool_rows_however_many_an_insert_holds() {
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let database = fixture.database();
+    for case in &INSERT_CASES {
+        let (input, prepared) = case.prepare();
+        let tools = prepared.tools().to_vec();
+        if case.parameters > 0 {
+            assert!(
+                case.rows_per_insert(&prepared).len() > 1,
+                "{}: the fixture is more text than one insert holds",
+                case.name
+            );
+        }
+        let mut transaction = database.begin().await.unwrap();
+        let a_tool_per_statement =
+            publish_a_tool_per_statement(&mut transaction, &input, &prepared).await;
+        let published = publish_generation(
+            &mut transaction,
+            GenerationInput::Setup(&input),
+            &ProviderSetupInputDigest::of_setup_input(&input),
+            prepared,
+            "tool-insert-fixture",
+            1,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let mut transaction = database.begin_read_snapshot().await.unwrap();
+        let rows = stored_tool_rows(&mut transaction, &published).await;
+        assert_eq!(rows.len(), tools.len(), "{}", case.name);
+        assert!(
+            rows == stored_tool_rows(&mut transaction, &a_tool_per_statement).await,
+            "{}: the rows are the ones a statement per Tool stores",
+            case.name
+        );
+        assert!(
+            load_catalog_tools(&mut transaction, &published)
+                .await
+                .unwrap()
+                == tools,
+            "{}: the Generation loads the Tools it was given",
+            case.name
+        );
+        transaction.rollback().await.unwrap();
+    }
+}
+
+// Catches: a publish that sends one statement per Tool, which is a round trip
+// to Postgres for each of a large Provider's Tools inside the publication's
+// transaction; and an insert that takes more rows or more text than its
+// limits. Postgres alone reports its statements: SQLite has no trigger that
+// fires once for a statement.
+#[tokio::test]
+async fn a_publish_writes_its_tools_in_inserts_of_many_rows() {
+    coral_test_support::database_only!(Postgres);
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    fixture
+        .execute_fixture_sql(
+            "CREATE TABLE tool_inserts (\
+                 id BIGSERIAL PRIMARY KEY, \
+                 provider_generation_id TEXT NOT NULL, \
+                 tool_rows BIGINT NOT NULL); \
+             CREATE FUNCTION record_tool_insert() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN \
+                 INSERT INTO tool_inserts (provider_generation_id, tool_rows) \
+                 SELECT provider_generation_id, COUNT(*) FROM inserted \
+                 GROUP BY provider_generation_id; \
+                 RETURN NULL; \
+             END $$; \
+             CREATE TRIGGER record_tool_insert AFTER INSERT ON materialized_tools \
+             REFERENCING NEW TABLE AS inserted \
+             FOR EACH STATEMENT EXECUTE FUNCTION record_tool_insert();",
+        )
+        .await
+        .unwrap();
+    let database = fixture.database();
+    for case in &INSERT_CASES {
+        let (input, prepared) = case.prepare();
+        let expected = case.rows_per_insert(&prepared);
+        let mut transaction = database.begin().await.unwrap();
+        let published = publish_generation(
+            &mut transaction,
+            GenerationInput::Setup(&input),
+            &ProviderSetupInputDigest::of_setup_input(&input),
+            prepared,
+            "tool-insert-fixture",
+            1,
+        )
+        .await
+        .unwrap();
+        let inserts: Vec<(i64,)> = transaction
+            .fetch_all(
+                Query::select()
+                    .column(sea_query::Alias::new("tool_rows"))
+                    .from(sea_query::Alias::new("tool_inserts"))
+                    .and_where(
+                        Expr::col(sea_query::Alias::new("provider_generation_id"))
+                            .eq(published.to_string()),
+                    )
+                    .order_by(sea_query::Alias::new("id"), Order::Asc)
+                    .to_owned(),
+            )
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let inserts = inserts
+            .into_iter()
+            .map(|(rows,)| usize::try_from(rows).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(inserts, expected, "{}", case.name);
+    }
+}
+
+/// A valid Tool-relative path of `bytes` bytes. Its characters are
+/// pseudo-random, because Postgres compresses a repetitive path until it
+/// fits an index entry.
+fn incompressible_path(bytes: usize, seed: u64) -> String {
+    let mut state = seed;
+    let mut path = String::from("p");
+    while path.len() < bytes {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let digit = u32::try_from((state >> 33) % 36).unwrap();
+        path.push(char::from_digit(digit, 36).unwrap());
+    }
+    path
+}
+
+// Catches: an insert of several Tools that reports another failure, or the
+// failure of another Tool, than a statement per Tool did when Postgres
+// rejects a relative path too long for its index entry; and a failed publish
+// that leaves Tool rows behind. SQLite has no such limit.
+#[tokio::test]
+async fn a_relative_path_too_long_for_postgres_fails_the_publish_at_the_first_such_tool() {
+    coral_test_support::database_only!(Postgres);
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let database = fixture.database();
+    let input = ProviderSetupInput::from(OpenApiDocument::parse(&sized_document(12, 0)).unwrap());
+    let MaterializationOutcome::Ready(short) =
+        crate::materialize(DestinationPolicy::default(), &input, &[])
+    else {
+        panic!("the fixture materializes");
+    };
+    // Two Tools of one insert have a path that is too long, each of its own
+    // length, so the size Postgres reports tells which one it rejected.
+    let [_, _, _, first, _, _, _, second, ..] = short.tools() else {
+        panic!("the fixture has at least eight Tools");
+    };
+    let paths = [
+        crate::ToolPathAssignment::new(first.key().clone(), incompressible_path(3_000, 1)),
+        crate::ToolPathAssignment::new(second.key().clone(), incompressible_path(3_400, 2)),
+    ];
+    let MaterializationOutcome::Ready(prepared) =
+        crate::materialize(DestinationPolicy::default(), &input, &paths)
+    else {
+        panic!("the fixture materializes with its long paths");
+    };
+    let (first, second) = (first.key().clone(), second.key().clone());
+
+    let rejection = |error: Error| {
+        let Error::Database(coral_db::Error::Sqlx(sqlx::Error::Database(error))) = error else {
+            panic!("the database rejects the row: {error:?}");
+        };
+        (
+            error.code().map(std::borrow::Cow::into_owned),
+            error.message().to_string(),
+        )
+    };
+    // What a statement for each Tool alone reports.
+    let mut alone = Vec::new();
+    for key in [&first, &second] {
+        let tool = prepared
+            .tools()
+            .iter()
+            .find(|tool| tool.key() == key)
+            .unwrap();
+        let mut transaction = database.begin().await.unwrap();
+        let generation = a_generation_without_its_tools(&mut transaction, &input, &prepared).await;
+        let error = insert_tools(&mut transaction, &generation, std::slice::from_ref(tool))
+            .await
+            .expect_err("Postgres rejects the long path");
+        transaction.rollback().await.unwrap();
+        alone.push(rejection(error));
+    }
+    let [first_alone, second_alone] = alone.as_slice() else {
+        unreachable!("two Tools were inserted alone");
+    };
+    assert_eq!(first_alone.0.as_deref(), Some("54000"), "{first_alone:?}");
+    assert!(
+        first_alone
+            .1
+            .contains("idx_materialized_tools_relative_path"),
+        "{first_alone:?}"
+    );
+    assert_ne!(first_alone, second_alone, "each Tool has its own failure");
+
+    let mut transaction = database.begin().await.unwrap();
+    let error = publish_generation(
+        &mut transaction,
+        GenerationInput::Setup(&input),
+        &ProviderSetupInputDigest::of_setup_input(&input),
+        prepared,
+        "long-path-fixture",
+        1,
+    )
+    .await
+    .expect_err("Postgres rejects the long path");
+    transaction.rollback().await.unwrap();
+    assert_eq!(&rejection(error), first_alone);
+
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    let stored: Vec<(String,)> = transaction
+        .fetch_all(
+            Query::select()
+                .column(MaterializedTools::ToolKey)
+                .from(MaterializedTools::Table)
+                .to_owned(),
+        )
+        .await
+        .unwrap();
+    transaction.rollback().await.unwrap();
+    assert!(stored.is_empty(), "the failed publish stores no Tool");
+}

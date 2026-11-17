@@ -19,7 +19,7 @@ use tokio::sync::watch;
 
 /// A point in one index write. A write reaches them in this order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum WritePoint {
+pub enum WritePoint {
     /// It built its rows and has not asked for the writer.
     BuiltRows,
     /// It waits to begin and to take its Workspace's lock. The writer wait
@@ -39,7 +39,10 @@ struct Progress {
     ended: bool,
 }
 
-pub(crate) struct WriteProbe {
+/// A test's view of each write of one index, and the clock of each write's
+/// two limits. [`crate::SearchIndex::probe_writes`] makes one.
+#[derive(Debug)]
+pub struct WriteProbe {
     /// Each write the probe has seen, in the order they started. An index
     /// writes one entry at a time, under its mutex, so the last one is the
     /// write that runs now.
@@ -68,7 +71,7 @@ impl WriteProbe {
     /// Panics when that write ended and never was at `point`: a write that
     /// fails early skips the points after its failure. Panics when `write`
     /// is zero, which names no write and would wait forever.
-    pub(crate) async fn reached(&self, write: usize, point: WritePoint) {
+    pub async fn reached(&self, write: usize, point: WritePoint) {
         assert!(write >= 1, "writes count from one");
         let was_there = |progress: &Progress| match point {
             WritePoint::Ended => progress.ended,
@@ -96,17 +99,18 @@ impl WriteProbe {
     }
 
     /// Keeps each write at `point` until [`Self::release`].
-    pub(crate) fn hold_at(&self, point: WritePoint) {
+    pub fn hold_at(&self, point: WritePoint) {
         self.held.send_replace(Some(point));
     }
 
-    pub(crate) fn release(&self) {
+    /// Lets each write held at a point go on.
+    pub fn release(&self) {
         self.held.send_replace(None);
     }
 
     /// Moves the clock of the limits forward. A limit that this passes ends
     /// its work, even if the work could finish at the same moment.
-    pub(crate) fn advance(&self, by: Duration) {
+    pub fn advance(&self, by: Duration) {
         self.now.send_modify(|now| *now += by);
     }
 

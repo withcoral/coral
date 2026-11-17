@@ -156,6 +156,20 @@ const SHARED_TYPE_ROWS_PER_INSERT: usize = 256;
 /// Shared type names looked up per select, within every database's bind limit.
 const SHARED_TYPE_NAMES_PER_SELECT: usize = 256;
 
+/// The columns of a Tool row other than its Generation, which
+/// [`tool_columns`] names.
+const TOOL_COLUMNS: usize = 27;
+/// The values one Tool row binds: its Generation and each other column.
+const TOOL_ROW_BINDS: usize = 1 + TOOL_COLUMNS;
+/// Tool rows written per insert, within every database's bind limit: `SQLite`
+/// binds 32,766 values per statement by default and Postgres 65,535.
+const TOOL_ROWS_PER_INSERT: usize = 256;
+const _: () = assert!(TOOL_ROWS_PER_INSERT * TOOL_ROW_BINDS <= 32_766);
+/// An insert takes no further Tool row once the text it binds reaches this
+/// many bytes, so it carries this much and one row at most. A Tool's row
+/// grows with its parameters: one with 1,000 of them is about 340 KB.
+const TOOL_TEXT_BYTES_PER_INSERT: usize = 4 * 1024 * 1024;
+
 #[derive(Debug, FromRow)]
 struct GenerationRow {
     id: String,
@@ -196,7 +210,7 @@ impl GenerationRow {
 }
 
 /// Declared effect hints; NULL is an undeclared hint.
-#[derive(Debug, FromRow)]
+#[derive(Debug, PartialEq, Eq, FromRow)]
 struct HintColumns {
     #[sqlx(rename = "read_only_hint")]
     read_only: Option<bool>,
@@ -475,7 +489,7 @@ impl ToolSummaryRow {
     }
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, PartialEq, Eq, FromRow)]
 struct ToolRow {
     tool_key: String,
     relative_path: String,
@@ -675,9 +689,7 @@ pub(super) async fn publish_generation(
         created_at_unix_nanos,
     )
     .await?;
-    for tool in &parts.tools {
-        insert_tool(transaction, &generation_id, tool).await?;
-    }
+    insert_tools(transaction, &generation_id, &parts.tools).await?;
     insert_shared_types(transaction, &generation_id, &parts.shared_types).await?;
     Ok(generation_id)
 }
@@ -819,91 +831,98 @@ async fn insert_generation(
     Ok(())
 }
 
-async fn insert_tool(
+/// Writes a Generation's Tool rows, many per statement. A statement per Tool
+/// is a round trip to Postgres for each Tool of a large Provider, inside the
+/// publication's transaction.
+///
+/// The rows and their order are the ones a statement per Tool writes, so a
+/// row the database rejects fails the publish at the same Tool.
+async fn insert_tools(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
-    tool: &MaterializedTool,
+    tools: &[MaterializedTool],
 ) -> Result<(), Error> {
-    let (method, path, server_url) = tool.http_index();
-    let statement = Query::insert()
-        .into_table(MaterializedTools::Table)
-        .columns([
-            MaterializedTools::ProviderGenerationId,
-            MaterializedTools::ToolKey,
-            MaterializedTools::RelativePath,
-            MaterializedTools::Protocol,
-            MaterializedTools::Method,
-            MaterializedTools::Path,
-            MaterializedTools::ServerUrl,
-            MaterializedTools::Summary,
-            MaterializedTools::Title,
-            MaterializedTools::Description,
-            MaterializedTools::Deprecated,
-            MaterializedTools::TagsJson,
-            MaterializedTools::Guidance,
-            MaterializedTools::ReadOnlyHint,
-            MaterializedTools::DestructiveHint,
-            MaterializedTools::IdempotentHint,
-            MaterializedTools::OpenWorldHint,
-            MaterializedTools::DefinitionJson,
-            MaterializedTools::InputSchemaJson,
-            MaterializedTools::OutputSchemaJson,
-            MaterializedTools::TypescriptDeclaration,
-            MaterializedTools::Availability,
-            MaterializedTools::DiagnosticCode,
-            MaterializedTools::DiagnosticMessage,
-            MaterializedTools::InputSchemaId,
-            MaterializedTools::DiagnosticsJson,
-            MaterializedTools::TypeReferencesJson,
-            MaterializedTools::EnabledByDefault,
-        ])
-        .values_panic([
-            Expr::val(generation_id.to_string()),
-            Expr::val(tool.key().as_str()),
-            Expr::val(tool.relative_path()),
-            Expr::val(tool.binding_kind()),
-            Expr::val(method),
-            Expr::val(path),
-            Expr::val(server_url),
-            Expr::val(tool.summary()),
-            Expr::val(tool.presentation().title()),
-            Expr::val(tool.presentation().description()),
-            Expr::val(tool.presentation().deprecated()),
-            Expr::val(
-                serde_json::to_string(tool.presentation().tags()).map_err(|_error| {
-                    Error::CorruptData("Tool tags cannot be encoded".to_string())
-                })?,
-            ),
-            Expr::val(tool.presentation().guidance()),
-            Expr::val(tool.hints().read_only()),
-            Expr::val(tool.hints().destructive()),
-            Expr::val(tool.hints().idempotent()),
-            Expr::val(tool.hints().open_world()),
-            Expr::val(tool.binding_json()),
-            Expr::val(tool.input_schema_json()),
-            Expr::val(tool.output_schema_json()),
-            Expr::val(tool.typescript_declaration()),
-            Expr::val(tool.availability().as_storage_str()),
-            Expr::val(
-                tool.diagnostic()
-                    .map(|diagnostic| diagnostic.code().to_string()),
-            ),
-            Expr::val(
-                tool.diagnostic()
-                    .map(|diagnostic| diagnostic.message().to_string()),
-            ),
-            Expr::val(tool.input_schema().as_str()),
-            Expr::val(tool.diagnostics_json()),
-            Expr::val(
-                serde_json::to_string(tool.type_references()).map_err(|_error| {
-                    Error::CorruptData("Tool type references cannot be encoded".to_string())
-                })?,
-            ),
-            Expr::val(tool.policy_facts().declares_enabled_by_default()),
-        ])
-        .to_owned();
-    transaction.execute(statement).await?;
+    let generation_id = generation_id.to_string();
+    let mut tools = tools.iter().peekable();
+    while tools.peek().is_some() {
+        let mut statement = Query::insert()
+            .into_table(MaterializedTools::Table)
+            .columns(std::iter::once(MaterializedTools::ProviderGenerationId).chain(tool_columns()))
+            .to_owned();
+        let mut rows = 0;
+        let mut text_bytes = 0;
+        while rows < TOOL_ROWS_PER_INSERT && text_bytes < TOOL_TEXT_BYTES_PER_INSERT {
+            let Some(tool) = tools.next() else {
+                break;
+            };
+            let values = tool_values(&generation_id, tool)?;
+            text_bytes += values.iter().map(text_bytes_of).sum::<usize>();
+            rows += 1;
+            statement.values_panic(values);
+        }
+        transaction.execute(statement).await?;
+    }
     Ok(())
+}
+
+/// The bytes a bound text value carries; nothing for any other expression.
+fn text_bytes_of(value: &Expr) -> usize {
+    match value {
+        Expr::Value(sea_query::Value::String(Some(text))) => text.len(),
+        _ => 0,
+    }
+}
+
+/// One Tool row: its Generation, then a value for each of [`tool_columns`],
+/// in that order.
+fn tool_values(
+    generation_id: &str,
+    tool: &MaterializedTool,
+) -> Result<[Expr; TOOL_ROW_BINDS], Error> {
+    let (method, path, server_url) = tool.http_index();
+    Ok([
+        Expr::val(generation_id),
+        Expr::val(tool.key().as_str()),
+        Expr::val(tool.relative_path()),
+        Expr::val(tool.binding_kind()),
+        Expr::val(method),
+        Expr::val(path),
+        Expr::val(server_url),
+        Expr::val(tool.summary()),
+        Expr::val(tool.presentation().title()),
+        Expr::val(tool.presentation().description()),
+        Expr::val(tool.presentation().deprecated()),
+        Expr::val(
+            serde_json::to_string(tool.presentation().tags())
+                .map_err(|_error| Error::CorruptData("Tool tags cannot be encoded".to_string()))?,
+        ),
+        Expr::val(tool.presentation().guidance()),
+        Expr::val(tool.hints().read_only()),
+        Expr::val(tool.hints().destructive()),
+        Expr::val(tool.hints().idempotent()),
+        Expr::val(tool.hints().open_world()),
+        Expr::val(tool.binding_json()),
+        Expr::val(tool.input_schema_json()),
+        Expr::val(tool.output_schema_json()),
+        Expr::val(tool.typescript_declaration()),
+        Expr::val(tool.availability().as_storage_str()),
+        Expr::val(
+            tool.diagnostic()
+                .map(|diagnostic| diagnostic.code().to_string()),
+        ),
+        Expr::val(
+            tool.diagnostic()
+                .map(|diagnostic| diagnostic.message().to_string()),
+        ),
+        Expr::val(tool.input_schema().as_str()),
+        Expr::val(tool.diagnostics_json()),
+        Expr::val(
+            serde_json::to_string(tool.type_references()).map_err(|_error| {
+                Error::CorruptData("Tool type references cannot be encoded".to_string())
+            })?,
+        ),
+        Expr::val(tool.policy_facts().declares_enabled_by_default()),
+    ])
 }
 
 /// Reads the Setup input kind a Generation pins; `None` for a built-in Generation.
@@ -1139,6 +1158,29 @@ pub(super) async fn load_schema_graph(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
 ) -> Result<SchemaGraph, Error> {
+    load_stored_schema_graph(transaction, generation_id)
+        .await?
+        .parse()
+}
+
+/// One Generation's schema graph as its row stores it, read and not yet
+/// parsed.
+pub(super) struct StoredSchemaGraph(String);
+
+impl StoredSchemaGraph {
+    /// Parses and checks the stored graph. It computes without awaiting: see
+    /// [`SchemaGraphCache`](crate::SchemaGraphCache) for how long.
+    pub(super) fn parse(self) -> Result<SchemaGraph, Error> {
+        SchemaGraph::from_storage_json(&self.0)
+    }
+}
+
+/// Reads one Generation's stored schema graph and leaves the parse to the
+/// caller, who may run it off its task.
+pub(super) async fn load_stored_schema_graph(
+    transaction: &mut Transaction<'_>,
+    generation_id: &ProviderGenerationId,
+) -> Result<StoredSchemaGraph, Error> {
     let row: Option<(String,)> = transaction
         .fetch_optional(
             Query::select()
@@ -1151,7 +1193,7 @@ pub(super) async fn load_schema_graph(
     let (schema_graph_json,) = row.ok_or_else(|| {
         Error::CorruptData("Provider has no retained Generation schema graph".to_string())
     })?;
-    SchemaGraph::from_storage_json(&schema_graph_json)
+    Ok(StoredSchemaGraph(schema_graph_json))
 }
 
 pub(super) async fn verify_generation(
@@ -1543,7 +1585,9 @@ fn verify_tool_schema_references(
     Ok(())
 }
 
-fn tool_columns() -> [MaterializedTools; 27] {
+/// Every column of a Tool row but its Generation: what [`ToolRow`] reads and,
+/// after the Generation, what [`tool_values`] writes.
+fn tool_columns() -> [MaterializedTools; TOOL_COLUMNS] {
     [
         MaterializedTools::ToolKey,
         MaterializedTools::RelativePath,

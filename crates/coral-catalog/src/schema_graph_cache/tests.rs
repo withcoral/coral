@@ -457,3 +457,263 @@ fn a_load_that_finds_its_generation_cached_returns_the_cached_graph() {
     let late = cache.keep_loaded(&generation, titled_graph("late"));
     assert!(Arc::ptr_eq(&first, &late));
 }
+
+/// What a test sees of the loads of an observed cache, and the hold it has
+/// on each parse.
+struct Loads {
+    /// One signal for each caller that found its Generation not cached, sent
+    /// before it waits for its turn to load.
+    awaiting_turn: tokio::sync::mpsc::UnboundedReceiver<()>,
+    /// One signal for each parse, sent before it starts: where it runs.
+    parsing: tokio::sync::mpsc::UnboundedReceiver<ParseThread>,
+    /// Each parse on a thread of its own waits here for one message before
+    /// it starts.
+    release: std::sync::mpsc::Sender<()>,
+}
+
+/// The thread a parse runs on.
+#[derive(Debug, PartialEq)]
+enum ParseThread {
+    /// A thread of the load's own.
+    Own,
+    /// A thread of the Tokio runtime: one of its workers, or one of its
+    /// blocking pool.
+    Runtime,
+}
+
+struct LoadSignals {
+    awaiting_turn: tokio::sync::mpsc::UnboundedSender<()>,
+    parsing: tokio::sync::mpsc::UnboundedSender<ParseThread>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl LoadObserver for LoadSignals {
+    fn awaiting_turn(&self) {
+        let _test_gone = self.awaiting_turn.send(()).is_err();
+    }
+
+    fn before_parse(&self) {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // Not held: on the test's own worker, the test could not let go.
+            let _test_gone = self.parsing.send(ParseThread::Runtime).is_err();
+            return;
+        }
+        let _test_gone = self.parsing.send(ParseThread::Own).is_err();
+        // Blocks the load's own thread, which runs no Tokio task. A test
+        // that is gone has dropped the sender, and holds nothing.
+        let release = self.release.lock().unwrap_or_else(PoisonError::into_inner);
+        let _test_gone = release.recv().is_err();
+    }
+}
+
+/// A cache whose loads the test observes and holds.
+fn observed_cache() -> (SchemaGraphCache, Loads) {
+    let (awaiting_turn, awaiting_turn_seen) = tokio::sync::mpsc::unbounded_channel();
+    let (parsing, parsing_seen) = tokio::sync::mpsc::unbounded_channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let cache = SchemaGraphCache::observed(
+        SchemaGraphCache::DEFAULT_BUDGET_BYTES,
+        Arc::new(LoadSignals {
+            awaiting_turn,
+            parsing,
+            release: Mutex::new(released),
+        }),
+    );
+    let loads = Loads {
+        awaiting_turn: awaiting_turn_seen,
+        parsing: parsing_seen,
+        release,
+    };
+    (cache, loads)
+}
+
+/// The cached read as a task of its own, in a read snapshot of its own, as a
+/// Tool call makes it.
+fn spawn_cached(
+    fixture: &TestDatabase,
+    cache: &SchemaGraphCache,
+    id: &ProviderGenerationId,
+) -> tokio::task::JoinHandle<Result<Arc<SchemaGraph>, Error>> {
+    let (database, cache, id) = (fixture.database(), cache.clone(), id.clone());
+    tokio::spawn(async move {
+        let mut transaction = database.begin_read_snapshot().await.unwrap();
+        let graph = cache
+            .schema_graph_in_transaction(&mut transaction, &id)
+            .await;
+        transaction.rollback().await.unwrap();
+        graph
+    })
+}
+
+/// What the stored row holds.
+#[derive(Clone, Copy, PartialEq)]
+enum Row {
+    Whole,
+    Corrupt,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Outcome {
+    Graph,
+    CorruptGraph,
+    Canceled,
+}
+
+struct ConcurrentCase {
+    name: &'static str,
+    /// The row when the first caller reads it.
+    first_read: Row,
+    /// The row from then on: the test rewrites it while the first parse is
+    /// held, after every other caller has begun to wait for its turn.
+    later_reads: Row,
+    /// Whether the first caller is canceled while its parse is held.
+    cancel_first: bool,
+    /// What the first caller and each of the others end with.
+    first: Outcome,
+    others: Outcome,
+    /// The parses that the callers cause together.
+    parses: fn(usize) -> usize,
+}
+
+const CONCURRENT_CASES: [ConcurrentCase; 4] = [
+    ConcurrentCase {
+        name: "the callers share one load",
+        first_read: Row::Whole,
+        later_reads: Row::Corrupt,
+        cancel_first: false,
+        first: Outcome::Graph,
+        others: Outcome::Graph,
+        parses: |_callers| 1,
+    },
+    ConcurrentCase {
+        name: "a canceled caller's load still serves the others",
+        first_read: Row::Whole,
+        later_reads: Row::Corrupt,
+        cancel_first: true,
+        first: Outcome::Canceled,
+        others: Outcome::Graph,
+        parses: |_callers| 1,
+    },
+    ConcurrentCase {
+        name: "a failed load fails its caller alone, and the next caller loads",
+        first_read: Row::Corrupt,
+        later_reads: Row::Whole,
+        cancel_first: false,
+        first: Outcome::CorruptGraph,
+        others: Outcome::Graph,
+        parses: |_callers| 2,
+    },
+    ConcurrentCase {
+        name: "each caller of a corrupt graph loads in its turn and fails",
+        first_read: Row::Corrupt,
+        later_reads: Row::Corrupt,
+        cancel_first: false,
+        first: Outcome::CorruptGraph,
+        others: Outcome::CorruptGraph,
+        parses: |callers| callers,
+    },
+];
+
+// Catches: concurrent first calls that each read and parse the Generation, a
+// waiting caller that reads the row again once the load it waited for has
+// cached the graph, a load that fails or loses its caller leaving the others
+// waiting, failing them too, or caching something, and a parse on a thread of
+// the runtime, which then runs none of its other tasks.
+#[tokio::test]
+async fn concurrent_first_loads_of_a_generation_take_turns_and_share_the_first_graph() {
+    const CALLERS: usize = 5;
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    for case in CONCURRENT_CASES {
+        let generation = publish(&fixture, &[http_input()])
+            .await
+            .pop()
+            .expect("one Generation");
+        let whole = generation.graph.to_storage_json().unwrap();
+        let store = |row: Row| {
+            let json = match row {
+                Row::Whole => whole.as_str(),
+                Row::Corrupt => "not a graph",
+            };
+            store_graph_json(&fixture, Some(&generation.id), json)
+        };
+        let (cache, mut loads) = observed_cache();
+
+        store(case.first_read).await;
+        let first = spawn_cached(&fixture, &cache, &generation.id);
+        assert_eq!(
+            loads.parsing.recv().await,
+            Some(ParseThread::Own),
+            "{}: the first parse is held, on a thread of its own",
+            case.name
+        );
+        let others = [(); CALLERS - 1].map(|()| spawn_cached(&fixture, &cache, &generation.id));
+        for _caller in 0..CALLERS {
+            loads.awaiting_turn.recv().await.expect("a caller waits");
+        }
+        if case.later_reads != case.first_read {
+            store(case.later_reads).await;
+        }
+        if case.cancel_first {
+            first.abort();
+        }
+        // Enough for every parse a broken cache could start.
+        for _parse in 0..CALLERS {
+            loads.release.send(()).expect("the cache is alive");
+        }
+
+        let outcome = |joined: Result<Result<Arc<SchemaGraph>, Error>, tokio::task::JoinError>| {
+            match joined {
+                Ok(Ok(graph)) => (Outcome::Graph, Some(graph)),
+                Ok(graph @ Err(_)) => {
+                    assert!(is_corrupt_graph(&graph), "{}: {graph:?}", case.name);
+                    (Outcome::CorruptGraph, None)
+                }
+                Err(canceled) => {
+                    assert!(canceled.is_cancelled(), "{}: {canceled}", case.name);
+                    (Outcome::Canceled, None)
+                }
+            }
+        };
+        let (first, first_graph) = outcome(first.await);
+        assert_eq!(first, case.first, "{}: the first caller", case.name);
+        let mut shared = first_graph;
+        for other in others {
+            let (other, graph) = outcome(other.await);
+            assert_eq!(other, case.others, "{}: another caller", case.name);
+            if let (Some(shared), Some(graph)) = (&shared, &graph) {
+                assert!(
+                    Arc::ptr_eq(shared, graph),
+                    "{}: every caller uses one graph",
+                    case.name
+                );
+            }
+            shared = shared.or(graph);
+        }
+
+        let mut parses = 1;
+        while let Ok(thread) = loads.parsing.try_recv() {
+            assert_eq!(thread, ParseThread::Own, "{}: a later parse", case.name);
+            parses += 1;
+        }
+        assert_eq!(parses, (case.parses)(CALLERS), "{}: parses", case.name);
+        assert_eq!(
+            cache.shared.turns().len(),
+            0,
+            "{}: no turn outlives its callers",
+            case.name
+        );
+
+        // A failure cached nothing: the next call reads the row as it is now.
+        store(Row::Whole).await;
+        loads.release.send(()).expect("the cache is alive");
+        let next = cached(&fixture, &cache, &generation.id).await.unwrap();
+        assert_eq!(*next, generation.graph, "{}", case.name);
+        if let Some(shared) = &shared {
+            assert!(
+                Arc::ptr_eq(shared, &next),
+                "{}: the shared graph is the cached one",
+                case.name
+            );
+        }
+    }
+}
