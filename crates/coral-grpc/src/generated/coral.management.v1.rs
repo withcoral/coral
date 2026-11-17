@@ -14411,8 +14411,9 @@ pub struct ListPrivateToolsRequest {
     /// Maximum results, bounded to 100; zero selects the default.
     #[prost(int32, tag = "2")]
     pub page_size: i32,
-    /// next_after from the previous page. Empty starts at the first path. Only a
-    /// value this list returned is a valid cursor. It only positions the page:
+    /// next_after from the previous page. Empty starts at the first path. Pass
+    /// only a value that this list returned. Coral accepts any path as a
+    /// position, and the format can change. The value only positions the page:
     /// each page lists the caller's own Private Tools in parent. Text that is not
     /// a path is INVALID_ARGUMENT.
     #[prost(string, tag = "3")]
@@ -16171,8 +16172,9 @@ pub struct ListSharedToolsRequest {
     /// Maximum results, bounded to 100; zero selects the default.
     #[prost(int32, tag = "2")]
     pub page_size: i32,
-    /// next_after from the previous page. Empty starts at the first path. Only a
-    /// value this list returned is a valid cursor. It only positions the page:
+    /// next_after from the previous page. Empty starts at the first path. Pass
+    /// only a value that this list returned. Coral accepts any path as a
+    /// position, and the format can change. The value only positions the page:
     /// each page lists the Shared Tools of parent. Text that is not a path is
     /// INVALID_ARGUMENT.
     #[prost(string, tag = "3")]
@@ -16470,10 +16472,11 @@ pub struct ListSharedToolEventsRequest {
     /// Maximum results, bounded to 100; zero selects the default.
     #[prost(int32, tag = "3")]
     pub page_size: i32,
-    /// next_after from the previous page. Empty starts at the newest event. Only
-    /// a value this list returned is a valid cursor. It only positions the page:
-    /// each page lists the events that parent and shared_tool name. Text that is
-    /// not {event time in Unix nanoseconds}/{event id} is INVALID_ARGUMENT.
+    /// next_after from the previous page. Empty starts at the newest event. Pass
+    /// only a value that this list returned. Coral accepts any text of the form
+    /// {event time in Unix nanoseconds}/{event id} as a position, and the format
+    /// can change. The value only positions the page: each page lists the events
+    /// that parent and shared_tool name. Other text is INVALID_ARGUMENT.
     #[prost(string, tag = "4")]
     pub after: ::prost::alloc::string::String,
 }

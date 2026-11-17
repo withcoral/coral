@@ -37,8 +37,9 @@ message ListPrivateToolsRequest {
   string parent = 1;
   // Maximum results, bounded to 100; zero selects the default.
   int32 page_size = 2;
-  // next_after from the previous page. Empty starts at the first path. Only a
-  // value this list returned is a valid cursor. It only positions the page:
+  // next_after from the previous page. Empty starts at the first path. Pass
+  // only a value that this list returned. Coral accepts any path as a
+  // position, and the format can change. The value only positions the page:
   // each page lists the caller's own Private Tools in parent. Text that is not
   // a path is INVALID_ARGUMENT.
   string after = 3;
