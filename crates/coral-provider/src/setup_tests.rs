@@ -214,7 +214,7 @@ async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
         assert_eq!(listed(3).await, expected, "{role:?}");
     }
     // Each Setup expires an hour after it was created.
-    let deadline = |created| crate::setup_credentials::setup_deadline(created).unwrap();
+    let deadline = |created: i64| created + HOUR;
     assert_eq!(listed(deadline(2) - 1).await, both);
     assert_eq!(
         listed(deadline(2)).await,
@@ -227,6 +227,78 @@ async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
         listed(deadline(3)).await,
         [] as [(crate::ProviderSetupId, Option<crate::SetupRequest>); 0]
     );
+}
+
+/// The migration version of the step that gives a Setup without a stored
+/// deadline the one its creation time sets.
+const SETUP_DEADLINES_MIGRATION_VERSION: i64 = 74;
+
+// Catches: a Setup without a stored deadline read as one that never expires,
+// an upgrade that leaves such a Setup unreadable, or one that gives it a
+// deadline other than the one creation stores or moves a deadline a Setup
+// already holds.
+#[tokio::test]
+async fn upgrade_gives_a_setup_without_a_deadline_the_one_creation_stores() {
+    let before = coral_test_support::migration_plan_before(SETUP_DEADLINES_MIGRATION_VERSION);
+    let fixture = coral_test_support::TestDatabase::new(&before)
+        .await
+        .expect("create a database from before the deadline step");
+    let database = fixture.database();
+    let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
+    let providers = crate::ProviderModule::with_running_catalog(
+        DestinationPolicy::default(),
+        database.clone(),
+        workspaces.clone(),
+    );
+    let actor = organization_user(database.clone(), "user:upgrade", OrganizationRole::Member).await;
+    let context = change_context(actor.clone(), 10, '1');
+    let workspace = workspaces
+        .create(&context, WorkspaceDisplayName::parse("Upgrade").unwrap())
+        .await
+        .unwrap();
+    let owner = workspace.id();
+    let server = MockServer::start().await;
+    let create = || async {
+        providers
+            .create_openapi_setup(
+                &context,
+                owner,
+                coral_catalog::OpenApiDocument::parse(&credential_free_openapi(&server)).unwrap(),
+            )
+            .await
+            .unwrap()
+    };
+    let (without, moved) = (create().await, create().await);
+    assert_eq!(without.expires_at_unix_nanos(), 10 + HOUR);
+    for (setup, stored) in [(&without, "NULL"), (&moved, "5000")] {
+        fixture
+            .execute_fixture_sql(&format!(
+                "UPDATE provider_setups SET expires_at_unix_nanos = {stored} WHERE id = '{}'",
+                setup.id()
+            ))
+            .await
+            .unwrap();
+    }
+    let read = providers
+        .review_setup_configuration(&actor, owner, without.id())
+        .await;
+    assert!(
+        matches!(&read, Err(Error::CorruptData(reason)) if reason == "Provider Setup has no deadline"),
+        "{read:?}"
+    );
+
+    database
+        .migrate(coral_db::migration_plan())
+        .await
+        .expect("apply the upgrade");
+
+    for (setup, deadline) in [(&without, 10 + HOUR), (&moved, 5_000)] {
+        let inspected = providers
+            .inspect_setup(&actor, owner, setup.id(), 11)
+            .await
+            .expect("the upgraded Setup decodes");
+        assert_eq!(inspected.setup.expires_at_unix_nanos(), deadline);
+    }
 }
 
 #[tokio::test]

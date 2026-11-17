@@ -314,8 +314,12 @@ impl SetupRow {
                 input_digest,
                 state,
                 self.created_at_unix_nanos,
+                // Every Setup is created with a deadline.
+                self.expires_at_unix_nanos.ok_or_else(|| {
+                    Error::CorruptData("Provider Setup has no deadline".to_string())
+                })?,
             )
-            .with_source(self.input_url, self.expires_at_unix_nanos)
+            .with_input_url(self.input_url)
             .with_request(request),
             setup_input,
             actor_user_id,
@@ -833,13 +837,14 @@ pub(super) async fn setup(
     row.map(SetupRow::decode).transpose()
 }
 
-/// The Setups that Programs asked `actor` to finish in `owner`, created after
-/// `created_after`, in one of `states` and not consumed, oldest first.
+/// The Setups that Programs asked `actor` to finish in `owner`, whose stored
+/// deadline is after `deadline_after`, in one of `states` and not consumed,
+/// oldest first.
 pub(super) async fn requested_setups(
     executor: impl QueryExecutor,
     owner: &WorkspaceId,
     actor: &UserId,
-    created_after: i64,
+    deadline_after: i64,
     states: &[ProviderSetupState],
 ) -> Result<Vec<LoadedSetup>, Error> {
     let rows: Vec<SetupRow> = executor
@@ -850,7 +855,7 @@ pub(super) async fn requested_setups(
                 .and_where(exact_setup_owner(owner))
                 .and_where(Expr::col(ProviderSetups::ActorUserId).eq(actor.as_str()))
                 .and_where(Expr::col(ProviderSetups::RequestedNamespace).is_not_null())
-                .and_where(Expr::col(ProviderSetups::CreatedAtUnixNanos).gt(created_after))
+                .and_where(Expr::col(ProviderSetups::ExpiresAtUnixNanos).gt(deadline_after))
                 .and_where(
                     Expr::col(ProviderSetups::State)
                         .is_in(states.iter().map(ProviderSetupState::as_storage_str)),

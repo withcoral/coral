@@ -277,9 +277,7 @@ impl ProviderModule {
             .await?;
         let source_analysis = self.preparation.analyze(setup_input.as_ref()).await?;
         let input_url = input_url.or_else(|| input::snapshot_source_url(setup_input.as_ref()));
-        let expires_at = Some(setup_credentials::setup_deadline(
-            context.occurred_at_unix_nanos(),
-        )?);
+        let expires_at = setup_credentials::setup_deadline(context.occurred_at_unix_nanos())?;
         let requirement = metadata
             .as_ref()
             .and_then(|metadata| metadata.requirement.as_ref())
@@ -296,8 +294,9 @@ impl ProviderModule {
                 .map(ProviderSetupInputDigest::of_setup_input),
             ProviderSetupState::AwaitingConfiguration,
             context.occurred_at_unix_nanos(),
+            expires_at,
         )
-        .with_source(input_url, expires_at)
+        .with_input_url(input_url)
         .with_request(purpose.request().cloned());
         let mut transaction = self.database.begin().await?;
         let (authority_source, update) = self

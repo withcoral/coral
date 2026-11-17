@@ -350,7 +350,7 @@ async fn challenge_produces_a_resumable_setup_that_consent_and_discovery_make_re
         .expect("a challenge yields a resumable Setup");
     assert_eq!(setup.state(), ProviderSetupState::AwaitingAuthorization);
     assert_eq!(setup.input_url(), Some(upstream.mcp_url().as_str()));
-    assert_eq!(setup.expires_at_unix_nanos(), Some(10 + HOUR));
+    assert_eq!(setup.expires_at_unix_nanos(), 10 + HOUR);
     let before = harness
         .providers
         .setup_authentication(&owner, &scope, setup.id(), 11)
@@ -3467,6 +3467,274 @@ async fn abandoned_setup_scrubs_the_application_secret_before_account_consent() 
                 .unwrap()
                 .client_secret_configured
         );
+    }
+}
+
+// Catches: a decision that adds the Setup lifetime to the creation time again,
+// so that it disagrees with the deadline the Setup stores. The decisions are
+// the listing, configuration, sealing a credential, starting a sign-in,
+// keeping the application secret, and Publication.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table checks every deadline decision against each moved deadline"
+)]
+async fn a_setups_stored_deadline_decides_every_deadline_decision() {
+    use crate::{OAuthClientAuthentication, OAuthClientConfiguration};
+    let api = OAuthApi::start().await;
+    let harness = harness(None).await;
+    let (actor, workspace) = workspace_owner(&harness, "user:stored-deadline").await;
+    let owner = workspace.id().clone();
+    // Each Setup is created at 2, so it stores the deadline 2 + HOUR. The
+    // fixture moves the stored deadline, and `now` sits between the two.
+    for (namespace, stored_deadline, now, open, request_id) in [
+        (
+            "earlier",
+            1_000,
+            1_000,
+            false,
+            "00000000-0000-4000-8000-000000000001",
+        ),
+        (
+            "later",
+            2 + 2 * HOUR,
+            2 + HOUR,
+            true,
+            "00000000-0000-4000-8000-000000000002",
+        ),
+    ] {
+        let created = change_context(actor.clone(), 2, '2');
+        // A ready Setup that a Program requested and that takes a bearer token.
+        let setup = harness
+            .providers
+            .prepare_requested_setup(
+                &created,
+                &owner,
+                ProviderSetupSource::OpenApiDocument(api.bearer_document()),
+                crate::SetupRequest {
+                    namespace: crate::ProviderNamespace::parse(namespace).unwrap(),
+                    route: CredentialRoute::Fixed,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(setup.expires_at_unix_nanos(), 2 + HOUR, "{namespace}");
+        let review = harness
+            .providers
+            .review_setup_configuration(&actor, &owner, setup.id())
+            .await
+            .unwrap();
+        let mut configuration = review.document.unwrap().suggested;
+        configuration.authentication = Some(AuthenticationConfiguration::Bearer);
+        let ready = harness
+            .providers
+            .confirm_setup_configuration(
+                &created,
+                &owner,
+                setup.id(),
+                review.revision,
+                configuration.clone(),
+            )
+            .await
+            .unwrap();
+        // A ready Setup that signs in through an application with a secret.
+        let sign_in = harness
+            .providers
+            .prepare_openapi_fixture(&created, &owner, api.document(namespace))
+            .await
+            .unwrap();
+        let review = harness
+            .providers
+            .review_setup_configuration(&actor, &owner, sign_in.id())
+            .await
+            .unwrap();
+        let application = harness
+            .accounts
+            .confirm_setup_configuration(
+                &created,
+                &owner,
+                sign_in.id(),
+                review.revision,
+                review.confirmed.unwrap(),
+                Some(
+                    SetupOAuthClient::application(
+                        "https://reef.example/provider-setup/oauth/callback".into(),
+                        OAuthClientConfiguration::new(
+                            "manual-client".into(),
+                            OAuthClientAuthentication::ClientSecretPost {
+                                secret: Some(Secret::new("deadline-canary".into()).unwrap()),
+                            },
+                        ),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+        harness
+            .fixture
+            .execute_fixture_sql(&format!(
+                "UPDATE provider_setups SET expires_at_unix_nanos = {stored_deadline} \
+                 WHERE id IN ('{}', '{}')",
+                setup.id(),
+                sign_in.id()
+            ))
+            .await
+            .unwrap();
+        let context = change_context(actor.clone(), now, '4');
+
+        let listed = harness
+            .providers
+            .open_requested_setups(
+                &coral_workspace::AuthenticatedPrincipal::user(actor.clone()),
+                &owner,
+                now,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            listed.iter().any(|listed| listed.id() == setup.id()),
+            open,
+            "{namespace}: listing"
+        );
+
+        let confirmed = harness
+            .providers
+            .confirm_setup_configuration(
+                &context,
+                &owner,
+                setup.id(),
+                ready.revision,
+                configuration,
+            )
+            .await;
+        if open {
+            assert_eq!(confirmed.unwrap(), ready, "{namespace}: configuration");
+        } else {
+            assert!(
+                matches!(confirmed, Err(Error::ProviderSetupNotApplicable)),
+                "{namespace}: configuration: {confirmed:?}"
+            );
+            assert_eq!(
+                harness
+                    .providers
+                    .review_setup_configuration(&actor, &owner, setup.id())
+                    .await
+                    .unwrap(),
+                ready,
+                "{namespace}: the denial changed nothing"
+            );
+        }
+
+        let sealed = harness
+            .accounts
+            .authorize_setup(
+                &context,
+                &owner,
+                setup.id(),
+                ready.revision,
+                coral_credentials::CredentialValues::token(
+                    Secret::new("deadline-token-canary".into()).unwrap(),
+                ),
+            )
+            .await;
+        let grant = if open {
+            let sealed = sealed.unwrap_or_else(|error| panic!("{namespace}: sealing: {error:?}"));
+            assert_eq!(
+                sealed.expires_at_unix_nanos,
+                Some(stored_deadline),
+                "{namespace}: sealing"
+            );
+            sealed.provisional_grant_id
+        } else {
+            assert!(
+                matches!(sealed, Err(Error::ProviderSetupNotApplicable)),
+                "{namespace}: sealing: {sealed:?}"
+            );
+            // Read before any deadline, so the read itself expires nothing.
+            assert!(
+                !harness
+                    .providers
+                    .setup_authentication(&actor, &owner, setup.id(), 2)
+                    .await
+                    .unwrap()
+                    .authorized,
+                "{namespace}: the denial sealed nothing"
+            );
+            None
+        };
+
+        let started = harness
+            .accounts
+            .start_setup_authorization(
+                &context,
+                &owner,
+                sign_in.id(),
+                application.revision,
+                self::client(),
+            )
+            .await;
+        if open {
+            let started = started.unwrap_or_else(|error| panic!("{namespace}: sign-in: {error:?}"));
+            assert!(started.authorization.is_some(), "{namespace}: sign-in");
+            assert_eq!(
+                started.expires_at_unix_nanos,
+                Some(stored_deadline),
+                "{namespace}: sign-in"
+            );
+        } else {
+            assert!(
+                matches!(started, Err(Error::ProviderSetupNotApplicable)),
+                "{namespace}: sign-in: {started:?}"
+            );
+        }
+        assert_eq!(
+            harness
+                .providers
+                .setup_authentication(&actor, &owner, sign_in.id(), now)
+                .await
+                .unwrap()
+                .client_secret_configured,
+            open,
+            "{namespace}: application secret"
+        );
+
+        let mut request = publication_request(
+            &owner,
+            setup.id(),
+            namespace,
+            CredentialRoute::Fixed,
+            request_id,
+        );
+        if let Some(grant) = grant {
+            request = request.with_account_grant(grant);
+        }
+        let publication = harness
+            .providers
+            .publish_workspace_provider(&context, request)
+            .await
+            .unwrap()
+            .skip_search();
+        if open {
+            assert_eq!(
+                publication.outcome(),
+                ProviderPublicationOutcome::Succeeded,
+                "{namespace}: Publication: {:?}",
+                publication.diagnostic()
+            );
+        } else {
+            assert_eq!(
+                publication.outcome(),
+                ProviderPublicationOutcome::Failed,
+                "{namespace}: Publication"
+            );
+            assert_eq!(
+                publication.diagnostic().unwrap().code(),
+                "setup_expired",
+                "{namespace}: Publication"
+            );
+            assert!(publication.published_provider().is_none(), "{namespace}");
+        }
     }
 }
 

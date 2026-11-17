@@ -448,9 +448,9 @@ impl ProviderModule {
             return Err(Error::EtagMismatch);
         }
         // A Setup that reached its deadline publishes nothing, ready or not.
-        let materialized = if credential_decision_context(context, started).occurred_at_unix_nanos()
-            >= setup_credentials::setup_deadline(current_setup.setup.created_at_unix_nanos())?
-        {
+        let materialized = if current_setup.setup.is_past_deadline(
+            credential_decision_context(context, started).occurred_at_unix_nanos(),
+        ) {
             MaterializationOutcome::Rejected(PublicationDiagnostic::stable(
                 "setup_expired",
                 "the Setup expired before Publication",

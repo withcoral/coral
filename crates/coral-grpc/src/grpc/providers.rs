@@ -484,7 +484,7 @@ impl GrpcServices {
                     message: "authenticated discovery did not complete".into(),
                 }
             }),
-            expire_time: setup.expires_at_unix_nanos().map(timestamp),
+            expire_time: Some(timestamp(setup.expires_at_unix_nanos())),
             configuration: Some(review),
             request: setup.request().map(|request| wire::ProviderSetupRequest {
                 namespace: request.namespace.as_str().to_owned(),
