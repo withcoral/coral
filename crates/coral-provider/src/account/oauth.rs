@@ -357,7 +357,7 @@ impl AccountModule {
         state: &str,
         response: CallbackResponse,
     ) -> Result<Authorization, Error> {
-        let started = std::time::Instant::now();
+        let started = self.started();
         let actor = context.actor();
         let mut tx = self.providers.database.begin().await?;
         let authority = self.scope_authority(&mut tx, actor, owner).await?;
@@ -443,16 +443,10 @@ impl AccountModule {
             },
         )
         .await;
-        let elapsed = i64::try_from(started.elapsed().as_nanos())
-            .map_err(|_error| Error::Internal(crate::InternalFault::Overflow))?;
         let record_status =
             result.is_ok() || matches!(result, Err(Error::OAuthClientConfiguration));
         let client_failed = result.is_err();
-        let context = ChangeContext::new(
-            context.actor().clone(),
-            context.occurred_at_unix_nanos().saturating_add(elapsed),
-            context.trace_id().clone(),
-        );
+        let context = super::setup_oauth::advanced(context, started);
         let completion = match result {
             Ok(token) => {
                 self.complete(&context, owner, id, CredentialMaterial::OAuth(token))

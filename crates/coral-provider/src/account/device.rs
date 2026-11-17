@@ -1,5 +1,5 @@
 //! Server-owned RFC 8628 device authorization. Browser reads never drive polling.
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use coral_telemetry::safe;
 use coral_workspace::{ChangeContext, WorkspaceId};
@@ -108,7 +108,7 @@ impl AccountModule {
         let owner = owner.clone();
         let id = id.clone();
         self.track_device_task(async move {
-            let started = Instant::now();
+            let started = module.started();
             let lease = match module.claim_device(&owner, &generation, &context).await {
                 Ok(Some(lease)) => lease,
                 // Another worker holds the job.
@@ -157,7 +157,7 @@ impl AccountModule {
         owner: &WorkspaceId,
         id: &ProviderSetupId,
         requirement: &StoredRequirement,
-        started: Instant,
+        started: super::Started<'_>,
         lease: &Lease,
     ) -> Result<oauth::TokenResponse, Error> {
         let generation = &lease.job.id;
@@ -360,7 +360,7 @@ impl AccountModule {
         let context = context.clone();
         let owner = owner.clone();
         self.track_device_task(async move {
-            let started = Instant::now();
+            let started = module.started();
             let lease = match module.claim_device(&owner, &id.to_string(), &context).await {
                 Ok(Some(lease)) => lease,
                 // Another worker holds the job.
@@ -445,7 +445,7 @@ impl AccountModule {
         owner: &WorkspaceId,
         id: super::AuthorizationId,
         requirement: &StoredRequirement,
-        started: Instant,
+        started: super::Started<'_>,
         lease: &Lease,
     ) -> Result<oauth::TokenResponse, Error> {
         let mut tx = self.providers.database.begin().await?;
@@ -551,7 +551,7 @@ struct Polling<'a> {
     device: DeviceResponse,
     expires: i64,
     context: &'a ChangeContext,
-    started: Instant,
+    started: super::Started<'a>,
     requirement: &'a StoredRequirement,
     authentication: oauth::TokenAuthentication<'a>,
     lease: &'a Lease,

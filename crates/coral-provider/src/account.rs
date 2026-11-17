@@ -295,10 +295,39 @@ pub struct AccountModule {
     client_id_metadata_document: Option<String>,
     /// Operator policy for choosing a new automatic client identity.
     client_bootstrap_policy: ClientBootstrapPolicy,
+    /// Measures how long work that outlives its request's instant has run.
+    clock: std::sync::Arc<dyn coral_db::Clock>,
     #[cfg(test)]
     exchange_gate: Option<std::sync::Arc<OAuthExchangeGate>>,
     #[cfg(test)]
     renewal_gate: Option<std::sync::Arc<RenewalGate>>,
+}
+
+/// When work that outlives its request's instant began, as the Module's clock
+/// read it.
+///
+/// A request gives its instant once, in its `ChangeContext`. An upstream
+/// exchange or a device worker goes on after it, so each later decision is
+/// dated by the request's instant plus the span between the clock's reading
+/// when the work began and its reading now. The clock is the one source of
+/// that span: a test moves it to move the work's time.
+#[derive(Clone, Copy)]
+pub(crate) struct Started<'a> {
+    clock: &'a dyn coral_db::Clock,
+    at: coral_db::UnixNanos,
+}
+
+impl Started<'_> {
+    /// Reads the clock once and returns `at` moved on by the span since the
+    /// work began.
+    ///
+    /// The span follows the host's clock. A clock that is set back while the
+    /// work runs shortens the span, so this reading can be earlier than the
+    /// one before it. A clock that reads earlier than it did when the work
+    /// began gives no span: the result is never before `at`.
+    pub(crate) fn now_from(self, at: coral_db::UnixNanos) -> coral_db::UnixNanos {
+        at.saturating_add(self.clock.now().saturating_duration_since(self.at))
+    }
 }
 
 /// Holds each renewal between the read that found it due and its write, and
@@ -449,6 +478,7 @@ impl AccountModule {
             device_tasks: std::sync::Arc::default(),
             client_id_metadata_document: None,
             client_bootstrap_policy: ClientBootstrapPolicy::default(),
+            clock: std::sync::Arc::new(coral_db::SystemClock),
             #[cfg(test)]
             exchange_gate: None,
             #[cfg(test)]
@@ -477,6 +507,22 @@ impl AccountModule {
     pub const fn with_client_bootstrap_policy(mut self, policy: ClientBootstrapPolicy) -> Self {
         self.client_bootstrap_policy = policy;
         self
+    }
+
+    /// Replaces the system clock that measures how long an upstream exchange
+    /// or a device worker has run, so that a test moves that time itself.
+    #[must_use]
+    pub fn with_clock(mut self, clock: std::sync::Arc<dyn coral_db::Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Reads the clock as work that outlives its request's instant begins.
+    pub(crate) fn started(&self) -> Started<'_> {
+        Started {
+            clock: self.clock.as_ref(),
+            at: self.clock.now(),
+        }
     }
 
     #[cfg(test)]

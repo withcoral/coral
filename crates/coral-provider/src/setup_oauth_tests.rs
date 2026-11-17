@@ -869,6 +869,84 @@ async fn a_superseded_exchange_never_seals_into_the_replacement_flow() {
     );
 }
 
+/// Catches an exchange dated by its request alone. The Module's clock measures
+/// how long the token endpoint took, so an answer that arrives at the
+/// authorization's deadline seals nothing.
+#[tokio::test]
+async fn an_exchange_that_outlasts_the_authorization_deadline_seals_nothing() {
+    let deadline = 20 + 15 * MINUTE;
+    let requested = 30;
+    for (exchange_ends, authorized, state) in [
+        (deadline - 1, true, SetupAuthorizationState::Succeeded),
+        (deadline, false, SetupAuthorizationState::Expired),
+    ] {
+        let upstream = OAuthMcp::start().await;
+        let gate = Arc::new(crate::account::OAuthExchangeGate::default());
+        let clock =
+            coral_test_support::ManualClock::starting_at(coral_db::UnixNanos::new(requested));
+        let mut harness = harness(None).await;
+        harness.accounts = harness
+            .accounts
+            .clone()
+            .with_exchange_gate(gate.clone())
+            .with_clock(Arc::new(clock.clone()));
+        let (owner, workspace) = workspace_owner(&harness, "user:oauth-slow-exchange").await;
+        let scope = workspace.id().clone();
+        let setup = harness
+            .accounts
+            .prepare_remote_fixture(
+                &change_context(owner.clone(), 10, '1'),
+                &scope,
+                crate::tests::mcp_url(upstream.mcp_url()),
+                None,
+            )
+            .await
+            .unwrap();
+        let started = harness
+            .accounts
+            .start_setup_authorization(
+                &change_context(owner.clone(), 20, '2'),
+                &scope,
+                setup.id(),
+                1,
+                client(),
+            )
+            .await
+            .unwrap();
+        let authorization = started.authorization.unwrap();
+        assert_eq!(authorization.expires_at_unix_nanos, deadline);
+        let state_parameter = state_of(&authorization.authorization_url.unwrap());
+        let exchange = {
+            let accounts = harness.accounts.clone();
+            let owner = owner.clone();
+            let scope = scope.clone();
+            let id = setup.id().clone();
+            tokio::spawn(async move {
+                accounts
+                    .complete_setup_authorization(
+                        &change_context(owner, requested, '3'),
+                        Some((&scope, &id)),
+                        &state_parameter,
+                        Secret::new(CODE.into()).unwrap(),
+                    )
+                    .await
+                    .map(|completion| completion.authentication)
+            })
+        };
+        gate.entered.notified().await;
+        // The token endpoint has answered. Only the clock says how long it took.
+        clock.set(coral_db::UnixNanos::new(exchange_ends));
+        gate.release.notify_one();
+        let view = exchange.await.unwrap().unwrap();
+        assert_eq!(view.authorized, authorized, "ends at {exchange_ends}");
+        assert_eq!(
+            view.authorization.map(|authorization| authorization.state),
+            Some(state),
+            "ends at {exchange_ends}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn concurrent_discoveries_pin_one_snapshot_and_discard_the_loser() {
     let upstream = OAuthMcp::start().await;

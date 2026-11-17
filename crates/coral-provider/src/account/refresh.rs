@@ -161,12 +161,11 @@ impl AccountModule {
         evidence: &CredentialEvidence,
         now: i64,
     ) -> Result<SettledCredentials, Error> {
-        let started = std::time::Instant::now();
+        let started = self.started();
         let trace = coral_telemetry::TraceId::current_or_new();
         let mut pending = None;
         loop {
-            let elapsed = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
-            let current_time = now.saturating_add(elapsed);
+            let current_time = started.now_from(coral_db::UnixNanos::new(now)).get();
             let observed = pending.take();
             let read = self
                 .read_retained(
@@ -395,7 +394,7 @@ impl AccountModule {
             now,
             trace,
         } = *dispatch;
-        let started = std::time::Instant::now();
+        let started = self.started();
         // Only an OAuth contract's token expires.
         let (token_url, scopes, resource) =
             refresh_endpoint(&evidence.contract).ok_or(Error::AccountRequired)?;
@@ -436,13 +435,12 @@ impl AccountModule {
             },
         )
         .await;
-        let elapsed = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
         let client_failed = match &result {
             Ok(_) => Some(false),
             Err(Error::OAuthClientConfiguration) => Some(true),
             Err(_) => None,
         };
-        let completed_at = now.saturating_add(elapsed);
+        let completed_at = started.now_from(coral_db::UnixNanos::new(now)).get();
         let completion = self
             .complete_refresh(workspace, row, &attempt, result, completed_at, trace)
             .await;
