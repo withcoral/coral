@@ -177,7 +177,9 @@ impl SchemaGraphCache {
     ///
     /// One load of a Generation runs at a time. A caller that finds a load
     /// under way waits for it and then uses the graph it cached, so
-    /// concurrent first calls read and parse the Generation once. A load that
+    /// concurrent first calls read and parse the Generation once. A waiter
+    /// loads it again only when the cache evicted that graph for another
+    /// Generation's before the waiter's turn. A load that
     /// fails reaches its own caller alone: the next caller in turn loads
     /// through its own transaction. So does the next caller when the one
     /// whose turn it was goes away before it has read the row; once the row

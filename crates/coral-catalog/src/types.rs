@@ -491,9 +491,11 @@ impl SchemaGraph {
     /// publication and persistence verification own reporting that corruption.
     ///
     /// A graph that a [`SchemaGraphCache`](crate::SchemaGraphCache) keeps
-    /// compiles the root's validator on its first use, and the cache's store
-    /// keeps it for the calls after it. Any other graph compiles it on each
-    /// call.
+    /// compiles the root's validator on its first use, and the calls after
+    /// it use that one for as long as the cache's store keeps it. The store
+    /// lets go of a validator to stay within its budget and keeps none that
+    /// outweighs the budget; the next call then compiles it again. Any other
+    /// graph compiles it on each call.
     #[must_use]
     pub fn accepts(&self, id: &SchemaId, value: &Value) -> bool {
         accepts_bundled(self, id, value, SchemaValidationDirection::Neutral)

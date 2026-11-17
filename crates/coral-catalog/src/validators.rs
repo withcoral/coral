@@ -305,7 +305,10 @@ impl Held {
     /// and returns what is kept for it, when anything is.
     fn mark_used(&self, graph: GraphId, root: &Root) -> Option<Compiled> {
         let kept = self.by_graph.get(&graph)?.get(root)?;
-        kept.last_use.store(self.tick(), Ordering::Relaxed);
+        // Two uses at once take their ticks and write them in either order,
+        // so each writes only a later tick: a use never looks older than
+        // the one before it.
+        kept.last_use.fetch_max(self.tick(), Ordering::Relaxed);
         Some(kept.compiled.clone())
     }
 
