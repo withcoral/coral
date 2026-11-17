@@ -807,11 +807,11 @@ impl AccountModule {
     /// A job that cannot be resumed is logged and its lease is moved one lease
     /// on, behind the other jobs, so it never holds them back. Recovery tries
     /// it again after each later lease for as long as it fails, and never
-    /// removes it.
+    /// removes it. A job whose lease cannot be moved is logged too, and the
+    /// next pass reads it first again.
     /// # Errors
-    /// Returns a failure to read the jobs or to move one behind the others, and
-    /// any failure in which the database gave no answer: every later job would
-    /// fail the same way.
+    /// Returns a failure to read the jobs, and any failure in which the
+    /// database gave no answer: every later job would fail the same way.
     pub async fn recover_device_authorizations(&self, now_unix_nanos: i64) -> Result<(), Error> {
         let mut tx = self.providers.database.begin_read_snapshot().await?;
         let recoverable = device_repository::recoverable(&mut tx, now_unix_nanos).await?;
@@ -839,16 +839,38 @@ impl AccountModule {
                 error.type = safe::kind(error.code()),
                 "failed to recover a device sign-in job; recovery tries it again later"
             );
-            let mut tx = self.providers.database.begin().await?;
-            device_repository::defer(
-                &mut tx,
-                &key,
-                now_unix_nanos,
-                next_poll(now_unix_nanos, LEASE_SECONDS),
-            )
-            .await?;
-            tx.commit().await?;
+            let Err(error) = self.defer_device_job(&key, now_unix_nanos).await else {
+                continue;
+            };
+            if error.is_operational() {
+                return Err(error);
+            }
+            // The job keeps its place ahead of the others. They still get
+            // their turn in this pass.
+            tracing::warn!(
+                coral.workspace.id = key.workspace().as_ref().map(safe::id),
+                error.type = safe::kind(error.code()),
+                "failed to move a device sign-in job that recovery could not resume behind the other jobs"
+            );
         }
+        Ok(())
+    }
+
+    /// Moves a job that recovery could not resume one lease on.
+    async fn defer_device_job(
+        &self,
+        key: &device_repository::StoredKey,
+        now_unix_nanos: i64,
+    ) -> Result<(), Error> {
+        let mut tx = self.providers.database.begin().await?;
+        device_repository::defer(
+            &mut tx,
+            key,
+            now_unix_nanos,
+            next_poll(now_unix_nanos, LEASE_SECONDS),
+        )
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 

@@ -454,14 +454,42 @@ async fn device_reconnect_replays_the_same_authorization_across_a_restart() {
     assert_eq!(connected.account_id, Some(account));
 }
 
-/// A device endpoint that issues one code for two minutes, `expected` times.
-async fn mount_device_endpoint(api: &OAuthApi, expected: u64) {
+/// What a mounted device endpoint issues.
+struct DeviceGrant {
+    device_code: &'static str,
+    user_code: &'static str,
+    /// The seconds a worker waits between its polls.
+    interval: u64,
+}
+
+impl DeviceGrant {
+    /// A grant whose worker asks for a token after one second.
+    const EAGER: Self = Self {
+        device_code: "busy-code",
+        user_code: "BUSY-CODE",
+        interval: 1,
+    };
+
+    /// A grant whose 50-second interval keeps the first worker from asking
+    /// for a token: the worker that a recovery past that interval starts asks
+    /// at once.
+    const fn patient(device_code: &'static str, user_code: &'static str) -> Self {
+        Self {
+            device_code,
+            user_code,
+            interval: 50,
+        }
+    }
+}
+
+/// A device endpoint that issues `grant` for two minutes, `expected` times.
+async fn mount_device_endpoint(api: &OAuthApi, grant: &DeviceGrant, expected: u64) {
     Mock::given(method("POST"))
         .and(path("/device"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "device_code": "busy-code", "user_code": "BUSY-CODE",
+            "device_code": grant.device_code, "user_code": grant.user_code,
             "verification_uri": "http://device.fixture.test/activate",
-            "expires_in": 120, "interval": 1
+            "expires_in": 120, "interval": grant.interval
         })))
         .expect(expected)
         .mount(&api.server)
@@ -616,7 +644,7 @@ async fn a_busy_writer_during_a_device_poll_leaves_the_reconnection_to_recovery(
     // Postgres has no single writer: a blocked write waits on locks.
     coral_test_support::database_only!(Sqlite);
     let api = OAuthApi::start().await;
-    mount_device_endpoint(&api, 2).await;
+    mount_device_endpoint(&api, &DeviceGrant::EAGER, 2).await;
     // The Setup's own sign-in takes the first token. The reconnection's first
     // poll is held.
     let token = mount_token_endpoint_holding(&api, 2, 3).await;
@@ -667,7 +695,7 @@ async fn a_busy_writer_during_a_device_poll_leaves_the_setup_authorization_to_re
     // Postgres has no single writer: a blocked write waits on locks.
     coral_test_support::database_only!(Sqlite);
     let api = OAuthApi::start().await;
-    mount_device_endpoint(&api, 1).await;
+    mount_device_endpoint(&api, &DeviceGrant::EAGER, 1).await;
     let token = mount_token_endpoint_holding(&api, 1, 2).await;
     let (h, context, owner, setup) =
         pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
@@ -777,22 +805,6 @@ async fn start_device_sign_in(device: &DeviceSetup) {
         .expect("starts server-owned device authorization");
 }
 
-/// Mounts a device endpoint that issues `user_code` once, for two minutes.
-/// Its 50-second interval keeps the first worker from asking for a token: the
-/// worker that a recovery past that interval starts asks at once.
-async fn mount_patient_device_endpoint(api: &OAuthApi, device_code: &str, user_code: &str) {
-    Mock::given(method("POST"))
-        .and(path("/device"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "device_code": device_code, "user_code": user_code,
-            "verification_uri": "http://device.fixture.test/activate",
-            "expires_in": 120, "interval": 50
-        })))
-        .expect(1)
-        .mount(&api.server)
-        .await;
-}
-
 /// Mounts a token endpoint that grants the one request it expects.
 async fn mount_token_endpoint_granting_once(api: &OAuthApi) {
     Mock::given(method("POST"))
@@ -852,11 +864,16 @@ async fn store_undecodable_jobs(
     assert_eq!(stored, u64::try_from(jobs.len()).unwrap());
 }
 
-/// The warnings recovery logged for the jobs it could not resume.
-fn recovery_failures(logs: &coral_telemetry::testing::ExportCapture) -> Vec<String> {
+/// The warning recovery logs for a job it could not resume.
+const NOT_RESUMED: &str = "failed to recover a device sign-in job";
+/// The warning recovery logs for a job it could not move behind the others.
+const NOT_MOVED: &str = "failed to move a device sign-in job";
+
+/// The log records whose message has `text`.
+fn logged(logs: &coral_telemetry::testing::ExportCapture, text: &str) -> Vec<String> {
     logs.log_records()
         .into_iter()
-        .filter(|record| record.contains("failed to recover a device sign-in job"))
+        .filter(|record| record.contains(text))
         .collect()
 }
 
@@ -1287,7 +1304,7 @@ async fn recovery_does_not_repeat_an_interrupted_token_request_immediately() {
 #[tokio::test]
 async fn recovery_never_completes_for_an_initiator_who_lost_organization_access() {
     let api = OAuthApi::start().await;
-    mount_patient_device_endpoint(&api, "disabled-code", "GONE-USER").await;
+    mount_device_endpoint(&api, &DeviceGrant::patient("disabled-code", "GONE-USER"), 1).await;
     let polls = Arc::new(AtomicUsize::new(0));
     let seen = polls.clone();
     Mock::given(method("POST"))
@@ -1370,7 +1387,7 @@ async fn recovery_never_completes_for_an_initiator_who_lost_organization_access(
 #[tokio::test]
 async fn recovery_waits_for_an_abandoned_lease_and_keeps_the_original_deadline() {
     let api = OAuthApi::start().await;
-    mount_patient_device_endpoint(&api, "crash-code", "SAME-CODE").await;
+    mount_device_endpoint(&api, &DeviceGrant::patient("crash-code", "SAME-CODE"), 1).await;
     mount_token_endpoint_granting_once(&api).await;
     let (h, context, owner, setup) =
         pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
@@ -1424,7 +1441,7 @@ async fn recovery_waits_for_an_abandoned_lease_and_keeps_the_original_deadline()
 #[tokio::test]
 async fn recovery_resumes_a_sign_in_behind_pages_of_jobs_that_do_not_decode() {
     let api = OAuthApi::start().await;
-    mount_patient_device_endpoint(&api, "healthy-code", "GOOD-CODE").await;
+    mount_device_endpoint(&api, &DeviceGrant::patient("healthy-code", "GOOD-CODE"), 1).await;
     mount_token_endpoint_granting_once(&api).await;
     let device = confirmed_application_setup(&api, crate::OAuthClientAuthentication::None).await;
     let DeviceSetup {
@@ -1479,6 +1496,61 @@ async fn recovery_resumes_a_sign_in_behind_pages_of_jobs_that_do_not_decode() {
     restarted.stop_device_authorizations().await.unwrap();
 }
 
+#[tokio::test]
+async fn recovery_goes_on_to_the_next_job_when_a_failed_job_cannot_be_moved() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    let logs = coral_telemetry::testing::ExportCapture::default();
+    let _subscriber =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(logs.log_layer()));
+    let api = OAuthApi::start().await;
+    mount_device_endpoint(&api, &DeviceGrant::patient("next-code", "NEXT-CODE"), 1).await;
+    mount_token_endpoint_granting_once(&api).await;
+    let (h, context, owner, setup) =
+        pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
+    showing_user_code(&h, &context, &owner, &setup, "NEXT-CODE").await;
+    // The stopped worker released its job: the lease ended at 0.
+    h.accounts.stop_device_authorizations().await.unwrap();
+
+    // A corrupt job that recovery reads before the sign-in's. The database
+    // refuses the lease recovery moves it to: another corrupt job, whose
+    // lease still runs, holds that value under a unique index.
+    let pass = MINUTE;
+    store_undecodable_jobs(&h, &owner, ["unmovable".to_owned()].into_iter(), -1).await;
+    store_undecodable_jobs(
+        &h,
+        &owner,
+        ["in-the-way".to_owned()].into_iter(),
+        pass + LEASE,
+    )
+    .await;
+    h.fixture
+        .execute_fixture_sql(
+            "CREATE UNIQUE INDEX refuse_the_move ON provider_device_jobs (lease_until) \
+             WHERE trace_id = 'corrupt'",
+        )
+        .await
+        .unwrap();
+
+    let restarted = h.restarted_accounts();
+    restarted
+        .recover_device_authorizations(pass)
+        .await
+        .expect("a job that cannot be moved fails only itself");
+    let refused = logged(&logs, NOT_MOVED);
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    for expected in [
+        "\"error.type\"".to_owned(),
+        "\"database\"".to_owned(),
+        format!("\"{owner}\""),
+    ] {
+        assert!(refused[0].contains(&expected), "{expected} in {refused:?}");
+    }
+    // The sign-in came after the corrupt job in the same pass.
+    poll_setup(&h, &context, &owner, &setup, |progress| progress.authorized).await;
+    restarted.stop_device_authorizations().await.unwrap();
+}
+
 /// A stored fault that fails the recovery of one reconnection with a definite
 /// answer.
 struct RecoveryFault {
@@ -1530,7 +1602,7 @@ async fn recovery_passes_over_a_reconnection_that_fails_and_tries_it_again_after
         let _subscriber =
             tracing::subscriber::set_default(tracing_subscriber::registry().with(logs.log_layer()));
         let api = OAuthApi::start().await;
-        mount_device_endpoint(&api, 2).await;
+        mount_device_endpoint(&api, &DeviceGrant::EAGER, 2).await;
         // The Setup's own sign-in takes the first token. The reconnection's
         // first poll is held, so its worker is stopped before any answer.
         let token = mount_token_endpoint_holding(&api, 2, 3).await;
@@ -1571,7 +1643,7 @@ async fn recovery_passes_over_a_reconnection_that_fails_and_tries_it_again_after
                 .recover_device_authorizations(now)
                 .await
                 .unwrap_or_else(|error| panic!("{fails}: {why}: {error:?}"));
-            let warnings = recovery_failures(&logs);
+            let warnings = logged(&logs, NOT_RESUMED);
             assert_eq!(warnings.len(), failures, "{fails}: {why}: {warnings:?}");
             for warning in &warnings {
                 // The record names the failure by its code and the job by
