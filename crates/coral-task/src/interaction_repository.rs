@@ -2,7 +2,7 @@ use crate::{
     AttemptEvidence, AttemptFailure, AttemptKind, AttemptOutcome, AttributedCommand, Error,
     InteractionDetail, InteractionId, InteractionSummary, TaskId, TaskIdentity, TaskIntent,
 };
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::WorkspaceId;
 use sea_query::{Condition, Expr, ExprTrait as _, Iden, Order, Query};
 use sqlx::FromRow;
@@ -90,8 +90,8 @@ struct SummaryRow {
     id: String,
     kind: String,
     intent: String,
-    started_at_unix_nanos: i64,
-    completed_at_unix_nanos: Option<i64>,
+    started_at_unix_nanos: UnixNanos,
+    completed_at_unix_nanos: Option<UnixNanos>,
     outcome: String,
     run_id: Option<String>,
 }
@@ -115,8 +115,8 @@ impl SummaryRow {
             kind,
             intent: TaskIntent::parse(&self.intent)?,
             outcome,
-            started_at_unix_nanos: self.started_at_unix_nanos,
-            completed_at_unix_nanos: self.completed_at_unix_nanos,
+            started_at: self.started_at_unix_nanos,
+            completed_at: self.completed_at_unix_nanos,
             run: self
                 .run_id
                 .as_deref()
@@ -131,7 +131,7 @@ pub(super) async fn insert(
     call: &AttributedCommand,
     id: &InteractionId,
     kind: AttemptKind,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<(), Error> {
     transaction
         .execute_change(
@@ -170,7 +170,7 @@ pub(super) async fn complete(
     call: &AttributedCommand,
     id: &InteractionId,
     evidence: &AttemptEvidence,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<bool, Error> {
     let (run_id, private_tool_id) = match evidence {
         AttemptEvidence::Run(id) => (Some(id.to_string()), None),
@@ -263,7 +263,7 @@ pub(super) async fn position(
                         Expr::col(TaskInteractions::Id),
                     ])
                     .lt(Expr::tuple([
-                        Expr::val(row.started_at_unix_nanos),
+                        Expr::val(row.started_at),
                         Expr::val(id.to_string()),
                     ])),
                 )
@@ -378,13 +378,10 @@ pub(super) async fn page(
             .ok_or(Error::InteractionNotFound)?;
         query.cond_where(
             Condition::any()
-                .add(Expr::col(TaskInteractions::StartedAtUnixNanos).gt(row.started_at_unix_nanos))
+                .add(Expr::col(TaskInteractions::StartedAtUnixNanos).gt(row.started_at))
                 .add(
                     Condition::all()
-                        .add(
-                            Expr::col(TaskInteractions::StartedAtUnixNanos)
-                                .eq(row.started_at_unix_nanos),
-                        )
+                        .add(Expr::col(TaskInteractions::StartedAtUnixNanos).eq(row.started_at))
                         .add(if at.is_some() {
                             Expr::col(TaskInteractions::Id).gte(after.to_string())
                         } else {
@@ -544,9 +541,9 @@ const fn encode_outcome(outcome: AttemptOutcome) -> &'static str {
     }
 }
 
-/// Counts the rejected Program submissions completed in `[start, end)` unix
-/// nanoseconds, across every Workspace, by their safe rejection code. The
-/// caller authorizes the read.
+/// Counts the rejected Program submissions completed in `[start, end)`,
+/// across every Workspace, by their safe rejection code. The caller
+/// authorizes the read.
 ///
 /// # Errors
 ///
@@ -554,8 +551,8 @@ const fn encode_outcome(outcome: AttemptOutcome) -> &'static str {
 /// write.
 pub async fn rejected_submissions(
     tx: &mut Transaction<'_>,
-    start: i64,
-    end: i64,
+    start: UnixNanos,
+    end: UnixNanos,
 ) -> Result<BTreeMap<String, u64>, Error> {
     let rows: Vec<(Option<String>,)> = tx
         .fetch_all(
@@ -742,7 +739,7 @@ mod usage_tests {
     use coral_test_support::{TestDatabase, provision_user};
     use coral_workspace::OrganizationRole;
 
-    use super::{encode, encode_kind, encode_outcome, rejected_submissions};
+    use super::{UnixNanos, encode, encode_kind, encode_outcome, rejected_submissions};
     use crate::{AttemptEvidence, AttemptFailure, AttemptKind, AttemptOutcome};
 
     /// One completed interaction at `at`, written with coral-task's own
@@ -798,7 +795,7 @@ mod usage_tests {
 
         let database = db.database();
         let mut tx = database.begin_read_snapshot().await.expect("snapshot");
-        let codes = rejected_submissions(&mut tx, 10, 20)
+        let codes = rejected_submissions(&mut tx, UnixNanos::new(10), UnixNanos::new(20))
             .await
             .expect("rejected submissions");
         tx.commit().await.expect("commit");

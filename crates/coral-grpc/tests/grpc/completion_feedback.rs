@@ -56,7 +56,7 @@ async fn completion_feedback_is_exact_task_detail_with_no_owner_exception_for_us
                 task.id(),
                 coral_task::TaskOutcome::Failure,
                 Some("Private completion 🪸"),
-                i64::MAX / 2,
+                coral_db::UnixNanos::new(i64::MAX / 2),
             )
             .await
             .unwrap();

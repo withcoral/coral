@@ -32,16 +32,13 @@ pub(crate) async fn compose(
 ) -> Result<Composed, Error> {
     let runs =
         coral_run::usage_repository::run_endings(tx, window.start.get(), window.end.get()).await?;
-    let compile: u64 = coral_task::usage_repository::rejected_submissions(
-        tx,
-        window.start.get(),
-        window.end.get(),
-    )
-    .await?
-    .into_iter()
-    .filter(|(code, _)| coral_run::Error::is_compile_rejection(code))
-    .map(|(_, submissions)| submissions)
-    .sum();
+    let compile: u64 =
+        coral_task::usage_repository::rejected_submissions(tx, window.start, window.end)
+            .await?
+            .into_iter()
+            .filter(|(code, _)| coral_run::Error::is_compile_rejection(code))
+            .map(|(_, submissions)| submissions)
+            .sum();
     let tools =
         coral_run::usage_repository::invocation_endings(tx, window.start.get(), window.end.get())
             .await?;
@@ -51,9 +48,7 @@ pub(crate) async fn compose(
     let approvals =
         coral_run::usage_repository::approval_outcomes(tx, window.start.get(), window.end.get())
             .await?;
-    let tasks =
-        coral_task::usage_repository::tasks_started(tx, window.start.get(), window.end.get())
-            .await?;
+    let tasks = coral_task::usage_repository::tasks_started(tx, window.start, window.end).await?;
     let private_tool_counts = private_tool_counts(tx, window).await?;
     let shared_tool_counts = shared_tool_counts(tx, window).await?;
     let totals = coral_workspace::usage_repository::workspace_totals(tx).await?;

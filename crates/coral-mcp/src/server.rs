@@ -347,7 +347,7 @@ impl McpServer {
                 &task_id,
                 outcome,
                 arguments.feedback.as_deref(),
-                self.runtime.now.get(),
+                self.runtime.now,
             )
             .await
             .map_err(task_failure)?;

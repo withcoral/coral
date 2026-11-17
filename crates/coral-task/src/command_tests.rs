@@ -1,5 +1,6 @@
 use crate::*;
 use configured_provider_fixtures::ConfiguredProviderFixtures as _;
+use coral_db::UnixNanos;
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
     AuthenticatedPrincipal, ChangeContext, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
@@ -137,7 +138,7 @@ impl Fixture {
             .create(
                 &ChangeContext::new(
                     user.clone(),
-                    coral_db::UnixNanos::new(10),
+                    UnixNanos::new(10),
                     coral_test_support::trace('1'),
                 ),
                 WorkspaceDisplayName::parse("Commands").unwrap(),
@@ -215,7 +216,7 @@ impl Fixture {
         .publish_openapi_fixture(
             &ChangeContext::new(
                 self.user.clone(),
-                coral_db::UnixNanos::new(15),
+                UnixNanos::new(15),
                 coral_test_support::trace('2'),
             ),
             &self.workspace,
@@ -240,7 +241,7 @@ impl Fixture {
             .set_membership(
                 &ChangeContext::new(
                     self.actor.authenticated_user().unwrap().clone(),
-                    coral_db::UnixNanos::new(wall_time()),
+                    UnixNanos::new(wall_time()),
                     coral_test_support::trace('1'),
                 ),
                 &self.workspace,
@@ -260,7 +261,7 @@ impl Fixture {
             .create(
                 &ChangeContext::new(
                     self.user.clone(),
-                    coral_db::UnixNanos::new(1),
+                    UnixNanos::new(1),
                     coral_test_support::trace('1'),
                 ),
                 WorkspaceDisplayName::parse(name).unwrap(),
@@ -283,7 +284,7 @@ impl Fixture {
                 &self.actor,
                 &self.workspace,
                 TaskIntent::parse("Find an answer").unwrap(),
-                20,
+                UnixNanos::new(20),
             )
             .await
             .unwrap()
@@ -338,7 +339,7 @@ async fn archived_workspace_description_rejection_remains_in_authorized_task_his
         .unwrap();
     let change = ChangeContext::new(
         fixture.actor.authenticated_user().unwrap().clone(),
-        coral_db::UnixNanos::new(wall_time()),
+        UnixNanos::new(wall_time()),
         coral_test_support::trace('1'),
     );
     fixture
@@ -443,7 +444,7 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
     .await;
     let change = ChangeContext::new(
         fixture.actor.authenticated_user().unwrap().clone(),
-        coral_db::UnixNanos::new(wall_time()),
+        UnixNanos::new(wall_time()),
         coral_test_support::trace('1'),
     );
     fixture
@@ -462,7 +463,7 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
         .save(
             &coral_tools::PrivateToolChangeContext::new(
                 AuthenticatedPrincipal::user(member),
-                coral_db::UnixNanos::new(wall_time()),
+                UnixNanos::new(wall_time()),
                 coral_test_support::trace('1'),
             ),
             &fixture.workspace,
@@ -756,7 +757,7 @@ async fn completion_requires_exact_workspace_principal_and_current_authority() {
     let f = Fixture::new().await;
     let change = ChangeContext::new(
         f.actor.authenticated_user().unwrap().clone(),
-        coral_db::UnixNanos::new(wall_time()),
+        UnixNanos::new(wall_time()),
         coral_test_support::trace('1'),
     );
     let issued = f
@@ -776,7 +777,7 @@ async fn completion_requires_exact_workspace_principal_and_current_authority() {
         .authenticate_agent(
             &f.workspace,
             issued.credential.expose(),
-            coral_db::UnixNanos::new(wall_time()),
+            UnixNanos::new(wall_time()),
         )
         .await
         .unwrap();
@@ -786,7 +787,7 @@ async fn completion_requires_exact_workspace_principal_and_current_authority() {
             &agent,
             &f.workspace,
             TaskIntent::parse("Private completion").unwrap(),
-            20,
+            UnixNanos::new(20),
         )
         .await
         .unwrap();
@@ -805,7 +806,7 @@ async fn completion_requires_exact_workspace_principal_and_current_authority() {
                     goal.id(),
                     TaskOutcome::Success,
                     Some("Unauthorized"),
-                    wall_time()
+                    UnixNanos::new(wall_time())
                 )
                 .await,
             Err(Error::TaskNotFound)
@@ -828,7 +829,7 @@ async fn completion_requires_exact_workspace_principal_and_current_authority() {
             goal.id(),
             TaskOutcome::Success,
             Some("Stale authority"),
-            wall_time(),
+            UnixNanos::new(wall_time()),
         )
         .await
         .expect_err("disabled Agent cannot close a goal");
@@ -853,7 +854,7 @@ async fn completion_feedback_creates_no_interaction() {
             goal.id(),
             TaskOutcome::Failure,
             Some("No tools"),
-            wall_time(),
+            UnixNanos::new(wall_time()),
         )
         .await
         .unwrap();
@@ -877,7 +878,7 @@ async fn inactive_open_goals_expire_but_reading_and_repeated_ending_do_not_exten
             .expire_group(
                 &fixture.workspace,
                 goal.id(),
-                20 + HISTORY_RETENTION_NANOS - 1
+                UnixNanos::new(20 + HISTORY_RETENTION_NANOS - 1)
             )
             .await
             .unwrap()
@@ -890,7 +891,11 @@ async fn inactive_open_goals_expire_but_reading_and_repeated_ending_do_not_exten
     assert!(
         fixture
             .tasks
-            .expire_group(&fixture.workspace, goal.id(), 20 + HISTORY_RETENTION_NANOS)
+            .expire_group(
+                &fixture.workspace,
+                goal.id(),
+                UnixNanos::new(20 + HISTORY_RETENTION_NANOS)
+            )
             .await
             .unwrap()
     );
@@ -910,7 +915,7 @@ async fn inactive_open_goals_expire_but_reading_and_repeated_ending_do_not_exten
             goal.id(),
             TaskOutcome::Failure,
             None,
-            100,
+            UnixNanos::new(100),
         )
         .await
         .unwrap();
@@ -922,14 +927,18 @@ async fn inactive_open_goals_expire_but_reading_and_repeated_ending_do_not_exten
             goal.id(),
             TaskOutcome::Success,
             Some("Late feedback cannot renew retention"),
-            1000,
+            UnixNanos::new(1000),
         )
         .await
         .unwrap();
     assert!(
         fixture
             .tasks
-            .expire_group(&fixture.workspace, goal.id(), 100 + HISTORY_RETENTION_NANOS)
+            .expire_group(
+                &fixture.workspace,
+                goal.id(),
+                UnixNanos::new(100 + HISTORY_RETENTION_NANOS)
+            )
             .await
             .unwrap()
     );
@@ -1054,7 +1063,7 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
             goal.id(),
             TaskOutcome::Failure,
             Some("Closed while work continues"),
-            wall_time(),
+            UnixNanos::new(wall_time()),
         )
         .await
         .unwrap();
@@ -1089,7 +1098,7 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
             .expire_group(
                 &fixture.workspace,
                 goal.id(),
-                wall_time() + 2 * HISTORY_RETENTION_NANOS
+                UnixNanos::new(wall_time() + 2 * HISTORY_RETENTION_NANOS)
             )
             .await
             .unwrap()
@@ -1117,7 +1126,7 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
             .expire_standalone_run(
                 &fixture.workspace,
                 &run,
-                wall_time() + 2 * HISTORY_RETENTION_NANOS
+                UnixNanos::new(wall_time() + 2 * HISTORY_RETENTION_NANOS)
             )
             .await
             .unwrap()
@@ -1125,7 +1134,7 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
     assert!(
         !fixture
             .tasks
-            .expire_group(&fixture.workspace, goal.id(), wall_time())
+            .expire_group(&fixture.workspace, goal.id(), UnixNanos::new(wall_time()))
             .await
             .unwrap()
     );
@@ -1135,7 +1144,7 @@ async fn a_begun_attempt_can_accept_after_closure_and_lost_handoff_keeps_the_run
             .expire_group(
                 &fixture.workspace,
                 goal.id(),
-                wall_time() + HISTORY_RETENTION_NANOS
+                UnixNanos::new(wall_time() + HISTORY_RETENTION_NANOS)
             )
             .await
             .unwrap()
@@ -1186,7 +1195,12 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
             .expire_group(
                 &fixture.workspace,
                 abandoned.id(),
-                attempts.first().unwrap().started_at_unix_nanos + HISTORY_RETENTION_NANOS
+                attempts
+                    .first()
+                    .unwrap()
+                    .started_at
+                    .checked_add(HISTORY_RETENTION)
+                    .unwrap()
             )
             .await
             .unwrap()
@@ -1208,7 +1222,7 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
             goal.id(),
             TaskOutcome::Failure,
             Some("No tools"),
-            ended_at,
+            UnixNanos::new(ended_at),
         )
         .await
         .unwrap();
@@ -1227,7 +1241,7 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
             .expire_group(
                 &fixture.workspace,
                 goal.id(),
-                ended_at + HISTORY_RETENTION_NANOS - 1
+                UnixNanos::new(ended_at + HISTORY_RETENTION_NANOS - 1)
             )
             .await
             .unwrap()
@@ -1238,7 +1252,7 @@ async fn unknown_attempts_and_completion_feedback_expire_without_deleting_curren
             .expire_group(
                 &fixture.workspace,
                 goal.id(),
-                ended_at + HISTORY_RETENTION_NANOS
+                UnixNanos::new(ended_at + HISTORY_RETENTION_NANOS)
             )
             .await
             .unwrap()
@@ -1284,7 +1298,7 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
     .await;
     let change = ChangeContext::new(
         fixture.actor.authenticated_user().unwrap().clone(),
-        coral_db::UnixNanos::new(30),
+        UnixNanos::new(30),
         coral_test_support::trace('1'),
     );
     fixture
@@ -1305,7 +1319,7 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
             &member_actor,
             &fixture.workspace,
             TaskIntent::parse("Private goal").unwrap(),
-            40,
+            UnixNanos::new(40),
         )
         .await
         .unwrap();
@@ -1328,7 +1342,7 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
             goal.id(),
             TaskOutcome::Failure,
             Some("Private obstacle"),
-            wall_time(),
+            UnixNanos::new(wall_time()),
         )
         .await
         .unwrap();
@@ -1397,7 +1411,7 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
             .expire_group(
                 elsewhere.id(),
                 goal.id(),
-                wall_time() + HISTORY_RETENTION_NANOS
+                UnixNanos::new(wall_time() + HISTORY_RETENTION_NANOS)
             )
             .await
             .unwrap()
@@ -1446,7 +1460,7 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
         .authenticate_agent(
             &fixture.workspace,
             issued.credential.expose(),
-            coral_db::UnixNanos::new(40),
+            UnixNanos::new(40),
         )
         .await
         .unwrap();
@@ -1456,7 +1470,7 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
             &agent,
             &fixture.workspace,
             TaskIntent::parse("Agent goal").unwrap(),
-            40,
+            UnixNanos::new(40),
         )
         .await
         .unwrap();
@@ -1531,7 +1545,7 @@ async fn standalone_runs_use_terminal_completion_and_create_no_goals_or_attempts
             .expire_standalone_run(
                 &fixture.workspace,
                 run.run_id(),
-                ended_at + HISTORY_RETENTION_NANOS - 1
+                UnixNanos::new(ended_at + HISTORY_RETENTION_NANOS - 1)
             )
             .await
             .unwrap()
@@ -1552,7 +1566,7 @@ async fn standalone_runs_use_terminal_completion_and_create_no_goals_or_attempts
             .expire_standalone_run(
                 &fixture.workspace,
                 run.run_id(),
-                ended_at + HISTORY_RETENTION_NANOS
+                UnixNanos::new(ended_at + HISTORY_RETENTION_NANOS)
             )
             .await
             .unwrap()
@@ -1657,7 +1671,7 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_run_acceptan
         let expiry = wall_time() + 1_000_000_000;
         let change = ChangeContext::new(
             fixture.actor.authenticated_user().unwrap().clone(),
-            coral_db::UnixNanos::new(wall_time()),
+            UnixNanos::new(wall_time()),
             coral_test_support::trace('1'),
         );
         let issued = fixture
@@ -1667,7 +1681,7 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_run_acceptan
                 &change,
                 &fixture.workspace,
                 coral_workspace::AgentDisplayName::parse("Expiring worker").unwrap(),
-                Some(coral_db::UnixNanos::new(expiry)),
+                Some(UnixNanos::new(expiry)),
             )
             .await
             .unwrap();
@@ -1677,7 +1691,7 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_run_acceptan
             .authenticate_agent(
                 &fixture.workspace,
                 issued.credential.expose(),
-                coral_db::UnixNanos::new(wall_time()),
+                UnixNanos::new(wall_time()),
             )
             .await
             .unwrap();
@@ -1687,7 +1701,7 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_run_acceptan
                 &agent,
                 &fixture.workspace,
                 TaskIntent::parse("Finish before expiry").unwrap(),
-                wall_time(),
+                UnixNanos::new(wall_time()),
             )
             .await
             .unwrap();
@@ -1721,7 +1735,7 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_run_acceptan
                 &mut blocker,
                 &fixture.actor,
                 &fixture.workspace,
-                coral_db::UnixNanos::new(wall_time()),
+                UnixNanos::new(wall_time()),
             )
             .await
             .unwrap();
@@ -1778,9 +1792,14 @@ async fn cleanup_rechecks_begin_and_completion_winners_under_the_goal_lock() {
                 .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
                 .await
                 .unwrap();
-            entries.first().unwrap().started_at_unix_nanos + HISTORY_RETENTION_NANOS
+            entries
+                .first()
+                .unwrap()
+                .started_at
+                .checked_add(HISTORY_RETENTION)
+                .unwrap()
         } else {
-            wall_time()
+            UnixNanos::new(wall_time())
         };
         let tasks = fixture.tasks.clone();
         let workspace = fixture.workspace.clone();
@@ -1824,10 +1843,11 @@ async fn cleanup_winners_prevent_late_begin_or_completion_from_committing() {
                 .unwrap()
                 .first()
                 .unwrap()
-                .started_at_unix_nanos
-                + HISTORY_RETENTION_NANOS
+                .started_at
+                .checked_add(HISTORY_RETENTION)
+                .unwrap()
         } else {
-            wall_time()
+            UnixNanos::new(wall_time())
         };
         fixture
             .tasks
@@ -1878,7 +1898,7 @@ async fn concurrent_run_termination_protects_its_group_from_stale_cleanup() {
     let AttemptEvidence::Run(run) = detail.evidence.unwrap() else {
         panic!("accepted Run association")
     };
-    let stale_cutoff = entry.completed_at_unix_nanos.unwrap();
+    let stale_cutoff = entry.completed_at.unwrap();
     // The lost handoff left the Run with no owner: once its lease lapsed the
     // expired-lease sweep ends it, timed out past its deadline, while a
     // cleanup that read it running holds its group. Retention reads a
@@ -1895,7 +1915,11 @@ async fn concurrent_run_termination_protects_its_group_from_stale_cleanup() {
     let id = goal.id().clone();
     let cleanup = tokio::spawn(async move {
         tasks
-            .expire_group(&workspace, &id, stale_cutoff + HISTORY_RETENTION_NANOS)
+            .expire_group(
+                &workspace,
+                &id,
+                stale_cutoff.checked_add(HISTORY_RETENTION).unwrap(),
+            )
             .await
     });
     let runs = fixture.runs.clone();
@@ -2037,6 +2061,10 @@ fn wall_time() -> i64 {
     coral_test_support::now_unix_nanos()
 }
 
+/// [`HISTORY_RETENTION`] in nanoseconds, for a test that adds it to an
+/// instant it writes as an integer.
+const HISTORY_RETENTION_NANOS: i64 = HISTORY_RETENTION.as_secs().cast_signed() * 1_000_000_000;
+
 #[tokio::test]
 async fn empty_filtered_search_retains_exact_accepted_query_provider_and_limit() {
     let fixture = Fixture::new().await;
@@ -2149,7 +2177,7 @@ async fn repeated_empty_searches_are_distinct_complete_attempts_and_closure_reje
             goal.id(),
             TaskOutcome::Success,
             None,
-            i64::MAX / 2,
+            UnixNanos::new(i64::MAX / 2),
         )
         .await
         .unwrap();
@@ -2266,7 +2294,7 @@ impl Fixture {
 fn private_tool_context(call: &AttributedCommand) -> coral_tools::PrivateToolChangeContext {
     coral_tools::PrivateToolChangeContext::new(
         call.actor.clone(),
-        coral_db::UnixNanos::new(wall_time()),
+        UnixNanos::new(wall_time()),
         coral_test_support::trace('f'),
     )
 }
@@ -2289,7 +2317,7 @@ async fn install_private_provider(
             &mut transaction,
             &ChangeContext::new(
                 owner.clone(),
-                coral_db::UnixNanos::new(10),
+                UnixNanos::new(10),
                 coral_test_support::trace('1'),
             ),
             workspace,

@@ -29,7 +29,7 @@ async fn duplicate_metadata_rejects_an_otherwise_valid_agent_in_both_authenticat
                 &principal,
                 f.workspace.id(),
                 coral_task::TaskIntent::parse("Private goal").unwrap(),
-                1,
+                coral_db::UnixNanos::new(1),
             )
             .await
             .unwrap();

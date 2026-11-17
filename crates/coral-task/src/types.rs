@@ -1,5 +1,6 @@
 use std::fmt;
 
+use coral_db::UnixNanos;
 use coral_workspace::{Principal, WorkspaceId};
 
 use crate::Error;
@@ -137,8 +138,8 @@ pub struct Task {
     intent: TaskIntent,
     outcome: Option<TaskOutcome>,
     feedback: Option<String>,
-    started_at_unix_nanos: i64,
-    ended_at_unix_nanos: Option<i64>,
+    started_at: UnixNanos,
+    ended_at: Option<UnixNanos>,
 }
 
 /// The ID of a Task Coral found, as a span field.
@@ -173,8 +174,8 @@ impl Task {
         intent: TaskIntent,
         outcome: Option<TaskOutcome>,
         feedback: Option<String>,
-        started_at_unix_nanos: i64,
-        ended_at_unix_nanos: Option<i64>,
+        started_at: UnixNanos,
+        ended_at: Option<UnixNanos>,
     ) -> Self {
         Self {
             context_impact: None,
@@ -184,8 +185,8 @@ impl Task {
             intent,
             outcome,
             feedback,
-            started_at_unix_nanos,
-            ended_at_unix_nanos,
+            started_at,
+            ended_at,
         }
     }
 
@@ -243,13 +244,13 @@ impl Task {
 
     /// Returns when Coral durably started the Task.
     #[must_use]
-    pub const fn started_at_unix_nanos(&self) -> i64 {
-        self.started_at_unix_nanos
+    pub const fn started_at(&self) -> UnixNanos {
+        self.started_at
     }
 
     /// Returns when the terminal outcome committed.
     #[must_use]
-    pub const fn ended_at_unix_nanos(&self) -> Option<i64> {
-        self.ended_at_unix_nanos
+    pub const fn ended_at(&self) -> Option<UnixNanos> {
+        self.ended_at
     }
 }

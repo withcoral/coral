@@ -2,7 +2,7 @@ pub(crate) mod activity;
 use sea_query::{Condition, Expr, ExprTrait as _, Iden, OnConflict, Order, Query};
 use sqlx::FromRow;
 
-use coral_db::{Database, QueryExecutor};
+use coral_db::{Database, QueryExecutor, UnixNanos};
 use coral_workspace::{Principal, PrincipalId, PrincipalKind, WorkspaceId};
 
 use crate::{Error, Task, TaskId, TaskIntent, TaskOutcome};
@@ -31,8 +31,8 @@ struct TaskRow {
     intent: String,
     outcome: Option<String>,
     feedback: Option<String>,
-    started_at_unix_nanos: i64,
-    ended_at_unix_nanos: Option<i64>,
+    started_at_unix_nanos: UnixNanos,
+    ended_at_unix_nanos: Option<UnixNanos>,
 }
 
 impl TaskRow {
@@ -106,9 +106,9 @@ pub(super) async fn insert(
             Expr::val(task.principal().kind().as_storage_str()),
             Expr::val(task.intent().as_str()),
             Expr::val(Option::<String>::None),
-            Expr::val(task.started_at_unix_nanos()),
-            Expr::val(Option::<i64>::None),
-            Expr::val(task.started_at_unix_nanos()),
+            Expr::val(task.started_at()),
+            Expr::val(Option::<UnixNanos>::None),
+            Expr::val(task.started_at()),
         ])
         .on_conflict(OnConflict::column(TaskRecords::Id).do_nothing().to_owned())
         .to_owned();
@@ -151,24 +151,21 @@ pub(super) async fn complete_for_principal(
     principal: &Principal,
     outcome: TaskOutcome,
     feedback: Option<&str>,
-    ended_at_unix_nanos: i64,
+    ended_at: UnixNanos,
 ) -> Result<Option<Task>, Error> {
     let statement = Query::update()
         .table(TaskRecords::Table)
         .values([
             (TaskRecords::Outcome, Expr::val(outcome.as_storage_str())),
             (TaskRecords::Feedback, Expr::val(feedback)),
-            (
-                TaskRecords::EndedAtUnixNanos,
-                Expr::val(ended_at_unix_nanos),
-            ),
+            (TaskRecords::EndedAtUnixNanos, Expr::val(ended_at)),
         ])
         .and_where(Expr::col(TaskRecords::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(TaskRecords::Id).eq(task_id.to_string()))
         .and_where(Expr::col(TaskRecords::PrincipalId).eq(principal.id().as_str()))
         .and_where(Expr::col(TaskRecords::PrincipalKind).eq(principal.kind().as_storage_str()))
         .and_where(Expr::col(TaskRecords::Outcome).is_null())
-        .and_where(Expr::col(TaskRecords::StartedAtUnixNanos).lte(ended_at_unix_nanos))
+        .and_where(Expr::col(TaskRecords::StartedAtUnixNanos).lte(ended_at))
         .to_owned();
     let changed = transaction.execute_change(statement).await? == 1;
     let task = find_attributed(&mut *transaction, workspace_id, task_id, principal).await?;
@@ -178,7 +175,7 @@ pub(super) async fn complete_for_principal(
         ));
     }
     if changed {
-        touch(transaction, workspace_id, task_id, ended_at_unix_nanos).await?;
+        touch(transaction, workspace_id, task_id, ended_at).await?;
     }
     Ok(task)
 }
@@ -229,7 +226,7 @@ pub(super) async fn retention_group(
     transaction: &mut coral_db::Transaction<'_>,
     workspace: &WorkspaceId,
     task: &TaskId,
-) -> Result<Option<(Task, i64)>, Error> {
+) -> Result<Option<(Task, UnixNanos)>, Error> {
     let row: Option<TaskRow> = transaction
         .fetch_optional(
             base_select()
@@ -241,7 +238,7 @@ pub(super) async fn retention_group(
     let Some(row) = row else {
         return Ok(None);
     };
-    let activity: Option<(i64,)> = transaction
+    let activity: Option<(UnixNanos,)> = transaction
         .fetch_optional(
             Query::select()
                 .column(TaskRecords::LastActivityAtUnixNanos)
@@ -299,7 +296,7 @@ pub(super) async fn touch(
     transaction: &mut coral_db::Transaction<'_>,
     workspace: &WorkspaceId,
     task: &TaskId,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<(), Error> {
     transaction
         .execute_change(
@@ -332,16 +329,15 @@ fn base_select() -> sea_query::SelectStatement {
         .to_owned()
 }
 
-/// Counts the Tasks started in `[start, end)` unix nanoseconds, across every
-/// Workspace. The caller authorizes the read.
+/// Counts the Tasks started in `[start, end)`, across every Workspace. The caller authorizes the read.
 ///
 /// # Errors
 ///
 /// Returns a database failure.
 pub async fn tasks_started(
     tx: &mut coral_db::Transaction<'_>,
-    start: i64,
-    end: i64,
+    start: UnixNanos,
+    end: UnixNanos,
 ) -> Result<u64, Error> {
     let tasks: Option<(i64,)> = tx
         .fetch_optional(
