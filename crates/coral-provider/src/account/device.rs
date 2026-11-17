@@ -807,8 +807,8 @@ impl AccountModule {
     /// A job that cannot be resumed is logged and its lease is moved one lease
     /// on, behind the other jobs, so it never holds them back. Recovery tries
     /// it again after each later lease for as long as it fails, and never
-    /// removes it. A job whose lease cannot be moved is logged too, and the
-    /// next pass reads it first again.
+    /// removes it. A job whose lease cannot be moved is logged too. It keeps
+    /// the lease it had, so it stays ahead of the jobs that were moved.
     /// # Errors
     /// Returns a failure to read the jobs, and any failure in which the
     /// database gave no answer: every later job would fail the same way.
