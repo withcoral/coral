@@ -4647,13 +4647,11 @@ async fn configure_publication_application(
     setup: &crate::ProviderSetupId,
     secret: Option<&str>,
 ) -> i64 {
-    let review = harness
-        .providers
-        .review_setup_configuration(context.actor(), owner, setup)
-        .await
-        .unwrap();
-    let application = SetupOAuthClient::application(
-        "https://reef.example/callback".into(),
+    configure_application(
+        harness,
+        context,
+        owner,
+        setup,
         crate::OAuthClientConfiguration::new(
             "manual-client".into(),
             crate::OAuthClientAuthentication::ClientSecretPost {
@@ -4661,7 +4659,25 @@ async fn configure_publication_application(
             },
         ),
     )
-    .unwrap();
+    .await
+}
+
+/// Confirms the Setup's saved or suggested configuration with `application`
+/// as its OAuth application, and returns the confirmed revision.
+async fn configure_application(
+    harness: &Harness,
+    context: &coral_workspace::ChangeContext,
+    owner: &WorkspaceId,
+    setup: &crate::ProviderSetupId,
+    application: crate::OAuthClientConfiguration,
+) -> i64 {
+    let review = harness
+        .providers
+        .review_setup_configuration(context.actor(), owner, setup)
+        .await
+        .unwrap();
+    let application =
+        SetupOAuthClient::application("https://reef.example/callback".into(), application).unwrap();
     let confirmed = harness
         .accounts
         .confirm_setup_configuration(
@@ -4863,16 +4879,21 @@ async fn publication_enforces_application_secret_expiry_without_inspection() {
     }
 }
 
-#[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one update lifecycle distinguishes expired replacement, active reuse, and fresh repair"
-)]
-async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_applications() {
-    use crate::account::oauth_client_secret_repository::{self as secrets, Target};
+/// A published Provider whose confidential OAuth application the token
+/// endpoint rejected: the Provider holds the application's secret and records
+/// its failure.
+struct RejectedApplication {
+    api: OAuthApi,
+    harness: Harness,
+    actor: coral_workspace::AuthenticatedUser,
+    owner: WorkspaceId,
+    provider: crate::Provider,
+}
+
+async fn rejected_application(user: &str) -> RejectedApplication {
     let api = OAuthApi::start().await;
     let harness = harness(None).await;
-    let (actor, workspace) = workspace_owner(&harness, "user:regeneration-expiry").await;
+    let (actor, workspace) = workspace_owner(&harness, user).await;
     let owner = workspace.id().clone();
     let context = change_context(actor.clone(), 10, '1');
     let setup = harness
@@ -4903,7 +4924,7 @@ async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_appli
         .await
         .unwrap()
         .skip_search();
-    let provider = publication.published_provider().unwrap();
+    let provider = publication.published_provider().unwrap().clone();
     let rejection = Mock::given(method("POST"))
         .and(path("/token"))
         .respond_with(ResponseTemplate::new(401).set_body_json(json!({"error": "invalid_client"})))
@@ -4939,29 +4960,120 @@ async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_appli
         .await
         .unwrap();
     drop(rejection);
-    let status = async || {
-        harness
+    RejectedApplication {
+        api,
+        harness,
+        actor,
+        owner,
+        provider,
+    }
+}
+
+impl RejectedApplication {
+    async fn failure_code(&self) -> Option<String> {
+        self.harness
             .accounts
-            .oauth_client_status(&context, &owner, provider.id())
+            .oauth_client_status(
+                &change_context(self.actor.clone(), 10, '1'),
+                &self.owner,
+                self.provider.id(),
+            )
             .await
             .unwrap()
             .failure_code
-    };
+    }
+
+    /// The identity of the application secret the Provider holds, if any.
+    async fn secret(&self) -> Option<String> {
+        use crate::account::oauth_client_secret_repository::{self as secrets, Target};
+        let mut tx = self.harness.database.begin_read_snapshot().await.unwrap();
+        let secret = secrets::load(&mut tx, &self.owner, &Target::Provider(self.provider.id()))
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        secret.map(|secret| secret.id)
+    }
+}
+
+// Catches: a Provider that keeps a confidential application's secret, or the
+// failure recorded against it, after an Update replaced that application with
+// a public one.
+#[tokio::test]
+async fn regeneration_to_a_public_application_drops_the_old_secret_and_its_failure() {
+    let rejected = rejected_application("user:regeneration-public").await;
+    let RejectedApplication {
+        api,
+        harness,
+        actor,
+        owner,
+        provider,
+    } = &rejected;
     assert_eq!(
-        status().await.as_deref(),
+        rejected.failure_code().await.as_deref(),
         Some("oauth_client_configuration")
     );
-    let active_secret = async || {
-        let mut tx = harness.database.begin().await.unwrap();
-        let id = secrets::load(&mut tx, &owner, &Target::Provider(provider.id()))
-            .await
-            .unwrap()
-            .unwrap()
-            .id;
-        tx.rollback().await.unwrap();
-        id
-    };
-    let original_secret = active_secret().await;
+    assert_ne!(rejected.secret().await, None);
+
+    let context = change_context(actor.clone(), 20, '2');
+    let update = harness
+        .providers
+        .prepare_setup(
+            &context,
+            owner,
+            ProviderSetupSource::OpenApiDocument(api.document("Expiry")),
+            Some(provider.id()),
+        )
+        .await
+        .unwrap();
+    let revision = configure_application(
+        harness,
+        &context,
+        owner,
+        update.id(),
+        crate::OAuthClientConfiguration::new(
+            "public-client".into(),
+            crate::OAuthClientAuthentication::None,
+        ),
+    )
+    .await;
+    let regenerated = harness
+        .providers
+        .regenerate_provider(
+            &context,
+            crate::ProviderRegenerationRequest::new(
+                super::account_tests::authorization_request(),
+                owner.clone(),
+                provider.id().clone(),
+                update.id().clone(),
+                revision,
+            )
+            .with_incompatible_configuration_confirmation(),
+        )
+        .await
+        .unwrap()
+        .skip_search();
+    assert_eq!(regenerated.outcome(), ProviderPublicationOutcome::Succeeded);
+
+    assert_eq!(rejected.failure_code().await, None);
+    assert_eq!(rejected.secret().await, None);
+}
+
+#[tokio::test]
+async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_applications() {
+    let rejected = rejected_application("user:regeneration-expiry").await;
+    let RejectedApplication {
+        api,
+        harness,
+        actor,
+        owner,
+        provider,
+    } = &rejected;
+    assert_eq!(
+        rejected.failure_code().await.as_deref(),
+        Some("oauth_client_configuration")
+    );
+    let original_secret = rejected.secret().await;
+    assert_ne!(original_secret, None);
     for (secret, created, now, succeeds, repairs) in [
         (Some("expired-canary"), 10, HOUR + 10, false, false),
         // A Setup expires at its deadline with or without a secret of its own.
@@ -4973,16 +5085,16 @@ async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_appli
             .providers
             .prepare_setup(
                 &created_context,
-                &owner,
+                owner,
                 ProviderSetupSource::OpenApiDocument(api.document("Expiry")),
                 Some(provider.id()),
             )
             .await
             .unwrap();
         let revision = configure_publication_application(
-            &harness,
+            harness,
             &created_context,
-            &owner,
+            owner,
             update.id(),
             secret,
         )
@@ -5020,9 +5132,12 @@ async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_appli
             .skip_search();
         assert_eq!(replay.id(), result.id());
         assert_eq!(replay.outcome(), result.outcome());
-        assert_eq!(status().await.is_none(), repairs);
-        assert_eq!(active_secret().await == original_secret, !repairs);
-        assert_consumed_without_application_secret(&harness, &owner, update.id()).await;
+        assert_eq!(rejected.failure_code().await.is_none(), repairs);
+        // A repair replaces the Provider's secret; it never leaves it without one.
+        let secret = rejected.secret().await;
+        assert_ne!(secret, None);
+        assert_eq!(secret == original_secret, !repairs);
+        assert_consumed_without_application_secret(harness, owner, update.id()).await;
     }
 }
 

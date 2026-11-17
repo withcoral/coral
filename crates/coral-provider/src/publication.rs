@@ -19,6 +19,9 @@
 use coral_workspace::WorkspaceId;
 
 pub(crate) mod materialization;
+mod regeneration;
+#[cfg(test)]
+mod regeneration_tests;
 mod repository;
 #[cfg(test)]
 mod tests;
@@ -65,6 +68,7 @@ use crate::{
     ProviderDisplayName, ProviderId, ProviderModule, ProviderSetupId, ProviderState,
     PublicationDiagnostic, access, require_owner, require_ready,
 };
+use regeneration::Effect;
 
 /// The request carries its target's evidence through both stages. Regeneration
 /// advances from an etag precondition to a pinned baseline; creation needs neither.
@@ -201,6 +205,40 @@ struct AppliedPublication {
 const TERMINAL_ONLY_FIELDS: &[&str] = &["setup.state", "publication"];
 
 impl AppliedPublication {
+    /// A regeneration that succeeded: it activated a new Generation, or kept
+    /// the active one because the catalog is the same.
+    fn regenerated(
+        id: ProviderPublicationId,
+        request: ProviderRegenerationRequest,
+        activated: Option<ActivatedGeneration>,
+        completed_at: i64,
+    ) -> Self {
+        Self {
+            terminal: Terminal::Regeneration(ProviderRegenerationPublication::new(
+                id,
+                request,
+                ProviderPublicationOutcome::Succeeded,
+                None,
+                completed_at,
+            )),
+            changed_field_paths: if activated.is_some() {
+                &[
+                    "setup.state",
+                    "provider.display_name",
+                    "provider.active_generation",
+                    "catalog",
+                    "search_material",
+                ]
+            } else {
+                TERMINAL_ONLY_FIELDS
+            },
+            evidence: activated.map_or(
+                PublicationEvidence::ReusedActiveGeneration,
+                PublicationEvidence::Activated,
+            ),
+        }
+    }
+
     fn failed_regeneration(
         id: ProviderPublicationId,
         request: ProviderRegenerationRequest,
@@ -1181,10 +1219,9 @@ impl ProviderModule {
         })
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one locked publication atomically activates the contract and invalidates obsolete authorization"
-    )]
+    /// Loads what a regeneration decides from, plans it, then applies the plan.
+    /// Nothing is written before the plan stands, so a refusal or a failed
+    /// terminal result leaves the Provider as it was.
     async fn apply_regeneration(
         &self,
         transaction: &mut Transaction<'_>,
@@ -1193,235 +1230,10 @@ impl ProviderModule {
         baseline: RegenerationBaseline,
         materialized: MaterializationOutcome,
     ) -> Result<AppliedPublication, Error> {
-        let TerminalContext {
-            context,
-            current_setup,
-            setup_input,
-            ..
-        } = *terminal;
-        let reuse_active_generation = match &materialized {
-            MaterializationOutcome::Ready(prepared) => {
-                prepared.display_name() == baseline.display_name.as_str()
-                    && prepared.fingerprint() == baseline.fingerprint
-            }
-            MaterializationOutcome::Rejected(_) => false,
-        };
+        let context = terminal.context;
         let publication_id = ProviderPublicationId::generate();
-        let (publication, activated) = match materialized {
-            MaterializationOutcome::Ready(prepared) => {
-                let prepared =
-                    with_active_client(transaction, &baseline.generation_id, prepared).await?;
-                let active_contract = coral_catalog::credential_contract_in_transaction(
-                    transaction,
-                    &baseline.generation_id,
-                )
-                .await?;
-                if prepared.credential_contract() != active_contract
-                    && !request.allows_incompatible_configuration()
-                {
-                    return Err(Error::IncompatibleConfigurationConfirmationRequired);
-                }
-                let replacement_contract = prepared.credential_contract();
-                let access = crate::access::exact_in_transaction(
-                    transaction,
-                    request.owner(),
-                    request.provider_id(),
-                )
-                .await?
-                .ok_or(Error::ProviderNotFound)?;
-                let route = request
-                    .account_setting()
-                    .unwrap_or(access.credential_route());
-                let setting_changed = route != access.credential_route();
-                if setting_changed && !request.allows_incompatible_configuration() {
-                    return Err(Error::IncompatibleConfigurationConfirmationRequired);
-                }
-                match route.fits(&replacement_contract) {
-                    crate::RouteFit::Fits => {}
-                    crate::RouteFit::SourceNeedsCredential => return Err(Error::AccountRequired),
-                    crate::RouteFit::SourceNeedsNoCredential => return Err(Error::AccountInput),
-                }
-                let promotion = if request.account_grant().is_some() {
-                    if route != crate::CredentialRoute::Fixed {
-                        return Err(Error::AccountInput);
-                    }
-                    match setup_credentials::decide(
-                        transaction,
-                        &credential_decision_context(context, terminal.started),
-                        request.owner(),
-                        request.setup_id(),
-                        route,
-                        request.account_grant(),
-                        &replacement_contract,
-                    )
-                    .await?
-                    {
-                        Ok(promotion) => Some(promotion),
-                        Err(diagnostic) => {
-                            return Ok(AppliedPublication::failed_regeneration(
-                                publication_id,
-                                request,
-                                diagnostic,
-                                context.occurred_at_unix_nanos(),
-                            ));
-                        }
-                    }
-                } else {
-                    if route == crate::CredentialRoute::Fixed
-                        && (setting_changed || replacement_contract != active_contract)
-                    {
-                        return Err(Error::AccountRequired);
-                    }
-                    None
-                };
-                crate::account::oauth_client::require_oauth_application(&replacement_contract)?;
-                crate::account::oauth_client::require_configured(
-                    transaction,
-                    request.owner(),
-                    request.setup_id(),
-                    &replacement_contract,
-                )
-                .await?;
-                let display_name = ProviderDisplayName::parse(prepared.display_name())?;
-                let activated = if reuse_active_generation {
-                    None
-                } else {
-                    let generation_id = coral_catalog::publish_generation_in_transaction(
-                        transaction,
-                        setup_input,
-                        current_setup
-                            .setup
-                            .input_digest()
-                            .ok_or(Error::ProviderSetupNotReady)?,
-                        prepared,
-                        context.occurred_at_unix_nanos(),
-                    )
-                    .await?;
-                    if !provider_repository::activate_generation(
-                        transaction,
-                        request.owner(),
-                        request.provider_id(),
-                        &baseline.generation_id,
-                        &generation_id,
-                        &display_name,
-                    )
-                    .await?
-                    {
-                        return Err(Error::ProviderChangedDuringPublication);
-                    }
-                    Some(ActivatedGeneration::new(
-                        request.owner().clone(),
-                        request.provider_id().clone(),
-                        generation_id,
-                        Some(baseline.generation_id.clone()),
-                    ))
-                };
-                if setting_changed {
-                    crate::account::update::retire_old_setting(
-                        transaction,
-                        context,
-                        &access,
-                        terminal.authority,
-                    )
-                    .await?;
-                    access::update_credential_route(transaction, &access, route).await?;
-                    let current = provider_repository::current_provider(
-                        transaction,
-                        request.owner(),
-                        provider_repository::ProviderKey::Id(request.provider_id()),
-                        coral_db::RowLock::None,
-                    )
-                    .await?
-                    .ok_or(Error::ProviderNotFound)?;
-                    provider_repository::advance_provider_version(
-                        transaction,
-                        request.owner(),
-                        request.provider_id(),
-                        current.provider.version(),
-                    )
-                    .await?;
-                    provider_repository::insert_lifecycle_event(
-                        transaction,
-                        provider_repository::NewLifecycleEvent {
-                            workspace_id: Some(request.owner()),
-                            actor: LifecycleActor::User {
-                                user_id: context.actor().user_id().clone(),
-                                authority_source: terminal.authority,
-                            },
-                            action: LifecycleAction::ProviderCredentialRouteChanged,
-                            target_id: &request.provider_id().to_string(),
-                            outcome: LifecycleOutcome::Accepted,
-                            changed_field_paths: &["credential_route", "account_setting_version"],
-                            occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
-                            trace_id: context.trace_id(),
-                        },
-                    )
-                    .await?;
-                }
-                if let Some(setup_credentials::Promotion::Promote { row, .. }) = promotion {
-                    setup_credentials::replace_shared(
-                        transaction,
-                        context,
-                        setup_credentials::PromotionTarget {
-                            owner: request.owner(),
-                            provider: request.provider_id(),
-                            authority: terminal.authority,
-                            route,
-                        },
-                        &row,
-                    )
-                    .await?;
-                }
-                if replacement_contract != active_contract {
-                    crate::account::cancel_obsolete_authorizations(
-                        transaction,
-                        context,
-                        request.owner(),
-                        request.provider_id(),
-                        terminal.authority,
-                    )
-                    .await?;
-                }
-                if replacement_contract.oauth_client().is_none_or(|policy| {
-                    policy.authentication == coral_catalog::OAuthClientAuthenticationMethod::None
-                }) {
-                    crate::account::oauth_client_secret_repository::delete(
-                        transaction,
-                        request.owner(),
-                        &crate::account::oauth_client_secret_repository::Target::Provider(
-                            request.provider_id(),
-                        ),
-                    )
-                    .await?;
-                }
-                if crate::account::oauth_client_secret_repository::promote(
-                    transaction,
-                    request.owner(),
-                    request.setup_id(),
-                    request.provider_id(),
-                )
-                .await?
-                    || replacement_contract != active_contract
-                {
-                    provider_repository::set_oauth_client_failure(
-                        transaction,
-                        request.owner(),
-                        request.provider_id(),
-                        None,
-                    )
-                    .await?;
-                }
-                (
-                    ProviderRegenerationPublication::new(
-                        publication_id,
-                        request,
-                        ProviderPublicationOutcome::Succeeded,
-                        None,
-                        context.occurred_at_unix_nanos(),
-                    ),
-                    activated,
-                )
-            }
+        let prepared = match materialized {
+            MaterializationOutcome::Ready(prepared) => prepared,
             MaterializationOutcome::Rejected(diagnostic) => {
                 return Ok(AppliedPublication::failed_regeneration(
                     publication_id,
@@ -1431,27 +1243,259 @@ impl ProviderModule {
                 ));
             }
         };
-
-        let changed_field_paths = if activated.is_some() {
-            &[
-                "setup.state",
-                "provider.display_name",
-                "provider.active_generation",
-                "catalog",
-                "search_material",
-            ]
+        let same_catalog = prepared.display_name() == baseline.display_name.as_str()
+            && prepared.fingerprint() == baseline.fingerprint;
+        let active_contract =
+            coral_catalog::credential_contract_in_transaction(transaction, &baseline.generation_id)
+                .await?;
+        let prepared = with_active_client(prepared, &active_contract)?;
+        let replacement_contract = prepared.credential_contract();
+        let access = crate::access::exact_in_transaction(
+            transaction,
+            request.owner(),
+            request.provider_id(),
+        )
+        .await?
+        .ok_or(Error::ProviderNotFound)?;
+        let plan = regeneration::plan(regeneration::Facts {
+            allows_incompatible_configuration: request.allows_incompatible_configuration(),
+            account_setting: request.account_setting(),
+            account_grant: request.account_grant().is_some(),
+            current_route: access.credential_route(),
+            active_contract: &active_contract,
+            replacement_contract: &replacement_contract,
+            same_catalog,
+        })?;
+        let grant = if plan.includes(Effect::ReplaceSharedAccount) {
+            match setup_credentials::decide(
+                transaction,
+                &credential_decision_context(context, terminal.started),
+                request.owner(),
+                request.setup_id(),
+                plan.route,
+                request.account_grant(),
+                &replacement_contract,
+            )
+            .await?
+            {
+                Ok(setup_credentials::Promotion::Promote { row, .. }) => Some(row),
+                // The plan takes a grant only for the shared Account, which
+                // the decision either promotes or refuses with a diagnostic.
+                Ok(
+                    setup_credentials::Promotion::Discard { .. }
+                    | setup_credentials::Promotion::NotRequired,
+                ) => return Err(Error::AccountRequired),
+                Err(diagnostic) => {
+                    return Ok(AppliedPublication::failed_regeneration(
+                        publication_id,
+                        request,
+                        diagnostic,
+                        context.occurred_at_unix_nanos(),
+                    ));
+                }
+            }
         } else {
-            TERMINAL_ONLY_FIELDS
+            None
         };
-        Ok(AppliedPublication {
-            terminal: Terminal::Regeneration(publication),
-            changed_field_paths,
-            evidence: activated.map_or(
-                PublicationEvidence::ReusedActiveGeneration,
-                PublicationEvidence::Activated,
-            ),
-        })
+        crate::account::oauth_client::require_oauth_application(&replacement_contract)?;
+        crate::account::oauth_client::require_configured(
+            transaction,
+            request.owner(),
+            request.setup_id(),
+            &replacement_contract,
+        )
+        .await?;
+        let display_name = ProviderDisplayName::parse(prepared.display_name())?;
+        let activated = self
+            .write_regeneration(
+                transaction,
+                terminal,
+                &RegenerationTarget {
+                    access: &access,
+                    active_generation: &baseline.generation_id,
+                    setup: request.setup_id(),
+                },
+                &plan,
+                Replacement {
+                    prepared,
+                    display_name,
+                    grant,
+                },
+            )
+            .await?;
+        Ok(AppliedPublication::regenerated(
+            publication_id,
+            request,
+            activated,
+            context.occurred_at_unix_nanos(),
+        ))
     }
+
+    /// Writes an accepted plan's effects, in this order. Every rule about what
+    /// a regeneration changes is in [`regeneration::plan`]. Two facts are known
+    /// only here: whether another writer moved the active Generation, and
+    /// whether the Setup held an application secret to promote. An error here
+    /// comes after earlier writes, so the caller never commits past one.
+    async fn write_regeneration(
+        &self,
+        transaction: &mut Transaction<'_>,
+        terminal: &TerminalContext<'_>,
+        target: &RegenerationTarget<'_>,
+        plan: &regeneration::Plan,
+        replacement: Replacement,
+    ) -> Result<Option<ActivatedGeneration>, Error> {
+        let context = terminal.context;
+        let (owner, provider) = (target.access.workspace_id(), target.access.id());
+        let active_generation = target.active_generation;
+        let activated = if plan.includes(Effect::ActivateGeneration) {
+            let generation_id = coral_catalog::publish_generation_in_transaction(
+                transaction,
+                terminal.setup_input,
+                terminal
+                    .current_setup
+                    .setup
+                    .input_digest()
+                    .ok_or(Error::ProviderSetupNotReady)?,
+                replacement.prepared,
+                context.occurred_at_unix_nanos(),
+            )
+            .await?;
+            if !provider_repository::activate_generation(
+                transaction,
+                owner,
+                provider,
+                active_generation,
+                &generation_id,
+                &replacement.display_name,
+            )
+            .await?
+            {
+                return Err(Error::ProviderChangedDuringPublication);
+            }
+            Some(ActivatedGeneration::new(
+                owner.clone(),
+                provider.clone(),
+                generation_id,
+                Some(active_generation.clone()),
+            ))
+        } else {
+            None
+        };
+        if plan.includes(Effect::ChangeRoute) {
+            change_credential_route(transaction, terminal, target.access, plan.route).await?;
+        }
+        if let Some(row) = &replacement.grant {
+            setup_credentials::replace_shared(
+                transaction,
+                context,
+                setup_credentials::PromotionTarget {
+                    owner,
+                    provider,
+                    authority: terminal.authority,
+                    route: plan.route,
+                },
+                row,
+            )
+            .await?;
+        }
+        if plan.includes(Effect::CancelAuthorizations) {
+            crate::account::cancel_obsolete_authorizations(
+                transaction,
+                context,
+                owner,
+                provider,
+                terminal.authority,
+            )
+            .await?;
+        }
+        if plan.includes(Effect::DropClientSecret) {
+            crate::account::oauth_client_secret_repository::delete(
+                transaction,
+                owner,
+                &crate::account::oauth_client_secret_repository::Target::Provider(provider),
+            )
+            .await?;
+        }
+        // A secret the Setup holds for the application always follows it to
+        // the Provider, and repairs a recorded application failure as a new
+        // contract does.
+        let promoted_secret = crate::account::oauth_client_secret_repository::promote(
+            transaction,
+            owner,
+            target.setup,
+            provider,
+        )
+        .await?;
+        if promoted_secret || plan.includes(Effect::ClearClientFailure) {
+            provider_repository::set_oauth_client_failure(transaction, owner, provider, None)
+                .await?;
+        }
+        Ok(activated)
+    }
+}
+
+/// The Provider one regeneration replaces, as its terminal transaction holds
+/// it, and the Setup that replaces it.
+struct RegenerationTarget<'a> {
+    access: &'a crate::ProviderAccess,
+    active_generation: &'a coral_catalog::ProviderGenerationId,
+    setup: &'a ProviderSetupId,
+}
+
+/// What an accepted regeneration puts in the Provider's place.
+struct Replacement {
+    prepared: coral_catalog::PreparedProviderCatalog,
+    display_name: ProviderDisplayName,
+    /// The reviewed Setup grant that replaces the shared Account.
+    grant: Option<Box<setup_credentials::Provisional>>,
+}
+
+/// Moves the Provider to `route`: disconnects the Accounts connected under
+/// the old route, advances the account setting's version, and records the
+/// change.
+async fn change_credential_route(
+    transaction: &mut Transaction<'_>,
+    terminal: &TerminalContext<'_>,
+    access: &crate::ProviderAccess,
+    route: crate::CredentialRoute,
+) -> Result<(), Error> {
+    let context = terminal.context;
+    let (owner, provider) = (access.workspace_id(), access.id());
+    crate::account::update::retire_old_setting(transaction, context, access, terminal.authority)
+        .await?;
+    access::update_credential_route(transaction, access, route).await?;
+    let current = provider_repository::current_provider(
+        transaction,
+        owner,
+        provider_repository::ProviderKey::Id(provider),
+        coral_db::RowLock::None,
+    )
+    .await?
+    .ok_or(Error::ProviderNotFound)?;
+    provider_repository::advance_provider_version(
+        transaction,
+        owner,
+        provider,
+        current.provider.version(),
+    )
+    .await?;
+    provider_repository::insert_lifecycle_event(
+        transaction,
+        provider_repository::NewLifecycleEvent {
+            workspace_id: Some(owner),
+            actor: LifecycleActor::User {
+                user_id: context.actor().user_id().clone(),
+                authority_source: terminal.authority,
+            },
+            action: LifecycleAction::ProviderCredentialRouteChanged,
+            target_id: &provider.to_string(),
+            outcome: LifecycleOutcome::Accepted,
+            changed_field_paths: &["credential_route", "account_setting_version"],
+            occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+            trace_id: context.trace_id(),
+        },
+    )
+    .await
 }
 
 /// Stamps the discovery application's policy independently of account retention.
@@ -1477,10 +1521,9 @@ fn with_setup_client(
 /// Regeneration keeps the client ownership the active Generation promoted: an
 /// OpenAPI document declares its OAuth flow but never the client, so a
 /// replacement whose contract differs only by that client stays compatible.
-async fn with_active_client(
-    transaction: &mut coral_db::Transaction<'_>,
-    active_generation: &coral_catalog::ProviderGenerationId,
+fn with_active_client(
     prepared: coral_catalog::PreparedProviderCatalog,
+    active: &coral_catalog::ProviderCredentialContract,
 ) -> Result<coral_catalog::PreparedProviderCatalog, Error> {
     let replacement = prepared.credential_contract();
     if replacement.oauth_client().is_some()
@@ -1491,8 +1534,6 @@ async fn with_active_client(
     {
         return Ok(prepared);
     }
-    let active =
-        coral_catalog::credential_contract_in_transaction(transaction, active_generation).await?;
     match active.oauth_client() {
         Some(policy) => Ok(prepared.with_oauth_client(policy)?),
         _ => Ok(prepared),
