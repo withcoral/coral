@@ -360,7 +360,7 @@ mod tests {
     use super::super::test_state::{authenticated, database, http_state};
     use super::*;
     use crate::auth::id_token::tests::{
-        claims as id_token_claims, rsa_key, set_claim, token as id_token,
+        claims_at as id_token_claims_at, rsa_key, set_claim, token as id_token,
     };
     use crate::auth::sealed_handshake::ClientRequest;
     use crate::auth::test_config::{PROVIDER_SECRET, resolved_settings};
@@ -399,6 +399,14 @@ mod tests {
             .await
             .expect("authorization")
             .user_id
+    }
+
+    /// The claims of an ID token the provider issues on the system clock,
+    /// which the callback reads.
+    fn id_token_claims() -> Value {
+        id_token_claims_at(coral_db::UnixNanos::new(
+            coral_test_support::now_unix_nanos(),
+        ))
     }
 
     /// Redeems `code` with the bindings of the seeded sign-in.

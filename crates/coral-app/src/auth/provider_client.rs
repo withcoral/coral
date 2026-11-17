@@ -322,12 +322,16 @@ impl OidcProviderClient {
             .await
             .map_err(|_error| OidcProviderClientError::Jwks)?;
         let jwks = serde_json::from_slice(&body).map_err(|_error| OidcProviderClientError::Jwks)?;
+        // One reading of the clock, after the provider's keys arrive, dates
+        // both tokens.
+        let now = coral_db::Clock::now(&coral_db::SystemClock);
         let identity = validate_id_token(
             provider,
             &id_token,
             expected_nonce,
             &signing_algorithms,
             &jwks,
+            now,
         );
         drop(id_token);
         let identity = identity.map_err(OidcProviderClientError::IdTokenValidation)?;
@@ -336,6 +340,7 @@ impl OidcProviderClient {
             access_token.as_ref().map(|token| token.as_str()),
             &identity,
             &jwks,
+            now,
         )
         .map_err(OidcProviderClientError::AccessTokenAdmission)?;
         Ok(identity)
@@ -718,8 +723,16 @@ mod tests {
 
     use super::*;
     use crate::auth::id_token::tests::{
-        claims as id_token_claims, rsa_key, set_claim, token as id_token,
+        claims_at as id_token_claims_at, rsa_key, set_claim, token as id_token,
     };
+
+    /// The claims of an ID token the provider issues on the system clock,
+    /// which the client reads.
+    fn id_token_claims() -> Value {
+        id_token_claims_at(coral_db::UnixNanos::new(
+            coral_test_support::now_unix_nanos(),
+        ))
+    }
 
     const CLIENT_SECRET: &str = "client-secret-must-not-leak";
 
