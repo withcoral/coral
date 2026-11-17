@@ -58,10 +58,11 @@ impl WorkspaceAuthenticator for LocalAuthentication {
     ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
         // Local mode verifies no User token, so no audience is read. An empty
         // audience matches no token if that ever changes.
-        Ok(self
+        let (principal, workspace, _now) = self
             .0
             .authenticate(endpoint.workspace_fixed_by(), bearer, "")
-            .await?)
+            .await?;
+        Ok((principal, workspace))
     }
 }
 

@@ -38,6 +38,7 @@ impl WorkspaceAuthenticator for WorkspaceAuthentication {
                 &self.urls.endpoint_resource(endpoint),
             )
             .await
+            .map(|(principal, workspace, _now)| (principal, workspace))
             .map_err(AuthenticationError::from)
     }
     fn oauth_resource(&self, endpoint: &McpEndpoint) -> Option<OauthProtectedResource> {

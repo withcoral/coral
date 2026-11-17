@@ -298,7 +298,7 @@ async fn a_credential_expires_when_the_clock_passes_its_expiry() {
                 .authentication
                 .authenticate_user(Some(&management), "reef")
                 .await
-                .map(drop),
+                .map(|(_user, now)| assert_eq!(now, fixture.clock.now())),
             fixture.authenticate(Some(agent)).await.map(drop),
             // Without sign-in, the same Registration and the same clock.
             fixture
@@ -438,23 +438,28 @@ async fn local_mode_admits_the_local_owner_without_a_credential_and_agents_with_
         ),
     ] {
         let local = &fixture.local;
+        // An admitted call returns the clock's reading beside its Principal.
+        let seen = |actor: AuthenticatedPrincipal, workspace: Option<WorkspaceId>, now| {
+            assert_eq!(now, START, "{case}: the instant the call read");
+            (actor.principal().clone(), workspace)
+        };
         let observed: [Result<(Principal, Option<WorkspaceId>), AuthenticationError>; 4] = [
             local
                 .authenticate(WorkspaceFixedBy::Url(workspace), bearer, AUDIENCE)
                 .await
-                .map(|(principal, workspace)| (principal.principal().clone(), Some(workspace))),
+                .map(|(actor, workspace, now)| seen(actor, Some(workspace), now)),
             local
                 .authenticate(WorkspaceFixedBy::Credential, bearer, ORGANIZATION_AUDIENCE)
                 .await
-                .map(|(principal, workspace)| (principal.principal().clone(), Some(workspace))),
+                .map(|(actor, workspace, now)| seen(actor, Some(workspace), now)),
             local
                 .authenticate_scoped(workspace, bearer, AUDIENCE)
                 .await
-                .map(|principal| (principal.principal().clone(), None)),
+                .map(|(actor, now)| seen(actor, None, now)),
             local
                 .authenticate_user(bearer, AUDIENCE)
                 .await
-                .map(|principal| (principal.principal().clone(), None)),
+                .map(|(actor, now)| seen(actor, None, now)),
         ];
         assert_eq!(observed, expected, "{case}");
     }
@@ -556,8 +561,9 @@ impl Fixture {
         self.authentication
             .authenticate(WorkspaceFixedBy::Url(&self.workspace), token, AUDIENCE)
             .await
-            .map(|(principal, workspace)| {
+            .map(|(principal, workspace, now)| {
                 assert_eq!(workspace, self.workspace);
+                assert_eq!(now, self.clock.now(), "the instant the call read");
                 principal
             })
     }
