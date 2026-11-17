@@ -247,8 +247,10 @@ pub(crate) fn run_update(
     }
 }
 
-/// Projects each Event and value once and encodes the result once. A page's
-/// size comes from the sizes of its parts, so choosing it copies nothing.
+/// Projects each Event once and builds one result. A candidate page's size
+/// comes from the counted sizes of its parts, so choosing a page copies no
+/// output. What a result holds besides its Events is counted again for each
+/// candidate, and the page chosen is then encoded once.
 fn paged<Task: Serialize + Copy>(
     update: &RunUpdate,
     task: Task,
