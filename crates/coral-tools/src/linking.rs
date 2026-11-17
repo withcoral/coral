@@ -207,7 +207,8 @@ pub async fn select_linked_tool_in_transaction(
 
 /// The Tool Key of the Authored Tool at `path`, as a Program names it: the
 /// Private Tool of `principal`, or the Workspace's live Shared Tool. `None`
-/// when no such Tool is there. Reads no definition.
+/// when [`select_linked_tool_in_transaction`] would select no Tool there.
+/// Reads the identity alone, and no definition.
 ///
 /// The caller owns Workspace authority and the transaction.
 ///
@@ -230,9 +231,9 @@ pub async fn authored_tool_key_in_transaction(
         .await?
         .map(|tool| tool.id.tool_key()),
         AuthoredToolPath::Shared(path) => {
-            shared_tool_repository::find_live_record(transaction, workspace_id, path)
+            shared_tool_repository::find_live_id(transaction, workspace_id, path)
                 .await?
-                .map(|tool| tool.id.tool_key())
+                .map(|id| id.tool_key())
         }
     })
 }

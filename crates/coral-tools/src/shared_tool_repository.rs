@@ -321,6 +321,35 @@ pub(crate) async fn hold_live_record(
     row.map(RecordRow::decode).transpose()
 }
 
+/// The identity of the live Shared Tool at `path` that has its current
+/// revision: the Shared Tool a Run links there. It reads no column of the
+/// revision.
+pub(crate) async fn find_live_id(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    path: &SharedToolPath,
+) -> Result<Option<SharedToolId>, Error> {
+    let statement = Query::select()
+        .column((SharedToolRecords::Table, SharedToolRecords::Id))
+        .from(SharedToolRecords::Table)
+        .inner_join(SharedToolRevisions::Table, is_current_revision())
+        .and_where(
+            Expr::col((SharedToolRecords::Table, SharedToolRecords::WorkspaceId))
+                .eq(workspace_id.to_string()),
+        )
+        .and_where(Expr::col((SharedToolRecords::Table, SharedToolRecords::Path)).eq(path.as_str()))
+        .and_where(
+            Expr::col((
+                SharedToolRecords::Table,
+                SharedToolRecords::RemovedAtUnixNanos,
+            ))
+            .is_null(),
+        )
+        .to_owned();
+    let row: Option<(String,)> = transaction.fetch_optional(statement).await?;
+    row.map(|(id,)| decode_id(&id)).transpose()
+}
+
 /// The paths of every live Shared Tool in the Workspace.
 pub(crate) async fn live_paths(
     transaction: &mut Transaction<'_>,
@@ -431,25 +460,6 @@ pub(crate) async fn live_declarations(
             ))
         })
         .collect()
-}
-
-/// Every revision of the Shared Tool `id` in the Workspace, newest first,
-/// each with its whole definition.
-#[cfg(any(test, feature = "test-fixtures"))]
-pub(crate) async fn list_revisions(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    id: &SharedToolId,
-) -> Result<Vec<SharedToolRevision>, Error> {
-    let statement = Query::select()
-        .columns(revision_columns())
-        .from(SharedToolRevisions::Table)
-        .and_where(Expr::col(SharedToolRevisions::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(SharedToolRevisions::SharedToolId).eq(id.to_string()))
-        .order_by(SharedToolRevisions::Revision, Order::Desc)
-        .to_owned();
-    let rows: Vec<RevisionRow> = transaction.fetch_all(statement).await?;
-    rows.into_iter().map(RevisionRow::decode).collect()
 }
 
 /// The live Shared Tool at `path` with its current revision.

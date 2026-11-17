@@ -204,9 +204,13 @@ impl LifecycleEventRow {
 }
 
 /// One current Private Tool without its definition: what names it, guards
-/// a write to it, and carries its default to the next save.
+/// a write to it, and carries its default to the next save. It keeps the
+/// Workspace and the owner it was read under, so a write to it names the
+/// same scope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PrivateToolRecord {
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) owner: Principal,
     pub(crate) id: PrivateToolId,
     pub(crate) path: PrivateToolPath,
     pub(crate) revision: u64,
@@ -222,8 +226,15 @@ struct PrivateToolRecordRow {
 }
 
 impl PrivateToolRecordRow {
-    fn decode(self) -> Result<PrivateToolRecord, Error> {
+    /// The record of a row read for `owner` in the Workspace.
+    fn decode(
+        self,
+        workspace_id: &WorkspaceId,
+        owner: &Principal,
+    ) -> Result<PrivateToolRecord, Error> {
         Ok(PrivateToolRecord {
+            workspace_id: workspace_id.clone(),
+            owner: owner.clone(),
             id: PrivateToolId::parse(&self.id).map_err(|_error| {
                 Error::CorruptData("Private Tool has invalid identity".to_string())
             })?,
@@ -284,7 +295,8 @@ pub(crate) async fn find_current_record_in_transaction(
     let mut statement = owned_statement(workspace_id, principal, RECORD_COLUMNS);
     statement.and_where(Expr::col(PrivateToolRecords::Path).eq(path.as_str()));
     let row: Option<PrivateToolRecordRow> = transaction.fetch_optional(statement).await?;
-    row.map(PrivateToolRecordRow::decode).transpose()
+    row.map(|row| row.decode(workspace_id, principal))
+        .transpose()
 }
 
 /// Every current Private Tool of `principal` in the Workspace, in path
@@ -297,7 +309,9 @@ pub(crate) async fn list_current_records_in_transaction(
     let mut statement = owned_statement(workspace_id, principal, RECORD_COLUMNS);
     statement.order_by(PrivateToolRecords::Path, Order::Asc);
     let rows: Vec<PrivateToolRecordRow> = transaction.fetch_all(statement).await?;
-    rows.into_iter().map(PrivateToolRecordRow::decode).collect()
+    rows.into_iter()
+        .map(|row| row.decode(workspace_id, principal))
+        .collect()
 }
 
 /// The current declaration of each Private Tool of `principal` at `paths`.
@@ -590,8 +604,8 @@ pub(crate) async fn insert_current(
     Ok(())
 }
 
-/// Replaces the definition of `previous`, the current Private Tool that
-/// `replacement` was built from: the same Workspace, owner and path.
+/// Replaces the definition of `previous`, in the Workspace and for the
+/// owner it was read under, with that of `replacement`.
 pub(crate) async fn replace_current(
     transaction: &mut Transaction<'_>,
     previous: &PrivateToolRecord,
@@ -658,16 +672,11 @@ pub(crate) async fn replace_current(
                 Expr::val(replacement_revision),
             ),
         ])
-        .and_where(
-            Expr::col(PrivateToolRecords::WorkspaceId).eq(replacement.workspace_id().to_string()),
-        )
+        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(previous.workspace_id.to_string()))
         .and_where(Expr::col(PrivateToolRecords::Id).eq(previous.id.to_string()))
+        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(previous.owner.id().as_str()))
         .and_where(
-            Expr::col(PrivateToolRecords::PrincipalId).eq(replacement.principal().id().as_str()),
-        )
-        .and_where(
-            Expr::col(PrivateToolRecords::PrincipalKind)
-                .eq(replacement.principal().kind().as_storage_str()),
+            Expr::col(PrivateToolRecords::PrincipalKind).eq(previous.owner.kind().as_storage_str()),
         )
         .and_where(Expr::col(PrivateToolRecords::Path).eq(previous.path.as_str()))
         .and_where(Expr::col(PrivateToolRecords::DefinitionRevision).eq(previous_revision))
@@ -680,19 +689,19 @@ pub(crate) async fn replace_current(
     Ok(())
 }
 
-/// Deletes `tool`, the current Private Tool of `owner` in the Workspace.
+/// Deletes `tool`, in the Workspace and for the owner it was read under.
 pub(crate) async fn delete_current(
     transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    owner: &Principal,
     tool: &PrivateToolRecord,
 ) -> Result<(), Error> {
     let statement = Query::delete()
         .from_table(PrivateToolRecords::Table)
-        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(tool.workspace_id.to_string()))
         .and_where(Expr::col(PrivateToolRecords::Id).eq(tool.id.to_string()))
-        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(owner.id().as_str()))
-        .and_where(Expr::col(PrivateToolRecords::PrincipalKind).eq(owner.kind().as_storage_str()))
+        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(tool.owner.id().as_str()))
+        .and_where(
+            Expr::col(PrivateToolRecords::PrincipalKind).eq(tool.owner.kind().as_storage_str()),
+        )
         .and_where(Expr::col(PrivateToolRecords::Path).eq(tool.path.as_str()))
         .and_where(
             Expr::col(PrivateToolRecords::DefinitionRevision).eq(stored_revision(tool.revision)?),

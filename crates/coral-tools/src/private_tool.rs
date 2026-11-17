@@ -5,7 +5,7 @@ use coral_catalog::AuthoredToolKind;
 use coral_db::{Database, Transaction};
 use coral_run_executor::CompilerClient;
 use coral_workspace::{
-    AuthenticatedPrincipal, Principal, PrincipalWorkspaceEvidence, WorkspaceAction, WorkspaceId,
+    AuthenticatedPrincipal, PrincipalWorkspaceEvidence, WorkspaceAction, WorkspaceId,
     WorkspaceModule,
 };
 
@@ -531,16 +531,7 @@ pub async fn delete_current_for_access_removal_in_transaction(
         .await?;
         let mut ids = Vec::with_capacity(tools.len());
         for tool in tools {
-            ids.push(
-                delete_current_with_event(
-                    transaction,
-                    &change,
-                    scope.workspace_id(),
-                    scope.principal(),
-                    &tool,
-                )
-                .await?,
-            );
+            ids.push(delete_current_with_event(transaction, &change, &tool).await?);
         }
         if !ids.is_empty() {
             deleted.push((scope.workspace_id().clone(), ids));
@@ -549,23 +540,21 @@ pub async fn delete_current_for_access_removal_in_transaction(
     Ok(deleted)
 }
 
-/// Deletes `tool`, the current Private Tool of `owner`, and records the
-/// deletion as `context`'s actor.
+/// Deletes `tool`, in the Workspace and for the owner it was read under,
+/// and records the deletion as `context`'s actor.
 pub(crate) async fn delete_current_with_event(
     transaction: &mut Transaction<'_>,
     context: &PrivateToolChangeContext,
-    workspace_id: &WorkspaceId,
-    owner: &Principal,
     tool: &PrivateToolRecord,
 ) -> Result<PrivateToolId, Error> {
-    repository::delete_current(transaction, workspace_id, owner, tool).await?;
+    repository::delete_current(transaction, tool).await?;
     repository::insert_lifecycle_event(
         transaction,
         repository::NewLifecycleEvent {
-            workspace_id,
+            workspace_id: &tool.workspace_id,
             actor: context.actor().principal(),
-            private_user_id: (owner.kind() == coral_workspace::PrincipalKind::User)
-                .then_some(owner.id()),
+            private_user_id: (tool.owner.kind() == coral_workspace::PrincipalKind::User)
+                .then_some(tool.owner.id()),
             action: LifecycleAction::Deleted,
             target_id: &tool.id,
             target_path: &tool.path,

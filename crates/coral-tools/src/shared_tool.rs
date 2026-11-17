@@ -1061,36 +1061,6 @@ impl SharedToolModule {
         Ok(revisions)
     }
 
-    /// Lists every revision of the Shared Tool `id` as
-    /// [`Self::list_revision_summaries`] does, each with its whole
-    /// definition, for tests: a Shared Tool's revisions have no bound, and
-    /// each may hold megabytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns the errors of [`Self::list_revision_summaries`], and
-    /// [`Error::CorruptData`] when the source, declaration, declaration
-    /// fields or diagnostics of any revision cannot be decoded.
-    #[cfg(any(test, feature = "test-fixtures"))]
-    pub async fn list_revisions(
-        &self,
-        actor: &AuthenticatedPrincipal,
-        workspace_id: &WorkspaceId,
-        id: &SharedToolId,
-    ) -> Result<Vec<SharedToolRevision>, Error> {
-        let mut transaction = self.database.begin_read_snapshot().await?;
-        self.authorize_history(&mut transaction, actor, workspace_id)
-            .await?;
-        let revisions =
-            shared_tool_repository::list_revisions(&mut transaction, workspace_id, id).await?;
-        transaction.commit().await?;
-        // Every Shared Tool has its first revision.
-        if revisions.is_empty() {
-            return Err(Error::NotFound(AuthoredToolKind::Shared));
-        }
-        Ok(revisions)
-    }
-
     /// Returns one revision of the Shared Tool `id`, live or removed, to a
     /// Member User.
     ///

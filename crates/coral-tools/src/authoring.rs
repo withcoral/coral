@@ -9,6 +9,7 @@
 //! are data. A save and a publish type a source the same way, except that
 //! `coral.private` is untyped inside a Shared Tool: it is each caller's own.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -373,19 +374,11 @@ impl Authoring {
             )
             .await?;
             transaction.commit().await?;
-            Ok::<_, Error>(
-                paths
-                    .iter()
-                    .filter_map(|path| {
-                        current.get(*path).map(|declaration| {
-                            CallableDeclaration::new(
-                                path.segments(),
-                                declaration.as_str().to_string(),
-                            )
-                        })
-                    })
-                    .collect(),
-            )
+            Ok::<_, Error>(callable_declarations(
+                paths,
+                &current,
+                PrivateToolPath::segments,
+            ))
         };
         untyped_on_failure(read.await)
     }
@@ -404,19 +397,11 @@ impl Authoring {
                 shared_tool_repository::live_declarations(&mut transaction, workspace_id, paths)
                     .await?;
             transaction.commit().await?;
-            Ok::<_, Error>(
-                paths
-                    .iter()
-                    .filter_map(|path| {
-                        current.get(*path).map(|declaration| {
-                            CallableDeclaration::new(
-                                path.segments(),
-                                declaration.as_str().to_string(),
-                            )
-                        })
-                    })
-                    .collect(),
-            )
+            Ok::<_, Error>(callable_declarations(
+                paths,
+                &current,
+                SharedToolPath::segments,
+            ))
         };
         untyped_on_failure(read.await)
     }
@@ -460,6 +445,24 @@ impl Authoring {
         }
         Ok(prepared)
     }
+}
+
+/// The declaration `current` holds for each of `paths`, in the order of
+/// `paths`, which is the order the source names them in. A path without one
+/// names no Tool and is left out.
+fn callable_declarations<P: Ord>(
+    paths: &[&P],
+    current: &BTreeMap<P, AuthoredToolDeclaration>,
+    segments: impl Fn(&P) -> Vec<String>,
+) -> Vec<CallableDeclaration> {
+    paths
+        .iter()
+        .filter_map(|path| {
+            current.get(*path).map(|declaration| {
+                CallableDeclaration::new(segments(path), declaration.as_str().to_string())
+            })
+        })
+        .collect()
 }
 
 /// The declarations read, or `None` with a warning when the read failed:

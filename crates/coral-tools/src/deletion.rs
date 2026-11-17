@@ -64,7 +64,7 @@ impl PrivateToolDeletion {
             repository::find_current_record_in_transaction(transaction, workspace_id, &agent, path)
                 .await?
                 .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
-        delete_current_with_event(transaction, context, workspace_id, &agent, &tool).await
+        delete_current_with_event(transaction, context, &tool).await
     }
 
     /// Stages the deletion of the actor's own Private Tool at `path`, with
@@ -96,7 +96,7 @@ impl PrivateToolDeletion {
                 .await?
                 .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
         authority.require_current_at(now_unix_nanos()?)?;
-        delete_current_with_event(transaction, context, workspace_id, owner, &tool).await
+        delete_current_with_event(transaction, context, &tool).await
     }
 }
 
