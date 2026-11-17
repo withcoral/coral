@@ -105,6 +105,10 @@ trait LoadObserver: Send + Sync {
     /// A load's own thread is about to parse the stored graph. Blocking here
     /// holds the load, and no Tokio task.
     fn before_parse(&self);
+
+    /// A load that parsed has given up its turn and its place. Its caller
+    /// may be gone, so the caller's end does not tell a test this.
+    fn after_turn(&self);
 }
 
 #[derive(Default)]
@@ -256,6 +260,10 @@ impl SchemaGraphCache {
                 .parse()
                 .map(|loaded| cache.keep_loaded(&generation_id, loaded));
             drop(turn);
+            #[cfg(test)]
+            if let Some(observer) = &cache.shared.observer {
+                observer.after_turn();
+            }
             // The caller may be gone. Its graph is cached all the same.
             drop(answer.send(loaded));
         });
