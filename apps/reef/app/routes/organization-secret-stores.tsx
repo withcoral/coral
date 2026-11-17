@@ -21,15 +21,19 @@ import {
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
-/** Only an organization owner can list the secret stores; Coral denies anyone else. */
+/**
+ * Only an organization owner can list the secret stores; Coral denies anyone else.
+ * The page does not exist where the deployment turned them off.
+ */
 export async function loader({ context }: Route.LoaderArgs) {
   try {
     const api = management(context)
-    const [{ secretStores }, { grants }, workspaces] = await Promise.all([
+    const [{ secretStores, disabled }, { grants }, workspaces] = await Promise.all([
       api.secretStores.listSecretStores({}),
       api.secretStores.listSecretStoreGrants({}),
       organizationWorkspaces(api),
     ])
+    if (disabled) throw new Response('Not found', { status: 404, headers: privateHeaders })
     const stores = new Map<string, SecretStoreRow>()
     for (const store of secretStores) {
       const name = secretStoreId(store.name)

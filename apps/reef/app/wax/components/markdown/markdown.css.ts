@@ -20,16 +20,6 @@ globalStyle(`${root} ol, ${root} ul`, { marginBlock: 4, paddingInlineStart: 20 }
 globalStyle(`${root} li`, { marginBlock: 2 })
 globalStyle(`${root} ul`, { listStyleType: 'disc' })
 globalStyle(`${root} ol`, { listStyleType: 'decimal' })
-globalStyle(`${root} a`, {
-  color: theme.content.link,
-  textDecoration: 'underline',
-  overflowWrap: 'anywhere',
-})
-globalStyle(`${root} a:hover`, { color: theme.content.linkHover })
-globalStyle(`${root} a:focus-visible`, {
-  outline: `2px solid ${theme.stroke.focused}`,
-  outlineOffset: 2,
-})
 globalStyle(`${root} code`, {
   ...theme.typography.codeSmallInline,
   background: theme.content.code.inlineBackground,

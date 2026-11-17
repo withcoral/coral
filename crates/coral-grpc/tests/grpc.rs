@@ -1367,21 +1367,31 @@ async fn only_an_organization_owner_lists_the_defined_secret_stores() {
         .unwrap_err();
     assert_eq!(anonymous.code(), tonic::Code::Unauthenticated);
 
-    let none = Fixture::new().await;
-    let answer = none
-        .secret_stores()
-        .list_secret_stores(request(
-            management::ListSecretStoresRequest {},
-            &none.token(&none.owner, "reef"),
-            "reef",
-        ))
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(
-        answer.secret_stores,
-        [] as [coral_grpc::coral::management::v1::SecretStore; 0]
-    );
+    // Defining none yet and turning Secret Stores off answer apart, so Reef
+    // still shows how to define one in the first case.
+    for (stores, disabled) in [
+        (coral_secret_store::SecretStores::default(), false),
+        (coral_secret_store::SecretStores::disabled(), true),
+    ] {
+        let none = Fixture::compose(true, None, stores).await;
+        let answer = none
+            .secret_stores()
+            .list_secret_stores(request(
+                management::ListSecretStoresRequest {},
+                &none.token(&none.owner, "reef"),
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            answer,
+            management::ListSecretStoresResponse {
+                secret_stores: Vec::new(),
+                disabled,
+            }
+        );
+    }
 }
 
 /// A deployment that defines only the `platform` store.

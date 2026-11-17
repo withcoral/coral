@@ -15331,6 +15331,10 @@ pub struct ListSecretStoresResponse {
     /// Ordered by name.
     #[prost(message, repeated, tag = "1")]
     pub secret_stores: ::prost::alloc::vec::Vec<SecretStore>,
+    /// The deployment turned Secret Stores off and can define none, so there is
+    /// nothing to show. False while it merely defines none yet.
+    #[prost(bool, tag = "2")]
+    pub disabled: bool,
 }
 /// One defined store: what it is called, never how Coral reaches it.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
