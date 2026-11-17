@@ -507,19 +507,16 @@ pub(crate) async fn list_summary_page_in_transaction(
     request: &PageRequest<PrivateToolPath>,
 ) -> Result<Page<PrivateToolSummary, PrivateToolPath>, Error> {
     let path = text_key_order(transaction.system(), PrivateToolRecords::Path);
-    let mut statement = Query::select();
-    statement
-        .columns([
+    let mut statement = owned_statement(
+        workspace_id,
+        principal,
+        [
             PrivateToolRecords::Path,
             PrivateToolRecords::Description,
             PrivateToolRecords::SavedAtUnixNanos,
-        ])
-        .from(PrivateToolRecords::Table)
-        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
-        .and_where(
-            Expr::col(PrivateToolRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
-        )
+        ],
+    );
+    statement
         .order_by_expr(path.clone(), Order::Asc)
         .limit(request.size.lookahead_limit());
     if let Some(after) = &request.after {
