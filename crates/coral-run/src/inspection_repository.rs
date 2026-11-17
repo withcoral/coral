@@ -9,31 +9,42 @@ pub(crate) async fn approval_labels(
     invocation: &InvocationId,
 ) -> Result<(Option<String>, Option<String>), Error> {
     let mut select = Query::select();
+    select.from(Alias::new("tool_invocations"));
+    select_approval_labels(&mut select, "tool_invocations");
     select
-        .from(Alias::new("tool_invocations"))
+        .and_where(Expr::col(column("tool_invocations", "workspace_id")).eq(workspace.to_string()))
+        .and_where(Expr::col(column("tool_invocations", "id")).eq(invocation.to_string()));
+    tx.fetch_optional(select).await?.ok_or(Error::RunNotFound)
+}
+
+/// Joins to `select` the Run, aliased `r`, of the Invocation aliased
+/// `invocation`, and selects what an Approval Request shows of them: the
+/// Invocation's current Provider label as `provider_label`, then the Run's
+/// retained Agent label as `agent_label`.
+pub(crate) fn select_approval_labels(select: &mut sea_query::SelectStatement, invocation: &str) {
+    select
         .join_as(
             sea_query::JoinType::InnerJoin,
             Alias::new("program_run_records"),
             Alias::new("r"),
             Expr::col(column("r", "workspace_id"))
-                .eq(Expr::col(column("tool_invocations", "workspace_id")))
-                .and(
-                    Expr::col(column("r", "id"))
-                        .eq(Expr::col(column("tool_invocations", "run_id"))),
-                ),
+                .eq(Expr::col(column(invocation, "workspace_id")))
+                .and(Expr::col(column("r", "id")).eq(Expr::col(column(invocation, "run_id")))),
         )
-        .expr(coral_provider::history_repository::display_label(
-            column("tool_invocations", "workspace_id"),
-            column("tool_invocations", "provider_id"),
-        ))
-        .expr(coral_workspace::history_repository::agent_label(
-            column("r", "workspace_id"),
-            column("r", "principal_id"),
-        ));
-    select
-        .and_where(Expr::col(column("tool_invocations", "workspace_id")).eq(workspace.to_string()))
-        .and_where(Expr::col(column("tool_invocations", "id")).eq(invocation.to_string()));
-    tx.fetch_optional(select).await?.ok_or(Error::RunNotFound)
+        .expr_as(
+            coral_provider::history_repository::display_label(
+                column(invocation, "workspace_id"),
+                column(invocation, "provider_id"),
+            ),
+            Alias::new("provider_label"),
+        )
+        .expr_as(
+            coral_workspace::history_repository::agent_label(
+                column("r", "workspace_id"),
+                column("r", "principal_id"),
+            ),
+            Alias::new("agent_label"),
+        );
 }
 
 fn scoped(

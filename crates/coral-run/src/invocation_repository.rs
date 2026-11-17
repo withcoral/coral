@@ -466,17 +466,31 @@ pub(super) struct ApprovalTarget {
 }
 
 /// The Invocation columns an [`ApprovalTarget`] is read from.
-pub(super) const APPROVAL_TARGET_COLUMNS: [&str; 9] = [
-    "provider_generation_id",
-    "tool_key",
-    "provider_id",
-    "provider_account_setting_version",
-    "credential_route",
-    "provider_account_id",
-    "call_path",
-    "arguments_json",
-    "declared_default_access_state",
+const APPROVAL_TARGET_COLUMNS: [ToolInvocations; 9] = [
+    ToolInvocations::ProviderGenerationId,
+    ToolInvocations::ToolKey,
+    ToolInvocations::ProviderId,
+    ToolInvocations::ProviderAccountSettingVersion,
+    ToolInvocations::CredentialRoute,
+    ToolInvocations::ProviderAccountId,
+    ToolInvocations::CallPath,
+    ToolInvocations::ArgumentsJson,
+    ToolInvocations::DeclaredDefaultAccessState,
 ];
+
+/// Joins to `select` the Invocation that matches `on`, aliased `i`, and
+/// selects the columns an [`ApprovalTargetRow`] decodes.
+pub(super) fn join_approval_target(select: &mut SelectStatement, on: SimpleExpr) {
+    use sea_query::Alias;
+    select
+        .join_as(
+            sea_query::JoinType::InnerJoin,
+            ToolInvocations::Table,
+            Alias::new("i"),
+            on,
+        )
+        .columns(APPROVAL_TARGET_COLUMNS.map(|column| (Alias::new("i"), column)));
+}
 
 /// One Invocation's [`APPROVAL_TARGET_COLUMNS`], before decoding.
 #[derive(FromRow)]
@@ -534,7 +548,7 @@ pub(super) async fn approval_target(
     let row: ApprovalTargetRow = tx
         .fetch_optional(
             Query::select()
-                .columns(APPROVAL_TARGET_COLUMNS.map(sea_query::Alias::new))
+                .columns(APPROVAL_TARGET_COLUMNS)
                 .from(ToolInvocations::Table)
                 .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace.to_string()))
                 .and_where(Expr::col(ToolInvocations::RunId).eq(run.to_string()))

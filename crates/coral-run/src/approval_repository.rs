@@ -146,18 +146,21 @@ fn user_principal(id: &str) -> Result<Principal, Error> {
     ))
 }
 
+/// The columns an [`ApprovalRow`] decodes.
+const APPROVAL_COLUMNS: [InvocationApprovals; 8] = [
+    InvocationApprovals::Id,
+    InvocationApprovals::InvocationId,
+    InvocationApprovals::RunId,
+    InvocationApprovals::DeadlineAtUnixNanos,
+    InvocationApprovals::State,
+    InvocationApprovals::DecidedAtUnixNanos,
+    InvocationApprovals::ApproverId,
+    InvocationApprovals::Comment,
+];
+
 fn select(workspace: &WorkspaceId) -> sea_query::SelectStatement {
     Query::select()
-        .columns([
-            InvocationApprovals::Id,
-            InvocationApprovals::InvocationId,
-            InvocationApprovals::RunId,
-            InvocationApprovals::DeadlineAtUnixNanos,
-            InvocationApprovals::State,
-            InvocationApprovals::DecidedAtUnixNanos,
-            InvocationApprovals::ApproverId,
-            InvocationApprovals::Comment,
-        ])
+        .columns(APPROVAL_COLUMNS)
         .from(InvocationApprovals::Table)
         .and_where(Expr::col(InvocationApprovals::WorkspaceId).eq(workspace.to_string()))
         .to_owned()
@@ -192,62 +195,18 @@ pub(super) async fn details_for_run(
     workspace: &WorkspaceId,
     run: &RunId,
 ) -> Result<Vec<StoredApprovalDetail>, Error> {
-    use coral_db::{col, column};
-    let rows: Vec<ApprovalDetailRow> = tx
-        .fetch_all(
-            Query::select()
-                .from_as(InvocationApprovals::Table, Alias::new("a"))
-                .join_as(
-                    JoinType::InnerJoin,
-                    Alias::new("tool_invocations"),
-                    Alias::new("i"),
-                    own_invocation(),
-                )
-                .join_as(
-                    JoinType::InnerJoin,
-                    Alias::new("program_run_records"),
-                    Alias::new("r"),
-                    col("r", "workspace_id")
-                        .eq(col("i", "workspace_id"))
-                        .and(col("r", "id").eq(col("i", "run_id"))),
-                )
-                .columns(
-                    [
-                        "id",
-                        "invocation_id",
-                        "run_id",
-                        "deadline_at_unix_nanos",
-                        "state",
-                        "decided_at_unix_nanos",
-                        "approver_id",
-                        "comment",
-                    ]
-                    .map(|name| (Alias::new("a"), Alias::new(name))),
-                )
-                .columns(
-                    crate::invocation_repository::APPROVAL_TARGET_COLUMNS
-                        .map(|name| (Alias::new("i"), Alias::new(name))),
-                )
-                .expr_as(
-                    coral_provider::history_repository::display_label(
-                        column("i", "workspace_id"),
-                        column("i", "provider_id"),
-                    ),
-                    Alias::new("provider_label"),
-                )
-                .expr_as(
-                    coral_workspace::history_repository::agent_label(
-                        column("r", "workspace_id"),
-                        column("r", "principal_id"),
-                    ),
-                    Alias::new("agent_label"),
-                )
-                .and_where(col("a", "workspace_id").eq(workspace.to_string()))
-                .and_where(col("a", "run_id").eq(run.to_string()))
-                .order_by((Alias::new("a"), Alias::new("id")), Order::Asc)
-                .to_owned(),
-        )
-        .await?;
+    let request = |column| Expr::col((Alias::new("a"), column));
+    let mut select = Query::select();
+    select
+        .from_as(InvocationApprovals::Table, Alias::new("a"))
+        .columns(APPROVAL_COLUMNS.map(|column| (Alias::new("a"), column)));
+    crate::invocation_repository::join_approval_target(&mut select, own_invocation());
+    crate::inspection_repository::select_approval_labels(&mut select, "i");
+    select
+        .and_where(request(InvocationApprovals::WorkspaceId).eq(workspace.to_string()))
+        .and_where(request(InvocationApprovals::RunId).eq(run.to_string()))
+        .order_by((Alias::new("a"), InvocationApprovals::Id), Order::Asc);
+    let rows: Vec<ApprovalDetailRow> = tx.fetch_all(select).await?;
     rows.into_iter()
         .map(|row| {
             Ok(StoredApprovalDetail {

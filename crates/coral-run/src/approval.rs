@@ -244,7 +244,7 @@ impl ApprovalModule {
 
     /// [`Self::list_for_run`] in the caller's read snapshot. One statement
     /// reads every request with its Invocation's target and labels. Whether
-    /// a pending request still needs a decision is decided once for each
+    /// a pending request still takes a decision is decided once for each
     /// distinct [`PolicySubject`] of the pending requests, and an approver's
     /// name is read once for each approver, so the read sends no statement
     /// for each request.
@@ -256,26 +256,16 @@ impl ApprovalModule {
         run: &RunId,
     ) -> Result<Vec<ApprovalRequest>, Error> {
         let run = self.visible_run(tx, actor, workspace, run).await?;
-        let now = self.now()?;
         let rows = approval_repository::details_for_run(tx, workspace, &run.id).await?;
-        let accepts_actions = crate::required_actions::run_accepts_actions(&run);
-        let mut decisions = HashMap::<PolicySubject, bool>::new();
+        // A Run with no request reads no clock.
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut actionable = Actionable::new(&self.workspaces, &run, self.now()?);
         let mut names = ApproverNames::new(&self.workspaces, actor);
         let mut requests = Vec::with_capacity(rows.len());
         for row in rows {
-            let actionable = if row.approval.state == ApprovalState::Pending && accepts_actions {
-                let subject = PolicySubject::of(&row.target);
-                if let Some(required) = decisions.get(&subject) {
-                    *required
-                } else {
-                    let required =
-                        decision_required(tx, &self.workspaces, &run, &subject, now).await?;
-                    decisions.insert(subject, required);
-                    required
-                }
-            } else {
-                false
-            };
+            let actionable = actionable.request(tx, &row.approval, &row.target).await?;
             let approver_name = match &row.approval.approver {
                 Some(approver) => names.name(tx, workspace, approver).await?,
                 None => None,
@@ -512,7 +502,7 @@ async fn decision_required(
     tx: &mut Transaction<'_>,
     workspaces: &WorkspaceModule,
     run: &RunRecord,
-    target: &PolicySubject,
+    subject: &PolicySubject,
     now: i64,
 ) -> Result<bool, Error> {
     let role = match workspaces
@@ -529,16 +519,16 @@ async fn decision_required(
     };
     let policy_target = coral_policy::ToolPolicyTarget::new(
         run.workspace_id.clone(),
-        target.provider_id.clone(),
-        target.tool.clone(),
+        subject.provider_id.clone(),
+        subject.tool.clone(),
     );
     // No catalog stores a Private or Shared Tool: its Invocation retains the
     // kind, in its Call Path, and the default of the revision the Run
     // linked. Any other Tool's facts are its retained Generation's.
-    let retained = match coral_catalog::AuthoredToolKind::of_call_path(&target.call_path) {
-        Some(kind) => crate::enforcement::RetainedPolicy::authored(kind, target.declared_default)?,
+    let retained = match coral_catalog::AuthoredToolKind::of_call_path(&subject.call_path) {
+        Some(kind) => crate::enforcement::RetainedPolicy::authored(kind, subject.declared_default)?,
         None => crate::enforcement::RetainedPolicy::Catalog(
-            coral_catalog::tool_in_transaction(tx, &target.generation, &target.tool)
+            coral_catalog::tool_in_transaction(tx, &subject.generation, &subject.tool)
                 .await
                 .map_err(coral_provider::Error::from)?
                 .ok_or(Error::ApprovalNotFound)?
@@ -555,6 +545,50 @@ async fn decision_required(
     )
     .await?;
     Ok(policy.access_state() == coral_policy::ToolAccessState::ApprovalRequired)
+}
+
+/// The rule for the `actionable` projection of one Run's requests in one
+/// snapshot: a request takes a decision while it is pending, its Run still
+/// accepts actions, and its Tool's policy still asks for a decision. The
+/// policy is decided once for each distinct [`PolicySubject`].
+struct Actionable<'a> {
+    workspaces: &'a WorkspaceModule,
+    run: &'a RunRecord,
+    now: i64,
+    decisions: HashMap<PolicySubject, bool>,
+}
+
+impl<'a> Actionable<'a> {
+    fn new(workspaces: &'a WorkspaceModule, run: &'a RunRecord, now: i64) -> Self {
+        Self {
+            workspaces,
+            run,
+            now,
+            decisions: HashMap::new(),
+        }
+    }
+
+    /// Whether the request `row`, whose Invocation is `target`, takes a
+    /// decision now.
+    async fn request(
+        &mut self,
+        tx: &mut Transaction<'_>,
+        row: &StoredApproval,
+        target: &invocation_repository::ApprovalTarget,
+    ) -> Result<bool, Error> {
+        if row.state != ApprovalState::Pending
+            || !crate::required_actions::run_accepts_actions(self.run)
+        {
+            return Ok(false);
+        }
+        let subject = PolicySubject::of(target);
+        if let Some(required) = self.decisions.get(&subject) {
+            return Ok(*required);
+        }
+        let required = decision_required(tx, self.workspaces, self.run, &subject, self.now).await?;
+        self.decisions.insert(subject, required);
+        Ok(required)
+    }
 }
 
 /// The approver's current name, when Workspace profile rules let `actor`
@@ -625,9 +659,9 @@ async fn view(
 ) -> Result<ApprovalRequest, Error> {
     let target =
         invocation_repository::approval_target(tx, workspace, &run.id, &row.invocation_id).await?;
-    let actionable = row.state == ApprovalState::Pending
-        && crate::required_actions::run_accepts_actions(run)
-        && decision_required(tx, workspaces, run, &PolicySubject::of(&target), now).await?;
+    let actionable = Actionable::new(workspaces, run, now)
+        .request(tx, &row, &target)
+        .await?;
     let labels =
         crate::inspection_repository::approval_labels(tx, workspace, &row.invocation_id).await?;
     let approver_name = match &row.approver {

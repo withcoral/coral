@@ -1635,7 +1635,7 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
 }
 
 /// Publishes `public.getForecast` as POST, so it needs approval by default.
-async fn publish_approval_provider(fixture: &TestModules, tool: &ToolFixture) {
+pub(super) async fn publish_approval_provider(fixture: &TestModules, tool: &ToolFixture) {
     let context = change(tool.user.clone(), 40, '4');
     let setup = fixture.providers.prepare_openapi_fixture(&context, &tool.workspace_id,
         OpenApiDocument::parse(r#"{"openapi":"3.1.0","info":{"title":"Public weather","version":"1"},"servers":[{"url":"https://upstream.example"}],"paths":{"/forecast":{"post":{"operationId":"getForecast","responses":{"200":{"description":"Forecast"}}}}}}"#).unwrap(),
@@ -1731,23 +1731,6 @@ async fn the_queue_lists_each_request_most_urgent_first_across_runs() {
     );
 }
 
-/// Asserts that the read of the longer page sent the statements of the
-/// shorter one. Each page is its row count and the statements its read sent.
-fn assert_statements_do_not_grow(read: &str, pages: &[(usize, u64)]) {
-    let [short, long] = pages else {
-        panic!("{read}: a short page and a long one: {pages:?}")
-    };
-    assert!(
-        short.0 < long.0,
-        "{read}: the long page has more rows than the short one: {short:?} and {long:?}"
-    );
-    assert_eq!(
-        short.1, long.1,
-        "{read}: {} rows send the statements of {}",
-        long.0, short.0
-    );
-}
-
 /// A Run summary without its duration, which is the time of its read.
 fn undated(run: &crate::RunSummary) -> String {
     format!(
@@ -1770,267 +1753,288 @@ fn undated_invocation(call: &crate::InvocationSummary) -> String {
     )
 }
 
-/// Catches: a read that sends a statement, or several, for each row of its
-/// page, so that a long page is many round trips inside one read snapshot;
-/// and a read of many rows that returns other rows, or another order, than
-/// the read of one row at a time. The reads are a Run's Approval Requests,
-/// the action queue, a Run's Activity entries and the settled approvals.
-#[tokio::test(flavor = "multi_thread")]
-#[expect(
-    clippy::too_many_lines,
-    reason = "four reads share one fixture of many rows"
-)]
-async fn a_long_page_sends_the_statements_of_a_short_one() {
+/// A read of many rows.
+#[derive(Debug, Clone, Copy)]
+enum PageRead {
+    /// The Approval Requests of one Run.
+    RunApprovals,
+    /// The Required Actions that wait on a person, across Runs.
+    RequiredActions,
+    /// The Tool calls among one Run's Activity entries.
+    ActivityEntries,
+    /// The settled Approval Requests.
+    SettledApprovals,
+}
+
+/// The rows one [`PageRead`] returned.
+enum PageRows {
+    Requests(Vec<crate::approval::ApprovalRequest>),
+    Actions(Vec<crate::QueuedAction>),
+    Calls(Vec<crate::InvocationSummary>),
+    Settled(Vec<crate::SettledApproval>),
+}
+
+impl PageRows {
+    fn len(&self) -> usize {
+        match self {
+            Self::Requests(rows) => rows.len(),
+            Self::Actions(rows) => rows.len(),
+            Self::Calls(rows) => rows.len(),
+            Self::Settled(rows) => rows.len(),
+        }
+    }
+}
+
+/// Runs whose every [`PageRead`] has a short page and a long one.
+struct ManyRows {
+    fixture: TestModules,
+    tool: ToolFixture,
+    approvals: crate::approval::ApprovalModule,
+    /// A Run with [`Self::SHORT`] Approval Requests: one declined, the rest
+    /// pending.
+    short: crate::RunId,
+    /// A Run with [`Self::LONG`] Approval Requests: one declined, the rest
+    /// pending.
+    long: crate::RunId,
+}
+
+impl ManyRows {
     const SHORT: usize = 2;
     const LONG: usize = 12;
-    let fixture = TestModules::new(Arc::new(
-        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
-    ))
-    .await;
-    let tool = fixture.user_tool("user:page-reads", "Page reads").await;
-    publish_approval_provider(&fixture, &tool).await;
-    let approvals = fixture.approvals();
-    let (actor, workspace) = (&tool.principal, &tool.workspace_id);
-    // Each call waits for its own approval.
-    let waiting = async |calls: usize| {
-        let source = format!(
-            "await Promise.allSettled(Array.from({{length: {calls}}}, () => coral.providers.public.getForecast({{}})));"
-        );
-        let accepted = fixture.runs.start(actor, workspace, submission(&source));
-        let run = accepted.await.unwrap().run_id().clone();
-        wait_until_async(async || {
-            let requests = approvals.list_for_run(actor, workspace, &run).await;
-            requests.unwrap().len() == calls
-        })
+
+    /// Starts the two Runs, and a third whose [`Self::LONG`] requests the
+    /// User declines, so that [`Self::LONG`] requests wait and more are
+    /// settled.
+    async fn new() -> Self {
+        let fixture = TestModules::new(Arc::new(
+            crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
+        ))
         .await;
-        run
-    };
-    let short = waiting(SHORT).await;
-    let long = waiting(LONG).await;
-    let now = fixture.clock.now_unix_nanos().unwrap();
-
-    let mut tx = fixture.database.begin_read_snapshot().await.unwrap();
-    // A Run's Approval Requests.
-    let mut listed = Vec::new();
-    for run in [&short, &long] {
-        let before = tx.statements();
-        let requests = approvals
-            .list_for_run_in_transaction(&mut tx, actor, workspace, run)
-            .await
-            .unwrap();
-        listed.push((requests, tx.statements() - before));
-    }
-    assert_statements_do_not_grow(
-        "a Run's Approval Requests",
-        &listed
+        let tool = fixture.user_tool("user:page-reads", "Page reads").await;
+        publish_approval_provider(&fixture, &tool).await;
+        let approvals = fixture.approvals();
+        let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+        // Each call waits for its own approval.
+        let waiting = async |calls: usize| {
+            let source = format!(
+                "await Promise.allSettled(Array.from({{length: {calls}}}, () => coral.providers.public.getForecast({{}})));"
+            );
+            let accepted = fixture.runs.start(actor, workspace, submission(&source));
+            let run = accepted.await.unwrap().run_id().clone();
+            let requests = async || {
+                approvals
+                    .list_for_run(actor, workspace, &run)
+                    .await
+                    .unwrap()
+            };
+            wait_until_async(async || requests().await.len() == calls).await;
+            let requests = requests().await;
+            (run, requests)
+        };
+        let (short, short_requests) = waiting(Self::SHORT).await;
+        let (long, long_requests) = waiting(Self::LONG).await;
+        let (_, declined_requests) = waiting(Self::LONG).await;
+        let declined = declined_requests
             .iter()
-            .map(|(requests, sent)| (requests.len(), *sent))
-            .collect::<Vec<_>>(),
-    );
-    let requests: Vec<_> = listed
-        .into_iter()
-        .flat_map(|(requests, _)| requests)
-        .collect();
-    assert_eq!(requests.len(), SHORT + LONG);
-
-    // The action queue: every request, each with its Run.
-    let authority = fixture
-        .workspaces
-        .action_history_authority_in_transaction(&mut tx, actor, None)
-        .await
-        .unwrap();
-    let mut queues = Vec::new();
-    for limit in [SHORT, LONG] {
-        let before = tx.statements();
-        let queue = fixture
-            .runs
-            .required_actions_in_transaction(
-                &mut tx,
-                &authority,
-                None,
-                None,
-                u16::try_from(limit).unwrap(),
-            )
-            .await
-            .unwrap();
-        queues.push((queue.actions, tx.statements() - before));
-    }
-    assert_statements_do_not_grow(
-        "the action queue",
-        &queues
-            .iter()
-            .map(|(actions, sent)| (actions.len(), *sent))
-            .collect::<Vec<_>>(),
-    );
-    let (queue, _) = queues.pop().unwrap();
-    assert!(
-        queue
-            .iter()
-            .map(|queued| (
-                queued.action.deadline_at_unix_nanos,
-                queued.action.request.to_string()
-            ))
-            .is_sorted(),
-        "the most urgent request comes first"
-    );
-    for queued in &queue {
-        let request = requests
-            .iter()
-            .find(|request| {
-                queued.action.request
-                    == crate::RequiredActionRequest::InvocationApproval(request.id.clone())
-            })
-            .expect("a queued request is one of the Runs' requests");
-        assert_eq!(queued.run.id, request.run_id, "a request shows its own Run");
-        let alone = crate::history_repository::run_summary(
-            &mut tx,
-            &authority,
-            &queued.run.workspace,
-            &queued.run.id,
-            now,
-        )
-        .await
-        .unwrap();
-        assert_eq!(undated(&queued.run), undated(&alone));
-    }
-
-    // A Run's Activity entries: one for each call.
-    let mut pages = Vec::new();
-    for limit in [SHORT, LONG] {
-        let before = tx.statements();
-        let page = fixture
-            .runs
-            .activity_entries_in_transaction(
-                &mut tx,
-                actor,
-                workspace,
-                &long,
-                &crate::RunEntryWindow::Start,
-                &crate::RunEntryLevel::Every,
-                u16::try_from(limit).unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
-        let calls: Vec<_> = page
-            .entries
-            .into_iter()
-            .filter_map(|entry| match entry {
-                crate::RunEntry::Invocation(call) => Some(*call),
-                crate::RunEntry::Event { .. } => None,
-            })
-            .collect();
-        pages.push((calls, tx.statements() - before));
-    }
-    assert_statements_do_not_grow(
-        "a Run's Activity entries",
-        &pages
-            .iter()
-            .map(|(calls, sent)| (calls.len(), *sent))
-            .collect::<Vec<_>>(),
-    );
-    let (calls, _) = pages.pop().unwrap();
-    let started: Vec<_> = retained_events(&fixture.runs, actor, workspace, &long)
-        .await
-        .iter()
-        .filter_map(|event| match event.kind() {
-            RunEventKind::InvocationStarted { invocation_id } => Some(invocation_id.clone()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        calls.iter().map(|call| call.id.clone()).collect::<Vec<_>>(),
-        started,
-        "the calls are in the order of the Run's Events"
-    );
-    for call in &calls {
-        let alone =
-            crate::history_repository::exact_invocation(&mut tx, workspace, &long, &call.id, now)
+            .chain(short_requests.first())
+            .chain(long_requests.first());
+        for request in declined {
+            approvals
+                .decide(
+                    actor,
+                    workspace,
+                    &request.id,
+                    ApprovalDecision::Decline,
+                    None,
+                    &TraceId::parse(&"d".repeat(32)).unwrap(),
+                )
                 .await
                 .unwrap();
-        assert_eq!(undated_invocation(call), undated_invocation(&alone));
+        }
+        Self {
+            fixture,
+            tool,
+            approvals,
+            short,
+            long,
+        }
     }
-    tx.commit().await.unwrap();
 
-    // The list shows each request as the read of that request alone does.
-    for request in &requests {
-        let alone = approvals.get(actor, workspace, &request.id).await.unwrap();
-        assert_eq!(request, &alone);
+    /// Reads the long page of `read`, or the short one.
+    async fn read(
+        &self,
+        tx: &mut coral_db::Transaction<'_>,
+        authority: &coral_workspace::HistoryAuthority,
+        read: PageRead,
+        long: bool,
+    ) -> PageRows {
+        let (actor, workspace) = (&self.tool.principal, &self.tool.workspace_id);
+        let limit = u16::try_from(if long { Self::LONG } else { Self::SHORT }).unwrap();
+        match read {
+            PageRead::RunApprovals => {
+                let run = if long { &self.long } else { &self.short };
+                let requests = self
+                    .approvals
+                    .list_for_run_in_transaction(tx, actor, workspace, run);
+                PageRows::Requests(requests.await.unwrap())
+            }
+            PageRead::RequiredActions => {
+                let page = self
+                    .fixture
+                    .runs
+                    .required_actions_in_transaction(tx, authority, None, None, limit);
+                PageRows::Actions(page.await.unwrap().actions)
+            }
+            PageRead::ActivityEntries => {
+                let page = self.fixture.runs.activity_entries_in_transaction(
+                    tx,
+                    actor,
+                    workspace,
+                    &self.long,
+                    &crate::RunEntryWindow::Start,
+                    &crate::RunEntryLevel::Every,
+                    limit,
+                    None,
+                );
+                let calls = page.await.unwrap().entries.into_iter();
+                PageRows::Calls(
+                    calls
+                        .filter_map(|entry| match entry {
+                            crate::RunEntry::Invocation(call) => Some(*call),
+                            crate::RunEntry::Event { .. } => None,
+                        })
+                        .collect(),
+                )
+            }
+            PageRead::SettledApprovals => {
+                let page = self
+                    .fixture
+                    .runs
+                    .settled_approvals_in_transaction(tx, actor, authority, None, limit);
+                PageRows::Settled(page.await.unwrap().approvals)
+            }
+        }
     }
-    assert!(
-        requests.iter().all(|request| request.actionable),
-        "each pending request takes a decision"
-    );
 
-    // The settled approvals, once the User has declined every request.
-    for request in &requests {
-        approvals
-            .decide(
-                actor,
-                workspace,
-                &request.id,
-                ApprovalDecision::Decline,
-                None,
-                &TraceId::parse(&"d".repeat(32)).unwrap(),
-            )
-            .await
-            .unwrap();
+    /// Asserts that each of `rows` is what the read of that row alone
+    /// returns.
+    async fn assert_each_is_the_row_read_alone(
+        &self,
+        tx: &mut coral_db::Transaction<'_>,
+        authority: &coral_workspace::HistoryAuthority,
+        rows: &PageRows,
+    ) {
+        let (actor, workspace) = (&self.tool.principal, &self.tool.workspace_id);
+        let now = self.fixture.clock.now_unix_nanos().unwrap();
+        let alone = async |tx: &mut coral_db::Transaction<'_>, run: &crate::RunSummary| {
+            let run =
+                crate::history_repository::run_summary(tx, authority, &run.workspace, &run.id, now);
+            undated(&run.await.unwrap())
+        };
+        match rows {
+            PageRows::Requests(requests) => {
+                for request in requests {
+                    let alone = self.approvals.get(actor, workspace, &request.id).await;
+                    assert_eq!(request, &alone.unwrap());
+                }
+            }
+            PageRows::Actions(actions) => {
+                for queued in actions {
+                    let crate::RequiredActionRequest::InvocationApproval(id) =
+                        &queued.action.request
+                    else {
+                        panic!("an Approval Request: {:?}", queued.action.request)
+                    };
+                    let request = self.approvals.get(actor, workspace, id).await.unwrap();
+                    assert_eq!(queued.run.id, request.run_id, "a request has its own Run");
+                    assert_eq!(undated(&queued.run), alone(tx, &queued.run).await);
+                }
+            }
+            PageRows::Calls(calls) => {
+                let events = retained_events(&self.fixture.runs, actor, workspace, &self.long);
+                let started: Vec<_> = events
+                    .await
+                    .iter()
+                    .filter_map(|event| match event.kind() {
+                        RunEventKind::InvocationStarted { invocation_id } => {
+                            Some(invocation_id.clone())
+                        }
+                        _ => None,
+                    })
+                    .take(calls.len())
+                    .collect();
+                assert_eq!(
+                    calls.iter().map(|call| call.id.clone()).collect::<Vec<_>>(),
+                    started,
+                    "the calls are in the order of the Run's Events"
+                );
+                for call in calls {
+                    let alone = crate::history_repository::exact_invocation(
+                        tx, workspace, &self.long, &call.id, now,
+                    );
+                    assert_eq!(
+                        undated_invocation(call),
+                        undated_invocation(&alone.await.unwrap())
+                    );
+                }
+            }
+            PageRows::Settled(settled) => {
+                for row in settled {
+                    let request = self.approvals.get(actor, workspace, &row.approval).await;
+                    let request = request.unwrap();
+                    assert_eq!(row.run.id, request.run_id, "a request has its own Run");
+                    assert_eq!(
+                        row.approver.as_ref().map(|approver| &approver.principal),
+                        request.approver.as_ref()
+                    );
+                    assert_eq!(undated(&row.run), alone(tx, &row.run).await);
+                }
+            }
+        }
     }
-    let mut tx = fixture.database.begin_read_snapshot().await.unwrap();
-    let authority = fixture
+}
+
+/// Catches: a read that sends a statement, or several, for each row of its
+/// page, so that a long page is many round trips inside one read snapshot;
+/// and a read of many rows that returns other rows than the read of one row
+/// at a time.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_page_sends_the_statements_of_a_short_one() {
+    let rows = ManyRows::new().await;
+    let mut tx = rows.fixture.database.begin_read_snapshot().await.unwrap();
+    let authority = rows
+        .fixture
         .workspaces
-        .action_history_authority_in_transaction(&mut tx, actor, None)
+        .action_history_authority_in_transaction(&mut tx, &rows.tool.principal, None)
         .await
         .unwrap();
-    let mut histories = Vec::new();
-    for limit in [SHORT, LONG] {
+    for read in [
+        PageRead::RunApprovals,
+        PageRead::RequiredActions,
+        PageRead::ActivityEntries,
+        PageRead::SettledApprovals,
+    ] {
         let before = tx.statements();
-        let history = fixture
-            .runs
-            .settled_approvals_in_transaction(
-                &mut tx,
-                actor,
-                &authority,
-                None,
-                u16::try_from(limit).unwrap(),
-            )
-            .await
-            .unwrap();
-        histories.push((history.approvals, tx.statements() - before));
-    }
-    assert_statements_do_not_grow(
-        "the settled approvals",
-        &histories
-            .iter()
-            .map(|(settled, sent)| (settled.len(), *sent))
-            .collect::<Vec<_>>(),
-    );
-    let (settled, _) = histories.pop().unwrap();
-    // The User declined the requests in the order of `requests`.
-    let newest_first: Vec<_> = requests.iter().rev().take(LONG).collect();
-    assert_eq!(
-        settled.iter().map(|row| &row.approval).collect::<Vec<_>>(),
-        newest_first
-            .iter()
-            .map(|request| &request.id)
-            .collect::<Vec<_>>()
-    );
-    for (row, request) in settled.iter().zip(newest_first) {
-        assert_eq!(row.run.id, request.run_id, "a request shows its own Run");
-        assert_eq!(
-            row.approver.as_ref().map(|approver| &approver.principal),
-            Some(actor.principal())
+        let short = rows.read(&mut tx, &authority, read, false).await;
+        let short_sent = tx.statements() - before;
+        let before = tx.statements();
+        let long = rows.read(&mut tx, &authority, read, true).await;
+        let long_sent = tx.statements() - before;
+        assert!(
+            short.len() < long.len(),
+            "{read:?}: the long page has more rows: {} and {}",
+            short.len(),
+            long.len()
         );
-        let alone = crate::history_repository::run_summary(
-            &mut tx,
-            &authority,
-            &row.run.workspace,
-            &row.run.id,
-            now,
-        )
-        .await
-        .unwrap();
-        assert_eq!(undated(&row.run), undated(&alone));
+        assert_eq!(
+            short_sent,
+            long_sent,
+            "{read:?}: {} rows send the statements of {}",
+            long.len(),
+            short.len()
+        );
+        rows.assert_each_is_the_row_read_alone(&mut tx, &authority, &long)
+            .await;
     }
     tx.commit().await.unwrap();
 }
