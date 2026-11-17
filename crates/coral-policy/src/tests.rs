@@ -1877,7 +1877,7 @@ async fn rules_hold_the_exact_rules_of_current_provider_tools_by_call_path() {
                         &principal,
                         workspace.id(),
                         Some(&format!("coral.providers.{namespace}")),
-                        at + 5,
+                        coral_db::UnixNanos::new(at + 5),
                     )
                     .await
                     .expect("read the Provider's rules"),
@@ -1893,7 +1893,7 @@ async fn rules_hold_the_exact_rules_of_current_provider_tools_by_call_path() {
                 &AuthenticatedPrincipal::user(owner.clone()),
                 workspace.id(),
                 Some("coral.providers.absent"),
-                350,
+                coral_db::UnixNanos::new(350),
             )
             .await
             .expect("read an absent root"),
@@ -2032,7 +2032,7 @@ async fn access_states_by_call_path_set_each_sent_path_and_keep_the_rest() {
                 (
                     event.target().tool_key().as_str().to_owned(),
                     event.actor_user_id().clone(),
-                    event.occurred_at_unix_nanos(),
+                    event.occurred_at().get(),
                 )
             })
             .collect::<Vec<_>>();
@@ -3093,7 +3093,7 @@ async fn rules_read_every_root_by_call_path_and_only_the_readers_own_private_too
         let (policies, workspace) = (base.policies.clone(), base.workspace.clone());
         async move {
             policies
-                .rules(&reader, &workspace, under, 80)
+                .rules(&reader, &workspace, under, coral_db::UnixNanos::new(80))
                 .await
                 .expect("read the rules")
                 .into_iter()

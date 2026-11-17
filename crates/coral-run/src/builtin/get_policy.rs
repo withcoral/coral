@@ -28,7 +28,7 @@ impl GetPolicy {
                 host.actor,
                 host.workspace_id,
                 self.under.as_deref(),
-                host.run.now()?,
+                coral_db::UnixNanos::new(host.run.now()?),
             )
             .await
             .map_err(|error| match error {
