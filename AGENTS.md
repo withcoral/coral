@@ -24,6 +24,16 @@
   ([ADR 0029](docs/adr/0029-mcp-requests-are-served-without-sessions-and-a-required-action-reaches-its-user-through-the-assistants-link.md)). Do
   not hold state between a client's requests in the Adapter, and do not send a
   client anything outside the response to its own request.
+- The Workspace, Catalog, Provider, Tool policy, authored Tool, Universal
+  Search, Run and Task errors each state the database error behind them
+  (`database_error`, `into_database_error`). The Provider, Tool policy,
+  authored Tool, Universal Search and Run errors also state the Workspace
+  refusal they wrap (`workspace_refusal`; `refusal` on
+  `coral_workspace::Error`). Each names every variant. Ask the error for
+  these facts; do not match its variants to find them, and give a new error
+  that another module wraps the same methods. A caller still matches the
+  outcomes of the call it made, and an Adapter reports a wrapped error as
+  that error's own mapper does.
 - Read process environment only at process bootstrap. Pass explicit values to
   domain code. The `env` Secret Store is the one exception: bootstrap hands it
   a reader, and it reads only under its guarded prefix (ADR 0036).
