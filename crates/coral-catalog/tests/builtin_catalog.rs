@@ -7,6 +7,7 @@
 use coral_catalog::{
     BuiltinCatalog, BuiltinTool, Error, ExecutionBinding, ToolAvailability, ToolHints, ToolKey,
 };
+use coral_db::UnixNanos;
 use coral_test_support::TestDatabase;
 use sea_query::{Alias, Expr, ExprTrait as _, Query};
 use sha2::{Digest as _, Sha256};
@@ -22,14 +23,20 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let database = fixture.database();
     let catalog = BuiltinCatalog::running().unwrap();
     let mut transaction = database.begin().await.unwrap();
-    let first =
-        coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &catalog, 1)
-            .await
-            .unwrap();
-    let second =
-        coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &catalog, 2)
-            .await
-            .unwrap();
+    let first = coral_catalog::publish_builtin_generation_in_transaction(
+        &mut transaction,
+        &catalog,
+        UnixNanos::new(1),
+    )
+    .await
+    .unwrap();
+    let second = coral_catalog::publish_builtin_generation_in_transaction(
+        &mut transaction,
+        &catalog,
+        UnixNanos::new(2),
+    )
+    .await
+    .unwrap();
     transaction.commit().await.unwrap();
     assert_ne!(first, second, "each Workspace gets its own Generation");
 
@@ -305,14 +312,20 @@ async fn a_builtin_generation_pins_its_catalog_identity_and_decodes_any_well_for
     let database = fixture.database();
     let catalog = BuiltinCatalog::running().unwrap();
     let mut transaction = database.begin().await.unwrap();
-    let first =
-        coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &catalog, 1)
-            .await
-            .unwrap();
-    let second =
-        coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &catalog, 2)
-            .await
-            .unwrap();
+    let first = coral_catalog::publish_builtin_generation_in_transaction(
+        &mut transaction,
+        &catalog,
+        UnixNanos::new(1),
+    )
+    .await
+    .unwrap();
+    let second = coral_catalog::publish_builtin_generation_in_transaction(
+        &mut transaction,
+        &catalog,
+        UnixNanos::new(2),
+    )
+    .await
+    .unwrap();
     transaction.commit().await.unwrap();
 
     let mut transaction = database.begin_read_snapshot().await.unwrap();
@@ -386,10 +399,13 @@ async fn a_builtin_generation_pins_its_own_catalog_and_no_other() {
     let other =
         BuiltinCatalog::with_unknown_tools([("archiveThings", ToolHints::default())]).unwrap();
     let mut transaction = database.begin().await.unwrap();
-    let generation =
-        coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &running, 1)
-            .await
-            .unwrap();
+    let generation = coral_catalog::publish_builtin_generation_in_transaction(
+        &mut transaction,
+        &running,
+        UnixNanos::new(1),
+    )
+    .await
+    .unwrap();
     transaction.commit().await.unwrap();
 
     let mut transaction = database.begin_read_snapshot().await.unwrap();
@@ -472,10 +488,13 @@ async fn a_builtin_binding_disagreeing_with_its_index_fails_full_and_search_read
         let database = fixture.database();
         let catalog = BuiltinCatalog::running().unwrap();
         let mut transaction = database.begin().await.unwrap();
-        let generation =
-            coral_catalog::publish_builtin_generation_in_transaction(&mut transaction, &catalog, 1)
-                .await
-                .unwrap();
+        let generation = coral_catalog::publish_builtin_generation_in_transaction(
+            &mut transaction,
+            &catalog,
+            UnixNanos::new(1),
+        )
+        .await
+        .unwrap();
         transaction.commit().await.unwrap();
         fixture
             .execute_fixture_sql(&format!(

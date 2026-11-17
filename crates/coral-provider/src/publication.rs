@@ -694,7 +694,7 @@ impl TerminalContext<'_> {
                 .input_digest()
                 .ok_or(Error::ProviderSetupNotReady)?,
             prepared,
-            self.context.occurred_at_unix_nanos(),
+            self.context.occurred_at(),
         )
         .await?;
         provider_repository::insert_provider(
@@ -1349,7 +1349,7 @@ impl ProviderModule {
                     .input_digest()
                     .ok_or(Error::ProviderSetupNotReady)?,
                 replacement.prepared,
-                context.occurred_at_unix_nanos(),
+                context.occurred_at(),
             )
             .await?;
             if !provider_repository::activate_generation(
