@@ -485,3 +485,40 @@ describe('database', () => {
     expect(launched).toEqual([])
   })
 })
+
+describe('search', () => {
+  async function runtimeConfig(mcp: string) {
+    const response = await fetch(`${mcp}/launch`)
+    return ((await response.json()) as { config: string }).config
+  }
+
+  it('turns semantic search off in the runtime when desktop.json says so', async () => {
+    await writeFile(join(dataDir, 'desktop.json'), JSON.stringify({ search: { semantic: false } }))
+
+    const config = await runtimeConfig((await supervise().start()).mcp)
+
+    expect(config).toContain('\n[search]\nsemantic_search_enabled = false\n')
+  })
+
+  it('leaves semantic search to the runtime default when desktop.json has no search section', async () => {
+    const config = await runtimeConfig((await supervise().start()).mcp)
+
+    expect(config).not.toContain('[search]')
+  })
+
+  it.each([
+    { section: 'off', message: 'search must be an object' },
+    { section: { semantic: 'no' }, message: 'search.semantic must be true or false' },
+    { section: { semantic: false, model: 'x' }, message: 'search has an unknown key, model' },
+  ])(
+    'fails, and launches nothing, when the search section is $section',
+    async ({ section, message }) => {
+      await writeFile(join(dataDir, 'desktop.json'), JSON.stringify({ search: section }))
+
+      const failure = await failureOf(supervise().start())
+
+      expect(failure).toMatchObject({ kind: 'error', message: expect.stringContaining(message) })
+      expect(launched).toEqual([])
+    },
+  )
+})

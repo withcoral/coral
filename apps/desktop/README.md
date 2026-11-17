@@ -221,8 +221,9 @@ Desktop keeps everything under `<appData>/com.withcoral.app`, which is
 - `runtime/`: the runtime's state. Desktop rewrites `runtime/config.toml` on
   every launch.
 - `desktop.json`: the kept MCP and Reef ports, the background notice, and the
-  database, if you set one. See [Ports](#ports), [Background](#background) and
-  [Database](#database).
+  database and search settings, if you set them. See [Ports](#ports),
+  [Background](#background), [Database](#database) and
+  [Semantic search](#semantic-search).
 - `logs/`: `coral.log`, `reef.log` and `desktop.log`, Desktop's own record of
   starts, failures and restarts. Help > Show logs opens this folder. A log
   that reaches 5 MB moves to `<name>.1.log`, which replaces the previous one.
@@ -250,3 +251,25 @@ Desktop never writes this section. An invalid section stops Coral from
 starting; it never falls back to SQLite. The runtime does not copy state
 between the two databases, and `runtime/credentials.key` must stay with the
 state that it sealed.
+
+### Semantic search
+
+The runtime finds tools by semantic search. When it does not find the model
+files, it downloads them (133 MB) from GitHub into `runtime/models`. On a
+Postgres database, semantic search needs the pgvector extension, version 0.7 or
+later. Without it, the runtime does not start.
+
+To turn semantic search off, quit Coral and add a `search` section to
+`desktop.json`. Keep the sections that are already there:
+
+```json
+{
+  "ports": { "mcp": 58100, "reef": 58101 },
+  "search": { "semantic": false }
+}
+```
+
+Desktop then writes `semantic_search_enabled = false` in `[search]` in
+`runtime/config.toml`. The runtime then loads no model, downloads nothing and
+does not check for pgvector. Desktop never writes this section. An invalid
+section stops Coral from starting.
