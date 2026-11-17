@@ -23,6 +23,7 @@ pub struct Transaction<'a> {
     /// holds no row, so it refuses every [`RowLock`] but [`RowLock::None`].
     read_write: bool,
     measure: Measure<'a>,
+    statements: &'a crate::statements::StatementCount,
 }
 
 /// Records how long one transaction was open and how it ended. A
@@ -152,6 +153,7 @@ impl Database {
             read_write: true,
             token: TransactionToken(std::sync::Arc::new(())),
             measure: Measure::start(&self.backend),
+            statements: &self.statements,
         })
     }
 
@@ -195,6 +197,7 @@ impl Database {
             read_write: false,
             token: TransactionToken(std::sync::Arc::new(())),
             measure: Measure::start(&self.backend),
+            statements: &self.statements,
         })
     }
 }
@@ -352,6 +355,7 @@ impl Transaction<'_> {
     where
         S: SqlxBinder,
     {
+        self.statements.sent();
         match &mut self.backend {
             TransactionBackend::Sqlite(transaction) => {
                 let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
@@ -386,6 +390,7 @@ impl Transaction<'_> {
         values: sea_query::Values,
     ) -> Result<u64, Error> {
         let values = sea_query_sqlx::SqlxValues(values);
+        self.statements.sent();
         let rows = match &mut self.backend {
             TransactionBackend::Sqlite(transaction) => {
                 sqlx::query_with::<Sqlite, _>(sqlx::AssertSqlSafe(sql), values)
@@ -421,6 +426,7 @@ impl Transaction<'_> {
         for<'row> T: FromRow<'row, PgRow>,
     {
         let values = sea_query_sqlx::SqlxValues(values);
+        self.statements.sent();
         match &mut self.backend {
             TransactionBackend::Sqlite(transaction) => {
                 sqlx::query_as_with::<Sqlite, T, _>(sqlx::AssertSqlSafe(sql), values)
@@ -448,6 +454,7 @@ impl Transaction<'_> {
     ///
     /// Returns the first backend statement error.
     pub async fn execute_script(&mut self, script: &str) -> Result<(), Error> {
+        self.statements.sent();
         match &mut self.backend {
             TransactionBackend::Sqlite(transaction) => {
                 sqlx::raw_sql(sqlx::AssertSqlSafe(script))
@@ -583,6 +590,7 @@ impl Transaction<'_> {
         for<'row> T: FromRow<'row, SqliteRow>,
         for<'row> T: FromRow<'row, PgRow>,
     {
+        self.statements.sent();
         match &mut self.backend {
             TransactionBackend::Sqlite(transaction) => {
                 let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);
@@ -612,6 +620,7 @@ impl Transaction<'_> {
         for<'row> T: FromRow<'row, SqliteRow>,
         for<'row> T: FromRow<'row, PgRow>,
     {
+        self.statements.sent();
         match &mut self.backend {
             TransactionBackend::Sqlite(transaction) => {
                 let (sql, values) = statement.build_sqlx(sea_query::SqliteQueryBuilder);

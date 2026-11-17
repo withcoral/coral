@@ -29,14 +29,26 @@ impl GrpcServices {
             .inspect_workspace(user, id)
             .await
             .map_err(error)?;
-        let mut view = workspace(&evidence, meta);
+        let own = self
+            .workspaces
+            .inspect_user_profile(user, id, user.user_id())
+            .await
+            .map_err(error)?;
+        Ok(self.workspace_projection(user, &evidence, meta, profile(own)))
+    }
+
+    /// Projects one Workspace as `user` sees it, with `own`, that User's profile.
+    fn workspace_projection(
+        &self,
+        user: &AuthenticatedUser,
+        evidence: &WorkspaceEvidence,
+        meta: ResourceMetadata,
+        own: wire::UserProfile,
+    ) -> wire::Workspace {
+        let id = evidence.workspace().id();
+        let mut view = workspace(evidence, meta);
         view.current_user = format!("users/{}", user.user_id());
-        view.current_user_profile = Some(profile(
-            self.workspaces
-                .inspect_user_profile(user, id, user.user_id())
-                .await
-                .map_err(error)?,
-        ));
+        view.current_user_profile = Some(own);
         view.mcp_endpoint = self.mcp_origin.get().map_or_else(String::new, |origin| {
             format!("{origin}/workspaces/{id}/mcp")
         });
@@ -46,7 +58,7 @@ impl GrpcServices {
         {
             view.organization_mcp_endpoint = format!("{origin}/mcp");
         }
-        Ok(view)
+        view
     }
 }
 
@@ -363,18 +375,23 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
     ) -> Result<Response<wire::ListWorkspacesResponse>, Status> {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
-        let values = self.workspaces.list(&user).await.map_err(error)?;
+        let listed = self
+            .workspaces
+            .inspect_workspaces(&user)
+            .await
+            .map_err(error)?;
+        let own = profile(listed.profile);
         let (values, next_page_token) = page(
-            values,
+            listed.workspaces,
             input.page_size,
             &input.page_token,
             &format!("{}:workspaces", user.user_id()),
-            coral_workspace::Workspace::listing_key,
+            |(evidence, _)| evidence.workspace().listing_key(),
         )?;
-        let mut workspaces = Vec::new();
-        for w in values {
-            workspaces.push(self.workspace_view(&user, w.id()).await?);
-        }
+        let workspaces = values
+            .into_iter()
+            .map(|(evidence, meta)| self.workspace_projection(&user, &evidence, meta, own.clone()))
+            .collect();
         Ok(Response::new(wire::ListWorkspacesResponse {
             workspaces,
             next_page_token,

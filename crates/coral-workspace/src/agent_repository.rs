@@ -170,6 +170,27 @@ pub(super) async fn list(
     rows.into_iter().map(AgentRow::decode).collect()
 }
 
+/// Selects one column of the Agents of one Workspace that are not deleted.
+fn agent_column(workspace_id: &WorkspaceId, column: WorkspaceAgents) -> sea_query::SelectStatement {
+    Query::select()
+        .column(column)
+        .from(WorkspaceAgents::Table)
+        .and_where(Expr::col(WorkspaceAgents::Deleted).eq(0))
+        .and_where(Expr::col(WorkspaceAgents::WorkspaceId).eq(workspace_id.to_string()))
+        .to_owned()
+}
+
+/// Selects the ids of the Agents [`list`] returns, in one column.
+pub(super) fn agent_ids(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
+    agent_column(workspace_id, WorkspaceAgents::Id)
+}
+
+/// Selects the ids of the Users who created the Agents [`list`] returns, in
+/// one column.
+pub(super) fn creator_ids(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
+    agent_column(workspace_id, WorkspaceAgents::CreatedBy)
+}
+
 pub(super) async fn find(
     executor: impl QueryExecutor,
     workspace_id: &WorkspaceId,
@@ -231,6 +252,25 @@ fn any_workspace_registrations() -> sea_query::SelectStatement {
             AgentRegistrations::ExpiresAtUnixNanos,
         ])
         .from(AgentRegistrations::Table)
+        .to_owned()
+}
+
+/// The Registration of every Agent of one Workspace. A deleted Agent has none.
+pub(super) async fn list_registrations(
+    executor: impl QueryExecutor,
+    workspace_id: &WorkspaceId,
+) -> Result<Vec<AgentRegistration>, Error> {
+    let rows: Vec<RegistrationRow> = executor.fetch_all(registrations(workspace_id)).await?;
+    rows.into_iter().map(RegistrationRow::decode).collect()
+}
+
+/// Selects the ids of the Registrations [`list_registrations`] returns, in
+/// one column.
+pub(super) fn registration_ids(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
+    Query::select()
+        .column(AgentRegistrations::Id)
+        .from(AgentRegistrations::Table)
+        .and_where(Expr::col(AgentRegistrations::WorkspaceId).eq(workspace_id.to_string()))
         .to_owned()
 }
 

@@ -11,12 +11,14 @@
 #[path = "organization_repository.rs"]
 mod repository;
 
-pub(crate) use repository::enabled_member_total;
+pub(crate) use repository::{current_member_ids, enabled_member_total};
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use coral_db::{Database, Transaction};
 
+use crate::list_repository::Users;
 use crate::{AuthenticatedUser, ChangeContext, Error, OrganizationRole, UserId};
 
 pub(super) async fn hold_administration(tx: &mut Transaction<'_>) -> Result<(), Error> {
@@ -29,6 +31,19 @@ pub(super) async fn is_enabled(tx: &mut Transaction<'_>, user: &UserId) -> Resul
     Ok(repository::find_membership(tx, user)
         .await?
         .is_some_and(|membership| membership.enabled))
+}
+
+/// The Users of one list for whom [`is_enabled`] holds, read in one statement.
+pub(super) async fn enabled_among(
+    tx: &mut Transaction<'_>,
+    users: Users<'_>,
+) -> Result<HashSet<UserId>, Error> {
+    Ok(repository::find_listed_memberships(tx, users)
+        .await?
+        .into_iter()
+        .filter(|membership| membership.enabled)
+        .map(|membership| membership.user_id)
+        .collect())
 }
 
 /// Current Coral-owned role and state of one Organization Membership.
@@ -194,10 +209,7 @@ impl OrganizationModule {
         user_id: &UserId,
     ) -> Result<AuthenticatedUser, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
-        let user = current_user(&mut tx, user_id).await?;
-        if user.organization_role().is_none() {
-            return Err(Error::PermissionDenied("User is disabled"));
-        }
+        let user = enabled_user(&mut tx, user_id).await?;
         tx.commit().await?;
         Ok(user)
     }
@@ -381,15 +393,17 @@ impl OrganizationModule {
     ) -> Result<Vec<(OrganizationMembership, crate::UserProfile)>, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
         require_owner(&mut tx, actor).await?;
-        let mut memberships = Vec::new();
-        for user in repository::current_members(&mut tx).await? {
-            memberships.push((
-                read_membership(&mut tx, &user).await?,
-                crate::profile::read_profile(&mut tx, &user).await?,
-            ));
-        }
+        let memberships = repository::current_memberships(&mut tx).await?;
+        let profiles =
+            crate::profile::read_listed_profiles(&mut tx, Users::OrganizationMembers).await?;
         tx.commit().await?;
-        Ok(memberships)
+        Ok(memberships
+            .into_iter()
+            .map(|membership| {
+                let profile = profiles.of(membership.user_id());
+                (membership, profile)
+            })
+            .collect())
     }
 
     /// Lists safe Organization administration evidence for a current Owner.
@@ -433,6 +447,18 @@ pub(crate) async fn current_user(
     user_id: &UserId,
 ) -> Result<AuthenticatedUser, Error> {
     Ok(read_membership(tx, user_id).await?.authenticated())
+}
+
+/// [`current_user`], denied when the User's Organization Membership is disabled.
+pub(crate) async fn enabled_user(
+    tx: &mut Transaction<'_>,
+    user_id: &UserId,
+) -> Result<AuthenticatedUser, Error> {
+    let user = current_user(tx, user_id).await?;
+    if user.organization_role().is_none() {
+        return Err(Error::PermissionDenied("User is disabled"));
+    }
+    Ok(user)
 }
 
 async fn read_membership(

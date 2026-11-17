@@ -310,12 +310,12 @@ impl WorkspaceModule {
         actor: &AuthenticatedUser,
         workspace_id: &WorkspaceId,
     ) -> Result<Vec<Agent>, Error> {
-        Ok(self
-            .inspect_agents(actor, workspace_id)
-            .await?
-            .into_iter()
-            .map(|view| view.agent)
-            .collect())
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        self.check_owner_inspection_in_transaction(&mut transaction, actor, workspace_id)
+            .await?;
+        let agents = repository::list(&mut transaction, workspace_id).await?;
+        transaction.commit().await?;
+        Ok(agents)
     }
 
     /// Inspects one Agent's single Registration without exposing its verifier.
