@@ -1,5 +1,5 @@
 use super::authored_tools::{diagnostic, error, private_tool_agent};
-use super::workspaces::{annotate, invalid, page_start, page_token, timestamp, workspace_id};
+use super::workspaces::{annotate, invalid, next_after, page_request, timestamp, workspace_id};
 use super::{GrpcServices, management as wire, now};
 use coral_tools::{PrivateTool, PrivateToolChangeContext, PrivateToolPath, PrivateToolSummary};
 use coral_workspace::{AuthenticatedPrincipal, TraceId};
@@ -39,13 +39,7 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
-        let scope = format!("{}:{w}:privateTools", user.user_id());
-        let (page_size, after) = page_start(input.page_size, &input.page_token, &scope)?;
-        let after = if after.is_empty() {
-            None
-        } else {
-            Some(PrivateToolPath::parse(&after).map_err(|_error| invalid())?)
-        };
+        let asked = page_request::<PrivateToolPath>(input.page_size, &input.after)?;
         let private_provider = self
             .providers
             .inspect_authored_tool_provider(&user, &w, coral_catalog::AuthoredToolKind::Private)
@@ -53,22 +47,12 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
             .map_err(super::providers::error)?;
         let page = self
             .private_tools
-            .list(
-                &AuthenticatedPrincipal::user(user),
-                &w,
-                after.as_ref(),
-                page_size,
-            )
+            .list(&AuthenticatedPrincipal::user(user), &w, &asked)
             .await
             .map_err(error)?;
-        let next_page_token = page
-            .next_after()
-            .map(|after| page_token(&scope, after.as_str()))
-            .transpose()?
-            .unwrap_or_default();
         Ok(Response::new(wire::ListPrivateToolsResponse {
-            private_tools: page.summaries().iter().map(summary).collect(),
-            next_page_token,
+            private_tools: page.items.iter().map(summary).collect(),
+            next_after: next_after(page.next_after.as_ref()),
             private_provider: super::providers::provider_name(&private_provider),
         }))
     }

@@ -80,16 +80,21 @@ message ListSharedToolsRequest {
   string parent = 1;
   // Maximum results, bounded to 100; zero selects the default.
   int32 page_size = 2;
-  // Opaque continuation from the preceding page in this scope.
-  string page_token = 3;
+  // next_after from the previous page. Empty starts at the first path. Only a
+  // value this list returned is a valid cursor. It only positions the page:
+  // each page lists the Shared Tools of parent. Text that is not a path is
+  // INVALID_ARGUMENT.
+  string after = 3;
 }
 
 // One page of source-free Shared Tool summaries in path order.
 message ListSharedToolsResponse {
   // The Shared Tools on this page.
   repeated SharedToolSummary shared_tools = 1;
-  // Empty when no further page remains.
-  string next_page_token = 2;
+  // Pass as after to get the next page; empty on the last page. It is the path
+  // of the last Shared Tool on this page, and still works after that Shared
+  // Tool is removed.
+  string next_after = 2;
   // The Workspace's Shared Provider, workspaces/{workspace}/providers/{provider}.
   string shared_provider = 3;
 }
@@ -299,16 +304,20 @@ message ListSharedToolEventsRequest {
   string shared_tool = 2;
   // Maximum results, bounded to 100; zero selects the default.
   int32 page_size = 3;
-  // Opaque continuation from the preceding page in this scope.
-  string page_token = 4;
+  // next_after from the previous page. Empty starts at the newest event. Only
+  // a value this list returned is a valid cursor. It only positions the page:
+  // each page lists the events that parent and shared_tool name. Text that is
+  // not {event time in Unix nanoseconds}/{event id} is INVALID_ARGUMENT.
+  string after = 4;
 }
 
 // One page of Shared Tool events, newest first.
 message ListSharedToolEventsResponse {
   // The events on this page.
   repeated SharedToolEvent events = 1;
-  // Empty when no further page remains.
-  string next_page_token = 2;
+  // Pass as after to get the next page; empty on the last page. It is the time
+  // and the id of the last event on this page.
+  string next_after = 2;
 }
 
 // One publish or removal of a Shared Tool. It never holds source.

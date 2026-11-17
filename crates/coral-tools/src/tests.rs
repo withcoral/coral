@@ -1,5 +1,6 @@
 use coral_catalog::AuthoredToolKind;
-use coral_test_support::change;
+use coral_db::{Page, PageKey};
+use coral_test_support::{change, page_request, read_pages};
 use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -37,6 +38,47 @@ fn fixed_private_tool_source_and_declaration_limits_accept_the_boundary_only() {
             "the Tool declaration exceeds 262144 bytes. Return fewer fields, or annotate the return type."
                 .to_string()
         )
+    );
+}
+
+// Catches: a cursor that does not spell its key back, or text that is no key
+// of a list taken for one.
+#[test]
+fn a_page_key_spells_its_cursor_and_reads_no_other_text() {
+    fn spells<K: PageKey>(cursors: &[&str], refused: &[&str]) {
+        for cursor in cursors {
+            let key = K::from_cursor(cursor).unwrap_or_else(|| panic!("{cursor} is a key"));
+            assert_eq!(key.to_cursor(), *cursor);
+        }
+        for text in refused {
+            assert!(K::from_cursor(text).is_none(), "{text:?} is no key");
+        }
+    }
+    let paths = ["alpha", "reports.total", "Middle.upper"];
+    let no_paths = ["", "reports..total", ".alpha", "not a path", "1st", "a/b"];
+    spells::<PrivateToolPath>(&paths, &no_paths);
+    spells::<crate::SharedToolPath>(&paths, &no_paths);
+    spells::<crate::SharedToolLifecycleEventKey>(
+        &[
+            "30/00000000-0000-4000-8000-000000000000",
+            "-30/6f1e3a52-9c0b-4d1e-8a7f-2b5c4d3e2f10",
+            "9223372036854775807/ffffffff-ffff-4fff-bfff-ffffffffffff",
+        ],
+        &[
+            "",
+            "30",
+            "30/",
+            "/00000000-0000-4000-8000-000000000000",
+            "00000000-0000-4000-8000-000000000000",
+            // One time and one identity each have one spelling.
+            "030/00000000-0000-4000-8000-000000000000",
+            "+30/00000000-0000-4000-8000-000000000000",
+            "30.0/00000000-0000-4000-8000-000000000000",
+            "9223372036854775808/00000000-0000-4000-8000-000000000000",
+            "30/00000000-0000-4000-8000-00000000000G",
+            "30/6F1E3A52-9C0B-4D1E-8A7F-2B5C4D3E2F10",
+            "30/00000000-0000-4000-8000-000000000000/",
+        ],
     );
 }
 
@@ -2231,12 +2273,12 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
         let after = after.map(|path| PrivateToolPath::parse(path).expect("after path"));
         async move {
             tools
-                .list(&actor, &workspace, after.as_ref(), page_size)
+                .list(&actor, &workspace, &page_request(after, page_size))
                 .await
         }
     };
-    let paths = |page: &crate::PrivateToolPage| {
-        page.summaries()
+    let paths = |page: &Page<crate::PrivateToolSummary, PrivateToolPath>| {
+        page.items
             .iter()
             .map(|summary| summary.path().as_str().to_owned())
             .collect::<Vec<_>>()
@@ -2244,14 +2286,77 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
 
     let first = list(&member, None, 2).await.expect("first page");
     assert_eq!(paths(&first), ["Middle.upper", "alpha.first"]);
-    let summary = first.summaries().last().expect("summary");
+    let summary = first.items.last().expect("summary");
     assert_eq!(summary.description().as_str(), "Describe alpha.first");
     assert_eq!(summary.saved_at_unix_nanos(), 20);
-    let after = first.next_after().expect("more pages").as_str().to_owned();
-    let second = list(&member, Some(&after), 2).await.expect("second page");
+    let first_after = first.next_after;
+    let after = first_after.as_ref().expect("more pages").as_str();
+    let second = list(&member, Some(after), 2).await.expect("second page");
     // A page that ends exactly at the last tool has no continuation.
     assert_eq!(paths(&second), ["reports.total", "zeta.last"]);
-    assert_eq!(second.next_after(), None);
+    assert_eq!(second.next_after, None);
+
+    // Pages of every size hold the same Private Tools in the same order.
+    let whole = ["Middle.upper", "alpha.first", "reports.total", "zeta.last"];
+    for size in [1, 2, 3, 4, 100] {
+        let pages = read_pages(size, async |request| {
+            inspection.list(&member, &workspace_id, &request).await
+        })
+        .await;
+        let read = pages
+            .iter()
+            .map(|page| {
+                page.iter()
+                    .map(|summary| summary.path().as_str())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let expected = whole
+            .chunks(usize::try_from(size).expect("size"))
+            .map(<[_]>::to_vec)
+            .collect::<Vec<_>>();
+        assert_eq!(read, expected, "pages of {size}");
+    }
+    // The path of another Principal's Private Tool, or of the caller's own in
+    // another Workspace, only positions the page: it shows the caller's own
+    // Private Tools of this Workspace after it.
+    for (case, lister, workspace, foreign) in [
+        ("another Principal", &owner, &workspace_id, "owner.private"),
+        (
+            "another Workspace",
+            &member,
+            &other_workspace,
+            "elsewhere.only",
+        ),
+    ] {
+        let theirs = inspection
+            .list(lister, workspace, &page_request(None, 100))
+            .await
+            .expect(case);
+        assert_eq!(paths(&theirs), [foreign], "{case}");
+        let positioned = list(&member, Some(foreign), 100).await.expect(case);
+        assert_eq!(paths(&positioned), ["reports.total", "zeta.last"], "{case}");
+    }
+    // The list fetches a page's rows and the one after them, whatever the
+    // collection holds. It fetches no row beyond those: this one fails any
+    // fetch of it.
+    let corrupt = async |from: &str, to: &str| {
+        let changed = fixture
+            .fixture
+            .execute_fixture_sql(&format!(
+                "UPDATE private_tool_records SET path = '{to}' WHERE path = '{from}'"
+            ))
+            .await
+            .expect("change the path");
+        assert_eq!(changed, 1);
+    };
+    corrupt("zeta.last", "zeta.not a path").await;
+    let bounded = list(&member, None, 2).await.expect("a page before the row");
+    assert_eq!(paths(&bounded), ["Middle.upper", "alpha.first"]);
+    assert_eq!(bounded.next_after, first_after);
+    let reached = list(&member, Some("alpha.first"), 2).await;
+    assert!(matches!(reached, Err(Error::CorruptData(_))), "{reached:?}");
+    corrupt("zeta.not a path", "zeta.last").await;
 
     // An Owner sees only their own tools: never a Member's or an Agent's.
     // An Agent likewise sees only its own.
@@ -2280,12 +2385,12 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
         ),
         "{denied:?}"
     );
-    for page_size in [0, crate::PRIVATE_TOOL_PAGE_MAX_SIZE + 1] {
-        assert!(matches!(
-            list(&member, None, page_size).await,
-            Err(Error::InvalidInput(_))
-        ));
-    }
+    // A page size holds one or more, so only a size over the maximum
+    // reaches the list.
+    assert!(matches!(
+        list(&member, None, crate::PRIVATE_TOOL_PAGE_MAX_SIZE + 1).await,
+        Err(Error::InvalidInput(_))
+    ));
 
     let entries = || async {
         let mut transaction = fixture

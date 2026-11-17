@@ -11,12 +11,14 @@ mod context;
 mod keys;
 mod migration;
 mod organization;
+mod paging;
 mod provider;
 mod secret_store;
 pub use context::{change, trace};
 pub use keys::{RSA_TEST_PRIVATE_KEY_DER, RSA_TEST_PUBLIC_MODULUS, p256_pkcs8};
 pub use migration::{edited_migration_plan, migration_plan_before, migration_plan_with};
 pub use organization::provision_user;
+pub use paging::{page_request, read_pages};
 pub use provider::fixture_request_id;
 pub use secret_store::{InMemorySecretStore, secret_stores};
 
