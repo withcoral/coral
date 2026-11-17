@@ -1,9 +1,9 @@
 ---
 title: "Providers"
-description: "Adding providers to Coral"
+description: "Add providers to Coral"
 ---
 
-Providers connect Coral to third-party data sources. Coral works with any data source that has either an OpenAPI 3.0/3.1 document, or a Streamable HTTP MCP server. For other providers, see [advanced scenarios](#advanced-scenarios).
+Providers connect Coral to third-party data sources. Coral works with any data source that has an OpenAPI 3.0/3.1 document or a Streamable HTTP MCP server. For other data sources, see [advanced scenarios](#advanced-scenarios).
 
 <Note>Only workspace owners can add providers.</Note>
 
@@ -11,23 +11,23 @@ Providers connect Coral to third-party data sources. Coral works with any data s
 
 Coral has a catalog of popular providers. To add one of these providers:
 
-1. Go to your workspace's **Tools** page
-2. Click **Add provider**
-3. Pick a provider from the list
+1. Go to your workspace's **Tools** page.
+2. Click **Add provider**.
+3. Click a provider in the list.
 
 ## Adding a provider using an OpenAPI document or MCP server URL
 
-1. Go to your workspace's **Tools** page
-2. Click **Add provider**
-3. Click **Add custom**
+1. Go to your workspace's **Tools** page.
+2. Click **Add provider**.
+3. Click **Add custom**.
 
-From there you can enter the MCP server URL, enter the URL to an OpenAPI document, or upload an OpenAPI document.
+Then enter the MCP server URL, enter the URL of an OpenAPI document, or upload an OpenAPI document.
 
 ## Adding a provider using your agent
 
-Coral exposes tools for managing Coral itself. This means that you can ask your agent to add a new provider to Coral. Your agent will do all the necessary pre-work; a workspace owner must then review and publish the returned setup in the Coral UI.
+Coral has tools that manage Coral itself, so you can ask your agent to add a new provider. Your agent prepares the setup. A workspace owner must then review and publish that setup in the Coral UI.
 
-For example, if you wanted to connect Coral to ClickUp, you could simply ask your agent:
+For example, to connect Coral to ClickUp, ask your agent:
 
 > Add a Coral provider for ClickUp
 
@@ -39,7 +39,7 @@ See [database providers](/guides/database-providers).
 
 ### Adding a provider for a service that only has a stdio MCP server
 
-Use a bridge that runs the stdio server and exposes a Streamable HTTP endpoint. There are a number of libraries that can help with this, including:
+Use a bridge that runs the stdio server and exposes a Streamable HTTP endpoint. Libraries that can do this include:
 
 - [Supergateway](https://github.com/supercorp-ai/supergateway) (Node)
 - [MCP Proxy](https://github.com/sparfenyuk/mcp-proxy) (Python)
@@ -49,13 +49,13 @@ For a complete example, see [Using the AWS MCP Server with IAM](/guides/provider
 
 <Note>
   Self-hosted Coral denies access to private networks and loopback addresses by
-  default. If you run a stdio bridge on the same host as Coral, you may need tp
+  default. If you run a stdio bridge on the same host as Coral, you may need to
   update [Coral's configuration](/reference/configuration#outbound) to allow
   access.
 </Note>
 
 ### Adding a provider for a service that has no OpenAPI document and no MCP server
 
-If the provider has a well specified RESTful API, you can ask your agent to generate an OpenAPI document for it, then use that document to add the provider to Coral.
+If the service has a well-specified RESTful API, ask your agent to generate an OpenAPI document for it. Then use that document to add the provider to Coral.
 
-Otherwise, you can write a small API server or MCP server (using [FastAPI](https://fastapi.tiangolo.com/), [FastMCP](https://gofastmcp.com/getting-started/welcome) or similar) that wraps your provider, and add that to Coral.
+Otherwise, write a small API server or MCP server that wraps the service, with [FastAPI](https://fastapi.tiangolo.com/), [FastMCP](https://gofastmcp.com/getting-started/welcome) or a similar library. Then add that server to Coral.

@@ -1,14 +1,14 @@
-# Coral Documentation
+# Coral documentation
 
-This directory contains the Mintlify documentation for Coral hosted at [withcoral.com/docs](https://withcoral.com/docs).
+This directory contains the Mintlify documentation for Coral. The site is at [withcoral.com/docs](https://withcoral.com/docs).
 
-## Local Development
+## Local development
 
 To preview the documentation locally:
 
 1. Run the Mintlify dev server: `npx mint dev`
-3. Open [http://localhost:3000](http://localhost:3000)
+2. Open [http://localhost:3000](http://localhost:3000)
 
-## Authoring Guidelines
+## Authoring guidelines
 
-If you are an agent or a human contributing to these docs, please read [AGENTS.md](./AGENTS.md) first for our writing standards, content strategy, and workflow rules.
+Before you contribute to these docs, read [AGENTS.md](./AGENTS.md). It has the writing and content rules, and the publishing workflow.

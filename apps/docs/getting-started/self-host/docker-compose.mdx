@@ -3,9 +3,9 @@ title: "Deploying Coral with Docker Compose"
 sidebarTitle: "Docker Compose"
 ---
 
-This guide will explain how to set up Coral using Docker Compose with your choice of SQLite or Postgres as the backing DB.
+Set up Coral with Docker Compose, with SQLite or Postgres as its database.
 
-We will use `<coral-host>` as the placeholder for the domain of your Coral deployment.
+`<coral-host>` is the placeholder for the domain of your Coral deployment.
 
 ## Before you start
 
@@ -16,17 +16,19 @@ We will use `<coral-host>` as the placeholder for the domain of your Coral deplo
   https://auth.<coral-host>/auth/oidc/callback
   ```
 
-  Coral derives the redirect URI from `listeners.auth.public_url`; there is no separate setting for it.
+  Coral derives the redirect URI from `listeners.auth.public_url`. There is no separate setting for it.
 
 - **Images.** `latest` is the newest stable release. To pin a version, use a tag from the [releases page](https://github.com/withcoral/coral/releases) without the leading `v`, such as `ghcr.io/withcoral/coral:1.0.0`. The images are built for `linux/amd64` only. On an arm64 host, such as an Apple Silicon Mac, add `platform: linux/amd64` to both services to run them under emulation.
 
 ## Deploy
 
-1. Create a compose file with the following contents on your working directory:
+1. Create a compose file in your working directory with these contents:
 
-- See the [Configuration Reference](/reference/configuration) for more details on the configuration options.
-- This compose file exposes no ports. Depending on how you intend to do TLS termination, either add the TLS termination container to this compose file (e.g. Caddy) or expose the ports 14556 (mcp), 8779 (auth) and 3000 (UI) to your reverse proxy so it can forward calls to Coral.
-- Coral's gRPC should not be exposed outside the compose network. Be mindful the server is plaintext with no encryption.
+- The [configuration reference](/reference/configuration) describes the configuration options.
+- This compose file exposes no ports. For TLS termination, do one of these:
+  - Add a TLS termination container, such as Caddy, to this compose file.
+  - Expose the ports 14556 (MCP), 8779 (auth) and 3000 (UI) to your reverse proxy, so that it can forward calls to Coral.
+- Do not expose Coral's gRPC port outside the compose network. The gRPC server is plaintext, with no encryption.
 
 <Tabs>
 <Tab title="With SQLite">
@@ -81,7 +83,7 @@ volumes:
 ```
 
 <Note>
-  Coral will save both the SQLite DB files and the encryption key for sensitive
+  Coral saves the SQLite database files and the encryption key for sensitive
   data in the `coral-state` volume.
 </Note>
 
@@ -142,7 +144,7 @@ services:
       CORAL_WEB_SESSION_SECRET: ${CORAL_WEB_SESSION_SECRET}
 ```
 
-If your Postgres server uses a custom CA for TLS, add the CA bundle to the Coral container so Coral knows it can trust the certificate. For example, if you're using AWS RDS:
+If your Postgres server uses a custom CA for TLS, add the CA bundle to the Coral container, so that Coral can trust the certificate. For example, with AWS RDS:
 
 - Download the CA bundle:
   ```bash
@@ -166,7 +168,7 @@ If your Postgres server uses a custom CA for TLS, add the CA bundle to the Coral
 </Tab>
 </Tabs>
 
-2. Create an .env file that will hold the credentials used by Coral
+2. Create a `.env` file that holds the credentials that Coral uses:
 
 ```dotenv
 # Coral session signing key - create with:
@@ -189,11 +191,11 @@ CORAL_CREDENTIALS_KEY=...
 CORAL_DATABASE_URL=postgres://coral:PASSWORD@db.example.com:5432/coral?sslmode=verify-full
 ```
 
-3. Start Coral with `docker compose up -d`
+3. Start Coral with `docker compose up -d`.
 
-   Both images have a built-in health check, which is what `condition: service_healthy` waits for. If `coral-web` reports `dependency coral failed to start`, the cause is in the `coral` container: run `docker compose logs coral`.
+   Both images have a built-in health check, and `condition: service_healthy` waits for it. If `coral-web` reports `dependency coral failed to start`, the cause is in the `coral` container. Run `docker compose logs coral`.
 
-4. Start your reverse proxy for TLS termination. If you don't have one, you can use Caddy by merging it into the compose file:
+4. Start your reverse proxy for TLS termination. If you don't have one, merge this Caddy service into the compose file:
 
 ```yaml
 services:
@@ -218,7 +220,7 @@ volumes:
   caddy-config:
 ```
 
-Caddyfile:
+Use this `Caddyfile`:
 
 ```caddyfile
 {
@@ -235,7 +237,7 @@ mcp.<coral-host> {
 }
 ```
 
-5. You should be able to open the UI in your browser in `https://<coral-host>`. After you create your first workspace you can use the UI instructions to connect an MCP client. Each workspace has its own MCP endpoint:
+5. Open the Coral UI in your browser at `https://<coral-host>`. After you create your first workspace, follow the instructions in the Coral UI to connect an MCP client. Each workspace has its own MCP endpoint:
 
    ```text
    https://mcp.<coral-host>/workspaces/<workspace-id>/mcp
@@ -243,10 +245,10 @@ mcp.<coral-host> {
 
 ## Choosing the organization owner
 
-`bootstrap_owner_subject` is the `sub` claim that your identity provider issues for the user who becomes the organization owner. It is not an email address. With Google it is a numeric account ID; other providers usually show it as the user ID in their admin console. You can also read it from the `sub` claim of an ID token issued to that user.
+`bootstrap_owner_subject` is the `sub` claim that your identity provider issues for the user who becomes the organization owner. It is not an email address. With Google, it is a numeric account ID. Other providers usually show it as the user ID in their admin console. You can also read it from the `sub` claim of an ID token issued to that user.
 
 - Set it before that user signs in to Coral for the first time. Coral assigns the role at a user's first sign-in and does not change the role of a user who has already signed in.
-- If you do not know the value yet, remove the line. An empty string is not valid and stops Coral from starting. Without an owner, organization admin operations are disabled.
+- If you do not know the value yet, remove the line. An empty string is not valid and stops Coral from starting. Without an owner, Coral disables organization admin operations.
 
 ## Offering a Coral plugin
 
@@ -258,7 +260,7 @@ The onboarding prompt can tell some MCP clients to look for a Coral plugin. To o
       AGENTS_WITH_AVAILABLE_PLUGINS: "claude, chatgpt"
 ```
 
-- A listed client that can find and install plugins looks for the plugin. It installs the plugin only after your user confirms, then adds the MCP server through it.
+- A listed client that can find and install plugins looks for the plugin. It installs the plugin only after your user confirms. Then it adds the MCP server through the plugin.
 - A listed client adds the MCP server directly if it cannot find or install the plugin, or if your user declines. Every other client adds it directly too.
 - The list only advertises a plugin. Coral does not check that the plugin exists.
 - Leave the variable unset to offer no plugin.
@@ -266,7 +268,7 @@ The onboarding prompt can tell some MCP clients to look for a Coral plugin. To o
 
 ## Using a single hostname
 
-Each `public_url` is an origin: a scheme, a host and an optional port, with no path. Coral cannot be served under a path prefix. If you only have one hostname, as with Tailscale Serve, give each listener its own HTTPS port:
+Each `public_url` is an origin: a scheme, a host and an optional port, with no path. You cannot serve Coral under a path prefix. If you only have one hostname, as with Tailscale Serve, give each listener its own HTTPS port:
 
 | Setting                                              | Example value                |
 | ---------------------------------------------------- | ---------------------------- |
