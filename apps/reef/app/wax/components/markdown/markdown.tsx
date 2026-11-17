@@ -5,8 +5,8 @@ import { TextLink } from '../text-link'
 import * as styles from './markdown.css'
 
 const MARKDOWN_COMPONENTS: Components = {
-  a: ({ href, children }) => (
-    <TextLink href={href} external>
+  a: ({ href, title, children }) => (
+    <TextLink href={href} title={title} external>
       {children}
     </TextLink>
   ),
