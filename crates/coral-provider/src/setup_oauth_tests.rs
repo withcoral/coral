@@ -6372,3 +6372,25 @@ async fn a_setup_reports_its_fitting_routes_and_whether_connect_can_start() {
         assert_eq!((readiness.now, readiness.later), (now, later), "{case}");
     }
 }
+
+/// Catches: an Account Module that keeps a system clock of its own. A
+/// harness that sets its Provider Module's clock would then move a
+/// Publication's time and not the time of that Provider's Accounts.
+#[tokio::test]
+async fn an_account_module_starts_on_its_provider_modules_clock() {
+    let mut harness = harness(None).await;
+    let clock = coral_test_support::ManualClock::starting_at(coral_db::UnixNanos::new(5_000));
+    harness.providers = harness
+        .providers
+        .clone()
+        .with_clock(Arc::new(clock.clone()));
+    let accounts = harness.restarted_accounts();
+
+    let started = accounts.started();
+    clock.advance(std::time::Duration::from_nanos(700));
+
+    assert_eq!(
+        started.now_from(coral_db::UnixNanos::new(100)),
+        coral_db::UnixNanos::new(800)
+    );
+}
