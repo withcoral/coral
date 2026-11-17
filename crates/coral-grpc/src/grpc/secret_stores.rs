@@ -66,7 +66,7 @@ impl GrpcServices {
         request: &Request<T>,
         request_id: &str,
     ) -> Result<ChangeContext, Status> {
-        change(self.management_user(request).await?)?
+        change(self.management_user(request).await?)
             .with_request_id(request_id)
             .map_err(error)
     }

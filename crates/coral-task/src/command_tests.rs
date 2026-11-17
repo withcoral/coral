@@ -2010,13 +2010,7 @@ async fn requested_search_pages_keep_order_context_evidence_and_continuation_aft
 }
 
 fn wall_time() -> i64 {
-    i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    )
-    .unwrap()
+    coral_test_support::now_unix_nanos()
 }
 
 #[tokio::test]

@@ -677,14 +677,7 @@ async fn a_token_renewed_during_the_enforcement_check_is_the_one_dispatched() {
     .unwrap()
     .unwrap();
     tx.commit().await.unwrap();
-    let far_future = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    )
-    .unwrap()
-        + 4_000_000_000_000;
+    let far_future = coral_test_support::now_unix_nanos() + 4_000_000_000_000;
     assert_eq!(
         account
             .accounts

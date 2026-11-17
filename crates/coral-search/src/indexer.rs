@@ -58,9 +58,6 @@ pub(crate) enum IndexError {
         .0.as_secs()
     )]
     WriterBusy(std::time::Duration),
-    /// The system clock cannot stamp the attempt.
-    #[error("system clock is before 1970 or past the durable nanosecond range")]
-    Clock,
     /// A search-owned row holds a value its column does not admit.
     #[error("corrupt search index: {0}")]
     Corrupt(&'static str),
@@ -83,7 +80,6 @@ impl IndexError {
             Self::TimedOut(_) => "timed_out",
             Self::Overran(_) => "overran",
             Self::WriterBusy(_) => "writer_busy",
-            Self::Clock => "clock",
             Self::Corrupt(_) => "corrupt",
             Self::Provider(_) => "provider",
             Self::AuthoredTools(_) => "authored_tools",
@@ -99,7 +95,6 @@ impl IndexError {
             Self::TimedOut(_) | Self::Overran(_) | Self::WriterBusy(_) => {
                 Some(SearchIndexFailure::TimedOut)
             }
-            Self::Clock => Some(SearchIndexFailure::Clock),
             Self::Corrupt(_) => Some(SearchIndexFailure::Corrupt),
             Self::Provider(_) => Some(SearchIndexFailure::Provider),
             Self::Database(_) => Some(SearchIndexFailure::Database),
@@ -290,10 +285,6 @@ pub(crate) async fn recount_statistics(
     Ok(Some(
         repository::recount_workspace_statistics(transaction, workspace_id).await?,
     ))
-}
-
-fn now_unix_nanos() -> Result<i64, IndexError> {
-    crate::unix_now_nanos().ok_or(IndexError::Clock)
 }
 
 /// Schema text with each word once. Words split as the query planner splits

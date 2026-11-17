@@ -468,7 +468,7 @@ impl SearchIndex {
         workspace_id: &WorkspaceId,
         id: &AuthoredToolId,
     ) -> Result<bool, IndexError> {
-        let now = crate::unix_now_nanos().ok_or(IndexError::Clock)?;
+        let now = crate::now_unix_nanos();
         let sync = self
             .read_snapshot(async |transaction| {
                 AuthoredToolIndexer
@@ -787,7 +787,7 @@ impl SearchIndex {
                 }
             };
             transaction.commit().await?;
-            Ok((effect, crate::unix_now_nanos()))
+            Ok((effect, crate::now_unix_nanos()))
         };
         let written = self
             .before_limit(self.write_limit, write)
@@ -815,9 +815,9 @@ impl SearchIndex {
         &self,
         workspace: WorkspaceId,
         effect: indexer::IndexEffect,
-        committed_at: Option<i64>,
+        committed_at: i64,
     ) {
-        if effect.catalog().is_none() || committed_at.is_none() || !metric::enabled() {
+        if effect.catalog().is_none() || !metric::enabled() {
             return;
         }
         let index = self.clone();
@@ -1122,7 +1122,7 @@ impl Drop for InFlightWork {
     }
 }
 
-fn elapsed_at(since_unix_nanos: i64, committed_at: Option<i64>) -> Option<Duration> {
-    let elapsed = committed_at?.checked_sub(since_unix_nanos)?;
+fn elapsed_at(since_unix_nanos: i64, committed_at: i64) -> Option<Duration> {
+    let elapsed = committed_at.checked_sub(since_unix_nanos)?;
     Some(Duration::from_nanos(u64::try_from(elapsed).ok()?))
 }

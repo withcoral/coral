@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::external_user_id;
+use coral_db::Clock as _;
 use coral_workspace::PrincipalKind;
 
 const DEFAULT_ISSUER: &str = "coral";
@@ -388,7 +389,7 @@ impl SessionTokenVerifier {
         if external_user_id(&claims.sub).is_err() {
             return Err(invalid("subject, client_id, and jti must be valid"));
         }
-        let now = unix_timestamp()?;
+        let now = unix_timestamp();
         if claims.iat > now.saturating_add(CLOCK_SKEW.as_secs()) {
             return Err(invalid("issued-at timestamp is in the future"));
         }
@@ -566,11 +567,8 @@ fn unix_seconds(now_unix_nanos: i64) -> Result<u64, SessionTokenError> {
         .map_err(|_error| "host time is before the Unix epoch".to_string())
 }
 
-fn unix_timestamp() -> Result<u64, SessionTokenError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .map_err(|error| format!("system clock is before the Unix epoch: {error}"))
+fn unix_timestamp() -> u64 {
+    coral_db::SystemClock.now().whole_seconds()
 }
 
 /// Hand-signed tokens for tests of what the verifier refuses.
@@ -588,7 +586,7 @@ pub(crate) mod test_tokens {
         client_id: &str,
         audience: &str,
     ) -> SessionTokenClaims {
-        let now = unix_timestamp().expect("timestamp");
+        let now = unix_timestamp();
         SessionTokenClaims {
             iss: issuer.issuer.clone(),
             aud: audience.to_string(),
@@ -899,7 +897,7 @@ mod tests {
     fn access_token_rejects_invalid_temporal_claims() {
         let issuer = test_issuer();
         let original = claims(&issuer);
-        let now = unix_timestamp().expect("timestamp");
+        let now = unix_timestamp();
         // How far past the accepted skew the future-dated cases sit.
         //
         // The verifier reads the clock again after this test does, and

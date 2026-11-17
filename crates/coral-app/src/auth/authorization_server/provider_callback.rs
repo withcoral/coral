@@ -6,6 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use coral_db::Clock as _;
 use coral_provider::account::AccountModule;
 
 pub(super) fn router(accounts: AccountModule) -> Router {
@@ -40,12 +41,7 @@ async fn callback(State(accounts): State<AccountModule>, RawQuery(query): RawQue
 }
 
 async fn complete(accounts: &AccountModule, query: &str) -> Result<(), coral_provider::Error> {
-    use coral_provider::Error;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
-        .ok_or(Error::AccountInput)?;
+    let now = coral_db::SystemClock.now().get();
     let context = coral_workspace::ChangeContext::new(
         coral_workspace::local_organization_owner(),
         now,
@@ -102,13 +98,7 @@ mod tests {
             coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
             coral_catalog::SchemaGraphCache::with_default_budget(),
         );
-        let now = i64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        )
-        .unwrap();
+        let now = coral_test_support::now_unix_nanos();
         let context =
             ChangeContext::new(local_organization_owner(), now, TraceId::current_or_new());
         let workspace = workspaces

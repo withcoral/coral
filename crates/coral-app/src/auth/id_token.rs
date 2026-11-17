@@ -1,4 +1,5 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use coral_db::Clock as _;
+use std::time::Duration;
 
 use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::jwk::{
@@ -120,15 +121,12 @@ pub(super) fn validate_id_token(
         advertised_algorithms,
         jwks,
     )?;
-    validate_claims(provider, expected_nonce, &claims, unix_now_seconds()?)
+    validate_claims(provider, expected_nonce, &claims, unix_now_seconds())
 }
 
 /// One reading of the clock for a token's time claims, in Unix seconds.
-fn unix_now_seconds() -> Result<u64, TokenRejection> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|since_epoch| since_epoch.as_secs())
-        .map_err(|_error| TokenRejection::Times)
+fn unix_now_seconds() -> u64 {
+    coral_db::SystemClock.now().whole_seconds()
 }
 
 /// Admission-only evidence from the same upstream code exchange. No claim or
@@ -152,7 +150,7 @@ pub(super) fn validate_access_token_admission(
         jwks,
     )?;
     let claims = claims.as_object().ok_or(TokenRejection::Malformed)?;
-    validate_token_times(claims, unix_now_seconds()?)?;
+    validate_token_times(claims, unix_now_seconds())?;
     if claims.get("iss").and_then(Value::as_str) != Some(identity.issuer.as_str()) {
         return Err(TokenRejection::Issuer);
     }

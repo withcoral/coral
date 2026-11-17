@@ -1,6 +1,7 @@
 use std::borrow::Cow;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use coral_db::Clock as _;
 use coral_run::{RUN_EVENT_PAGE_MAX, RunCursor, RunId, RunObservation};
 use coral_task::{TaskId, TaskIntent, TaskOutcome};
 use coral_telemetry::safe;
@@ -347,7 +348,7 @@ impl McpServer {
                 &task_id,
                 outcome,
                 arguments.feedback.as_deref(),
-                now_unix_nanos()?,
+                coral_db::SystemClock.now().get(),
             )
             .await
             .map_err(task_failure)?;
@@ -506,14 +507,6 @@ fn validated_wait(wait_ms: u64) -> Result<u64, DispatchError> {
         )));
     }
     Ok(wait_ms)
-}
-
-fn now_unix_nanos() -> Result<i64, DispatchError> {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))?;
-    i64::try_from(duration.as_nanos())
-        .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))
 }
 
 fn invalid_input(error: impl std::fmt::Display) -> DispatchError {

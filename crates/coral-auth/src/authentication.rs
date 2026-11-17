@@ -1,3 +1,4 @@
+use coral_db::Clock as _;
 use coral_workspace::{
     AuthenticatedPrincipal, OrganizationModule, PrincipalKind, WorkspaceId, WorkspaceModule,
     local_organization_owner,
@@ -196,7 +197,7 @@ impl PrincipalAuthentication {
         fixed_by: WorkspaceFixedBy<'_>,
         credential: &str,
     ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
-        let now = now_unix_nanos()?;
+        let now = coral_db::SystemClock.now().get();
         Ok(match fixed_by {
             WorkspaceFixedBy::Url(workspace) => (
                 self.workspaces
@@ -262,14 +263,6 @@ pub enum WorkspaceFixedBy<'a> {
     /// Nothing in the request names one, so the credential must: a User
     /// token's signed `workspace_id`, or an Agent Registration's Workspace.
     Credential,
-}
-
-fn now_unix_nanos() -> Result<i64, AuthenticationError> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_error| AuthenticationError::Unavailable)?
-        .as_nanos();
-    i64::try_from(nanos).map_err(|_error| AuthenticationError::Unavailable)
 }
 
 impl From<coral_workspace::Error> for AuthenticationError {

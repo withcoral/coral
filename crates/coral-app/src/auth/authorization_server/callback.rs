@@ -12,6 +12,7 @@ use super::response::{TrustedRedirect, direct_error};
 use super::{AuthorizationServerHttpState, query, sign_in_cookie};
 use coral_auth::authorization_codes::{AuthorizationGrant, CodeIssue};
 use coral_auth::{LoginProvisioning, UserDirectory, VerifiedOidcLogin};
+use coral_db::Clock as _;
 use coral_telemetry::safe;
 use coral_workspace::UserId;
 
@@ -31,9 +32,12 @@ pub(super) async fn oidc_callback(
     let Some((cookie_name, sealed)) = sign_in_cookie::find(&headers, oidc_state, secure) else {
         return invalid_state();
     };
-    let session = sign_in_cookie::now_unix_secs().and_then(|now| {
-        SignInSession::open(state.settings.handshake_keys(), oidc_state, &sealed, now)
-    });
+    let session = SignInSession::open(
+        state.settings.handshake_keys(),
+        oidc_state,
+        &sealed,
+        sign_in_cookie::now_unix_secs(),
+    );
     let mut response = match session {
         Some(session) => complete(&state, &query, oidc_state, session, &headers).await,
         None => invalid_state(),
@@ -159,10 +163,7 @@ pub(super) async fn issue_code(
         tracing::warn!("Sign-in could not generate an authorization code");
         return trusted.error("server_error", "authorization failed");
     };
-    let Ok(now_unix_nanos) = now_unix_nanos_i64() else {
-        tracing::warn!("Sign-in could not read the system clock");
-        return trusted.error("server_error", "authorization failed");
-    };
+    let now_unix_nanos = now_unix_nanos_i64();
     match state
         .codes
         .issue(&authorization_code, oidc_state, grant, now_unix_nanos)
@@ -221,10 +222,7 @@ async fn provision(
     user_directory: &UserDirectory,
     identity: &ValidatedOidcIdentity,
 ) -> Result<UserId, ProvisioningFailure> {
-    let Ok(now_unix_nanos) = now_unix_nanos_i64() else {
-        tracing::warn!("OIDC callback could not read the system clock");
-        return Err(ProvisioningFailure::Unavailable);
-    };
+    let now_unix_nanos = now_unix_nanos_i64();
     let provisioning = user_directory
         .provision_login(
             VerifiedOidcLogin::new(
@@ -277,12 +275,8 @@ const fn provisioning_error_code(error: &coral_auth::Error) -> &'static str {
     }
 }
 
-fn now_unix_nanos_i64() -> Result<i64, ()> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_error| ())?
-        .as_nanos();
-    i64::try_from(nanos).map_err(|_error| ())
+fn now_unix_nanos_i64() -> i64 {
+    coral_db::SystemClock.now().get()
 }
 
 #[derive(Default)]
@@ -420,7 +414,7 @@ mod tests {
                     code_challenge: &session.request.code_challenge,
                     resource: RESOURCE,
                 },
-                now_unix_nanos_i64().expect("clock"),
+                now_unix_nanos_i64(),
             )
             .await
             .expect("code storage")
@@ -471,7 +465,7 @@ mod tests {
         oidc_state: &str,
         session: &SignInSession,
     ) -> HeaderValue {
-        let now = sign_in_cookie::now_unix_secs().expect("clock");
+        let now = sign_in_cookie::now_unix_secs();
         let sealed = session
             .seal(state.settings.handshake_keys(), oidc_state, now + 300)
             .expect("sealed session");
@@ -1143,7 +1137,7 @@ mod tests {
                 issuer,
                 UPSTREAM_SUBJECT,
                 None,
-                now_unix_nanos_i64().unwrap(),
+                now_unix_nanos_i64(),
             ))
             .await
         else {
@@ -1164,7 +1158,7 @@ mod tests {
             .create(
                 &coral_workspace::ChangeContext::new(
                     user.clone(),
-                    now_unix_nanos_i64().unwrap(),
+                    now_unix_nanos_i64(),
                     coral_workspace::TraceId::current_or_new(),
                 ),
                 coral_workspace::WorkspaceDisplayName::parse(name).unwrap(),
@@ -1255,7 +1249,7 @@ mod tests {
                     code_challenge: &session.request.code_challenge,
                     resource: ORGANIZATION_RESOURCE,
                 },
-                now_unix_nanos_i64().unwrap(),
+                now_unix_nanos_i64(),
             )
             .await
             .unwrap()
@@ -1368,7 +1362,7 @@ mod tests {
             .set_membership(
                 &coral_workspace::ChangeContext::new(
                     stranger,
-                    now_unix_nanos_i64().unwrap(),
+                    now_unix_nanos_i64(),
                     coral_workspace::TraceId::current_or_new(),
                 ),
                 &shared,

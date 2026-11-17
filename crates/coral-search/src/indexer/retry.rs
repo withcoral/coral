@@ -256,7 +256,6 @@ mod tests {
             (IndexError::Overran(limit), true),
             (IndexError::WriterBusy(limit), false),
             (IndexError::TimedOut(limit), false),
-            (IndexError::Clock, false),
             (IndexError::Corrupt("bad row"), false),
         ] {
             let rule = RetryRule::after_failure(None, &error, 0, Duration::from_mins(5));

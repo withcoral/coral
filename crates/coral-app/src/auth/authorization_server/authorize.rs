@@ -130,7 +130,7 @@ fn consent_page(
 ) -> Option<Response> {
     let secure_cookie = state.secure_cookies();
     let browser_binding = approval_page::browser_binding_for_page(headers, secure_cookie).ok()?;
-    let expires_at = sign_in_cookie::now_unix_secs()? + approval_page::APPROVAL_MAX_AGE_SECONDS;
+    let expires_at = sign_in_cookie::now_unix_secs() + approval_page::APPROVAL_MAX_AGE_SECONDS;
     let ticket = approval
         .seal(
             state.settings.handshake_keys(),
@@ -171,9 +171,12 @@ pub(super) async fn oauth_authorize_post(
         return approval_error();
     };
     let keys = state.settings.handshake_keys();
-    let Some(approval) = sign_in_cookie::now_unix_secs().and_then(|now| {
-        PendingApproval::open(keys, browser_binding.as_bytes(), ticket.as_bytes(), now)
-    }) else {
+    let Some(approval) = PendingApproval::open(
+        keys,
+        browser_binding.as_bytes(),
+        ticket.as_bytes(),
+        sign_in_cookie::now_unix_secs(),
+    ) else {
         return approval_error();
     };
     let Some(trusted) = TrustedRedirect::parse(
@@ -222,16 +225,18 @@ async fn provider_sign_in(
         return trusted.error("server_error", "authorization failed");
     };
     let secure = state.secure_cookies();
-    let Some(cookie) = sign_in_cookie::now_unix_secs().and_then(|now| {
-        let sealed = session
-            .seal(keys, &oidc_state, now + sign_in_cookie::MAX_AGE_SECONDS)
-            .ok()?;
-        sign_in_cookie::set_header(
-            &sign_in_cookie::name(&oidc_state, now, secure),
-            &sealed,
-            secure,
-        )
-    }) else {
+    let now = sign_in_cookie::now_unix_secs();
+    let Some(cookie) = session
+        .seal(keys, &oidc_state, now + sign_in_cookie::MAX_AGE_SECONDS)
+        .ok()
+        .and_then(|sealed| {
+            sign_in_cookie::set_header(
+                &sign_in_cookie::name(&oidc_state, now, secure),
+                &sealed,
+                secure,
+            )
+        })
+    else {
         return trusted.error("server_error", "authorization failed");
     };
     let mut response = redirect(url.as_str());
@@ -471,7 +476,7 @@ mod tests {
         }
         let (_name, sealed) = sign_in_cookie::find(&cookies, oidc_state, state.secure_cookies())
             .expect("sign-in cookie");
-        let now = sign_in_cookie::now_unix_secs().expect("clock");
+        let now = sign_in_cookie::now_unix_secs();
         SignInSession::open(state.settings.handshake_keys(), oidc_state, &sealed, now)
             .expect("sealed sign-in")
     }
@@ -480,7 +485,7 @@ mod tests {
     /// from this browser would open it.
     fn opened_approval(ticket: &str) -> PendingApproval {
         let (settings, _session_tokens) = resolved_settings("https://provider.invalid", "");
-        let now = sign_in_cookie::now_unix_secs().expect("clock");
+        let now = sign_in_cookie::now_unix_secs();
         PendingApproval::open(
             settings.handshake_keys(),
             &BROWSER_BINDING,

@@ -95,7 +95,7 @@ impl wire::organization_membership_service_server::OrganizationMembershipService
             .filter(|revision| *revision > 0)
             .ok_or_else(invalid)?;
         self.access_lifecycle
-            .remove_organization_member(&change(actor)?, &user, revision, transfer_to.as_ref())
+            .remove_organization_member(&change(actor), &user, revision, transfer_to.as_ref())
             .await
             .map_err(super::workspaces::administration_error)?;
         Ok(Response::new(()))

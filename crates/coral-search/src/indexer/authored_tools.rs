@@ -20,7 +20,7 @@ use super::repository::{
     self, AuthoredToolFailure, AuthoredToolRow, FailedAuthoredToolState, WorkspaceAuthoredTool,
 };
 use super::retry::RetryRule;
-use super::{DistinctWords, EntityIndexer, IndexError, compact_identifier_variant, now_unix_nanos};
+use super::{DistinctWords, EntityIndexer, IndexError, compact_identifier_variant};
 use crate::CallPath;
 
 /// Indexes Private Tools and Shared Tools.
@@ -67,7 +67,7 @@ impl EntityIndexer for AuthoredToolIndexer {
         entry: &AuthoredToolEntry,
         row: &AuthoredToolRow<'_>,
     ) -> Result<super::IndexEffect, IndexError> {
-        repository::upsert_authored_tool_row(transaction, row, now_unix_nanos()?).await?;
+        repository::upsert_authored_tool_row(transaction, row, crate::now_unix_nanos()).await?;
         repository::delete_authored_tool_state(transaction, entry.workspace_id(), entry.id())
             .await?;
         Ok(super::IndexEffect::Updated)
@@ -246,7 +246,7 @@ pub(crate) async fn record_failed_attempt(
         .map(|failure| failure.retry);
     let removed =
         repository::delete_authored_tool_row(transaction, entry.workspace_id(), entry.id()).await?;
-    let attempted_at = now_unix_nanos()?;
+    let attempted_at = crate::now_unix_nanos();
     repository::write_failed_authored_tool_state(
         transaction,
         FailedAuthoredToolState {

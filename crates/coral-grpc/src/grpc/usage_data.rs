@@ -58,7 +58,7 @@ impl wire::usage_data_service_server::UsageDataService for GrpcServices {
         let actor = self.management_user(&request).await?;
         let usage = self.usage()?;
         let data = usage
-            .view(&actor, now()?)
+            .view(&actor, now())
             .await
             .map_err(|failure| error(&failure))?;
         Ok(Response::new(view(data)))
@@ -73,7 +73,7 @@ impl wire::usage_data_service_server::UsageDataService for GrpcServices {
         let sharing = request.get_ref().sharing;
         let usage = self.usage()?;
         let data = usage
-            .set_sharing(&actor, sharing, now()?)
+            .set_sharing(&actor, sharing, now())
             .await
             .map_err(|failure| error(&failure))?;
         Ok(Response::new(view(data)))

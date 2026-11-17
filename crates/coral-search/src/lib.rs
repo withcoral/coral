@@ -77,6 +77,7 @@ pub mod test_fixtures;
 mod types;
 use std::sync::Arc;
 
+use coral_db::Clock as _;
 use coral_db::{Database, Transaction};
 use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
@@ -364,7 +365,7 @@ impl UniversalSearchModule {
                 &mut transaction,
                 actor,
                 workspace_id,
-                now_unix_nanos()?,
+                now_unix_nanos(),
             )
             .await?;
         let searchable = retriever::tools::searchable_providers(
@@ -589,7 +590,7 @@ impl UniversalSearchModule {
                 &mut transaction,
                 actor,
                 workspace_id,
-                now_unix_nanos()?,
+                now_unix_nanos(),
             )
             .await
             .map_err(Error::from)
@@ -669,7 +670,7 @@ impl UniversalSearchModule {
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         Ok(self
             .workspaces
-            .check_discovery_in_transaction(transaction, actor, workspace_id, now_unix_nanos()?)
+            .check_discovery_in_transaction(transaction, actor, workspace_id, now_unix_nanos())
             .await?)
     }
 }
@@ -750,18 +751,9 @@ const fn ranked_status(retriever: EntityKind, coverage: RetrieverCoverage) -> Re
     RetrieverStatus::new(retriever, state, coverage)
 }
 
-fn now_unix_nanos() -> Result<i64, Error> {
-    unix_now_nanos().ok_or(Error::ServiceUnavailable)
-}
-
-/// The current time in Unix nanoseconds, or `None` when the system clock is
-/// before 1970 or past the durable nanosecond range. Each caller turns `None`
-/// into its own error.
-pub(crate) fn unix_now_nanos() -> Option<i64> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_nanos()).ok())
+/// The current time in Unix nanoseconds.
+pub(crate) fn now_unix_nanos() -> i64 {
+    coral_db::SystemClock.now().get()
 }
 
 fn conceal_description_error(error: Error) -> Error {

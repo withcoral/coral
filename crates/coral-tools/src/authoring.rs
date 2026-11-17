@@ -11,8 +11,9 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
+use coral_db::Clock as _;
 use coral_db::Database;
 use coral_run_executor::{CompilerClient, time_left};
 use coral_telemetry::safe;
@@ -33,12 +34,8 @@ use crate::types::{
 };
 use crate::{Error, repository, shared_tool_repository};
 
-pub(crate) fn now_unix_nanos() -> Result<i64, Error> {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| Error::Clock(error.to_string()))?;
-    i64::try_from(elapsed.as_nanos())
-        .map_err(|_error| Error::Clock("current time exceeds durable nanosecond range".to_string()))
+pub(crate) fn now_unix_nanos() -> i64 {
+    coral_db::SystemClock.now().get()
 }
 
 /// What the compiler made of one authored source.

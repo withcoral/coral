@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use crate::coral::{internal::v1 as internal, management::v1 as management};
 use coral_auth::{PrincipalAuthentication, PrivateAudience};
+use coral_db::Clock as _;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId, WorkspaceModule};
 use tonic::{Request, Response, Status};
 
@@ -350,10 +351,7 @@ impl internal::task_service_server::TaskService for GrpcServices {
     }
 }
 
-fn now() -> Result<i64, Status> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_error| status::unavailable())?
-        .as_nanos();
-    i64::try_from(nanos).map_err(|_error| status::unavailable())
+/// The request's time, in Unix nanoseconds.
+fn now() -> i64 {
+    coral_db::SystemClock.now().get()
 }
