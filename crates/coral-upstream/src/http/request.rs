@@ -11,7 +11,7 @@ use coral_catalog::{
 use serde_json::{Map, Value};
 use url::Url;
 
-use crate::{Error, is_json_media_type, media_type_essence};
+use crate::{AuthorizeError, PlanError, is_json_media_type, media_type_essence};
 
 /// A validated one-use HTTP request with a separate, redacted host credential slot.
 #[derive(Debug)]
@@ -49,19 +49,21 @@ impl ReadyHttpDispatch {
         schema_graph: &Arc<SchemaGraph>,
         arguments: &Value,
         limits: coral_value::ValueLimits,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, PlanError> {
         if tool.availability() != ToolAvailability::Available {
-            return Err(Error::ToolUnavailable);
+            return Err(PlanError::ToolUnavailable);
         }
-        limits.validate(arguments).map_err(Error::invalid_value)?;
+        limits
+            .validate(arguments)
+            .map_err(PlanError::invalid_value)?;
         let ExecutionBinding::Http(binding) = tool.execution_binding() else {
-            return Err(Error::UnsupportedProtocol);
+            return Err(PlanError::UnsupportedProtocol);
         };
         let arguments = arguments.as_object().ok_or_else(|| {
-            Error::InvalidArguments("Tool arguments must be an object".to_string())
+            PlanError::InvalidArguments("Tool arguments must be an object".to_string())
         })?;
-        let server_url = binding.server_url().ok_or(Error::MissingServer)?;
-        let mut url = Url::parse(server_url).map_err(Error::InvalidUrl)?;
+        let server_url = binding.server_url().ok_or(PlanError::MissingServer)?;
+        let mut url = Url::parse(server_url).map_err(PlanError::InvalidUrl)?;
         let SerializedParameters {
             path,
             query,
@@ -77,7 +79,7 @@ impl ReadyHttpDispatch {
         // URL parsing removes dot segments, which would send the request, and
         // its credentials, to a path the Tool does not declare.
         if tool_path.split('/').any(is_dot_segment) {
-            return Err(Error::InvalidArguments(
+            return Err(PlanError::InvalidArguments(
                 "the request path cannot contain a `.` or `..` segment".to_string(),
             ));
         }
@@ -121,7 +123,7 @@ impl ReadyHttpDispatch {
             |size, (name, value)| size.saturating_add(name.len()).saturating_add(value.len()),
         );
         if request_bytes > limits.upstream_bytes() {
-            return Err(Error::InputTooLarge);
+            return Err(PlanError::InputTooLarge);
         }
         let credential_slots = binding
             .credential_slots()
@@ -157,14 +159,19 @@ impl ReadyHttpDispatch {
     /// # Errors
     /// Rejects a credential-free contract, a missing field, a header or query
     /// parameter the request already plans, a second injection, or an oversized request.
-    pub fn authorize(&mut self, values: &coral_credentials::CredentialValues) -> Result<(), Error> {
+    /// A refusal attaches nothing.
+    pub fn authorize(
+        &mut self,
+        values: &coral_credentials::CredentialValues,
+    ) -> Result<(), AuthorizeError> {
         use coral_catalog::HeaderBinding;
         use coral_credentials::{CredentialValues, Secret};
-        let field = |name: &str| values.get(name).ok_or(Error::CredentialRequired);
-        let secret = |value: String| Secret::new(value).map_err(|_error| Error::CredentialRequired);
+        let field = |name: &str| values.get(name).ok_or(AuthorizeError::CredentialRequired);
+        let secret =
+            |value: String| Secret::new(value).map_err(|_error| AuthorizeError::CredentialRequired);
         let mut query = Vec::new();
         let credentials = match self.credential_contract.authentication() {
-            AuthenticationConfiguration::None => return Err(Error::CredentialRequired),
+            AuthenticationConfiguration::None => return Err(AuthorizeError::CredentialRequired),
             AuthenticationConfiguration::HeaderCredentials { headers } => headers
                 .iter()
                 .map(|(header, binding)| {
@@ -179,14 +186,14 @@ impl ReadyHttpDispatch {
                     };
                     Ok((header.clone(), secret(value)?))
                 })
-                .collect::<Result<Vec<_>, Error>>()?,
+                .collect::<Result<Vec<_>, AuthorizeError>>()?,
             AuthenticationConfiguration::QueryCredentials { parameters } => {
                 query = parameters
                     .iter()
                     .map(|(name, source)| {
                         Ok((name.clone(), secret(part(source, values)?.to_owned())?))
                     })
-                    .collect::<Result<Vec<_>, Error>>()?;
+                    .collect::<Result<Vec<_>, AuthorizeError>>()?;
                 Vec::new()
             }
             AuthenticationConfiguration::BasicAuth { username, password } => {
@@ -195,7 +202,7 @@ impl ReadyHttpDispatch {
                 // Basic splits the pair at its first colon, so the service would
                 // read a different username.
                 if username.contains(':') {
-                    return Err(Error::CredentialUnusable);
+                    return Err(AuthorizeError::CredentialUnusable);
                 }
                 let pair =
                     zeroize::Zeroizing::new(format!("{username}:{}", part(password, values)?));
@@ -216,23 +223,24 @@ impl ReadyHttpDispatch {
                 ))?,
             )],
         };
-        if self.sent_bytes(&credentials, &query) > self.limits.upstream_bytes() {
-            return Err(Error::InputTooLarge);
+        if !self.credentials.is_empty() || !self.query_credentials.is_empty() {
+            return Err(AuthorizeError::AlreadyAuthorized);
         }
-        if !self.credentials.is_empty()
-            || !self.query_credentials.is_empty()
-            || credentials.iter().any(|(header, _)| {
-                self.headers
-                    .iter()
-                    .any(|(name, _)| name.eq_ignore_ascii_case(header))
-            })
-            || query.iter().any(|(parameter, _)| {
-                self.url
-                    .query_pairs()
-                    .any(|(name, _)| name == parameter.as_str())
-            })
-        {
-            return Err(Error::CredentialRequired);
+        if credentials.iter().any(|(header, _)| {
+            self.headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(header))
+        }) || query.iter().any(|(parameter, _)| {
+            self.url
+                .query_pairs()
+                .any(|(name, _)| name == parameter.as_str())
+        }) {
+            return Err(AuthorizeError::CredentialCollision);
+        }
+        // After the collision check: a request that cannot be sent at any
+        // size is not reported as too large.
+        if self.sent_bytes(&credentials, &query) > self.limits.upstream_bytes() {
+            return Err(AuthorizeError::InputTooLarge);
         }
         self.credentials = credentials;
         self.query_credentials = query;
@@ -322,12 +330,12 @@ impl ReadyHttpDispatch {
 fn part<'a>(
     source: &'a coral_catalog::CredentialSource,
     values: &'a coral_credentials::CredentialValues,
-) -> Result<&'a str, Error> {
+) -> Result<&'a str, AuthorizeError> {
     match source {
         coral_catalog::CredentialSource::Field { field } => values
             .get(field)
             .map(coral_credentials::Secret::expose)
-            .ok_or(Error::CredentialRequired),
+            .ok_or(AuthorizeError::CredentialRequired),
         coral_catalog::CredentialSource::Literal { value } => Ok(value),
     }
 }
@@ -383,7 +391,7 @@ fn serialize_parameters(
     parameters: &[HttpParameterBinding],
     declares_body: bool,
     arguments: &Map<String, Value>,
-) -> Result<SerializedParameters, Error> {
+) -> Result<SerializedParameters, PlanError> {
     let mut path = path_template.to_string();
     let mut query = Vec::new();
     let mut headers = Vec::new();
@@ -392,7 +400,7 @@ fn serialize_parameters(
         let value = arguments.get(parameter.logical_name());
         let Some(value) = value else {
             if parameter.required() {
-                return Err(Error::InvalidArguments(format!(
+                return Err(PlanError::InvalidArguments(format!(
                     "required Tool argument `{}` is missing",
                     parameter.logical_name()
                 )));
@@ -406,7 +414,7 @@ fn serialize_parameters(
                 if path_texts(value).any(|text| {
                     text.contains(['/', '\\']) && text.split(['/', '\\']).any(is_dot_segment)
                 }) {
-                    return Err(Error::InvalidArguments(format!(
+                    return Err(PlanError::InvalidArguments(format!(
                         "Tool argument `{}` cannot contain a `.` or `..` path segment",
                         parameter.logical_name()
                     )));
@@ -437,7 +445,7 @@ fn serialize_parameters(
             .iter()
             .any(|parameter| parameter.logical_name() == name)
         {
-            return Err(Error::InvalidArguments(undeclared_argument(
+            return Err(PlanError::InvalidArguments(undeclared_argument(
                 name,
                 parameters,
                 declares_body,
@@ -508,13 +516,13 @@ fn undeclared_argument(
 fn serialize_path_parameter(
     parameter: &HttpParameterBinding,
     value: &Value,
-) -> Result<String, Error> {
+) -> Result<String, PlanError> {
     if let Some(media_type) = parameter.content_media_type() {
         return serialize_content_parameter(value, media_type)
             .map(|value| percent_encode(&value, false));
     }
     let style = parameter.style().ok_or_else(|| {
-        Error::InvalidArguments("path parameter has no serialization style".to_string())
+        PlanError::InvalidArguments("path parameter has no serialization style".to_string())
     })?;
     let name = percent_encode(parameter.wire_name(), false);
     let encoded = match style {
@@ -537,7 +545,7 @@ fn serialize_path_parameter(
             Value::Array(values) if parameter.explode() => values
                 .iter()
                 .map(|value| Ok(format!(";{name}={}", encode_scalar(value, false)?)))
-                .collect::<Result<Vec<_>, Error>>()?
+                .collect::<Result<Vec<_>, PlanError>>()?
                 .join(""),
             Value::Array(values) => {
                 format!(";{name}={}", serialize_array(values, ",", false)?)
@@ -551,7 +559,7 @@ fn serialize_path_parameter(
                         encode_scalar(value, false)?
                     ))
                 })
-                .collect::<Result<Vec<_>, Error>>()?
+                .collect::<Result<Vec<_>, PlanError>>()?
                 .join(""),
             Value::Object(values) => {
                 format!(";{name}={}", serialize_object(values, ",", false, false)?)
@@ -559,7 +567,7 @@ fn serialize_path_parameter(
             scalar => format!(";{name}={}", encode_scalar(scalar, false)?),
         },
         _ => {
-            return Err(Error::InvalidArguments(
+            return Err(PlanError::InvalidArguments(
                 "query serialization style cannot be used in a path".to_string(),
             ));
         }
@@ -570,9 +578,9 @@ fn serialize_path_parameter(
 fn serialize_query_parameter(
     parameter: &HttpParameterBinding,
     value: &Value,
-) -> Result<Vec<(String, String, bool)>, Error> {
+) -> Result<Vec<(String, String, bool)>, PlanError> {
     if value.as_str() == Some("") && !parameter.allow_empty_value() {
-        return Err(Error::InvalidArguments(format!(
+        return Err(PlanError::InvalidArguments(format!(
             "Tool argument `{}` does not allow an empty query value",
             parameter.logical_name()
         )));
@@ -585,7 +593,7 @@ fn serialize_query_parameter(
         )]);
     }
     let style = parameter.style().ok_or_else(|| {
-        Error::InvalidArguments("query parameter has no serialization style".to_string())
+        PlanError::InvalidArguments("query parameter has no serialization style".to_string())
     })?;
     let name = parameter.wire_name().to_string();
     match (style, value) {
@@ -646,7 +654,7 @@ fn serialize_query_parameter(
                 ))
             })
             .collect(),
-        _ => Err(Error::InvalidArguments(format!(
+        _ => Err(PlanError::InvalidArguments(format!(
             "Tool argument `{}` does not match its query serialization",
             parameter.logical_name()
         ))),
@@ -656,14 +664,14 @@ fn serialize_query_parameter(
 fn serialize_cookie_parameter(
     parameter: &HttpParameterBinding,
     value: &Value,
-) -> Result<String, Error> {
+) -> Result<String, PlanError> {
     let name = parameter.wire_name();
     if let Some(media_type) = parameter.content_media_type() {
         let value = serialize_content_parameter(value, media_type)?;
         return Ok(format!("{name}={}", percent_encode(&value, false)));
     }
     if parameter.style() != Some(HttpParameterStyle::Form) {
-        return Err(Error::InvalidArguments(
+        return Err(PlanError::InvalidArguments(
             "cookie parameter does not use form serialization".to_string(),
         ));
     }
@@ -671,7 +679,7 @@ fn serialize_cookie_parameter(
         Value::Array(values) if parameter.explode() => values
             .iter()
             .map(|value| Ok(format!("{name}={}", encode_scalar(value, false)?)))
-            .collect::<Result<Vec<_>, Error>>()
+            .collect::<Result<Vec<_>, PlanError>>()
             .map(|values| values.join("&")),
         Value::Object(values) if parameter.explode() => sorted_object(values)
             .into_iter()
@@ -682,7 +690,7 @@ fn serialize_cookie_parameter(
                     encode_scalar(value, false)?
                 ))
             })
-            .collect::<Result<Vec<_>, Error>>()
+            .collect::<Result<Vec<_>, PlanError>>()
             .map(|values| values.join("&")),
         other => Ok(format!(
             "{name}={}",
@@ -691,13 +699,13 @@ fn serialize_cookie_parameter(
     }
 }
 
-fn validate_request_headers(headers: &[(String, String)]) -> Result<(), Error> {
+fn validate_request_headers(headers: &[(String, String)]) -> Result<(), PlanError> {
     for (name, value) in headers {
         reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_error| {
-            Error::InvalidArguments("a serialized request header name is invalid".to_string())
+            PlanError::InvalidArguments("a serialized request header name is invalid".to_string())
         })?;
         reqwest::header::HeaderValue::from_str(value).map_err(|_error| {
-            Error::InvalidArguments("a serialized request header value is invalid".to_string())
+            PlanError::InvalidArguments("a serialized request header value is invalid".to_string())
         })?;
     }
     Ok(())
@@ -708,20 +716,20 @@ fn serialize_request_body(
     arguments: &Map<String, Value>,
     schemas: &SchemaGraph,
     limits: coral_value::ValueLimits,
-) -> Result<(Option<Vec<u8>>, Option<String>), Error> {
+) -> Result<(Option<Vec<u8>>, Option<String>), PlanError> {
     let Some(binding) = request_body else {
         return Ok((None, None));
     };
     let Some(body) = arguments.get("body") else {
         if binding.required() {
-            return Err(Error::InvalidArguments(
+            return Err(PlanError::InvalidArguments(
                 "required Tool argument `body` is missing".to_string(),
             ));
         }
         return Ok((None, None));
     };
     let (content, body) = select_request_content(binding.content(), body).ok_or_else(|| {
-        Error::InvalidArguments(
+        PlanError::InvalidArguments(
             "request body does not match a supported media alternative".to_string(),
         )
     })?;
@@ -731,23 +739,23 @@ fn serialize_request_body(
         return Ok((Some(body), Some(media)));
     }
     let encoded = if schemas.is_binary(content.schema()) {
-        coral_value::decode_binary(body, limits.binary_bytes()).map_err(Error::invalid_value)?
+        coral_value::decode_binary(body, limits.binary_bytes()).map_err(PlanError::invalid_value)?
     } else if is_json_media_type(&essence) {
-        serde_json::to_vec(body).map_err(Error::EncodeJson)?
+        serde_json::to_vec(body).map_err(PlanError::EncodeJson)?
     } else if essence == "application/x-www-form-urlencoded" {
         serialize_form_body(body, content.encoding())?.into_bytes()
     } else if essence.starts_with("text/") {
         encode_text_request(
             body.as_str().ok_or_else(|| {
-                Error::InvalidArguments("text request bodies must be strings".to_string())
+                PlanError::InvalidArguments("text request bodies must be strings".to_string())
             })?,
             content.media_type(),
         )?
     } else {
-        coral_value::decode_binary(body, limits.binary_bytes()).map_err(Error::invalid_value)?
+        coral_value::decode_binary(body, limits.binary_bytes()).map_err(PlanError::invalid_value)?
     };
     if encoded.len() > limits.upstream_bytes() {
-        return Err(Error::InputTooLarge);
+        return Err(PlanError::InputTooLarge);
     }
     Ok((Some(encoded), Some(content.media_type().to_string())))
 }
@@ -757,10 +765,10 @@ fn serialize_multipart(
     content: &HttpContentBinding,
     schemas: &SchemaGraph,
     limits: coral_value::ValueLimits,
-) -> Result<(Vec<u8>, String), Error> {
-    let object = body
-        .as_object()
-        .ok_or_else(|| Error::InvalidArguments("multipart body must be an object".to_string()))?;
+) -> Result<(Vec<u8>, String), PlanError> {
+    let object = body.as_object().ok_or_else(|| {
+        PlanError::InvalidArguments("multipart body must be an object".to_string())
+    })?;
     let mut parts = Vec::new();
     let mut size = 0usize;
     for (name, value) in sorted_object(object) {
@@ -777,7 +785,7 @@ fn serialize_multipart(
             let part = multipart_part(name, value, encoding, schemas, limits)?;
             size = size.saturating_add(part.len());
             if size > limits.upstream_bytes() {
-                return Err(Error::InputTooLarge);
+                return Err(PlanError::InputTooLarge);
             }
             parts.push(part);
         }
@@ -799,7 +807,7 @@ fn serialize_multipart(
     }
     bytes.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
     if bytes.len() > limits.upstream_bytes() {
-        return Err(Error::InputTooLarge);
+        return Err(PlanError::InputTooLarge);
     }
     Ok((bytes, format!("multipart/form-data; boundary={boundary}")))
 }
@@ -810,7 +818,7 @@ fn multipart_part(
     encoding: Option<&HttpEncodingBinding>,
     schemas: &SchemaGraph,
     limits: coral_value::ValueLimits,
-) -> Result<Vec<u8>, Error> {
+) -> Result<Vec<u8>, PlanError> {
     let binary = value.get("_tag").and_then(Value::as_str) == Some("BinaryValue");
     let media = encoding
         .and_then(HttpEncodingBinding::content_type)
@@ -838,16 +846,17 @@ fn multipart_part(
                 })
             })
             .ok_or_else(|| {
-                Error::InvalidArguments(
+                PlanError::InvalidArguments(
                     "Binary Value MIME type does not select a declared multipart alternative"
                         .to_string(),
                 )
             })?
     };
     let body = if binary {
-        coral_value::decode_binary(value, limits.binary_bytes()).map_err(Error::invalid_value)?
+        coral_value::decode_binary(value, limits.binary_bytes())
+            .map_err(PlanError::invalid_value)?
     } else if is_json_media_type(&media_type_essence(media)) {
-        serde_json::to_vec(value).map_err(Error::EncodeJson)?
+        serde_json::to_vec(value).map_err(PlanError::EncodeJson)?
     } else {
         encode_text_request(&scalar_text(value)?, media)?
     };
@@ -869,7 +878,7 @@ fn multipart_part(
                 .wire_name()
                 .eq_ignore_ascii_case("content-disposition")
             {
-                return Err(Error::InvalidArguments(
+                return Err(PlanError::InvalidArguments(
                     "part disposition is binding-owned".to_string(),
                 ));
             }
@@ -883,7 +892,7 @@ fn multipart_part(
                 };
                 headers.push((header.wire_name().to_string(), encoded));
             } else if header.required() {
-                return Err(Error::InvalidArguments(
+                return Err(PlanError::InvalidArguments(
                     "required part header has no binding value".to_string(),
                 ));
             }
@@ -899,27 +908,27 @@ fn multipart_part(
     Ok(part)
 }
 
-fn multipart_quoted(value: &str) -> Result<String, Error> {
+fn multipart_quoted(value: &str) -> Result<String, PlanError> {
     if value.chars().any(char::is_control) {
-        return Err(Error::InvalidArguments(
+        return Err(PlanError::InvalidArguments(
             "invalid multipart name".to_string(),
         ));
     }
     Ok(value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-fn encode_text_request(value: &str, media_type: &str) -> Result<Vec<u8>, Error> {
+fn encode_text_request(value: &str, media_type: &str) -> Result<Vec<u8>, PlanError> {
     let parsed = media_type.parse::<mime::Mime>().map_err(|_error| {
-        Error::InvalidArguments("text request body declares a malformed media type".to_string())
+        PlanError::InvalidArguments("text request body declares a malformed media type".to_string())
     })?;
     let charset = parsed
         .get_param(mime::CHARSET)
         .map_or_else(|| "utf-8".to_string(), |value| value.as_str().to_string());
     let encoding = encoding_rs::Encoding::for_label(charset.as_bytes()).ok_or_else(|| {
-        Error::InvalidArguments("text request body declares an unsupported charset".to_string())
+        PlanError::InvalidArguments("text request body declares an unsupported charset".to_string())
     })?;
     if !charset_label_matches_encoder(&charset, encoding) {
-        return Err(Error::InvalidArguments(
+        return Err(PlanError::InvalidArguments(
             "text request body declares an ambiguous or remapped charset".to_string(),
         ));
     }
@@ -931,12 +940,12 @@ fn encode_text_request(value: &str, media_type: &str) -> Result<Vec<u8>, Error> 
     }
     let (encoded, used_encoding, unrepresentable) = encoding.encode(value);
     if !std::ptr::eq(used_encoding, encoding) {
-        return Err(Error::InvalidArguments(
+        return Err(PlanError::InvalidArguments(
             "text request body declares a charset without an encoder".to_string(),
         ));
     }
     if unrepresentable {
-        return Err(Error::InvalidArguments(
+        return Err(PlanError::InvalidArguments(
             "text request body cannot be represented by its declared charset".to_string(),
         ));
     }
@@ -989,9 +998,12 @@ fn select_request_content<'a, 'b>(
     .then_some((content, data))
 }
 
-fn serialize_form_body(body: &Value, encodings: &[HttpEncodingBinding]) -> Result<String, Error> {
+fn serialize_form_body(
+    body: &Value,
+    encodings: &[HttpEncodingBinding],
+) -> Result<String, PlanError> {
     let object = body.as_object().ok_or_else(|| {
-        Error::InvalidArguments("form request bodies must be objects".to_string())
+        PlanError::InvalidArguments("form request bodies must be objects".to_string())
     })?;
     let mut pairs = Vec::new();
     for (name, value) in sorted_object(object) {
@@ -1017,7 +1029,7 @@ fn serialize_form_property(
     name: &str,
     value: &Value,
     encoding: Option<&HttpEncodingBinding>,
-) -> Result<Vec<(String, String, bool)>, Error> {
+) -> Result<Vec<(String, String, bool)>, PlanError> {
     let allow_reserved = encoding.is_some_and(HttpEncodingBinding::allow_reserved);
     if let Some(content_type) = encoding.and_then(HttpEncodingBinding::content_type) {
         return Ok(vec![(
@@ -1074,26 +1086,25 @@ fn serialize_form_property(
                 ))
             })
             .collect(),
-        _ => Err(Error::InvalidArguments(format!(
+        _ => Err(PlanError::InvalidArguments(format!(
             "request body property `{name}` does not match its form encoding"
         ))),
     }
 }
 
-fn serialize_content_parameter(value: &Value, media_type: &str) -> Result<String, Error> {
+fn serialize_content_parameter(value: &Value, media_type: &str) -> Result<String, PlanError> {
     if is_json_media_type(&media_type_essence(media_type)) {
-        serde_json::to_string(value).map_err(Error::EncodeJson)
+        serde_json::to_string(value).map_err(PlanError::EncodeJson)
     } else if media_type_essence(media_type).starts_with("text/") {
-        value
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| Error::InvalidArguments("text parameters must be strings".to_string()))
+        value.as_str().map(str::to_string).ok_or_else(|| {
+            PlanError::InvalidArguments("text parameters must be strings".to_string())
+        })
     } else {
-        Err(Error::UnsupportedRequestMedia(media_type.to_string()))
+        Err(PlanError::UnsupportedRequestMedia(media_type.to_string()))
     }
 }
 
-fn serialize_simple(value: &Value, explode: bool) -> Result<String, Error> {
+fn serialize_simple(value: &Value, explode: bool) -> Result<String, PlanError> {
     match value {
         Value::Array(values) => serialize_array_text(values, ","),
         Value::Object(values) => serialize_object_text(values, ",", explode),
@@ -1101,7 +1112,7 @@ fn serialize_simple(value: &Value, explode: bool) -> Result<String, Error> {
     }
 }
 
-fn serialize_simple_encoded(value: &Value, explode: bool) -> Result<String, Error> {
+fn serialize_simple_encoded(value: &Value, explode: bool) -> Result<String, PlanError> {
     match value {
         Value::Array(values) => serialize_array(values, ",", false),
         Value::Object(values) => serialize_object(values, ",", explode, false),
@@ -1109,11 +1120,11 @@ fn serialize_simple_encoded(value: &Value, explode: bool) -> Result<String, Erro
     }
 }
 
-fn serialize_array_text(values: &[Value], separator: &str) -> Result<String, Error> {
+fn serialize_array_text(values: &[Value], separator: &str) -> Result<String, PlanError> {
     values
         .iter()
         .map(scalar_text)
-        .collect::<Result<Vec<_>, Error>>()
+        .collect::<Result<Vec<_>, PlanError>>()
         .map(|values| values.join(separator))
 }
 
@@ -1121,11 +1132,11 @@ fn serialize_array(
     values: &[Value],
     separator: &str,
     allow_reserved: bool,
-) -> Result<String, Error> {
+) -> Result<String, PlanError> {
     values
         .iter()
         .map(|value| encode_scalar(value, allow_reserved))
-        .collect::<Result<Vec<_>, Error>>()
+        .collect::<Result<Vec<_>, PlanError>>()
         .map(|values| values.join(separator))
 }
 
@@ -1133,7 +1144,7 @@ fn serialize_object_text(
     values: &Map<String, Value>,
     separator: &str,
     explode: bool,
-) -> Result<String, Error> {
+) -> Result<String, PlanError> {
     sorted_object(values)
         .into_iter()
         .map(|(key, value)| {
@@ -1143,7 +1154,7 @@ fn serialize_object_text(
                 format!("{key}{separator}{}", scalar_text(value)?)
             })
         })
-        .collect::<Result<Vec<_>, Error>>()
+        .collect::<Result<Vec<_>, PlanError>>()
         .map(|values| values.join(separator))
 }
 
@@ -1152,7 +1163,7 @@ fn serialize_object(
     separator: &str,
     explode: bool,
     allow_reserved: bool,
-) -> Result<String, Error> {
+) -> Result<String, PlanError> {
     sorted_object(values)
         .into_iter()
         .map(|(key, value)| {
@@ -1164,7 +1175,7 @@ fn serialize_object(
                 format!("{key}{separator}{value}")
             })
         })
-        .collect::<Result<Vec<_>, Error>>()
+        .collect::<Result<Vec<_>, PlanError>>()
         .map(|values| values.join(separator))
 }
 
@@ -1177,17 +1188,17 @@ fn sorted_object(values: &Map<String, Value>) -> Vec<(&str, &Value)> {
     values
 }
 
-fn encode_scalar(value: &Value, allow_reserved: bool) -> Result<String, Error> {
+fn encode_scalar(value: &Value, allow_reserved: bool) -> Result<String, PlanError> {
     scalar_text(value).map(|value| percent_encode(&value, allow_reserved))
 }
 
-fn scalar_text(value: &Value) -> Result<String, Error> {
+fn scalar_text(value: &Value) -> Result<String, PlanError> {
     match value {
         Value::Null => Ok("null".to_string()),
         Value::Bool(value) => Ok(value.to_string()),
         Value::Number(value) => Ok(value.to_string()),
         Value::String(value) => Ok(value.clone()),
-        Value::Array(_) | Value::Object(_) => Err(Error::InvalidArguments(
+        Value::Array(_) | Value::Object(_) => Err(PlanError::InvalidArguments(
             "nested parameter values cannot be serialized by this style".to_string(),
         )),
     }

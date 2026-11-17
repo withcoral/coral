@@ -14,10 +14,10 @@ use rmcp::transport::streamable_http_client::{
 };
 use serde_json::Value;
 
-use crate::Error;
+use crate::SendError;
 use crate::exchange::ExchangeBytes;
 
-type TransportError = StreamableHttpError<Error>;
+type TransportError = StreamableHttpError<SendError>;
 
 pub(super) enum Captured {
     Result(Value),
@@ -30,15 +30,16 @@ pub(super) enum Captured {
 }
 
 impl Captured {
-    pub(super) fn into_result(self) -> Result<Value, Error> {
+    /// What a Tool dispatch reads from the capture.
+    pub(super) fn into_result(self) -> Result<Value, SendError> {
         match self {
             Self::Result(value) => Ok(value),
-            Self::Rejected(rejection) => Err(Error::McpRejected(rejection)),
-            Self::DestinationRejected => Err(Error::DestinationRejected),
-            Self::InputTooLarge => Err(Error::InputTooLarge),
-            Self::ResultTooLarge => Err(Error::ResultTooLarge),
-            Self::Unauthorized(challenge) => Err(Error::McpUnauthorized(challenge)),
-            Self::AuthenticationUnsupported => Err(Error::McpAuthenticationUnsupported),
+            Self::Rejected(rejection) => Err(SendError::McpRejected(rejection)),
+            Self::DestinationRejected => Err(SendError::DestinationRejected),
+            Self::InputTooLarge => Err(SendError::InputTooLarge),
+            Self::ResultTooLarge => Err(SendError::ResultTooLarge),
+            Self::Unauthorized(challenge) => Err(SendError::McpUnauthorized(challenge)),
+            Self::AuthenticationUnsupported => Err(SendError::McpAuthenticationUnsupported),
         }
     }
 }
@@ -96,7 +97,10 @@ pub(super) struct McpHttpClient {
 }
 
 impl StreamableHttpClient for McpHttpClient {
-    type Error = Error;
+    // Coral does not read this error back from the SDK. A session reads why
+    // it failed from the capture, so discovery shares the type without
+    // returning it.
+    type Error = SendError;
 
     async fn post_message(
         &self,
@@ -112,9 +116,9 @@ impl StreamableHttpClient for McpHttpClient {
             *self
                 .result
                 .lock()
-                .map_err(|_error| TransportError::Client(Error::McpResult))? =
+                .map_err(|_error| TransportError::Client(SendError::Internal))? =
                 Some(Captured::InputTooLarge);
-            return Err(TransportError::Client(Error::InputTooLarge));
+            return Err(TransportError::Client(SendError::InputTooLarge));
         }
         let capture_request = result_request(&request_json);
         if let Some(bytes) = &self.bytes {
@@ -142,7 +146,7 @@ impl StreamableHttpClient for McpHttpClient {
         let mut response = request
             .send()
             .await
-            .map_err(|error| self.capture_destination(Error::send(error)))?;
+            .map_err(|error| self.capture_destination(SendError::send(error)))?;
         if response.status() == reqwest::StatusCode::ACCEPTED
             || response.status() == reqwest::StatusCode::NO_CONTENT
         {
@@ -158,7 +162,7 @@ impl StreamableHttpClient for McpHttpClient {
             return Err(self.capture_authentication(response.headers()));
         }
         if !response.status().is_success() {
-            return Err(TransportError::Client(Error::McpRequest));
+            return Err(TransportError::Client(SendError::McpRequest));
         }
         let session_id = response
             .headers()
@@ -175,7 +179,7 @@ impl StreamableHttpClient for McpHttpClient {
                 let body = crate::read_bounded_body(&mut response, self.limit, true)
                     .await
                     .map_err(|error| {
-                        if matches!(error, Error::ResultTooLarge)
+                        if matches!(error, SendError::ResultTooLarge)
                             && let Ok(mut slot) = self.result.lock()
                         {
                             *slot = Some(Captured::ResultTooLarge);
@@ -197,7 +201,7 @@ impl StreamableHttpClient for McpHttpClient {
                 self.bounded_sse(response, capture_request),
                 session_id,
             )),
-            _ => Err(TransportError::Client(Error::McpResult)),
+            _ => Err(TransportError::Client(SendError::MalformedResult)),
         }
     }
 
@@ -226,7 +230,7 @@ impl StreamableHttpClient for McpHttpClient {
             .map_err(TransportError::Client)?
             .send()
             .await
-            .map_err(|error| self.capture_destination(Error::send(error)))?;
+            .map_err(|error| self.capture_destination(SendError::send(error)))?;
         Ok(())
     }
 
@@ -262,11 +266,11 @@ impl McpHttpClient {
                 },
             );
         }
-        TransportError::Client(Error::McpRequest)
+        TransportError::Client(SendError::McpRequest)
     }
 
-    fn capture_destination(&self, error: Error) -> TransportError {
-        if matches!(error, Error::DestinationRejected)
+    fn capture_destination(&self, error: SendError) -> TransportError {
+        if matches!(error, SendError::DestinationRejected)
             && let Ok(mut slot) = self.result.lock()
         {
             *slot = Some(Captured::DestinationRejected);
@@ -288,14 +292,14 @@ impl McpHttpClient {
                 self.bytes.clone(),
             ),
             |(mut response, remaining, result, bytes)| async move {
-                let Some(chunk) = response.chunk().await.map_err(Error::Body)? else {
-                    return Ok::<_, Error>(None);
+                let Some(chunk) = response.chunk().await.map_err(SendError::Body)? else {
+                    return Ok::<_, SendError>(None);
                 };
                 let remaining = remaining.checked_sub(chunk.len()).ok_or_else(|| {
                     if let Ok(mut slot) = result.lock() {
                         *slot = Some(Captured::ResultTooLarge);
                     }
-                    Error::ResultTooLarge
+                    SendError::ResultTooLarge
                 })?;
                 if let Some(bytes) = &bytes {
                     bytes.received(chunk.len());
@@ -340,7 +344,7 @@ fn capture(
     slot: &Mutex<Option<Captured>>,
     request: Option<&(String, Value)>,
     message: &mut Value,
-) -> Result<(), Error> {
+) -> Result<(), SendError> {
     let Some((method, id)) = request else {
         return Ok(());
     };
@@ -351,10 +355,12 @@ fn capture(
         return capture_rejection(slot, method, message);
     }
     if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-        return Err(Error::McpResult);
+        return Err(SendError::MalformedResult);
     }
-    let result = message.get_mut("result").ok_or(Error::McpResult)?;
-    *slot.lock().map_err(|_poisoned| Error::McpResult)? = Some(Captured::Result(result.clone()));
+    let result = message
+        .get_mut("result")
+        .ok_or(SendError::MalformedResult)?;
+    *slot.lock().map_err(|_poisoned| SendError::Internal)? = Some(Captured::Result(result.clone()));
     // Decode by the outstanding method. Otherwise the SDK's untagged
     // ServerResult can mistake a tool extension named `tools` for discovery.
     // Only the internal SDK envelope is narrowed; Programs get the raw copy.
@@ -373,9 +379,10 @@ fn capture(
         .and_then(serde_json::to_value),
         // Discovery keeps the raw result; the SDK decodes its own copy.
         "initialize" | "tools/list" => Ok(result.clone()),
-        _ => return Err(Error::McpResult),
+        // `result_request` captures no other method.
+        _ => return Err(SendError::Internal),
     }
-    .map_err(|_invalid_result| Error::McpResult)?;
+    .map_err(|_invalid_result| SendError::MalformedResult)?;
     Ok(())
 }
 
@@ -385,7 +392,7 @@ fn capture_rejection(
     slot: &Mutex<Option<Captured>>,
     method: &str,
     message: &Value,
-) -> Result<(), Error> {
+) -> Result<(), SendError> {
     if !matches!(method, "tools/call" | "resources/read")
         || message.get("jsonrpc").and_then(Value::as_str) != Some("2.0")
     {
@@ -397,7 +404,7 @@ fn capture_rejection(
         && error.get("message").and_then(Value::as_str).is_some()
         && let Some(code) = error.get("code").and_then(Value::as_i64)
     {
-        *slot.lock().map_err(|_poisoned| Error::McpResult)? =
+        *slot.lock().map_err(|_poisoned| SendError::Internal)? =
             Some(Captured::Rejected(McpRejection::from_code(code)));
     }
     Ok(())

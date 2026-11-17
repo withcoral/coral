@@ -9,8 +9,8 @@ use url::Url;
 use super::response_headers::{CredentialNames, safe_response_headers};
 use crate::span_field::{self, Declared};
 use crate::{
-    Error, OutcomeClass, ReadyHttpDispatch, is_json_media_type, media_type_essence,
-    read_bounded_body,
+    ClientError, OutcomeClass, ReadyHttpDispatch, SendError, is_json_media_type,
+    media_type_essence, read_bounded_body,
 };
 
 const MAX_REDIRECTS: usize = 10;
@@ -198,7 +198,7 @@ impl HttpUpstream {
     /// Builds a sender with the deployment-selected outbound policy.
     /// # Errors
     /// Returns an HTTP client initialization error.
-    pub fn new(policy: coral_outbound::DestinationPolicy) -> Result<Self, Error> {
+    pub fn new(policy: coral_outbound::DestinationPolicy) -> Result<Self, ClientError> {
         Ok(Self {
             client: crate::http_client(policy)?,
         })
@@ -214,13 +214,13 @@ impl HttpUpstream {
     ///
     /// Returns only when no complete response was received or the complete
     /// response crossed its finite size bound.
-    pub async fn send(&self, dispatch: ReadyHttpDispatch) -> Result<HttpOutcome, Error> {
+    pub async fn send(&self, dispatch: ReadyHttpDispatch) -> Result<HttpOutcome, SendError> {
         // A dispatch missing its credential sends nothing.
         if dispatch.credential_contract != coral_catalog::ProviderCredentialContract::NONE
             && dispatch.credentials.is_empty()
             && dispatch.query_credentials.is_empty()
         {
-            return Err(Error::CredentialRequired);
+            return Err(SendError::CredentialRequired);
         }
         let measure = crate::exchange::ExchangeMeasure::start(
             coral_telemetry::metric::ProviderProtocol::Http,
@@ -243,7 +243,7 @@ impl HttpUpstream {
         &self,
         dispatch: ReadyHttpDispatch,
         bytes: &crate::exchange::ExchangeBytes,
-    ) -> Result<HttpOutcome, Error> {
+    ) -> Result<HttpOutcome, SendError> {
         let ReadyHttpDispatch {
             mut credentials,
             mut query_credentials,
@@ -280,7 +280,7 @@ impl HttpUpstream {
             }
             for (name, secret) in &credentials {
                 let mut value = reqwest::header::HeaderValue::from_str(secret.expose())
-                    .map_err(|_error| Error::CredentialRequired)?;
+                    .map_err(|_error| SendError::CredentialRequired)?;
                 value.set_sensitive(true);
                 request = request.header(name, value);
             }
@@ -302,7 +302,7 @@ impl HttpUpstream {
                 .send()
                 .instrument(span.clone())
                 .await
-                .map_err(Error::send)?;
+                .map_err(SendError::send)?;
             let status = response.status().as_u16();
             span.record("http.response.status_code", safe::number(status));
             if status >= 400 {
@@ -352,7 +352,7 @@ impl HttpUpstream {
                         .query_pairs()
                         .any(|(name, _value)| name == parameter.as_str())
                 }) {
-                    return Err(Error::CredentialUnusable);
+                    return Err(SendError::CredentialUnusable);
                 }
                 method = next_method;
                 url = target;
@@ -400,13 +400,13 @@ impl HttpUpstream {
                 class,
             };
             let encoded =
-                serde_json::to_string(&outcome.tool_result()).map_err(Error::EncodeJson)?;
+                serde_json::to_string(&outcome.tool_result()).map_err(SendError::EncodeJson)?;
             if encoded.len() > limits.upstream_bytes() {
-                return Err(Error::ResultTooLarge);
+                return Err(SendError::ResultTooLarge);
             }
             limits
                 .validate_json(&encoded)
-                .map_err(Error::invalid_result)?;
+                .map_err(SendError::invalid_result)?;
             return Ok(outcome);
         }
     }
@@ -514,7 +514,7 @@ fn decode_response_body(
     binding: &HttpExecutionBinding,
     schema_graph: &SchemaGraph,
     limits: coral_value::ValueLimits,
-) -> Result<(Value, Vec<HttpDecodeDiagnostic>), Error> {
+) -> Result<(Value, Vec<HttpDecodeDiagnostic>), SendError> {
     let mut diagnostics = Vec::new();
     let response = binding.response_for(status);
     if response.is_none() {
@@ -561,7 +561,7 @@ fn decode_response_body(
                 .unwrap_or("application/octet-stream");
             (
                 coral_value::binary_value(body, media, limits.binary_bytes())
-                    .map_err(Error::invalid_result)?,
+                    .map_err(SendError::invalid_result)?,
                 false,
             )
         } else if body.is_empty() {

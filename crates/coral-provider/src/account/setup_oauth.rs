@@ -855,7 +855,7 @@ impl AccountModule {
                 providers::save_setup_preview(&mut tx, owner, id, preview.as_deref()).await?;
                 LifecycleOutcome::Succeeded
             }
-            Err(coral_upstream::Error::McpUnauthorized(challenge)) => {
+            Err(coral_upstream::McpDiscoveryError::Unauthorized(challenge)) => {
                 // The credential does not satisfy the server. Record the raised
                 // request, scrub the credential, and require explicit new consent.
                 // The request is raised only to what the server named; a
@@ -917,10 +917,22 @@ impl AccountModule {
                 LifecycleOutcome::Failed
             }
             Err(error) => {
+                use coral_upstream::McpDiscoveryError as Discovery;
                 let code = match error {
-                    coral_upstream::Error::DestinationRejected => "outbound_destination_rejected",
-                    coral_upstream::Error::ResultTooLarge => "snapshot_too_large",
-                    _ => "discovery_unavailable",
+                    Discovery::DestinationRejected => "outbound_destination_rejected",
+                    Discovery::SnapshotTooLarge => "snapshot_too_large",
+                    // Name every variant so a new one needs a decision here.
+                    // The arm above records an authentication challenge.
+                    Discovery::Client(_)
+                    | Discovery::Unauthorized(_)
+                    | Discovery::AuthenticationUnsupported
+                    | Discovery::UnsupportedProtocol
+                    | Discovery::Request
+                    | Discovery::Deadline
+                    | Discovery::RequestTooLarge
+                    | Discovery::MalformedResult
+                    | Discovery::EncodeJson(_)
+                    | Discovery::Internal => "discovery_unavailable",
                 };
                 providers::set_setup_discovery_failure(&mut tx, owner, id, Some(code)).await?;
                 LifecycleOutcome::Failed

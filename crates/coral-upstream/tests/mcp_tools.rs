@@ -241,7 +241,7 @@ async fn resource_references_preserve_position_and_only_read_with_the_issuing_pr
 async fn call_once(
     server: &MockServer,
     limit: usize,
-) -> Result<coral_upstream::McpOutcome, coral_upstream::Error> {
+) -> Result<coral_upstream::McpOutcome, coral_upstream::SendError> {
     let catalog = catalog(&server.uri());
     let tool = catalog
         .tools()
@@ -320,7 +320,26 @@ fn mcp_request_limit_includes_the_wire_envelope_before_dispatch() {
             Arc::new(McpResources::default()),
             coral_value::ValueLimits::new(512, 2048, 1024, 4096).expect("limits")
         ),
-        Err(coral_upstream::Error::InputTooLarge)
+        Err(coral_upstream::PlanError::InputTooLarge)
+    ));
+}
+
+#[test]
+fn an_http_plan_refuses_an_mcp_binding() {
+    let catalog = catalog("http://127.0.0.1:1/mcp");
+    let tool = catalog
+        .tools()
+        .iter()
+        .find(|op| op.key().as_str() == "mixed")
+        .expect("Tool");
+    assert!(matches!(
+        coral_upstream::ReadyHttpDispatch::plan(
+            tool,
+            &Arc::new(catalog.schema_graph().clone()),
+            &json!({}),
+            coral_value::ValueLimits::default()
+        ),
+        Err(coral_upstream::PlanError::UnsupportedProtocol)
     ));
 }
 
@@ -380,7 +399,7 @@ async fn mcp_request_at_the_wire_byte_limit_is_sent_once() {
             Arc::new(McpResources::default()),
             limits
         ),
-        Err(coral_upstream::Error::InputTooLarge)
+        Err(coral_upstream::PlanError::InputTooLarge)
     ));
 }
 
@@ -394,7 +413,7 @@ async fn oversized_json_and_sse_results_keep_the_size_failure_category() {
         .await;
         assert!(matches!(
             call_once(&server, 4096).await,
-            Err(coral_upstream::Error::ResultTooLarge)
+            Err(coral_upstream::SendError::ResultTooLarge)
         ));
         server.verify().await;
     }
@@ -562,7 +581,7 @@ async fn json_rpc_errors_are_typed_rejections_that_never_repeat_the_call() {
             .await
             .expect_err("a JSON-RPC error is an answer, not a result");
         assert!(
-            matches!(error, coral_upstream::Error::McpRejected(rejection) if rejection == expected),
+            matches!(error, coral_upstream::SendError::McpRejected(rejection) if rejection == expected),
             "{listing:?}: {error:?}"
         );
         assert!(
@@ -646,7 +665,7 @@ async fn a_json_rpc_error_on_resources_read_is_a_typed_rejection_without_a_listi
             .await
             .expect_err("a JSON-RPC error is an answer, not a result");
         assert!(
-            matches!(error, coral_upstream::Error::McpRejected(rejection) if rejection == expected),
+            matches!(error, coral_upstream::SendError::McpRejected(rejection) if rejection == expected),
             "{code}: {error:?}"
         );
         assert!(
@@ -687,8 +706,49 @@ async fn a_malformed_json_rpc_error_is_not_a_rejection() {
             .await
             .expect_err("a malformed error envelope is no answer");
         assert!(
-            matches!(error, coral_upstream::Error::McpRequest),
+            matches!(error, coral_upstream::SendError::McpRequest),
             "{error:?}"
+        );
+        server.verify().await;
+    }
+}
+
+/// A complete result that Coral cannot use is malformed. A result that the
+/// SDK cannot decode never completes the request, so it is no answer.
+#[tokio::test]
+async fn an_unusable_result_is_malformed_and_an_undecodable_one_is_no_answer() {
+    for (result, malformed) in [
+        (json!({"structuredContent": {"count": 1}}), true),
+        (
+            json!({"content": [{"type": "resource_link", "name": "n", "uri": ""}]}),
+            true,
+        ),
+        (
+            json!({"content": [{"type": "resource", "resource": {"uri": "", "text": "x"}}]}),
+            true,
+        ),
+        (json!({"content": "not blocks"}), false),
+    ] {
+        let case = result.to_string();
+        let server = server_with_response(
+            move |request: &Request| {
+                let request: Value = request.body_json().expect("call");
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"jsonrpc": "2.0", "id": request["id"], "result": result}))
+            },
+            false,
+        )
+        .await;
+        let error = call_once(&server, 4096)
+            .await
+            .expect_err("the result is unusable");
+        assert!(
+            if malformed {
+                matches!(error, coral_upstream::SendError::MalformedResult)
+            } else {
+                matches!(error, coral_upstream::SendError::McpRequest)
+            },
+            "{case}: {error:?}"
         );
         server.verify().await;
     }
@@ -711,7 +771,7 @@ async fn a_refused_initialize_is_an_incomplete_request_not_a_rejection() {
         .await
         .expect_err("no session was established");
     assert!(
-        matches!(error, coral_upstream::Error::McpRequest),
+        matches!(error, coral_upstream::SendError::McpRequest),
         "{error:?}"
     );
     assert!(
@@ -911,13 +971,16 @@ async fn bearer_contract_sends_the_host_credential_and_credential_free_dispatch_
             .unwrap()
         )
         .await,
-        Err(coral_upstream::Error::CredentialRequired)
+        Err(coral_upstream::SendError::CredentialRequired)
     ));
-    ready
-        .authorize(&coral_credentials::CredentialValues::token(
-            coral_credentials::Secret::new("dispatch-canary".into()).unwrap(),
-        ))
-        .expect("authorize bearer dispatch");
+    let token = coral_credentials::CredentialValues::token(
+        coral_credentials::Secret::new("dispatch-canary".into()).unwrap(),
+    );
+    ready.authorize(&token).expect("authorize bearer dispatch");
+    assert_eq!(
+        ready.authorize(&token),
+        Err(coral_upstream::AuthorizeError::AlreadyAuthorized)
+    );
     let outcome = McpUpstream::new(
         DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
     )
@@ -941,12 +1004,10 @@ async fn bearer_contract_sends_the_host_credential_and_credential_free_dispatch_
         coral_value::ValueLimits::default(),
     )
     .expect("plan");
-    assert!(matches!(
-        ready.authorize(&coral_credentials::CredentialValues::token(
-            coral_credentials::Secret::new("dispatch-canary".into()).unwrap()
-        )),
-        Err(coral_upstream::Error::CredentialRequired)
-    ));
+    assert_eq!(
+        ready.authorize(&token),
+        Err(coral_upstream::AuthorizeError::CredentialRequired)
+    );
 }
 
 #[tokio::test]

@@ -14,7 +14,7 @@ use rmcp::{RoleClient, ServiceExt as _};
 use serde_json::{Value, json};
 
 use super::transport::{Captured, McpHttpClient};
-use crate::Error;
+use crate::McpDiscoveryError;
 
 const DISCOVERY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_DISCOVERY_PAGES: usize = 64;
@@ -202,22 +202,23 @@ fn is_token_character(character: char) -> bool {
 /// snapshot. The caller supplies the secret-free credential contract to stamp.
 ///
 /// # Errors
-/// Returns [`Error::McpUnauthorized`] when the server answers with an
-/// authentication challenge, and request, protocol, size, or malformed-discovery
-/// failures otherwise. Discovery never invokes a tool or reads a resource.
+/// Returns [`McpDiscoveryError::Unauthorized`] when the server answers with an
+/// authentication challenge, and deadline, request, protocol, size, or
+/// malformed-discovery failures otherwise. Discovery never invokes a tool or
+/// reads a resource.
 pub async fn discover_mcp(
     policy: coral_outbound::DestinationPolicy,
     url: &str,
     credential: Option<&coral_credentials::Secret>,
     contract: &coral_catalog::ProviderCredentialContract,
     request_headers: &std::collections::BTreeMap<String, String>,
-) -> Result<coral_catalog::McpDiscoverySnapshot, Error> {
+) -> Result<coral_catalog::McpDiscoverySnapshot, McpDiscoveryError> {
     tokio::time::timeout(
         DISCOVERY_DEADLINE,
         discover(policy, url, credential, contract, request_headers),
     )
     .await
-    .map_err(|_deadline| Error::McpRequest)?
+    .map_err(|_deadline| McpDiscoveryError::Deadline)?
 }
 
 async fn discover(
@@ -226,7 +227,7 @@ async fn discover(
     credential: Option<&coral_credentials::Secret>,
     contract: &coral_catalog::ProviderCredentialContract,
     request_headers: &std::collections::BTreeMap<String, String>,
-) -> Result<coral_catalog::McpDiscoverySnapshot, Error> {
+) -> Result<coral_catalog::McpDiscoverySnapshot, McpDiscoveryError> {
     let limit = coral_catalog::MCP_DISCOVERY_SNAPSHOT_MAX_BYTES;
     let captured: Arc<Mutex<Option<Captured>>> = Arc::new(Mutex::new(None));
     let mut config = StreamableHttpClientTransportConfig::with_uri(url.to_owned())
@@ -248,8 +249,9 @@ async fn discover(
         config,
     );
     let mut info = ClientConfig::default();
+    // The SDK reads the version that Coral itself names.
     info.protocol_version = serde_json::from_value(json!("2025-11-25"))
-        .map_err(|_invalid_version| Error::McpProtocolChanged)?;
+        .map_err(|_invalid_version| McpDiscoveryError::Internal)?;
     let mut client = match info.serve(transport).await {
         Ok(client) => client,
         Err(_initialization) => return Err(failure(&captured)),
@@ -262,7 +264,7 @@ async fn discover(
                 .and_then(Value::as_str),
             Some("2025-03-26" | "2025-06-18" | "2025-11-25")
         ) {
-            return Err(Error::McpProtocolChanged);
+            return Err(McpDiscoveryError::UnsupportedProtocol);
         }
         let mut tools = Vec::new();
         if initialization.pointer("/capabilities/tools").is_some() {
@@ -279,10 +281,29 @@ async fn discover(
     result
 }
 
-fn failure(slot: &Mutex<Option<Captured>>) -> Error {
-    match slot.lock().ok().and_then(|mut slot| slot.take()) {
-        Some(captured) => captured.into_result().err().unwrap_or(Error::McpRequest),
-        None => Error::McpRequest,
+fn failure(slot: &Mutex<Option<Captured>>) -> McpDiscoveryError {
+    // A poisoned lock is broken Adapter state, as `take` reports it.
+    let Ok(mut slot) = slot.lock() else {
+        return McpDiscoveryError::Internal;
+    };
+    match slot.take() {
+        Some(captured) => answer(captured).err().unwrap_or(McpDiscoveryError::Request),
+        None => McpDiscoveryError::Request,
+    }
+}
+
+/// What discovery reads from the capture.
+fn answer(captured: Captured) -> Result<Value, McpDiscoveryError> {
+    match captured {
+        Captured::Result(value) => Ok(value),
+        Captured::DestinationRejected => Err(McpDiscoveryError::DestinationRejected),
+        Captured::InputTooLarge => Err(McpDiscoveryError::RequestTooLarge),
+        Captured::ResultTooLarge => Err(McpDiscoveryError::SnapshotTooLarge),
+        Captured::Unauthorized(challenge) => Err(McpDiscoveryError::Unauthorized(challenge)),
+        Captured::AuthenticationUnsupported => Err(McpDiscoveryError::AuthenticationUnsupported),
+        // The transport captures a JSON-RPC error only for a tool call or a
+        // resource read, and discovery sends neither.
+        Captured::Rejected(_) => Err(McpDiscoveryError::Request),
     }
 }
 
@@ -292,7 +313,7 @@ pub(super) async fn visit_tool_pages(
     client: &RunningService<RoleClient, ClientConfig>,
     captured: &Mutex<Option<Captured>>,
     mut visit: impl FnMut(Vec<Value>) -> ControlFlow<()>,
-) -> Result<(), Error> {
+) -> Result<(), McpDiscoveryError> {
     let mut cursor: Option<String> = None;
     let mut seen = std::collections::HashSet::new();
     loop {
@@ -308,20 +329,20 @@ pub(super) async fn visit_tool_pages(
         let tools = page
             .get("tools")
             .and_then(Value::as_array)
-            .ok_or(Error::McpResult)?
+            .ok_or(McpDiscoveryError::MalformedResult)?
             .clone();
         if visit(tools).is_break() {
             return Ok(());
         }
         if seen.len() >= MAX_DISCOVERY_PAGES {
-            return Err(Error::ResultTooLarge);
+            return Err(McpDiscoveryError::SnapshotTooLarge);
         }
         cursor = match page.get("nextCursor") {
             None => None,
             Some(Value::String(next)) if !next.is_empty() && seen.insert(next.clone()) => {
                 Some(next.clone())
             }
-            Some(_) => return Err(Error::McpResult),
+            Some(_) => return Err(McpDiscoveryError::MalformedResult),
         };
         if cursor.is_none() {
             return Ok(());
@@ -334,8 +355,10 @@ fn snapshot(
     tools: Vec<Value>,
     url: &str,
     contract: &coral_catalog::ProviderCredentialContract,
-) -> Result<coral_catalog::McpDiscoverySnapshot, Error> {
-    let root = initialization.as_object_mut().ok_or(Error::McpResult)?;
+) -> Result<coral_catalog::McpDiscoverySnapshot, McpDiscoveryError> {
+    let root = initialization
+        .as_object_mut()
+        .ok_or(McpDiscoveryError::MalformedResult)?;
     root.insert(
         "server".into(),
         json!({"url": url, "transport": "streamable_http"}),
@@ -343,18 +366,20 @@ fn snapshot(
     root.insert("tools".into(), Value::Array(tools));
     root.insert(
         "credentialContract".into(),
-        serde_json::to_value(contract).map_err(Error::EncodeJson)?,
+        serde_json::to_value(contract).map_err(McpDiscoveryError::EncodeJson)?,
     );
-    let text = serde_json::to_string(&initialization).map_err(Error::EncodeJson)?;
-    coral_catalog::McpDiscoverySnapshot::parse(&text).map_err(|_invalid| Error::ResultTooLarge)
+    let text = serde_json::to_string(&initialization).map_err(McpDiscoveryError::EncodeJson)?;
+    coral_catalog::McpDiscoverySnapshot::parse(&text)
+        .map_err(|_invalid| McpDiscoveryError::SnapshotTooLarge)
 }
 
-fn take(slot: &Mutex<Option<Captured>>) -> Result<Value, Error> {
-    slot.lock()
-        .map_err(|_poisoned| Error::McpResult)?
+fn take(slot: &Mutex<Option<Captured>>) -> Result<Value, McpDiscoveryError> {
+    let captured = slot
+        .lock()
+        .map_err(|_poisoned| McpDiscoveryError::Internal)?
         .take()
-        .ok_or(Error::McpResult)?
-        .into_result()
+        .ok_or(McpDiscoveryError::MalformedResult)?;
+    answer(captured)
 }
 
 #[cfg(test)]
