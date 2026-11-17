@@ -128,6 +128,18 @@ impl TestDatabase {
         self.database.clone()
     }
 
+    /// How many statements the fixture's database handle has sent, on either
+    /// database: one for each call that executes or fetches, inside a
+    /// transaction or not.
+    ///
+    /// A test reads this before and after an operation and asserts on the
+    /// difference, for example that a list sends as many statements for
+    /// twelve rows as for two. A peer handle keeps its own count.
+    #[must_use]
+    pub fn statements_sent(&self) -> u64 {
+        self.database.statements_sent()
+    }
+
     /// Returns the connection options for this fixture's isolated storage.
     ///
     /// Bootstrap checks that open their own connections use this to inspect

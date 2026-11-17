@@ -1,8 +1,11 @@
 //! Organization Owner governance over Workspaces the Owner is not a Member of.
 //! It lists Workspaces and assigns designated Owners; it grants no authority
 //! inside a Workspace.
+use std::collections::HashMap;
+
 use coral_db::Transaction;
 
+use crate::list_repository::{Resources, Users};
 use crate::{
     AuthenticatedUser, AuthoritySource, ChangeContext, Error, EventDetail, LifecycleAction,
     LifecycleTargetKind, OrganizationRole, ResourceMetadata, UserId, UserProfile, Workspace,
@@ -34,16 +37,34 @@ pub(super) async fn owners(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
 ) -> Result<Vec<WorkspaceOwner>, Error> {
-    let mut owners = Vec::new();
-    for membership in crate::repository::list_memberships(&mut *tx, workspace).await? {
-        if membership.role() == WorkspaceRole::Owner {
-            owners.push(WorkspaceOwner {
-                profile: crate::profile::read_profile(tx, membership.user_id()).await?,
-                enabled: crate::organization::is_enabled(tx, membership.user_id()).await?,
-            });
-        }
-    }
-    Ok(owners)
+    Ok(listed_owners(tx, Some(workspace))
+        .await?
+        .into_iter()
+        .map(|(_workspace, owner)| owner)
+        .collect())
+}
+
+/// The designated Owners of one Workspace, or of every Workspace, each with
+/// its Workspace. The Owners of one Workspace are ordered by User. The
+/// statements this sends do not grow with the Owners or the Workspaces.
+async fn listed_owners(
+    tx: &mut Transaction<'_>,
+    workspace: Option<&WorkspaceId>,
+) -> Result<Vec<(WorkspaceId, WorkspaceOwner)>, Error> {
+    let users = workspace.map_or(Users::EveryOwner, Users::Owners);
+    let memberships = crate::repository::list_owner_memberships(&mut *tx, workspace).await?;
+    let profiles = crate::profile::read_listed_profiles(tx, users).await?;
+    let enabled = crate::organization::enabled_among(tx, users).await?;
+    Ok(memberships
+        .into_iter()
+        .map(|membership| {
+            let owner = WorkspaceOwner {
+                profile: profiles.of(membership.user_id()),
+                enabled: enabled.contains(membership.user_id()),
+            };
+            (membership.workspace_id().clone(), owner)
+        })
+        .collect())
 }
 
 /// Makes one User a designated Owner under Organization Owner authority. The
@@ -100,12 +121,25 @@ impl WorkspaceModule {
         require_organization_owner(
             &crate::organization::current_user(&mut tx, actor.user_id()).await?,
         )?;
-        let mut result = Vec::new();
-        for workspace in crate::repository::all_workspaces(&mut tx).await? {
-            result.push(organization_workspace(&mut tx, workspace).await?);
+        let workspaces = crate::repository::all_workspaces(&mut tx).await?;
+        let metadata =
+            crate::management_repository::listed_metadata(&mut tx, Resources::EveryWorkspace)
+                .await?;
+        let mut owners: HashMap<WorkspaceId, Vec<WorkspaceOwner>> = HashMap::new();
+        for (workspace, owner) in listed_owners(&mut tx, None).await? {
+            owners.entry(workspace).or_default().push(owner);
         }
         tx.commit().await?;
-        Ok(result)
+        workspaces
+            .into_iter()
+            .map(|workspace| {
+                Ok(OrganizationWorkspace {
+                    metadata: metadata.of(&workspace.id().to_string())?,
+                    owners: owners.remove(workspace.id()).unwrap_or_default(),
+                    workspace,
+                })
+            })
+            .collect()
     }
 
     /// Inspects one Workspace as an Organization Owner sees it.
