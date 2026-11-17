@@ -47,7 +47,6 @@ function usageView(usage: UsageData): UsageDataView {
   const block = sendBlock(usage.block)
   return {
     choice: usage.sharing ? 'on' : 'off',
-    canChange: usage.canChange,
     ...(block && { block }),
     kind: usage.kind === UsageHostKind.DESKTOP ? 'desktop' : 'server',
     next: usage.nextReportJson,

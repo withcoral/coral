@@ -148,9 +148,19 @@ const openAccountMenu: Story['play'] = async ({ canvas }) => {
 export const LongUserName: Story = {
   args: { userName: 'Alexandra Morgan with a name long enough to truncate' },
 }
-export const AccountMenu: Story = { play: openAccountMenu }
-export const CollapsedAccountMenu: Story = { ...Collapsed, play: openAccountMenu }
-export const LocalAccountMenu: Story = { ...LocalUser, play: openAccountMenu }
+// An organization owner's menu holds Settings.
+export const AccountMenu: Story = { args: { organizationOwner: true }, play: openAccountMenu }
+export const CollapsedAccountMenu: Story = {
+  args: { ...Collapsed.args, organizationOwner: true },
+  play: openAccountMenu,
+}
+// The local user always owns the organization.
+export const LocalAccountMenu: Story = {
+  args: { ...LocalUser.args, organizationOwner: true },
+  play: openAccountMenu,
+}
+// A member's menu has no Settings: Coral refuses them the organization's pages.
+export const MemberAccountMenu: Story = { play: openAccountMenu }
 export const HelpMenu: Story = {
   play: async ({ canvas }) => {
     await userEvent.click(canvas.getByRole('button', { name: 'Help and feedback' }))

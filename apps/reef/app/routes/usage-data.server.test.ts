@@ -26,7 +26,6 @@ beforeEach(() => {
   vi.resetAllMocks()
   usage = {
     sharing: true,
-    canChange: false,
     block: UsageSendBlock.NONE,
     kind: UsageHostKind.SERVER,
     nextReportJson: next,
@@ -63,7 +62,6 @@ it('passes both reports through byte for byte', async () => {
   const result = await load()
   expect(result.data.view).toEqual({
     choice: 'on',
-    canChange: false,
     kind: 'server',
     next,
     lastSent: { at: '2026-11-09T00:12:00.000Z', json: sent },
@@ -87,13 +85,23 @@ it.each([
   expect(view.kind).toBe('desktop')
 })
 
-// Catches: the page showing an owner's view as a member's, or "off" as "on".
-it('shows sharing off and lets an owner change it', async () => {
+// Catches: the page showing "off" as "on".
+it('shows sharing off', async () => {
   usage.sharing = false
-  usage.canChange = true
-  const view = (await load()).data.view
-  expect(view.choice).toBe('off')
-  expect(view.canChange).toBe(true)
+  expect((await load()).data.view.choice).toBe('off')
+})
+
+// Catches: a member who reaches the URL getting anything but Coral's refusal.
+it('passes on the refusal when the caller is not an organization owner', async () => {
+  coral.transport = fakeManagementTransport({
+    usageData: {
+      getUsageData: () => {
+        throw new ConnectError('permission denied', Code.PermissionDenied)
+      },
+    },
+  })
+  const failure: unknown = await load().catch((error: unknown) => error)
+  expect(failure).toMatchObject({ status: 403 })
 })
 
 // Catches: the switch sending Coral the opposite of what the owner chose.

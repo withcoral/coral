@@ -11,7 +11,7 @@ import * as styles from './usage-data.css'
 /** Each report scrolls inside its card, so both fit on one screen. */
 const REPORT_LINES = 20
 
-/** The deployment's usage data setting and the exact reports. Every member can read it. */
+/** The deployment's usage data setting and the exact reports. Only an organization owner opens it. */
 export function UsageDataPage({
   view: v,
   error,
@@ -37,12 +37,11 @@ export function UsageDataPage({
         {v.block && <Banner variant="info">{blockReason(v.block, v.kind)}</Banner>}
         <Card.Card
           title="Share anonymous usage data"
-          description={description(v)}
+          description={`${contents} This applies to the whole organization.`}
           action={
             <Switch
               aria-label="Share anonymous usage data"
               checked={v.choice === 'on'}
-              disabled={!v.canChange}
               onCheckedChange={onChoose}
             />
           }
@@ -78,11 +77,4 @@ export function UsageDataPage({
       </SettingsLayout>
     </PageLayout>
   )
-}
-
-function description(v: UsageDataView): string {
-  const who = v.canChange
-    ? 'This applies to the whole organization.'
-    : 'Only organization owners can change this.'
-  return `${contents} ${who}`
 }

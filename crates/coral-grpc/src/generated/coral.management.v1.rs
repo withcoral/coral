@@ -17459,9 +17459,6 @@ pub struct UsageData {
     /// On until an Organization Owner turns it off.
     #[prost(bool, tag = "1")]
     pub sharing: bool,
-    /// Whether the caller is an Organization Owner, who can change `sharing`.
-    #[prost(bool, tag = "2")]
-    pub can_change: bool,
     /// What stops this process from sending, whatever `sharing` says.
     #[prost(enumeration = "UsageSendBlock", tag = "3")]
     pub block: i32,
@@ -17574,7 +17571,7 @@ pub mod usage_data_service_client {
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
     /// The deployment's anonymous usage data: the one sharing setting, and the
-    /// Usage Reports Coral sends.
+    /// Usage Reports Coral sends. Only an Organization Owner can read or change it.
     #[derive(Debug, Clone)]
     pub struct UsageDataServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -17655,7 +17652,7 @@ pub mod usage_data_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        /// Any Organization Member can read the setting and the reports.
+        /// Reads the setting and the reports.
         pub async fn get_usage_data(
             &mut self,
             request: impl tonic::IntoRequest<super::GetUsageDataRequest>,
@@ -17682,7 +17679,7 @@ pub mod usage_data_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Only an Organization Owner can change the setting.
+        /// Changes the setting.
         pub async fn set_usage_data_sharing(
             &mut self,
             request: impl tonic::IntoRequest<super::SetUsageDataSharingRequest>,
@@ -17725,19 +17722,19 @@ pub(crate) mod usage_data_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with UsageDataServiceServer.
     #[async_trait]
     pub trait UsageDataService: std::marker::Send + std::marker::Sync + 'static {
-        /// Any Organization Member can read the setting and the reports.
+        /// Reads the setting and the reports.
         async fn get_usage_data(
             &self,
             request: tonic::Request<super::GetUsageDataRequest>,
         ) -> std::result::Result<tonic::Response<super::UsageData>, tonic::Status>;
-        /// Only an Organization Owner can change the setting.
+        /// Changes the setting.
         async fn set_usage_data_sharing(
             &self,
             request: tonic::Request<super::SetUsageDataSharingRequest>,
         ) -> std::result::Result<tonic::Response<super::UsageData>, tonic::Status>;
     }
     /// The deployment's anonymous usage data: the one sharing setting, and the
-    /// Usage Reports Coral sends.
+    /// Usage Reports Coral sends. Only an Organization Owner can read or change it.
     #[derive(Debug)]
     pub struct UsageDataServiceServer<T> {
         inner: Arc<T>,

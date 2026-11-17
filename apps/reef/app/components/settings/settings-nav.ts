@@ -1,9 +1,10 @@
 import type { IconName } from '@/wax/components/icon'
 
 /**
- * The organization's settings: what you administer for everyone, away from the
- * work in a workspace. This module lists the sections of the settings nav and
- * who sees each. `routes.ts` puts each section's page under the settings layout.
+ * The organization's settings: what an organization owner administers for
+ * everyone, away from the work in a workspace. This module lists the sections
+ * of the settings nav and who sees each. `routes.ts` puts each section's page
+ * under the settings layout.
  */
 
 export interface SettingsNavItem {
@@ -30,36 +31,35 @@ export interface SettingsReader {
 }
 
 /**
- * The organization's sections for this reader: only what they can open, in the
- * order it shows. It is never empty, and Settings in the account menu opens the first.
+ * The organization's sections for this reader, in the order they show. Only an
+ * organization owner has any: Coral refuses these pages to everyone else. The
+ * account menu's Settings opens the first.
  */
 export function settingsNav({
   organizationOwner,
   people,
   secretStoresEnabled,
 }: SettingsReader): SettingsNavItem[] {
+  if (!organizationOwner) return []
   const sections: (SettingsNavItem | false)[] = [
-    organizationOwner &&
-      people && {
-        id: 'members',
-        label: 'Members',
-        to: settingsPath.organizationMembers,
-        icon: 'Users',
-      },
-    organizationOwner && {
+    people && {
+      id: 'members',
+      label: 'Members',
+      to: settingsPath.organizationMembers,
+      icon: 'Users',
+    },
+    {
       id: 'workspaces',
       label: 'Workspaces',
       to: settingsPath.organizationWorkspaces,
       icon: 'Folders',
     },
-    organizationOwner &&
-      secretStoresEnabled && {
-        id: 'secret-stores',
-        label: 'Secret stores',
-        to: settingsPath.secretStores,
-        icon: 'KeyRound',
-      },
-    // Every member can read what Coral sends; only organization owners change it.
+    secretStoresEnabled && {
+      id: 'secret-stores',
+      label: 'Secret stores',
+      to: settingsPath.secretStores,
+      icon: 'KeyRound',
+    },
     {
       id: 'usage-data',
       label: 'Usage data',

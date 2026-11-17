@@ -443,13 +443,13 @@ Self-hosted Coral sends one anonymous usage report for each UTC day on which it 
 
 Coral sends the report to `https://telemetry.withcoral.com/v1/report`. The [`[outbound]`](#outbound) policy still applies.
 
-A report holds a random install ID, facts about your Coral build and where it runs, and dates, counts and totals of activity. It never holds your programs, tool arguments, tool results, credentials, names, email addresses or URLs. [`report.rs`](https://github.com/withcoral/coral/blob/main/crates/coral-usage/src/report.rs) lists every field. To read the exact report before Coral sends it, open **Settings** from the account menu, then **Usage data**.
+A report holds a random install ID, facts about your Coral build and where it runs, and dates, counts and totals of activity. It never holds your programs, tool arguments, tool results, credentials, names, email addresses or URLs. [`report.rs`](https://github.com/withcoral/coral/blob/main/crates/coral-usage/src/report.rs) lists every field. If you are an organization owner, you can read the exact report before Coral sends it: open **Settings** from the account menu, then **Usage data**.
 
 Nothing in a report identifies you or your organization. We do not store IP addresses.
 
 ### Turn off sharing
 
-If you are an organization owner, open **Settings**, then **Usage data**, and turn off **Share anonymous usage data**. This setting applies to the full deployment. Other members can read the page but cannot change it.
+If you are an organization owner, open **Settings**, then **Usage data**, and turn off **Share anonymous usage data**. This setting applies to the full deployment. Only organization owners can open the page.
 
 To stop sending from one Coral process, set one of these environment variables. Coral ignores spaces and letter case. Restart Coral after you change one. The **Usage data** page then shows a banner that names the variable.
 

@@ -39,28 +39,32 @@ export function SettingsSidebar({
       >
         Back to workspace
       </SidebarButton>
-      <div role="group" aria-label="Organization" className={styles.settingsGroup}>
-        {!isMinimized && (
-          <Typography.BodySmall className={styles.settingsGroupLabel}>
-            Organization
-          </Typography.BodySmall>
-        )}
-        {nav.map((item) => (
-          <SidebarButton
-            key={item.id}
-            as={Link}
-            to={item.to}
-            icon={item.icon}
-            aria-label={item.label}
-            title={item.label}
-            isMinimized={isMinimized}
-            isActive={item.id === current?.id}
-            aria-current={item.id === current?.id ? 'page' : undefined}
-          >
-            {item.label}
-          </SidebarButton>
-        ))}
-      </div>
+      {/* Someone who is not an organization owner has no section: Coral
+          refused the page they opened. */}
+      {nav.length > 0 && (
+        <div role="group" aria-label="Organization" className={styles.settingsGroup}>
+          {!isMinimized && (
+            <Typography.BodySmall className={styles.settingsGroupLabel}>
+              Organization
+            </Typography.BodySmall>
+          )}
+          {nav.map((item) => (
+            <SidebarButton
+              key={item.id}
+              as={Link}
+              to={item.to}
+              icon={item.icon}
+              aria-label={item.label}
+              title={item.label}
+              isMinimized={isMinimized}
+              isActive={item.id === current?.id}
+              aria-current={item.id === current?.id ? 'page' : undefined}
+            >
+              {item.label}
+            </SidebarButton>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
