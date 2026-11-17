@@ -214,6 +214,7 @@ impl QueryPlan {
         let spelling = |stat: &WordStatistics| Spelling {
             word: stat.word.clone(),
             idf: inverse_document_frequency(total, stat.ndoc),
+            held: stat.ndoc > 0,
         };
         ScoringPlan {
             words: stats
@@ -471,6 +472,8 @@ pub(super) struct ScoredWord {
 pub(super) struct Spelling {
     pub(super) word: String,
     pub(super) idf: f64,
+    /// Whether a row of the Workspace holds the spelling as a lexeme.
+    pub(super) held: bool,
 }
 
 /// FTS5's IDF, `ln((N - n + 0.5) / (n + 0.5))`, floored so a word in more

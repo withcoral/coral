@@ -687,19 +687,25 @@ async fn rank_postgres(
 }
 
 /// The candidate disjuncts over the alias `d`: the prefix `tsquery` over the
-/// spellings, and a substring pattern per spelling and per wordless term.
+/// spellings, and a substring pattern per spelling that no row holds as a
+/// lexeme and per wordless term.
+///
+/// A held spelling selects by its lexemes alone. Its substring would add
+/// only rows that hold it inside a longer lexeme, which the score gives
+/// nothing for it, and each pattern costs a trigram scan and a recheck of
+/// every matched row's whole text. A spelling no row holds keeps its
+/// pattern, so `enchmark` still meets `benchmark_runs`.
 fn postgres_candidates(binds: &mut Binds, plan: &QueryPlan, scoring: &ScoringPlan) -> String {
     let spellings = scoring
         .words
         .iter()
         .flat_map(|word| &word.spellings)
-        .map(|spelling| &spelling.word)
         .collect::<Vec<_>>();
     let mut matches = Vec::new();
     if !spellings.is_empty() {
         let tsquery = spellings
             .iter()
-            .map(|spelling| format!("{spelling}:*"))
+            .map(|spelling| format!("{}:*", spelling.word))
             .collect::<Vec<_>>()
             .join(" | ");
         matches.push(format!(
@@ -707,7 +713,11 @@ fn postgres_candidates(binds: &mut Binds, plan: &QueryPlan, scoring: &ScoringPla
             binds.push(tsquery)
         ));
     }
-    for term in spellings.into_iter().chain(&plan.wordless) {
+    let unheld = spellings
+        .into_iter()
+        .filter(|spelling| !spelling.held)
+        .map(|spelling| &spelling.word);
+    for term in unheld.chain(&plan.wordless) {
         matches.push(format!(
             "d.all_text ILIKE {}",
             binds.push(contains_pattern(term))

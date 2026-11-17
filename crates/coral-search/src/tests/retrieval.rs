@@ -1049,6 +1049,40 @@ async fn a_word_that_only_resembles_a_rows_text_selects_nothing() {
     );
 }
 
+#[tokio::test]
+async fn postgres_selects_a_held_word_by_its_lexemes_and_another_by_its_substring() {
+    coral_test_support::database_only!(Postgres);
+    let document = r#"{
+      "openapi": "3.1.0",
+      "info": { "title": "Weather", "version": "1.0.0" },
+      "servers": [{ "url": "https://weather.example" }],
+      "security": [],
+      "paths": {
+        "/l": { "get": { "operationId": "labels/paint", "summary": "Set the color of a label",
+          "responses": { "200": { "description": "OK" } } } },
+        "/r": { "get": { "operationId": "items/relabel", "summary": "Tracer one",
+          "responses": { "200": { "description": "OK" } } } }
+      }
+    }"#;
+    let (modules, principal, workspace) = published(document, "weather").await;
+    // A row holds `label` as a word, so `relabel` no longer selects its row:
+    // the score gives a word inside a longer word nothing. No row holds
+    // `abel`, so its substring still selects both.
+    for (query, expected) in [
+        ("label", vec!["coral.providers.weather.labels.paint"]),
+        (
+            "abel",
+            vec![
+                "coral.providers.weather.items.relabel",
+                "coral.providers.weather.labels.paint",
+            ],
+        ),
+    ] {
+        let page = search_page(&modules, &principal, &workspace, query).await;
+        assert_eq!(paths(&page), expected, "{query}");
+    }
+}
+
 /// One Provider of invented words whose rows separate the scoring rules.
 /// Every row holds `zentro` through the Provider name, so a query of
 /// two words with it never meets a phrase; the long rows hold the query
