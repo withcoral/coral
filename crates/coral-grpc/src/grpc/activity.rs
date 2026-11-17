@@ -20,30 +20,26 @@ fn approval_state(state: S) -> &'static str {
         S::Closed => "closed",
     }
 }
-fn error(error: coral_task::Error) -> Status {
+/// The status of one coral-task failure, for every service. An error that
+/// wraps another module's reports what that error reports alone.
+pub(super) fn error(error: coral_task::Error) -> Status {
     match error {
         coral_task::Error::TaskNotFound
         | coral_task::Error::InteractionNotFound
-        | coral_task::Error::WorkspaceNotFound
-        | coral_task::Error::Workspace(
-            coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::AgentNotFound,
-        ) => status::not_found(),
-        coral_task::Error::PermissionDenied(_)
-        | coral_task::Error::Workspace(coral_workspace::Error::PermissionDenied(_)) => {
-            status::permission_denied()
-        }
+        | coral_task::Error::WorkspaceNotFound => status::not_found(),
+        coral_task::Error::PermissionDenied(_) => status::permission_denied(),
         coral_task::Error::InvalidInput(_) => status::invalid(),
+        coral_task::Error::Workspace(error) => super::workspaces::error(error),
         coral_task::Error::Run(error) => execution::run_error(error),
+        coral_task::Error::Search(error) => super::providers::search_error(error),
+        coral_task::Error::Tools(error) => super::authored_tools::error(error),
         coral_task::Error::TaskClosed => {
             status::safe_status(tonic::Code::FailedPrecondition, "TASK_CLOSED")
         }
         // Name every remaining variant so a new domain error needs an explicit wire decision.
         coral_task::Error::SnapshotTooLarge
-        | coral_task::Error::Search(_)
-        | coral_task::Error::Tools(_)
         | coral_task::Error::Clock
         | coral_task::Error::IdentifierIssuance(_)
-        | coral_task::Error::Workspace(_)
         | coral_task::Error::CorruptData(_)
         | coral_task::Error::Database(_) => status::unavailable(),
     }
@@ -703,6 +699,79 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
 #[cfg(test)]
 mod tests {
     use tonic::Code;
+
+    /// Catches: a refusal that reads as a retryable failure, or as another
+    /// code, because a Task or Run error wraps the error that refuses.
+    #[test]
+    fn a_wrapped_error_reports_what_it_reports_alone() {
+        use coral_policy::Error as Policy;
+        use coral_provider::Error as Provider;
+        use coral_run::Error as Run;
+        use coral_task::Error as Task;
+        use coral_tools::Error as Tools;
+        use coral_workspace::Error as Workspace;
+        let reported = |status: tonic::Status| (status.code(), status.message().to_owned());
+        let cases = [
+            (
+                Task::Workspace(Workspace::WorkspaceArchived),
+                crate::grpc::workspaces::error(Workspace::WorkspaceArchived),
+                Code::FailedPrecondition,
+            ),
+            (
+                Task::Workspace(Workspace::InvalidAgentCredential),
+                crate::grpc::workspaces::error(Workspace::InvalidAgentCredential),
+                Code::Unauthenticated,
+            ),
+            (
+                Task::Run(Run::Workspace(Workspace::WorkspaceNotFound)),
+                crate::grpc::workspaces::error(Workspace::WorkspaceNotFound),
+                Code::NotFound,
+            ),
+            (
+                Task::Run(Run::Workspace(Workspace::AgentDisabled)),
+                crate::grpc::workspaces::error(Workspace::AgentDisabled),
+                Code::FailedPrecondition,
+            ),
+            (
+                Task::Run(Run::Provider(Provider::Workspace(
+                    Workspace::PermissionDenied("private detail"),
+                ))),
+                crate::grpc::workspaces::error(Workspace::PermissionDenied("private detail")),
+                Code::PermissionDenied,
+            ),
+            (
+                Task::Run(Run::Provider(Provider::ProviderNotFound)),
+                crate::grpc::providers::error(Provider::ProviderNotFound),
+                Code::NotFound,
+            ),
+            (
+                Task::Run(Run::Policy(Policy::ToolNotFound)),
+                crate::grpc::policies::error(Policy::ToolNotFound),
+                Code::NotFound,
+            ),
+            (
+                Task::Run(Run::Tools(Tools::PermissionDenied("private detail"))),
+                crate::grpc::authored_tools::error(Tools::PermissionDenied("private detail")),
+                Code::PermissionDenied,
+            ),
+            (
+                Task::Tools(Tools::Workspace(Workspace::WorkspaceNotFound)),
+                crate::grpc::workspaces::error(Workspace::WorkspaceNotFound),
+                Code::NotFound,
+            ),
+            (
+                Task::Search(coral_search::Error::Workspace(Workspace::AgentNotFound)),
+                crate::grpc::workspaces::error(Workspace::AgentNotFound),
+                Code::NotFound,
+            ),
+        ];
+        for (wrapped, alone, code) in cases {
+            let label = format!("{wrapped:?}");
+            let status = super::error(wrapped);
+            assert_eq!(status.code(), code, "{label}");
+            assert_eq!(reported(status), reported(alone), "{label}");
+        }
+    }
 
     /// History reads conceal absence and refusal alike and never report a
     /// denial, bad query, or closed Task as a retryable failure.

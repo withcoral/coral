@@ -5,18 +5,18 @@ use super::{
 use crate::grpc::status;
 use coral_run::InvocationStatus;
 
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "map_err consumes domain errors to project safe statuses"
-)]
+/// The status of one coral-run failure, for every service.
 pub(super) fn run_error(error: coral_run::Error) -> Status {
     match error {
         coral_run::Error::RunNotFound | coral_run::Error::ApprovalNotFound => status::not_found(),
         coral_run::Error::InvalidInput(_) => status::invalid(),
-        coral_run::Error::PermissionDenied(_)
-        | coral_run::Error::Workspace(coral_workspace::Error::PermissionDenied(_)) => {
-            status::permission_denied()
-        }
+        coral_run::Error::PermissionDenied(_) => status::permission_denied(),
+        // An error that wraps another module's reports what that error
+        // reports alone.
+        coral_run::Error::Workspace(error) => crate::grpc::workspaces::error(error),
+        coral_run::Error::Provider(error) => crate::grpc::providers::error(error),
+        coral_run::Error::Policy(error) => crate::grpc::policies::error(error),
+        coral_run::Error::Tools(error) => crate::grpc::authored_tools::error(error),
         // The Run Owner stopped before it answered the request: the outcome
         // may be recorded already, and the record read again says.
         coral_run::Error::OwnerLost => {
@@ -34,7 +34,6 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         }
         // Name every remaining variant so a new domain error needs an explicit wire decision.
         coral_run::Error::ProgramAdmission(_)
-        | coral_run::Error::Tools(_)
         | coral_run::Error::CompilationTimedOut
         | coral_run::Error::CompilerBusy
         | coral_run::Error::CompilerUnavailable
@@ -53,10 +52,7 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         | coral_run::Error::HeadMismatch
         | coral_run::Error::RunEnded
         | coral_run::Error::ProgramHostTerminated
-        | coral_run::Error::Provider(_)
-        | coral_run::Error::Policy(_)
         | coral_run::Error::Upstream(_)
-        | coral_run::Error::Workspace(_)
         | coral_run::Error::CorruptData(_)
         | coral_run::Error::Database(_) => status::unavailable(),
     }

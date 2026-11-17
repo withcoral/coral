@@ -879,12 +879,12 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
             .provider_readiness
             .inspect_provider_readiness(&user, &workspace)
             .await
-            .map_err(readiness_error)?;
+            .map_err(search_error)?;
         let search_index = self
             .provider_readiness
             .inspect_search_index_states(&user, &workspace, None)
             .await
-            .map_err(readiness_error)?;
+            .map_err(search_error)?;
         let (inspections, next_page_token) = page(
             inspections,
             req.page_size,
@@ -1164,12 +1164,12 @@ impl GrpcServices {
             .provider_readiness
             .inspect_provider_readiness_for(actor, workspace, id)
             .await
-            .map_err(readiness_error)?;
+            .map_err(search_error)?;
         let search_index = self
             .provider_readiness
             .inspect_search_index_states(actor, workspace, Some(id))
             .await
-            .map_err(readiness_error)?;
+            .map_err(search_error)?;
         Ok(provider_view(
             &inspection.provider,
             &inspection.blockers,
@@ -1178,11 +1178,12 @@ impl GrpcServices {
     }
 }
 
-pub(super) fn readiness_error(failure: coral_search::Error) -> Status {
+pub(super) fn search_error(failure: coral_search::Error) -> Status {
     match failure {
         coral_search::Error::Workspace(inner) => super::workspaces::error(inner),
         coral_search::Error::Provider(inner) => error(inner),
         coral_search::Error::Policy(inner) => super::policies::error(inner),
+        coral_search::Error::Tools(inner) => super::authored_tools::error(inner),
         coral_search::Error::InvalidInput(_)
         | coral_search::Error::UnknownProviderCallRoot { .. }
         | coral_search::Error::TypesLimit
@@ -1196,9 +1197,9 @@ pub(super) fn readiness_error(failure: coral_search::Error) -> Status {
             safe_status(tonic::Code::NotFound, "NOT_FOUND")
         }
         // Retrying can succeed. Name every variant so a new one needs a wire decision.
-        coral_search::Error::ServiceUnavailable
-        | coral_search::Error::Tools(_)
-        | coral_search::Error::Database(_) => safe_status(tonic::Code::Unavailable, "UNAVAILABLE"),
+        coral_search::Error::ServiceUnavailable | coral_search::Error::Database(_) => {
+            safe_status(tonic::Code::Unavailable, "UNAVAILABLE")
+        }
     }
 }
 
@@ -1413,7 +1414,7 @@ mod tests {
 
     /// Only failures that a retry can fix are reported as retryable.
     #[test]
-    fn readiness_errors_report_retryable_only_for_dependencies() {
+    fn search_errors_report_retryable_only_for_dependencies() {
         let cases = [
             (
                 coral_search::Error::InvalidInput("private detail".into()),
@@ -1443,6 +1444,20 @@ mod tests {
                 Code::NotFound,
                 "NOT_FOUND",
             ),
+            // A wrapped authored Tool error reports its own status, and is
+            // retryable only when that error is.
+            (
+                coral_search::Error::Tools(coral_tools::Error::PrivateToolExists),
+                Code::AlreadyExists,
+                "ALREADY_EXISTS",
+            ),
+            (
+                coral_search::Error::Tools(coral_tools::Error::Database(
+                    coral_db::Error::WriterBusy,
+                )),
+                Code::Unavailable,
+                "UNAVAILABLE",
+            ),
             (
                 coral_search::Error::ServiceUnavailable,
                 Code::Unavailable,
@@ -1451,7 +1466,7 @@ mod tests {
         ];
         for (failure, code, reason) in cases {
             let label = format!("{failure:?}");
-            let status = super::readiness_error(failure);
+            let status = super::search_error(failure);
             assert_eq!((status.code(), status.message()), (code, reason), "{label}");
         }
     }
