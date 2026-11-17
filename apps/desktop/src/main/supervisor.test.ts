@@ -59,14 +59,18 @@ function stub(role: Role, mode: string): Launcher {
 
 const RESTART = { attempts: 2, windowMs: 60_000, backoffMs: 50 }
 
-function supervise(runtime = 'ready', reef = 'ready', restart = RESTART) {
+function supervise(
+  runtime = 'ready',
+  reef = 'ready',
+  { restart = RESTART, stopTimeoutMs = 500 } = {},
+) {
   supervisor = createSupervisor({
     dataDir,
     runtime: stub('runtime', runtime),
     reef: stub('reef', reef),
     readinessTimeoutMs: 1500,
     checkUpdates: false,
-    stopTimeoutMs: 500,
+    stopTimeoutMs,
     restart,
   })
   supervisor.on('state', (state) => states.push(state))
@@ -89,6 +93,14 @@ async function failureOf(promise: Promise<unknown>) {
 /** Makes a running stub exit, as a crash would. */
 async function crash(origin: string) {
   await fetch(`${origin}/exit`).catch(() => {})
+}
+
+/** Creates an empty file in the runtime's state directory, which changes how the stub starts. */
+async function mark(name: string) {
+  const path = join(dataDir, 'runtime', name)
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, '')
+  return path
 }
 
 async function occupy(port: number) {
@@ -311,8 +323,7 @@ describe('after start', () => {
     'after a crash, retries a relaunch that %s only if it did not refuse',
     async (_, marker, failure, retried) => {
       const endpoints = await supervise().start()
-      const markerPath = join(dataDir, 'runtime', marker)
-      await writeFile(markerPath, '')
+      const markerPath = await mark(marker)
       await crash(endpoints.mcp)
 
       const relaunchFailure = () =>
@@ -336,7 +347,9 @@ describe('after start', () => {
   )
 
   it('starts afresh when asked while a restart waits', async () => {
-    const endpoints = await supervise('ready', 'ready', { ...RESTART, backoffMs: 60_000 }).start()
+    const endpoints = await supervise('ready', 'ready', {
+      restart: { ...RESTART, backoffMs: 60_000 },
+    }).start()
     await crash(endpoints.reef)
     await expect.poll(statuses).toContain('failed')
 
@@ -371,16 +384,11 @@ describe('after start', () => {
 })
 
 describe('a state directory another runtime holds', () => {
-  const lock = () => join(dataDir, 'runtime', 'stub.lock')
-  beforeEach(async () => {
-    await mkdir(dirname(lock()), { recursive: true })
-    await writeFile(lock(), '')
-  })
-
   it('retries the runtime until the directory is free', async () => {
+    const lock = await mark('stub.lock')
     const started = supervise().start()
     await expect.poll(() => roles().length).toBeGreaterThanOrEqual(2)
-    await rm(lock())
+    await rm(lock)
 
     await started
     expect(roles().filter((role) => role === 'runtime').length).toBeGreaterThanOrEqual(2)
@@ -388,8 +396,19 @@ describe('a state directory another runtime holds', () => {
     expect(alive()).toEqual(['runtime', 'reef'])
   })
 
-  it('fails as locked when the directory stays held', async () => {
-    expect(await failureOf(supervise().start())).toMatchObject({ kind: 'state-locked' })
+  it.each([
+    ['the directory stays held', 'stub.lock'],
+    // The deadline passes before the runtime has found the directory held.
+    ['a runtime that is still starting at the deadline finds it held', 'stub.lock-late'],
+  ])('fails as locked when %s', async (_, marker) => {
+    await mark(marker)
+
+    // The deadline can catch a runtime that has not started yet: give it time
+    // to exit by itself once it is stopped.
+    const failure = await failureOf(supervise('ready', 'ready', { stopTimeoutMs: 10_000 }).start())
+
+    expect(failure).toMatchObject({ kind: 'state-locked' })
+    expect(failure.kind === 'state-locked' && failure.output).toContain('state directory locked')
     expect(roles().every((role) => role === 'runtime')).toBe(true)
     expect(alive()).toEqual([])
   })

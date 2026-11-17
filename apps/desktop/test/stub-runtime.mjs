@@ -11,6 +11,8 @@
 // closes, and it does not handle SIGTERM. Files in its state directory change
 // a launch, so a test can change later launches:
 //   stub.lock    exit 75, as the runtime does when another one holds the directory
+//   stub.lock-late  like hang, then exit 75 when its stdin closes, as a runtime
+//                does that Desktop stops before it has found the directory held
 //   stub.refuse  like fail
 //   stub.hang    like hang
 // GET /exit on the MCP listener makes a running stub exit 7. GET /launch answers
@@ -20,21 +22,23 @@ import { createServer } from 'node:http'
 import { join } from 'node:path'
 
 const marked = (name) => existsSync(join(process.env.CORAL_CONFIG_DIR, name))
+const lockedLate = marked('stub.lock-late')
 const mode = marked('stub.refuse')
   ? 'fail'
-  : marked('stub.hang')
+  : marked('stub.hang') || lockedLate
     ? 'hang'
     : (process.argv[2] ?? 'ready')
+const locked = () => {
+  console.error('stub runtime found its state directory locked')
+  process.exit(75)
+}
 if (mode === 'fail') {
   console.error('stub runtime refused to start')
   process.exit(3)
 }
-if (marked('stub.lock')) {
-  console.error('stub runtime found its state directory locked')
-  process.exit(75)
-}
+if (marked('stub.lock')) locked()
 if (process.env.CORAL_STOP_ON_STDIN_CLOSE === '1' && mode !== 'stubborn') {
-  process.stdin.on('end', () => process.exit(0))
+  process.stdin.on('end', () => (lockedLate ? locked() : process.exit(0)))
   process.stdin.resume()
 }
 
