@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use coral_catalog::McpInvocationMethod;
 use serde_json::{Value, json};
 
-use crate::Error;
+use crate::{PlanError, SendError};
 
 /// Run-local opaque MCP resource references. The Run owner shares this registry
 /// across its Invocations and drops it when execution ends. No durable store or
@@ -29,7 +29,7 @@ struct Resource {
 }
 
 impl McpResources {
-    pub(super) fn resolve(&self, provider: &str, reference: &Value) -> Result<String, Error> {
+    pub(super) fn resolve(&self, provider: &str, reference: &Value) -> Result<String, PlanError> {
         let reference = reference
             .as_object()
             .filter(|value| value.len() == 1)
@@ -38,7 +38,10 @@ impl McpResources {
             .get("$coralMcpResource")
             .and_then(Value::as_str)
             .ok_or_else(invalid_reference)?;
-        let entries = self.entries.lock().map_err(|_poisoned| Error::McpResult)?;
+        let entries = self
+            .entries
+            .lock()
+            .map_err(|_poisoned| PlanError::Internal)?;
         let resource = entries
             .by_token
             .get(token)
@@ -47,8 +50,11 @@ impl McpResources {
         Ok(resource.uri.clone())
     }
 
-    fn insert(&self, provider: &str, uri: &str) -> Result<Value, Error> {
-        let mut entries = self.entries.lock().map_err(|_poisoned| Error::McpResult)?;
+    fn insert(&self, provider: &str, uri: &str) -> Result<Value, SendError> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_poisoned| SendError::Internal)?;
         // ponytail: one bounded Run-local map; add reclamation only if long Runs
         // need more than 16 MiB of retained URI and token bookkeeping.
         let bytes = entries
@@ -56,9 +62,9 @@ impl McpResources {
             .checked_add(provider.len())
             .and_then(|bytes| bytes.checked_add(uri.len()))
             .and_then(|bytes| bytes.checked_add(128))
-            .ok_or(Error::ResultTooLarge)?;
+            .ok_or(SendError::ResultTooLarge)?;
         if bytes > 16 * 1024 * 1024 {
-            return Err(Error::ResultTooLarge);
+            return Err(SendError::ResultTooLarge);
         }
         let token = uuid::Uuid::new_v4().to_string();
         entries.by_token.insert(
@@ -77,7 +83,7 @@ impl McpResources {
         provider: &str,
         method: McpInvocationMethod,
         data: &mut Value,
-    ) -> Result<(), Error> {
+    ) -> Result<(), SendError> {
         if method == McpInvocationMethod::CallTool
             && let Some(content) = data.get_mut("content").and_then(Value::as_array_mut)
         {
@@ -86,7 +92,9 @@ impl McpResources {
                     Some("resource_link") => self.replace_uri(provider, block, "resource")?,
                     Some("resource") => self.replace_uri(
                         provider,
-                        block.get_mut("resource").ok_or(Error::McpResult)?,
+                        block
+                            .get_mut("resource")
+                            .ok_or(SendError::MalformedResult)?,
                         "reference",
                     )?,
                     _ => {}
@@ -103,20 +111,25 @@ impl McpResources {
         Ok(())
     }
 
-    fn replace_uri(&self, provider: &str, resource: &mut Value, field: &str) -> Result<(), Error> {
-        let object = resource.as_object_mut().ok_or(Error::McpResult)?;
-        let uri = object.remove("uri").ok_or(Error::McpResult)?;
+    fn replace_uri(
+        &self,
+        provider: &str,
+        resource: &mut Value,
+        field: &str,
+    ) -> Result<(), SendError> {
+        let object = resource.as_object_mut().ok_or(SendError::MalformedResult)?;
+        let uri = object.remove("uri").ok_or(SendError::MalformedResult)?;
         let uri = uri
             .as_str()
             .filter(|uri| !uri.is_empty())
-            .ok_or(Error::McpResult)?;
+            .ok_or(SendError::MalformedResult)?;
         object.insert(field.to_string(), self.insert(provider, uri)?);
         Ok(())
     }
 }
 
-fn invalid_reference() -> Error {
-    Error::InvalidArguments(
+fn invalid_reference() -> PlanError {
+    PlanError::InvalidArguments(
         "resource reference was not created by this Provider in this Run".to_string(),
     )
 }

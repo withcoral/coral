@@ -1,8 +1,7 @@
 //! Resource-specific Reef projection of Provider Setup and Publication. Domain
 //! Modules own authority, sealing, promotion, and the terminal transaction.
-use super::workspaces::{
-    annotate, change, invalid, page, page_start, safe_status, timestamp, workspace_id,
-};
+use super::status::{self, invalid, safe_status};
+use super::workspaces::{change, page, page_start, timestamp, workspace_id};
 use super::{GrpcServices, management as wire};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use coral_catalog::AuthenticationKind;
@@ -318,9 +317,12 @@ pub(super) fn error(value: domain::Error) -> Status {
         E::AccountConnectionDeclined => (Code::FailedPrecondition, "ACCOUNT_CONNECTION_DECLINED"),
         E::AccountConnectionExpired => (Code::FailedPrecondition, "ACCOUNT_CONNECTION_EXPIRED"),
         E::AccountAuthorizationChanged => (Code::Aborted, "ACCOUNT_CHANGED"),
+        // A fault inside Coral, which no change to the request corrects.
+        E::Internal(_) => (Code::Internal, "INTERNAL"),
         // Retrying can succeed: an upstream, worker, or storage dependency failed.
         // Name every variant so a new domain error needs an explicit wire decision.
         E::SetupPreparationUnavailable
+        | E::DeviceLeaseLost
         | E::CredentialRefreshFailed
         | E::OAuthTokenExchange(_)
         | E::Credentials(_)
@@ -377,9 +379,7 @@ impl GrpcServices {
     }
 
     pub(super) fn accounts(&self) -> Result<&domain::account::AccountModule, Status> {
-        self.accounts
-            .as_ref()
-            .ok_or_else(|| annotate(Status::unavailable("credential storage unavailable")))
+        self.accounts.as_ref().ok_or_else(status::unavailable)
     }
 
     /// Resolves one Provider through the scope's visibility; concealed ones are absent.
@@ -882,12 +882,12 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
             .provider_readiness
             .inspect_provider_readiness(&user, &workspace)
             .await
-            .map_err(readiness_error)?;
+            .map_err(search_error)?;
         let search_index = self
             .provider_readiness
             .inspect_search_index_states(&user, &workspace, None)
             .await
-            .map_err(readiness_error)?;
+            .map_err(search_error)?;
         let (inspections, next_page_token) = page(
             inspections,
             req.page_size,
@@ -1167,12 +1167,12 @@ impl GrpcServices {
             .provider_readiness
             .inspect_provider_readiness_for(actor, workspace, id)
             .await
-            .map_err(readiness_error)?;
+            .map_err(search_error)?;
         let search_index = self
             .provider_readiness
             .inspect_search_index_states(actor, workspace, Some(id))
             .await
-            .map_err(readiness_error)?;
+            .map_err(search_error)?;
         Ok(provider_view(
             &inspection.provider,
             &inspection.blockers,
@@ -1181,11 +1181,12 @@ impl GrpcServices {
     }
 }
 
-pub(super) fn readiness_error(failure: coral_search::Error) -> Status {
+pub(super) fn search_error(failure: coral_search::Error) -> Status {
     match failure {
         coral_search::Error::Workspace(inner) => super::workspaces::error(inner),
         coral_search::Error::Provider(inner) => error(inner),
         coral_search::Error::Policy(inner) => super::policies::error(inner),
+        coral_search::Error::Tools(inner) => super::authored_tools::error(inner),
         coral_search::Error::InvalidInput(_)
         | coral_search::Error::UnknownProviderCallRoot { .. }
         | coral_search::Error::TypesLimit
@@ -1199,9 +1200,9 @@ pub(super) fn readiness_error(failure: coral_search::Error) -> Status {
             safe_status(tonic::Code::NotFound, "NOT_FOUND")
         }
         // Retrying can succeed. Name every variant so a new one needs a wire decision.
-        coral_search::Error::ServiceUnavailable
-        | coral_search::Error::Tools(_)
-        | coral_search::Error::Database(_) => safe_status(tonic::Code::Unavailable, "UNAVAILABLE"),
+        coral_search::Error::ServiceUnavailable | coral_search::Error::Database(_) => {
+            safe_status(tonic::Code::Unavailable, "UNAVAILABLE")
+        }
     }
 }
 
@@ -1240,6 +1241,24 @@ mod tests {
                 Code::FailedPrecondition,
                 "ACCOUNT_REQUIRED",
             ),
+            (
+                E::AccountInput,
+                Code::InvalidArgument,
+                "INVALID_PROVIDER_INPUT",
+            ),
+            // Stored data that does not decode and a fault inside Coral are
+            // not the caller's input.
+            (
+                E::CorruptData("stored token does not decode".into()),
+                Code::Unavailable,
+                "UNAVAILABLE",
+            ),
+            (
+                E::Internal(coral_provider::InternalFault::Random),
+                Code::Internal,
+                "INTERNAL",
+            ),
+            (E::DeviceLeaseLost, Code::Unavailable, "UNAVAILABLE"),
             (
                 E::Workspace(coral_workspace::Error::WorkspaceArchived),
                 Code::FailedPrecondition,
@@ -1324,7 +1343,9 @@ mod tests {
             ),
             (E::ProviderNotFound, Code::NotFound, "NOT_FOUND"),
             (
-                E::Workspace(coral_workspace::Error::PermissionDenied("private detail")),
+                E::Workspace(coral_workspace::Error::PermissionDenied(
+                    coral_workspace::Denial::WorkspaceOwnerRequired,
+                )),
                 Code::PermissionDenied,
                 "PERMISSION_DENIED",
             ),
@@ -1416,7 +1437,7 @@ mod tests {
 
     /// Only failures that a retry can fix are reported as retryable.
     #[test]
-    fn readiness_errors_report_retryable_only_for_dependencies() {
+    fn search_errors_report_retryable_only_for_dependencies() {
         let cases = [
             (
                 coral_search::Error::InvalidInput("private detail".into()),
@@ -1446,6 +1467,20 @@ mod tests {
                 Code::NotFound,
                 "NOT_FOUND",
             ),
+            // A wrapped authored Tool error reports its own status, and is
+            // retryable only when that error is.
+            (
+                coral_search::Error::Tools(coral_tools::Error::PrivateToolExists),
+                Code::AlreadyExists,
+                "ALREADY_EXISTS",
+            ),
+            (
+                coral_search::Error::Tools(coral_tools::Error::Database(
+                    coral_db::Error::WriterBusy,
+                )),
+                Code::Unavailable,
+                "UNAVAILABLE",
+            ),
             (
                 coral_search::Error::ServiceUnavailable,
                 Code::Unavailable,
@@ -1454,7 +1489,7 @@ mod tests {
         ];
         for (failure, code, reason) in cases {
             let label = format!("{failure:?}");
-            let status = super::readiness_error(failure);
+            let status = super::search_error(failure);
             assert_eq!((status.code(), status.message()), (code, reason), "{label}");
         }
     }

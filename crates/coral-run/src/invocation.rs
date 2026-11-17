@@ -25,7 +25,10 @@ use coral_db::Transaction;
 use coral_policy::ToolAccessState;
 use coral_provider::{InvocationCaller, ResolvedInvocationTool};
 use coral_telemetry::{metric, safe};
-use coral_upstream::{McpRejection, McpResources, ReadyDispatch, UpstreamOutcome};
+use coral_upstream::{
+    AuthorizeError, McpRejection, McpResources, PlanError, ReadyDispatch, SendError,
+    UpstreamOutcome,
+};
 use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
 use tokio::sync::{oneshot, watch};
@@ -59,7 +62,75 @@ pub(crate) enum UpstreamSendError {
     /// The peer refused the request's authentication (HTTP 401 or 403).
     Unauthorized,
     Canceled,
-    Fatal(coral_upstream::Error),
+    Fatal(SendError),
+}
+
+/// What a failed send means for its Invocation.
+pub(crate) fn send_failure(error: SendError) -> UpstreamSendError {
+    // Name every variant so a new one needs a decision here.
+    match error {
+        SendError::DestinationRejected => UpstreamSendError::DestinationRejected,
+        SendError::InputTooLarge => UpstreamSendError::InputTooLarge,
+        SendError::ResultTooLarge => UpstreamSendError::TooLarge,
+        SendError::McpRejected(rejection) => UpstreamSendError::Rejected(rejection),
+        SendError::McpUnauthorized(_) | SendError::McpAuthenticationUnsupported => {
+            UpstreamSendError::Unauthorized
+        }
+        // No complete result that Coral can use arrived. Adapter state that
+        // broke during the send leaves none either.
+        SendError::Send(_)
+        | SendError::Body(_)
+        | SendError::McpRequest
+        | SendError::McpProtocolChanged
+        | SendError::MalformedResult
+        | SendError::Internal => UpstreamSendError::Incomplete,
+        // No Coral Failure names these, so they stop the Run.
+        defect @ (SendError::CredentialRequired
+        | SendError::CredentialUnusable
+        | SendError::EncodeJson(_)) => UpstreamSendError::Fatal(defect),
+    }
+}
+
+/// The Coral Failure that ends an Invocation whose request could not be
+/// planned, or the defect that stops its Run.
+pub(crate) fn plan_failure(error: PlanError) -> Result<Rejection, Error> {
+    // Name every variant so a new one needs a decision here.
+    match error {
+        PlanError::InputTooLarge => Ok(CoralFailure::InputTooLarge.into()),
+        PlanError::InvalidArguments(reason) => Ok(Rejection::invalid_input("", reason)),
+        PlanError::UnsupportedRequestMedia(_) => Ok(CoralFailure::InvalidInput.into()),
+        PlanError::ToolUnavailable => Ok(CoralFailure::ToolUnavailable.into()),
+        // A defect in the retained catalog or in Coral stops the Run.
+        defect @ (PlanError::UnsupportedProtocol
+        | PlanError::MissingServer
+        | PlanError::InvalidUrl(_)
+        | PlanError::MissingToolName
+        | PlanError::EncodeJson(_)
+        | PlanError::Internal) => Err(Error::Upstream(defect.into())),
+    }
+}
+
+/// The Coral Failure that ends an Invocation whose credential could not join
+/// its request, or the defect that stops its Run.
+pub(crate) fn authorize_failure(error: AuthorizeError) -> Error {
+    // Name every variant so a new one needs a decision here.
+    match error {
+        AuthorizeError::InputTooLarge => {
+            Error::InvocationRejected(CoralFailure::InputTooLarge.into())
+        }
+        AuthorizeError::CredentialRequired | AuthorizeError::CredentialUnusable => {
+            Error::InvocationRejected(CoralFailure::AccountRequired.into())
+        }
+        // The Provider's configuration sends its credential where the
+        // planned request already holds a value. No Account repairs that,
+        // and the Tool cannot be called until the configuration changes.
+        AuthorizeError::CredentialCollision => {
+            Error::InvocationRejected(CoralFailure::ToolUnavailable.into())
+        }
+        // Only a defect in Coral authorizes a dispatch twice. It stops the
+        // Run.
+        defect @ AuthorizeError::AlreadyAuthorized => Error::Upstream(defect.into()),
+    }
 }
 
 #[async_trait]
@@ -79,8 +150,8 @@ pub(crate) struct ProductionUpstream {
 impl ProductionUpstream {
     pub(crate) fn new(policy: coral_outbound::DestinationPolicy) -> Result<Self, Error> {
         Ok(Self {
-            http: coral_upstream::HttpUpstream::new(policy)?,
-            mcp: coral_upstream::McpUpstream::new(policy)?,
+            http: coral_upstream::HttpUpstream::new(policy).map_err(coral_upstream::Error::from)?,
+            mcp: coral_upstream::McpUpstream::new(policy).map_err(coral_upstream::Error::from)?,
         })
     }
 }
@@ -107,24 +178,7 @@ impl UpstreamSender for ProductionUpstream {
         };
         tokio::select! {
             biased;
-            outcome = send => outcome.map_err(|error| match error {
-                coral_upstream::Error::DestinationRejected => UpstreamSendError::DestinationRejected,
-                coral_upstream::Error::InputTooLarge => UpstreamSendError::InputTooLarge,
-                coral_upstream::Error::ResultTooLarge => UpstreamSendError::TooLarge,
-                coral_upstream::Error::McpRejected(rejection) => {
-                    UpstreamSendError::Rejected(rejection)
-                }
-                coral_upstream::Error::McpUnauthorized(_)
-                | coral_upstream::Error::McpAuthenticationUnsupported => {
-                    UpstreamSendError::Unauthorized
-                }
-                coral_upstream::Error::Send(_)
-                | coral_upstream::Error::Body(_)
-                | coral_upstream::Error::McpRequest
-                | coral_upstream::Error::McpProtocolChanged
-                | coral_upstream::Error::McpResult => UpstreamSendError::Incomplete,
-                private_defect => UpstreamSendError::Fatal(private_defect),
-            }),
+            outcome = send => outcome.map_err(send_failure),
             () = stop.requested() => Err(UpstreamSendError::Canceled),
         }
     }
@@ -571,20 +625,7 @@ impl ToolInvoker {
         let mut ready = match planned {
             Ok(ready) => ready,
             Err(error) => {
-                let failure: Rejection = match error {
-                    coral_upstream::Error::DestinationRejected => {
-                        CoralFailure::OutboundDestinationRejected.into()
-                    }
-                    coral_upstream::Error::InputTooLarge => CoralFailure::InputTooLarge.into(),
-                    coral_upstream::Error::InvalidArguments(reason) => {
-                        Rejection::invalid_input("", reason)
-                    }
-                    coral_upstream::Error::UnsupportedRequestMedia(_) => {
-                        CoralFailure::InvalidInput.into()
-                    }
-                    coral_upstream::Error::ToolUnavailable => CoralFailure::ToolUnavailable.into(),
-                    private_error => return Err(Error::Upstream(private_error).into()),
-                };
+                let failure = plan_failure(error)?;
                 return Err(self.finish_failure(&admitted, &progress, failure).await?);
             }
         };
@@ -648,7 +689,7 @@ impl ToolInvoker {
                     }
                     ready = self
                         .planned(&admitted, arguments, builtin)
-                        .map_err(Error::from)?;
+                        .map_err(|error| Error::Upstream(error.into()))?;
                 }
             }
         };
@@ -665,7 +706,7 @@ impl ToolInvoker {
         admitted: &AdmittedInvocation,
         arguments: &serde_json::Value,
         builtin: Option<&crate::builtin::BuiltinCall>,
-    ) -> Result<Dispatch, coral_upstream::Error> {
+    ) -> Result<Dispatch, PlanError> {
         let planned = step_span(&admitted.span, Step::Plan)
             .in_scope(|| self.dispatch(admitted, arguments, builtin))?;
         let protocol = match &planned {
@@ -866,7 +907,7 @@ impl ToolInvoker {
                     .await?);
             }
             Err(UpstreamSendError::Fatal(private_defect)) => {
-                return Err(Error::Upstream(private_defect).into());
+                return Err(Error::Upstream(private_defect.into()).into());
             }
             Err(UpstreamSendError::Incomplete) => {
                 return Err(self
@@ -943,7 +984,7 @@ impl ToolInvoker {
         admitted: &AdmittedInvocation,
         arguments: &serde_json::Value,
         builtin: Option<&crate::builtin::BuiltinCall>,
-    ) -> Result<Dispatch, coral_upstream::Error> {
+    ) -> Result<Dispatch, PlanError> {
         if let Some(call) = builtin {
             return Ok(Dispatch::Builtin(Box::new(call.clone())));
         }
@@ -1043,26 +1084,19 @@ impl ToolInvoker {
             Dispatch::Upstream(ReadyDispatch::Mcp(mcp)) => mcp.authorize(&secret),
             // Built-in and Private Tools have no Credential Route.
             Dispatch::Builtin(_) | Dispatch::Performed => {
-                Err(coral_upstream::Error::ToolUnavailable)
+                return Err(Error::InvocationRejected(
+                    CoralFailure::AccountRequired.into(),
+                ));
             }
         };
-        authorization.map_err(|error| {
-            Error::InvocationRejected(
-                if matches!(error, coral_upstream::Error::InputTooLarge) {
-                    CoralFailure::InputTooLarge
-                } else {
-                    CoralFailure::AccountRequired
-                }
-                .into(),
-            )
-        })
+        authorization.map_err(authorize_failure)
     }
 
     fn plan(
         &self,
         target: &ResolvedInvocationTool,
         arguments: &serde_json::Value,
-    ) -> Result<ReadyDispatch, coral_upstream::Error> {
+    ) -> Result<ReadyDispatch, PlanError> {
         ReadyDispatch::plan(
             target.tool(),
             target.schema_graph(),

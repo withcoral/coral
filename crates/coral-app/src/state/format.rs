@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use super::fs::{ensure_private_dir, write_atomic};
 use super::lock::lock_file_path;
 use super::{AppStateLayout, DatabaseConfig};
-use crate::bootstrap::AppError;
+use crate::bootstrap::{AppError, StateRefusal};
 
 const STATE_FORMAT_FILE_NAME: &str = "state-format";
 const CURRENT_STATE_FORMAT: &[u8] = b"coral-state-v1\n";
@@ -183,23 +183,23 @@ fn establish_current_marker(layout: &AppStateLayout) -> Result<(), AppError> {
 }
 
 fn pre_v1_state_error(layout: &AppStateLayout) -> AppError {
-    AppError::FailedPrecondition(format!(
-        "pre-v1 Coral state detected at '{}'; move or remove it before starting this version of Coral",
-        layout.config_dir().display()
-    ))
+    StateRefusal::PreV1Root {
+        path: layout.config_dir().to_path_buf(),
+    }
+    .into()
 }
 
 fn malformed_marker_error(layout: &AppStateLayout) -> AppError {
-    AppError::FailedPrecondition(format!(
-        "the Coral state format marker at '{}' is malformed; move or remove the state root before starting this version of Coral",
-        layout.config_dir().join(STATE_FORMAT_FILE_NAME).display()
-    ))
+    StateRefusal::MalformedRootMarker {
+        path: layout.config_dir().join(STATE_FORMAT_FILE_NAME),
+    }
+    .into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::validate_state_root;
-    use crate::bootstrap::AppError;
+    use crate::bootstrap::{AppError, StateRefusal};
     use crate::state::{AppStateLayout, LOCK_FILE_NAME};
 
     /// A runtime creates its lock file before it publishes the marker, so a
@@ -250,10 +250,10 @@ mod tests {
             if fresh {
                 assert!(result.is_ok(), "{case}: {result:?}");
             } else {
-                let Err(AppError::FailedPrecondition(detail)) = result else {
+                let Err(AppError::StateRefused(StateRefusal::PreV1Root { path })) = result else {
                     panic!("{case}: expected the pre-v1 rejection: {result:?}");
                 };
-                assert!(detail.contains("pre-v1"), "{case}: {detail}");
+                assert_eq!(path, temp.path(), "{case}");
             }
         }
     }
@@ -312,10 +312,10 @@ mod tests {
             if fresh {
                 assert!(result.is_ok(), "{case}: {result:?}");
             } else {
-                let Err(AppError::FailedPrecondition(detail)) = result else {
+                let Err(AppError::StateRefused(StateRefusal::PreV1Root { path })) = result else {
                     panic!("{case}: expected the pre-v1 rejection: {result:?}");
                 };
-                assert!(detail.contains("pre-v1"), "{case}: {detail}");
+                assert_eq!(path, temp.path(), "{case}");
             }
         }
     }

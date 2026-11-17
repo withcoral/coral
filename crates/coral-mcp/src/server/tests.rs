@@ -324,7 +324,7 @@ fn run_error_codes() -> Vec<(coral_run::Error, &'static str)> {
     vec![
         (Error::InvalidInput("bad".into()), "invalid_input"),
         (Error::RunNotFound, "run_not_found"),
-        (Error::ApprovalNotFound, internal),
+        (Error::ApprovalNotFound, "approval_not_found"),
         (
             Error::ProgramAdmission("bad".into()),
             "program_admission_failed",
@@ -501,17 +501,17 @@ fn search_error_codes() -> Vec<(coral_search::Error, &'static str, &'static str)
         (
             Error::Policy(coral_policy::Error::ToolNotFound),
             internal,
-            "search",
+            "policy",
         ),
         (
             Error::Tools(coral_tools::Error::PrivateToolExists),
             "private_tool_exists",
-            "search",
+            "tools",
         ),
         (
             Error::Tools(coral_tools::Error::Clock("bad".into())),
             internal,
-            "search",
+            "tools",
         ),
         (
             Error::Workspace(coral_workspace::Error::WorkspaceArchived),
@@ -570,6 +570,104 @@ fn each_domain_error_projects_one_code_and_a_message() {
                 .is_some_and(|message| !message.is_empty()),
             "{label}"
         );
+    }
+}
+
+/// Wraps a Workspace error as a Task error.
+type WrapWorkspaceError = fn(coral_workspace::Error) -> coral_task::Error;
+
+/// Every way a Task error wraps a Workspace error, with the modules it
+/// passes through.
+fn workspace_error_wrappers() -> [(WrapWorkspaceError, &'static str); 12] {
+    use coral_policy::Error as Policy;
+    use coral_provider::Error as Provider;
+    use coral_run::Error as Run;
+    use coral_search::Error as Search;
+    use coral_task::Error as Task;
+    use coral_tools::Error as Tools;
+    [
+        (Task::Workspace, "task"),
+        (|error| Task::Run(Run::Workspace(error)), "run"),
+        (
+            |error| Task::Run(Run::Provider(Provider::Workspace(error))),
+            "run provider",
+        ),
+        (
+            |error| Task::Run(Run::Policy(Policy::Workspace(error))),
+            "run policy",
+        ),
+        (
+            |error| Task::Run(Run::Policy(Policy::Provider(Provider::Workspace(error)))),
+            "run policy provider",
+        ),
+        (
+            |error| Task::Run(Run::Tools(Tools::Workspace(error))),
+            "run tools",
+        ),
+        (|error| Task::Tools(Tools::Workspace(error)), "tools"),
+        (|error| Task::Search(Search::Workspace(error)), "search"),
+        (
+            |error| Task::Search(Search::Provider(Provider::Workspace(error))),
+            "search provider",
+        ),
+        (
+            |error| Task::Search(Search::Policy(Policy::Workspace(error))),
+            "search policy",
+        ),
+        (
+            |error| Task::Search(Search::Policy(Policy::Provider(Provider::Workspace(error)))),
+            "search policy provider",
+        ),
+        (
+            |error| Task::Search(Search::Tools(Tools::Workspace(error))),
+            "search tools",
+        ),
+    ]
+}
+
+/// Catches: a Workspace refusal that reports another code or message, or
+/// `internal_error`, because of the module error that wrapped it.
+#[test]
+fn a_workspace_refusal_projects_one_code_and_message_through_every_wrapper() {
+    use coral_workspace::{AuthorityRefusal as Refusal, Error as Workspace};
+    let refusals: [(fn() -> Workspace, Refusal); 7] = [
+        (|| Workspace::WorkspaceNotFound, Refusal::WorkspaceNotFound),
+        (
+            || Workspace::PermissionDenied(coral_workspace::Denial::WorkspaceOwnerRequired),
+            Refusal::PermissionDenied,
+        ),
+        (|| Workspace::WorkspaceArchived, Refusal::WorkspaceArchived),
+        (|| Workspace::AgentNotFound, Refusal::AgentNotFound),
+        (|| Workspace::AgentDisabled, Refusal::AgentDisabled),
+        (
+            || Workspace::AgentRegistrationExpired,
+            Refusal::AgentRegistrationExpired,
+        ),
+        (
+            || Workspace::InvalidAgentCredential,
+            Refusal::InvalidAgentCredential,
+        ),
+    ];
+    for (wrap, wrapper) in workspace_error_wrappers() {
+        for (error, refusal) in refusals {
+            let label = format!("{wrapper} {refusal:?}");
+            let super::DispatchError::Tool(failure) = super::task_failure(wrap(error())) else {
+                panic!("{label}: a tool failure, not a protocol error");
+            };
+            let projected = crate::projection::failure(&failure, &TraceId::current_or_new())
+                .structured_content
+                .expect("structured failure");
+            assert_eq!(
+                projected.get("code").and_then(Value::as_str),
+                Some(refusal.code()),
+                "{label}"
+            );
+            assert_eq!(
+                projected.get("message").and_then(Value::as_str),
+                Some(refusal.message()),
+                "{label}"
+            );
+        }
     }
 }
 

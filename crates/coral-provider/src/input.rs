@@ -232,7 +232,7 @@ impl ProviderModule {
                 .await
                 {
                     Ok(snapshot) => snapshot,
-                    Err(coral_upstream::Error::McpUnauthorized(challenge)) => {
+                    Err(coral_upstream::McpDiscoveryError::Unauthorized(challenge)) => {
                         let challenge = challenge.unwrap_or_else(|| {
                             coral_upstream::BearerChallenge::from_parts(None, Vec::new())
                         });
@@ -262,15 +262,26 @@ impl ProviderModule {
                             )
                             .await;
                     }
-                    Err(coral_upstream::Error::McpAuthenticationUnsupported) => {
+                    Err(coral_upstream::McpDiscoveryError::AuthenticationUnsupported) => {
                         return Err(Error::AuthorizationDiscovery(
                             crate::account::AuthorizationDiscoveryFailure::ChallengeUnsupported,
                         ));
                     }
-                    Err(coral_upstream::Error::DestinationRejected) => {
+                    Err(coral_upstream::McpDiscoveryError::DestinationRejected) => {
                         return Err(Error::OutboundDestinationRejected);
                     }
-                    Err(_discovery) => return Err(Error::InputUnavailable),
+                    // Name every variant so a new one needs a decision here.
+                    Err(
+                        coral_upstream::McpDiscoveryError::Client(_)
+                        | coral_upstream::McpDiscoveryError::UnsupportedProtocol
+                        | coral_upstream::McpDiscoveryError::Request
+                        | coral_upstream::McpDiscoveryError::Deadline
+                        | coral_upstream::McpDiscoveryError::RequestTooLarge
+                        | coral_upstream::McpDiscoveryError::SnapshotTooLarge
+                        | coral_upstream::McpDiscoveryError::MalformedResult
+                        | coral_upstream::McpDiscoveryError::EncodeJson(_)
+                        | coral_upstream::McpDiscoveryError::Internal,
+                    ) => return Err(Error::InputUnavailable),
                 };
                 // Anonymous catalog access does not imply absent OAuth metadata for calls.
                 let hint = coral_upstream::BearerChallenge::from_parts(None, Vec::new());

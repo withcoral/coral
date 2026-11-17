@@ -7,18 +7,26 @@ use rmcp::transport::StreamableHttpClientTransport;
 use tempfile::TempDir;
 
 use super::{
-    LOCAL_OUTBOUND_DEFAULTS, Launch, RunningRuntime, ServeError, ServeErrorKind, ServerBuilder,
-    start_prepared, with_local_launch_defaults,
+    AuthServerError, LOCAL_OUTBOUND_DEFAULTS, Launch, McpStartError, RunningRuntime, RuntimeError,
+    ServerBuilder, start_prepared, with_local_launch_defaults,
 };
 
 const WEB: &str = "\n[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n";
 
-async fn start(builder: ServerBuilder) -> Result<RunningRuntime, ServeError> {
-    let builder = builder
-        .prepare()
-        .await
-        .map_err(|error| ServeError(Box::new(ServeErrorKind::Config(error))))?;
-    start_prepared(builder).await
+async fn start(builder: ServerBuilder) -> Result<RunningRuntime, RuntimeError> {
+    start_prepared(builder.prepare().await?).await
+}
+
+/// Whether `error` is the auth-support listener that could not bind
+/// `address`, after which the private listener stopped cleanly.
+fn auth_bind_refused(error: &RuntimeError, address: std::net::SocketAddr) -> bool {
+    matches!(
+        error,
+        RuntimeError::StartAuthSupport {
+            error: AuthServerError::Bind { address: refused, .. },
+            cleanup: None,
+        } if *refused == address
+    )
 }
 
 /// Writes an `[auth]` deployment, with its session signing key, into `dir`.
@@ -168,17 +176,14 @@ async fn configured_local_auth_bind_is_honored_without_enabling_oauth() {
                 panic!("configured auth bind was ignored");
             }
         };
-        assert!(
-            matches!(*error.0, ServeErrorKind::AuthSupportStart(_)),
-            "{error}"
-        );
+        assert!(auth_bind_refused(&error, address), "{error}");
         drop(occupied);
         match start(ServerBuilder::new().with_config_dir(temp.path())).await {
             Ok(server) => break (server, address),
             Err(error) => {
                 lost += 1;
                 assert!(
-                    matches!(*error.0, ServeErrorKind::AuthSupportStart(_)) && lost < ADDRESSES,
+                    auth_bind_refused(&error, address) && lost < ADDRESSES,
                     "{lost} of {ADDRESSES} released addresses: {error}"
                 );
             }
@@ -263,7 +268,16 @@ async fn mcp_bind_failure_aborts_startup_and_releases_the_private_listener() {
             panic!("MCP bind failure must not leave a successful gRPC-only runtime");
         }
     };
-    assert!(matches!(*error.0, ServeErrorKind::McpStart(_)), "{error}");
+    assert!(
+        matches!(
+            error,
+            RuntimeError::StartMcp {
+                error: McpStartError::Http(_),
+                cleanup: None
+            }
+        ),
+        "{error}"
+    );
     let rebound = std::net::TcpListener::bind(grpc_addr).expect("failed startup releases gRPC");
     drop(rebound);
     drop(occupied_mcp);

@@ -88,7 +88,7 @@ impl AccountModule {
         let authorization_expires_at = context
             .occurred_at_unix_nanos()
             .checked_add(SETUP_AUTHORIZATION_LIFETIME_NANOS)
-            .ok_or(Error::AccountInput)?;
+            .ok_or(Error::Internal(crate::InternalFault::Overflow))?;
         // Read the requirement and any retained registration, then bootstrap
         // outside the transaction: registration is a network call.
         let mut tx = self.providers.database.begin().await?;
@@ -296,7 +296,7 @@ impl AccountModule {
                 .await
         })
         .await
-        .map_err(|_error| Error::AccountInput)??;
+        .map_err(|_error| Error::Internal(crate::InternalFault::TaskStopped))??;
         Ok(SetupAuthorizationCompletion {
             owner,
             setup_id: id,
@@ -502,7 +502,7 @@ impl AccountModule {
         }
         let fingerprint = URL_SAFE_NO_PAD.encode(Sha256::digest(
             serde_json::to_vec(&(state, response.fingerprint_input()))
-                .map_err(|_error| Error::AccountInput)?,
+                .map_err(|_error| Error::Internal(crate::InternalFault::Encoding))?,
         ));
         let authorization_state = row.authorization_state;
         let flow = flow_of(self.providers.outbound_policy, &loaded);
@@ -855,7 +855,7 @@ impl AccountModule {
                 providers::save_setup_preview(&mut tx, owner, id, preview.as_deref()).await?;
                 LifecycleOutcome::Succeeded
             }
-            Err(coral_upstream::Error::McpUnauthorized(challenge)) => {
+            Err(coral_upstream::McpDiscoveryError::Unauthorized(challenge)) => {
                 // The credential does not satisfy the server. Record the raised
                 // request, scrub the credential, and require explicit new consent.
                 // The request is raised only to what the server named; a
@@ -917,10 +917,22 @@ impl AccountModule {
                 LifecycleOutcome::Failed
             }
             Err(error) => {
+                use coral_upstream::McpDiscoveryError as Discovery;
                 let code = match error {
-                    coral_upstream::Error::DestinationRejected => "outbound_destination_rejected",
-                    coral_upstream::Error::ResultTooLarge => "snapshot_too_large",
-                    _ => "discovery_unavailable",
+                    Discovery::DestinationRejected => "outbound_destination_rejected",
+                    Discovery::SnapshotTooLarge => "snapshot_too_large",
+                    // Name every variant so a new one needs a decision here.
+                    // The arm above records an authentication challenge.
+                    Discovery::Client(_)
+                    | Discovery::Unauthorized(_)
+                    | Discovery::AuthenticationUnsupported
+                    | Discovery::UnsupportedProtocol
+                    | Discovery::Request
+                    | Discovery::Deadline
+                    | Discovery::RequestTooLarge
+                    | Discovery::MalformedResult
+                    | Discovery::EncodeJson(_)
+                    | Discovery::Internal => "discovery_unavailable",
                 };
                 providers::set_setup_discovery_failure(&mut tx, owner, id, Some(code)).await?;
                 LifecycleOutcome::Failed

@@ -2,9 +2,9 @@
 //! each coral-tools failure, the diagnostic projection, and the Agent a
 //! request names as a Private Tool's owner.
 use super::management as wire;
-use super::workspaces::{
-    error as workspace_error, invalid, resource, safe_status, safe_status_with,
-};
+use super::resource;
+use super::status::{invalid, safe_status, safe_status_with};
+use super::workspaces::error as workspace_error;
 use coral_catalog::AuthoredToolKind::{Private, Shared};
 use coral_tools::{AuthoredToolDiagnostic, AuthoredToolDiagnosticCategory};
 use coral_workspace::{PrincipalId, WorkspaceId};

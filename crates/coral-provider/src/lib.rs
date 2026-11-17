@@ -85,7 +85,7 @@ pub use coral_catalog::{
     McpDiscoverySnapshot, OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, ProviderSetupInputDigest,
     ProviderSetupInputKind,
 };
-pub use error::Error;
+pub use error::{Error, InternalFault};
 pub mod history_repository;
 pub mod usage_repository;
 
@@ -1199,10 +1199,10 @@ fn require_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
     if evidence.effective_role() == WorkspaceRole::Owner {
         Ok(())
     } else {
-        Err(
-            coral_workspace::Error::PermissionDenied("Workspace Owner authority is required")
-                .into(),
+        Err(coral_workspace::Error::PermissionDenied(
+            coral_workspace::Denial::WorkspaceOwnerRequired,
         )
+        .into())
     }
 }
 

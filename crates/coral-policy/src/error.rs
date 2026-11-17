@@ -53,6 +53,25 @@ impl Error {
             | Self::EventFields(_) => None,
         }
     }
+
+    /// The Workspace refusal this error wraps, directly or through another
+    /// module's error. A refusal reads the same whichever module wrapped
+    /// it, so a caller reports it without naming that module's variants.
+    #[must_use]
+    pub const fn workspace_refusal(&self) -> Option<coral_workspace::AuthorityRefusal> {
+        match self {
+            Self::Workspace(error) => error.refusal(),
+            Self::Provider(error) => error.workspace_refusal(),
+            // Name every variant so a new one that wraps a Workspace error
+            // is found here.
+            Self::Database(_)
+            | Self::InvalidBatch
+            | Self::ToolNotFound
+            | Self::RefusedToolPaths { .. }
+            | Self::CorruptData(_)
+            | Self::EventFields(_) => None,
+        }
+    }
 }
 
 /// Names each kind of refused path that has any, such as
@@ -107,6 +126,33 @@ mod tests {
             Error::Provider(coral_provider::Error::ProviderNotFound),
         ] {
             assert!(error.database_error().is_none(), "{error:?}");
+        }
+    }
+
+    // Catches: a Workspace refusal that a caller of Policy cannot find
+    // because a Provider error holds it.
+    #[test]
+    fn a_policy_error_states_the_workspace_refusal_it_wraps() {
+        use coral_workspace::AuthorityRefusal as Refusal;
+        for (error, refusal) in [
+            (
+                Error::Workspace(coral_workspace::Error::WorkspaceArchived),
+                Some(Refusal::WorkspaceArchived),
+            ),
+            (
+                Error::Provider(coral_provider::Error::Workspace(
+                    coral_workspace::Error::AgentDisabled,
+                )),
+                Some(Refusal::AgentDisabled),
+            ),
+            (Error::Workspace(coral_workspace::Error::EtagMismatch), None),
+            (
+                Error::Provider(coral_provider::Error::ProviderNotFound),
+                None,
+            ),
+            (Error::ToolNotFound, None),
+        ] {
+            assert_eq!(error.workspace_refusal(), refusal, "{error:?}");
         }
     }
 }

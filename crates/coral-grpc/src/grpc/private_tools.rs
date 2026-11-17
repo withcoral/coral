@@ -1,5 +1,6 @@
 use super::authored_tools::{diagnostic, error, private_tool_agent};
-use super::workspaces::{annotate, invalid, next_after, page_request, timestamp, workspace_id};
+use super::status::invalid;
+use super::workspaces::{next_after, page_request, timestamp, workspace_id};
 use super::{GrpcServices, management as wire, now};
 use coral_tools::{PrivateTool, PrivateToolChangeContext, PrivateToolPath, PrivateToolSummary};
 use coral_workspace::{AuthenticatedPrincipal, TraceId};
@@ -90,7 +91,7 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
         let path = path(&input.path)?;
         let context = PrivateToolChangeContext::new(
             AuthenticatedPrincipal::user(user),
-            now().map_err(annotate)?,
+            now()?,
             TraceId::current_or_new(),
         );
         let agent = private_tool_agent(&input.agent, &w)?;

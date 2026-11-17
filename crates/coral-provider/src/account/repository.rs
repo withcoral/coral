@@ -34,7 +34,9 @@ impl TryFrom<String> for ConnectionState {
             "expired" => Ok(Self::Expired),
             "route_changed" => Ok(Self::RouteChanged),
             "authorization_changed" => Ok(Self::AuthorizationChanged),
-            _ => Err(Error::AccountInput),
+            _ => Err(Error::CorruptData(
+                "stored connection state is not known".into(),
+            )),
         }
     }
 }

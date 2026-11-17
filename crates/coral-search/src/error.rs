@@ -63,41 +63,51 @@ impl Error {
     #[must_use]
     pub const fn lost_workspace_authority(&self) -> bool {
         use coral_workspace::AuthorityRefusal as Refusal;
+        if matches!(self, Self::PermissionDenied(_)) {
+            return true;
+        }
+        match self.workspace_refusal() {
+            Some(
+                Refusal::WorkspaceNotFound
+                | Refusal::PermissionDenied
+                | Refusal::AgentNotFound
+                | Refusal::InvalidAgentCredential
+                | Refusal::AgentDisabled
+                | Refusal::AgentRegistrationExpired,
+            ) => true,
+            // An archived Workspace stays open to inspection.
+            Some(Refusal::WorkspaceArchived) | None => false,
+        }
+    }
+
+    /// The Workspace refusal this error wraps, directly or through another
+    /// module's error. A refusal reads the same whichever module wrapped
+    /// it, so a caller reports it without naming that module's variants.
+    #[must_use]
+    pub const fn workspace_refusal(&self) -> Option<coral_workspace::AuthorityRefusal> {
         match self {
-            Self::PermissionDenied(_) => true,
-            Self::Workspace(error) => match error.refusal() {
-                Some(
-                    Refusal::WorkspaceNotFound
-                    | Refusal::PermissionDenied
-                    | Refusal::AgentNotFound
-                    | Refusal::InvalidAgentCredential
-                    | Refusal::AgentDisabled
-                    | Refusal::AgentRegistrationExpired,
-                ) => true,
-                // An archived Workspace stays open to inspection.
-                Some(Refusal::WorkspaceArchived) | None => false,
-            },
-            // Name every variant so a new one needs a decision here.
+            Self::Workspace(error) => error.refusal(),
+            Self::Provider(error) => error.workspace_refusal(),
+            Self::Policy(error) => error.workspace_refusal(),
+            Self::Tools(error) => error.workspace_refusal(),
+            // Name every variant so a new one that wraps a Workspace error
+            // is found here.
             Self::InvalidInput(_)
             | Self::UnknownProviderCallRoot { .. }
             | Self::ServiceUnavailable
             | Self::AuthoringDescriptionNotFound
             | Self::TypesLimit
             | Self::UndeclaredTypes { .. }
-            | Self::Provider(_)
-            | Self::Policy(_)
-            | Self::Tools(_)
-            | Self::Database(_) => false,
+            | Self::PermissionDenied(_)
+            | Self::Database(_) => None,
         }
     }
 
     /// Returns a safe definite rejection, excluding uncertain persistence or host errors.
     #[must_use]
     pub fn safe_rejection(&self) -> Option<(&'static str, String)> {
-        if let Self::Workspace(error) = self {
-            return error
-                .safe_rejection()
-                .map(|(code, message)| (code, message.to_owned()));
+        if let Some(refusal) = self.workspace_refusal() {
+            return Some((refusal.code(), refusal.message().to_owned()));
         }
         if let Self::UnknownProviderCallRoot { searchable, .. } = self {
             return Some(("invalid_input", unknown_call_root_message(searchable)));

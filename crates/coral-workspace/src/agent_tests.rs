@@ -235,9 +235,26 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
         (Some(workspace.id()), workspace.id()),
         "the credential alone resolves its own Workspace, never another"
     );
+    // History is a User's to browse. An Agent is refused by name.
+    let mut snapshot = module.database.begin_read_snapshot().await.unwrap();
+    assert!(matches!(
+        module
+            .history_authority_in_transaction(
+                &mut snapshot,
+                &principal,
+                &crate::HistoryScope::Personal(None)
+            )
+            .await,
+        Err(Error::PermissionDenied(
+            crate::Denial::AgentsCannotBrowseHistory
+        ))
+    ));
+    drop(snapshot);
     assert!(matches!(
         module.list_agents(&member, workspace.id()).await,
-        Err(Error::PermissionDenied(_))
+        Err(Error::PermissionDenied(
+            crate::Denial::WorkspaceOwnerRequired
+        ))
     ));
     assert!(matches!(
         module

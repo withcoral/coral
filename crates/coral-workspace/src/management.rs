@@ -25,7 +25,7 @@ pub struct ResourceMetadata {
 pub(super) fn require_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
     if evidence.effective_role() != crate::WorkspaceRole::Owner {
         return Err(Error::PermissionDenied(
-            "Workspace Owner authority is required",
+            crate::Denial::WorkspaceOwnerRequired,
         ));
     }
     Ok(())

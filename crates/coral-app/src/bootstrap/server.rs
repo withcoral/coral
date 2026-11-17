@@ -556,10 +556,9 @@ fn search_model_delivery(
     }
     coral_outbound::Client::new(policy, super::search_model::CONNECT_TIMEOUT)
         .map(|client| Some(Delivery::coral(state_dir, client)))
-        .map_err(|_error| {
-            AppError::FailedPrecondition(
-                "search model download client initialization failed".into(),
-            )
+        .map_err(|source| AppError::HttpClient {
+            purpose: "search model download",
+            source,
         })
 }
 
@@ -573,8 +572,9 @@ fn release_check(
     }
     coral_outbound::Client::new(policy, coral_release::REQUEST_TIMEOUT)
         .map(|client| Some(coral_release::ReleaseCheck::coral(client)))
-        .map_err(|_error| {
-            AppError::FailedPrecondition("release check client initialization failed".into())
+        .map_err(|source| AppError::HttpClient {
+            purpose: "release check",
+            source,
         })
 }
 
@@ -594,9 +594,7 @@ async fn private_authentication(
             coral_workspace::TraceId::current_or_new(),
         ))
         .await
-        .map_err(|_error| {
-            AppError::FailedPrecondition("local authority initialization failed".to_owned())
-        })?;
+        .map_err(AppError::LocalAuthority)?;
     Ok(coral_auth::PrincipalAuthentication::local(
         coral_workspace::WorkspaceModule::new(database.clone()),
     ))
@@ -640,38 +638,44 @@ fn open_credential_vault(
     key_env: Option<&str>,
     key_path: &Path,
 ) -> Result<coral_credentials::CredentialVault, AppError> {
+    const KEY_ENV: &str = "credentials.key_env";
     let Some(key_env) = key_env else {
-        return coral_credentials::CredentialVault::open(key_path).map_err(|_error| {
-            AppError::FailedPrecondition("credential storage initialization failed".into())
-        });
+        return coral_credentials::CredentialVault::open(key_path).map_err(AppError::CredentialKey);
     };
     // Only a confirmed absence lets the secret stand in: an entry of any kind
     // is the conflict, and a path that cannot be inspected is not known to be
     // empty.
     match std::fs::symlink_metadata(key_path) {
         Ok(_entry) => {
-            return Err(AppError::FailedPrecondition(format!(
-                "credentials.key_env is configured but a key file exists at '{}'; encode that file's key into `{key_env}` and remove the file, or remove credentials.key_env",
-                key_path.display()
-            )));
+            return Err(AppError::config(
+                KEY_ENV,
+                format!(
+                    "{KEY_ENV} is configured but a key file exists at '{}'; encode that file's key into `{key_env}` and remove the file, or remove {KEY_ENV}",
+                    key_path.display()
+                ),
+            ));
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
-            return Err(AppError::FailedPrecondition(format!(
-                "credentials.key_env is configured but the key file path '{}' cannot be inspected: {error}",
-                key_path.display()
-            )));
+            return Err(AppError::config(
+                KEY_ENV,
+                format!(
+                    "{KEY_ENV} is configured but the key file path '{}' cannot be inspected: {error}",
+                    key_path.display()
+                ),
+            ));
         }
     }
-    let encoded = Zeroizing::new(AppEnvironment::required_env_var(
-        "credentials.key_env",
-        key_env,
-    )?);
+    let encoded = Zeroizing::new(AppEnvironment::required_env_var(KEY_ENV, key_env)?);
     coral_credentials::CredentialVault::from_encoded_key(&encoded).map_err(|_error| {
-        AppError::FailedPrecondition(format!(
-            "environment variable `{key_env}` must contain the standard base64 encoding of a {}-byte credential key",
-            coral_credentials::CredentialVault::KEY_LEN
-        ))
+        AppError::invalid_secret(
+            KEY_ENV,
+            key_env,
+            format!(
+                "environment variable `{key_env}` must contain the standard base64 encoding of a {}-byte credential key",
+                coral_credentials::CredentialVault::KEY_LEN
+            ),
+        )
     })
 }
 
@@ -888,7 +892,77 @@ fn start_grpc_server(
 mod tests {
     use tempfile::TempDir;
 
-    use super::{AppError, SHUTDOWN_GRACE_PERIOD, ServerBuilder, join_listeners};
+    use super::{
+        AppError, SHUTDOWN_GRACE_PERIOD, ServerBuilder, join_listeners, open_credential_vault,
+        private_authentication,
+    };
+
+    /// Catches: a start that says only that credential storage failed, so
+    /// the operator cannot tell a missing folder from a damaged key file.
+    #[test]
+    fn a_key_file_that_cannot_be_opened_reports_why() {
+        let temp = TempDir::new().unwrap();
+        let damaged = temp.path().join("damaged.key");
+        std::fs::write(&damaged, [7_u8; 8]).unwrap();
+        let no_folder = temp.path().join("absent").join("credentials.key");
+        let is_missing_folder: fn(&coral_credentials::Error) -> bool = |cause| {
+            matches!(cause, coral_credentials::Error::Io(error)
+                if error.kind() == std::io::ErrorKind::NotFound)
+        };
+        for (case, key_path, is_cause) in [
+            ("no folder for the key file", &no_folder, is_missing_folder),
+            ("a key file of the wrong length", &damaged, |cause| {
+                matches!(cause, coral_credentials::Error::InvalidKey)
+            }),
+        ] {
+            let Err(error) = open_credential_vault(None, key_path) else {
+                panic!("{case}: the vault must not open");
+            };
+            assert!(
+                matches!(&error, AppError::CredentialKey(cause) if is_cause(cause)),
+                "{case}: {error:?}"
+            );
+            let source = std::error::Error::source(&error).expect("the cause is the source");
+            assert!(
+                source
+                    .downcast_ref::<coral_credentials::Error>()
+                    .is_some_and(is_cause),
+                "{case}: {source}"
+            );
+        }
+        assert_eq!(std::fs::read(&damaged).unwrap(), [7_u8; 8]);
+    }
+
+    /// Catches: a start that says only that the local authority failed, with
+    /// the database's answer dropped.
+    #[tokio::test]
+    async fn a_refused_local_authority_write_reports_the_database_error() {
+        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
+            .await
+            .expect("apply current migrations");
+        fixture
+            .execute_fixture_sql(
+                "ALTER TABLE organization_authority_guard RENAME TO organization_authority_moved",
+            )
+            .await
+            .expect("move the table the login holds");
+
+        let Err(error) = private_authentication(None, &fixture.database()).await else {
+            panic!("the login cannot be provisioned without its table");
+        };
+
+        assert!(
+            matches!(&error, AppError::LocalAuthority(cause) if cause.database_error().is_some()),
+            "{error:?}"
+        );
+        let source = std::error::Error::source(&error).expect("the cause is the source");
+        assert!(
+            source
+                .downcast_ref::<coral_workspace::Error>()
+                .is_some_and(|cause| cause.database_error().is_some()),
+            "{source}"
+        );
+    }
 
     /// A connection that stays open does not hold the process up: the join
     /// gives up at the grace period and aborts the listener task.

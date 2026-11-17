@@ -65,7 +65,7 @@ impl InitializedState {
 ///
 /// # Errors
 ///
-/// Returns [`AppError::FailedPrecondition`] without mutation when either the
+/// Returns [`AppError::StateRefused`] without mutation when either the
 /// filesystem root or configured database contains unmarked or malformed
 /// state. Configuration failures are also returned without mutation. Returns
 /// [`AppError::StateLocked`] without mutation when another runtime holds the
@@ -232,8 +232,9 @@ mod tests {
             CONFIG,
             |_, _| Ok(coral_db::DatabaseOptions::Sqlite { path: database }),
             || {
-                Err::<((), coral_search::VectorStorage), _>(AppError::FailedPrecondition(
-                    "refused".into(),
+                Err::<((), coral_search::VectorStorage), _>(AppError::config(
+                    "listeners.web.public_url",
+                    "refused",
                 ))
             },
             &|_| {},
@@ -241,7 +242,10 @@ mod tests {
         .await;
 
         assert!(
-            matches!(&refused, Err(AppError::FailedPrecondition(message)) if message == "refused"),
+            matches!(
+                &refused,
+                Err(AppError::Config { setting, .. }) if setting == "listeners.web.public_url"
+            ),
             "{:?}",
             refused.as_ref().map(drop)
         );

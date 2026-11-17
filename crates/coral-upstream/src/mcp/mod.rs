@@ -35,8 +35,8 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use rmcp::{RoleClient, ServiceExt as _};
 use serde_json::{Value, json};
 
-use crate::Error;
 use crate::span_field::{self, Declared};
+use crate::{AuthorizeError, ClientError, McpDiscoveryError, PlanError, SendError};
 
 /// A validated, one-use request against an exact retained MCP binding.
 pub struct ReadyMcpDispatch {
@@ -61,28 +61,32 @@ impl ReadyMcpDispatch {
         provider: &str,
         resources: Arc<McpResources>,
         limits: coral_value::ValueLimits,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, PlanError> {
         if tool.availability() != ToolAvailability::Available {
-            return Err(Error::ToolUnavailable);
+            return Err(PlanError::ToolUnavailable);
         }
-        limits.validate(arguments).map_err(Error::invalid_value)?;
+        limits
+            .validate(arguments)
+            .map_err(PlanError::invalid_value)?;
         let ExecutionBinding::Mcp(binding) = tool.execution_binding() else {
-            return Err(Error::UnsupportedProtocol);
+            return Err(PlanError::UnsupportedProtocol);
         };
         let arguments = arguments
             .as_object()
-            .ok_or_else(|| Error::InvalidArguments("Tool arguments must be an object".to_string()))?
+            .ok_or_else(|| {
+                PlanError::InvalidArguments("Tool arguments must be an object".to_string())
+            })?
             .clone();
         let resource_uri = if binding.invocation_method() == McpInvocationMethod::ReadResource {
             if arguments.len() != 1 {
-                return Err(Error::InvalidArguments(
+                return Err(PlanError::InvalidArguments(
                     "resources.read requires only a reference".to_string(),
                 ));
             }
             Some(resources.resolve(
                 provider,
                 arguments.get("reference").ok_or_else(|| {
-                    Error::InvalidArguments("resources.read requires a reference".to_string())
+                    PlanError::InvalidArguments("resources.read requires a reference".to_string())
                 })?,
             )?)
         } else {
@@ -110,30 +114,34 @@ impl ReadyMcpDispatch {
     /// # Errors
     /// Rejects a credential-free contract, an HTTP-header contract, or a second
     /// credential for the same dispatch.
-    pub fn authorize(&mut self, values: &coral_credentials::CredentialValues) -> Result<(), Error> {
+    pub fn authorize(
+        &mut self,
+        values: &coral_credentials::CredentialValues,
+    ) -> Result<(), AuthorizeError> {
         let secret = values
             .get(coral_credentials::CredentialValues::TOKEN)
             .and_then(|token| coral_credentials::Secret::new(token.expose().to_owned()).ok())
-            .ok_or(Error::CredentialRequired)?;
-        if self.credential.is_some()
-            || !matches!(
-                self.binding.credential_contract().authentication(),
-                AuthenticationConfiguration::Bearer
-                    | AuthenticationConfiguration::OAuthAuthorizationCode { .. }
-                    | AuthenticationConfiguration::OAuthDeviceCode { .. }
-            )
-        {
-            return Err(Error::CredentialRequired);
+            .ok_or(AuthorizeError::CredentialRequired)?;
+        if self.credential.is_some() {
+            return Err(AuthorizeError::AlreadyAuthorized);
+        }
+        if !matches!(
+            self.binding.credential_contract().authentication(),
+            AuthenticationConfiguration::Bearer
+                | AuthenticationConfiguration::OAuthAuthorizationCode { .. }
+                | AuthenticationConfiguration::OAuthDeviceCode { .. }
+        ) {
+            return Err(AuthorizeError::CredentialRequired);
         }
         self.credential = Some(secret);
         Ok(())
     }
 
-    fn credential_header(&self) -> Result<Option<String>, Error> {
+    fn credential_header(&self) -> Result<Option<String>, SendError> {
         let required =
             self.binding.credential_contract() != &coral_catalog::ProviderCredentialContract::NONE;
         if required != self.credential.is_some() {
-            return Err(Error::CredentialRequired);
+            return Err(SendError::CredentialRequired);
         }
         Ok(self
             .credential
@@ -147,7 +155,7 @@ fn validate_request_size(
     arguments: &serde_json::Map<String, Value>,
     resource_uri: Option<&str>,
     maximum: usize,
-) -> Result<(), Error> {
+) -> Result<(), PlanError> {
     let (method, params) = if let Some(uri) = resource_uri {
         (
             "resources/read",
@@ -158,27 +166,30 @@ fn validate_request_size(
             "tools/call",
             serde_json::to_value(
                 CallToolRequestParams::new(
-                    binding.tool_name().ok_or(Error::McpResult)?.to_string(),
+                    binding
+                        .tool_name()
+                        .ok_or(PlanError::MissingToolName)?
+                        .to_string(),
                 )
                 .with_arguments(arguments.clone()),
             ),
         )
     };
-    let mut params = params.map_err(Error::EncodeJson)?;
+    let mut params = params.map_err(PlanError::EncodeJson)?;
     // Each dispatch initializes a fresh SDK session (request 0), then sends one
     // request (1) with its first progress token (0). The wire-boundary test pins
     // these SDK facts so dependency changes cannot silently undercount requests.
     params
         .as_object_mut()
-        .ok_or(Error::McpResult)?
+        .ok_or(PlanError::Internal)?
         .insert("_meta".to_string(), json!({"progressToken":0}));
     let request = json!({"jsonrpc":"2.0", "id":1, "method":method, "params":params});
     if serde_json::to_vec(&request)
-        .map_err(Error::EncodeJson)?
+        .map_err(PlanError::EncodeJson)?
         .len()
         > maximum
     {
-        return Err(Error::InputTooLarge);
+        return Err(PlanError::InputTooLarge);
     }
     Ok(())
 }
@@ -195,20 +206,20 @@ impl McpOutcome {
         mut data: Value,
         method: McpInvocationMethod,
         limits: coral_value::ValueLimits,
-    ) -> Result<Self, Error> {
-        let object = data.as_object_mut().ok_or(Error::McpResult)?;
+    ) -> Result<Self, SendError> {
+        let object = data.as_object_mut().ok_or(SendError::MalformedResult)?;
         let mut metadata = serde_json::Map::from_iter([("kind".to_string(), json!("mcp"))]);
         if let Some(meta) = object.remove("_meta") {
             metadata.insert("_meta".to_string(), meta);
         }
         let result = json!({"data": data, "metadata": metadata});
-        let encoded = serde_json::to_string(&result).map_err(Error::EncodeJson)?;
+        let encoded = serde_json::to_string(&result).map_err(SendError::EncodeJson)?;
         if encoded.len() > limits.upstream_bytes() {
-            return Err(Error::ResultTooLarge);
+            return Err(SendError::ResultTooLarge);
         }
         limits
             .validate_json(&encoded)
-            .map_err(Error::invalid_result)?;
+            .map_err(SendError::invalid_result)?;
         Ok(Self { result, method })
     }
 
@@ -238,7 +249,7 @@ async fn lists_tool(
     client: &RunningService<RoleClient, ClientConfig>,
     captured: &Mutex<Option<transport::Captured>>,
     name: &str,
-) -> Result<bool, Error> {
+) -> Result<bool, McpDiscoveryError> {
     let mut listed = false;
     discovery::visit_tool_pages(client, captured, |tools| {
         listed = tools
@@ -254,22 +265,24 @@ async fn lists_tool(
     Ok(listed)
 }
 
-fn request_failure(captured: &Mutex<Option<transport::Captured>>) -> Error {
+fn request_failure(captured: &Mutex<Option<transport::Captured>>) -> SendError {
     match captured
         .lock()
         .ok()
         .as_deref()
         .and_then(|slot| slot.as_ref())
     {
-        Some(transport::Captured::DestinationRejected) => Error::DestinationRejected,
-        Some(transport::Captured::InputTooLarge) => Error::InputTooLarge,
-        Some(transport::Captured::ResultTooLarge) => Error::ResultTooLarge,
-        Some(transport::Captured::AuthenticationUnsupported) => Error::McpAuthenticationUnsupported,
-        Some(transport::Captured::Unauthorized(challenge)) => {
-            Error::McpUnauthorized(challenge.clone())
+        Some(transport::Captured::DestinationRejected) => SendError::DestinationRejected,
+        Some(transport::Captured::InputTooLarge) => SendError::InputTooLarge,
+        Some(transport::Captured::ResultTooLarge) => SendError::ResultTooLarge,
+        Some(transport::Captured::AuthenticationUnsupported) => {
+            SendError::McpAuthenticationUnsupported
         }
-        Some(transport::Captured::Rejected(rejection)) => Error::McpRejected(*rejection),
-        _ => Error::McpRequest,
+        Some(transport::Captured::Unauthorized(challenge)) => {
+            SendError::McpUnauthorized(challenge.clone())
+        }
+        Some(transport::Captured::Rejected(rejection)) => SendError::McpRejected(*rejection),
+        _ => SendError::McpRequest,
     }
 }
 
@@ -283,7 +296,7 @@ impl McpUpstream {
     /// Builds a sender with the deployment-selected outbound policy.
     /// # Errors
     /// Returns an HTTP client initialization error.
-    pub fn new(policy: coral_outbound::DestinationPolicy) -> Result<Self, Error> {
+    pub fn new(policy: coral_outbound::DestinationPolicy) -> Result<Self, ClientError> {
         Ok(Self {
             client: crate::http_client(policy)?,
         })
@@ -293,7 +306,7 @@ impl McpUpstream {
     ///
     /// # Errors
     /// Returns an error when no complete bounded MCP result is available.
-    pub async fn send(&self, dispatch: ReadyMcpDispatch) -> Result<McpOutcome, Error> {
+    pub async fn send(&self, dispatch: ReadyMcpDispatch) -> Result<McpOutcome, SendError> {
         let span = client_span(&dispatch);
         let measure =
             crate::exchange::ExchangeMeasure::start(coral_telemetry::metric::ProviderProtocol::Mcp);
@@ -308,7 +321,7 @@ impl McpUpstream {
             }
             Ok(_) => {}
             // The JSON-RPC error code, as the MCP conventions name it.
-            Err(Error::McpRejected(rejection)) => coral_telemetry::record_failure(
+            Err(SendError::McpRejected(rejection)) => coral_telemetry::record_failure(
                 &span,
                 safe::json_rpc_code(match rejection {
                     McpRejection::InvalidParams | McpRejection::UnknownTool => -32602,
@@ -327,7 +340,7 @@ impl McpUpstream {
         dispatch: ReadyMcpDispatch,
         span: tracing::Span,
         bytes: Arc<crate::exchange::ExchangeBytes>,
-    ) -> Result<McpOutcome, Error> {
+    ) -> Result<McpOutcome, SendError> {
         let mut config = StreamableHttpClientTransportConfig::with_uri(
             dispatch.binding.server_url().to_string(),
         )
@@ -350,7 +363,7 @@ impl McpUpstream {
         );
         let mut info = ClientConfig::default();
         info.protocol_version = serde_json::from_value(json!(dispatch.binding.protocol_version()))
-            .map_err(|_invalid_version| Error::McpProtocolChanged)?;
+            .map_err(|_invalid_version| SendError::McpProtocolChanged)?;
         let client = info
             .serve(transport)
             .await
@@ -358,12 +371,13 @@ impl McpUpstream {
         if !client.peer_info().is_some_and(|info| {
             info.protocol_version.as_str() == dispatch.binding.protocol_version()
         }) {
-            return Err(Error::McpProtocolChanged);
+            return Err(SendError::McpProtocolChanged);
         }
         // The SDK's multi-round convenience API can repeat a tool call. Never use it here.
         let required_content = match dispatch.binding.invocation_method() {
             McpInvocationMethod::CallTool => {
-                let tool_name = dispatch.binding.tool_name().ok_or(Error::McpResult)?;
+                // A planned tool call names its tool.
+                let tool_name = dispatch.binding.tool_name().ok_or(SendError::Internal)?;
                 let call = client
                     .call_tool_once(
                         CallToolRequestParams::new(tool_name.to_string())
@@ -376,40 +390,41 @@ impl McpUpstream {
                         let error = request_error();
                         // MCP answers an unknown tool with the same code as invalid
                         // arguments. A listing that cannot be read keeps the peer's answer.
-                        if matches!(error, Error::McpRejected(McpRejection::InvalidParams))
+                        if matches!(error, SendError::McpRejected(McpRejection::InvalidParams))
                             && matches!(lists_tool(&client, &captured, tool_name).await, Ok(false))
                         {
-                            return Err(Error::McpRejected(McpRejection::UnknownTool));
+                            return Err(SendError::McpRejected(McpRejection::UnknownTool));
                         }
                         return Err(error);
                     }
                 };
                 if !matches!(response, CallToolResponse::Complete(_)) {
-                    return Err(Error::McpResult);
+                    return Err(SendError::MalformedResult);
                 }
                 "content"
             }
             McpInvocationMethod::ReadResource => {
                 let response = client
                     .read_resource_once(ReadResourceRequestParams::new(
-                        dispatch.resource_uri.ok_or(Error::McpResult)?,
+                        // A planned resource read holds its URI.
+                        dispatch.resource_uri.ok_or(SendError::Internal)?,
                     ))
                     .await
                     .map_err(|_request| request_error())?;
                 if !matches!(response, ReadResourceResponse::Complete(_)) {
-                    return Err(Error::McpResult);
+                    return Err(SendError::MalformedResult);
                 }
                 "contents"
             }
         };
         let mut data = captured
             .lock()
-            .map_err(|_poisoned| Error::McpResult)?
+            .map_err(|_poisoned| SendError::Internal)?
             .take()
-            .ok_or(Error::McpResult)?
+            .ok_or(SendError::MalformedResult)?
             .into_result()?;
         if !data.get(required_content).is_some_and(Value::is_array) {
-            return Err(Error::McpResult);
+            return Err(SendError::MalformedResult);
         }
         if dispatch.binding.invocation_method() == McpInvocationMethod::ReadResource
             && let Some(contents) = data.get("contents").and_then(Value::as_array)
@@ -418,7 +433,7 @@ impl McpUpstream {
                 dispatch
                     .limits
                     .validate_mcp_resource(resource)
-                    .map_err(Error::invalid_result)?;
+                    .map_err(SendError::invalid_result)?;
             }
         }
         dispatch.resources.project(

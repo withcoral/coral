@@ -1,8 +1,8 @@
 use super::authored_tools::{correctable, diagnostic, error, private_tool_agent};
 use super::policies::{access, access_state};
-use super::workspaces::{
-    annotate, invalid, next_after, page_request, resource, timestamp, workspace_id,
-};
+use super::resource;
+use super::status::invalid;
+use super::workspaces::{next_after, page_request, timestamp, workspace_id};
 use super::{GrpcServices, management as wire, now};
 use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, PrivateToolPath, SharedTool, SharedToolId,
@@ -261,7 +261,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         if !input.validate_only {
             publish = publish.approve(input.reviewed_declaration);
         }
-        let context = ChangeContext::new(user, now().map_err(annotate)?, TraceId::current_or_new());
+        let context = ChangeContext::new(user, now()?, TraceId::current_or_new());
         let published = self
             .shared_tool_workflow
             .publish(&context, &w, publish)
@@ -282,7 +282,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
         let path = path(&input.path)?;
-        let context = ChangeContext::new(user, now().map_err(annotate)?, TraceId::current_or_new());
+        let context = ChangeContext::new(user, now()?, TraceId::current_or_new());
         let removed = self
             .shared_tool_workflow
             .remove(&context, &w, &path, input.expected_revision)

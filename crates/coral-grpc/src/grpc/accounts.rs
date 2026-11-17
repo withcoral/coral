@@ -1,6 +1,7 @@
 //! Reef Account projection. Domains own authorization, transactions and lifecycle evidence.
 use super::providers::{error, parent, resource, scope};
-use super::workspaces::{change, invalid, timestamp};
+use super::status::invalid;
+use super::workspaces::{change, timestamp};
 use super::{GrpcServices, management as wire};
 use coral_provider::account::{self as domain, AccountScope};
 use coral_provider::{ManagementRequestId, ProviderId};
@@ -249,7 +250,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
             .provider_readiness
             .inspect_agent_providers(&user, &workspace, &agent)
             .await
-            .map_err(super::providers::readiness_error)?;
+            .map_err(super::providers::search_error)?;
         Ok(Response::new(wire::ListAgentProvidersResponse {
             providers: inspections.into_iter().map(agent_provider_view).collect(),
         }))

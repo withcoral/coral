@@ -48,14 +48,17 @@ impl AppEnvironment {
     pub(crate) fn required_env_var(setting: &str, name: &str) -> Result<String, AppError> {
         env_var(name)
             .map_err(|_not_unicode| {
-                AppError::FailedPrecondition(format!(
-                    "{setting} requires environment variable `{name}` to contain valid UTF-8"
-                ))
+                AppError::invalid_secret(
+                    setting,
+                    name,
+                    format!(
+                        "{setting} requires environment variable `{name}` to contain valid UTF-8"
+                    ),
+                )
             })?
-            .ok_or_else(|| {
-                AppError::FailedPrecondition(format!(
-                    "{setting} requires environment variable `{name}`"
-                ))
+            .ok_or_else(|| AppError::MissingSecret {
+                setting: setting.to_owned(),
+                variable: name.to_owned(),
             })
     }
 }

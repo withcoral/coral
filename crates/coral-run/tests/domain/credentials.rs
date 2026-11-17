@@ -979,6 +979,88 @@ async fn a_path_argument_cannot_send_shared_credentials_to_an_undeclared_endpoin
     server.verify().await;
 }
 
+/// A credential header that the planned request already holds is a fault in
+/// the Provider's configuration, not a missing account. The call fails as an
+/// unavailable Tool, the Program can catch that and go on, and nothing is
+/// sent.
+#[tokio::test]
+async fn a_credential_that_collides_with_the_planned_request_makes_the_tool_unavailable() {
+    let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
+    let mut fixture = TestModules::with_upstream(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        upstream.clone(),
+    )
+    .await;
+    let mut tool = fixture
+        .user_tool("user:credential-collision", "Credential collision")
+        .await;
+    // The request body plans the header that the credential is sent in.
+    let document = serde_json::json!({
+        "openapi":"3.1.0", "info":{"title":"Private weather","version":"1"},
+        "servers":[{"url":"https://upstream.example"}],
+        "paths":{"/forecast":{"post":{
+            "operationId":"getForecast",
+            "requestBody":{"content":{"application/json":{"schema":{"type":"object"}}}},
+            "responses":{"200":{"description":"Forecast"}}
+        }}}
+    });
+    let (_directory, accounts) = Box::pin(configure_authored_provider(
+        &fixture,
+        &mut tool,
+        &document,
+        coral_catalog::AuthenticationConfiguration::HeaderCredentials {
+            headers: std::collections::BTreeMap::from([(
+                "content-type".into(),
+                coral_catalog::HeaderBinding::Field {
+                    field: "api_key".into(),
+                    prefix: String::new(),
+                },
+            )]),
+        },
+        std::collections::BTreeMap::from([(
+            "api_key".to_string(),
+            coral_catalog::CredentialField {
+                label: "API key".into(),
+                description: String::new(),
+                sensitive: true,
+            },
+        )]),
+        coral_credentials::CredentialValues::new(std::collections::BTreeMap::from([(
+            "api_key".to_string(),
+            Secret::new("collision-canary".into()).unwrap(),
+        )]))
+        .unwrap(),
+    ))
+    .await;
+    fixture.runs = fixture.runs.with_accounts(accounts);
+    let accepted = fixture
+        .runs
+        .start(
+            &tool.principal,
+            &tool.workspace_id,
+            submission(
+                "try { await coral.providers.weather.getForecast({body: {}}); } catch (error) { return error.code; }",
+            ),
+        )
+        .await
+        .unwrap();
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &tool.principal,
+        &tool.workspace_id,
+        accepted.run_id(),
+    )
+    .await;
+    let Some(RunTerminalOutcome::Succeeded {
+        final_value: FinalValue::Present(value),
+    }) = terminal.terminal_outcome()
+    else {
+        panic!("the Program should catch the failure: {terminal:?}");
+    };
+    assert_eq!(value.as_json(), &serde_json::json!("tool_unavailable"));
+    assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[expect(
     clippy::too_many_lines,

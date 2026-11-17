@@ -1,3 +1,4 @@
+use super::status::{self, invalid, safe_status};
 use super::{GrpcServices, PrivateAudience, management as wire, now};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use coral_db::{PageKey, PageRequest, PageSize};
@@ -5,7 +6,6 @@ use coral_workspace::{
     AuthenticatedUser, ChangeContext, ResourceMetadata, TraceId, WorkspaceDisplayName,
     WorkspaceEvidence, WorkspaceId,
 };
-use prost::Message as _;
 use tonic::{Request, Response, Status};
 
 impl GrpcServices {
@@ -14,11 +14,10 @@ impl GrpcServices {
         request: &Request<T>,
     ) -> Result<AuthenticatedUser, Status> {
         self.principal(request, None, PrivateAudience::Reef)
-            .await
-            .map_err(annotate)?
+            .await?
             .authenticated_user()
             .cloned()
-            .ok_or_else(|| annotate(Status::unauthenticated("User required")))
+            .ok_or_else(status::unauthenticated)
     }
     async fn workspace_view(
         &self,
@@ -64,11 +63,7 @@ impl GrpcServices {
 }
 
 pub(super) fn change(user: AuthenticatedUser) -> Result<ChangeContext, Status> {
-    Ok(ChangeContext::new(
-        user,
-        now().map_err(annotate)?,
-        TraceId::current_or_new(),
-    ))
+    Ok(ChangeContext::new(user, now()?, TraceId::current_or_new()))
 }
 pub(super) fn workspace_id(name: &str) -> Result<WorkspaceId, Status> {
     let Some(id) = name.strip_prefix("workspaces/") else {
@@ -138,26 +133,6 @@ pub(super) fn mask(
     Ok(paths)
 }
 
-// Standard google.rpc.Status / ErrorInfo wire layout. The one domain error
-// text exported is the bounded text of a definite refusal, as metadata.
-#[derive(Clone, PartialEq, prost::Message)]
-struct RpcStatus {
-    #[prost(int32, tag = "1")]
-    code: i32,
-    #[prost(string, tag = "2")]
-    message: String,
-    #[prost(message, repeated, tag = "3")]
-    details: Vec<prost_types::Any>,
-}
-#[derive(Clone, PartialEq, prost::Message)]
-struct ErrorInfo {
-    #[prost(string, tag = "1")]
-    reason: String,
-    #[prost(string, tag = "2")]
-    domain: String,
-    #[prost(map = "string, string", tag = "3")]
-    metadata: std::collections::HashMap<String, String>,
-}
 #[expect(
     clippy::needless_pass_by_value,
     reason = "consumes domain failures in Result::map_err without exporting their text"
@@ -166,9 +141,10 @@ pub(super) fn error(error: coral_workspace::Error) -> Status {
     use coral_workspace::Error as E;
     let (code, reason) = match error {
         E::InvalidInput(_) => (tonic::Code::InvalidArgument, "INVALID_ARGUMENT"),
-        E::WorkspaceNotFound | E::MembershipNotFound | E::AgentNotFound => {
-            (tonic::Code::NotFound, "NOT_FOUND")
-        }
+        E::WorkspaceNotFound
+        | E::MembershipNotFound
+        | E::AgentNotFound
+        | E::OrganizationMembershipNotFound => (tonic::Code::NotFound, "NOT_FOUND"),
         E::PermissionDenied(_) => (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
         E::EtagMismatch | E::OrganizationAuthorityConflict => {
             (tonic::Code::Aborted, "ETAG_MISMATCH")
@@ -178,6 +154,10 @@ pub(super) fn error(error: coral_workspace::Error) -> Status {
         E::MembershipAlreadyExists => (tonic::Code::AlreadyExists, "MEMBERSHIP_ALREADY_EXISTS"),
         E::WorkspaceArchived => (tonic::Code::FailedPrecondition, "WORKSPACE_ARCHIVED"),
         E::LastWorkspaceOwner => (tonic::Code::FailedPrecondition, "LAST_WORKSPACE_OWNER"),
+        E::LastOrganizationOwner => (tonic::Code::FailedPrecondition, "LAST_ORGANIZATION_OWNER"),
+        E::MemberTargetNotEnabled => (tonic::Code::FailedPrecondition, "MEMBER_TARGET_NOT_ENABLED"),
+        // A defect in Coral, which no retry of the request corrects.
+        E::AccessRemovalMismatch => (tonic::Code::Internal, "INTERNAL"),
         E::OwnerTransferRequired => (tonic::Code::FailedPrecondition, "OWNER_TRANSFER_REQUIRED"),
         E::OwnerTargetNotEnabled => (tonic::Code::FailedPrecondition, "OWNER_TARGET_NOT_ENABLED"),
         E::WorkspaceAlreadyActive
@@ -195,81 +175,24 @@ pub(super) fn error(error: coral_workspace::Error) -> Status {
     safe_status(code, reason)
 }
 
+/// The status of one coral-administration failure. An error that wraps
+/// another module's reports what that error reports alone.
 pub(super) fn administration_error(error: coral_administration::Error) -> Status {
     use coral_administration::Error as E;
     match error {
         E::Workspace(error) => self::error(error),
+        E::Provider(error) => super::providers::error(error),
+        E::Tools(error) => super::authored_tools::error(error),
+        E::Policy(error) => super::policies::error(error),
         E::UndefinedSecretStore => {
             safe_status(tonic::Code::FailedPrecondition, "SECRET_STORE_NOT_DEFINED")
         }
-        E::Database(_) | E::Provider(_) | E::Tools(_) | E::Policy(_) | E::Auth(_) => {
-            safe_status(tonic::Code::Unavailable, "UNAVAILABLE")
-        }
+        // An auth error reaches the adapter only here, wrapped, when access
+        // removal fails to retire a Refresh Grant. The adapter has no mapper
+        // of its own for it.
+        E::Database(_) | E::Auth(_) => status::unavailable(),
     }
 }
-/// The one status for a request the adapter refuses as invalid. It does not
-/// say which rule the request broke: the client gets the stable reason alone.
-pub(super) fn invalid() -> Status {
-    safe_status(tonic::Code::InvalidArgument, "INVALID_ARGUMENT")
-}
-
-pub(super) fn resource<'a>(
-    name: &'a str,
-    collection: &str,
-) -> Result<(WorkspaceId, &'a str), Status> {
-    super::resource(name, collection).map_err(annotate)
-}
-
-pub(super) fn annotate(status: Status) -> Status {
-    if !status.details().is_empty() {
-        return status;
-    }
-    let reason = match status.code() {
-        tonic::Code::InvalidArgument => "INVALID_ARGUMENT",
-        tonic::Code::Unauthenticated => "UNAUTHENTICATED",
-        tonic::Code::PermissionDenied => "PERMISSION_DENIED",
-        tonic::Code::NotFound => "NOT_FOUND",
-        tonic::Code::Internal => "INTERNAL",
-        _ => "UNAVAILABLE",
-    };
-    safe_status(status.code(), reason)
-}
-
-pub(super) fn safe_status(code: tonic::Code, reason: &str) -> Status {
-    safe_status_with(code, reason, [])
-}
-
-/// A status whose `ErrorInfo` also carries `metadata`: safe values that the
-/// client acts on or shows. An error's text is not one, except the bounded
-/// text its domain returns for a definite refusal.
-pub(super) fn safe_status_with(
-    code: tonic::Code,
-    reason: &str,
-    metadata: impl IntoIterator<Item = (&'static str, String)>,
-) -> Status {
-    let detail = ErrorInfo {
-        reason: reason.into(),
-        domain: "coral.management".into(),
-        metadata: metadata
-            .into_iter()
-            .map(|(key, value)| (key.to_owned(), value))
-            .chain([(
-                "trace_id".to_owned(),
-                TraceId::current_or_new().as_str().to_owned(),
-            )])
-            .collect(),
-    };
-    let status = RpcStatus {
-        code: code as i32,
-        message: reason.into(),
-        details: vec![prost_types::Any {
-            type_url: "type.googleapis.com/google.rpc.ErrorInfo".into(),
-            value: detail.encode_to_vec(),
-        }],
-    };
-    Status::with_details(code, reason, status.encode_to_vec().into())
-}
-
 /// The size of the page a list request asks for: zero selects the default of
 /// 30, and a size over `limit`, or a continuation too long to be one, is
 /// refused.
@@ -366,10 +289,8 @@ pub(super) fn page_of<T>(
 
 /// Encodes the continuation after `after`, bound to `scope`, for [`page_start`].
 pub(super) fn page_token(scope: &str, after: &str) -> Result<String, Status> {
-    Ok(URL_SAFE_NO_PAD.encode(
-        serde_json::to_vec(&(scope, after))
-            .map_err(|_error| annotate(Status::internal("page encoding failed")))?,
-    ))
+    Ok(URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&(scope, after)).map_err(|_error| status::internal())?))
 }
 
 #[tonic::async_trait]
@@ -542,6 +463,43 @@ mod tests {
         assert_eq!(super::next_after::<PrivateToolPath>(None), "");
     }
 
+    /// Catches: a refusal that reads as retryable because an administration
+    /// error wraps the error that refuses.
+    #[test]
+    fn an_administration_error_reports_what_it_wraps() {
+        use coral_administration::Error as Administration;
+        let reported = |status: tonic::Status| (status.code(), status.message().to_owned());
+        let cases = [
+            (
+                Administration::Workspace(E::LastWorkspaceOwner),
+                super::error(E::LastWorkspaceOwner),
+            ),
+            (
+                Administration::Provider(coral_provider::Error::ProviderNotFound),
+                crate::grpc::providers::error(coral_provider::Error::ProviderNotFound),
+            ),
+            (
+                Administration::Tools(coral_tools::Error::PrivateToolExists),
+                crate::grpc::authored_tools::error(coral_tools::Error::PrivateToolExists),
+            ),
+            (
+                Administration::Policy(coral_policy::Error::ToolNotFound),
+                crate::grpc::policies::error(coral_policy::Error::ToolNotFound),
+            ),
+        ];
+        for (wrapped, alone) in cases {
+            let label = format!("{wrapped:?}");
+            let status = super::administration_error(wrapped);
+            assert_ne!(status.code(), Code::Unavailable, "{label}");
+            assert_eq!(reported(status), reported(alone), "{label}");
+        }
+        assert_eq!(
+            super::administration_error(Administration::Database(coral_db::Error::WriterBusy))
+                .code(),
+            Code::Unavailable
+        );
+    }
+
     /// Reef names these reasons in management forms (`apps/reef/app/lib/management.server.ts`).
     #[test]
     fn workspace_errors_keep_the_reasons_reef_explains() {
@@ -578,7 +536,23 @@ mod tests {
             ),
             (E::WorkspaceNotFound, Code::NotFound, "NOT_FOUND"),
             (
-                E::PermissionDenied("private detail"),
+                E::OrganizationMembershipNotFound,
+                Code::NotFound,
+                "NOT_FOUND",
+            ),
+            (
+                E::LastOrganizationOwner,
+                Code::FailedPrecondition,
+                "LAST_ORGANIZATION_OWNER",
+            ),
+            (
+                E::MemberTargetNotEnabled,
+                Code::FailedPrecondition,
+                "MEMBER_TARGET_NOT_ENABLED",
+            ),
+            (E::AccessRemovalMismatch, Code::Internal, "INTERNAL"),
+            (
+                E::PermissionDenied(coral_workspace::Denial::WorkspaceOwnerRequired),
                 Code::PermissionDenied,
                 "PERMISSION_DENIED",
             ),

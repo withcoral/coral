@@ -1,4 +1,5 @@
-use super::workspaces::{annotate, timestamp};
+use super::status;
+use super::workspaces::timestamp;
 use super::{GrpcServices, management as wire, now};
 use tonic::{Request, Response, Status};
 
@@ -31,19 +32,19 @@ fn view(view: coral_usage::UsageDataView) -> wire::UsageData {
 }
 
 fn error(error: &coral_usage::Error) -> Status {
-    annotate(match error {
-        coral_usage::Error::PermissionDenied => Status::permission_denied("permission denied"),
+    match error {
+        coral_usage::Error::PermissionDenied => status::permission_denied(),
         coral_usage::Error::Database(_)
         | coral_usage::Error::CorruptData(_)
-        | coral_usage::Error::Unavailable => Status::unavailable("usage data unavailable"),
-    })
+        | coral_usage::Error::Unavailable => status::unavailable(),
+    }
 }
 
 impl GrpcServices {
     fn usage(&self) -> Result<&coral_usage::UsageData, Status> {
         self.usage
             .as_ref()
-            .ok_or_else(|| annotate(Status::unimplemented("usage data is not available")))
+            .ok_or_else(|| status::safe_status(tonic::Code::Unimplemented, "UNIMPLEMENTED"))
     }
 }
 

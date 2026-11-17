@@ -22,9 +22,25 @@ pub enum Error {
     /// The Workspace is absent or concealed from this User.
     #[error("Workspace was not found")]
     WorkspaceNotFound,
-    /// The authenticated User cannot perform this action.
+    /// The caller cannot perform this action.
     #[error("permission denied: {0}")]
-    PermissionDenied(&'static str),
+    PermissionDenied(Denial),
+    /// The User a request names has no Organization Membership: none was
+    /// created, or it was removed. The caller's own missing Membership is a
+    /// [`Denial`], not this.
+    #[error("Organization Membership was not found")]
+    OrganizationMembershipNotFound,
+    /// Disabling, demoting or removing would leave the Organization with no
+    /// enabled Owner.
+    #[error("Organization must keep at least one enabled Owner; assign another Owner first")]
+    LastOrganizationOwner,
+    /// A Workspace Membership needs a current enabled Organization Membership.
+    #[error("a Workspace Member must have an enabled Organization Membership")]
+    MemberTargetNotEnabled,
+    /// Access-removal evidence was used in a transaction or change context
+    /// other than the one that prepared it. A caller defect, not a denial.
+    #[error("access removal belongs to another transaction or change context")]
+    AccessRemovalMismatch,
     /// An archived Workspace rejects this action.
     #[error("Workspace is archived; restore it before changing configuration or starting work")]
     WorkspaceArchived,
@@ -99,6 +115,10 @@ impl Error {
             | Self::LastWorkspaceOwner
             | Self::OwnerTransferRequired
             | Self::OwnerTargetNotEnabled
+            | Self::OrganizationMembershipNotFound
+            | Self::LastOrganizationOwner
+            | Self::MemberTargetNotEnabled
+            | Self::AccessRemovalMismatch
             | Self::CredentialGeneration
             | Self::CorruptData(_)
             | Self::Database(_)
@@ -129,6 +149,10 @@ impl Error {
             | Self::LastWorkspaceOwner
             | Self::OwnerTransferRequired
             | Self::OwnerTargetNotEnabled
+            | Self::OrganizationMembershipNotFound
+            | Self::LastOrganizationOwner
+            | Self::MemberTargetNotEnabled
+            | Self::AccessRemovalMismatch
             | Self::AgentNotFound
             | Self::AgentDisabled
             | Self::AgentRegistrationExpired
@@ -138,14 +162,35 @@ impl Error {
             | Self::EventFields(_) => None,
         }
     }
+}
 
-    /// Safe current-authority rejection, excluding host and persistence uncertainty.
-    #[must_use]
-    pub const fn safe_rejection(&self) -> Option<(&'static str, &'static str)> {
-        match self.refusal() {
-            Some(refusal) => Some((refusal.code(), refusal.message())),
-            None => None,
-        }
+/// Why Coral denies the caller an action. The set is closed, so code that
+/// means one reason names it, and never reads every denial as that reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Denial {
+    /// The caller has no Organization Membership: none was created, or it
+    /// was removed.
+    NoOrganizationMembership,
+    /// The caller's Organization Membership is disabled, where the action
+    /// needs an enabled one.
+    OrganizationMembershipRequired,
+    /// The action needs Workspace Owner authority.
+    WorkspaceOwnerRequired,
+    /// The action needs Organization Owner authority.
+    OrganizationOwnerRequired,
+    /// An Agent asked for history, which only a User browses.
+    AgentsCannotBrowseHistory,
+}
+
+impl std::fmt::Display for Denial {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::NoOrganizationMembership => "current Organization authority is unavailable",
+            Self::OrganizationMembershipRequired => "current Organization Membership is required",
+            Self::WorkspaceOwnerRequired => "Workspace Owner authority is required",
+            Self::OrganizationOwnerRequired => "Organization Owner authority is required",
+            Self::AgentsCannotBrowseHistory => "Agents cannot browse history",
+        })
     }
 }
 
@@ -220,7 +265,7 @@ impl AuthorityRefusal {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthorityRefusal, Error};
+    use super::{AuthorityRefusal, Denial, Error};
 
     // Catches: a refusal whose code or message changes under the clients
     // that read it, an error that starts or stops being a refusal, and a
@@ -235,7 +280,7 @@ mod tests {
                 "Workspace was not found",
             ),
             (
-                Error::PermissionDenied("Workspace Owner authority is required"),
+                Error::PermissionDenied(Denial::WorkspaceOwnerRequired),
                 AuthorityRefusal::PermissionDenied,
                 "permission_denied",
                 "Current authority does not permit this action",
@@ -278,7 +323,11 @@ mod tests {
                 "{error:?}"
             );
             assert_eq!(error.refusal(), Some(refusal), "{error:?}");
-            assert_eq!(error.safe_rejection(), Some((code, message)), "{error:?}");
+            assert_eq!(
+                (refusal.code(), refusal.message()),
+                (code, message),
+                "{error:?}"
+            );
             assert!(error.database_error().is_none(), "{error:?}");
         }
         for error in [
@@ -290,7 +339,6 @@ mod tests {
             Error::Database(coral_db::Error::WriterBusy),
         ] {
             assert_eq!(error.refusal(), None, "{error:?}");
-            assert_eq!(error.safe_rejection(), None, "{error:?}");
             assert_eq!(
                 error.database_error().is_some(),
                 matches!(error, Error::Database(_)),

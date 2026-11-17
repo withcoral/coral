@@ -128,7 +128,15 @@ pub(super) async fn hold_administration(tx: &mut Transaction<'_>) -> Result<(), 
 /// Holds the User's Organization authority row, removed or not, for the rest
 /// of the transaction. An unknown User holds nothing.
 pub(super) async fn hold_user(tx: &mut Transaction<'_>, user_id: &UserId) -> Result<(), Error> {
-    held_authority_row(tx, user_id).await.map(drop)
+    hold_user_row(tx, user_id).await.map(drop)
+}
+
+/// [`hold_user`], and whether there was a row to hold.
+pub(super) async fn hold_user_row(
+    tx: &mut Transaction<'_>,
+    user_id: &UserId,
+) -> Result<bool, Error> {
+    Ok(held_authority_row(tx, user_id).await?.is_some())
 }
 
 /// Holds the User's Organization authority row as [`hold_user`] does and
