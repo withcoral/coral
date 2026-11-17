@@ -52,12 +52,12 @@ async fn acceptance_records_its_coral_instance_and_a_taken_identifier_writes_not
 
     let mut transaction = database.begin().await.expect("transaction");
     assert!(
-        insert_record(&mut transaction, &run(taken, 10), &first)
+        insert_record(&mut transaction, &run(taken, 10), Some(&first))
             .await
             .expect("first insert")
     );
     assert!(
-        !insert_record(&mut transaction, &run(taken, 20), &second)
+        !insert_record(&mut transaction, &run(taken, 20), Some(&second))
             .await
             .expect("conflicting insert")
     );
@@ -65,7 +65,7 @@ async fn acceptance_records_its_coral_instance_and_a_taken_identifier_writes_not
         insert_record(
             &mut transaction,
             &run("random-big-business-store", 30),
-            &second
+            Some(&second)
         )
         .await
         .expect("fresh insert after the conflict")

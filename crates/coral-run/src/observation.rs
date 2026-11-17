@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use coral_db::{Database, Transaction};
+use coral_db::{ChangeSubscription, Database, Transaction};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 use crate::lifecycle::RunRecord;
@@ -226,4 +226,15 @@ pub(crate) fn validate_cursor(run_id: &RunId, observation: &RunObservation) -> R
         return Err(Error::InvalidInput("Run cursor is invalid".to_string()));
     }
     Ok(())
+}
+
+/// Returns once the change signal rings, or an outage of it begins (the
+/// next call then waits for its return); never without a subscription.
+pub(crate) async fn rung(changes: &mut Option<ChangeSubscription>) {
+    match changes {
+        Some(changes) => {
+            let _rang_or_lost = changes.changed().await;
+        }
+        None => std::future::pending().await,
+    }
 }

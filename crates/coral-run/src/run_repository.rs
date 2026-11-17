@@ -1,4 +1,4 @@
-//! Run record persistence. Children own the package, claim, Run Ledger,
+//! Run record persistence. Children own the package, claim, take, Run Ledger,
 //! termination, Event, Run Inbox, and retention statements; callers reach all of them
 //! through this module.
 
@@ -18,6 +18,7 @@ mod inbox;
 mod ledger;
 mod retention;
 mod run_row;
+mod take;
 mod termination;
 mod usage;
 
@@ -37,6 +38,7 @@ pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention_activity};
 use run_row::RunRow;
 pub(crate) use run_row::UndecodableRun;
+pub(crate) use take::{Claimed, Taker, any_waiting, take_oldest};
 pub(crate) use termination::{
     Takeover, finish_run, finish_termination, finish_unstarted_run, interrupt_run,
     request_termination,
@@ -76,6 +78,9 @@ enum ProgramRunRecords {
     AccumulatedOutputBytes,
     ChunkSequence,
     LastCommitAtUnixNanos,
+    TakenAtUnixNanos,
+    RunExecutorId,
+    RunExecutorKind,
 }
 
 /// Reads the Run row in one statement, outside any transaction and without

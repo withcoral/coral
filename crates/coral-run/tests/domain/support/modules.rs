@@ -781,6 +781,17 @@ impl TestModules {
         workspace_id: &coral_workspace::WorkspaceId,
         run_id: &crate::RunId,
     ) -> crate::lifecycle::RunRecord {
+        self.try_run_record(workspace_id, run_id)
+            .await
+            .expect("read the Run")
+    }
+
+    /// [`Self::run_record`], or the error its decode returns.
+    pub(crate) async fn try_run_record(
+        &self,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+    ) -> Result<crate::lifecycle::RunRecord, crate::Error> {
         let mut transaction = self
             .database
             .begin_read_snapshot()
@@ -791,11 +802,9 @@ impl TestModules {
             workspace_id,
             run_id,
         )
-        .await
-        .expect("read the Run")
-        .expect("Run exists");
-        transaction.commit().await.expect("end read snapshot");
-        run
+        .await;
+        transaction.rollback().await.expect("end read snapshot");
+        run.map(|run| run.expect("Run exists"))
     }
 
     /// Releases the Run's worker claim and its lease, as the previous
