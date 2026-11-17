@@ -1759,6 +1759,17 @@ fn undated(run: &crate::RunSummary) -> String {
     )
 }
 
+/// An Invocation summary without its duration, which is the time of its read.
+fn undated_invocation(call: &crate::InvocationSummary) -> String {
+    format!(
+        "{:?}",
+        crate::InvocationSummary {
+            duration: 0,
+            ..call.clone()
+        }
+    )
+}
+
 /// Catches: a read that sends a statement, or several, for each row of its
 /// page, so that a long page is many round trips inside one read snapshot;
 /// and a read of many rows that returns other rows, or another order, than
@@ -1937,16 +1948,7 @@ async fn a_long_page_sends_the_statements_of_a_short_one() {
             crate::history_repository::exact_invocation(&mut tx, workspace, &long, &call.id, now)
                 .await
                 .unwrap();
-        let undated = |call: &crate::InvocationSummary| {
-            format!(
-                "{:?}",
-                crate::InvocationSummary {
-                    duration: 0,
-                    ..call.clone()
-                }
-            )
-        };
-        assert_eq!(undated(call), undated(&alone));
+        assert_eq!(undated_invocation(call), undated_invocation(&alone));
     }
     tx.commit().await.unwrap();
 

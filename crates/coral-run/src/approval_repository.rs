@@ -201,10 +201,7 @@ pub(super) async fn details_for_run(
                     JoinType::InnerJoin,
                     Alias::new("tool_invocations"),
                     Alias::new("i"),
-                    col("i", "workspace_id")
-                        .eq(col("a", "workspace_id"))
-                        .and(col("i", "id").eq(col("a", "invocation_id")))
-                        .and(col("i", "run_id").eq(col("a", "run_id"))),
+                    own_invocation(),
                 )
                 .join_as(
                     JoinType::InnerJoin,
@@ -311,6 +308,16 @@ pub(super) async fn find_for_run_invocation(
     row.map(StoredApproval::try_from).transpose()
 }
 
+/// The Invocation `i` is the one the request `a` asks about: the same
+/// Workspace, the request's Invocation, and a call of the request's Run.
+fn own_invocation() -> SimpleExpr {
+    use coral_db::col;
+    col("a", "workspace_id")
+        .eq(col("i", "workspace_id"))
+        .and(col("a", "invocation_id").eq(col("i", "id")))
+        .and(col("a", "run_id").eq(col("i", "run_id")))
+}
+
 /// Complete pending-approval match for repository queries using `a` (approval)
 /// and `i` (Invocation). Queue existence, card pages and Run Updates share it.
 /// A request stays pending until its Run Owner records its expiry: readers
@@ -318,10 +325,7 @@ pub(super) async fn find_for_run_invocation(
 /// clock.
 pub(super) fn pending_invocation() -> SimpleExpr {
     use coral_db::col;
-    col("a", "workspace_id")
-        .eq(col("i", "workspace_id"))
-        .and(col("a", "invocation_id").eq(col("i", "id")))
-        .and(col("a", "run_id").eq(col("i", "run_id")))
+    own_invocation()
         .and(crate::history_repository::invocation_pending())
         .and(col("a", "state").eq(ApprovalState::Pending.storage()))
         .and(approval_required())

@@ -245,8 +245,9 @@ impl ApprovalModule {
     /// [`Self::list_for_run`] in the caller's read snapshot. One statement
     /// reads every request with its Invocation's target and labels. Whether
     /// a pending request still needs a decision is decided once for each
-    /// Tool the requests name, and an approver's name is read once for each
-    /// approver, so the read sends no statement for each request.
+    /// distinct [`PolicySubject`] of the pending requests, and an approver's
+    /// name is read once for each approver, so the read sends no statement
+    /// for each request.
     pub(crate) async fn list_for_run_in_transaction(
         &self,
         tx: &mut Transaction<'_>,
