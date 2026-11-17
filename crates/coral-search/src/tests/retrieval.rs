@@ -1110,6 +1110,89 @@ fn scoring_document() -> String {
     .to_string()
 }
 
+/// One Provider of `fills` Tools that each hold one form of `vorm` in
+/// their schema text, and of `readMany`, which holds eight forms there.
+fn exact_limit_document(fills: usize) -> String {
+    let parameter = |name: String, description: &str| {
+        serde_json::json!({
+            "name": name, "in": "query",
+            "schema": { "type": "string", "description": description }
+        })
+    };
+    let tool = |id: String, summary: String, parameters: Vec<serde_json::Value>| {
+        serde_json::json!({ "get": {
+            "operationId": id, "summary": summary, "parameters": parameters,
+            "responses": { "200": { "description": "OK" } }
+        } })
+    };
+    let mut paths = serde_json::Map::new();
+    for index in 0..fills {
+        paths.insert(
+            format!("/fill{index}"),
+            tool(
+                format!("fill{index}"),
+                format!("Tracer {index}"),
+                vec![parameter("note".to_string(), "Vormy.")],
+            ),
+        );
+    }
+    let forms = [
+        "Vorm.", "Vorms.", "Vormed.", "Vorming.", "Vormer.", "Vormish.", "Vormal.", "Vormly.",
+    ];
+    paths.insert(
+        "/many".to_string(),
+        tool(
+            "readMany".to_string(),
+            "Tracer many".to_string(),
+            forms
+                .iter()
+                .enumerate()
+                .map(|(index, form)| parameter(format!("note{index}"), form))
+                .collect(),
+        ),
+    );
+    serde_json::json!({
+        "openapi": "3.1.0",
+        "info": { "title": "Zentro", "version": "1.0.0" },
+        "servers": [{ "url": "https://zentro.example" }],
+        "security": [],
+        "paths": paths,
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn postgres_orders_by_the_exact_score_only_the_best_thousand_by_estimate() {
+    coral_test_support::database_only!(Postgres);
+    // The exact score counts every form of `vorm` in schema text, so
+    // `readMany`'s is the best. The estimate counts one form there, and the
+    // longer text of `readMany` puts it below every `fill` Tool. Among the
+    // best 1,000 by estimate the exact score decides; past them a Tool
+    // stays off the page.
+    for (fills, many_first) in [(1, true), (1_000, false)] {
+        let (modules, principal, workspace) =
+            published(&exact_limit_document(fills), "zentro").await;
+        let page = search_page(&modules, &principal, &workspace, "vorm").await;
+        let ranked = paths(&page);
+        let many = "coral.providers.zentro.readMany";
+        if many_first {
+            assert_eq!(
+                ranked,
+                [many, "coral.providers.zentro.fill0"],
+                "{fills} fill Tools"
+            );
+        } else {
+            assert!(
+                ranked
+                    .first()
+                    .is_some_and(|path| path.starts_with("coral.providers.zentro.fill")),
+                "{fills} fill Tools: {ranked:?}"
+            );
+            assert!(!ranked.contains(&many), "{fills} fill Tools: {ranked:?}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn name_and_body_score_apart_and_postgres_splits_camel_case_names() {
     let (modules, principal, workspace) = published(&scoring_document(), "zentro").await;

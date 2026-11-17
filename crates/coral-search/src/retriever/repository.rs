@@ -606,9 +606,24 @@ async fn rank(
     }
 }
 
+/// How many candidates the Postgres statement scores exactly: the best by
+/// phrase points, a named Provider and the estimate. The estimate is cheap
+/// and the exact score is not, so a large Workspace's statement spends its
+/// time on these alone. A candidate past them takes no place in the window.
+const EXACT_SCORE_LIMIT: usize = 1_000;
+
 /// Candidates by prefix `tsquery` over the spellings, or by substring over
 /// `all_text`, in a `MATERIALIZED` CTE so the planner keeps the index scans
-/// apart from the score. Then the approximate BM25 of the reference
+/// apart from the score. Then two stages.
+///
+/// The first estimates every candidate's score from its name, title,
+/// description and Provider name, and from whether its schema text holds
+/// each spelling, and keeps the best [`EXACT_SCORE_LIMIT`] of them, or the
+/// window if that is larger, in the final order with the estimate in place
+/// of the score. The estimate is the score with each spelling's schema text
+/// counted once, so it is never above the score.
+///
+/// The second gives those candidates the approximate BM25 of the reference
 /// implementation, with two caps per spelling: the field-weighted frequency
 /// of every lexeme it prefix-matches in the name and the title (name 8,
 /// title 6), and in the body (description and Provider name 2, schema text
@@ -631,22 +646,38 @@ async fn rank_postgres(
     let mut binds = Binds::new(DatabaseSystem::Postgres);
     let conditions = scope.sql(&mut binds);
     let matches = postgres_candidates(&mut binds, plan, &scoring);
-    let score_sql = postgres_score(&mut binds, &scoring);
+    let estimate_sql = postgres_score(&mut binds, &scoring, Reading::Estimate);
     let columns = ranked_columns(&mut binds, "c", plan);
+    let estimated_named = scope.named_key(&mut binds, "c");
+    let exact_limit = binds.push(limit_value(limit.max(EXACT_SCORE_LIMIT)));
+    let score_sql = postgres_score(&mut binds, &scoring, Reading::Exact);
     let named = scope.named_key(&mut binds, "c");
     let limit = binds.push(limit_value(limit));
     let sql = format!(
         "WITH candidates AS MATERIALIZED ( \
              SELECT d.doc_id, d.call_path, d.provider_id, d.tool_key, d.authored_tool_id, \
-                    d.qualified_name, d.title, d.description, d.provider_name, d.tsv, d.tsv_length \
+                    d.qualified_name, d.title, d.description, d.provider_name, d.tsv, d.tsv_length, \
+                    ts_filter(d.tsv, '{{a,b,c}}') AS fields \
              FROM search_entities AS d \
              WHERE {conditions} AND ({matches}) \
+         ), \
+         estimated AS MATERIALIZED ( \
+             SELECT {columns}, c.tsv, c.tsv_length \
+             FROM candidates AS c \
+             CROSS JOIN LATERAL ({estimate_sql}) AS s \
+             ORDER BY \
+                 phrase_points DESC, \
+                 {estimated_named}s.score DESC, \
+                 c.call_path COLLATE \"C\" ASC, \
+                 c.doc_id COLLATE \"C\" ASC \
+             LIMIT {exact_limit} \
          ) \
-         SELECT {columns} \
-         FROM candidates AS c \
+         SELECT c.doc_id, c.call_path, c.provider_id, c.tool_key, c.authored_tool_id, \
+                c.qualified_name, c.title, c.phrase_points \
+         FROM estimated AS c \
          CROSS JOIN LATERAL ({score_sql}) AS s \
          ORDER BY \
-             phrase_points DESC, \
+             c.phrase_points DESC, \
              {named}s.score DESC, \
              c.call_path COLLATE \"C\" ASC, \
              c.doc_id COLLATE \"C\" ASC \
@@ -696,7 +727,12 @@ fn postgres_candidates(binds: &mut Binds, plan: &QueryPlan, scoring: &ScoringPla
 /// of a word in it come near the value of one name match.
 /// The vector splits camelCase names, so `comments` meets the name word of
 /// `listComments`.
-fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan) -> String {
+///
+/// The estimate reads the same weights from `c.fields`, the vector without
+/// schema text, and adds a spelling's schema-text weight once when
+/// `c.tsv` holds it there, however many lexemes it prefix-matches. Schema
+/// text holds most of a row's lexemes, so the estimate unnests far fewer.
+fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan, reading: Reading) -> String {
     if scoring.words.is_empty() {
         return "SELECT 0::float8 AS score".to_string();
     }
@@ -711,8 +747,15 @@ fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan) -> String {
                 .map(move |spelling| (position, spelling))
         })
         .map(|(position, spelling)| {
+            let schema_text = match reading {
+                Reading::Exact => String::new(),
+                Reading::Estimate => format!(
+                    ", {}::tsquery",
+                    binds.push(schema_text_prefix_query(&spelling.word))
+                ),
+            };
             format!(
-                "({}::int, {}::text, {}::float8)",
+                "({}::int, {}::text, {}::float8{schema_text})",
                 binds.push(i32::try_from(position).unwrap_or(i32::MAX)),
                 binds.push(prefix_pattern(&spelling.word)),
                 binds.push(spelling.idf)
@@ -726,15 +769,28 @@ fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan) -> String {
              / ({f} + 1.2 * (1 - 0.4 + 0.4 * c.tsv_length::float8 / {avgdl}))"
         )
     };
+    let (columns, lexemes, body_weights) = match reading {
+        Reading::Exact => (
+            "word_position, pattern, idf",
+            "c.tsv",
+            "coalesce(sum(CASE w WHEN 'C' THEN 2::float8 WHEN 'D' THEN 0.25 ELSE 0 END), 0)",
+        ),
+        Reading::Estimate => (
+            "word_position, pattern, idf, schema_text",
+            "c.fields",
+            "coalesce(sum(CASE w WHEN 'C' THEN 2::float8 ELSE 0 END), 0) \
+             + CASE WHEN c.tsv @@ q.schema_text THEN 0.25 ELSE 0 END",
+        ),
+    };
     format!(
         "SELECT coalesce(sum(b.best), 0)::float8 AS score FROM ( \
              SELECT max({name_group} + {body_group}) AS best \
-             FROM (VALUES {spellings}) AS q(word_position, pattern, idf) \
+             FROM (VALUES {spellings}) AS q({columns}) \
              CROSS JOIN LATERAL ( \
                  SELECT \
                      coalesce(sum(CASE w WHEN 'A' THEN 8::float8 WHEN 'B' THEN 6 ELSE 0 END), 0) AS name_group, \
-                     coalesce(sum(CASE w WHEN 'C' THEN 2::float8 WHEN 'D' THEN 0.25 ELSE 0 END), 0) AS body_group \
-                 FROM unnest(c.tsv) AS u(lexeme, positions, weights) \
+                     {body_weights} AS body_group \
+                 FROM unnest({lexemes}) AS u(lexeme, positions, weights) \
                  CROSS JOIN LATERAL unnest(u.weights) AS w \
                  WHERE u.lexeme LIKE q.pattern \
              ) AS tf \
@@ -743,6 +799,30 @@ fn postgres_score(binds: &mut Binds, scoring: &ScoringPlan) -> String {
         name_group = saturation("tf.name_group"),
         body_group = saturation("tf.body_group"),
     )
+}
+
+/// Which score a statement computes: the exact one, or the first stage's
+/// estimate of it.
+#[derive(Clone, Copy)]
+enum Reading {
+    Exact,
+    Estimate,
+}
+
+/// The `tsquery` that holds when a vector's schema text (weight `D`) holds a
+/// lexeme that starts with `word`: the word quoted, so the parser leaves it
+/// whole, as the score's `LIKE` does.
+fn schema_text_prefix_query(word: &str) -> String {
+    let mut quoted = String::with_capacity(word.len() + 6);
+    quoted.push('\'');
+    for character in word.chars() {
+        if matches!(character, '\'' | '\\') {
+            quoted.push('\\');
+        }
+        quoted.push(character);
+    }
+    quoted.push_str("':*D");
+    quoted
 }
 
 /// An FTS5 `MATCH` over every term of three or more characters as a quoted
