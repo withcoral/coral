@@ -1,8 +1,7 @@
 //! Resource-specific Reef projection of Provider Setup and Publication. Domain
 //! Modules own authority, sealing, promotion, and the terminal transaction.
-use super::workspaces::{
-    annotate, change, invalid, page, page_start, safe_status, timestamp, workspace_id,
-};
+use super::status::{self, invalid, safe_status};
+use super::workspaces::{change, page, page_start, timestamp, workspace_id};
 use super::{GrpcServices, management as wire};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use coral_catalog::AuthenticationKind;
@@ -377,9 +376,7 @@ impl GrpcServices {
     }
 
     pub(super) fn accounts(&self) -> Result<&domain::account::AccountModule, Status> {
-        self.accounts
-            .as_ref()
-            .ok_or_else(|| annotate(Status::unavailable("credential storage unavailable")))
+        self.accounts.as_ref().ok_or_else(status::unavailable)
     }
 
     /// Resolves one Provider through the scope's visibility; concealed ones are absent.

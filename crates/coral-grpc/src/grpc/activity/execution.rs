@@ -2,6 +2,7 @@ use super::{
     GrpcServices, PrivateAudience, Request, Response, Status, WorkspaceId, error, limit, resource,
     wire,
 };
+use crate::grpc::status;
 use coral_run::InvocationStatus;
 
 #[expect(
@@ -10,28 +11,27 @@ use coral_run::InvocationStatus;
 )]
 pub(super) fn run_error(error: coral_run::Error) -> Status {
     match error {
-        coral_run::Error::RunNotFound | coral_run::Error::ApprovalNotFound => {
-            Status::not_found("history unavailable")
-        }
-        coral_run::Error::InvalidInput(_) => Status::invalid_argument("invalid history query"),
+        coral_run::Error::RunNotFound | coral_run::Error::ApprovalNotFound => status::not_found(),
+        coral_run::Error::InvalidInput(_) => status::invalid(),
         coral_run::Error::PermissionDenied(_)
         | coral_run::Error::Workspace(coral_workspace::Error::PermissionDenied(_)) => {
-            Status::permission_denied("history unavailable")
+            status::permission_denied()
         }
         // The Run Owner stopped before it answered the request: the outcome
         // may be recorded already, and the record read again says.
         coral_run::Error::OwnerLost => {
-            Status::aborted("request outcome unknown; read the run again")
+            status::safe_status(tonic::Code::Aborted, "RUN_OUTCOME_UNKNOWN")
         }
         // The request waits in the Run Inbox and its owner has not recorded
         // it yet. Retryable: a retry reads what was recorded meanwhile.
-        coral_run::Error::RunRequestNotYetRecorded => super::super::workspaces::safe_status(
-            tonic::Code::Unavailable,
-            "RUN_REQUEST_NOT_YET_RECORDED",
-        ),
+        coral_run::Error::RunRequestNotYetRecorded => {
+            status::safe_status(tonic::Code::Unavailable, "RUN_REQUEST_NOT_YET_RECORDED")
+        }
         // The process is shutting down and accepts no new Run; another
         // process takes the request.
-        coral_run::Error::ShuttingDown => Status::unavailable("server is shutting down; retry"),
+        coral_run::Error::ShuttingDown => {
+            status::safe_status(tonic::Code::Unavailable, "SHUTTING_DOWN")
+        }
         // Name every remaining variant so a new domain error needs an explicit wire decision.
         coral_run::Error::ProgramAdmission(_)
         | coral_run::Error::Tools(_)
@@ -58,7 +58,7 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         | coral_run::Error::Upstream(_)
         | coral_run::Error::Workspace(_)
         | coral_run::Error::CorruptData(_)
-        | coral_run::Error::Database(_) => Status::unavailable("history unavailable"),
+        | coral_run::Error::Database(_) => status::unavailable(),
     }
 }
 pub(super) fn state(value: coral_run::RunState) -> i32 {
@@ -487,7 +487,7 @@ pub(super) async fn inspect_run(
     } else {
         let (selected_workspace, id) = resource(&input.account_connection, "accountConnections")?;
         let id = coral_provider::account::ConnectionRequestId::parse(id)
-            .map_err(|_invalid| Status::invalid_argument("invalid account connection name"))?;
+            .map_err(|_invalid| status::invalid())?;
         (selected_workspace == workspace).then_some(id)
     };
     let history = services

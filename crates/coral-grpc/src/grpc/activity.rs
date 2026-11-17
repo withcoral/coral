@@ -1,5 +1,6 @@
 mod execution;
 mod tree;
+use super::status;
 use super::{GrpcServices, management as wire, resource};
 use coral_auth::PrivateAudience;
 use coral_run::approval::ApprovalState as S;
@@ -26,14 +27,16 @@ fn error(error: coral_task::Error) -> Status {
         | coral_task::Error::WorkspaceNotFound
         | coral_task::Error::Workspace(
             coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::AgentNotFound,
-        ) => Status::not_found("history unavailable"),
+        ) => status::not_found(),
         coral_task::Error::PermissionDenied(_)
         | coral_task::Error::Workspace(coral_workspace::Error::PermissionDenied(_)) => {
-            Status::permission_denied("history unavailable")
+            status::permission_denied()
         }
-        coral_task::Error::InvalidInput(_) => Status::invalid_argument("invalid history query"),
+        coral_task::Error::InvalidInput(_) => status::invalid(),
         coral_task::Error::Run(error) => execution::run_error(error),
-        coral_task::Error::TaskClosed => Status::failed_precondition("history unavailable"),
+        coral_task::Error::TaskClosed => {
+            status::safe_status(tonic::Code::FailedPrecondition, "TASK_CLOSED")
+        }
         // Name every remaining variant so a new domain error needs an explicit wire decision.
         coral_task::Error::SnapshotTooLarge
         | coral_task::Error::Search(_)
@@ -42,23 +45,21 @@ fn error(error: coral_task::Error) -> Status {
         | coral_task::Error::IdentifierIssuance(_)
         | coral_task::Error::Workspace(_)
         | coral_task::Error::CorruptData(_)
-        | coral_task::Error::Database(_) => Status::unavailable("history unavailable"),
+        | coral_task::Error::Database(_) => status::unavailable(),
     }
 }
 fn task_identity(name: &str) -> Result<TaskIdentity, Status> {
     let (workspace, id) = resource(name, "tasks")?;
-    let task = coral_task::TaskId::parse(id)
-        .map_err(|_invalid| Status::invalid_argument("invalid Task name"))?;
+    let task = coral_task::TaskId::parse(id).map_err(|_invalid| status::invalid())?;
     Ok(TaskIdentity { workspace, task })
 }
 fn interaction_identity(name: &str) -> Result<(TaskIdentity, InteractionId), Status> {
     let (task, id) = name
         .rsplit_once("/interactions/")
-        .ok_or_else(|| Status::invalid_argument("invalid interaction name"))?;
+        .ok_or_else(status::invalid)?;
     Ok((
         task_identity(task)?,
-        InteractionId::parse(id)
-            .map_err(|_invalid| Status::invalid_argument("invalid interaction name"))?,
+        InteractionId::parse(id).map_err(|_invalid| status::invalid())?,
     ))
 }
 /// Parses an optional `workspaces/{id}` filter; empty means every authorized Workspace.
@@ -68,7 +69,7 @@ fn workspace_filter(name: &str) -> Result<Option<WorkspaceId>, Status> {
     }
     WorkspaceId::parse(name.strip_prefix("workspaces/").unwrap_or_default())
         .map(Some)
-        .map_err(|_invalid| Status::invalid_argument("invalid Workspace name"))
+        .map_err(|_invalid| status::invalid())
 }
 
 fn required_action_kind(kind: i32) -> Result<Option<coral_run::RequiredActionKind>, Status> {
@@ -80,7 +81,7 @@ fn required_action_kind(kind: i32) -> Result<Option<coral_run::RequiredActionKin
         Ok(wire::ActivityRequiredActionKind::AccountConnection) => {
             Ok(Some(coral_run::RequiredActionKind::AccountConnection))
         }
-        Err(_unknown) => Err(Status::invalid_argument("invalid required action kind")),
+        Err(_unknown) => Err(status::invalid()),
     }
 }
 
@@ -149,21 +150,18 @@ fn scope(scope: &wire::ActivityScope) -> Result<HistoryScope, Status> {
     }
     let (agent_workspace, agent) = resource(&scope.agent, "agents")?;
     if workspace.as_ref() != Some(&agent_workspace) {
-        return Err(Status::invalid_argument("Agent Workspace mismatch"));
+        return Err(status::invalid());
     }
     Ok(HistoryScope::Agent {
         workspace: agent_workspace,
-        agent: PrincipalId::parse(agent)
-            .map_err(|_invalid| Status::invalid_argument("invalid Agent name"))?,
+        agent: PrincipalId::parse(agent).map_err(|_invalid| status::invalid())?,
     })
 }
 fn limit(value: u32) -> Result<u16, Status> {
     match value {
         0 => Ok(50),
-        1..=100 => {
-            u16::try_from(value).map_err(|_overflow| Status::invalid_argument("invalid page size"))
-        }
-        _ => Err(Status::invalid_argument("invalid page size")),
+        1..=100 => u16::try_from(value).map_err(|_overflow| status::invalid()),
+        _ => Err(status::invalid()),
     }
 }
 fn task(task: &coral_task::Task) -> wire::ActivityTask {
@@ -233,12 +231,12 @@ fn interaction_window(
     .count()
         > 1
     {
-        return Err(Status::invalid_argument("ambiguous interaction window"));
+        return Err(status::invalid());
     }
     let child = |name: &str| -> Result<InteractionId, Status> {
         let (parent, id) = interaction_identity(name)?;
         if parent.workspace != identity.workspace || parent.task != identity.task {
-            return Err(Status::invalid_argument("interaction Task mismatch"));
+            return Err(status::invalid());
         }
         Ok(id)
     };
@@ -250,9 +248,7 @@ fn interaction_window(
             } else {
                 Some(child(&viewport.anchor)?)
             },
-            preceding: u16::try_from(viewport.preceding).map_err(|_overflow| {
-                Status::invalid_argument("invalid viewport predecessor budget")
-            })?,
+            preceding: u16::try_from(viewport.preceding).map_err(|_overflow| status::invalid())?,
         });
     }
     if !input.after.is_empty() {
@@ -266,7 +262,7 @@ fn interaction_window(
     }
     let (workspace, id) = resource(&input.anchor, "runs")?;
     if workspace != identity.workspace {
-        return Err(Status::invalid_argument("Run Workspace mismatch"));
+        return Err(status::invalid());
     }
     Ok(W::Run(
         coral_run::RunId::parse(id).map_err(execution::run_error)?,
@@ -296,7 +292,10 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
         // The subscription predates the caller's first read, so that read is current.
         sender
             .try_send(Ok(wire::WatchActivityResponse { changed: true }))
-            .map_err(|_full| Status::internal("activity stream unavailable"))?;
+            .map_err(|_full| status::internal())?;
+        // Built here, in the request, so that it names the request's trace.
+        // The task below runs outside the request's span.
+        let stopped = status::unavailable();
         tokio::spawn(async move {
             loop {
                 let result = tokio::select! {
@@ -304,7 +303,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
                     // A stopping listener waits for its open streams, so this
                     // one ends now. UNAVAILABLE has the client connect again.
                     () = async { drop(stopping.wait_for(|stopping| *stopping).await) } => {
-                        Err(Status::unavailable("activity stream unavailable"))
+                        Err(stopped.clone())
                     }
                     result = async {
                         let wake = observer.next().await.map_err(execution::run_error)?;
@@ -392,8 +391,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             .principal(&request, None, PrivateAudience::Reef)
             .await?;
         let input = request.into_inner();
-        let workspace = workspace_filter(&input.workspace)?
-            .ok_or_else(|| Status::invalid_argument("Workspace is required"))?;
+        let workspace = workspace_filter(&input.workspace)?.ok_or_else(status::invalid)?;
         let summary = self
             .tasks
             .activity_summary(&self.runs, &actor, &workspace, input.days)
@@ -453,8 +451,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             .principal(&request, None, PrivateAudience::Reef)
             .await?;
         let input = request.into_inner();
-        let workspace = workspace_filter(&input.workspace)?
-            .ok_or_else(|| Status::invalid_argument("Workspace is required"))?;
+        let workspace = workspace_filter(&input.workspace)?.ok_or_else(status::invalid)?;
         let after = if input.after.is_empty() {
             None
         } else {
@@ -493,7 +490,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
         let decision = match input.decision.as_str() {
             "approve" => coral_run::approval::ApprovalDecision::Approve,
             "decline" => coral_run::approval::ApprovalDecision::Decline,
-            _ => return Err(Status::invalid_argument("invalid approval decision")),
+            _ => return Err(status::invalid()),
         };
         let result = self
             .runs
@@ -519,7 +516,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             .principal(&request, None, PrivateAudience::Reef)
             .await?;
         if actor.authenticated_user().is_none() {
-            return Err(Status::not_found("history unavailable"));
+            return Err(status::not_found());
         }
         let input = request.into_inner();
         let (workspace, id) = resource(&input.name, "runs")?;

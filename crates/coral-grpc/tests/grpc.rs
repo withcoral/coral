@@ -913,7 +913,7 @@ async fn local_agent_authentication_reports_database_outages_as_unavailable() {
         .await
         .unwrap_err();
     assert_eq!(error.code(), tonic::Code::Unavailable);
-    assert_eq!(error.message(), "authentication unavailable");
+    assert_eq!(error.message(), "AUTHENTICATION_UNAVAILABLE");
 }
 
 #[tokio::test]

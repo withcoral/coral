@@ -1,6 +1,7 @@
 //! Reef Account projection. Domains own authorization, transactions and lifecycle evidence.
 use super::providers::{error, parent, resource, scope};
-use super::workspaces::{change, invalid, timestamp};
+use super::status::invalid;
+use super::workspaces::{change, timestamp};
 use super::{GrpcServices, management as wire};
 use coral_provider::account::{self as domain, AccountScope};
 use coral_provider::{ManagementRequestId, ProviderId};
