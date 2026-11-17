@@ -1,10 +1,12 @@
 //! Run-owned source-free projections. Only repositories compose the position facet.
+use std::collections::{BTreeMap, HashMap};
+
 use crate::{Error, InvocationStatus, InvocationSummary, RunSummary};
 use coral_catalog::AuthoredToolKind;
 use coral_db::{Transaction, col};
 use coral_workspace::{HistoryAuthority, WorkspaceId};
 use sea_query::{
-    Alias, Expr, ExprTrait as _, Func, IntoColumnRef as _, JoinType, Query, SelectStatement,
+    Alias, Cond, Expr, ExprTrait as _, Func, IntoColumnRef as _, JoinType, Query, SelectStatement,
     SimpleExpr,
 };
 
@@ -312,6 +314,70 @@ pub(crate) async fn run_summary(
     let row: RunRow = tx.fetch_optional(select).await?.ok_or(Error::RunNotFound)?;
     row.decode()
 }
+
+/// The summaries of one page's Runs, read in one statement.
+pub(crate) struct RunSummaries(HashMap<(WorkspaceId, crate::RunId), RunSummary>);
+
+impl RunSummaries {
+    /// The summary of the Run `id` in `workspace`.
+    /// # Errors
+    /// [`Error::RunNotFound`] for a Run the read did not name or that its
+    /// authority does not cover, as [`run_summary`] answers.
+    pub(crate) fn of(
+        &self,
+        workspace: &WorkspaceId,
+        id: &crate::RunId,
+    ) -> Result<RunSummary, Error> {
+        self.0
+            .get(&(workspace.clone(), id.clone()))
+            .cloned()
+            .ok_or(Error::RunNotFound)
+    }
+}
+
+/// Reads the summary of each of `runs` that `authority` covers, as
+/// [`run_summary`] reads one: a Run matches its own Workspace and identity
+/// together, under the same restriction. One statement reads them all, so
+/// `runs` is one page, of at most 100 Runs; a Run named twice is read once.
+pub(crate) async fn run_summaries<'a>(
+    tx: &mut Transaction<'_>,
+    authority: &HistoryAuthority,
+    runs: impl IntoIterator<Item = (&'a WorkspaceId, &'a crate::RunId)>,
+    now: i64,
+) -> Result<RunSummaries, Error> {
+    let mut by_workspace = BTreeMap::<&WorkspaceId, Vec<String>>::new();
+    for (workspace, id) in runs {
+        let ids = by_workspace.entry(workspace).or_default();
+        let id = id.to_string();
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if by_workspace.is_empty() {
+        return Ok(RunSummaries(HashMap::new()));
+    }
+    let named = by_workspace
+        .into_iter()
+        .fold(Cond::any(), |named, (workspace, ids)| {
+            named.add(
+                col("r", "workspace_id")
+                    .eq(workspace.to_string())
+                    .and(col("r", "id").is_in(ids)),
+            )
+        });
+    let mut select = run_select(now);
+    select.cond_where(named);
+    restrict(&mut select, authority);
+    let rows: Vec<RunRow> = tx.fetch_all(select).await?;
+    rows.into_iter()
+        .map(|row| {
+            let summary = row.decode()?;
+            Ok(((summary.workspace.clone(), summary.id.clone()), summary))
+        })
+        .collect::<Result<_, Error>>()
+        .map(RunSummaries)
+}
+
 pub(crate) async fn visible_run_summary(
     tx: &mut Transaction<'_>,
     actor: &coral_workspace::Principal,
@@ -460,14 +526,10 @@ fn linked_shared_tool_revision(invocation: &'static str) -> SimpleExpr {
     )
 }
 
-pub(crate) async fn exact_invocation(
-    tx: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    run: &crate::RunId,
-    id: &crate::InvocationId,
-    now: i64,
-) -> Result<InvocationSummary, Error> {
-    let query = Query::select()
+/// Summaries of the Invocations of the Run `run` in `workspace`, before a
+/// caller names which.
+fn invocation_select(workspace: &WorkspaceId, run: &crate::RunId, now: i64) -> SelectStatement {
+    Query::select()
         .from_as(Alias::new("tool_invocations"), Alias::new("i"))
         .join_as(
             JoinType::InnerJoin,
@@ -529,8 +591,56 @@ pub(crate) async fn exact_invocation(
         )
         .and_where(col("i", "workspace_id").eq(workspace.to_string()))
         .and_where(col("i", "run_id").eq(run.to_string()))
-        .and_where(col("i", "id").eq(id.to_string()))
-        .to_owned();
+        .to_owned()
+}
+
+pub(crate) async fn exact_invocation(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    run: &crate::RunId,
+    id: &crate::InvocationId,
+    now: i64,
+) -> Result<InvocationSummary, Error> {
+    let mut query = invocation_select(workspace, run, now);
+    query.and_where(col("i", "id").eq(id.to_string()));
     let row: InvocationRow = tx.fetch_optional(query).await?.ok_or(Error::RunNotFound)?;
     row.decode()
+}
+
+/// The summaries of one page's Invocations, read in one statement.
+pub(crate) struct InvocationSummaries(HashMap<crate::InvocationId, InvocationSummary>);
+
+impl InvocationSummaries {
+    /// The summary of the Invocation `id`.
+    /// # Errors
+    /// [`Error::RunNotFound`] for an Invocation the read did not name or that
+    /// its Run does not hold, as [`exact_invocation`] answers.
+    pub(crate) fn of(&self, id: &crate::InvocationId) -> Result<InvocationSummary, Error> {
+        self.0.get(id).cloned().ok_or(Error::RunNotFound)
+    }
+}
+
+/// Reads the summary of each of `ids` that is an Invocation of the Run `run`
+/// in `workspace`, as [`exact_invocation`] reads one. One statement reads
+/// them all, so `ids` is one page, of at most 100 Invocations.
+pub(crate) async fn invocation_summaries(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    run: &crate::RunId,
+    ids: &[&crate::InvocationId],
+    now: i64,
+) -> Result<InvocationSummaries, Error> {
+    if ids.is_empty() {
+        return Ok(InvocationSummaries(HashMap::new()));
+    }
+    let mut query = invocation_select(workspace, run, now);
+    query.and_where(col("i", "id").is_in(ids.iter().map(ToString::to_string)));
+    let rows: Vec<InvocationRow> = tx.fetch_all(query).await?;
+    rows.into_iter()
+        .map(|row| {
+            let summary = row.decode()?;
+            Ok((summary.id.clone(), summary))
+        })
+        .collect::<Result<_, Error>>()
+        .map(InvocationSummaries)
 }

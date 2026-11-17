@@ -176,31 +176,31 @@ impl RunModule {
             crate::inspection_repository::entry_summaries(tx, workspace, id, window, level, limit)
                 .await?;
         let has_more = page.rows.len() > usize::from(limit);
-        let mut entries = Vec::new();
-        let mut next_after = page.after;
-        for row in page.rows.into_iter().take(usize::from(limit)) {
-            next_after = row.sequence;
-            entries.push(if let Some(invocation) = row.invocation {
-                RunEntry::Invocation(Box::new(
-                    crate::history_repository::exact_invocation(
-                        tx,
-                        workspace,
-                        id,
-                        &invocation,
-                        now,
-                    )
-                    .await?,
-                ))
-            } else {
-                RunEntry::Event {
-                    sequence: row.sequence,
-                    kind: row.kind,
-                    occurred_at: row.occurred_at,
-                    context_impact_bytes: row.context_impact_bytes,
-                    source_location: row.source_location,
-                }
-            });
-        }
+        let rows: Vec<_> = page.rows.into_iter().take(usize::from(limit)).collect();
+        let next_after = rows.last().map_or(page.after, |row| row.sequence);
+        let invocations: Vec<_> = rows
+            .iter()
+            .filter_map(|row| row.invocation.as_ref())
+            .collect();
+        let invocations =
+            crate::history_repository::invocation_summaries(tx, workspace, id, &invocations, now)
+                .await?;
+        let entries = rows
+            .into_iter()
+            .map(|row| {
+                Ok(if let Some(invocation) = row.invocation {
+                    RunEntry::Invocation(Box::new(invocations.of(&invocation)?))
+                } else {
+                    RunEntry::Event {
+                        sequence: row.sequence,
+                        kind: row.kind,
+                        occurred_at: row.occurred_at,
+                        context_impact_bytes: row.context_impact_bytes,
+                        source_location: row.source_location,
+                    }
+                })
+            })
+            .collect::<Result<Vec<_>, Error>>()?;
         Ok(RunEntries {
             total: page.total,
             offset: page.offset,

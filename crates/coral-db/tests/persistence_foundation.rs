@@ -677,6 +677,39 @@ async fn read_snapshots_cannot_write() {
     assert_eq!(record(&*database, "snapshot").await, None);
 }
 
+/// Catches: a transaction that does not count a statement it sends, so that
+/// a read which sends one for each row looks like a read which sends one.
+#[tokio::test]
+async fn a_transaction_counts_each_statement_it_sends() {
+    let fixture = TestDatabase::new(&MIGRATOR)
+        .await
+        .expect("create repository test database");
+    let database = fixture.database();
+
+    let mut transaction = database.begin().await.expect("begin transaction");
+    assert_eq!(transaction.statements(), 0);
+    transaction
+        .execute(insert_record("counted", "once"))
+        .await
+        .expect("insert record");
+    assert_eq!(transaction.statements(), 1);
+    assert!(record(&mut transaction, "counted").await.is_some());
+    assert_eq!(transaction.statements(), 2);
+    let records: Vec<Record> = transaction
+        .fetch_all(records_query())
+        .await
+        .expect("read records");
+    assert_eq!(records.len(), 1);
+    assert_eq!(transaction.statements(), 3);
+    transaction.rollback().await.expect("roll back transaction");
+
+    let snapshot = database
+        .begin_read_snapshot()
+        .await
+        .expect("begin read snapshot");
+    assert_eq!(snapshot.statements(), 0, "each transaction counts its own");
+}
+
 /// A hold reads like `fetch_optional` or `fetch_all` in a read-write
 /// transaction. A read snapshot holds nothing on either database, so it
 /// refuses the hold before it sends a statement, and stays usable.

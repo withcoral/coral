@@ -24,6 +24,7 @@
 //! not required-action projections or UI.
 
 use crate::lifecycle::RunRecord;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -234,24 +235,59 @@ impl ApprovalModule {
         run: &RunId,
     ) -> Result<Vec<ApprovalRequest>, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
-        let run = self.visible_run(&mut tx, actor, workspace, run).await?;
-        let rows = approval_repository::list_for_run(&mut tx, workspace, &run.id).await?;
-        let mut requests = Vec::new();
-        for row in rows {
-            requests.push(
-                view(
-                    &mut tx,
-                    &self.workspaces,
-                    actor,
-                    workspace,
-                    &run,
-                    row,
-                    self.now()?,
-                )
-                .await?,
-            );
-        }
+        let requests = self
+            .list_for_run_in_transaction(&mut tx, actor, workspace, run)
+            .await?;
         tx.commit().await?;
+        Ok(requests)
+    }
+
+    /// [`Self::list_for_run`] in the caller's read snapshot. One statement
+    /// reads every request with its Invocation's target and labels. Whether
+    /// a pending request still needs a decision is decided once for each
+    /// Tool the requests name, and an approver's name is read once for each
+    /// approver, so the read sends no statement for each request.
+    pub(crate) async fn list_for_run_in_transaction(
+        &self,
+        tx: &mut Transaction<'_>,
+        actor: &AuthenticatedPrincipal,
+        workspace: &WorkspaceId,
+        run: &RunId,
+    ) -> Result<Vec<ApprovalRequest>, Error> {
+        let run = self.visible_run(tx, actor, workspace, run).await?;
+        let now = self.now()?;
+        let rows = approval_repository::details_for_run(tx, workspace, &run.id).await?;
+        let accepts_actions = crate::required_actions::run_accepts_actions(&run);
+        let mut decisions = HashMap::<PolicySubject, bool>::new();
+        let mut names = ApproverNames::new(&self.workspaces, actor);
+        let mut requests = Vec::with_capacity(rows.len());
+        for row in rows {
+            let actionable = if row.approval.state == ApprovalState::Pending && accepts_actions {
+                let subject = PolicySubject::of(&row.target);
+                if let Some(required) = decisions.get(&subject) {
+                    *required
+                } else {
+                    let required =
+                        decision_required(tx, &self.workspaces, &run, &subject, now).await?;
+                    decisions.insert(subject, required);
+                    required
+                }
+            } else {
+                false
+            };
+            let approver_name = match &row.approval.approver {
+                Some(approver) => names.name(tx, workspace, approver).await?,
+                None => None,
+            };
+            requests.push(request(
+                &run,
+                row.approval,
+                row.target,
+                (row.provider_label, row.agent_label),
+                actionable,
+                approver_name,
+            ));
+        }
         Ok(requests)
     }
 
@@ -443,6 +479,30 @@ fn conceal(error: coral_workspace::Error) -> Error {
         other => other.into(),
     }
 }
+/// What of an Invocation [`decision_required`] reads. Two requests of one
+/// Run that agree on it get one answer in one snapshot, so a list decides
+/// once for each.
+#[derive(PartialEq, Eq, Hash)]
+struct PolicySubject {
+    provider_id: ProviderId,
+    tool: coral_catalog::ToolKey,
+    generation: coral_catalog::ProviderGenerationId,
+    call_path: String,
+    declared_default: Option<coral_catalog::ToolAccessState>,
+}
+
+impl PolicySubject {
+    fn of(target: &invocation_repository::ApprovalTarget) -> Self {
+        Self {
+            provider_id: target.provider_id.clone(),
+            tool: target.tool.clone(),
+            generation: target.generation.clone(),
+            call_path: target.call_path.clone(),
+            declared_default: target.declared_default,
+        }
+    }
+}
+
 /// Whether the Tool's current policy asks for a decision, as a read
 /// snapshot shows it: the request's `actionable` projection. A decision
 /// itself reads no policy; the Policy Enforcement Point judges the approval
@@ -451,7 +511,7 @@ async fn decision_required(
     tx: &mut Transaction<'_>,
     workspaces: &WorkspaceModule,
     run: &RunRecord,
-    target: &invocation_repository::ApprovalTarget,
+    target: &PolicySubject,
     now: i64,
 ) -> Result<bool, Error> {
     let role = match workspaces
@@ -498,7 +558,7 @@ async fn decision_required(
 
 /// The approver's current name, when Workspace profile rules let `actor`
 /// read it.
-pub(crate) async fn approver_name(
+async fn approver_name(
     tx: &mut Transaction<'_>,
     workspaces: &WorkspaceModule,
     actor: &AuthenticatedPrincipal,
@@ -517,6 +577,42 @@ pub(crate) async fn approver_name(
     }
 }
 
+/// Approver names for one snapshot, each read once: a list often repeats an
+/// approver.
+pub(crate) struct ApproverNames<'a> {
+    workspaces: &'a WorkspaceModule,
+    actor: &'a AuthenticatedPrincipal,
+    names: HashMap<(WorkspaceId, Principal), Option<String>>,
+}
+
+impl<'a> ApproverNames<'a> {
+    /// Names approvers as Workspace profile rules let `actor` read them.
+    pub(crate) fn new(workspaces: &'a WorkspaceModule, actor: &'a AuthenticatedPrincipal) -> Self {
+        Self {
+            workspaces,
+            actor,
+            names: HashMap::new(),
+        }
+    }
+
+    /// The current name of `approver` in `workspace`, as [`approver_name`]
+    /// reads it.
+    pub(crate) async fn name(
+        &mut self,
+        tx: &mut Transaction<'_>,
+        workspace: &WorkspaceId,
+        approver: &Principal,
+    ) -> Result<Option<String>, Error> {
+        let key = (workspace.clone(), approver.clone());
+        if let Some(name) = self.names.get(&key) {
+            return Ok(name.clone());
+        }
+        let name = approver_name(tx, self.workspaces, self.actor, workspace, approver).await?;
+        self.names.insert(key, name.clone());
+        Ok(name)
+    }
+}
+
 async fn view(
     tx: &mut Transaction<'_>,
     workspaces: &WorkspaceModule,
@@ -530,14 +626,27 @@ async fn view(
         invocation_repository::approval_target(tx, workspace, &run.id, &row.invocation_id).await?;
     let actionable = row.state == ApprovalState::Pending
         && crate::required_actions::run_accepts_actions(run)
-        && decision_required(tx, workspaces, run, &target, now).await?;
-    let (provider_label, agent_label) =
+        && decision_required(tx, workspaces, run, &PolicySubject::of(&target), now).await?;
+    let labels =
         crate::inspection_repository::approval_labels(tx, workspace, &row.invocation_id).await?;
     let approver_name = match &row.approver {
         Some(approver) => approver_name(tx, workspaces, actor, workspace, approver).await?,
         None => None,
     };
-    Ok(ApprovalRequest {
+    Ok(request(run, row, target, labels, actionable, approver_name))
+}
+
+/// The authorized detail of the request `row` of `run`, from what was read
+/// of its Invocation (`target` and its Provider and Agent `labels`).
+fn request(
+    run: &RunRecord,
+    row: StoredApproval,
+    target: invocation_repository::ApprovalTarget,
+    (provider_label, agent_label): (Option<String>, Option<String>),
+    actionable: bool,
+    approver_name: Option<String>,
+) -> ApprovalRequest {
+    ApprovalRequest {
         approver_name,
         provider_label,
         agent_label,
@@ -557,7 +666,7 @@ async fn view(
         approver: row.approver,
         decided_at_unix_nanos: row.decided_at_unix_nanos,
         comment: row.comment,
-    })
+    }
 }
 
 /// The Run's Approval Requests still undecided whose deadline passed by

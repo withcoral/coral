@@ -163,20 +163,104 @@ fn select(workspace: &WorkspaceId) -> sea_query::SelectStatement {
         .to_owned()
 }
 
-pub(super) async fn list_for_run(
+/// One Approval Request with what its detail shows of its Invocation.
+pub(super) struct StoredApprovalDetail {
+    pub approval: StoredApproval,
+    pub target: crate::invocation_repository::ApprovalTarget,
+    /// Current safe Provider label, absent after the Provider is removed.
+    pub provider_label: Option<String>,
+    /// Safe retained label of the invoking Agent, absent for User work.
+    pub agent_label: Option<String>,
+}
+
+#[derive(FromRow)]
+struct ApprovalDetailRow {
+    #[sqlx(flatten)]
+    approval: ApprovalRow,
+    #[sqlx(flatten)]
+    target: crate::invocation_repository::ApprovalTargetRow,
+    provider_label: Option<String>,
+    agent_label: Option<String>,
+}
+
+/// Every Approval Request of the Run `run` in `workspace`, in identity
+/// order, each with its Invocation's target and labels: one statement,
+/// however many requests the Run has. A request's Invocation is a call of
+/// the request's Run.
+pub(super) async fn details_for_run(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     run: &RunId,
-) -> Result<Vec<StoredApproval>, Error> {
-    let rows: Vec<ApprovalRow> = tx
+) -> Result<Vec<StoredApprovalDetail>, Error> {
+    use coral_db::{col, column};
+    let rows: Vec<ApprovalDetailRow> = tx
         .fetch_all(
-            select(workspace)
-                .and_where(Expr::col(InvocationApprovals::RunId).eq(run.to_string()))
-                .order_by(InvocationApprovals::Id, Order::Asc)
+            Query::select()
+                .from_as(InvocationApprovals::Table, Alias::new("a"))
+                .join_as(
+                    JoinType::InnerJoin,
+                    Alias::new("tool_invocations"),
+                    Alias::new("i"),
+                    col("i", "workspace_id")
+                        .eq(col("a", "workspace_id"))
+                        .and(col("i", "id").eq(col("a", "invocation_id")))
+                        .and(col("i", "run_id").eq(col("a", "run_id"))),
+                )
+                .join_as(
+                    JoinType::InnerJoin,
+                    Alias::new("program_run_records"),
+                    Alias::new("r"),
+                    col("r", "workspace_id")
+                        .eq(col("i", "workspace_id"))
+                        .and(col("r", "id").eq(col("i", "run_id"))),
+                )
+                .columns(
+                    [
+                        "id",
+                        "invocation_id",
+                        "run_id",
+                        "deadline_at_unix_nanos",
+                        "state",
+                        "decided_at_unix_nanos",
+                        "approver_id",
+                        "comment",
+                    ]
+                    .map(|name| (Alias::new("a"), Alias::new(name))),
+                )
+                .columns(
+                    crate::invocation_repository::APPROVAL_TARGET_COLUMNS
+                        .map(|name| (Alias::new("i"), Alias::new(name))),
+                )
+                .expr_as(
+                    coral_provider::history_repository::display_label(
+                        column("i", "workspace_id"),
+                        column("i", "provider_id"),
+                    ),
+                    Alias::new("provider_label"),
+                )
+                .expr_as(
+                    coral_workspace::history_repository::agent_label(
+                        column("r", "workspace_id"),
+                        column("r", "principal_id"),
+                    ),
+                    Alias::new("agent_label"),
+                )
+                .and_where(col("a", "workspace_id").eq(workspace.to_string()))
+                .and_where(col("a", "run_id").eq(run.to_string()))
+                .order_by((Alias::new("a"), Alias::new("id")), Order::Asc)
                 .to_owned(),
         )
         .await?;
-    rows.into_iter().map(StoredApproval::try_from).collect()
+    rows.into_iter()
+        .map(|row| {
+            Ok(StoredApprovalDetail {
+                approval: row.approval.try_into()?,
+                target: row.target.decode()?,
+                provider_label: row.provider_label,
+                agent_label: row.agent_label,
+            })
+        })
+        .collect()
 }
 
 pub(super) async fn load(

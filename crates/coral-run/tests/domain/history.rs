@@ -422,3 +422,75 @@ async fn emissions_before_a_failure_stay_readable_and_exact_events_stay_private(
         Err(Error::RunNotFound)
     ));
 }
+
+/// Catches: a read of several Runs that matches a Run by its identity alone,
+/// so that a Run answers under another Workspace's name; and one that reads a
+/// Run its authority does not cover. The read of one Run conceals both.
+#[tokio::test]
+async fn a_read_of_several_runs_conceals_what_the_read_of_one_run_conceals() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let home = fixture.user_tool("user:several-runs", "Home").await;
+    let away = fixture.user_tool("user:several-runs-host", "Away").await;
+    // The reader also works in the other User's Workspace.
+    let reader = AuthenticatedPrincipal::user(
+        fixture
+            .workspace_user(
+                &away.workspace_id,
+                &away.user,
+                "user:several-runs",
+                WorkspaceRole::Member,
+            )
+            .await,
+    );
+    let finish = async |actor: &AuthenticatedPrincipal,
+                        workspace: &coral_workspace::WorkspaceId| {
+        let accepted = fixture.runs.start(actor, workspace, submission("null"));
+        let run = accepted.await.unwrap().run_id().clone();
+        wait_for_terminal(&fixture.runs, actor, workspace, &run).await;
+        run
+    };
+    let own_home = finish(&reader, &home.workspace_id).await;
+    let own_away = finish(&reader, &away.workspace_id).await;
+    let theirs = finish(&away.principal, &away.workspace_id).await;
+    // Each Run to read, and whether the reader's own history holds it there.
+    let named = [
+        (&home.workspace_id, &own_home, true),
+        (&away.workspace_id, &own_away, true),
+        (&away.workspace_id, &theirs, false),
+        (&away.workspace_id, &own_home, false),
+        (&home.workspace_id, &own_home, true),
+    ];
+
+    let mut tx = fixture.database.begin_read_snapshot().await.unwrap();
+    let authority = fixture
+        .workspaces
+        .history_authority_in_transaction(&mut tx, &reader, &HistoryScope::Personal(None))
+        .await
+        .unwrap();
+    let now = fixture.clock.now_unix_nanos().unwrap();
+    let before = tx.statements();
+    let several = crate::history_repository::run_summaries(
+        &mut tx,
+        &authority,
+        named.map(|(workspace, run, _)| (workspace, run)),
+        now,
+    )
+    .await
+    .unwrap();
+    assert_eq!(tx.statements() - before, 1, "one statement reads every Run");
+    for (workspace, run, held) in named {
+        let alone =
+            crate::history_repository::run_summary(&mut tx, &authority, workspace, run, now).await;
+        match (several.of(workspace, run), alone) {
+            (Ok(several), Ok(alone)) => {
+                assert!(held, "{run} in {workspace}");
+                assert_eq!(format!("{several:?}"), format!("{alone:?}"));
+            }
+            (Err(Error::RunNotFound), Err(Error::RunNotFound)) => {
+                assert!(!held, "{run} in {workspace}");
+            }
+            other => panic!("both reads answer alike for {run} in {workspace}: {other:?}"),
+        }
+    }
+    tx.commit().await.unwrap();
+}
