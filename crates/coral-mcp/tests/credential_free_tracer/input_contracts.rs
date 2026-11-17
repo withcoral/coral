@@ -42,36 +42,44 @@ pub(super) async fn check(session: &RawSession, tools: &[Value]) {
         .await;
 }
 
-/// An `exec` names its Task or states the goal of a new one. Coral never
-/// guesses which Task a call belongs to, so neither and both are refused
-/// with the same message, which names both options.
+/// An `exec` names its Task or states the goal of a new one. One that names
+/// neither is refused, with a message that names both options. One that
+/// names both continues the Task it names: agents often keep the first
+/// call's `goal` on later calls, and `task_id` already says which Task.
 async fn check_task_choice(session: &RawSession, task: &str) {
-    for (arguments, case) in [
-        (
-            json!({"intent":"Name no Task", "program":"return null;"}),
-            "neither",
-        ),
-        (
+    let error = session
+        .result(
+            "tools/call",
+            json!({"name":"exec", "arguments":{"intent":"Name no Task", "program":"return null;"}}),
+        )
+        .await
+        .expect_err("neither");
+    assert_eq!(error.get("code"), Some(&json!(-32602)));
+    assert_eq!(
+        error.get("message"),
+        Some(&json!(
+            "exec takes `task_id` or `goal`: pass `task_id` to continue a Task, or `goal` to start a new one"
+        ))
+    );
+
+    let continued = session
+        .tool(
+            "exec",
             json!({
                 "task_id":task, "goal":"Start another Task", "intent":"Name both",
                 "program":"return null;"
             }),
-            "both",
-        ),
-    ] {
-        let error = session
-            .result("tools/call", json!({"name":"exec", "arguments":arguments}))
-            .await
-            .expect_err(case);
-        assert_eq!(error.get("code"), Some(&json!(-32602)), "{case}");
-        assert_eq!(
-            error.get("message"),
-            Some(&json!(
-                "exec takes exactly one of `task_id` or `goal`: pass `task_id` to continue a Task, or `goal` to start a new one"
-            )),
-            "{case}"
-        );
-    }
+        )
+        .await;
+    assert!(
+        continued.pointer("/structuredContent/run_id").is_some(),
+        "both: the Run is accepted"
+    );
+    assert_eq!(
+        continued.pointer("/structuredContent/task_id"),
+        None,
+        "both: no new Task is started"
+    );
 }
 
 async fn check_text(session: &RawSession, tools: &[Value]) {
