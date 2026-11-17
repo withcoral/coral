@@ -1842,40 +1842,15 @@ async fn each_method_requires_every_field() {
     }
 }
 
-/// A credential that cannot join the request is told apart from one that is
-/// missing: it collides with what the request plans, or the dispatch already
-/// holds one.
+/// A dispatch that already holds a credential refuses a second one, and that
+/// is told apart from a missing credential. The catalog refuses a
+/// configuration that collides with what the request plans, so no fixture
+/// here can build one; coral-run tests that refusal on a stored Generation.
 #[test]
-fn authorize_names_a_collision_and_a_second_injection() {
+fn authorize_refuses_a_second_injection() {
     use coral_upstream::AuthorizeError;
     let api_key = values(&[("api_key", "value")]);
     for (case, server, paths, authentication, arguments, values, earlier, refusal) in [
-        (
-            "a header that the request body plans",
-            "http://127.0.0.1:9",
-            POST_JSON,
-            header_credentials(&[("content-type", field_header("api_key", ""))]),
-            serde_json::json!({"body": {}}),
-            &api_key,
-            0,
-            AuthorizeError::CredentialCollision,
-        ),
-        (
-            "a query parameter that the path fixes",
-            "http://127.0.0.1:9",
-            r#"
-  "/boards?key=fixed":
-    get:
-      operationId: boards
-      responses:
-        "204": {description: done}
-"#,
-            trello(),
-            serde_json::json!({}),
-            &trello_values(),
-            0,
-            AuthorizeError::CredentialCollision,
-        ),
         (
             "a second header injection",
             "http://127.0.0.1:9",

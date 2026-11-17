@@ -1320,6 +1320,12 @@ fn header_credentials_report_the_header_or_field_at_fault_without_rejected_value
             presented(&["key"]),
             "authentication.headers.cookie",
         ),
+        // A request with a body sets this header itself.
+        (
+            vec![("Content-Type", field("key"))],
+            presented(&["key"]),
+            "authentication.headers.Content-Type",
+        ),
         (
             vec![("x-key", field("missing"))],
             presented(&["key"]),

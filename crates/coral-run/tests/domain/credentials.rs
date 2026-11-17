@@ -973,7 +973,7 @@ async fn a_path_argument_cannot_send_shared_credentials_to_an_undeclared_endpoin
 }
 
 /// A credential header that the planned request already holds is a fault in
-/// the Provider's configuration, not a missing account. The call fails as an
+/// the Provider's stored configuration, not a missing account. The call fails as an
 /// unavailable Tool, the Program can catch that and go on, and nothing is
 /// sent.
 #[tokio::test]
@@ -987,7 +987,6 @@ async fn a_credential_that_collides_with_the_planned_request_makes_the_tool_unav
     let mut tool = fixture
         .user_tool("user:credential-collision", "Credential collision")
         .await;
-    // The request body plans the header that the credential is sent in.
     let document = serde_json::json!({
         "openapi":"3.1.0", "info":{"title":"Private weather","version":"1"},
         "servers":[{"url":"https://upstream.example"}],
@@ -1003,7 +1002,7 @@ async fn a_credential_that_collides_with_the_planned_request_makes_the_tool_unav
         &document,
         coral_catalog::AuthenticationConfiguration::HeaderCredentials {
             headers: std::collections::BTreeMap::from([(
-                "content-type".into(),
+                "x-api-key".into(),
                 coral_catalog::HeaderBinding::Field {
                     field: "api_key".into(),
                     prefix: String::new(),
@@ -1025,6 +1024,23 @@ async fn a_credential_that_collides_with_the_planned_request_makes_the_tool_unav
         .unwrap(),
     ))
     .await;
+    // A Provider published before setup refused this header keeps it in its
+    // stored Generation and Account: the credential goes in the header that
+    // the request body plans.
+    for statement in [
+        "UPDATE provider_generations \
+         SET credential_contract = REPLACE(credential_contract, 'x-api-key', 'content-type')",
+        "UPDATE materialized_tools \
+         SET definition_json = REPLACE(definition_json, 'x-api-key', 'content-type')",
+        "UPDATE provider_accounts \
+         SET contract = REPLACE(contract, 'x-api-key', 'content-type')",
+    ] {
+        fixture
+            .test_database
+            .execute_fixture_sql(statement)
+            .await
+            .unwrap();
+    }
     fixture.runs = fixture.runs.with_accounts(accounts);
     let accepted = fixture
         .runs

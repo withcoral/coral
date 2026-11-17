@@ -94,6 +94,9 @@ fn build_openapi(
         let slots = credentials.for_tool(&draft.key);
         let mut build =
             materialize_operation(draft, relative_path, &mut schemas, &credential_parameters)?;
+        if let Err(diagnostic) = validate_query_credentials(&build.binding, &slots) {
+            build.diagnostics.push(diagnostic);
+        }
         build.binding.set_credential_slots(slots);
         if let Some(configuration) = configuration {
             build
@@ -768,6 +771,39 @@ fn validate_path_query(query: Option<&str>) -> Result<(), CatalogDiagnostic> {
         return Err(diagnostic(
             "invalid_tool_path",
             "an OpenAPI path query contains a parameter or a fragment",
+        ));
+    }
+    Ok(())
+}
+
+/// A Tool's fixed query, in its path or its server URL, must not hold a
+/// parameter that the Tool's own credential is sent in: the two would
+/// collide, and every call to the Tool would fail. Only the credentials the
+/// Tool sends count, not every API key the document declares.
+fn validate_query_credentials(
+    binding: &HttpExecutionBinding,
+    slots: &[crate::HttpCredentialSlot],
+) -> Result<(), CatalogDiagnostic> {
+    let sends = |name: &str| {
+        slots.iter().any(|slot| {
+            matches!(
+                slot.contract().authentication(),
+                AuthenticationConfiguration::QueryCredentials { parameters }
+                    if parameters.contains_key(name)
+            )
+        })
+    };
+    let holds =
+        |query: &str| url::form_urlencoded::parse(query.as_bytes()).any(|(name, _)| sends(&name));
+    let server_query = binding
+        .server_url()
+        .and_then(|server| url::Url::parse(server).ok())
+        .and_then(|server| server.query().map(str::to_owned));
+    let collides = binding.query().is_some_and(holds) || server_query.as_deref().is_some_and(holds);
+    if collides {
+        return Err(diagnostic(
+            "invalid_tool_path",
+            "an OpenAPI path or server query holds a parameter that carries a credential",
         ));
     }
     Ok(())
