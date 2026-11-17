@@ -12,7 +12,7 @@ use super::response::{TrustedRedirect, direct_error};
 use super::{AuthorizationServerHttpState, query, sign_in_cookie};
 use coral_auth::authorization_codes::{AuthorizationGrant, CodeIssue};
 use coral_auth::{LoginProvisioning, UserDirectory, VerifiedOidcLogin};
-use coral_db::Clock as _;
+use coral_db::UnixNanos;
 use coral_telemetry::safe;
 use coral_workspace::UserId;
 
@@ -32,11 +32,13 @@ pub(super) async fn oidc_callback(
     let Some((cookie_name, sealed)) = sign_in_cookie::find(&headers, oidc_state, secure) else {
         return invalid_state();
     };
+    // The sign-in is live if it has not expired when its callback arrives.
+    let arrived = state.clock.now();
     let session = SignInSession::open(
         state.settings.handshake_keys(),
         oidc_state,
         &sealed,
-        sign_in_cookie::now_unix_secs(),
+        arrived.whole_seconds(),
     );
     let mut response = match session {
         Some(session) => complete(&state, &query, oidc_state, session, &headers).await,
@@ -97,16 +99,20 @@ async fn complete(
             return trusted.error("server_error", "authorization failed");
         }
     };
-    let identity = match state
+    // `now` is the instant the provider's tokens were validated at, read
+    // after the provider's last answer. It dates everything the sign-in
+    // decides from here: the login, the Workspace choice and the code.
+    let (identity, now) = match state
         .provider_client
         .validate_code_exchange(
             provider,
             exchange,
             &state.settings.handshake_keys().nonce(oidc_state),
+            state.clock.as_ref(),
         )
         .await
     {
-        Ok(identity) => identity,
+        Ok(validated) => validated,
         Err(error) => {
             tracing::warn!(
                 error.type = safe::kind(error.code()),
@@ -115,7 +121,7 @@ async fn complete(
             return trusted.error("server_error", "authorization failed");
         }
     };
-    let user_id = match provision(&state.user_directory, &identity).await {
+    let user_id = match provision(&state.user_directory, &identity, now).await {
         Ok(user_id) => user_id,
         Err(outcome) => return outcome.into_error(&trusted),
     };
@@ -137,6 +143,7 @@ async fn complete(
             user_id,
             signed_in_as,
             session,
+            now,
         )
         .await;
     }
@@ -145,28 +152,29 @@ async fn complete(
         &trusted,
         oidc_state,
         &session.request.grant(&user_id, None),
+        now,
     )
     .await
 }
 
-/// Stores a new code for `grant`, issued by the sign-in named `oidc_state`,
-/// and returns the client redirect that carries it. A sign-in that already
-/// issued its code, or a code that cannot be stored, is refused with the
-/// client's error redirect.
+/// Stores a new code for `grant`, issued at `now` by the sign-in named
+/// `oidc_state`, and returns the client redirect that carries it. A sign-in
+/// that already issued its code, or a code that cannot be stored, is refused
+/// with the client's error redirect.
 pub(super) async fn issue_code(
     state: &AuthorizationServerHttpState,
     trusted: &TrustedRedirect,
     oidc_state: &str,
     grant: &AuthorizationGrant,
+    now: UnixNanos,
 ) -> Response {
     let Ok(authorization_code) = random_code() else {
         tracing::warn!("Sign-in could not generate an authorization code");
         return trusted.error("server_error", "authorization failed");
     };
-    let now_unix_nanos = now_unix_nanos_i64();
     match state
         .codes
-        .issue(&authorization_code, oidc_state, grant, now_unix_nanos)
+        .issue(&authorization_code, oidc_state, grant, now.get())
         .await
     {
         Ok(CodeIssue::Issued) => trusted.success(&authorization_code),
@@ -218,18 +226,19 @@ impl ProvisioningFailure {
 /// display name reach the user directory and go no further, so the record a
 /// client redeems — and every token and principal id minted from it — carries
 /// only Coral's own identifier. A login that cannot be recorded issues no code.
+/// The login is recorded at `now`.
 async fn provision(
     user_directory: &UserDirectory,
     identity: &ValidatedOidcIdentity,
+    now: UnixNanos,
 ) -> Result<UserId, ProvisioningFailure> {
-    let now_unix_nanos = now_unix_nanos_i64();
     let provisioning = user_directory
         .provision_login(
             VerifiedOidcLogin::new(
                 &identity.issuer,
                 &identity.subject,
                 identity.display_name.as_deref(),
-                now_unix_nanos,
+                now.get(),
             )
             .with_profile(coral_workspace::VerifiedUserProfile::new(
                 identity.profile_name.as_deref(),
@@ -273,10 +282,6 @@ const fn provisioning_error_code(error: &coral_auth::Error) -> &'static str {
             None => "organization",
         },
     }
-}
-
-fn now_unix_nanos_i64() -> i64 {
-    coral_db::SystemClock.now().get()
 }
 
 #[derive(Default)]
@@ -364,9 +369,13 @@ mod tests {
     };
     use crate::auth::sealed_handshake::ClientRequest;
     use crate::auth::test_config::{PROVIDER_SECRET, resolved_settings};
-    use coral_auth::authorization_codes::{AuthorizationCodes, CodeRedemption};
-    use coral_db::Database;
+    use coral_auth::authorization_codes::{
+        AUTHORIZATION_CODE_TTL, AuthorizationCodes, CodeRedemption,
+    };
+    use coral_db::{Clock as _, Database};
+    use coral_test_support::ManualClock;
     use coral_test_support::TestDatabase;
+    use std::time::Duration;
 
     const OIDC_STATE: &str = "oidc-state";
     const CLIENT_STATE: &str = "client&error=injected";
@@ -402,15 +411,28 @@ mod tests {
     }
 
     /// The claims of an ID token the provider issues on the system clock,
-    /// which the callback reads.
+    /// which the state these tests build reads.
     fn id_token_claims() -> Value {
-        id_token_claims_at(coral_db::UnixNanos::new(
-            coral_test_support::now_unix_nanos(),
-        ))
+        id_token_claims_at(UnixNanos::new(coral_test_support::now_unix_nanos()))
     }
 
-    /// Redeems `code` with the bindings of the seeded sign-in.
+    /// Redeems `code` on the system clock with the bindings of the seeded
+    /// sign-in.
     async fn redeem(database: &Arc<Database>, code: &str) -> Option<AuthorizationGrant> {
+        redeem_at(
+            database,
+            code,
+            UnixNanos::new(coral_test_support::now_unix_nanos()),
+        )
+        .await
+    }
+
+    /// Redeems `code` at `now` with the bindings of the seeded sign-in.
+    async fn redeem_at(
+        database: &Arc<Database>,
+        code: &str,
+        now: UnixNanos,
+    ) -> Option<AuthorizationGrant> {
         let session = session();
         let client = authenticated(database.clone(), &session.request.client_id).await;
         AuthorizationCodes::new(database.clone())
@@ -422,7 +444,7 @@ mod tests {
                     code_challenge: &session.request.code_challenge,
                     resource: RESOURCE,
                 },
-                now_unix_nanos_i64(),
+                now.get(),
             )
             .await
             .expect("code storage")
@@ -473,7 +495,7 @@ mod tests {
         oidc_state: &str,
         session: &SignInSession,
     ) -> HeaderValue {
-        let now = sign_in_cookie::now_unix_secs();
+        let now = state.clock.now().whole_seconds();
         let sealed = session
             .seal(state.settings.handshake_keys(), oidc_state, now + 300)
             .expect("sealed session");
@@ -540,8 +562,20 @@ mod tests {
         .collect()
     }
 
+    /// Mounts a provider whose ID token is issued on the system clock.
     async fn mount_provider(server: &MockServer, token_status: u16, jwks_status: u16, nonce: &str) {
-        let mut claims = id_token_claims();
+        mount_provider_with(server, token_status, jwks_status, nonce, id_token_claims()).await;
+    }
+
+    /// Mounts a provider that answers a code with an ID token of `claims`,
+    /// for this server, sign-in and subject.
+    async fn mount_provider_with(
+        server: &MockServer,
+        token_status: u16,
+        jwks_status: u16,
+        nonce: &str,
+        mut claims: Value,
+    ) {
         set_claim(&mut claims, "iss", Value::String(server.uri()));
         set_claim(&mut claims, "nonce", Value::String(nonce.into()));
         set_claim(&mut claims, "sub", Value::String(UPSTREAM_SUBJECT.into()));
@@ -639,6 +673,69 @@ mod tests {
                 .is_empty(),
             "no provider exchange may start without the starting browser's cookie"
         );
+    }
+
+    /// The server's clock alone dates a sign-in: the five minutes its cookie
+    /// lasts, the provider's tokens, and the five minutes its code lasts.
+    /// The clock is in 2100, so a reading of the host's clock anywhere on the
+    /// way fails here.
+    #[tokio::test]
+    async fn the_servers_clock_dates_a_sign_in_and_the_code_it_issues() {
+        let server = MockServer::start().await;
+        let fixture = database().await;
+        let clock = ManualClock::starting_at(UnixNanos::new(4_102_444_800 * 1_000_000_000));
+        let mut app = state(&fixture, &server.uri());
+        app.clock = Arc::new(clock.clone());
+        let mut headers = HeaderMap::new();
+        headers.append(header::COOKIE, browser_cookie(&app, OIDC_STATE, &session()));
+        let callback = || {
+            oidc_callback(
+                State(app.clone()),
+                RawQuery(Some(query(&[
+                    ("state", OIDC_STATE),
+                    ("code", PROVIDER_CODE),
+                ]))),
+                headers.clone(),
+            )
+        };
+
+        // The last second of the sign-in's five minutes. The provider issues
+        // its token then.
+        clock.advance(Duration::from_secs(sign_in_cookie::MAX_AGE_SECONDS - 1));
+        let issued_at = clock.now();
+        mount_provider_with(&server, 200, 200, &nonce(), id_token_claims_at(issued_at)).await;
+        let finished = callback().await;
+        let code = redirect_query(&finished)
+            .into_iter()
+            .find(|(key, _value)| key == "code")
+            .expect("authorization code")
+            .1;
+        let expires_at = issued_at.saturating_add(AUTHORIZATION_CODE_TTL);
+        assert!(
+            redeem_at(&fixture.database(), &code, expires_at)
+                .await
+                .is_none(),
+            "the code has expired five minutes after the callback"
+        );
+        let last_instant = expires_at
+            .checked_sub(Duration::from_nanos(1))
+            .expect("an earlier instant");
+        assert!(
+            redeem_at(&fixture.database(), &code, last_instant)
+                .await
+                .is_some(),
+            "the code lasts until then"
+        );
+
+        // A second later the sign-in is over.
+        clock.advance(Duration::from_secs(1));
+        let expired = callback().await;
+        assert_eq!(expired.status(), StatusCode::BAD_REQUEST);
+        assert!(!expired.headers().contains_key(header::LOCATION));
+        let body = to_bytes(expired.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(error_code(&body), "invalid_request");
     }
 
     #[tokio::test]
@@ -1145,7 +1242,7 @@ mod tests {
                 issuer,
                 UPSTREAM_SUBJECT,
                 None,
-                now_unix_nanos_i64(),
+                coral_test_support::now_unix_nanos(),
             ))
             .await
         else {
@@ -1166,7 +1263,7 @@ mod tests {
             .create(
                 &coral_workspace::ChangeContext::new(
                     user.clone(),
-                    now_unix_nanos_i64(),
+                    coral_test_support::now_unix_nanos(),
                     coral_workspace::TraceId::current_or_new(),
                 ),
                 coral_workspace::WorkspaceDisplayName::parse(name).unwrap(),
@@ -1257,7 +1354,7 @@ mod tests {
                     code_challenge: &session.request.code_challenge,
                     resource: ORGANIZATION_RESOURCE,
                 },
-                now_unix_nanos_i64(),
+                coral_test_support::now_unix_nanos(),
             )
             .await
             .unwrap()
@@ -1370,7 +1467,7 @@ mod tests {
             .set_membership(
                 &coral_workspace::ChangeContext::new(
                     stranger,
-                    now_unix_nanos_i64(),
+                    coral_test_support::now_unix_nanos(),
                     coral_workspace::TraceId::current_or_new(),
                 ),
                 &shared,

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::external_user_id;
-use coral_db::Clock as _;
+use coral_db::UnixNanos;
 use coral_workspace::PrincipalKind;
 
 const DEFAULT_ISSUER: &str = "coral";
@@ -306,12 +306,14 @@ impl SessionTokenVerifier {
         })
     }
 
-    /// Validates an access token against exact, non-empty audience identifiers.
+    /// Validates an access token against exact, non-empty audience identifiers,
+    /// at `now`, the caller's one reading of the clock.
     /// Audience selection belongs to the trusted caller, never unverified claims.
     pub(crate) fn validate_access_token(
         &self,
         token: &str,
         accepted_audiences: &[&str],
+        now: UnixNanos,
     ) -> Result<ValidatedSession, SessionTokenError> {
         if accepted_audiences.is_empty()
             || accepted_audiences
@@ -353,15 +355,17 @@ impl SessionTokenVerifier {
             "nbf",
             "sub",
         ]);
-        validation.validate_nbf = true;
-        validation.leeway = CLOCK_SKEW.as_secs();
+        // `decode` would read the host's clock for `exp` and `nbf`.
+        // `validate_claims` checks them against `now` instead.
+        validation.validate_exp = false;
+        validation.validate_nbf = false;
         let claims = decode::<SessionTokenClaims>(token, verification_key, &validation)
             .map_err(|error| format!("invalid Coral access token: {error}"))?
             .claims;
         if !accepted_audiences.contains(&claims.aud.as_str()) {
             return Err(invalid_token("audience is not accepted by this surface"));
         }
-        self.validate_claims(&claims)?;
+        self.validate_claims(&claims, now)?;
         Ok(ValidatedSession {
             token_id: claims.jti,
             audience: claims.aud,
@@ -372,7 +376,14 @@ impl SessionTokenVerifier {
         })
     }
 
-    fn validate_claims(&self, claims: &SessionTokenClaims) -> Result<(), SessionTokenError> {
+    /// Checks the claims of a token whose signature is verified. A token
+    /// carries whole seconds, so `now` counts as the second it falls in, and
+    /// each time claim may be [`CLOCK_SKEW`] off.
+    fn validate_claims(
+        &self,
+        claims: &SessionTokenClaims,
+        now: UnixNanos,
+    ) -> Result<(), SessionTokenError> {
         let invalid = |message: &str| format!("invalid Coral access token: {message}");
         if claims.client_id.trim().is_empty()
             || claims.client_id.trim() != claims.client_id
@@ -389,8 +400,15 @@ impl SessionTokenVerifier {
         if external_user_id(&claims.sub).is_err() {
             return Err(invalid("subject, client_id, and jti must be valid"));
         }
-        let now = unix_timestamp();
-        if claims.iat > now.saturating_add(CLOCK_SKEW.as_secs()) {
+        let now = now.whole_seconds();
+        let latest_start = now.saturating_add(CLOCK_SKEW.as_secs());
+        if claims.exp.saturating_add(CLOCK_SKEW.as_secs()) < now {
+            return Err(invalid("token has expired"));
+        }
+        if claims.nbf > latest_start {
+            return Err(invalid("token is not valid yet"));
+        }
+        if claims.iat > latest_start {
             return Err(invalid("issued-at timestamp is in the future"));
         }
         let latest_exp = now
@@ -567,10 +585,6 @@ fn unix_seconds(now_unix_nanos: i64) -> Result<u64, SessionTokenError> {
         .map_err(|_error| "host time is before the Unix epoch".to_string())
 }
 
-fn unix_timestamp() -> u64 {
-    coral_db::SystemClock.now().whole_seconds()
-}
-
 /// Hand-signed tokens for tests of what the verifier refuses.
 ///
 /// Production issues User tokens only. Agent authentication requires the exact
@@ -580,13 +594,15 @@ fn unix_timestamp() -> u64 {
 pub(crate) mod test_tokens {
     use super::*;
 
+    /// The claims the issuer gives a token it issues at `now`.
     pub(super) fn claims(
         issuer: &SessionTokenIssuer,
         user_id: &str,
         client_id: &str,
         audience: &str,
+        now: UnixNanos,
     ) -> SessionTokenClaims {
-        let now = unix_timestamp();
+        let now = now.whole_seconds();
         SessionTokenClaims {
             iss: issuer.issuer.clone(),
             aud: audience.to_string(),
@@ -620,31 +636,41 @@ pub(crate) mod test_tokens {
         encode(&header, claims, &issuer.signing_key).expect("signed token")
     }
 
-    /// A correctly signed token that claims to authenticate an Agent.
+    /// A correctly signed token, issued at `now`, that claims to authenticate
+    /// an Agent.
     pub(crate) fn agent_kind_token(
         issuer: &SessionTokenIssuer,
         user_id: &str,
         client_id: &str,
         audience: &str,
+        now: UnixNanos,
     ) -> String {
-        let claims = changed(claims(issuer, user_id, client_id, audience), |claims| {
-            claims.principal_kind = ActorKindClaim::Agent;
-        });
+        let claims = changed(
+            claims(issuer, user_id, client_id, audience, now),
+            |claims| {
+                claims.principal_kind = ActorKindClaim::Agent;
+            },
+        );
         sign(issuer, &claims, Some(&issuer.signing_key_id))
     }
 
-    /// A correctly signed Workspace-scoped token that claims to authenticate an Agent.
+    /// A correctly signed Workspace-scoped token, issued at `now`, that
+    /// claims to authenticate an Agent.
     pub(crate) fn scoped_agent_kind_token(
         issuer: &SessionTokenIssuer,
         user_id: &str,
         client_id: &str,
         audience: &str,
         workspace_id: &str,
+        now: UnixNanos,
     ) -> String {
-        let claims = changed(claims(issuer, user_id, client_id, audience), |claims| {
-            claims.principal_kind = ActorKindClaim::Agent;
-            claims.workspace_id = Some(workspace_id.to_string());
-        });
+        let claims = changed(
+            claims(issuer, user_id, client_id, audience, now),
+            |claims| {
+                claims.principal_kind = ActorKindClaim::Agent;
+                claims.workspace_id = Some(workspace_id.to_string());
+            },
+        );
         sign(issuer, &claims, Some(&issuer.signing_key_id))
     }
 }
@@ -673,22 +699,29 @@ mod tests {
         test_issuer_with_key(&signing_key())
     }
 
-    /// The system clock, which validation reads: a test that validates a
-    /// token issues it at this time.
-    fn now() -> i64 {
-        coral_test_support::now_unix_nanos()
-    }
+    /// The instant these tests issue and validate at, in 2100: neither reads
+    /// a clock, and no real clock is near it. It is the last nanosecond of
+    /// its second, and a token carries whole seconds.
+    const NOW: UnixNanos = UnixNanos::new(4_102_444_800 * 1_000_000_000 + 999_999_999);
 
+    /// The claims of a token issued at [`NOW`].
     fn claims(issuer: &SessionTokenIssuer) -> SessionTokenClaims {
-        super::test_tokens::claims(issuer, "user-123", CLIENT_ID, MCP_AUDIENCE)
+        super::test_tokens::claims(issuer, "user-123", CLIENT_ID, MCP_AUDIENCE, NOW)
     }
 
-    fn assert_invalid(issuer: &SessionTokenIssuer, claims: &SessionTokenClaims) {
+    /// Validates a token with `claims` at [`NOW`].
+    fn validate(
+        issuer: &SessionTokenIssuer,
+        claims: &SessionTokenClaims,
+    ) -> Result<ValidatedSession, SessionTokenError> {
         let token = sign(issuer, claims, Some(&issuer.signing_key_id));
         issuer
             .verifier()
-            .validate_access_token(&token, &[MCP_AUDIENCE])
-            .expect_err("invalid token");
+            .validate_access_token(&token, &[MCP_AUDIENCE], NOW)
+    }
+
+    fn assert_invalid(issuer: &SessionTokenIssuer, claims: &SessionTokenClaims) {
+        validate(issuer, claims).expect_err("invalid token");
     }
 
     fn decode_unverified_claims(token: &str) -> serde_json::Value {
@@ -726,7 +759,7 @@ mod tests {
         let issuer = test_issuer();
         let verifier = issuer.verifier();
         let access = issuer
-            .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, now())
+            .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, NOW.get())
             .unwrap();
         let header = decode_header(&access.access_token).unwrap();
         assert_eq!(header.alg, Algorithm::ES256);
@@ -739,7 +772,7 @@ mod tests {
         assert_ne!(token_id, "");
         assert!(claims.get("scope").is_none());
         let session = verifier
-            .validate_access_token(&access.access_token, &[MCP_AUDIENCE])
+            .validate_access_token(&access.access_token, &[MCP_AUDIENCE], NOW)
             .unwrap();
         assert_eq!(session.token_id, token_id);
         assert_eq!(session.audience, MCP_AUDIENCE);
@@ -766,14 +799,14 @@ mod tests {
                 PrincipalKind::User,
                 "user",
                 issuer
-                    .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, now())
+                    .issue_access_token(USER_ID, CLIENT_ID, MCP_AUDIENCE, NOW.get())
                     .expect("session token")
                     .access_token,
             ),
             (
                 PrincipalKind::Agent,
                 "agent",
-                agent_kind_token(&issuer, USER_ID, CLIENT_ID, MCP_AUDIENCE),
+                agent_kind_token(&issuer, USER_ID, CLIENT_ID, MCP_AUDIENCE, NOW),
             ),
         ] {
             assert_eq!(
@@ -781,7 +814,7 @@ mod tests {
                 wire
             );
             let session = verifier
-                .validate_access_token(&token, &[MCP_AUDIENCE])
+                .validate_access_token(&token, &[MCP_AUDIENCE], NOW)
                 .expect("validated session");
             assert_eq!(session.principal_kind, kind);
             assert_eq!(session.user_id, USER_ID, "the subject is untouched by kind");
@@ -808,7 +841,7 @@ mod tests {
 
         let session = issuer
             .verifier()
-            .validate_access_token(&token, &[MCP_AUDIENCE])
+            .validate_access_token(&token, &[MCP_AUDIENCE], NOW)
             .expect("a token predating the claim still validates");
         assert_eq!(session.principal_kind, PrincipalKind::User);
     }
@@ -817,7 +850,8 @@ mod tests {
     fn issuance_rejects_subjects_that_could_never_authenticate() {
         let issuer = test_issuer();
         for user_id in ["", "   ", "user id", "user\tid", LOCAL_PRINCIPAL_ID] {
-            let Err(_error) = issuer.issue_access_token(user_id, CLIENT_ID, MCP_AUDIENCE, now())
+            let Err(_error) =
+                issuer.issue_access_token(user_id, CLIENT_ID, MCP_AUDIENCE, NOW.get())
             else {
                 panic!("token issuance should reject the subject {user_id:?}");
             };
@@ -859,7 +893,7 @@ mod tests {
         )
         .unwrap();
         verifier
-            .validate_access_token(&missing_client_id, &[MCP_AUDIENCE])
+            .validate_access_token(&missing_client_id, &[MCP_AUDIENCE], NOW)
             .expect_err("missing client_id");
         let mut wrong_algorithm_header = Header::new(Algorithm::HS256);
         wrong_algorithm_header.kid = Some(issuer.signing_key_id.clone());
@@ -870,64 +904,112 @@ mod tests {
         )
         .unwrap();
         verifier
-            .validate_access_token(&wrong_algorithm, &[MCP_AUDIENCE])
+            .validate_access_token(&wrong_algorithm, &[MCP_AUDIENCE], NOW)
             .expect_err("wrong algorithm");
         let mut wrong_type_header = Header::new(SESSION_TOKEN_ALGORITHM);
         wrong_type_header.kid = Some(issuer.signing_key_id.clone());
         let wrong_type = encode(&wrong_type_header, &original, &issuer.signing_key).unwrap();
         verifier
-            .validate_access_token(&wrong_type, &[MCP_AUDIENCE])
+            .validate_access_token(&wrong_type, &[MCP_AUDIENCE], NOW)
             .expect_err("wrong token type");
         let other = test_issuer();
         let signed_by_other = sign(&other, &original, Some(&issuer.signing_key_id));
         verifier
-            .validate_access_token(&signed_by_other, &[MCP_AUDIENCE])
+            .validate_access_token(&signed_by_other, &[MCP_AUDIENCE], NOW)
             .expect_err("wrong key");
         let missing_key_id = sign(&issuer, &original, None);
         verifier
-            .validate_access_token(&missing_key_id, &[MCP_AUDIENCE])
+            .validate_access_token(&missing_key_id, &[MCP_AUDIENCE], NOW)
             .expect_err("missing key id");
         let wrong_key_id = sign(&issuer, &original, Some("unknown"));
         verifier
-            .validate_access_token(&wrong_key_id, &[MCP_AUDIENCE])
+            .validate_access_token(&wrong_key_id, &[MCP_AUDIENCE], NOW)
             .expect_err("unknown key id");
     }
 
+    /// The verifier dates a token by the caller's instant alone, in whole
+    /// seconds, and lets each time claim be [`CLOCK_SKEW`] off. The instant
+    /// is in 2100, so a verifier that read the host's clock would refuse
+    /// every case here that is accepted.
     #[test]
-    fn access_token_rejects_invalid_temporal_claims() {
+    fn a_token_is_valid_from_its_start_to_its_expiry_give_or_take_the_clock_skew() {
+        type Change = fn(&mut SessionTokenClaims, u64, u64);
+        const SKEW: u64 = CLOCK_SKEW.as_secs();
+        const EXPIRED: Result<(), &str> = Err("token has expired");
+        const TOO_LONG: Result<(), &str> = Err("expiration exceeds configured access token TTL");
         let issuer = test_issuer();
-        let original = claims(&issuer);
-        let now = unix_timestamp();
-        // How far past the accepted skew the future-dated cases sit.
-        //
-        // The verifier reads the clock again after this test does, and
-        // `unix_timestamp` truncates to whole seconds, so a one-second offset
-        // lands exactly on the tolerance boundary — which `iat > now + skew`
-        // accepts — whenever the second boundary falls between the two reads.
-        // That raced at roughly 2% of runs. Pinning the boundary itself would
-        // need an injectable clock on the verifier; short of that the offset
-        // only has to dwarf the time these cases spend signing and validating.
-        let past_skew = CLOCK_SKEW.as_secs() + 30;
-        let time_invalid = [
-            changed(original.clone(), |c| {
-                c.iat = now + past_skew;
-                c.exp = c.iat + issuer.access_token_ttl.as_secs();
-            }),
-            changed(original.clone(), |c| c.nbf = now + past_skew),
-            changed(original.clone(), |c| c.exp += 1),
-            changed(original.clone(), |c| {
-                c.iat = now + CLOCK_SKEW.as_secs();
-                c.exp = c.iat + issuer.access_token_ttl.as_secs() + 2;
-            }),
-            changed(original.clone(), |c| c.exp = c.iat - 1),
-            changed(original, |c| {
-                c.iat = now - issuer.access_token_ttl.as_secs() - CLOCK_SKEW.as_secs() - 1;
+        let ttl = issuer.access_token_ttl.as_secs();
+        let now = NOW.whole_seconds();
+        // Each change gets the second the verifier reads and the lifetime.
+        let cases: [(&str, Result<(), &str>, Change); 11] = [
+            ("issued this second", Ok(()), |_claims, _now, _ttl| {}),
+            ("expired as long ago as the skew", Ok(()), |c, now, ttl| {
+                c.exp = now - SKEW;
+                c.iat = c.exp - ttl;
                 c.nbf = c.iat;
-                c.exp = now - CLOCK_SKEW.as_secs() - 1;
+            }),
+            (
+                "expired a second longer ago than the skew",
+                EXPIRED,
+                |c, now, ttl| {
+                    c.exp = now - SKEW - 1;
+                    c.iat = c.exp - ttl;
+                    c.nbf = c.iat;
+                },
+            ),
+            ("starts as far ahead as the skew", Ok(()), |c, now, _ttl| {
+                c.nbf = now + SKEW;
+            }),
+            (
+                "starts a second further ahead than the skew",
+                Err("token is not valid yet"),
+                |c, now, _ttl| c.nbf = now + SKEW + 1,
+            ),
+            ("issued as far ahead as the skew", Ok(()), |c, now, ttl| {
+                c.iat = now + SKEW;
+                c.nbf = c.iat;
+                c.exp = c.iat + ttl;
+            }),
+            (
+                "issued a second further ahead than the skew",
+                Err("issued-at timestamp is in the future"),
+                // It starts and expires as the case above does: only its
+                // issue time is too far ahead.
+                |c, now, ttl| {
+                    c.iat = now + SKEW + 1;
+                    c.nbf = now + SKEW;
+                    c.exp = now + SKEW + ttl;
+                },
+            ),
+            (
+                "lasts a second longer than the lifetime",
+                Err("token lifetime exceeds configured access token TTL"),
+                |c, _now, ttl| c.exp = c.iat + ttl + 1,
+            ),
+            (
+                "issued ahead and expires later than a token issued now can",
+                TOO_LONG,
+                |c, now, ttl| {
+                    c.iat = now + SKEW;
+                    c.exp = c.iat + ttl + 2;
+                },
+            ),
+            (
+                "expires before it is issued",
+                Err("expiration is earlier than issued-at timestamp"),
+                |c, _now, _ttl| c.exp = c.iat - 1,
+            ),
+            ("expires at the end of time", TOO_LONG, |c, _now, _ttl| {
+                c.exp = u64::MAX;
             }),
         ];
-        for claims in time_invalid {
-            assert_invalid(&issuer, &claims);
+        for (case, expected, change) in cases {
+            let claims = changed(claims(&issuer), |claims| change(claims, now, ttl));
+            assert_eq!(
+                validate(&issuer, &claims).map(drop),
+                expected.map_err(invalid_token),
+                "{case}"
+            );
         }
     }
 
@@ -966,30 +1048,30 @@ mod tests {
         let issuer = test_issuer();
         let verifier = issuer.verifier();
         let mcp = issuer
-            .issue_access_token("user-123", "mcp-client", MCP_AUDIENCE, now())
+            .issue_access_token("user-123", "mcp-client", MCP_AUDIENCE, NOW.get())
             .unwrap();
         let bff = issuer
-            .issue_access_token("user-123", "bff-client", BFF_AUDIENCE, now())
+            .issue_access_token("user-123", "bff-client", BFF_AUDIENCE, NOW.get())
             .unwrap();
 
         verifier
-            .validate_access_token(&mcp.access_token, &[MCP_AUDIENCE])
+            .validate_access_token(&mcp.access_token, &[MCP_AUDIENCE], NOW)
             .expect("MCP token should validate for the MCP audience");
         verifier
-            .validate_access_token(&bff.access_token, &[BFF_AUDIENCE])
+            .validate_access_token(&bff.access_token, &[BFF_AUDIENCE], NOW)
             .expect("BFF token should validate for the BFF audience");
         verifier
-            .validate_access_token(&mcp.access_token, &[BFF_AUDIENCE])
+            .validate_access_token(&mcp.access_token, &[BFF_AUDIENCE], NOW)
             .expect_err("MCP token should not validate for the BFF audience");
         for token in [&mcp.access_token, &bff.access_token] {
             verifier
-                .validate_access_token(token, &[MCP_AUDIENCE, BFF_AUDIENCE])
+                .validate_access_token(token, &[MCP_AUDIENCE, BFF_AUDIENCE], NOW)
                 .expect("token should validate for the combined audience policy");
             verifier
-                .validate_access_token(token, &[])
+                .validate_access_token(token, &[], NOW)
                 .expect_err("an empty audience policy must fail closed");
             verifier
-                .validate_access_token(token, &[" "])
+                .validate_access_token(token, &[" "], NOW)
                 .expect_err("an invalid audience policy must fail closed");
         }
 
@@ -999,7 +1081,7 @@ mod tests {
             (CLIENT_ID, ""),
             (CLIENT_ID, "audience "),
         ] {
-            let Err(_error) = issuer.issue_access_token("user-123", client_id, audience, now())
+            let Err(_error) = issuer.issue_access_token("user-123", client_id, audience, NOW.get())
             else {
                 panic!(
                     "token issuance should reject client_id={client_id:?}, audience={audience:?}"
@@ -1012,11 +1094,11 @@ mod tests {
     fn public_jwks_support_detached_validation() {
         let issuer = test_issuer();
         let token = issuer
-            .issue_access_token("user-123", CLIENT_ID, MCP_AUDIENCE, now())
+            .issue_access_token("user-123", CLIENT_ID, MCP_AUDIENCE, NOW.get())
             .unwrap();
         let expected = issuer
             .verifier()
-            .validate_access_token(&token.access_token, &[MCP_AUDIENCE])
+            .validate_access_token(&token.access_token, &[MCP_AUDIENCE], NOW)
             .expect("issuer verifier should accept the token");
         assert_eq!(issuer.verification_jwks().keys.len(), 1);
         let detached = SessionTokenVerifier::new(
@@ -1027,7 +1109,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             detached
-                .validate_access_token(&token.access_token, &[MCP_AUDIENCE])
+                .validate_access_token(&token.access_token, &[MCP_AUDIENCE], NOW)
                 .unwrap(),
             expected
         );

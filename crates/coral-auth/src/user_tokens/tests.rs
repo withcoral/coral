@@ -20,12 +20,6 @@ use crate::{PrincipalAuthentication, PrivateAudience, SessionTokenIssuer};
 pub(super) const NOW: i64 = 1_800_000_000_000_000_000;
 pub(super) const SECOND: i64 = 1_000_000_000;
 
-/// A host time on the system clock, for a test that authenticates the access
-/// tokens it is issued: authentication reads the system clock. It is ten
-/// seconds back, so a token issued seconds after it is not from the future.
-pub(super) fn real_now() -> i64 {
-    coral_test_support::now_unix_nanos() - 10 * SECOND
-}
 pub(super) const CLIENT: &str = "https://client.example.test/oauth/client.json";
 const REDIRECT: &str = "http://127.0.0.1:14554/callback";
 pub(super) const REEF: &str = "https://reef.example.test";
@@ -236,19 +230,28 @@ impl Fixture {
             .await
     }
 
-    /// Authenticates `access_token` at the fixture Workspace's private MCP
-    /// surface, on the system clock: issue the token at [`real_now`].
-    pub(super) async fn authenticates(&self, access_token: &str) -> bool {
+    /// Authentication over the fixture's issuer and database, at a clock
+    /// that reads ten seconds after [`NOW`]: every access token these tests
+    /// authenticate is issued by then and has not expired.
+    pub(super) fn authentication(&self) -> PrincipalAuthentication {
+        let soon = coral_db::UnixNanos::new(NOW + 10 * SECOND);
         PrincipalAuthentication::new(
             &self.issuer,
             OrganizationModule::new(self.database.database()),
             WorkspaceModule::new(self.database.database()),
+            std::sync::Arc::new(coral_test_support::ManualClock::starting_at(soon)),
         )
-        .authenticate_scoped(&self.workspace, Some(access_token), "mcp")
-        .await
-        .is_ok_and(|principal: AuthenticatedPrincipal| {
-            principal.principal().id().as_str() == self.user.user_id().as_str()
-        })
+    }
+
+    /// Authenticates `access_token` at the fixture Workspace's private MCP
+    /// surface.
+    pub(super) async fn authenticates(&self, access_token: &str) -> bool {
+        self.authentication()
+            .authenticate_scoped(&self.workspace, Some(access_token), "mcp")
+            .await
+            .is_ok_and(|principal: AuthenticatedPrincipal| {
+                principal.principal().id().as_str() == self.user.user_id().as_str()
+            })
     }
 }
 
@@ -272,7 +275,7 @@ pub(super) fn refresh_token(issued: &IssuedTokens) -> String {
 #[tokio::test]
 async fn a_refresh_rotates_the_token_and_keeps_the_user_and_workspace() {
     let fixture = Fixture::new().await;
-    let now = real_now();
+    let now = NOW;
     let first = fixture.refreshable_at(now).await;
     let refreshed = fixture.refresh(&first, now + SECOND).await.unwrap();
     assert!(
@@ -299,7 +302,7 @@ async fn a_client_that_did_not_declare_refresh_gets_an_access_token_alone() {
             &fixture.workspace_resource(),
             AccessTarget::PrivateMcp(fixture.workspace.clone()),
             false,
-            real_now(),
+            NOW,
         )
         .await
         .unwrap();
@@ -457,7 +460,7 @@ async fn revocation_ends_the_grant_for_its_own_client_only() {
             .await,
         Ok(())
     );
-    let now = real_now();
+    let now = NOW;
     let first = fixture.refreshable_at(now).await;
     let issued = fixture.refresh(&first, now + SECOND).await.unwrap();
     let current = refresh_token(&issued);
@@ -547,7 +550,7 @@ async fn a_revocation_racing_a_refresh_leaves_nothing_refreshable() {
 #[tokio::test]
 async fn refresh_rechecks_current_organization_membership() {
     let fixture = Fixture::new().await;
-    let now = real_now();
+    let now = NOW;
     let token = fixture.refreshable_at(now).await;
     let owner = provision_user(
         fixture.database.database(),

@@ -1,4 +1,6 @@
-use coral_db::Clock as _;
+use std::sync::Arc;
+
+use coral_db::{Clock, UnixNanos};
 use coral_workspace::{
     AuthenticatedPrincipal, OrganizationModule, PrincipalKind, WorkspaceId, WorkspaceModule,
     local_organization_owner,
@@ -32,10 +34,14 @@ pub enum AuthenticationError {
 /// An auth-disabled deployment ([`Self::local`]) has no User sign-in: a missing
 /// credential is the implicit local Owner, and every presented credential must
 /// authenticate an Agent Registration. A credential never falls back to the Owner.
+///
+/// Each call reads the clock it was built with once, and that instant dates
+/// every expiry the call checks.
 #[derive(Clone)]
 pub struct PrincipalAuthentication {
     mode: Mode,
     workspaces: WorkspaceModule,
+    clock: Arc<dyn Clock>,
 }
 
 #[derive(Clone)]
@@ -49,11 +55,15 @@ enum Mode {
 impl PrincipalAuthentication {
     /// Builds authentication from the issuer's verification material and authority Modules.
     /// The authentication Module retains no signing key.
+    ///
+    /// `clock` is the deployment's one clock: the one that dates the tokens
+    /// `issuer` issues, or a token looks expired or not valid yet.
     #[must_use]
     pub fn new(
         issuer: &SessionTokenIssuer,
         organization: OrganizationModule,
         workspaces: WorkspaceModule,
+        clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             mode: Mode::SignedIn(SignIn {
@@ -61,17 +71,20 @@ impl PrincipalAuthentication {
                 organization,
             }),
             workspaces,
+            clock,
         }
     }
 
     /// Builds authentication for an auth-disabled deployment, where no User signs in.
     ///
     /// Composition must bind every listener that serves it to loopback only.
+    /// `clock` is the deployment's one clock.
     #[must_use]
-    pub const fn local(workspaces: WorkspaceModule) -> Self {
+    pub const fn local(workspaces: WorkspaceModule, clock: Arc<dyn Clock>) -> Self {
         Self {
             mode: Mode::Local,
             workspaces,
+            clock,
         }
     }
 
@@ -143,6 +156,7 @@ impl PrincipalAuthentication {
         let session = sign_in.session(
             bearer.ok_or(AuthenticationError::Unauthenticated)?,
             audience,
+            self.clock.now(),
         )?;
         if session.workspace_id.is_some() {
             return Err(AuthenticationError::Unauthenticated);
@@ -168,12 +182,13 @@ impl PrincipalAuthentication {
                 }
             };
         };
+        let now = self.clock.now();
         // Without sign-in, every credential names an Agent Registration.
         let sign_in = match &self.mode {
             Mode::SignedIn(sign_in) if !credential.starts_with("coral_agent_") => sign_in,
-            Mode::SignedIn(_) | Mode::Local => return self.agent(fixed_by, credential).await,
+            Mode::SignedIn(_) | Mode::Local => return self.agent(fixed_by, credential, now).await,
         };
-        let session = sign_in.session(credential, expected_audience)?;
+        let session = sign_in.session(credential, expected_audience, now)?;
         let scope = session.workspace_id.as_deref();
         let workspace = match fixed_by {
             WorkspaceFixedBy::Url(workspace) => {
@@ -191,13 +206,15 @@ impl PrincipalAuthentication {
         Ok((sign_in.user(&session).await?, workspace))
     }
 
-    /// The Agent whose Registration `credential` authenticates, in the Workspace it fixes.
+    /// The Agent whose Registration `credential` authenticates at `now`, in
+    /// the Workspace it fixes.
     async fn agent(
         &self,
         fixed_by: WorkspaceFixedBy<'_>,
         credential: &str,
+        now: UnixNanos,
     ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
-        let now = coral_db::SystemClock.now().get();
+        let now = now.get();
         Ok(match fixed_by {
             WorkspaceFixedBy::Url(workspace) => (
                 self.workspaces
@@ -226,9 +243,10 @@ impl SignIn {
         &self,
         credential: &str,
         audience: &str,
+        now: UnixNanos,
     ) -> Result<ValidatedSession, AuthenticationError> {
         self.sessions
-            .validate_access_token(credential, &[audience])
+            .validate_access_token(credential, &[audience], now)
             .map_err(|_error| AuthenticationError::Unauthenticated)
     }
 

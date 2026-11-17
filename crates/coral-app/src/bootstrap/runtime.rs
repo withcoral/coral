@@ -64,6 +64,10 @@ pub struct Launch {
     /// Where startup reports each database migration step it applies. They
     /// run before telemetry starts, so without this a long step is silent.
     pub migration_report: Option<MigrationReport>,
+    /// The clock this Coral Instance reads: for a test that starts Coral in
+    /// its own process and drives time itself. Without one, the instance
+    /// reads the host's clock, as every launching binary does.
+    pub clock: Option<Arc<dyn coral_db::Clock>>,
 }
 
 impl Launch {
@@ -93,6 +97,10 @@ impl Launch {
         };
         let builder = match self.migration_report {
             Some(report) => builder.with_migration_report(report),
+            None => builder,
+        };
+        let builder = match self.clock {
+            Some(clock) => builder.with_clock(clock),
             None => builder,
         };
         if self.desktop {
@@ -376,6 +384,7 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, R
         private_listeners,
         authorization_server,
         workspace_authentication,
+        clock,
     } = builder
         .compose(session_auth)
         .await
@@ -388,6 +397,7 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, R
         authorization_server.map(|server| *server),
         auth_bind_addr,
         grpc.engine(),
+        clock.clone(),
     )
     .await
     {
@@ -402,6 +412,7 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, R
         grpc.engine(),
         workspace_authentication,
         settings.human_interface().clone(),
+        clock,
     )
     .await
     {
@@ -428,6 +439,7 @@ async fn start_auth_support(
     authorization_server: Option<CoralAuthorizationServer>,
     bind_addr: SocketAddr,
     engine: &Engine,
+    clock: Arc<dyn coral_db::Clock>,
 ) -> Result<Option<RunningCoralAuthorizationServer>, AuthServerError> {
     match authorization_server {
         Some(server) => server.start().await.map(Some),
@@ -435,6 +447,7 @@ async fn start_auth_support(
             bind_addr,
             engine.readiness(),
             engine.accounts(),
+            clock,
         )
         .await
         .map(Some),
@@ -458,18 +471,20 @@ async fn shutdown_components(
     ShutdownFailures::from_results(mcp_result, auth_support_result, grpc_result)
 }
 
-/// Starts the MCP companion over `engine`.
+/// Starts the MCP companion over `engine`. Without sign-in, its
+/// authentication reads `clock`.
 async fn start_mcp_http(
     settings: McpHttpServeConfig,
     engine: &Engine,
     authentication: Option<crate::WorkspaceAuthentication>,
     human_interface: coral_mcp::HumanInterfaceUrl,
+    clock: Arc<dyn coral_db::Clock>,
 ) -> Result<RunningMcpHttpServer, McpStartError> {
     let readiness = engine.readiness().probe();
     let modules = engine.mcp_modules(human_interface);
     let server = match settings {
         McpHttpServeConfig::AuthDisabled { bind_addr } => {
-            start_local(McpHttpConfig::new(bind_addr)?, modules, readiness).await?
+            start_local(McpHttpConfig::new(bind_addr)?, modules, readiness, clock).await?
         }
         McpHttpServeConfig::Authenticated {
             bind_addr,

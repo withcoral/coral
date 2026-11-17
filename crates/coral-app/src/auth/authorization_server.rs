@@ -53,6 +53,7 @@ pub struct CoralAuthorizationServer {
     authorization_resources: BTreeSet<String>,
     workspace_resource_family: Option<WorkspaceMcpUrls>,
     database: Arc<coral_db::Database>,
+    clock: Arc<dyn coral_db::Clock>,
     readiness: Option<crate::ListenerReadiness>,
     providers: Option<coral_provider::ProviderModule>,
 }
@@ -74,6 +75,9 @@ impl CoralAuthorizationServer {
     /// Processes that share it and the session signing key can each finish a
     /// sign-in another one started.
     ///
+    /// `clock` is the deployment's one clock. It dates every token, code and
+    /// cookie the server issues, so whatever verifies them must read it too.
+    ///
     /// # Errors
     ///
     /// Returns an error when the provider secret cannot be resolved from its
@@ -85,14 +89,20 @@ impl CoralAuthorizationServer {
         settings: AuthSettings,
         outbound_policy: coral_outbound::DestinationPolicy,
         database: Arc<coral_db::Database>,
+        clock: Arc<dyn coral_db::Clock>,
     ) -> Result<Self, AuthServerError> {
         let authorization_resources = settings.allowed_audiences().to_vec();
         let (settings, session_tokens) = settings
             .resolve_runtime_dependencies(config_path, &|name| {
                 crate::bootstrap::env_var(name).map_err(|error| signing_key_env_error(&error))
             })?;
-        let mut server =
-            Self::from_resolved_settings(settings, session_tokens, outbound_policy, database)?;
+        let mut server = Self::from_resolved_settings(
+            settings,
+            session_tokens,
+            outbound_policy,
+            database,
+            clock,
+        )?;
         for resource in authorization_resources {
             server = server
                 .with_authorization_resource(resource)
@@ -106,6 +116,7 @@ impl CoralAuthorizationServer {
         session_tokens: SessionTokenIssuer,
         outbound_policy: coral_outbound::DestinationPolicy,
         database: Arc<coral_db::Database>,
+        clock: Arc<dyn coral_db::Clock>,
     ) -> Result<Self, AuthServerError> {
         if !settings.matches_session_token_issuer(&session_tokens) {
             return Err(AuthServerError::SessionIssuerMismatch);
@@ -117,6 +128,7 @@ impl CoralAuthorizationServer {
             authorization_resources: BTreeSet::new(),
             workspace_resource_family: None,
             database,
+            clock,
             readiness: None,
             providers: None,
         })
@@ -150,13 +162,15 @@ impl CoralAuthorizationServer {
         start_listener(bind, health_routes(Router::new(), Some(readiness))).await
     }
 
-    /// Starts local auth support with the Provider domain's upstream callback.
+    /// Starts local auth support with the Provider domain's upstream callback,
+    /// which `clock`, the deployment's one clock, dates.
     /// # Errors
     /// Requires loopback and reports the configured port's bind failure unchanged.
     pub async fn start_local_with_provider_oauth(
         bind: SocketAddr,
         readiness: crate::ListenerReadiness,
         accounts: coral_provider::account::AccountModule,
+        clock: Arc<dyn coral_db::Clock>,
     ) -> Result<RunningCoralAuthorizationServer, AuthServerError> {
         if !crate::bootstrap::is_loopback_ip(bind.ip()) {
             return Err(AuthServerError::Config(
@@ -167,7 +181,7 @@ impl CoralAuthorizationServer {
             bind,
             health_routes(
                 coral_telemetry::trace_http_routes(
-                    provider_callback::router(accounts),
+                    provider_callback::router(accounts, clock),
                     coral_telemetry::metric::Interface::Auth,
                 ),
                 Some(readiness),
@@ -231,6 +245,7 @@ impl CoralAuthorizationServer {
             self.database,
             self.outbound_policy,
             self.providers,
+            self.clock,
         )?;
         start_listener(
             bind_addr,
@@ -404,9 +419,16 @@ struct AuthorizationServerHttpState {
     /// Names each Workspace's Providers on that page; display only. Absent
     /// until the server is composed with the Provider Module.
     providers: Option<coral_provider::ProviderModule>,
+    /// The deployment's one clock. A handler reads it once and passes that
+    /// instant to everything the request decides.
+    clock: Arc<dyn coral_db::Clock>,
 }
 
 impl AuthorizationServerHttpState {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is one part of the prepared server, which is the one production caller"
+    )]
     fn new(
         settings: Arc<ResolvedAuthSettings>,
         session_tokens: SessionTokenIssuer,
@@ -415,6 +437,7 @@ impl AuthorizationServerHttpState {
         database: Arc<coral_db::Database>,
         outbound_policy: coral_outbound::DestinationPolicy,
         providers: Option<coral_provider::ProviderModule>,
+        clock: Arc<dyn coral_db::Clock>,
     ) -> Result<Self, AuthServerError> {
         // Preserve local MCP client-ID derivation, but never treat an HTTPS
         // MCP base as an operator-registered Reef metadata destination. Only
@@ -469,6 +492,7 @@ impl AuthorizationServerHttpState {
             workspaces,
             organization,
             providers,
+            clock,
         })
     }
 
@@ -599,6 +623,7 @@ mod test_state {
                 coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
                 coral_catalog::SchemaGraphCache::with_default_budget(),
             )),
+            Arc::new(coral_db::SystemClock),
         )
         .expect("authorization server state")
     }
@@ -676,8 +701,14 @@ mod tests {
         let settings = crate::bootstrap::auth_settings(&raw)
             .expect("valid config")
             .expect("auth settings");
-        CoralAuthorizationServer::from_settings(&config_path, settings, loopback_policy(), database)
-            .expect("valid server dependencies")
+        CoralAuthorizationServer::from_settings(
+            &config_path,
+            settings,
+            loopback_policy(),
+            database,
+            Arc::new(coral_db::SystemClock),
+        )
+        .expect("valid server dependencies")
     }
 
     async fn json(client: &reqwest::Client, url: String) -> Value {
@@ -702,6 +733,7 @@ mod tests {
             settings,
             loopback_policy(),
             fixture.database(),
+            Arc::new(coral_db::SystemClock),
         )
         .expect("prepared from snapshot");
     }
@@ -730,6 +762,7 @@ mod tests {
             session_tokens,
             loopback_policy(),
             fixture.database(),
+            Arc::new(coral_db::SystemClock),
         ) else {
             panic!("expected mismatched session settings");
         };
@@ -770,6 +803,7 @@ mod tests {
             prepared.database,
             prepared.outbound_policy,
             None,
+            prepared.clock,
         )
         .expect("authorization server state");
 

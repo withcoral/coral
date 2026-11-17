@@ -141,6 +141,8 @@ impl Drop for RunningMcpHttpServer {
 /// must authenticate an Agent Registration. Each path fixes one Workspace, and normal authority is
 /// checked before transport dispatch. Domain Modules recheck exact authority,
 /// attribution, and resource visibility for each tool operation.
+/// `clock` is the deployment's one clock: it dates an Agent Registration's
+/// expiry.
 ///
 /// # Errors
 ///
@@ -149,9 +151,10 @@ pub async fn start_local(
     config: McpHttpConfig,
     modules: McpModules,
     readiness: ReadinessProbe,
+    clock: Arc<dyn coral_db::Clock>,
 ) -> Result<RunningMcpHttpServer, McpHttpError> {
     let authentication = Arc::new(LocalAuthentication(
-        coral_auth::PrincipalAuthentication::local(modules.workspaces.clone()),
+        coral_auth::PrincipalAuthentication::local(modules.workspaces.clone(), clock),
     ));
     start_server(config, modules, authentication, None, readiness).await
 }
