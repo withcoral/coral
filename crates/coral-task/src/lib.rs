@@ -243,10 +243,7 @@ impl TaskModule {
             .await
         {
             Ok(evidence) => Ok(evidence.effective_role() == WorkspaceRole::Owner),
-            Err(
-                coral_workspace::Error::WorkspaceNotFound
-                | coral_workspace::Error::PermissionDenied(_),
-            ) if conceal_resource => Err(Error::TaskNotFound),
+            Err(error) if conceal_resource && error.denies_access() => Err(Error::TaskNotFound),
             Err(error) => Err(error.into()),
         }
     }
@@ -283,10 +280,12 @@ impl TaskModule {
                 ended_at_unix_nanos,
             )
             .await
-            .map_err(|error| match error {
-                coral_workspace::Error::WorkspaceNotFound
-                | coral_workspace::Error::PermissionDenied(_) => Error::TaskNotFound,
-                other => other.into(),
+            .map_err(|error| {
+                if error.denies_access() {
+                    Error::TaskNotFound
+                } else {
+                    error.into()
+                }
             })?
             .require_current_at(commands::now()?)?;
         let task = repository::complete_for_principal(
@@ -316,10 +315,12 @@ impl TaskModule {
             .workspaces
             .check_in_transaction(transaction, user, workspace, WorkspaceAction::Inspect)
             .await
-            .map_err(|error| match error {
-                coral_workspace::Error::WorkspaceNotFound
-                | coral_workspace::Error::PermissionDenied(_) => Error::TaskNotFound,
-                other => other.into(),
+            .map_err(|error| {
+                if error.denies_access() {
+                    Error::TaskNotFound
+                } else {
+                    error.into()
+                }
             })?;
         repository::find_visible(
             transaction,

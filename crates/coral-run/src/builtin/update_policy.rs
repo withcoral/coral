@@ -39,9 +39,7 @@ impl UpdatePolicy {
                 coral_policy::Error::RefusedToolPaths { missing, builtin } => {
                     Error::InvocationRejected(refused_paths(missing, builtin))
                 }
-                coral_policy::Error::Workspace(error)
-                    if crate::enforcement::loses_authority(&error) =>
-                {
+                error if crate::enforcement::ended_authority(error.workspace_refusal()) => {
                     Error::InvocationRejected(CoralFailure::AuthorityLost.into())
                 }
                 other => other.into(),

@@ -269,9 +269,11 @@ async fn provision(
 const fn provisioning_error_code(error: &coral_auth::Error) -> &'static str {
     match error {
         coral_auth::Error::CorruptData { .. } => "corrupt_data",
-        coral_auth::Error::Database(error)
-        | coral_auth::Error::Organization(coral_workspace::Error::Database(error)) => error.code(),
-        coral_auth::Error::Organization { .. } => "organization",
+        coral_auth::Error::Database(error) => error.code(),
+        coral_auth::Error::Organization(error) => match error.database_error() {
+            Some(error) => error.code(),
+            None => "organization",
+        },
     }
 }
 

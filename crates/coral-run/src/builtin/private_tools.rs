@@ -298,7 +298,7 @@ fn failure(field: &str, error: coral_tools::Error) -> Error {
             ))
         }
         E::PermissionDenied(_) => Error::InvocationRejected(CoralFailure::AuthorityLost.into()),
-        E::Workspace(error) if crate::enforcement::loses_authority(&error) => {
+        error if crate::enforcement::ended_authority(error.workspace_refusal()) => {
             Error::InvocationRejected(CoralFailure::AuthorityLost.into())
         }
         other => other.into(),

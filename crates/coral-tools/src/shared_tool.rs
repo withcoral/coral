@@ -1398,9 +1398,12 @@ impl SharedToolModule {
             .workspaces
             .check_configuration_in_transaction(transaction, context.actor(), workspace_id)
             .await
-            .map_err(|error| match error {
-                coral_workspace::Error::PermissionDenied(_) => Error::PermissionDenied(denial),
-                other => other.into(),
+            .map_err(|error| {
+                if error.refusal() == Some(coral_workspace::AuthorityRefusal::PermissionDenied) {
+                    Error::PermissionDenied(denial)
+                } else {
+                    error.into()
+                }
             })?;
         require_owner(&evidence, denial)
     }
@@ -1442,12 +1445,12 @@ impl SharedToolModule {
             )
             .await
             .map(drop)
-            .map_err(|error| match error {
-                coral_workspace::Error::WorkspaceNotFound
-                | coral_workspace::Error::PermissionDenied(_) => {
+            .map_err(|error| {
+                if error.denies_access() {
                     Error::NotFound(AuthoredToolKind::Shared)
+                } else {
+                    error.into()
                 }
-                other => other.into(),
             })
     }
 }

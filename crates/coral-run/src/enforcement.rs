@@ -515,11 +515,18 @@ pub(crate) fn authority_failure(error: coral_workspace::Error) -> Result<CoralFa
     }
 }
 
-/// Whether a Workspace error means the Principal lost authority, rather than
-/// a host defect.
-pub(crate) const fn loses_authority(error: &coral_workspace::Error) -> bool {
-    match error.refusal() {
+/// Whether the refusal a module error wraps, if any, means the Principal
+/// lost authority. A caller passes its error's `workspace_refusal()`, so a
+/// refusal counts whichever module's error holds it.
+pub(crate) const fn ended_authority(refusal: Option<coral_workspace::AuthorityRefusal>) -> bool {
+    match refusal {
         Some(refusal) => refusal.ends_authority(),
         None => false,
     }
+}
+
+/// Whether a Workspace error means the Principal lost authority, rather than
+/// a host defect.
+pub(crate) const fn loses_authority(error: &coral_workspace::Error) -> bool {
+    ended_authority(error.refusal())
 }

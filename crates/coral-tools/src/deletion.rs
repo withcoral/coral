@@ -101,10 +101,9 @@ impl PrivateToolDeletion {
 }
 
 fn conceal_agent_private_tool_error(error: coral_workspace::Error) -> Error {
-    match error {
-        coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_) => {
-            Error::NotFound(AuthoredToolKind::Private)
-        }
-        other => Error::Workspace(other),
+    if error.denies_access() {
+        Error::NotFound(AuthoredToolKind::Private)
+    } else {
+        Error::Workspace(error)
     }
 }

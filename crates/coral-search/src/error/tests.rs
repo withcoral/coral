@@ -145,3 +145,42 @@ fn an_undeclared_types_message_names_the_missing_types_and_a_bounded_declared_li
         assert_eq!(undeclared_types_message(&undeclared, &declared), expected);
     }
 }
+
+// Catches: a caller with no access to the Workspace learning that a Call
+// Path exists there, because a Provider or policy error held the refusal.
+#[test]
+fn a_caller_with_no_access_finds_no_authoring_description() {
+    use coral_workspace::Error as Workspace;
+    let concealed = [
+        Error::PermissionDenied("discovery"),
+        Error::Workspace(Workspace::WorkspaceNotFound),
+        Error::Provider(coral_provider::Error::Workspace(
+            Workspace::WorkspaceNotFound,
+        )),
+        Error::Policy(coral_policy::Error::Provider(
+            coral_provider::Error::Workspace(Workspace::PermissionDenied(
+                coral_workspace::Denial::WorkspaceOwnerRequired,
+            )),
+        )),
+        Error::Tools(coral_tools::Error::Workspace(Workspace::WorkspaceNotFound)),
+    ];
+    for error in concealed {
+        let label = format!("{error:?}");
+        assert!(
+            matches!(
+                crate::conceal_description_error(error),
+                Error::AuthoringDescriptionNotFound
+            ),
+            "{label}"
+        );
+    }
+    // What the caller may know stays as it is.
+    assert!(matches!(
+        crate::conceal_description_error(Error::Workspace(Workspace::WorkspaceArchived)),
+        Error::Workspace(Workspace::WorkspaceArchived)
+    ));
+    assert!(matches!(
+        crate::conceal_description_error(Error::ServiceUnavailable),
+        Error::ServiceUnavailable
+    ));
+}

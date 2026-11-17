@@ -126,7 +126,11 @@ impl From<coral_workspace::Error> for Error {
     fn from(error: coral_workspace::Error) -> Self {
         match error {
             coral_workspace::Error::Database(error) => Self::Database(error),
-            coral_workspace::Error::PermissionDenied(_) => Self::PermissionDenied,
+            other
+                if other.refusal() == Some(coral_workspace::AuthorityRefusal::PermissionDenied) =>
+            {
+                Self::PermissionDenied
+            }
             _ => Self::Unavailable,
         }
     }
