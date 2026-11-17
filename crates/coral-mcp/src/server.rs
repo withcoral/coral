@@ -531,10 +531,10 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
             ToolFailure::stable("task_not_found", "Task was not found")
         }
         coral_task::Error::WorkspaceNotFound => {
-            ToolFailure::stable("workspace_not_found", "Workspace was not found")
+            refusal_failure(coral_workspace::AuthorityRefusal::WorkspaceNotFound)
         }
         coral_task::Error::PermissionDenied(_) => {
-            ToolFailure::stable("permission_denied", "Permission was denied")
+            refusal_failure(coral_workspace::AuthorityRefusal::PermissionDenied)
         }
         coral_task::Error::Workspace(error) => workspace_tool_failure(error),
         coral_task::Error::Search(error) => return search_failure(error),
@@ -591,6 +591,8 @@ const fn lookup_error_kind(error: &coral_search::Error) -> &'static str {
     match error {
         coral_search::Error::Database(_) => "database",
         coral_search::Error::Provider(_) => "provider",
+        coral_search::Error::Policy(_) => "policy",
+        coral_search::Error::Tools(_) => "tools",
         coral_search::Error::Workspace(_) => "workspace",
         // Name every remaining variant so a new one needs a kind here.
         coral_search::Error::InvalidInput(_)
@@ -599,9 +601,7 @@ const fn lookup_error_kind(error: &coral_search::Error) -> &'static str {
         | coral_search::Error::AuthoringDescriptionNotFound
         | coral_search::Error::TypesLimit
         | coral_search::Error::UndeclaredTypes { .. }
-        | coral_search::Error::PermissionDenied(_)
-        | coral_search::Error::Policy(_)
-        | coral_search::Error::Tools(_) => "search",
+        | coral_search::Error::PermissionDenied(_) => "search",
     }
 }
 
@@ -611,7 +611,7 @@ fn search_failure(error: coral_search::Error) -> DispatchError {
     }
     let failure = match error {
         coral_search::Error::PermissionDenied(_) => {
-            ToolFailure::stable("permission_denied", "Permission was denied")
+            refusal_failure(coral_workspace::AuthorityRefusal::PermissionDenied)
         }
         coral_search::Error::Workspace(error) => workspace_tool_failure(error),
         coral_search::Error::Tools(error) => return tools_failure(error),
@@ -674,6 +674,9 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
         coral_run::Error::RunNotFound => {
             ToolFailure::stable("run_not_found", "Program Run was not found")
         }
+        coral_run::Error::ApprovalNotFound => {
+            ToolFailure::stable("approval_not_found", "Approval Request was not found")
+        }
         coral_run::Error::OwnerLost => ToolFailure::stable(
             "run_owner_lost",
             "Program Run outcome is unknown; read the Run again",
@@ -702,7 +705,6 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
         | coral_run::Error::PackageTooLarge { .. }
         | coral_run::Error::ShuttingDown
         // `safe_rejection` has no answer for the rest.
-        | coral_run::Error::ApprovalNotFound
         | coral_run::Error::ProgramRuntimeUnavailable(_)
         | coral_run::Error::ProgramWorkerStopped
         | coral_run::Error::Clock(_)
@@ -724,30 +726,31 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
     DispatchError::Tool(failure)
 }
 
+/// A refusal reports the same code and message whichever module's error
+/// wrapped it.
+fn refusal_failure(refusal: coral_workspace::AuthorityRefusal) -> ToolFailure {
+    ToolFailure::stable(refusal.code(), refusal.message())
+}
+
 fn workspace_tool_failure(error: coral_workspace::Error) -> ToolFailure {
+    if let Some(refusal) = error.refusal() {
+        return refusal_failure(refusal);
+    }
     match error {
         coral_workspace::Error::InvalidInput(message) => {
             ToolFailure::safe("invalid_input", message)
         }
-        coral_workspace::Error::WorkspaceNotFound => {
-            ToolFailure::stable("workspace_not_found", "Workspace was not found")
-        }
-        coral_workspace::Error::WorkspaceArchived => {
-            ToolFailure::stable("workspace_archived", "Workspace is archived")
-        }
-        coral_workspace::Error::PermissionDenied(_)
+        // Name every remaining variant so a new one needs a decision here.
+        // `refusal` answers these before the match.
+        coral_workspace::Error::WorkspaceNotFound
+        | coral_workspace::Error::WorkspaceArchived
+        | coral_workspace::Error::PermissionDenied(_)
         | coral_workspace::Error::AgentNotFound
-        | coral_workspace::Error::InvalidAgentCredential => {
-            ToolFailure::stable("permission_denied", "Permission was denied")
-        }
-        coral_workspace::Error::AgentDisabled => {
-            ToolFailure::stable("agent_disabled", "Agent is disabled")
-        }
-        coral_workspace::Error::AgentRegistrationExpired => ToolFailure::stable(
-            "agent_registration_expired",
-            "Agent Registration has expired",
-        ),
-        coral_workspace::Error::OrganizationAuthorityConflict
+        | coral_workspace::Error::InvalidAgentCredential
+        | coral_workspace::Error::AgentDisabled
+        | coral_workspace::Error::AgentRegistrationExpired
+        // `refusal` has no answer for the rest.
+        | coral_workspace::Error::OrganizationAuthorityConflict
         | coral_workspace::Error::EtagMismatch
         | coral_workspace::Error::RequestAlreadyApplied
         | coral_workspace::Error::CredentialGeneration

@@ -183,14 +183,45 @@ impl Error {
         }
     }
 
+    /// The Workspace refusal this error wraps, directly or through another
+    /// module's error. A refusal reads the same whichever module wrapped
+    /// it, so a caller reports it without naming that module's variants.
+    #[must_use]
+    pub const fn workspace_refusal(&self) -> Option<coral_workspace::AuthorityRefusal> {
+        match self {
+            Self::Workspace(error) => error.refusal(),
+            // Name every variant so a new one that wraps a Workspace error
+            // is found here.
+            Self::Database(_)
+            | Self::InvalidInput(_)
+            | Self::NotFound(_)
+            | Self::PrivateToolExists
+            | Self::RevisionConflict { .. }
+            | Self::Admission(..)
+            | Self::SharedToolSourceUnreadable
+            | Self::SharedToolRestoreDiffers
+            | Self::SharedToolDeclarationChanged
+            | Self::SharedToolHasDependents { .. }
+            | Self::PathConflict(_)
+            | Self::NotData(..)
+            | Self::CompilationTimedOut(_)
+            | Self::CompilerBusy
+            | Self::NoCompiler
+            | Self::PermissionDenied(_)
+            | Self::CompilerUnavailable(_)
+            | Self::CompilerWorkerStopped
+            | Self::Clock(_)
+            | Self::Json(_)
+            | Self::CorruptData(_) => None,
+        }
+    }
+
     /// Returns a definite safe rejection; operational uncertainty has no invented outcome.
     #[must_use]
     pub fn safe_rejection(&self) -> Option<(&'static str, String)> {
         use AuthoredToolKind::{Private, Shared};
-        if let Self::Workspace(error) = self {
-            return error
-                .safe_rejection()
-                .map(|(code, message)| (code, message.to_owned()));
+        if let Some(refusal) = self.workspace_refusal() {
+            return Some((refusal.code(), refusal.message().to_owned()));
         }
         let code = match self {
             Self::InvalidInput(_) => "invalid_input",

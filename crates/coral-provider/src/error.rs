@@ -274,6 +274,63 @@ impl Error {
         }
     }
 
+    /// The Workspace refusal this error wraps, directly or through another
+    /// module's error. A refusal reads the same whichever module wrapped
+    /// it, so a caller reports it without naming that module's variants.
+    #[must_use]
+    pub const fn workspace_refusal(&self) -> Option<coral_workspace::AuthorityRefusal> {
+        match self {
+            Self::Workspace(error) => error.refusal(),
+            // Name every variant so a new one that wraps a Workspace error
+            // is found here.
+            Self::Database(_)
+            | Self::Catalog(_)
+            | Self::ConsentDestinationRejected
+            | Self::OutboundDestinationRejected
+            | Self::InputUnavailable
+            | Self::SetupPreparationUnavailable
+            | Self::ProviderSetupNotApplicable
+            | Self::ProviderSetupNotReady
+            | Self::AuthorizationDiscovery(_)
+            | Self::ClientBootstrapUnavailable
+            | Self::ClientMetadataNotPublic
+            | Self::ClientMetadataUnresolved
+            | Self::AccountInput
+            | Self::SecretReferenceNotAllowed
+            | Self::SecretStoreNotGranted
+            | Self::SecretStoreRead(_)
+            | Self::CredentialRefreshFailed
+            | Self::OAuthTokenExchange(_)
+            | Self::OAuthClientConfiguration
+            | Self::AccountNotFound
+            | Self::AccountRequired
+            | Self::AccountAuthorizationChanged
+            | Self::AccountConnectionDeclined
+            | Self::AccountConnectionExpired
+            | Self::CredentialRouteChanged
+            | Self::Credentials(_)
+            | Self::InvalidInput(_)
+            | Self::ProviderSetupNotFound
+            | Self::ProviderSetupConsumed
+            | Self::ProviderPublicationNotFound
+            | Self::ProviderNotFound
+            | Self::ProviderAlreadyDisabled
+            | Self::ProviderAlreadyActive
+            | Self::ProviderCallRootConflict
+            | Self::BuiltinProviderManaged
+            | Self::ProviderAccountSettingVersionOverflow
+            | Self::ToolNotFound
+            | Self::RequestIdConflict
+            | Self::PendingAuthorizationLimit
+            | Self::EtagMismatch
+            | Self::IncompatibleConfigurationConfirmationRequired
+            | Self::ProviderChangedDuringPublication
+            | Self::OperationalPublication(_)
+            | Self::CorruptData(_)
+            | Self::EventFields(_) => None,
+        }
+    }
+
     pub(crate) fn source_fetch(error: reqwest::Error) -> Self {
         match coral_outbound::FetchError::from(error) {
             coral_outbound::FetchError::DestinationRejected => Self::OutboundDestinationRejected,

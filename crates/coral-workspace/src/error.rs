@@ -138,15 +138,6 @@ impl Error {
             | Self::EventFields(_) => None,
         }
     }
-
-    /// Safe current-authority rejection, excluding host and persistence uncertainty.
-    #[must_use]
-    pub const fn safe_rejection(&self) -> Option<(&'static str, &'static str)> {
-        match self.refusal() {
-            Some(refusal) => Some((refusal.code(), refusal.message())),
-            None => None,
-        }
-    }
 }
 
 /// Why the caller's current authority does not reach a Workspace or an
@@ -278,7 +269,11 @@ mod tests {
                 "{error:?}"
             );
             assert_eq!(error.refusal(), Some(refusal), "{error:?}");
-            assert_eq!(error.safe_rejection(), Some((code, message)), "{error:?}");
+            assert_eq!(
+                (refusal.code(), refusal.message()),
+                (code, message),
+                "{error:?}"
+            );
             assert!(error.database_error().is_none(), "{error:?}");
         }
         for error in [
@@ -290,7 +285,6 @@ mod tests {
             Error::Database(coral_db::Error::WriterBusy),
         ] {
             assert_eq!(error.refusal(), None, "{error:?}");
-            assert_eq!(error.safe_rejection(), None, "{error:?}");
             assert_eq!(
                 error.database_error().is_some(),
                 matches!(error, Error::Database(_)),

@@ -633,6 +633,50 @@ impl Error {
         }
     }
 
+    /// The Workspace refusal this error wraps, directly or through another
+    /// module's error. A refusal reads the same whichever module wrapped
+    /// it, so a caller reports it without naming that module's variants.
+    #[must_use]
+    pub const fn workspace_refusal(&self) -> Option<coral_workspace::AuthorityRefusal> {
+        match self {
+            Self::Workspace(error) => error.refusal(),
+            Self::Provider(error) => error.workspace_refusal(),
+            Self::Policy(error) => error.workspace_refusal(),
+            Self::Tools(error) => error.workspace_refusal(),
+            // Name every variant so a new one that wraps a Workspace error
+            // is found here.
+            Self::Database(_)
+            | Self::InvalidInput(_)
+            | Self::RunNotFound
+            | Self::ApprovalNotFound
+            | Self::ProgramAdmission(_)
+            | Self::PermissionDenied(_)
+            | Self::CompilationTimedOut
+            | Self::CompilerBusy
+            | Self::CompilerUnavailable
+            | Self::PackageTooLarge { .. }
+            | Self::ProgramRuntimeUnavailable(_)
+            | Self::ProgramWorkerStopped
+            | Self::Clock(_)
+            | Self::IdentifierIssuance(_)
+            | Self::ProgramValueTooLarge
+            | Self::InvalidProgramValue
+            | Self::ProgramValueJson(_)
+            | Self::InvocationRejected(_)
+            | Self::InvocationPersistence(_)
+            | Self::RunEventPersistence(_)
+            | Self::ClaimMismatch
+            | Self::HeadMismatch
+            | Self::RunEnded
+            | Self::OwnerLost
+            | Self::RunRequestNotYetRecorded
+            | Self::ShuttingDown
+            | Self::ProgramHostTerminated
+            | Self::Upstream(_)
+            | Self::CorruptData(_) => None,
+        }
+    }
+
     /// Whether a [`Self::safe_rejection`] code says the Program did not
     /// compile in time or at all.
     #[must_use]
@@ -643,10 +687,8 @@ impl Error {
     /// Returns a definite safe rejection; operational uncertainty has no invented outcome.
     #[must_use]
     pub fn safe_rejection(&self) -> Option<(&'static str, String)> {
-        if let Self::Workspace(error) = self {
-            return error
-                .safe_rejection()
-                .map(|(code, message)| (code, message.to_owned()));
+        if let Some(refusal) = self.workspace_refusal() {
+            return Some((refusal.code(), refusal.message().to_owned()));
         }
         let code = match self {
             Self::InvalidInput(_) => "invalid_input",
@@ -745,6 +787,53 @@ mod tests {
         assert!(!Error::RunNotFound.is_operational());
         assert!(!Error::ClaimMismatch.is_operational());
         assert!(!Error::RunRequestNotYetRecorded.is_operational());
+    }
+
+    // Catches: a Workspace refusal that stops being a safe rejection
+    // because another module's error wraps it.
+    #[test]
+    fn a_workspace_refusal_is_a_safe_rejection_through_every_module_wrapper() {
+        type Wrap = fn(coral_workspace::Error) -> Error;
+        let wrapped: [(Wrap, &str); 5] = [
+            (Error::Workspace, "workspace"),
+            (
+                |error| Error::Provider(coral_provider::Error::Workspace(error)),
+                "provider",
+            ),
+            (
+                |error| Error::Policy(coral_policy::Error::Workspace(error)),
+                "policy",
+            ),
+            (
+                |error| {
+                    Error::Policy(coral_policy::Error::Provider(
+                        coral_provider::Error::Workspace(error),
+                    ))
+                },
+                "policy provider",
+            ),
+            (
+                |error| Error::Tools(coral_tools::Error::Workspace(error)),
+                "tools",
+            ),
+        ];
+        let refusal = coral_workspace::AuthorityRefusal::WorkspaceArchived;
+        for (wrap, label) in wrapped {
+            assert_eq!(
+                wrap(coral_workspace::Error::WorkspaceArchived).safe_rejection(),
+                Some((refusal.code(), refusal.message().to_owned())),
+                "{label}"
+            );
+            assert_eq!(
+                wrap(coral_workspace::Error::EtagMismatch).safe_rejection(),
+                None,
+                "{label}"
+            );
+        }
+        assert_eq!(
+            Error::Provider(coral_provider::Error::ProviderNotFound).safe_rejection(),
+            None
+        );
     }
 
     #[test]
