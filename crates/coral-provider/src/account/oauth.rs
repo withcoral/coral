@@ -608,6 +608,11 @@ pub(super) async fn token_request(
     parse_token_response(status, &body)
 }
 
+/// How long a request to a token or device-authorization endpoint runs
+/// before Coral gives up on its answer. The device poll schedule counts on
+/// it: a poll that got no answer took this long at most.
+pub(super) const TOKEN_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The largest token or device-authorization response Coral reads.
 const TOKEN_RESPONSE_LIMIT: usize = 64 * 1024;
 
@@ -616,11 +621,8 @@ pub(super) async fn form_request(
     form: &[(&str, &str)],
     authentication: &TokenAuthentication<'_>,
 ) -> Result<(reqwest::StatusCode, zeroize::Zeroizing<Vec<u8>>), Error> {
-    let client = coral_outbound::Client::new(
-        endpoint.destination_policy,
-        std::time::Duration::from_secs(30),
-    )
-    .map_err(token_transport_error)?;
+    let client = coral_outbound::Client::new(endpoint.destination_policy, TOKEN_REQUEST_TIMEOUT)
+        .map_err(token_transport_error)?;
     let mut request = client
         .post(endpoint.url)
         .map_err(|_error| Error::OutboundDestinationRejected)?

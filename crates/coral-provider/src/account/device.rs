@@ -1,10 +1,12 @@
 //! Server-owned RFC 8628 device authorization. Browser reads never drive polling.
 use std::time::Duration;
 
+use coral_db::UnixNanos;
 use coral_telemetry::safe;
 use coral_workspace::{ChangeContext, WorkspaceId};
 use serde::Deserialize;
 
+use super::device_schedule::{Outcome, PollSchedule, Step, Timing};
 use super::setup::{SetupAuthorizationState, StoredRequirement};
 use super::setup_oauth::{advanced, end_open_authorization};
 use super::{
@@ -181,17 +183,15 @@ impl AccountModule {
             policy: row.contract.oauth_client(),
             secret: secret.as_ref(),
         };
-        let (device, expires, interval, next) = if row.user_code.is_some() {
+        let (device, schedule) = if row.user_code.is_some() {
             let private = row.private_flow.as_deref().ok_or(Error::AccountInput)?;
             let device =
                 repository::decode_device(&self.vault.open_sealed(&id.to_string(), private)?)?;
-            (
-                device,
-                row.authorization_expires_at_unix_nanos
-                    .ok_or(Error::AccountInput)?,
-                lease.interval(),
-                lease.job.next_poll_at,
-            )
+            let expires = row
+                .authorization_expires_at_unix_nanos
+                .ok_or(Error::AccountInput)?;
+            let schedule = PollSchedule::resumed(lease.timing(), UnixNanos::new(expires));
+            (device, schedule)
         } else {
             let device =
                 request_device(self.providers.outbound_policy, requirement, &authentication)
@@ -204,7 +204,11 @@ impl AccountModule {
             let private = self
                 .vault
                 .seal(&id.to_string(), &repository::encode_device(&device)?)?;
-            let next = next_poll(now.occurred_at_unix_nanos(), device.interval);
+            let schedule = PollSchedule::issued(
+                UnixNanos::new(now.occurred_at_unix_nanos()),
+                Duration::from_secs(device.interval),
+                UnixNanos::new(expires),
+            );
             let mut tx = self.providers.database.begin().await?;
             lease.hold(&mut tx, now.occurred_at_unix_nanos()).await?;
             self.lock_pre_ready(&mut tx, &now, owner, id).await?;
@@ -216,21 +220,18 @@ impl AccountModule {
                 &mut tx, owner, id, generation, &device, &private, expires,
             )
             .await?;
-            lease.schedule(&mut tx, device.interval, next).await?;
+            lease.store(&mut tx, schedule.timing()).await?;
             tx.commit().await?;
-            let interval = device.interval;
-            (device, expires, interval, next)
+            (device, schedule)
         };
         Polling {
             device,
-            expires,
+            schedule,
             context,
             started,
             requirement,
             authentication,
             lease,
-            interval,
-            next,
         }
         .run(self.providers.outbound_policy, |now| async move {
             let mut tx = self.providers.database.begin().await?;
@@ -472,16 +473,13 @@ impl AccountModule {
             policy: row.contract.oauth_client(),
             secret: secret.as_ref(),
         };
-        let (device, expires, interval, next) = if row.user_code.is_some() {
+        let (device, schedule) = if row.user_code.is_some() {
             let private = row.private_flow.as_deref().ok_or(Error::AccountInput)?;
             let device =
                 repository::decode_device(&self.vault.open_sealed(&id.to_string(), private)?)?;
-            (
-                device,
-                row.expires_at_unix_nanos,
-                lease.interval(),
-                lease.job.next_poll_at,
-            )
+            let schedule =
+                PollSchedule::resumed(lease.timing(), UnixNanos::new(row.expires_at_unix_nanos));
+            (device, schedule)
         } else {
             let device =
                 request_device(self.providers.outbound_policy, requirement, &authentication)
@@ -493,26 +491,27 @@ impl AccountModule {
             let private = self
                 .vault
                 .seal(&id.to_string(), &repository::encode_device(&device)?)?;
-            let next = next_poll(now.occurred_at_unix_nanos(), device.interval);
+            let schedule = PollSchedule::issued(
+                UnixNanos::new(now.occurred_at_unix_nanos()),
+                Duration::from_secs(device.interval),
+                UnixNanos::new(expires),
+            );
             let mut tx = self.providers.database.begin().await?;
             lease.hold(&mut tx, now.occurred_at_unix_nanos()).await?;
             self.device_account(&mut tx, &now, owner, id).await?;
             repository::set_device(&mut tx, owner, id, &device, &private, expires).await?;
-            lease.schedule(&mut tx, device.interval, next).await?;
+            lease.store(&mut tx, schedule.timing()).await?;
             tx.commit().await?;
-            let interval = device.interval;
-            (device, expires, interval, next)
+            (device, schedule)
         };
         let token = Polling {
             device,
-            expires,
+            schedule,
             context,
             started,
             requirement,
             authentication,
             lease,
-            interval,
-            next,
         }
         .run(self.providers.outbound_policy, |now| async move {
             let mut tx = self.providers.database.begin().await?;
@@ -549,14 +548,12 @@ impl AccountModule {
 /// Protocol state shared by setup and published Accounts; each owner supplies its live fence.
 struct Polling<'a> {
     device: DeviceResponse,
-    expires: i64,
+    schedule: PollSchedule,
     context: &'a ChangeContext,
     started: super::Started<'a>,
     requirement: &'a StoredRequirement,
     authentication: oauth::TokenAuthentication<'a>,
     lease: &'a Lease,
-    interval: u64,
-    next: i64,
 }
 
 impl Polling<'_> {
@@ -565,7 +562,6 @@ impl Polling<'_> {
         policy: coral_outbound::DestinationPolicy,
         mut check: impl FnMut(ChangeContext) -> F + Send,
     ) -> Result<oauth::TokenResponse, Error> {
-        let mut interval = self.interval;
         let client_id = &self
             .authentication
             .policy
@@ -573,41 +569,25 @@ impl Polling<'_> {
             .client_id;
         loop {
             let now = advanced(self.context, self.started);
-            let remaining = self.expires.saturating_sub(now.occurred_at_unix_nanos());
-            if remaining <= 0 {
+            let at = UnixNanos::new(now.occurred_at_unix_nanos());
+            let step = self.schedule.step(at);
+            if step == Step::Expired {
                 return Err(Error::OAuthTokenExchange(
                     TokenExchangeFailure::DeviceExpired,
                 ));
             }
-            self.lease.renew(now.occurred_at_unix_nanos()).await?;
-            let wait = self
-                .next
-                .min(self.expires)
-                .saturating_sub(now.occurred_at_unix_nanos());
-            if wait > 0 {
-                tokio::time::sleep(
-                    Duration::from_nanos(wait.unsigned_abs()).min(Duration::from_secs(10)),
-                )
-                .await;
+            self.lease.renew(at.get()).await?;
+            if let Step::Wait(wait) = step {
+                tokio::time::sleep(wait).await;
                 continue;
             }
-            check(now.clone()).await?;
-            // A lost response may have requested slow_down or consumed the full 30-second
-            // HTTP timeout. Persist conservative timing before the request leaves Coral.
-            let uncertain_interval = interval.saturating_mul(2).max(interval.saturating_add(5));
+            check(now).await?;
+            // A lost response may have requested slow_down or consumed the whole
+            // request timeout. Persist conservative timing before the request leaves Coral.
             let mut tx = self.lease.module.providers.database.begin().await?;
+            self.lease.hold(&mut tx, at.get()).await?;
             self.lease
-                .hold(&mut tx, now.occurred_at_unix_nanos())
-                .await?;
-            self.lease
-                .schedule(
-                    &mut tx,
-                    uncertain_interval,
-                    next_poll(
-                        now.occurred_at_unix_nanos(),
-                        30_u64.saturating_add(uncertain_interval),
-                    ),
-                )
+                .store(&mut tx, self.schedule.before_request(at))
                 .await?;
             tx.commit().await?;
             let mut form = vec![
@@ -627,28 +607,22 @@ impl Polling<'_> {
                 &self.authentication,
             )
             .await;
-            match result {
-                Err(Error::OAuthTokenExchange(TokenExchangeFailure::AuthorizationPending)) => {}
-                Err(Error::OAuthTokenExchange(TokenExchangeFailure::SlowDown)) => {
-                    interval = interval.saturating_add(5);
+            let at = self
+                .started
+                .now_from(UnixNanos::new(self.context.occurred_at_unix_nanos()));
+            let outcome = match result {
+                Err(Error::OAuthTokenExchange(TokenExchangeFailure::AuthorizationPending)) => {
+                    Outcome::Pending
                 }
-                Err(Error::OAuthTokenExchange(TokenExchangeFailure::Timeout)) => {
-                    interval = interval.saturating_mul(2);
-                }
-                Ok(token) => {
-                    return token.usable(
-                        &self.requirement.scopes,
-                        client_id,
-                        advanced(self.context, self.started).occurred_at_unix_nanos(),
-                    );
-                }
+                Err(Error::OAuthTokenExchange(TokenExchangeFailure::SlowDown)) => Outcome::SlowDown,
+                Err(Error::OAuthTokenExchange(TokenExchangeFailure::Timeout)) => Outcome::NoAnswer,
+                Ok(token) => return token.usable(&self.requirement.scopes, client_id, at.get()),
                 Err(error) => return Err(error),
-            }
-            let now = advanced(self.context, self.started).occurred_at_unix_nanos();
-            self.next = next_poll(now, interval);
+            };
+            let next = self.schedule.after_poll(at, outcome);
             let mut tx = self.lease.module.providers.database.begin().await?;
-            self.lease.hold(&mut tx, now).await?;
-            self.lease.schedule(&mut tx, interval, self.next).await?;
+            self.lease.hold(&mut tx, at.get()).await?;
+            self.lease.store(&mut tx, next).await?;
             tx.commit().await?;
         }
     }
@@ -727,8 +701,12 @@ struct Lease {
     token: String,
 }
 impl Lease {
-    fn interval(&self) -> u64 {
-        self.job.interval_seconds
+    /// The timing the job stored when this worker claimed it.
+    const fn timing(&self) -> Timing {
+        Timing {
+            interval: Duration::from_secs(self.job.interval_seconds),
+            next_poll_at: UnixNanos::new(self.job.next_poll_at),
+        }
     }
     async fn hold(&self, tx: &mut coral_db::Transaction<'_>, now: i64) -> Result<(), Error> {
         device_repository::renew(
@@ -747,14 +725,17 @@ impl Lease {
         tx.commit().await?;
         Ok(())
     }
-    async fn schedule(
-        &self,
-        tx: &mut coral_db::Transaction<'_>,
-        interval: u64,
-        next: i64,
-    ) -> Result<(), Error> {
-        device_repository::schedule(tx, &self.owner, &self.job.id, &self.token, interval, next)
-            .await
+    /// Stores the timing the poll schedule gave.
+    async fn store(&self, tx: &mut coral_db::Transaction<'_>, timing: Timing) -> Result<(), Error> {
+        device_repository::schedule(
+            tx,
+            &self.owner,
+            &self.job.id,
+            &self.token,
+            timing.interval.as_secs(),
+            timing.next_poll_at.get(),
+        )
+        .await
     }
     async fn finish(&self) -> Result<(), Error> {
         let mut tx = self.module.providers.database.begin().await?;
