@@ -119,6 +119,8 @@ export const callsBar = style({
 export const usageTipDay = style({ display: 'block', ...theme.typography.bodySmallStrong })
 export const usageTipTotal = style({ color: theme.content.secondary, display: 'block' })
 export const callsHeading = style({ alignItems: 'center', display: 'inline-flex', gap: 6 })
+// A dash where a count would be: the cell's hidden text says the usage is not available.
+export const usageAbsent = style({ color: theme.content.tertiary, textAlign: 'center' })
 // The column is as wide as its toggles; the header centres over them.
 export const policyHeader = style({ display: 'flex', justifyContent: 'center' })
 // One line: a wrapped outcome pill would change the row's height after a save.

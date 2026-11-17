@@ -363,14 +363,19 @@ export async function providerView(
   api: ManagementApi,
   provider: Provider,
   workspacePath: string,
-  /** Your own account's state for each separate-account provider, by provider name. */
-  personalAccounts: ReadonlyMap<string, PersonalAccountState>,
+  /** Your own account's state for each separate-account provider, by provider name. The
+   * provider's tools are read while it loads. */
+  personalAccounts: Promise<ReadonlyMap<string, PersonalAccountState>>,
 ): Promise<ProviderView> {
+  const [tools, accounts] = await Promise.all([
+    listAllToolAccess(api, provider.name),
+    personalAccounts,
+  ])
   return {
-    ...groupView(provider, (await listAllToolAccess(api, provider.name)).map(toolView)),
+    ...groupView(provider, tools.map(toolView)),
     kind: provider.builtin ? 'coral' : 'added',
     path: providerPath(workspacePath, provider.name),
-    personalAccountAction: personalAccountAction(provider, personalAccounts),
+    personalAccountAction: personalAccountAction(provider, accounts),
   }
 }
 

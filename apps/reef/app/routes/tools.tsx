@@ -1,3 +1,4 @@
+import { ConnectError } from '@connectrpc/connect'
 import { data, Outlet, type ShouldRevalidateFunctionArgs } from 'react-router'
 import type { Route } from './+types/tools'
 import {
@@ -14,8 +15,9 @@ import { glimpseActivitySummary } from '@/lib/activity-summary.server'
 import { personalAccountStates } from '@/lib/accounts.server'
 import { applyProviderChange } from '@/lib/provider-changes.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
+import { useSettled } from '@/lib/use-settled'
 import { RECIPE_CHOICES } from '@/lib/provider-recipes/library.server'
-import type { PolicyActionResult } from '@/views/providers/types'
+import type { PolicyActionResult, ToolCallCounts, ToolCallsAbsent } from '@/views/providers/types'
 import {
   addressedTool,
   PRIVATE_GROUP,
@@ -61,22 +63,28 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
   try {
     const { api, workspace: w } = await authorizedWorkspace(context, params.workspace)
     const days: SummaryDays = 30
-    const [listed, personalAccounts, summary, sharedToolsGroup, privateToolsGroup] =
-      await Promise.all([
-        listAllProviders(api, w.name),
-        personalAccountStates(api, w.name),
-        glimpseActivitySummary(api, w.name, days, request.signal),
-        sharedGroup(api, w),
-        privateGroup(api, w),
-      ])
+    // Streamed, not awaited: the catalog, a saved change and a refresh never wait for a
+    // slow summary. The page shows a failed read as unavailable, never as no calls.
+    const toolCalls = glimpseActivitySummary(api, w.name, days, request.signal).then(
+      (summary) => summary && { days, tools: toolUsage(summary.tools) },
+    )
+    toolCalls.catch((error: unknown) => {
+      // A defect in Reef itself must not hide behind an unavailable summary.
+      if (!(error instanceof ConnectError))
+        console.error('Unexpected failure in a Reef loader:', error)
+    })
+    // Each provider's tools are read once the provider list arrives, not after the rest.
+    const personalAccounts = personalAccountStates(api, w.name)
+    const [listed, sharedToolsGroup, privateToolsGroup] = await Promise.all([
+      listAllProviders(api, w.name).then((list) =>
+        Promise.all(list.map((provider) => providerView(api, provider, w.path, personalAccounts))),
+      ),
+      sharedGroup(api, w),
+      privateGroup(api, w),
+      personalAccounts,
+    ])
     // The page orders the groups; the shared and the private one are not in Coral's list.
-    const providers = [
-      ...(await Promise.all(
-        listed.map((provider) => providerView(api, provider, w.path, personalAccounts)),
-      )),
-      sharedToolsGroup,
-      privateToolsGroup,
-    ]
+    const providers = [...listed, sharedToolsGroup, privateToolsGroup]
     // An address that names a group or a tool the catalog does not hold is not found.
     const namesGroup = params.group !== undefined || params.provider !== undefined
     const group =
@@ -99,7 +107,8 @@ export async function loader({ context, params, request }: Route.LoaderArgs) {
       {
         workspace: w,
         providers,
-        toolCalls: summary && { days, tools: toolUsage(summary.tools) },
+        usageDays: days,
+        toolCalls,
         recipes: RECIPE_CHOICES,
         form: formContext(context),
       },
@@ -123,8 +132,23 @@ export async function action({ request, context, params }: Route.ActionArgs) {
   return applyProviderChange(context, params, form)
 }
 
-export type ToolsData = Route.ComponentProps['loaderData']
+/** The tree each selection renders, with the usage settled so far. */
+export type ToolsData = Omit<Route.ComponentProps['loaderData'], 'toolCalls' | 'usageDays'> & {
+  toolCalls: ToolCallCounts | ToolCallsAbsent
+}
 
 export default function ToolsRoute({ loaderData }: Route.ComponentProps) {
-  return <Outlet context={loaderData} />
+  const { toolCalls: read, usageDays, ...tree } = loaderData
+  const toolCalls = useSettledUsage(read, usageDays)
+  return <Outlet context={{ ...tree, toolCalls } satisfies ToolsData} />
+}
+
+/** The usage of this read: loading until it settles, and unavailable, never zeros, when it fails. */
+function useSettledUsage(
+  read: Promise<ToolCallCounts | null>,
+  days: number,
+): ToolCallCounts | ToolCallsAbsent {
+  const settled = useSettled(read)
+  if (settled?.read !== read) return { days, state: 'loading' }
+  return settled.value ?? { days, state: 'unavailable' }
 }

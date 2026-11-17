@@ -838,6 +838,195 @@ test('the Overview streams its activity summary after the page and keeps the pag
   )
 })
 
+// The Tools page through the production server and a real browser, over a Coral that holds
+// each usage summary until the test answers it.
+// Catches: a catalog whose page, hydration or navigation waits for a slow usage summary, a
+// policy change held behind it, or a summary that fails and reads as zero calls.
+const TOOLS_WORKSPACE = 'workspaces/00000000-0000-4000-8000-000000000001'
+const TOOLS_PROVIDER = `${TOOLS_WORKSPACE}/providers/00000000-0000-4000-8000-0000000000a1`
+const TOOL_PATHS = ['issues.list', 'issues.create', 'repos.get']
+const toolResource = (path) => `${TOOLS_PROVIDER}/tools/${Buffer.from(path).toString('base64url')}`
+/** The usage summary's answer: `calls` to `issues.list`. */
+const toolUsageSummary = (calls) =>
+  new BinaryWriter()
+    .tag(3, WireType.LengthDelimited)
+    .bytes(
+      new BinaryWriter()
+        .tag(2, WireType.Varint)
+        .int64(calls)
+        .tag(4, WireType.LengthDelimited)
+        .string(toolResource('issues.list'))
+        .finish(),
+    )
+    .finish()
+/** One provider with three tools that ask first, and empty shared and private groups. */
+const TOOLS_CATALOG = {
+  ListProviders: () =>
+    new BinaryWriter()
+      .tag(1, WireType.LengthDelimited)
+      .bytes(
+        new BinaryWriter()
+          .tag(1, WireType.LengthDelimited)
+          .string(TOOLS_PROVIDER)
+          .tag(2, WireType.LengthDelimited)
+          .string('GitHub')
+          .tag(3, WireType.Varint)
+          .int32(1) // PROVIDER_STATE_ACTIVE
+          .tag(6, WireType.LengthDelimited)
+          .string('github')
+          .finish(),
+      )
+      .finish(),
+  ListToolAccess: (request) => {
+    const message = new BinaryWriter()
+    if (protoField(request, 1) === TOOLS_PROVIDER)
+      for (const path of TOOL_PATHS)
+        message.tag(1, WireType.LengthDelimited).bytes(
+          new BinaryWriter()
+            .tag(1, WireType.LengthDelimited)
+            .string(toolResource(path))
+            .tag(2, WireType.LengthDelimited)
+            .string(path)
+            .tag(3, WireType.Varint)
+            .bool(true)
+            .tag(7, WireType.Varint)
+            .int32(2) // TOOL_ACCESS_STATE_APPROVAL_REQUIRED
+            .finish(),
+        )
+    return message.finish()
+  },
+  ListPrivateTools: () =>
+    new BinaryWriter()
+      .tag(3, WireType.LengthDelimited)
+      .string(`${TOOLS_WORKSPACE}/providers/00000000-0000-4000-8000-0000000000aa`)
+      .finish(),
+  ListSharedTools: () =>
+    new BinaryWriter()
+      .tag(3, WireType.LengthDelimited)
+      .string(`${TOOLS_WORKSPACE}/providers/00000000-0000-4000-8000-0000000000ab`)
+      .finish(),
+  UpdateToolPolicies: () => new Uint8Array(),
+}
+
+test('the Tools page streams its usage after the catalog and saves a policy while it loads', async (t) => {
+  const coral = await startOverviewPeer(TOOLS_CATALOG)
+  const authorization = await startSessionPeer()
+  // A change from the page must come from Reef's public origin.
+  const port = await freePort()
+  const child = startReef({
+    CORAL_ENDPOINT: coral.url,
+    CORAL_WEB_AUTH_ISSUER: authorization.url,
+    CORAL_WEB_PUBLIC_URL: `http://127.0.0.1:${port}`,
+    PORT: String(port),
+  })
+  const stderr = streamText(child.stderr)
+  t.after(async () => {
+    coral.releaseAll()
+    await stopChild(child)
+    await stderr
+    await coral.close()
+    await authorization.close()
+  })
+  const origin = `http://127.0.0.1:${await listeningPort(child)}`
+  const cookie = await validSessionCookie(authorization.url)
+  const tools = `/${TOOLS_WORKSPACE}/tools`
+  const headers = { Cookie: cookie, 'User-Agent': BROWSER }
+
+  await t.test('the whole catalog arrives first, and a failed summary still ends it', async () => {
+    const response = await within(fetch(`${origin}${tools}`, { headers }), 'The page')
+    assert.equal(response.status, 200)
+    const body = response.body.getReader()
+    // The table renders its rows in the browser; the document carries every tool's data.
+    const page = await readUntil(body, /repos\.get/, ARRIVES_MS)
+    assert.match(page, /Loading usage…/)
+    for (const path of TOOL_PATHS) assert.ok(page.includes(path), `The page names ${path}`)
+    // Throws unless Reef still waits for this read.
+    await (await coral.held(30)).fail(13)
+    await readUntil(body, null, ARRIVES_MS)
+  })
+
+  await t.test(
+    'navigation data arrives first, and the usage follows in the same response',
+    async () => {
+      const response = await within(
+        fetch(`${origin}${tools}.data`, { headers }),
+        'The navigation data',
+      )
+      assert.equal(response.status, 200)
+      const body = response.body.getReader()
+      const first = await readUntil(body, /repos\.get/, ARRIVES_MS)
+      assert.doesNotMatch(first, /987654/)
+      await (await coral.held(30)).reply(toolUsageSummary(987654))
+      assert.match(await readUntil(body, null, ARRIVES_MS), /987654/)
+    },
+  )
+
+  await t.test('the hydrated page', async (browserTest) => {
+    const browser = await chromium.launch()
+    browserTest.after(() => browser.close())
+    const context = await browser.newContext({ userAgent: BROWSER })
+    const [name, value] = cookie.split(/=(.*)/s)
+    await context.addCookies([{ name, value, url: origin }])
+    /** Opens the page, its usage still loading, once its first bytes arrive. */
+    const open = async () => {
+      const page = await context.newPage()
+      // The document stays open until its usage settles, so wait for its first bytes only.
+      await page.goto(`${origin}${tools}`, { waitUntil: 'commit', timeout: ARRIVES_MS })
+      const table = page.getByRole('table', { name: 'Tools' })
+      await table
+        .getByRole('status')
+        .filter({ hasText: 'Loading usage…' })
+        .waitFor({ state: 'attached', timeout: ARRIVES_MS })
+      return { page, table, row: (path) => table.getByRole('row').filter({ hasText: path }) }
+    }
+
+    await browserTest.test('saves a policy while the usage loads, then shows it', async () => {
+      const { table, row } = await open()
+      const allow = row('repos.get').getByRole('radio', { name: 'Allow' })
+      // A click before hydration reaches no handler, so wait until React holds the radio.
+      await allow.evaluate(
+        (radio) =>
+          new Promise((resolve) => {
+            const check = () =>
+              Object.keys(radio).some((key) => key.startsWith('__reactProps'))
+                ? resolve()
+                : setTimeout(check, 20)
+            check()
+          }),
+      )
+      await allow.click({ timeout: ARRIVES_MS })
+      await row('repos.get')
+        .getByRole('radio', { name: 'Allow', checked: true })
+        .waitFor({ timeout: ARRIVES_MS })
+      for (let tries = 0; coral.called('UpdateToolPolicies').length === 0; tries++) {
+        if (tries === 30) assert.fail('The policy change did not reach Coral')
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+      assert.equal(protoField(coral.called('UpdateToolPolicies')[0], 1), TOOLS_PROVIDER)
+      // The saved policy patches the page; the usage it waits for is still loading.
+      assert.equal(await table.getByRole('status').count(), 1)
+
+      await (await coral.held(30)).reply(toolUsageSummary(987654))
+      await row('issues.list')
+        .getByText('987,654 calls')
+        .waitFor({ state: 'attached', timeout: ARRIVES_MS })
+      assert.equal(await table.getByRole('status').count(), 0)
+    })
+
+    await browserTest.test('shows a failed summary as not available', async () => {
+      const { table, row } = await open()
+      // The server rendered the loading state, so only the hydrated page can show the
+      // document's failed summary.
+      await (await coral.held(30)).fail(13)
+      await row('issues.list')
+        .getByText('Not available')
+        .waitFor({ state: 'attached', timeout: ARRIVES_MS })
+      assert.equal(await table.getByRole('status').count(), 0)
+      assert.equal(await table.getByText(/\bcalls?\b/).count(), 0)
+    })
+  })
+})
+
 /** `promise`, or a failure named for `what` once `ARRIVES_MS` passes. */
 async function within(promise, what) {
   let timer
@@ -854,6 +1043,16 @@ async function within(promise, what) {
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** A loopback port no listener holds now. */
+async function freePort() {
+  const server = createServer()
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const { port } = server.address()
+  await new Promise((resolve) => server.close(resolve))
+  return port
 }
 
 function startReef(env) {
@@ -1052,10 +1251,12 @@ async function stopChild(child) {
   return once(child, 'exit')
 }
 
-/** Coral for the Overview: a workspace, empty lists, and each activity summary held until
- * the test answers or fails it. */
-async function startOverviewPeer() {
+/** Coral for a page with an activity summary: a workspace, each activity summary held until
+ * the test answers or fails it, a reply from `replies` for each method it names, and an
+ * empty list for the rest. Each call to a method in `replies` is recorded by its name. */
+async function startOverviewPeer(replies = {}) {
   const summaries = []
+  const calls = []
   const sessions = new Set()
   const peer = createHttp2Server()
   peer.on('session', (session) => {
@@ -1101,17 +1302,19 @@ async function startOverviewPeer() {
         send()
       }
       summary.answer = async (answered) =>
-        settle(() =>
-          grpcReply(
-            stream,
-            new BinaryWriter()
-              .tag(1, WireType.LengthDelimited)
-              .bytes(new BinaryWriter().tag(1, WireType.Varint).int64(answered).finish())
-              .finish(),
-          ),
+        summary.reply(
+          new BinaryWriter()
+            .tag(1, WireType.LengthDelimited)
+            .bytes(new BinaryWriter().tag(1, WireType.Varint).int64(answered).finish())
+            .finish(),
         )
+      summary.reply = async (message) => settle(() => grpcReply(stream, message))
       summary.fail = async (code) => settle(() => grpcFailure(stream, code))
       summaries.push(summary)
+    } else if (Object.hasOwn(replies, path.split('/').at(-1))) {
+      const method = path.split('/').at(-1)
+      calls.push({ method, request })
+      grpcReply(stream, replies[method](request))
     } else {
       // An empty list, or a default message, for everything else the page reads.
       grpcReply(stream, new Uint8Array())
@@ -1121,6 +1324,8 @@ async function startOverviewPeer() {
   await once(peer, 'listening')
   return {
     url: `http://127.0.0.1:${peer.address().port}`,
+    /** The requests to the methods `replies` names, by method. */
+    called: (method) => calls.filter((call) => call.method === method).map((call) => call.request),
     /** The first summary read for `days` that Reef still waits for, once Reef asks. */
     async held(days) {
       for (let tries = 0; tries < 60; tries++) {

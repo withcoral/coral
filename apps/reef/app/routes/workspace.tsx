@@ -1,17 +1,12 @@
-import { useEffect, useState } from 'react'
 import { ConnectError } from '@connectrpc/connect'
 import { data, redirect, useLocation, useNavigate, useNavigation } from 'react-router'
 import type { Route } from './+types/workspace'
 import { ProviderState } from '@/generated/coral/management/v1/provider_pb'
-import {
-  DEFAULT_SUMMARY_DAYS,
-  summaryDays,
-  summarySearch,
-  type ActivitySummaryData,
-} from '@/lib/activity-summary'
+import { DEFAULT_SUMMARY_DAYS, summaryDays, summarySearch } from '@/lib/activity-summary'
 import { glimpseActivitySummary } from '@/lib/activity-summary.server'
 import { secretStoreBlockers } from '@/lib/secret-store-state'
 import { useRevalidateWhileVisible } from '@/lib/use-revalidate-while-visible'
+import { useSettled } from '@/lib/use-settled'
 import {
   actionFailure,
   field,
@@ -210,26 +205,4 @@ function LiveSummary({
       }
     />
   )
-}
-
-/** The latest read that settled, and its summary. A failed read is unavailable, never
- * zeros. Suspense would hold the page's own update until the summary settles, so the read
- * settles in an effect, and a read that a newer one replaced never shows.
- */
-function useSettled(read: Promise<ActivitySummaryData | null>) {
-  const [settled, setSettled] = useState<{
-    read: Promise<ActivitySummaryData | null>
-    value: ActivitySummaryData | null
-  }>()
-  useEffect(() => {
-    let current = true
-    const show = (value: ActivitySummaryData | null) => {
-      if (current) setSettled({ read, value })
-    }
-    read.then(show, () => show(null))
-    return () => {
-      current = false
-    }
-  }, [read])
-  return settled
 }

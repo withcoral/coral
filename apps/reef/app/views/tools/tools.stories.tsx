@@ -307,6 +307,30 @@ export const TreeToolUsage: Story = {
     />
   ),
 }
+// The usage while the summary loads, in the column and the drawer: no counts, no zeros.
+export const TreeToolUsageLoading: Story = {
+  render: () => (
+    <ToolsPage
+      {...treeProps}
+      selectedProvider="prov-github"
+      selectedTool="issues.create"
+      selectedToolDetail={createIssue}
+      toolCalls={{ days: 30, state: 'loading' }}
+    />
+  ),
+}
+// The usage once the summary could not load: a dash in each row, and a note in the drawer.
+export const TreeToolUsageUnavailable: Story = {
+  render: () => (
+    <ToolsPage
+      {...treeProps}
+      selectedProvider="prov-github"
+      selectedTool="issues.create"
+      selectedToolDetail={createIssue}
+      toolCalls={{ days: 30, state: 'unavailable' }}
+    />
+  ),
+}
 // A provider heading's status: unavailable tools on GitHub and HR system.
 export const TreeProviderStatus: Story = {
   render: () => <ToolsPage {...treeProps} providers={[github, weather, blocked]} />,

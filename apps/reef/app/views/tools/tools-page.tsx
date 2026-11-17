@@ -22,6 +22,7 @@ import { Markdown } from '@/wax/components/markdown'
 import { PageLayout } from '@/wax/components/page-layout'
 import { Picker } from '@/wax/components/picker'
 import { Pill, type PillColor } from '@/wax/components/pill'
+import { Skeleton } from '@/wax/components/skeleton'
 import { Stat } from '@/wax/components/stat'
 import { StatusDot } from '@/wax/components/status'
 import { InfoTip, Tooltip } from '@/wax/components/tooltip'
@@ -90,6 +91,7 @@ import type {
   ToolView,
   ProviderView,
   ToolCallCounts,
+  ToolCallsAbsent,
   ToolUsage,
 } from '@/views/providers/types'
 import type { ToolDetailView, ToolsPageProps } from './types'
@@ -625,8 +627,8 @@ function ToolsTableScreen({
   selectedTool: ToolView | null
   selectedToolDetail: ToolDetailView | null
   setRailFilter: (value: string) => void
-  /** Null hides the Calls column. */
-  toolCalls: ToolCallCounts | null
+  /** Null hides the Usage column. */
+  toolCalls: ToolCalls
   workspace: ToolsPageProps['workspace']
 }) {
   const navigate = useNavigate()
@@ -639,7 +641,8 @@ function ToolsTableScreen({
   const [policyFilter, setPolicyFilter] = useState<PolicyFilter | null>(null)
   // Off, rows sort by name under their headings; on, every tool ranks in one list.
   const [sortByUsage, setSortByUsage] = useState(false)
-  const usageOrder = sortByUsage && toolCalls ? toolCalls : null
+  const usageCounts = toolCalls && 'tools' in toolCalls ? toolCalls : null
+  const usageOrder = sortByUsage ? usageCounts : null
   const [selected, setSelected] = useState<Set<SelectionKey>>(new Set())
   // "Show selected" lists the selection as it was when clicked, like a policy
   // filter, so a row the reader unchecks or applies a policy to stays in view.
@@ -656,12 +659,12 @@ function ToolsTableScreen({
       providers.reduce(
         (max, provider) =>
           provider.tools.reduce(
-            (most, tool) => Math.max(most, usageOf(toolCalls, provider, tool)?.calls ?? 0),
+            (most, tool) => Math.max(most, usageCalls(usageOf(usageCounts, provider, tool))),
             max,
           ),
         0,
       ),
-    [providers, toolCalls],
+    [providers, usageCounts],
   )
   const searchable = useMemo(() => searchableProviders(providers), [providers])
   const selectedProviderId = selectedProvider?.id ?? null
@@ -757,7 +760,7 @@ function ToolsTableScreen({
       // One list across providers, busiest first. The sort is stable, so equal
       // usage keeps provider order, then name order.
       const callsOf = ({ provider, tool }: { provider: ProviderView; tool: ToolView }) =>
-        usageOf(usageOrder, provider, tool)?.calls ?? 0
+        usageCalls(usageOf(usageOrder, provider, tool))
       const list = visibleByProvider
         .flatMap(({ provider, listed }) => listed.map((tool) => ({ provider, tool })))
         .toSorted((a, b) => callsOf(b) - callsOf(a))
@@ -1270,19 +1273,31 @@ function ToolsTableScreen({
                     <Table.Heading
                       align="center"
                       className={styles.callsColumn}
-                      sort={sortByUsage ? 'descending' : 'none'}
+                      // Only counts sort; a usage still loading or unavailable does not.
+                      sort={usageCounts ? (sortByUsage ? 'descending' : 'none') : undefined}
                     >
                       <span className={styles.callsHeading}>
-                        <Table.SortButton
-                          label="Sort by usage"
-                          sort={sortByUsage ? 'descending' : 'none'}
-                          onClick={() => setSortByUsage((on) => !on)}
-                        >
-                          Usage
-                        </Table.SortButton>
+                        {usageCounts ? (
+                          <Table.SortButton
+                            label="Sort by usage"
+                            sort={sortByUsage ? 'descending' : 'none'}
+                            onClick={() => setSortByUsage((on) => !on)}
+                          >
+                            Usage
+                          </Table.SortButton>
+                        ) : (
+                          'Usage'
+                        )}
                         <InfoTip ariaLabel="About usage">
-                          {`Your calls and your agents' calls in the last ${toolCalls.days} days.`}
+                          {'state' in toolCalls && toolCalls.state === 'unavailable'
+                            ? USAGE_UNAVAILABLE
+                            : `Your calls and your agents' calls in the last ${toolCalls.days} days.`}
                         </InfoTip>
+                        {'state' in toolCalls && toolCalls.state === 'loading' && (
+                          <span role="status" className={visuallyHidden}>
+                            Loading usage…
+                          </span>
+                        )}
                       </span>
                     </Table.Heading>
                   )}
@@ -1460,7 +1475,7 @@ const RankedRows = memo(function RankedRows({
   ranked: { index: number; provider: ProviderView; tool: ToolView }[]
   selected: Set<SelectionKey>
   toggleTools: (targets: { provider: ProviderView; tool: ToolView }[], checked: boolean) => void
-  toolCalls: ToolCallCounts | null
+  toolCalls: ToolCalls
   virtual: Table.VirtualRowsHandle
 }) {
   if (ranked.length === 0) return <Table.Status>No tools match.</Table.Status>
@@ -1527,7 +1542,7 @@ const TableSections = memo(function TableSections({
   sections: ProviderSection[]
   selected: Set<SelectionKey>
   toggleTools: (targets: { provider: ProviderView; tool: ToolView }[], checked: boolean) => void
-  toolCalls: ToolCallCounts | null
+  toolCalls: ToolCalls
   /** The busiest tool's calls, which a full bar stands for. */
   maxCalls: number
   virtual: Table.VirtualRowsHandle
@@ -1869,8 +1884,8 @@ const ToolRow = memo(function ToolRow({
   provider: ProviderView
   measure: Ref<HTMLDivElement>
   tool: ToolView
-  /** The tool's calls; null while the table has no Usage column. */
-  usage: ToolUsage | null
+  /** The tool's calls, or why it has none yet; null while the table has no Usage column. */
+  usage: Usage
   /** The busiest tool's calls, which a full bar stands for. */
   maxCalls: number
   /** Names the provider before the tool, for a list with no provider headings. */
@@ -1966,15 +1981,33 @@ const ToolRow = memo(function ToolRow({
           </Tooltip>
         )}
       </span>
-      {usage && (
+      {usage === 'loading' ? (
         <Table.Cell className={styles.callsColumn}>
-          <Tooltip content={countLabel(usage.calls, 'call')}>
-            <span className={styles.callsBar}>
-              <Meter value={usage.calls} max={maxCalls} size="small" />
-              <span className={visuallyHidden}>{countLabel(usage.calls, 'call')}</span>
-            </span>
-          </Tooltip>
+          {/* The column heading announces the loading once, not each row. */}
+          <span className={styles.callsBar} aria-hidden>
+            <Skeleton width="100%" height={4} />
+          </span>
         </Table.Cell>
+      ) : usage === 'unavailable' ? (
+        <Table.Cell className={styles.callsColumn}>
+          <span className={styles.callsBar}>
+            <span aria-hidden className={styles.usageAbsent}>
+              —
+            </span>
+            <span className={visuallyHidden}>Not available</span>
+          </span>
+        </Table.Cell>
+      ) : (
+        usage && (
+          <Table.Cell className={styles.callsColumn}>
+            <Tooltip content={countLabel(usage.calls, 'call')}>
+              <span className={styles.callsBar}>
+                <Meter value={usage.calls} max={maxCalls} size="small" />
+                <span className={visuallyHidden}>{countLabel(usage.calls, 'call')}</span>
+              </span>
+            </Tooltip>
+          </Table.Cell>
+        )
       )}
       <span role="cell" className={styles.policyCell}>
         <PolicySelect canChange={canChange} compact form={form} provider={provider} tool={tool} />
@@ -2225,10 +2258,23 @@ function unused(days: number) {
   return usage
 }
 
-/** A tool's usage over the window; null while Coral cannot count calls. */
-function usageOf(toolCalls: ToolCallCounts | null, provider: ProviderView, tool: ToolView) {
+/** The Usage column's counts, or why it has none yet; null hides the column. */
+type ToolCalls = ToolCallCounts | ToolCallsAbsent | null
+/** One tool's usage, or why it has none yet; null while the table has no Usage column. */
+type Usage = ToolUsage | ToolCallsAbsent['state'] | null
+
+const USAGE_UNAVAILABLE = 'Usage is not available. Try again later.'
+
+/** A tool's usage over the window, or why it has none yet. */
+function usageOf(toolCalls: ToolCalls, provider: ProviderView, tool: ToolView): Usage {
   if (!toolCalls) return null
+  if ('state' in toolCalls) return toolCalls.state
   return toolCalls.tools[selectionKey(provider.id, tool.key)] ?? unused(toolCalls.days)
+}
+
+/** A usage's calls; a usage without counts ranks and scales as none. */
+function usageCalls(usage: Usage) {
+  return usage && typeof usage === 'object' ? usage.calls : 0
 }
 
 /** When a day of the window was, counted back from now. */
@@ -2266,6 +2312,31 @@ function ToolPolicySection(props: {
         Policy
       </Typography.BodyStrong>
       <PolicySelect {...props} />
+    </section>
+  )
+}
+
+/** The drawer's Usage section while the summary loads, or once it could not. */
+function ToolUsageAbsent({ state }: { state: ToolCallsAbsent['state'] }) {
+  const headingId = useId()
+  const loading = state === 'loading'
+  return (
+    <section aria-labelledby={headingId} aria-busy={loading} className={styles.usage}>
+      <Typography.BodyStrong as="h3" id={headingId}>
+        Usage
+      </Typography.BodyStrong>
+      {loading ? (
+        <>
+          <span role="status" className={visuallyHidden}>
+            Loading usage…
+          </span>
+          <Skeleton width="100%" height={56} borderRadius="8px" />
+        </>
+      ) : (
+        <Typography.BodySmall as="p" variant="secondary">
+          {USAGE_UNAVAILABLE}
+        </Typography.BodySmall>
+      )}
     </section>
   )
 }
@@ -2368,7 +2439,7 @@ function ToolDetailsDrawer({
   /** What the table does not load of `tool`: its prose, or the source of a private or a shared tool. */
   detail: ToolDetailView | null
   /** Null shows no usage. */
-  toolCalls: ToolCallCounts | null
+  toolCalls: ToolCalls
   form: FormContext
   tool: ToolView | null
   /** Runs as the close starts, so the URL and the keys follow it at once. */
@@ -2520,7 +2591,9 @@ function ToolDetailsDrawer({
                   tool={tool}
                 />
               </UnlessDocked>
-              {usage ? (
+              {usage === 'loading' || usage === 'unavailable' ? (
+                <ToolUsageAbsent state={usage} />
+              ) : usage ? (
                 <ToolUsageSection usage={usage} />
               ) : (
                 toolCalls && (
