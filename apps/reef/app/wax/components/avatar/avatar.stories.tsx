@@ -57,7 +57,7 @@ export const Square: Story = {
 }
 
 // Two letters tell one person from another better than one does.
-export const Initials: Story = {
+export const TwoLetters: Story = {
   args: { name: 'James Summerfield' },
   render: () => (
     <div style={{ alignItems: 'center', display: 'flex', gap: 16 }}>
