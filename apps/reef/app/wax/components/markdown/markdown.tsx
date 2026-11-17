@@ -1,10 +1,15 @@
 import classNames from 'classnames'
 import ReactMarkdown, { type Components } from 'react-markdown'
 
+import { TextLink } from '../text-link'
 import * as styles from './markdown.css'
 
 const MARKDOWN_COMPONENTS: Components = {
-  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+  a: ({ href, children }) => (
+    <TextLink href={href} external>
+      {children}
+    </TextLink>
+  ),
   // Provider prose must not trigger requests to external image hosts.
   img: ({ alt }) => <span>{alt}</span>,
 }

@@ -3,6 +3,7 @@ import { Button, Table, Typography } from '@/wax/components'
 import { Picker } from '@/wax/components/picker'
 import { Pill } from '@/wax/components/pill'
 import { Status } from '@/wax/components/status'
+import { TextLink } from '@/wax/components/text-link'
 import { ActionDialog } from './forms'
 import { ManagementLayout, trail } from './layout'
 import type { FormContext } from './types'
@@ -61,10 +62,11 @@ export function OrganizationSecretStoresPage({
         <Table.Head />
         {stores.length === 0 && (
           <Table.Status>
-            <span>No secret stores. To define one, add it to config.toml.</span>
-            <Button.ExternalLink href={secretStoresDocsUrl} size="small">
+            No secret stores defined.{' '}
+            <TextLink href={secretStoresDocsUrl} external>
               Read the secret store docs
-            </Button.ExternalLink>
+            </TextLink>
+            .
           </Table.Status>
         )}
         <Table.Body>
