@@ -357,7 +357,7 @@ impl AccountModule {
         state: &str,
         response: CallbackResponse,
     ) -> Result<Authorization, Error> {
-        let started = std::time::Instant::now();
+        let started = self.started();
         let actor = context.actor();
         let mut tx = self.providers.database.begin().await?;
         let authority = self.scope_authority(&mut tx, actor, owner).await?;
@@ -443,16 +443,10 @@ impl AccountModule {
             },
         )
         .await;
-        let elapsed = i64::try_from(started.elapsed().as_nanos())
-            .map_err(|_error| Error::Internal(crate::InternalFault::Overflow))?;
         let record_status =
             result.is_ok() || matches!(result, Err(Error::OAuthClientConfiguration));
         let client_failed = result.is_err();
-        let context = ChangeContext::new(
-            context.actor().clone(),
-            context.occurred_at_unix_nanos().saturating_add(elapsed),
-            context.trace_id().clone(),
-        );
+        let context = super::setup_oauth::advanced(context, started);
         let completion = match result {
             Ok(token) => {
                 self.complete(&context, owner, id, CredentialMaterial::OAuth(token))
@@ -614,6 +608,11 @@ pub(super) async fn token_request(
     parse_token_response(status, &body)
 }
 
+/// How long a request to a token or device-authorization endpoint runs
+/// before Coral gives up on its answer. The device poll schedule counts on
+/// it: a poll that got no answer took this long at most.
+pub(super) const TOKEN_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The largest token or device-authorization response Coral reads.
 const TOKEN_RESPONSE_LIMIT: usize = 64 * 1024;
 
@@ -622,11 +621,8 @@ pub(super) async fn form_request(
     form: &[(&str, &str)],
     authentication: &TokenAuthentication<'_>,
 ) -> Result<(reqwest::StatusCode, zeroize::Zeroizing<Vec<u8>>), Error> {
-    let client = coral_outbound::Client::new(
-        endpoint.destination_policy,
-        std::time::Duration::from_secs(30),
-    )
-    .map_err(token_transport_error)?;
+    let client = coral_outbound::Client::new(endpoint.destination_policy, TOKEN_REQUEST_TIMEOUT)
+        .map_err(token_transport_error)?;
     let mut request = client
         .post(endpoint.url)
         .map_err(|_error| Error::OutboundDestinationRejected)?
@@ -807,10 +803,9 @@ impl TokenResponse {
         self.expires_at = self
             .expires_in
             .map(|seconds| {
-                i64::try_from(seconds)
-                    .ok()
-                    .and_then(|seconds| seconds.checked_mul(1_000_000_000))
-                    .and_then(|duration| now.checked_add(duration))
+                coral_db::UnixNanos::new(now)
+                    .checked_add(std::time::Duration::from_secs(seconds))
+                    .map(coral_db::UnixNanos::get)
                     .ok_or(Error::AccountInput)
             })
             .transpose()?;

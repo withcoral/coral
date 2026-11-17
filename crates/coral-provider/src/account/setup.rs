@@ -27,9 +27,10 @@ use crate::{
 
 /// How long after its creation a Setup reaches its host deadline. Setup-scoped
 /// credential material expires at that deadline too.
-const SETUP_CREDENTIAL_LIFETIME_NANOS: i64 = 3_600_000_000_000;
+const SETUP_CREDENTIAL_LIFETIME: std::time::Duration = std::time::Duration::from_hours(1);
 /// Host deadline for one setup-scoped Authorization, from its start.
-pub(crate) const SETUP_AUTHORIZATION_LIFETIME_NANOS: i64 = 900_000_000_000;
+pub(crate) const SETUP_AUTHORIZATION_LIFETIME: std::time::Duration =
+    std::time::Duration::from_mins(15);
 
 pub(crate) struct Provisional {
     pub(super) automatic_refresh: Option<bool>,
@@ -1118,8 +1119,9 @@ impl ProviderModule {
 /// one hour later. Only Setup creation asks; every later decision reads the
 /// stored deadline through `ProviderSetup::is_past_deadline`.
 pub(crate) fn setup_deadline(created_at_unix_nanos: i64) -> Result<i64, Error> {
-    created_at_unix_nanos
-        .checked_add(SETUP_CREDENTIAL_LIFETIME_NANOS)
+    coral_db::UnixNanos::new(created_at_unix_nanos)
+        .checked_add(SETUP_CREDENTIAL_LIFETIME)
+        .map(coral_db::UnixNanos::get)
         .ok_or(Error::Internal(crate::InternalFault::Overflow))
 }
 

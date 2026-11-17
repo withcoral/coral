@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use super::callback::CallbackResponse;
 use super::setup::{
-    SETUP_AUTHORIZATION_LIFETIME_NANOS, SetupAuthentication, SetupAuthorizationCompletion,
+    SETUP_AUTHORIZATION_LIFETIME, SetupAuthentication, SetupAuthorizationCompletion,
     SetupAuthorizationState, SetupOAuthClient, StoredClient, StoredRequirement,
     callback_state_digest,
 };
@@ -84,11 +84,11 @@ impl AccountModule {
         configuration_revision: i64,
         client: SetupOAuthClient,
     ) -> Result<SetupAuthentication, Error> {
-        let started = std::time::Instant::now();
-        let authorization_expires_at = context
-            .occurred_at_unix_nanos()
-            .checked_add(SETUP_AUTHORIZATION_LIFETIME_NANOS)
-            .ok_or(Error::Internal(crate::InternalFault::Overflow))?;
+        let started = self.started();
+        let authorization_expires_at = coral_db::UnixNanos::new(context.occurred_at_unix_nanos())
+            .checked_add(SETUP_AUTHORIZATION_LIFETIME)
+            .ok_or(Error::Internal(crate::InternalFault::Overflow))?
+            .get();
         // Read the requirement and any retained registration, then bootstrap
         // outside the transaction: registration is a network call.
         let mut tx = self.providers.database.begin().await?;
@@ -491,7 +491,7 @@ impl AccountModule {
         state: &str,
         response: CallbackResponse,
     ) -> Result<SetupAuthentication, Error> {
-        let started = std::time::Instant::now();
+        let started = self.started();
         let mut tx = self.providers.database.begin().await?;
         let (authority, loaded) = self.lock_pre_ready(&mut tx, context, owner, id).await?;
         let row = load(&mut tx, owner, id)
@@ -710,7 +710,7 @@ impl AccountModule {
         id: &ProviderSetupId,
         borrowed_revision: Option<i64>,
     ) -> Result<(), Error> {
-        let started = std::time::Instant::now();
+        let started = self.started();
         let borrow = borrowed_revision.is_some();
         let mut tx = self.providers.database.begin().await?;
         let (_authority, loaded) = self.lock_pre_ready(&mut tx, context, owner, id).await?;
@@ -1030,12 +1030,14 @@ fn flow_of(policy: coral_outbound::DestinationPolicy, loaded: &LoadedSetup) -> R
     }
 }
 
-/// Advances the change context by the wall time an upstream exchange took.
-pub(super) fn advanced(context: &ChangeContext, started: std::time::Instant) -> ChangeContext {
-    let elapsed = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
+/// The change context at the instant the Module's clock now gives the work
+/// that `started`: one reading of the clock.
+pub(super) fn advanced(context: &ChangeContext, started: super::Started<'_>) -> ChangeContext {
     ChangeContext::new(
         context.actor().clone(),
-        context.occurred_at_unix_nanos().saturating_add(elapsed),
+        started
+            .now_from(coral_db::UnixNanos::new(context.occurred_at_unix_nanos()))
+            .get(),
         context.trace_id().clone(),
     )
 }
