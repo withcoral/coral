@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 
 use coral_db::{
     Database, DatabaseOptions, DatabaseSystem, Error, MigrationPlan, MigrationProgress,
-    QueryExecutor, ReadOnlyDatabase, RowLock,
+    QueryExecutor, ReadOnlyDatabase, RowLock, UnixNanos,
 };
 use coral_test_support::TestDatabase;
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
@@ -712,6 +712,131 @@ async fn the_statement_count_adds_one_for_each_statement_and_none_for_a_transact
         .await
         .expect("read records");
     assert_eq!(sent() - before, 2, "direct reads: {all:?}");
+}
+
+#[derive(Clone, Copy, Iden)]
+enum Instants {
+    #[iden = "fixture_instants"]
+    Table,
+    Id,
+    AtUnixNanos,
+    EndsAtUnixNanos,
+}
+
+#[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+struct InstantRow {
+    id: String,
+    at_unix_nanos: UnixNanos,
+    ends_at_unix_nanos: Option<UnixNanos>,
+}
+
+// Catches: an instant that a statement binds, or that a row decodes, as
+// anything but the integer of nanoseconds its column holds. A repository that
+// moves from `i64` to `UnixNanos` would then store, read or compare another
+// value on one of the databases.
+#[tokio::test]
+async fn an_instant_binds_and_decodes_as_the_integer_its_column_holds() {
+    const INSTANTS: &str = "CREATE TABLE fixture_instants (
+        id TEXT NOT NULL PRIMARY KEY,
+        at_unix_nanos BIGINT NOT NULL,
+        ends_at_unix_nanos BIGINT
+    );";
+    // The ids sort in the order of their instants.
+    const CASES: [(&str, i64, Option<i64>); 5] = [
+        ("a first", i64::MIN, None),
+        ("b before 1970", -1, Some(0)),
+        ("c 1970", 0, Some(i64::MIN)),
+        (
+            "d 2100",
+            4_102_444_800_000_000_000,
+            Some(4_102_444_800_000_000_001),
+        ),
+        ("e last", i64::MAX, Some(i64::MAX)),
+    ];
+    let fixture = TestDatabase::new(&fixture_plan(&[(1, INSTANTS, INSTANTS)]))
+        .await
+        .expect("create instants test database");
+    let database = fixture.database();
+    let columns = [
+        Instants::Id,
+        Instants::AtUnixNanos,
+        Instants::EndsAtUnixNanos,
+    ];
+    let select = || {
+        Query::select()
+            .columns(columns)
+            .from(Instants::Table)
+            .order_by(Instants::Id, sea_query::Order::Asc)
+            .to_owned()
+    };
+
+    let mut transaction = database.begin().await.expect("begin transaction");
+    for (id, at, ends_at) in CASES {
+        transaction
+            .execute(
+                Query::insert()
+                    .into_table(Instants::Table)
+                    .columns(columns)
+                    .values_panic([
+                        id.into(),
+                        UnixNanos::new(at).into(),
+                        ends_at.map(UnixNanos::new).into(),
+                    ])
+                    .to_owned(),
+            )
+            .await
+            .expect("insert instants");
+    }
+    transaction.commit().await.expect("commit instants");
+
+    // The column holds the integer that an `i64` bound there before.
+    let stored: Vec<(String, i64, Option<i64>)> =
+        database.fetch_all(select()).await.expect("read integers");
+    assert_eq!(
+        stored,
+        CASES.map(|(id, at, ends_at)| (id.to_string(), at, ends_at))
+    );
+
+    // A derived row and a tuple both decode the integer as the instant.
+    let rows: Vec<InstantRow> = database.fetch_all(select()).await.expect("read rows");
+    assert_eq!(
+        rows,
+        CASES.map(|(id, at, ends_at)| InstantRow {
+            id: id.to_string(),
+            at_unix_nanos: UnixNanos::new(at),
+            ends_at_unix_nanos: ends_at.map(UnixNanos::new),
+        })
+    );
+    let tuples: Vec<(String, UnixNanos, Option<UnixNanos>)> =
+        database.fetch_all(select()).await.expect("read tuples");
+    assert_eq!(
+        tuples,
+        CASES.map(|(id, at, ends_at)| (
+            id.to_string(),
+            UnixNanos::new(at),
+            ends_at.map(UnixNanos::new)
+        ))
+    );
+
+    // A predicate compares the column with a bound instant as integers. A
+    // null deadline matches no comparison, a bound null included.
+    let at = || Expr::col(Instants::AtUnixNanos);
+    let ends_at = || Expr::col(Instants::EndsAtUnixNanos);
+    let predicates: [(sea_query::Expr, &[&str]); 5] = [
+        (at().lt(UnixNanos::new(0)), &["a first", "b before 1970"]),
+        (at().eq(UnixNanos::new(i64::MAX)), &["e last"]),
+        (ends_at().gt(UnixNanos::new(0)), &["d 2100", "e last"]),
+        (ends_at().eq(None::<UnixNanos>), &[]),
+        (ends_at().is_null(), &["a first"]),
+    ];
+    for (case, (predicate, expected)) in predicates.into_iter().enumerate() {
+        let matching: Vec<InstantRow> = database
+            .fetch_all(select().and_where(predicate).to_owned())
+            .await
+            .expect("read matching rows");
+        let ids: Vec<String> = matching.into_iter().map(|row| row.id).collect();
+        assert_eq!(ids, expected, "predicate {case}");
+    }
 }
 
 #[tokio::test]
