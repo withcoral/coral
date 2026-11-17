@@ -7,10 +7,12 @@
     reason = "fixture setup fails the journey if it cannot complete or a response lacks a field"
 )]
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use coral_grpc::coral::management::v1::CreateWorkspaceRequest;
 use coral_grpc::coral::management::v1::workspace_service_client::WorkspaceServiceClient;
+use coral_test_support::ManualClock;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use wiremock::MockServer;
@@ -24,9 +26,15 @@ const MCP_HOST: &str = "mcp.example.test";
 
 /// Access tokens live one second, plus the verifier's clock-skew leeway.
 const ACCESS_TOKEN_TTL_SECONDS: u64 = 1;
+/// How long past its expiry the verifier still accepts an access token.
+const VERIFIER_CLOCK_SKEW: Duration = Duration::from_mins(1);
 
 struct Journey {
     _temp: TempDir,
+    /// The clock the runtime issues and verifies its tokens by. It starts at
+    /// the system clock's reading, because the mock provider dates its ID
+    /// tokens by that clock, and then stands still until the journey moves it.
+    clock: ManualClock,
     runtime: coral_app::RunningRuntime,
     provider: MockServer,
     endpoint: String,
@@ -59,9 +67,11 @@ impl Journey {
             ),
         )
         .unwrap();
+        let clock = ManualClock::starting_now();
         let runtime = coral_app::start_runtime(coral_app::Launch {
             config_dir: Some(temp.path().to_owned()),
             compile_in_process: true,
+            clock: Some(Arc::new(clock.clone())),
             ..coral_app::Launch::default()
         })
         .await
@@ -72,6 +82,7 @@ impl Journey {
         );
         Self {
             _temp: temp,
+            clock,
             runtime,
             provider,
             endpoint,
@@ -272,9 +283,9 @@ async fn message(response: reqwest::Response) -> Value {
 }
 
 /// One person signs in once per client. Reef's grant refreshes and creates a
-/// Workspace; an MCP client's access token then expires for real, and
-/// refresh carries it on in the same MCP session as the same User in the
-/// same Workspace.
+/// Workspace; an MCP client's access token then expires on the runtime's
+/// clock, and refresh carries it on in the same MCP session as the same User
+/// in the same Workspace.
 #[tokio::test(flavor = "multi_thread")]
 async fn refresh_carries_reef_and_mcp_clients_past_access_token_expiry() {
     let journey = Journey::start().await;
@@ -315,21 +326,23 @@ async fn refresh_carries_reef_and_mcp_clients_past_access_token_expiry() {
     let done = mcp.work(&first, "Before expiry").await;
     assert_eq!(done["state"], "succeeded", "{done}");
 
-    // Real expiry: the verifier allows a minute of clock skew.
-    let deadline = Instant::now() + Duration::from_secs(ACCESS_TOKEN_TTL_SECONDS + 90);
-    loop {
-        let response = mcp
-            .post(
-                &first,
-                &json!({"jsonrpc":"2.0", "id":3, "method":"tools/list", "params":{}}),
-            )
-            .await;
-        if response.status() == 401 {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the access token never expired");
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
+    // The token lasts its lifetime and the verifier's clock skew, and not a
+    // second longer.
+    let list_tools = json!({"jsonrpc":"2.0", "id":3, "method":"tools/list", "params":{}});
+    journey
+        .clock
+        .advance(Duration::from_secs(ACCESS_TOKEN_TTL_SECONDS) + VERIFIER_CLOCK_SKEW);
+    assert_eq!(
+        mcp.post(&first, &list_tools).await.status(),
+        200,
+        "the access token is still within the clock skew"
+    );
+    journey.clock.advance(Duration::from_secs(1));
+    assert_eq!(
+        mcp.post(&first, &list_tools).await.status(),
+        401,
+        "the access token has expired"
+    );
 
     let refreshed = journey.refresh(&client, &tokens).await;
     let second = refreshed["access_token"].as_str().unwrap();

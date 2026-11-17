@@ -12,7 +12,6 @@
 //! lets the callback find its own cookie among a browser's concurrent
 //! sign-ins; the start time lets a new sign-in expire the oldest ones.
 
-use coral_db::Clock as _;
 use std::fmt::Write as _;
 
 use axum::http::{HeaderMap, HeaderValue};
@@ -65,11 +64,6 @@ pub(super) fn sealed_fits(sealed_len: usize, secure: bool) -> bool {
         secure,
     )
     .is_some()
-}
-
-/// Host time in Unix seconds.
-pub(super) fn now_unix_secs() -> u64 {
-    coral_db::SystemClock.now().whole_seconds()
 }
 
 /// The cookie name for the sign-in named by `oidc_state`, started at `started_at`.

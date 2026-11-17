@@ -369,6 +369,7 @@ impl Tracer {
                 .expect("loopback MCP config"),
             modules,
             Arc::new(|| Box::pin(async { true })),
+            Arc::new(coral_db::SystemClock),
         )
         .await
         .expect("start credential-free MCP");

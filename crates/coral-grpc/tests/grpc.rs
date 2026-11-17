@@ -174,9 +174,14 @@ impl Fixture {
             .unwrap();
         let tasks = coral_task::TaskModule::new(database.clone(), workspaces.clone());
         let authentication = if enabled {
-            PrincipalAuthentication::new(&issuer, organization, workspaces.clone())
+            PrincipalAuthentication::new(
+                &issuer,
+                organization,
+                workspaces.clone(),
+                Arc::new(coral_db::SystemClock),
+            )
         } else {
-            PrincipalAuthentication::local(workspaces.clone())
+            PrincipalAuthentication::local(workspaces.clone(), Arc::new(coral_db::SystemClock))
         };
         let vault_dir = tempfile::tempdir().unwrap();
         let vault =

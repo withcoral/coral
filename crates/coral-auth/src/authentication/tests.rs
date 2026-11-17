@@ -1,5 +1,5 @@
 use super::*;
-use coral_test_support::TestDatabase;
+use coral_test_support::{ManualClock, TestDatabase};
 use coral_workspace::{
     AgentDisplayName, AuthenticatedUser, ChangeContext, IssuedAgentCredential, OrganizationRole,
     Principal, TraceId, UserId, WorkspaceDisplayName, WorkspaceRole,
@@ -8,6 +8,8 @@ use std::time::Duration;
 
 const AUDIENCE: &str = "https://coral.example/workspaces/01234567-89ab-4cde-8fab-0123456789ab/mcp";
 const ORGANIZATION_AUDIENCE: &str = "https://coral.example/mcp";
+/// Where the fixture's clock starts, in 2100: no real clock is near it.
+const START: UnixNanos = UnixNanos::new(4_102_444_800 * 1_000_000_000);
 
 #[tokio::test]
 async fn user_authentication_reloads_authority_without_provisioning_or_local_fallback() {
@@ -74,15 +76,15 @@ async fn authentication_rejects_wrong_audience_signature_kind_and_malformed_cred
     )
     .unwrap();
     let wrong_key = other_issuer
-        .issue_access_token(
-            "owner",
-            "client",
-            AUDIENCE,
-            coral_test_support::now_unix_nanos(),
-        )
+        .issue_access_token("owner", "client", AUDIENCE, fixture.now_unix_nanos())
         .unwrap();
-    let wrong_kind =
-        crate::session::test_tokens::agent_kind_token(&fixture.issuer, "owner", "client", AUDIENCE);
+    let wrong_kind = crate::session::test_tokens::agent_kind_token(
+        &fixture.issuer,
+        "owner",
+        "client",
+        AUDIENCE,
+        fixture.clock.now(),
+    );
     let wrong_audience = fixture.token("owner", "https://other.example");
     for token in [
         "",
@@ -124,7 +126,7 @@ async fn the_credential_alone_fixes_the_workspace_at_the_organization_endpoint()
                 "client",
                 audience,
                 workspace,
-                coral_test_support::now_unix_nanos(),
+                fixture.now_unix_nanos(),
             )
             .unwrap()
             .access_token
@@ -173,6 +175,7 @@ async fn the_credential_alone_fixes_the_workspace_at_the_organization_endpoint()
         "client",
         ORGANIZATION_AUDIENCE,
         &workspace,
+        fixture.clock.now(),
     );
     for (case, bearer) in [
         ("no credential", None),
@@ -264,6 +267,68 @@ async fn agent_authentication_uses_workspace_registration_not_user_authority() {
             Err(AuthenticationError::Unauthenticated)
         );
     }
+}
+
+/// Authentication dates a credential by the clock it was built with, not by
+/// the host's: when that clock passes a User token's expiry, or an Agent
+/// Registration's, the credential stops authenticating.
+#[tokio::test]
+async fn a_credential_expires_when_the_clock_passes_its_expiry() {
+    const SECOND: i64 = 1_000_000_000;
+    let fixture = Fixture::new().await;
+    let token = fixture.token("owner", AUDIENCE);
+    let management = fixture.token("owner", "reef");
+    let agent = fixture.agent(&fixture.workspace).await;
+    fixture
+        .workspaces
+        .update_agent_registration(
+            &fixture.other,
+            &fixture.workspace,
+            agent.registration.id(),
+            true,
+            Some(fixture.now_unix_nanos() + 30 * SECOND),
+        )
+        .await
+        .unwrap();
+    let agent = agent.credential.expose();
+    let at_this_instant = async || {
+        [
+            fixture.authenticate(Some(&token)).await.map(drop),
+            fixture
+                .authentication
+                .authenticate_user(Some(&management), "reef")
+                .await
+                .map(drop),
+            fixture.authenticate(Some(agent)).await.map(drop),
+            // Without sign-in, the same Registration and the same clock.
+            fixture
+                .local
+                .authenticate(
+                    WorkspaceFixedBy::Url(&fixture.workspace),
+                    Some(agent),
+                    AUDIENCE,
+                )
+                .await
+                .map(drop),
+        ]
+    };
+    assert_eq!(at_this_instant().await, [Ok(()); 4]);
+
+    // The fixture's tokens last one minute, and the verifier lets the clock
+    // be one more minute off.
+    fixture
+        .clock
+        .advance(Duration::from_mins(2) + Duration::from_secs(1));
+
+    assert_eq!(
+        at_this_instant().await,
+        [Err(AuthenticationError::Unauthenticated); 4]
+    );
+    // A token issued at the new instant authenticates at it.
+    fixture
+        .authenticate(Some(&fixture.token("owner", AUDIENCE)))
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -403,6 +468,9 @@ struct Fixture {
     other: ChangeContext,
     workspace: WorkspaceId,
     issuer: SessionTokenIssuer,
+    /// The clock `authentication` and `local` read. It reads [`START`] until
+    /// a test moves it.
+    clock: ManualClock,
     authentication: PrincipalAuthentication,
     /// The same authority without sign-in.
     local: PrincipalAuthentication,
@@ -434,9 +502,14 @@ impl Fixture {
             Duration::from_mins(1),
         )
         .unwrap();
-        let authentication =
-            PrincipalAuthentication::new(&issuer, organization.clone(), workspaces.clone());
-        let local = PrincipalAuthentication::local(workspaces.clone());
+        let clock = ManualClock::starting_at(START);
+        let authentication = PrincipalAuthentication::new(
+            &issuer,
+            organization.clone(),
+            workspaces.clone(),
+            Arc::new(clock.clone()),
+        );
+        let local = PrincipalAuthentication::local(workspaces.clone(), Arc::new(clock.clone()));
         Self {
             database,
             organization,
@@ -445,9 +518,16 @@ impl Fixture {
             other,
             workspace,
             issuer,
+            clock,
             authentication,
             local,
         }
+    }
+
+    /// The fixture clock's reading in Unix nanoseconds, as the issuer and
+    /// the Workspace module take it.
+    fn now_unix_nanos(&self) -> i64 {
+        self.clock.now().get()
     }
 
     async fn agent(&self, workspace: &WorkspaceId) -> IssuedAgentCredential {
@@ -464,12 +544,7 @@ impl Fixture {
 
     fn token(&self, user: &str, audience: &str) -> String {
         self.issuer
-            .issue_access_token(
-                user,
-                "untrusted-client",
-                audience,
-                coral_test_support::now_unix_nanos(),
-            )
+            .issue_access_token(user, "untrusted-client", audience, self.now_unix_nanos())
             .unwrap()
             .access_token
     }

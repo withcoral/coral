@@ -1,5 +1,6 @@
-use coral_db::Clock as _;
 use std::time::Duration;
+
+use coral_db::UnixNanos;
 
 use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::jwk::{
@@ -107,12 +108,15 @@ pub(super) struct ValidatedOidcIdentity {
     pub(super) profile_observed_at_unix_nanos: i64,
 }
 
+/// Verifies the ID token of one sign-in at `now`, the caller's one reading
+/// of the clock. Nothing here reads another.
 pub(super) fn validate_id_token(
     provider: &ResolvedOidcProvider,
     token: &str,
     expected_nonce: &str,
     advertised_algorithms: &[String],
     jwks: &JwkSet,
+    now: UnixNanos,
 ) -> Result<ValidatedOidcIdentity, TokenRejection> {
     let claims = verified_jwt_claims(
         &provider.issuer,
@@ -121,21 +125,18 @@ pub(super) fn validate_id_token(
         advertised_algorithms,
         jwks,
     )?;
-    validate_claims(provider, expected_nonce, &claims, unix_now_seconds())
+    validate_claims(provider, expected_nonce, &claims, now.whole_seconds())
 }
 
-/// One reading of the clock for a token's time claims, in Unix seconds.
-fn unix_now_seconds() -> u64 {
-    coral_db::SystemClock.now().whole_seconds()
-}
-
-/// Admission-only evidence from the same upstream code exchange. No claim or
+/// Admission-only evidence from the same upstream code exchange, checked at
+/// `now`, the instant that dated the ID token. No claim or
 /// token is returned to callers, persisted, or forwarded to Coral clients.
 pub(super) fn validate_access_token_admission(
     provider: &ResolvedOidcProvider,
     token: Option<&str>,
     identity: &ValidatedOidcIdentity,
     jwks: &JwkSet,
+    now: UnixNanos,
 ) -> Result<(), TokenRejection> {
     let Some(policy) = &provider.access_token else {
         return Ok(());
@@ -150,7 +151,7 @@ pub(super) fn validate_access_token_admission(
         jwks,
     )?;
     let claims = claims.as_object().ok_or(TokenRejection::Malformed)?;
-    validate_token_times(claims, unix_now_seconds())?;
+    validate_token_times(claims, now.whole_seconds())?;
     if claims.get("iss").and_then(Value::as_str) != Some(identity.issuer.as_str()) {
         return Err(TokenRejection::Issuer);
     }
@@ -168,6 +169,8 @@ pub(super) fn validate_access_token_admission(
     Ok(())
 }
 
+/// The claims of a token whose signature, issuer and audience are verified.
+/// Its times are not: the caller checks them with [`validate_token_times`].
 fn verified_jwt_claims(
     issuer: &str,
     audience: &str,
@@ -211,8 +214,9 @@ fn verified_jwt_claims(
     }
     let decoding_key = DecodingKey::from_jwk(key).map_err(|_error| TokenRejection::KeyNotFound)?;
     let mut validation = Validation::new(algorithm);
-    validation.leeway = CLOCK_SKEW_SECONDS;
-    validation.validate_nbf = true;
+    // `decode` would read the host's clock for `exp` and `nbf`.
+    validation.validate_exp = false;
+    validation.validate_nbf = false;
     validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
     validation.set_issuer(&[issuer]);
     validation.set_audience(&[audience]);
@@ -467,7 +471,7 @@ fn required_claim_matches(actual: &Value, expected: &Value) -> bool {
 pub(in crate::auth) mod tests {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
-    use jsonwebtoken::{EncodingKey, Header, encode, get_current_timestamp};
+    use jsonwebtoken::{EncodingKey, Header, encode};
 
     use serde_json::json;
     use std::path::Path;
@@ -502,8 +506,19 @@ pub(in crate::auth) mod tests {
         settings.provider().clone()
     }
 
-    pub(in crate::auth) fn claims() -> Value {
-        let now = get_current_timestamp();
+    /// The instant these tests date and validate tokens at, in 2100: nothing
+    /// here reads a clock, and no real clock is near it. It is the last
+    /// nanosecond of its second, and a token carries whole seconds.
+    const NOW: UnixNanos = UnixNanos::new(4_102_444_800 * 1_000_000_000 + 999_999_999);
+
+    /// The claims of an ID token that is valid at [`NOW`].
+    fn claims() -> Value {
+        claims_at(NOW)
+    }
+
+    /// The claims of an ID token the provider issued a second before `now`.
+    pub(in crate::auth) fn claims_at(now: UnixNanos) -> Value {
+        let now = now.whole_seconds();
         json!({
             "iss": "http://localhost/issuer", "aud": "provider-client", "sub": "subject",
             "iat": now - 1, "exp": now + 300, "nonce": "expected-nonce", "email": " User "
@@ -555,8 +570,15 @@ pub(in crate::auth) mod tests {
         let good = token(&claims);
         let validate = |token: &str, algorithm: &str, keys: &[Value]| {
             let algorithms = [algorithm.to_owned()];
-            validate_id_token(&provider, token, "expected-nonce", &algorithms, &jwks(keys))
-                .map(|_identity| ())
+            validate_id_token(
+                &provider,
+                token,
+                "expected-nonce",
+                &algorithms,
+                &jwks(keys),
+                NOW,
+            )
+            .map(|_identity| ())
         };
         for (field, value) in [
             ("kid", json!("other")),
@@ -630,7 +652,7 @@ pub(in crate::auth) mod tests {
     #[test]
     fn a_verified_signature_over_refused_claims_names_the_claim_check() {
         let provider = provider("");
-        let now = get_current_timestamp();
+        let now = NOW.whole_seconds();
         for (field, value, expected) in [
             ("iss", Some(json!("wrong")), TokenRejection::Issuer),
             ("iss", None, TokenRejection::Issuer),
@@ -657,6 +679,7 @@ pub(in crate::auth) mod tests {
                     "expected-nonce",
                     &["RS256".into()],
                     &jwks(&[rsa_key()]),
+                    NOW,
                 )
                 .map(|_identity| ()),
                 Err(expected),
@@ -757,6 +780,7 @@ pub(in crate::auth) mod tests {
             "expected-nonce",
             &["RS256".into()],
             &jwks(&[rsa_key()]),
+            NOW,
         )
         .expect("verified OIDC identity");
         let mut base = claims();
@@ -765,7 +789,7 @@ pub(in crate::auth) mod tests {
         base.as_object_mut().expect("claims").remove("nonce");
         let valid = token(&base);
         let check = |token: Option<&str>, keys: &[Value]| {
-            validate_access_token_admission(&provider, token, &identity, &jwks(keys))
+            validate_access_token_admission(&provider, token, &identity, &jwks(keys), NOW)
         };
         assert_eq!(check(Some(&valid), &[rsa_key()]), Ok(()));
         assert_eq!(check(None, &[rsa_key()]), Err(TokenRejection::Missing));
@@ -777,7 +801,7 @@ pub(in crate::auth) mod tests {
             check(Some(&valid), &[rsa_key(), rsa_key()]),
             Err(TokenRejection::KeyAmbiguous)
         );
-        let now = get_current_timestamp();
+        let now = NOW.whole_seconds();
         // `None` removes the claim.
         for (field, value, expected) in [
             ("iss", Some(json!("https://another-provider.test")), Issuer),
@@ -838,7 +862,7 @@ pub(in crate::auth) mod tests {
     fn validates_mandatory_oidc_claims_and_time_types() {
         let provider = provider("");
         let base = claims();
-        let now = get_current_timestamp();
+        let now = NOW.whole_seconds();
         let mut invalid = Vec::new();
         for (field, value, expected) in [
             ("iss", json!("wrong"), TokenRejection::Issuer),
@@ -908,68 +932,111 @@ pub(in crate::auth) mod tests {
             .expect("matching authorized party must allow multiple audiences");
     }
 
-    /// The time claims are checked against the caller's one reading of the
-    /// clock, so a claim one second past the allowed skew is past it however
-    /// long the check takes to start.
+    /// A signed token's time claims are checked against the caller's one
+    /// reading of the clock, so a claim one second past the allowed skew is
+    /// past it however long the check takes to start. No other clock decides:
+    /// neither instant here is near the host's.
     #[test]
     fn token_times_allow_the_clock_skew_and_no_more() {
-        const NOW: u64 = 1_800_000_000;
         const SKEW: u64 = CLOCK_SKEW_SECONDS;
-        let provider = provider("");
-        for (case, issued_at, expires_at, not_before, accepted) in [
-            ("issued at the skew", NOW + SKEW, NOW + 300, None, true),
-            (
-                "issued past the skew",
-                NOW + SKEW + 1,
-                NOW + 300,
-                None,
-                false,
-            ),
-            (
-                "not before the skew",
-                NOW - 1,
-                NOW + 300,
-                Some(NOW + SKEW),
-                true,
-            ),
-            (
-                "not before a time past the skew",
-                NOW - 1,
-                NOW + 300,
-                Some(NOW + SKEW + 1),
-                false,
-            ),
-            // Issued before it expired, so only the skew decides these two.
-            (
-                "expired at the skew",
-                NOW - SKEW - 2,
-                NOW - SKEW,
-                None,
-                true,
-            ),
-            (
-                "expired past the skew",
-                NOW - SKEW - 2,
-                NOW - SKEW - 1,
-                None,
-                false,
-            ),
-        ] {
-            let mut claims = claims();
-            set_claim(&mut claims, "iat", json!(issued_at));
-            set_claim(&mut claims, "exp", json!(expires_at));
-            if let Some(not_before) = not_before {
-                set_claim(&mut claims, "nbf", json!(not_before));
-            }
-            assert_eq!(
-                validate_claims(&provider, "expected-nonce", &claims, NOW).map(|_identity| ()),
-                if accepted {
+        let provider = provider(
+            "[auth.provider.access_token]\n\
+             audience = 'environment-audience'",
+        );
+        let keys = jwks(&[rsa_key()]);
+        let algorithms = ["RS256".to_owned()];
+        // 2001 and 2100: one long past, one far ahead of any real clock.
+        for now in [1_000_000_000_u64, 4_102_444_800] {
+            // A token carries whole seconds: the last nanosecond of a second
+            // is still that second.
+            let instant =
+                UnixNanos::new(i64::try_from(now).expect("seconds") * 1_000_000_000 + 999_999_999);
+            let dated = |issued_at: u64, expires_at: u64, not_before: Option<u64>| {
+                let mut claims = claims();
+                set_claim(&mut claims, "iat", json!(issued_at));
+                set_claim(&mut claims, "exp", json!(expires_at));
+                if let Some(not_before) = not_before {
+                    set_claim(&mut claims, "nbf", json!(not_before));
+                }
+                claims
+            };
+            let id_token = |claims: &Value| {
+                validate_id_token(
+                    &provider,
+                    &token(claims),
+                    "expected-nonce",
+                    &algorithms,
+                    &keys,
+                    instant,
+                )
+            };
+            let Ok(identity) = id_token(&dated(now - 1, now + 300, None)) else {
+                panic!("a token dated {now} is valid at {now}");
+            };
+            for (case, issued_at, expires_at, not_before, accepted) in [
+                ("issued at the skew", now + SKEW, now + 300, None, true),
+                (
+                    "issued past the skew",
+                    now + SKEW + 1,
+                    now + 300,
+                    None,
+                    false,
+                ),
+                (
+                    "not before the skew",
+                    now - 1,
+                    now + 300,
+                    Some(now + SKEW),
+                    true,
+                ),
+                (
+                    "not before a time past the skew",
+                    now - 1,
+                    now + 300,
+                    Some(now + SKEW + 1),
+                    false,
+                ),
+                // Issued before it expired, so only the skew decides these two.
+                (
+                    "expired at the skew",
+                    now - SKEW - 2,
+                    now - SKEW,
+                    None,
+                    true,
+                ),
+                (
+                    "expired past the skew",
+                    now - SKEW - 2,
+                    now - SKEW - 1,
+                    None,
+                    false,
+                ),
+            ] {
+                let claims = dated(issued_at, expires_at, not_before);
+                let expected = if accepted {
                     Ok(())
                 } else {
                     Err(TokenRejection::Times)
-                },
-                "{case}"
-            );
+                };
+                assert_eq!(
+                    id_token(&claims).map(|_identity| ()),
+                    expected,
+                    "an ID token {case}, at {now}"
+                );
+                let mut access = claims;
+                set_claim(&mut access, "aud", json!("environment-audience"));
+                assert_eq!(
+                    validate_access_token_admission(
+                        &provider,
+                        Some(&token(&access)),
+                        &identity,
+                        &keys,
+                        instant,
+                    ),
+                    expected,
+                    "an access token {case}, at {now}"
+                );
+            }
         }
     }
 
@@ -977,7 +1044,7 @@ pub(in crate::auth) mod tests {
     #[test]
     fn keeps_verified_issuer_and_raw_subject_independent_of_other_claims() {
         let provider = provider("");
-        let now = get_current_timestamp();
+        let now = NOW.whole_seconds();
         let mut claims = claims();
         set_claim(&mut claims, "sub", json!("upstream sub/with spaces"));
         set_claim(&mut claims, "uid", json!(LOCAL_PRINCIPAL_ID));
@@ -991,7 +1058,7 @@ pub(in crate::auth) mod tests {
     fn profile_freshness_follows_verified_token_issuance_not_validation_order() {
         let provider = provider("");
         let mut older = claims();
-        let now = get_current_timestamp();
+        let now = NOW.whole_seconds();
         set_claim(&mut older, "iat", json!(now - 30));
         let mut newer = older.clone();
         set_claim(&mut newer, "iat", json!(now - 10));
@@ -1003,7 +1070,7 @@ pub(in crate::auth) mod tests {
     #[test]
     fn profile_claims_are_separate_and_email_verification_is_not_login_admission() {
         let provider = provider("display_name_claim = 'email'");
-        let now = get_current_timestamp();
+        let now = NOW.whole_seconds();
         for verified in [Value::Null, json!(false), json!(true)] {
             let mut claims = claims();
             set_claim(&mut claims, "name", json!("Ada"));
@@ -1027,7 +1094,7 @@ pub(in crate::auth) mod tests {
              tenant = 'one'
              groups = ['admin', 'dev']",
         );
-        let now = get_current_timestamp();
+        let now = NOW.whole_seconds();
         let mut claims = claims();
         set_claim(&mut claims, "name", json!("  Coral User  "));
         set_claim(&mut claims, "tenant", json!(["one", "two"]));

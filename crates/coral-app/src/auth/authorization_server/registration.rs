@@ -5,7 +5,6 @@ use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use coral_auth::oauth_clients::{MAX_REGISTRATION_BYTES, RegistrationError, RegistrationRequest};
-use coral_db::Clock as _;
 
 use super::AuthorizationServerHttpState;
 
@@ -36,7 +35,7 @@ pub(super) async fn register(
     let Ok(request) = serde_json::from_slice::<RegistrationRequest>(&body) else {
         return failure(RegistrationError::InvalidMetadata);
     };
-    let now = coral_db::SystemClock.now().whole_seconds().cast_signed();
+    let now = state.clock.now().whole_seconds().cast_signed();
     match state.clients.register(request, now).await {
         Ok(client) => match serde_json::to_value(client) {
             Ok(value) => response(StatusCode::CREATED, super::json_response(&value)),

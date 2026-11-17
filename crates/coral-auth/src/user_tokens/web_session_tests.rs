@@ -4,7 +4,7 @@
 )]
 use std::time::Duration;
 
-use super::tests::{CLIENT, Fixture, NOW, REEF, SECOND, real_now, refresh_token};
+use super::tests::{CLIENT, Fixture, NOW, REEF, SECOND, refresh_token};
 use super::{AccessTarget, TokenRefusal, WebSessionToken};
 use crate::oauth_clients::test_support::rewrite_past_checks;
 
@@ -55,8 +55,7 @@ fn claims(token: &WebSessionToken) -> serde_json::Value {
 #[tokio::test]
 async fn a_web_session_mints_reef_tokens_until_it_ends() {
     let fixture = Fixture::new().await;
-    // The last step authenticates a token, which reads the system clock.
-    let now = real_now();
+    let now = NOW;
     let handle = fixture.web_session_at(HOUR, now).await;
     assert!(handle.starts_with("coral_ws_"));
     for at in [2, 3] {
@@ -84,14 +83,11 @@ async fn a_web_session_mints_reef_tokens_until_it_ends() {
     );
     // Ending a session ends refresh only: a token minted before keeps its
     // expiry and its live authority checks.
-    let reef = crate::PrincipalAuthentication::new(
-        &fixture.issuer,
-        coral_workspace::OrganizationModule::new(fixture.database.database()),
-        coral_workspace::WorkspaceModule::new(fixture.database.database()),
-    )
-    .authenticate_user(Some(&issued.access_token.access_token), "reef")
-    .await
-    .expect("the earlier token still authenticates");
+    let reef = fixture
+        .authentication()
+        .authenticate_user(Some(&issued.access_token.access_token), "reef")
+        .await
+        .expect("the earlier token still authenticates");
     assert_eq!(
         reef.principal().id().as_str(),
         fixture.user.user_id().as_str()

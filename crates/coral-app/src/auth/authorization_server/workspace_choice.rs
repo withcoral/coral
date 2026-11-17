@@ -10,14 +10,15 @@
 use axum::extract::{Request, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
+use coral_db::UnixNanos;
 use coral_outbound::{BrowserRedirect, EndpointUrl};
 use coral_workspace::{UserId, WorkspaceChoice, WorkspaceId, WorkspaceRole};
 
 use super::super::sealed_handshake::{PendingWorkspaceChoice, SignInSession};
+use super::AuthorizationServerHttpState;
 use super::approval_page::{self, ApprovalDecision, ApprovalScope, Choice};
 use super::callback;
 use super::response::{TrustedRedirect, direct_error};
-use super::{AuthorizationServerHttpState, sign_in_cookie};
 
 /// Where the picker form posts the person's choice.
 pub(super) const WORKSPACE_CHOICE_PATH: &str = "/oauth/workspace";
@@ -27,7 +28,12 @@ const UNNAMED_CLIENT: &str = "Unnamed OAuth client";
 /// Asks the person who finished `session` to allow the client and pick a
 /// Workspace, or says how to get one. No code is issued here.
 /// `signed_in_as` is the account the identity provider named, shown so the
-/// person can tell why a Workspace is missing.
+/// person can tell why a Workspace is missing. The page is good for
+/// [`approval_page::APPROVAL_MAX_AGE_SECONDS`] after `now`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the page shows what the request, the sign-in and the User each carry"
+)]
 pub(super) async fn offer(
     state: &AuthorizationServerHttpState,
     headers: &HeaderMap,
@@ -36,6 +42,7 @@ pub(super) async fn offer(
     user_id: UserId,
     signed_in_as: Option<&str>,
     session: SignInSession,
+    now: UnixNanos,
 ) -> Response {
     let choices = match state.workspaces.list_sign_in_choices(&user_id).await {
         Ok(choices) => choices,
@@ -56,6 +63,7 @@ pub(super) async fn offer(
         signed_in_as,
         &choices,
         &providers,
+        now,
     )
     .unwrap_or_else(|| trusted.error("server_error", "authorization failed"))
 }
@@ -75,11 +83,14 @@ pub(super) async fn oauth_workspace_post(
     else {
         return choice_error();
     };
+    // The request's one reading of the clock: it dates the page's expiry and
+    // the code.
+    let now = state.clock.now();
     let Some(pending) = PendingWorkspaceChoice::open(
         state.settings.handshake_keys(),
         submission.browser_binding.as_bytes(),
         submission.ticket.as_bytes(),
-        sign_in_cookie::now_unix_secs(),
+        now.whole_seconds(),
     ) else {
         return choice_error();
     };
@@ -111,7 +122,7 @@ pub(super) async fn oauth_workspace_post(
         Err(error) => return ChoiceFailure::from_domain(&error).into_error(&trusted),
     };
     let grant = pending.request.grant(&pending.user_id, Some(workspace));
-    callback::issue_code(&state, &trusted, &pending.oidc_state, &grant).await
+    callback::issue_code(&state, &trusted, &pending.oidc_state, &grant, now).await
 }
 
 enum ChoiceFailure {
@@ -204,6 +215,10 @@ fn provider_summary(names: &[String]) -> Option<String> {
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the page shows what the request, the sign-in and the User each carry"
+)]
 fn picker_page(
     state: &AuthorizationServerHttpState,
     headers: &HeaderMap,
@@ -212,10 +227,11 @@ fn picker_page(
     signed_in_as: Option<&str>,
     choices: &[WorkspaceChoice],
     providers: &[Option<String>],
+    now: UnixNanos,
 ) -> Option<Response> {
     let secure = state.secure_cookies();
     let browser_binding = approval_page::browser_binding_for_page(headers, secure).ok()?;
-    let expires_at = sign_in_cookie::now_unix_secs() + approval_page::APPROVAL_MAX_AGE_SECONDS;
+    let expires_at = now.whole_seconds() + approval_page::APPROVAL_MAX_AGE_SECONDS;
     let ticket = pending
         .seal(
             state.settings.handshake_keys(),

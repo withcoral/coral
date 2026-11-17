@@ -626,7 +626,12 @@ impl Fixture {
         )
         .unwrap();
         let auth = WorkspaceAuthentication::new(
-            PrincipalAuthentication::new(&issuer, organization.clone(), workspaces.clone()),
+            PrincipalAuthentication::new(
+                &issuer,
+                organization.clone(),
+                workspaces.clone(),
+                Arc::new(coral_db::SystemClock),
+            ),
             urls.clone(),
             "https://auth.example".into(),
         );

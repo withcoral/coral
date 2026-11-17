@@ -91,6 +91,19 @@ pub(crate) struct Launcher {
     pub(crate) compile_in_process: bool,
     /// Where startup reports each database migration step it applies.
     pub(crate) migration_report: Option<super::runtime::MigrationReport>,
+    /// The clock a test drives. Without one, the host's clock.
+    pub(crate) clock: Option<std::sync::Arc<dyn coral_db::Clock>>,
+}
+
+impl Launcher {
+    /// The one clock of this Coral Instance: the host's, unless a test
+    /// drives its own. Everything that issues or verifies a credential reads
+    /// it, so a token is dated and checked by the same clock.
+    pub(crate) fn clock(&self) -> std::sync::Arc<dyn coral_db::Clock> {
+        self.clock
+            .clone()
+            .unwrap_or_else(|| std::sync::Arc::new(coral_db::SystemClock))
+    }
 }
 
 /// Local auth support's default port under Desktop, which registers it as a
@@ -1103,25 +1116,31 @@ impl SessionAuthSettings {
         self.web_public_url.as_deref()
     }
 
+    /// Builds the verification of this instance's credentials. `clock` is
+    /// the one the authorization server issues them by.
     pub(crate) fn principal_authentication(
         &self,
         database: std::sync::Arc<coral_db::Database>,
+        clock: std::sync::Arc<dyn coral_db::Clock>,
     ) -> coral_auth::PrincipalAuthentication {
         coral_auth::PrincipalAuthentication::new(
             &self.session_tokens,
             coral_workspace::OrganizationModule::new(database.clone()),
             coral_workspace::WorkspaceModule::new(database),
+            clock,
         )
     }
 
     /// Builds public Workspace credential verification over the current domain authority.
+    /// `clock` is the one the authorization server issues credentials by.
     #[must_use]
     pub fn workspace_authentication(
         &self,
         database: std::sync::Arc<coral_db::Database>,
+        clock: std::sync::Arc<dyn coral_db::Clock>,
     ) -> crate::WorkspaceAuthentication {
         crate::WorkspaceAuthentication::new(
-            self.principal_authentication(database),
+            self.principal_authentication(database, clock),
             self.mcp_workspace_urls.clone(),
             self.settings.authorization_server().issuer().to_owned(),
         )
@@ -1151,7 +1170,8 @@ impl SessionAuthSettings {
     /// than an enumeration.
     ///
     /// The server records its sign-ins in `database`, the instance's
-    /// initialized deployment database.
+    /// initialized deployment database, and dates them by `clock`, the
+    /// instance's one clock.
     ///
     /// # Errors
     ///
@@ -1160,6 +1180,7 @@ impl SessionAuthSettings {
         self,
         policy: coral_outbound::DestinationPolicy,
         database: std::sync::Arc<coral_db::Database>,
+        clock: std::sync::Arc<dyn coral_db::Clock>,
     ) -> Result<CoralAuthorizationServer, AppError> {
         // Operator-configured HTTP issuer support is a separate auth contract.
         // It must neither narrow explicit Provider permissions nor broaden the
@@ -1179,6 +1200,7 @@ impl SessionAuthSettings {
             self.session_tokens,
             policy,
             database,
+            clock,
         )
         .map_err(AppError::Auth)?;
         for audience in &self.public_audiences {
@@ -1419,6 +1441,7 @@ pub(super) mod tests {
             .into_authorization_server(
                 coral_outbound::DestinationPolicy::default(),
                 fixture.database(),
+                std::sync::Arc::new(coral_db::SystemClock),
             )
             .expect("authorization server")
             .start()

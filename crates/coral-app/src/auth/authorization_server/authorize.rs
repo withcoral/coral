@@ -130,7 +130,7 @@ fn consent_page(
 ) -> Option<Response> {
     let secure_cookie = state.secure_cookies();
     let browser_binding = approval_page::browser_binding_for_page(headers, secure_cookie).ok()?;
-    let expires_at = sign_in_cookie::now_unix_secs() + approval_page::APPROVAL_MAX_AGE_SECONDS;
+    let expires_at = state.clock.now().whole_seconds() + approval_page::APPROVAL_MAX_AGE_SECONDS;
     let ticket = approval
         .seal(
             state.settings.handshake_keys(),
@@ -175,7 +175,7 @@ pub(super) async fn oauth_authorize_post(
         keys,
         browser_binding.as_bytes(),
         ticket.as_bytes(),
-        sign_in_cookie::now_unix_secs(),
+        state.clock.now().whole_seconds(),
     ) else {
         return approval_error();
     };
@@ -225,7 +225,9 @@ async fn provider_sign_in(
         return trusted.error("server_error", "authorization failed");
     };
     let secure = state.secure_cookies();
-    let now = sign_in_cookie::now_unix_secs();
+    // The sign-in starts when the provider's answer arrives, not when the
+    // request did.
+    let now = state.clock.now().whole_seconds();
     let Some(cookie) = session
         .seal(keys, &oidc_state, now + sign_in_cookie::MAX_AGE_SECONDS)
         .ok()
@@ -387,7 +389,13 @@ mod tests {
     use super::*;
     use crate::auth::sealed_handshake::SignInSession;
     use crate::auth::test_config::{AUTH_ISSUER, PROVIDER_SECRET, resolved_settings};
-    use coral_test_support::TestDatabase;
+    use coral_db::UnixNanos;
+    use coral_test_support::{ManualClock, TestDatabase};
+    use std::time::Duration;
+
+    /// The instant these tests' servers read, in 2100, until a test moves its
+    /// own clock: no real clock is near it.
+    const NOW: UnixNanos = UnixNanos::new(4_102_444_800 * 1_000_000_000);
 
     const RESOURCE: &str = "https://api.example.test/mcp";
     const CLIENT_ID: &str = "https://client.example.test/oauth/client.json";
@@ -456,6 +464,7 @@ mod tests {
     ) -> AuthorizationServerHttpState {
         let mut state = http_state(database, issuer, extra, &[RESOURCE]);
         state.client_metadata_resolver = resolver;
+        state.clock = Arc::new(ManualClock::starting_at(NOW));
         state
     }
 
@@ -476,21 +485,20 @@ mod tests {
         }
         let (_name, sealed) = sign_in_cookie::find(&cookies, oidc_state, state.secure_cookies())
             .expect("sign-in cookie");
-        let now = sign_in_cookie::now_unix_secs();
+        let now = state.clock.now().whole_seconds();
         SignInSession::open(state.settings.handshake_keys(), oidc_state, &sealed, now)
             .expect("sealed sign-in")
     }
 
     /// The approval a consent page's ticket carries, opened as a submission
-    /// from this browser would open it.
+    /// from this browser at [`NOW`] would open it.
     fn opened_approval(ticket: &str) -> PendingApproval {
         let (settings, _session_tokens) = resolved_settings("https://provider.invalid", "");
-        let now = sign_in_cookie::now_unix_secs();
         PendingApproval::open(
             settings.handshake_keys(),
             &BROWSER_BINDING,
             ticket.as_bytes(),
-            now,
+            NOW.whole_seconds(),
         )
         .expect("sealed approval")
     }
@@ -1463,6 +1471,37 @@ mod tests {
         }
     }
 
+    /// A consent page is good for five minutes on the server's clock, which
+    /// is in 2100: a reading of the host's clock would never refuse it.
+    #[tokio::test]
+    async fn an_approval_expires_when_the_clock_passes_its_five_minutes() {
+        let database = database().await;
+        let clock = ManualClock::starting_at(NOW);
+        let mut auth_state = state(&database, "https://provider.invalid");
+        auth_state.clock = Arc::new(clock.clone());
+        let ticket = approval_ticket(auth_state.clone(), &pairs()).await;
+
+        // The last second of the five minutes: the person's Cancel is theirs.
+        clock.advance(Duration::from_secs(
+            approval_page::APPROVAL_MAX_AGE_SECONDS - 1,
+        ));
+        let canceled = submit(auth_state.clone(), &ticket, "cancel").await;
+        assert!(
+            location(&canceled).is_some_and(|location| location.contains("error=access_denied")),
+            "the approval is still open"
+        );
+
+        clock.advance(Duration::from_secs(1));
+        let expired = submit(auth_state, &ticket, "cancel").await;
+        assert_eq!(expired.status(), StatusCode::BAD_REQUEST);
+        assert!(location(&expired).is_none());
+        assert!(
+            response_body(expired)
+                .await
+                .contains("authorization approval is invalid or expired")
+        );
+    }
+
     /// Each Allow starts its own sign-in in its own cookie, so a double
     /// submission leaves two independent sign-ins rather than a race.
     #[tokio::test]
@@ -1575,6 +1614,7 @@ mod tests {
             &[long_resource.as_str()],
         );
         long_resource_state.client_metadata_resolver = resolver;
+        long_resource_state.clock = Arc::new(ManualClock::starting_at(NOW));
         let mut oversized_app = pairs();
         replace(&mut oversized_app, "state", Some(&"s".repeat(1536)));
         let mut long_resource_pairs = pairs();
