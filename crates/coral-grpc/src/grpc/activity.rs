@@ -38,7 +38,6 @@ pub(super) fn error(error: coral_task::Error) -> Status {
         }
         // Name every remaining variant so a new domain error needs an explicit wire decision.
         coral_task::Error::SnapshotTooLarge
-        | coral_task::Error::Clock
         | coral_task::Error::IdentifierIssuance(_)
         | coral_task::Error::CorruptData(_)
         | coral_task::Error::Database(_) => status::unavailable(),
@@ -828,7 +827,6 @@ mod tests {
                 coral_task::Error::Run(coral_run::Error::OwnerLost),
                 Code::Aborted,
             ),
-            (coral_task::Error::Clock, Code::Unavailable),
             (
                 coral_task::Error::CorruptData("private detail".into()),
                 Code::Unavailable,

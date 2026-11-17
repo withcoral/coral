@@ -339,7 +339,7 @@ fn run_error_codes() -> Vec<(coral_run::Error, &'static str)> {
             "private_tool_exists",
         ),
         (
-            Error::Tools(coral_tools::Error::Clock("bad".into())),
+            Error::Tools(coral_tools::Error::CompilerWorkerStopped),
             internal,
         ),
         (Error::PermissionDenied("denied"), "permission_denied"),
@@ -448,7 +448,6 @@ fn tools_error_codes() -> Vec<(coral_tools::Error, &'static str)> {
         (Error::PermissionDenied("denied"), "permission_denied"),
         (Error::CompilerUnavailable("bad".into()), internal),
         (Error::CompilerWorkerStopped, internal),
-        (Error::Clock("bad".into()), internal),
         (Error::Json(json_fault()), internal),
         (
             Error::Workspace(coral_workspace::Error::WorkspaceArchived),
@@ -514,7 +513,7 @@ fn search_error_codes() -> Vec<(coral_search::Error, &'static str, &'static str)
             "tools",
         ),
         (
-            Error::Tools(coral_tools::Error::Clock("bad".into())),
+            Error::Tools(coral_tools::Error::CompilerWorkerStopped),
             internal,
             "tools",
         ),

@@ -78,7 +78,6 @@ pub(super) fn error(error: coral_tools::Error) -> Status {
         | E::NoCompiler
         | E::CompilerUnavailable(_)
         | E::CompilerWorkerStopped
-        | E::Clock(_)
         | E::Json(_)
         | E::CorruptData(_)
         | E::Database(_) => (tonic::Code::Unavailable, "UNAVAILABLE"),

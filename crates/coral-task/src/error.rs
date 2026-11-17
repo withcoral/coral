@@ -25,9 +25,6 @@ pub enum Error {
     /// Run selected an admission or observation failure.
     #[error(transparent)]
     Run(#[from] coral_run::Error),
-    /// The host cannot obtain durable time evidence.
-    #[error("Task clock is unavailable")]
-    Clock,
     /// Coral could not issue an unused Task identifier.
     #[error("Task identifier could not be issued: {0}")]
     IdentifierIssuance(String),
@@ -66,7 +63,6 @@ impl Error {
             | Self::TaskClosed
             | Self::InteractionNotFound
             | Self::SnapshotTooLarge
-            | Self::Clock
             | Self::IdentifierIssuance(_)
             | Self::WorkspaceNotFound
             | Self::PermissionDenied(_)
