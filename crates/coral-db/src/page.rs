@@ -77,7 +77,9 @@ impl<T, K> Page<T, K> {
     }
 }
 
-/// A list's key, and its text form on the wire.
+/// A list's key, and its text form on the wire. The key type owns that form,
+/// so every Adapter spells a cursor the same way: an Adapter only calls
+/// these.
 pub trait PageKey: Sized {
     /// The key as the cursor a page returns.
     fn to_cursor(&self) -> String;
@@ -88,19 +90,21 @@ pub trait PageKey: Sized {
 }
 
 /// `column` as a page's query orders and compares a text key: in byte order
-/// on both databases, which is Rust's string order. `SQLite` compares `TEXT`
-/// that way by default; Postgres compares in the database's locale unless
-/// the expression names the `C` collation.
+/// on both databases, which is Rust's string order. The expression names the
+/// collation on each: `BINARY` on `SQLite`, whose columns otherwise compare
+/// in their declared collation, and `C` on Postgres, which otherwise
+/// compares in the database's locale.
 ///
 /// Use the one expression in the `ORDER BY` and in the `key > after`
 /// predicate, so the two agree.
 #[must_use]
 pub fn text_key_order(system: DatabaseSystem, column: impl IntoColumnRef) -> Expr {
-    let column = Expr::col(column);
-    match system {
-        DatabaseSystem::Sqlite => column,
-        DatabaseSystem::Postgres => Expr::cust_with_expr("$1 COLLATE \"C\"", column),
-    }
+    // sea-query marks the expression's place as each database does.
+    let collated = match system {
+        DatabaseSystem::Sqlite => "? COLLATE BINARY",
+        DatabaseSystem::Postgres => "$1 COLLATE \"C\"",
+    };
+    Expr::cust_with_expr(collated, Expr::col(column))
 }
 
 #[cfg(test)]
@@ -137,8 +141,9 @@ mod tests {
         }
     }
 
-    // Catches: a text key that Postgres orders in the database's locale, or
-    // an order and a predicate that spell the key differently.
+    // Catches: a text key that Postgres orders in the database's locale or
+    // that SQLite orders in the column's declared collation, or an order and
+    // a predicate that spell the key differently.
     #[test]
     fn a_text_key_is_compared_in_byte_order_on_both_databases() {
         let statement = |system| {
@@ -156,7 +161,7 @@ mod tests {
         );
         assert_eq!(
             statement(DatabaseSystem::Sqlite).to_string(SqliteQueryBuilder),
-            r#"SELECT "path" FROM "tools" WHERE "tools"."path" > 'a' ORDER BY "tools"."path" ASC"#
+            r#"SELECT "path" FROM "tools" WHERE ("tools"."path" COLLATE BINARY) > 'a' ORDER BY "tools"."path" COLLATE BINARY ASC"#
         );
     }
 }
