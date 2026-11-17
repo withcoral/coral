@@ -358,22 +358,17 @@ async fn start_prepared(builder: PreparedServerBuilder) -> Result<RunningRuntime
 /// The runtime owns the implicit-user local experience, so an auth-disabled
 /// deployment gets local outbound defaults. Ordinary server builders retain
 /// deny/deny; authentication never changes explicit fields.
-fn with_local_launch_defaults(
-    builder: PreparedServerBuilder,
-) -> Result<PreparedServerBuilder, AppError> {
-    let settings = builder.serve_settings()?;
-    Ok(
-        if matches!(settings.mcp_http(), McpHttpServeConfig::AuthDisabled { .. }) {
-            builder.with_outbound_defaults(LOCAL_OUTBOUND_DEFAULTS)
-        } else {
-            builder
-        },
-    )
+fn with_local_launch_defaults(builder: PreparedServerBuilder) -> PreparedServerBuilder {
+    if builder.authenticated() {
+        builder
+    } else {
+        builder.with_outbound_defaults(LOCAL_OUTBOUND_DEFAULTS)
+    }
 }
 
 async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, ServeError> {
-    let builder = with_local_launch_defaults(builder)
-        .map_err(|error| ServeError(Box::new(ServeErrorKind::Config(error))))?;
+    let builder = with_local_launch_defaults(builder);
+    // The one read of the session signing key and the provider secret.
     let mut settings = builder
         .serve_settings()
         .map_err(|error| ServeError(Box::new(ServeErrorKind::Config(error))))?;

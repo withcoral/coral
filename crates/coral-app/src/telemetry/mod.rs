@@ -489,10 +489,7 @@ mod tests {
 
     use tracing_subscriber::Layer as _;
 
-    use super::{
-        TelemetryConfig, telemetry_resource, trace_layer_filter, trace_layer_filter_for,
-        trace_pipeline,
-    };
+    use super::{telemetry_resource, trace_layer_filter, trace_layer_filter_for, trace_pipeline};
 
     /// With `[otel]` unset, or with a trace filter that exports none of a
     /// request's spans, Coral work anywhere inside the request still reads the
@@ -506,7 +503,7 @@ mod tests {
                 "[otel]\ntrace_filter = \"coral_search=trace\"\n",
             ),
         ] {
-            let config = TelemetryConfig::from_toml(raw).expect("telemetry config");
+            let config = crate::bootstrap::telemetry(raw).expect("telemetry config");
             let resource = telemetry_resource("coral-test", "1.2.3+abc1234", "instance");
             let (provider, layer, filter_error) =
                 trace_pipeline(&config, &resource, None).expect("trace pipeline");
@@ -583,7 +580,7 @@ mod tests {
         ];
         for (ratio, caller, request_sampled, run_sampled) in cases {
             let case = format!("{ratio:?} with caller {caller:?}");
-            let config = TelemetryConfig::from_toml(&format!("[otel]\n{ratio}\n"))
+            let config = crate::bootstrap::telemetry(&format!("[otel]\n{ratio}\n"))
                 .expect("telemetry config");
             let resource = telemetry_resource("coral-test", "1.2.3+abc1234", "instance");
             let (provider, layer, _filter_error) =

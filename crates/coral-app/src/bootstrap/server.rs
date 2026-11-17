@@ -19,7 +19,8 @@ use super::health::EngineReadiness;
 use super::periodic::{Passes, Schedule};
 use super::search_model::{Delivery, SearchModel};
 use super::server_config::{
-    Launcher, LoadedServerConfig, RunExecutorListener, ServeSettings, SessionAuthSettings,
+    DeploymentConfig, Launcher, LoadedServerConfig, RunExecutorListener, ServeSettings,
+    SessionAuthSettings,
 };
 use crate::auth::CoralAuthorizationServer;
 use crate::state::DatabaseConfig;
@@ -95,13 +96,21 @@ impl ServerConfig {
         self
     }
 
-    fn resolved_mode(&self, config: &LoadedServerConfig) -> Result<ServerMode, AppError> {
+    /// The private gRPC address this composition selects itself; none when
+    /// `[listeners.grpc].bind` selects it.
+    fn grpc_bind(&self) -> Option<SocketAddr> {
         match &self.mode {
-            ServerModeSelection::Explicit(mode) => Ok(mode.clone()),
-            ServerModeSelection::ConfiguredStandaloneGrpc => {
-                let bind = config.grpc_settings()?.bind;
-                Ok(ServerMode::StandaloneGrpc { bind })
-            }
+            ServerModeSelection::Explicit(mode) => Some(mode.bind_addr()),
+            ServerModeSelection::ConfiguredStandaloneGrpc => None,
+        }
+    }
+
+    fn resolved_mode(&self, config: &DeploymentConfig) -> ServerMode {
+        match &self.mode {
+            ServerModeSelection::Explicit(mode) => mode.clone(),
+            ServerModeSelection::ConfiguredStandaloneGrpc => ServerMode::StandaloneGrpc {
+                bind: config.grpc_bind(),
+            },
         }
     }
 }
@@ -144,7 +153,8 @@ pub struct ServerBuilder {
 }
 
 /// A server builder whose complete persistent state has passed the startup
-/// fence and completed fresh initialization.
+/// fence and completed fresh initialization, and whose configuration passed
+/// every rule that needs no secret.
 ///
 /// This temporal type lets process composition read companion settings and
 /// install their session policy without re-running or reordering state-format
@@ -152,7 +162,7 @@ pub struct ServerBuilder {
 pub struct PreparedServerBuilder {
     builder: ServerBuilder,
     state: InitializedState,
-    deployment_config: LoadedServerConfig,
+    deployment_config: DeploymentConfig,
 }
 
 impl ServerBuilder {
@@ -292,19 +302,22 @@ impl ServerBuilder {
     /// # Errors
     ///
     /// Returns [`AppError`] when the state root or configured database is
-    /// retired or malformed, or when fresh-state initialization fails.
+    /// retired or malformed, when the configuration is invalid, or when
+    /// fresh-state initialization fails. Invalid configuration leaves a fresh
+    /// state root unchanged.
     pub async fn prepare(self) -> Result<PreparedServerBuilder, AppError> {
         let environment = AppEnvironment::discover();
         let layout = environment.app_state_layout(self.config.config_dir.clone())?;
-        let deployment_config = LoadedServerConfig::load(&layout)?;
+        let captured = LoadedServerConfig::load(&layout)?;
         let report_migration = self.launcher.migration_report.clone();
-        let state = initialize_state(
+        let (state, deployment_config) = initialize_state(
             layout,
-            deployment_config.raw(),
+            captured.raw(),
             resolve_database_config,
             || {
-                deployment_config.validate(&self.launcher.extensions.secret_store_kinds)?;
-                deployment_config.vector_storage()
+                let config = captured.validate(&self.launcher, self.config.grpc_bind())?;
+                let vector_storage = config.vector_storage();
+                Ok((config, vector_storage))
             },
             report_migration.as_deref().unwrap_or(&|_| {}),
         )
@@ -334,15 +347,22 @@ impl ServerBuilder {
 impl PreparedServerBuilder {
     /// Resolves settings for transports served beside the prepared gRPC server.
     ///
-    /// State preparation has already completed, so this read cannot bypass or
-    /// repeat any part of the state-format sequence.
+    /// The configuration is already validated. With `[auth]` configured, this
+    /// reads the session signing key and the provider secret from their
+    /// sources.
     ///
     /// # Errors
     ///
-    /// Returns [`AppError`] when companion configuration is invalid.
+    /// Returns [`AppError`] when a secret source cannot be read or holds an
+    /// unusable value.
     pub fn serve_settings(&self) -> Result<ServeSettings, AppError> {
         self.deployment_config
-            .serve_settings(self.builder.outbound_defaults, &self.builder.launcher)
+            .serve_settings(self.builder.outbound_defaults)
+    }
+
+    /// Whether `[auth]` is configured, so every listener authenticates.
+    pub(crate) fn authenticated(&self) -> bool {
+        self.deployment_config.authenticated()
     }
 
     /// Supplies composition defaults without changing the operator snapshot.
@@ -378,18 +398,21 @@ impl PreparedServerBuilder {
         let session_auth = match builder.session_auth {
             Some(auth) => Some(auth),
             None => deployment_config
-                .serve_settings(builder.outbound_defaults, &builder.launcher)?
+                .serve_settings(builder.outbound_defaults)?
                 .take_session_auth()
                 .map(Box::new),
         };
-        let policy = deployment_config.outbound_policy(builder.outbound_defaults)?;
-        let runtime_limits = deployment_config.runtime_limits()?;
+        let policy = deployment_config.outbound_policy(builder.outbound_defaults);
+        let runtime_limits = deployment_config.runtime_limits();
         let config = builder.config;
-        let vault = open_credential_vault(&deployment_config, state.credential_key_path())?;
+        let vault = open_credential_vault(
+            deployment_config.credential_key_env(),
+            state.credential_key_path(),
+        )?;
         // With the setting off, nothing looks for the model's files and
         // nothing downloads them.
         let search_model = deployment_config
-            .semantic_search_enabled()?
+            .semantic_search_enabled()
             .then(|| {
                 coral_outbound::Client::new(policy, super::search_model::CONNECT_TIMEOUT)
                     .map(|client| Delivery::coral(state.state_dir(), client))
@@ -401,15 +424,10 @@ impl PreparedServerBuilder {
             })
             .transpose()?;
         let (coral_db, state_lock) = state.into_parts();
-        let mode = config.resolved_mode(&deployment_config)?;
-        if session_auth.is_none() && !super::is_loopback_ip(mode.bind_addr().ip()) {
-            return Err(AppError::FailedPrecondition(
-                "auth-disabled private gRPC bind must be loopback".to_owned(),
-            ));
-        }
-        let run_executor_listener = deployment_config
-            .run_executor_listener(session_auth.is_some(), &AppEnvironment::required_env_var)?;
-        let local_children = match deployment_config.local_run_executors()? {
+        let mode = config.resolved_mode(&deployment_config);
+        let run_executor_listener =
+            deployment_config.run_executor_listener(&AppEnvironment::required_env_var)?;
+        let local_children = match deployment_config.local_run_executors() {
             Some(settings) => Some(LocalChildren {
                 settings,
                 program: std::env::current_exe()?,
@@ -446,7 +464,7 @@ impl PreparedServerBuilder {
             .as_ref()
             .and_then(|auth| auth.web_public_url())
             .map(|origin| format!("{origin}/.well-known/oauth-client"));
-        let client_bootstrap_policy = deployment_config.mcp_oauth_client_bootstrap()?;
+        let client_bootstrap_policy = deployment_config.mcp_oauth_client_bootstrap();
         // One readiness for every listener, so shutdown takes them all out of
         // rotation at once.
         let readiness = EngineReadiness::from_database(Arc::clone(&coral_db));
@@ -455,9 +473,9 @@ impl PreparedServerBuilder {
                 build_authorization_server(*session_auth, &coral_db, policy, readiness.clone())
             })
             .transpose()?;
-        let reconcile_interval = deployment_config.search_reconcile_interval()?;
+        let reconcile_interval = deployment_config.search_reconcile_interval();
         let releases = deployment_config
-            .update_check()?
+            .update_check()
             .then(|| {
                 coral_outbound::Client::new(policy, coral_release::REQUEST_TIMEOUT)
                     .map(coral_release::ReleaseCheck::coral)
@@ -474,13 +492,12 @@ impl PreparedServerBuilder {
             authorization_server.is_some(),
             policy,
         )?;
-        let secret_stores = deployment_config
-            .secret_stores(&builder.launcher.extensions.secret_store_kinds, policy)?;
+        let secret_stores = deployment_config.secret_stores(policy)?;
         // This start's Coral Instance, recorded on the Runs it claims. The
         // first start in a process also names it in exported telemetry.
         let instance = coral_run::CoralInstanceId::generate();
         init_server_telemetry(
-            deployment_config.raw(),
+            deployment_config.telemetry(),
             &instance.to_string(),
             builder.launcher.service_version,
         )?;
@@ -535,13 +552,12 @@ fn build_authorization_server(
 }
 
 fn init_server_telemetry(
-    raw: &str,
+    config: &TelemetryConfig,
     instance_id: &str,
     service_version: Option<&'static str>,
 ) -> Result<(), AppError> {
-    let config = TelemetryConfig::from_toml(raw)?;
     let service_version = service_version.unwrap_or(env!("CARGO_PKG_VERSION"));
-    crate::telemetry::init_tracing(&config, instance_id, service_version)
+    crate::telemetry::init_tracing(config, instance_id, service_version)
 }
 
 /// Opens the host credential vault from the source the deployment selects:
@@ -553,10 +569,10 @@ fn init_server_telemetry(
 /// credentials. The operator moves the file's key into the secret, or drops
 /// the setting, and says so by removing the file.
 fn open_credential_vault(
-    deployment_config: &LoadedServerConfig,
+    key_env: Option<&str>,
     key_path: &Path,
 ) -> Result<coral_credentials::CredentialVault, AppError> {
-    let Some(key_env) = deployment_config.credential_key_env()? else {
+    let Some(key_env) = key_env else {
         return coral_credentials::CredentialVault::open(key_path).map_err(|_error| {
             AppError::FailedPrecondition("credential storage initialization failed".into())
         });
@@ -581,7 +597,7 @@ fn open_credential_vault(
     }
     let encoded = Zeroizing::new(AppEnvironment::required_env_var(
         "credentials.key_env",
-        &key_env,
+        key_env,
     )?);
     coral_credentials::CredentialVault::from_encoded_key(&encoded).map_err(|_error| {
         AppError::FailedPrecondition(format!(

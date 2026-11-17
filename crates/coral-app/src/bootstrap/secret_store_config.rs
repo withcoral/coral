@@ -156,11 +156,10 @@ fn named_variables(config: &str) -> Result<NamedVariables, AppError> {
 }
 
 fn entries<'a>(
-    config: &str,
+    named: &NamedVariables,
     raw: &[toml::Value],
     kinds: &'a SecretStoreKinds,
 ) -> Result<Vec<Entry<'a>>, AppError> {
-    let named = named_variables(config)?;
     let mut stores: Vec<Entry<'a>> = Vec::with_capacity(raw.len());
     for (index, raw) in raw.iter().enumerate() {
         let store = entry(index, raw, kinds)?;
@@ -172,7 +171,7 @@ fn entries<'a>(
         }
         if let Some(factory) = store.factory {
             factory
-                .validate(&store.settings, &named)
+                .validate(&store.settings, named)
                 .map_err(|error| rejected(&store.label, &error))?;
         }
         stores.push(store);
@@ -180,22 +179,49 @@ fn entries<'a>(
     Ok(stores)
 }
 
-/// Checks each store's settings without reading the environment. `config`
-/// is the whole file, whose `*_env` settings an `env` store stays clear of.
-pub(super) fn validate(
-    config: &str,
-    raw: &[toml::Value],
-    kinds: &SecretStoreKinds,
-) -> Result<(), AppError> {
-    // Validation reads no variable.
-    let kinds = with_core_kinds(kinds, Arc::new(|_: &str| Ok(None)));
-    entries(config, raw, &kinds).map(drop)
+/// The Secret Stores a deployment defines, with each store's settings checked
+/// against its kind. Building them is what reads the environment.
+pub(super) struct SecretStoreDefinitions {
+    raw: Vec<toml::Value>,
+    /// The `*_env` settings of the whole file, which an `env` store stays
+    /// clear of.
+    named: NamedVariables,
+    /// The kinds the launching binary adds to those every build has.
+    kinds: SecretStoreKinds,
 }
 
-/// Builds the stores. No request leaves here, so an unreachable store does
-/// not stop Coral from starting; a missing secret does.
-pub(super) fn build(
-    config: &str,
+impl SecretStoreDefinitions {
+    /// Checks each store's settings without reading the environment. `config`
+    /// is the whole file, and `raw` its `[[secret_stores]]` entries.
+    pub(super) fn validate(
+        config: &str,
+        raw: Vec<toml::Value>,
+        kinds: &SecretStoreKinds,
+    ) -> Result<Self, AppError> {
+        let named = named_variables(config)?;
+        // Validation reads no variable.
+        let checked = with_core_kinds(kinds, Arc::new(|_: &str| Ok(None)));
+        entries(&named, &raw, &checked)?;
+        Ok(Self {
+            raw,
+            named,
+            kinds: kinds.clone(),
+        })
+    }
+
+    /// Builds the stores. No request leaves here, so an unreachable store
+    /// does not stop Coral from starting; a missing secret does.
+    pub(super) fn build(
+        &self,
+        policy: coral_outbound::DestinationPolicy,
+        env: &EnvReader,
+    ) -> Result<SecretStores, AppError> {
+        build(&self.named, &self.raw, &self.kinds, policy, env)
+    }
+}
+
+fn build(
+    named: &NamedVariables,
     raw: &[toml::Value],
     kinds: &SecretStoreKinds,
     policy: coral_outbound::DestinationPolicy,
@@ -207,7 +233,7 @@ pub(super) fn build(
         env: &**env,
     };
     let mut stores = Vec::with_capacity(raw.len());
-    for entry in entries(config, raw, &kinds)? {
+    for entry in entries(named, raw, &kinds)? {
         let store: Arc<dyn SecretStore> = if let Some(factory) = entry.factory {
             factory
                 .build(&entry.settings, &environment)
@@ -238,7 +264,7 @@ mod tests {
     use serde::Deserialize;
 
     use crate::bootstrap::AppError;
-    use crate::bootstrap::server_config::tests::load;
+    use crate::bootstrap::server_config::tests::validated_with;
 
     const SECRET: &str = "sk-live-0123456789abcdef";
 
@@ -304,9 +330,7 @@ mod tests {
         kinds: &SecretStoreKinds,
         env: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
     ) -> Result<SecretStores, AppError> {
-        let (_temp, config) = load(raw);
-        config.secret_stores_from(
-            kinds,
+        validated_with(raw, kinds)?.secret_stores_from(
             DestinationPolicy::default(),
             &(Arc::new(move |name: &str| Ok(env(name))) as coral_secret_store::EnvReader),
         )
@@ -384,7 +408,7 @@ mod tests {
     }
 
     fn validate(raw: &str) -> Result<(), AppError> {
-        load(raw).1.validate(&kinds())
+        validated_with(raw, &kinds()).map(drop)
     }
 
     #[test]

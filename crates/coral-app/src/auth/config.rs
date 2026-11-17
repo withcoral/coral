@@ -32,23 +32,31 @@ const CONFLICTING_KEY_SOURCES: &str = "configure only one of signing_key_env or 
 
 /// Validated authentication policy and its auth/web listener identities.
 ///
-/// [`AuthSettings::from_toml`] is the only constructor: the deserialize target
-/// is the private `RawAuthSettings`, so an unvalidated value of this type
-/// cannot be built outside this module — by the rest of the crate or by
+/// [`AuthSettings::from_sections`] is the only constructor: the deserialize
+/// target is the private `RawAuthSettings`, so an unvalidated value of this
+/// type cannot be built outside this module — by the rest of the crate or by
 /// external callers. Holding one is proof that validation ran, which is why
 /// nothing downstream revalidates. This type performs no `config.toml`
 /// filesystem reads.
 ///
 /// The settings are read through the crate-internal `ResolvedAuthSettings`,
 /// which `resolve_runtime_dependencies` produces once the secrets the config
-/// only points at have actually been fetched.
+/// only points at have actually been fetched. A clone is the same validated
+/// policy, so each resolution starts from one.
+#[derive(Clone)]
 pub struct AuthSettings {
     auth: RawAuthSettings,
     bind_addr: SocketAddr,
     authorization_server: AuthorizationServerSettings,
 }
 
+/// The `[auth]` table as bootstrap decodes it from `config.toml`, before
+/// [`AuthSettings::from_sections`] validates it.
 #[derive(Deserialize)]
+#[serde(transparent)]
+pub(crate) struct AuthSection(RawAuthSettings);
+
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawAuthSettings {
     /// Additional public-surface resource identifiers registered with the
@@ -62,22 +70,23 @@ struct RawAuthSettings {
 }
 
 impl AuthSettings {
-    /// Deserializes and validates the auth settings from a whole `config.toml` snapshot.
+    /// Validates the auth settings bootstrap decoded from `config.toml`: the
+    /// `[auth]` table, and the auth and web listeners whose addresses give
+    /// the authorization server its identity. Without `[auth]` there are no
+    /// settings, and the auth listener must then stay local.
     ///
     /// # Errors
     ///
-    /// Returns [`AuthServerError::Config`] when an auth-owned TOML field or
+    /// Returns [`AuthServerError::Config`] when an auth-owned field or
     /// cross-section relationship is invalid.
-    pub fn from_toml(raw: &str) -> Result<Option<Self>, AuthServerError> {
-        let document: AuthConfigDocument =
-            crate::config_toml::decode(raw).map_err(|error| config_error(error.to_string()))?;
-        let issuer = document.listeners.auth.validate(document.auth.is_some())?;
-        let web_client = document
-            .listeners
-            .web
-            .as_ref()
-            .and_then(WebClient::from_settings);
-        let Some(mut auth) = document.auth else {
+    pub(crate) fn from_sections(
+        auth: Option<AuthSection>,
+        listener: &AuthListenerSettings,
+        web: Option<&WebSettings>,
+    ) -> Result<Option<Self>, AuthServerError> {
+        let issuer = listener.validate(auth.is_some())?;
+        let web_client = web.and_then(WebClient::from_settings);
+        let Some(AuthSection(mut auth)) = auth else {
             return Ok(None);
         };
         auth.validate()?;
@@ -101,9 +110,19 @@ impl AuthSettings {
         };
         Ok(Some(Self {
             auth,
-            bind_addr: document.listeners.auth.bind.unwrap_or(DEFAULT_BIND_ADDR),
+            bind_addr: listener.bind.unwrap_or(DEFAULT_BIND_ADDR),
             authorization_server,
         }))
+    }
+
+    /// Where the authorization server listens.
+    pub(crate) fn bind_addr(&self) -> SocketAddr {
+        self.bind_addr
+    }
+
+    /// The authorization server's issuer, from `listeners.auth.public_url`.
+    pub(crate) fn issuer(&self) -> &str {
+        &self.authorization_server.issuer
     }
 
     /// Returns additional public-surface audiences, including the derived web
@@ -222,21 +241,6 @@ impl RawAuthSettings {
     }
 }
 
-#[derive(Deserialize)]
-struct AuthConfigDocument {
-    auth: Option<RawAuthSettings>,
-    #[serde(default)]
-    listeners: AuthOwnedListeners,
-}
-
-// Bootstrap validates the listener names and owns grpc/mcp configuration.
-#[derive(Default, Deserialize)]
-#[serde(default)]
-struct AuthOwnedListeners {
-    auth: AuthListenerSettings,
-    web: Option<WebSettings>,
-}
-
 /// Auth-support bind and external identity. Bootstrap selects a local default
 /// when the bind is absent; authenticated instances default to ephemeral loopback
 /// and must supply a public URL. TLS can terminate at a proxy, so the public
@@ -315,7 +319,7 @@ impl WebClient {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct SessionTokenSettings {
     signing_key_env: Option<String>,
@@ -552,11 +556,11 @@ pub(super) const RESERVED_PROVIDER_AUTH_PARAMS: &[&str] = &[
 
 /// Deserialize-and-validate target for the `[auth.provider]` section.
 ///
-/// This shape exists only between parsing and
-/// [`resolve`](Self::resolve): it is the one place a client secret and a
-/// name pointing at one coexist, and it does not outlive the resolution that
-/// settles which of them the provider actually uses.
-#[derive(Default, Deserialize)]
+/// This shape is the one place a client secret and a name pointing at one
+/// coexist. Validated settings keep it until startup resolves them;
+/// [`resolve`](Self::resolve) settles which of the two the provider uses, and
+/// the resolved provider carries neither name.
+#[derive(Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct OidcProviderSettings {
     issuer: String,
@@ -1004,6 +1008,7 @@ mod tests {
     use super::*;
 
     use crate::auth::test_config::{PROVIDER, SESSION};
+    use crate::bootstrap::auth_settings;
 
     /// Local override of the shared fixture: the trailing slash proves
     /// `validate_issuer` normalizes it away, and the rejection table rewrites
@@ -1022,8 +1027,8 @@ mod tests {
     }
 
     fn reject(raw: &str) -> String {
-        match AuthSettings::from_toml(raw) {
-            Err(error) => error.to_string(),
+        match auth_settings(raw) {
+            Err(error) => error,
             Ok(_) => panic!("expected invalid config"),
         }
     }
@@ -1037,7 +1042,7 @@ mod tests {
     }
 
     fn parse(raw: &str) -> AuthSettings {
-        AuthSettings::from_toml(raw)
+        auth_settings(raw)
             .expect("valid config")
             .expect("auth settings")
     }
@@ -1097,25 +1102,21 @@ mod tests {
         for (raw, expected) in [
             (
                 "[listeners.auth]\nbind = '0.0.0.0:9080'",
-                "auth-disabled listeners.auth.bind must be loopback",
+                "invalid auth configuration: auth-disabled listeners.auth.bind must be loopback",
             ),
             (
                 "[listeners.auth]\npublic_url = 'https://login.example.test'",
-                "listeners.auth.public_url requires [auth]",
+                "invalid auth configuration: listeners.auth.public_url requires [auth]",
             ),
             (
                 "[listeners.auth]\nbind = 'not-an-address'",
-                "listeners.auth.bind: invalid socket address syntax",
+                "server configuration is invalid: listeners.auth.bind: invalid socket address syntax",
             ),
         ] {
-            assert_eq!(
-                reject(raw),
-                format!("invalid auth configuration: {expected}"),
-                "{raw}"
-            );
+            assert_eq!(reject(raw), expected, "{raw}");
         }
         assert!(
-            AuthSettings::from_toml("[listeners.auth]\nbind = '127.0.0.1:9080'")
+            auth_settings("[listeners.auth]\nbind = '127.0.0.1:9080'")
                 .expect("local bind")
                 .is_none()
         );
@@ -1130,7 +1131,12 @@ mod tests {
             "http://localhost:9080"
         );
 
-        assert!(AuthSettings::from_toml("unowned = true").unwrap().is_none());
+        // A document without `[auth]` configures no sign-in.
+        assert!(
+            auth_settings("[otel]\nservice_name = 'coral'")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -1229,7 +1235,7 @@ mod tests {
             let error = reject(&raw);
             assert!(
                 error.starts_with(
-                    "invalid auth configuration: listeners.web.public_url: must be a concrete HTTPS \
+                    "server configuration is invalid: listeners.web.public_url: must be a concrete HTTPS \
                      or explicit loopback HTTP origin"
                 ),
                 "{public_url}: {error}"
@@ -1247,7 +1253,7 @@ mod tests {
             assert!(error.contains(expected), "{raw}: {error}");
         }
         assert!(
-            AuthSettings::from_toml("[listeners.grpc]\nbind = '127.0.0.1:0'")
+            auth_settings("[listeners.grpc]\nbind = '127.0.0.1:0'")
                 .expect("Desktop config")
                 .is_none()
         );
@@ -1588,7 +1594,7 @@ mod tests {
             "[auth.provider.access_token]\naudience = 'env'\n[auth.provider.access_token.required_claims]\norg_id = { value = 'org_allowed' }",
         ] {
             assert!(
-                AuthSettings::from_toml(&(valid("") + "\n" + suffix)).is_err(),
+                auth_settings(&(valid("") + "\n" + suffix)).is_err(),
                 "{suffix}"
             );
         }
@@ -1697,7 +1703,7 @@ mod tests {
         let config_path = temp.path().join("config.toml");
         let key = coral_test_support::p256_pkcs8();
         fs::write(temp.path().join("session.key"), &key).expect("session key");
-        let settings = AuthSettings::from_toml(&valid(""))
+        let settings = auth_settings(&valid(""))
             .expect("valid config")
             .expect("auth settings");
         let (settings, issuer) = settings
@@ -1711,7 +1717,7 @@ mod tests {
             "signing_key_file = 'session.key'",
             "signing_key_env = 'SESSION_KEY'",
         );
-        let settings = AuthSettings::from_toml(&raw)
+        let settings = auth_settings(&raw)
             .expect("valid config")
             .expect("auth settings");
         settings
@@ -1729,7 +1735,7 @@ mod tests {
         let encoded_key = BASE64_STANDARD.encode(&key);
 
         let default_env = valid("").replace("signing_key_file = 'session.key'\n", "");
-        let settings = AuthSettings::from_toml(&default_env)
+        let settings = auth_settings(&default_env)
             .expect("valid config")
             .expect("auth settings");
         settings
@@ -1767,7 +1773,7 @@ mod tests {
             assert!(reject(&raw).contains(expected));
         }
 
-        let Err(missing_file) = AuthSettings::from_toml(&valid(""))
+        let Err(missing_file) = auth_settings(&valid(""))
             .expect("valid config")
             .expect("auth settings")
             .resolve_runtime_dependencies(&config_path, &|_| Ok(None))
@@ -1784,7 +1790,7 @@ mod tests {
             "signing_key_file = 'session.key'",
             "signing_key_env = 'SESSION_KEY'",
         );
-        let settings = AuthSettings::from_toml(&env_config)
+        let settings = auth_settings(&env_config)
             .expect("valid config")
             .expect("auth settings");
         let Err(invalid_base64) = settings.resolve_runtime_dependencies(&config_path, &|_| {

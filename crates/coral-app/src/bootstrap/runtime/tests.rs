@@ -64,7 +64,6 @@ async fn launch_selects_local_outbound_defaults_for_local_experiences() {
             .await
             .unwrap();
         let settings = with_local_launch_defaults(prepared)
-            .unwrap()
             .serve_settings()
             .unwrap();
         assert_eq!(

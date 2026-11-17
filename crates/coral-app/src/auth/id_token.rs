@@ -475,7 +475,6 @@ pub(in crate::auth) mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::auth::config::AuthSettings;
     const LOCAL_PRINCIPAL_ID: &str = "coral:local";
 
     const RSA_N: &str = coral_test_support::RSA_TEST_PUBLIC_MODULUS;
@@ -483,7 +482,7 @@ pub(in crate::auth) mod tests {
 
     fn provider(extra: &str) -> ResolvedOidcProvider {
         let extra = extra.replace("[required_claims]", "[auth.provider.required_claims]");
-        let settings = AuthSettings::from_toml(&format!(
+        let settings = crate::bootstrap::auth_settings(&format!(
             "[auth]
              [auth.session]
              [listeners.auth]

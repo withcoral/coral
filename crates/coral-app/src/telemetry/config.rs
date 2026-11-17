@@ -2,8 +2,6 @@
 
 use serde::Deserialize;
 
-use crate::bootstrap::AppError;
-
 pub(super) const DEFAULT_TRACE_FILTER: &str = "coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_run=trace,coral_search=trace,coral_search::index::reconcile=info,coral_upstream=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off";
 /// Spans that always get trace context, whatever `trace_filter` exports:
 /// every Coral span at info or above. A request's safe errors and records
@@ -12,12 +10,6 @@ pub(super) const DEFAULT_TRACE_FILTER: &str = "coral.request=trace,coral_app=tra
 pub(super) const TRACE_CONTEXT_FILTER: &str = "coral=info";
 pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info,coral_provider::account::secret_references=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct TelemetryConfigFile {
-    #[serde(default)]
-    otel: OtlpConfig,
-}
 
 /// External telemetry settings loaded from `config.toml`.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -85,25 +77,11 @@ impl Default for OtlpConfig {
     }
 }
 
-impl TelemetryConfig {
-    /// Parses the `[otel]` section from the captured `config.toml` document.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AppError`] if the section cannot be parsed.
-    pub(crate) fn from_toml(raw: &str) -> Result<Self, AppError> {
-        let file = crate::config_toml::decode::<TelemetryConfigFile>(raw).map_err(|error| {
-            AppError::FailedPrecondition(format!("telemetry configuration is invalid: {error}"))
-        })?;
-        Ok(Self { otel: file.otel })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use tracing_subscriber::filter::Targets;
 
-    use super::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER, TelemetryConfig};
+    use super::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
 
     #[test]
     fn trace_sample_ratio_admits_only_zero_to_one() {
@@ -122,7 +100,7 @@ mod tests {
             } else {
                 format!("[otel]\ntrace_sample_ratio = {raw}\n")
             };
-            let parsed = TelemetryConfig::from_toml(&toml)
+            let parsed = crate::bootstrap::telemetry(&toml)
                 .map(|config| config.otel.trace_sample_ratio.get());
             assert_eq!(parsed.ok(), ratio, "{raw}");
         }
