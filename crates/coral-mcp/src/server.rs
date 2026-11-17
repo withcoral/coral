@@ -144,8 +144,10 @@ impl McpServer {
     }
 
     async fn exec(&self, arguments: ExecArguments) -> Result<CallToolResponse, DispatchError> {
+        // A later call that still carries its Task's `goal` continues the Task:
+        // refusing it would only cost the agent a turn to send it again.
         let target = match (&arguments.task_id, &arguments.goal) {
-            (Some(task_id), None) => {
+            (Some(task_id), _) => {
                 ExecTarget::Task(self.attributed_command(task_id, &arguments.intent)?)
             }
             (None, Some(goal)) => ExecTarget::Goal(coral_task::NewTaskCommand::new(
@@ -157,9 +159,9 @@ impl McpServer {
                     .map_err(|error| invalid_input(format!("`goal`: {error}")))?,
                 TaskIntent::parse(&arguments.intent).map_err(invalid_input)?,
             )),
-            _ => {
+            (None, None) => {
                 return Err(invalid_input_message(
-                    "exec takes exactly one of `task_id` or `goal`: pass `task_id` to continue a Task, or `goal` to start a new one".to_owned(),
+                    "exec takes `task_id` or `goal`: pass `task_id` to continue a Task, or `goal` to start a new one".to_owned(),
                 ));
             }
         };

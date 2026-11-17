@@ -2,8 +2,10 @@
 //! immutable revisions, the Shared Tools each revision calls, and lifecycle
 //! Events. Every read and write matches the Workspace and the entity.
 
+use std::collections::BTreeMap;
+
 use coral_catalog::ToolAccessState;
-use coral_db::{RowLock, Transaction};
+use coral_db::{Page, PageRequest, RowLock, Transaction, text_key_order};
 use coral_workspace::{TraceId, UserId, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query, SelectStatement};
 use sqlx::FromRow;
@@ -12,8 +14,8 @@ use crate::Error;
 use crate::repository::{access_state_from_storage, decode_diagnostics, stored_revision};
 use crate::shared_tool::{
     SharedTool, SharedToolDefault, SharedToolDependency, SharedToolId, SharedToolLifecycleAction,
-    SharedToolLifecycleEvent, SharedToolLifecycleEventId, SharedToolLifecycleEventPage,
-    SharedToolPage, SharedToolPath, SharedToolRevision, SharedToolRevisionOrigin,
+    SharedToolLifecycleEvent, SharedToolLifecycleEventId, SharedToolLifecycleEventKey,
+    SharedToolPath, SharedToolRevision, SharedToolRevisionOrigin, SharedToolRevisionSummary,
     SharedToolSummary,
 };
 use crate::types::{
@@ -112,19 +114,12 @@ impl RecordRow {
     }
 }
 
+/// One revision without its source, declaration, declaration fields or
+/// diagnostics.
 #[derive(Debug, FromRow)]
-struct RevisionRow {
-    shared_tool_id: String,
+struct RevisionSummaryRow {
     revision: i64,
     description: String,
-    source: String,
-    declaration: String,
-    declaration_fields_format: String,
-    declaration_fields_status: String,
-    declaration_fields_json: Option<String>,
-    declaration_fields_failure: Option<String>,
-    diagnostics_json: String,
-    diagnostics_truncated: bool,
     content_hash: String,
     default_access_state: String,
     published_by_user_id: String,
@@ -133,16 +128,49 @@ struct RevisionRow {
     published_at_unix_nanos: i64,
 }
 
+impl RevisionSummaryRow {
+    fn decode(self) -> Result<SharedToolRevisionSummary, Error> {
+        Ok(SharedToolRevisionSummary {
+            revision: decode_revision(self.revision)?,
+            description: AuthoredToolDescription::parse(&self.description).map_err(|_error| {
+                Error::CorruptData("Shared Tool revision has an invalid description".to_string())
+            })?,
+            content_hash: self.content_hash,
+            default_access_state: access_state_from_storage(&self.default_access_state)?,
+            published_by: decode_user(&self.published_by_user_id)?,
+            origin: decode_origin(self.source_private_tool_id, self.restored_from_revision)?,
+            published_at_unix_nanos: self.published_at_unix_nanos,
+        })
+    }
+}
+
+/// One whole revision: its summary, which decodes as every summary does,
+/// and its definition.
+#[derive(Debug, FromRow)]
+struct RevisionRow {
+    shared_tool_id: String,
+    #[sqlx(flatten)]
+    summary: RevisionSummaryRow,
+    source: String,
+    declaration: String,
+    declaration_fields_format: String,
+    declaration_fields_status: String,
+    declaration_fields_json: Option<String>,
+    declaration_fields_failure: Option<String>,
+    diagnostics_json: String,
+    diagnostics_truncated: bool,
+}
+
 impl RevisionRow {
     fn decode(self) -> Result<SharedToolRevision, Error> {
-        let corrupt = |what: &str| Error::CorruptData(format!("Shared Tool revision has {what}"));
+        let summary = self.summary.decode()?;
         Ok(SharedToolRevision {
             shared_tool_id: decode_id(&self.shared_tool_id)?,
-            revision: decode_revision(self.revision)?,
-            description: AuthoredToolDescription::parse(&self.description)
-                .map_err(|_error| corrupt("an invalid description"))?,
-            source: AuthoredToolSource::parse(&self.source)
-                .map_err(|_error| corrupt("an invalid source"))?,
+            revision: summary.revision,
+            description: summary.description,
+            source: AuthoredToolSource::parse(&self.source).map_err(|_error| {
+                Error::CorruptData("Shared Tool revision has an invalid source".to_string())
+            })?,
             declaration: AuthoredToolDeclaration::from_persisted(&self.declaration)?,
             declaration_field_projection: AuthoredToolDeclarationFieldProjection::from_storage(
                 &self.declaration_fields_format,
@@ -152,21 +180,30 @@ impl RevisionRow {
             )?,
             diagnostics: decode_diagnostics(&self.diagnostics_json, self.diagnostics_truncated)?,
             diagnostics_truncated: self.diagnostics_truncated,
-            content_hash: self.content_hash,
-            default_access_state: access_state_from_storage(&self.default_access_state)?,
-            published_by: decode_user(&self.published_by_user_id)?,
-            origin: match (self.source_private_tool_id, self.restored_from_revision) {
-                (Some(private_tool), None) => SharedToolRevisionOrigin::PrivateTool(
-                    PrivateToolId::parse(&private_tool)
-                        .map_err(|_error| corrupt("an invalid source Private Tool"))?,
-                ),
-                (None, Some(revision)) => {
-                    SharedToolRevisionOrigin::Revision(decode_revision(revision)?)
-                }
-                _ => return Err(corrupt("no one origin")),
-            },
-            published_at_unix_nanos: self.published_at_unix_nanos,
+            content_hash: summary.content_hash,
+            default_access_state: summary.default_access_state,
+            published_by: summary.published_by,
+            origin: summary.origin,
+            published_at_unix_nanos: summary.published_at_unix_nanos,
         })
+    }
+}
+
+/// What a revision copied: a Private Tool, or an earlier revision.
+fn decode_origin(
+    source_private_tool_id: Option<String>,
+    restored_from_revision: Option<i64>,
+) -> Result<SharedToolRevisionOrigin, Error> {
+    let corrupt = |what: &str| Error::CorruptData(format!("Shared Tool revision has {what}"));
+    match (source_private_tool_id, restored_from_revision) {
+        (Some(private_tool), None) => Ok(SharedToolRevisionOrigin::PrivateTool(
+            PrivateToolId::parse(&private_tool)
+                .map_err(|_error| corrupt("an invalid source Private Tool"))?,
+        )),
+        (None, Some(revision)) => Ok(SharedToolRevisionOrigin::Revision(decode_revision(
+            revision,
+        )?)),
+        _ => Err(corrupt("no one origin")),
     }
 }
 
@@ -202,11 +239,22 @@ fn record_columns() -> [SharedToolRecords; 5] {
     ]
 }
 
-fn revision_columns() -> [SharedToolRevisions; 17] {
-    [
+/// The columns of a [`RevisionSummaryRow`].
+const REVISION_SUMMARY_COLUMNS: [SharedToolRevisions; 8] = [
+    SharedToolRevisions::Revision,
+    SharedToolRevisions::Description,
+    SharedToolRevisions::ContentHash,
+    SharedToolRevisions::DefaultAccessState,
+    SharedToolRevisions::PublishedByUserId,
+    SharedToolRevisions::SourcePrivateToolId,
+    SharedToolRevisions::RestoredFromRevision,
+    SharedToolRevisions::PublishedAtUnixNanos,
+];
+
+/// The columns of a [`RevisionRow`]: its summary's and its definition's.
+fn revision_columns() -> impl Iterator<Item = SharedToolRevisions> {
+    REVISION_SUMMARY_COLUMNS.into_iter().chain([
         SharedToolRevisions::SharedToolId,
-        SharedToolRevisions::Revision,
-        SharedToolRevisions::Description,
         SharedToolRevisions::Source,
         SharedToolRevisions::Declaration,
         SharedToolRevisions::DeclarationFieldsFormat,
@@ -215,13 +263,7 @@ fn revision_columns() -> [SharedToolRevisions; 17] {
         SharedToolRevisions::DeclarationFieldsFailure,
         SharedToolRevisions::DiagnosticsJson,
         SharedToolRevisions::DiagnosticsTruncated,
-        SharedToolRevisions::ContentHash,
-        SharedToolRevisions::DefaultAccessState,
-        SharedToolRevisions::PublishedByUserId,
-        SharedToolRevisions::SourcePrivateToolId,
-        SharedToolRevisions::RestoredFromRevision,
-        SharedToolRevisions::PublishedAtUnixNanos,
-    ]
+    ])
 }
 
 /// Joins a record to its current revision, in the record's own Workspace.
@@ -279,6 +321,50 @@ pub(crate) async fn hold_live_record(
     row.map(RecordRow::decode).transpose()
 }
 
+/// Every live Shared Tool of the Workspace that has its current revision,
+/// joined to that revision: the Shared Tools a Run links. A read selects
+/// its columns from the record and the revision, and narrows the paths.
+fn linkable_statement(workspace_id: &WorkspaceId) -> SelectStatement {
+    Query::select()
+        .from(SharedToolRecords::Table)
+        .inner_join(SharedToolRevisions::Table, is_current_revision())
+        .and_where(
+            Expr::col((SharedToolRecords::Table, SharedToolRecords::WorkspaceId))
+                .eq(workspace_id.to_string()),
+        )
+        .and_where(
+            Expr::col((
+                SharedToolRecords::Table,
+                SharedToolRecords::RemovedAtUnixNanos,
+            ))
+            .is_null(),
+        )
+        .to_owned()
+}
+
+/// The Shared Tool a Run links at `path`, of [`linkable_statement`].
+fn linkable_at_statement(workspace_id: &WorkspaceId, path: &SharedToolPath) -> SelectStatement {
+    let mut statement = linkable_statement(workspace_id);
+    statement.and_where(
+        Expr::col((SharedToolRecords::Table, SharedToolRecords::Path)).eq(path.as_str()),
+    );
+    statement
+}
+
+/// The identity of the live Shared Tool at `path` that has its current
+/// revision: the Shared Tool a Run links there. It reads no column of the
+/// revision.
+pub(crate) async fn find_live_id(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    path: &SharedToolPath,
+) -> Result<Option<SharedToolId>, Error> {
+    let mut statement = linkable_at_statement(workspace_id, path);
+    statement.column((SharedToolRecords::Table, SharedToolRecords::Id));
+    let row: Option<(String,)> = transaction.fetch_optional(statement).await?;
+    row.map(|(id,)| decode_id(&id)).transpose()
+}
+
 /// The paths of every live Shared Tool in the Workspace.
 pub(crate) async fn live_paths(
     transaction: &mut Transaction<'_>,
@@ -312,21 +398,70 @@ pub(crate) async fn find_revision(
     row.map(RevisionRow::decode).transpose()
 }
 
-/// Every revision of the Shared Tool `id` in the Workspace, newest first.
-pub(crate) async fn list_revisions(
+/// The content hash of one revision of the Shared Tool `id` in the
+/// Workspace.
+pub(crate) async fn find_revision_content_hash(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     id: &SharedToolId,
-) -> Result<Vec<SharedToolRevision>, Error> {
+    revision: u64,
+) -> Result<Option<String>, Error> {
     let statement = Query::select()
-        .columns(revision_columns())
+        .column(SharedToolRevisions::ContentHash)
+        .from(SharedToolRevisions::Table)
+        .and_where(Expr::col(SharedToolRevisions::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SharedToolRevisions::SharedToolId).eq(id.to_string()))
+        .and_where(Expr::col(SharedToolRevisions::Revision).eq(stored_revision(revision)?))
+        .to_owned();
+    let row: Option<(String,)> = transaction.fetch_optional(statement).await?;
+    Ok(row.map(|(content_hash,)| content_hash))
+}
+
+/// Every revision of the Shared Tool `id` in the Workspace, newest first,
+/// without its source, declaration, declaration fields or diagnostics.
+pub(crate) async fn list_revision_summaries(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    id: &SharedToolId,
+) -> Result<Vec<SharedToolRevisionSummary>, Error> {
+    let statement = Query::select()
+        .columns(REVISION_SUMMARY_COLUMNS)
         .from(SharedToolRevisions::Table)
         .and_where(Expr::col(SharedToolRevisions::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(SharedToolRevisions::SharedToolId).eq(id.to_string()))
         .order_by(SharedToolRevisions::Revision, Order::Desc)
         .to_owned();
-    let rows: Vec<RevisionRow> = transaction.fetch_all(statement).await?;
-    rows.into_iter().map(RevisionRow::decode).collect()
+    let rows: Vec<RevisionSummaryRow> = transaction.fetch_all(statement).await?;
+    rows.into_iter().map(RevisionSummaryRow::decode).collect()
+}
+
+/// The current declaration of each live Shared Tool at `paths` in the
+/// Workspace. A path that names none is left out.
+pub(crate) async fn live_declarations(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    paths: &[&SharedToolPath],
+) -> Result<BTreeMap<SharedToolPath, AuthoredToolDeclaration>, Error> {
+    if paths.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut statement = linkable_statement(workspace_id);
+    statement
+        .column((SharedToolRecords::Table, SharedToolRecords::Path))
+        .column((SharedToolRevisions::Table, SharedToolRevisions::Declaration))
+        .and_where(
+            Expr::col((SharedToolRecords::Table, SharedToolRecords::Path))
+                .is_in(paths.iter().map(|path| path.as_str())),
+        );
+    let rows: Vec<(String, String)> = transaction.fetch_all(statement).await?;
+    rows.into_iter()
+        .map(|(path, declaration)| {
+            Ok((
+                decode_path(&path)?,
+                AuthoredToolDeclaration::from_persisted(&declaration)?,
+            ))
+        })
+        .collect()
 }
 
 /// The live Shared Tool at `path` with its current revision.
@@ -365,23 +500,16 @@ struct SummaryRow {
     published_at_unix_nanos: i64,
 }
 
-/// One page of live Shared Tools in path order after `after`.
+/// One page of the Workspace's live Shared Tools in path order.
 pub(crate) async fn list_live_page(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    after: Option<&SharedToolPath>,
-    page_size: u32,
-) -> Result<SharedToolPage, Error> {
-    // Match Rust string ordering regardless of the Postgres locale, so the
-    // exclusive cursor predicate agrees with the page order.
-    let path = match transaction.system() {
-        coral_db::DatabaseSystem::Sqlite => {
-            Expr::col((SharedToolRecords::Table, SharedToolRecords::Path))
-        }
-        coral_db::DatabaseSystem::Postgres => {
-            Expr::cust("\"shared_tool_records\".\"path\" COLLATE \"C\"")
-        }
-    };
+    request: &PageRequest<SharedToolPath>,
+) -> Result<Page<SharedToolSummary, SharedToolPath>, Error> {
+    let path = text_key_order(
+        transaction.system(),
+        (SharedToolRecords::Table, SharedToolRecords::Path),
+    );
     let mut statement = Query::select()
         .column((SharedToolRecords::Table, SharedToolRecords::Id))
         .column((SharedToolRecords::Table, SharedToolRecords::Path))
@@ -405,13 +533,13 @@ pub(crate) async fn list_live_page(
             .is_null(),
         )
         .order_by_expr(path.clone(), Order::Asc)
-        .limit(u64::from(page_size) + 1)
+        .limit(request.size.lookahead_limit())
         .to_owned();
-    if let Some(after) = after {
+    if let Some(after) = &request.after {
         statement.and_where(path.gt(after.as_str()));
     }
     let rows: Vec<SummaryRow> = transaction.fetch_all(statement).await?;
-    let mut summaries = rows
+    let summaries = rows
         .into_iter()
         .map(|row| {
             Ok(SharedToolSummary {
@@ -429,17 +557,9 @@ pub(crate) async fn list_live_page(
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
-    let page_size = usize::try_from(page_size).unwrap_or(usize::MAX);
-    let next_after = if summaries.len() > page_size {
-        summaries.truncate(page_size);
-        summaries.last().map(|summary| summary.path.clone())
-    } else {
-        None
-    };
-    Ok(SharedToolPage {
-        summaries,
-        next_after,
-    })
+    Ok(Page::from_lookahead(summaries, request.size, |summary| {
+        summary.path.clone()
+    }))
 }
 
 /// Every live Shared Tool of the Workspace with the default of its current
@@ -547,29 +667,15 @@ pub(crate) async fn select_current_source(
     workspace_id: &WorkspaceId,
     path: &SharedToolPath,
 ) -> Result<Option<CurrentRevision>, Error> {
-    let statement = Query::select()
+    let mut statement = linkable_at_statement(workspace_id, path);
+    statement
         .column((SharedToolRecords::Table, SharedToolRecords::Id))
         .column((SharedToolRecords::Table, SharedToolRecords::CurrentRevision))
         .column((SharedToolRevisions::Table, SharedToolRevisions::Source))
         .column((
             SharedToolRevisions::Table,
             SharedToolRevisions::DefaultAccessState,
-        ))
-        .from(SharedToolRecords::Table)
-        .inner_join(SharedToolRevisions::Table, is_current_revision())
-        .and_where(
-            Expr::col((SharedToolRecords::Table, SharedToolRecords::WorkspaceId))
-                .eq(workspace_id.to_string()),
-        )
-        .and_where(Expr::col((SharedToolRecords::Table, SharedToolRecords::Path)).eq(path.as_str()))
-        .and_where(
-            Expr::col((
-                SharedToolRecords::Table,
-                SharedToolRecords::RemovedAtUnixNanos,
-            ))
-            .is_null(),
-        )
-        .to_owned();
+        ));
     let row: Option<SelectionRow> = transaction.fetch_optional(statement).await?;
     row.map(|row| {
         Ok(CurrentRevision {
@@ -919,18 +1025,16 @@ impl EventRow {
     }
 }
 
-/// One page of the Workspace's lifecycle Events, newest first after the
-/// Event `after`: those of the Shared Tool `shared_tool` alone, or of every
-/// Shared Tool, live and removed. Events that occurred together follow one
-/// another in identity order. `None` when `after` names no Event of the
-/// Workspace.
+/// One page of the Workspace's lifecycle Events, newest first: those of the
+/// Shared Tool `shared_tool` alone, or of every Shared Tool, live and
+/// removed. Events that occurred together follow one another in identity
+/// order.
 pub(crate) async fn list_lifecycle_event_page(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     shared_tool: Option<&SharedToolId>,
-    after: Option<&SharedToolLifecycleEventId>,
-    page_size: u32,
-) -> Result<Option<SharedToolLifecycleEventPage>, Error> {
+    request: &PageRequest<SharedToolLifecycleEventKey>,
+) -> Result<Page<SharedToolLifecycleEvent, SharedToolLifecycleEventKey>, Error> {
     let mut statement = Query::select()
         .columns([
             SharedToolLifecycleEvents::Id,
@@ -946,47 +1050,32 @@ pub(crate) async fn list_lifecycle_event_page(
         .and_where(Expr::col(SharedToolLifecycleEvents::WorkspaceId).eq(workspace_id.to_string()))
         .order_by(SharedToolLifecycleEvents::OccurredAtUnixNanos, Order::Desc)
         .order_by(SharedToolLifecycleEvents::Id, Order::Desc)
-        .limit(u64::from(page_size) + 1)
+        .limit(request.size.lookahead_limit())
         .to_owned();
     if let Some(shared_tool) = shared_tool {
         statement.and_where(
             Expr::col(SharedToolLifecycleEvents::TargetSharedToolId).eq(shared_tool.to_string()),
         );
     }
-    if let Some(after) = after {
-        let position = Query::select()
-            .column(SharedToolLifecycleEvents::OccurredAtUnixNanos)
-            .from(SharedToolLifecycleEvents::Table)
-            .and_where(
-                Expr::col(SharedToolLifecycleEvents::WorkspaceId).eq(workspace_id.to_string()),
-            )
-            .and_where(Expr::col(SharedToolLifecycleEvents::Id).eq(after.to_string()))
-            .to_owned();
-        let Some((occurred_at,)): Option<(i64,)> = transaction.fetch_optional(position).await?
-        else {
-            return Ok(None);
-        };
+    if let Some(after) = &request.after {
         statement.and_where(
             Expr::col(SharedToolLifecycleEvents::OccurredAtUnixNanos)
-                .lt(occurred_at)
+                .lt(after.occurred_at_unix_nanos)
                 .or(Expr::col(SharedToolLifecycleEvents::OccurredAtUnixNanos)
-                    .eq(occurred_at)
-                    .and(Expr::col(SharedToolLifecycleEvents::Id).lt(after.to_string()))),
+                    .eq(after.occurred_at_unix_nanos)
+                    .and(Expr::col(SharedToolLifecycleEvents::Id).lt(after.id.to_string()))),
         );
     }
     let rows: Vec<EventRow> = transaction.fetch_all(statement).await?;
-    let mut events = rows
+    let events = rows
         .into_iter()
         .map(EventRow::decode)
         .collect::<Result<Vec<_>, Error>>()?;
-    let page_size = usize::try_from(page_size).unwrap_or(usize::MAX);
-    let next_after = if events.len() > page_size {
-        events.truncate(page_size);
-        events.last().map(|event| event.id.clone())
-    } else {
-        None
-    };
-    Ok(Some(SharedToolLifecycleEventPage { events, next_after }))
+    Ok(Page::from_lookahead(
+        events,
+        request.size,
+        SharedToolLifecycleEvent::key,
+    ))
 }
 
 /// A Shared Tool's first revision: the publish that made it.

@@ -11,12 +11,14 @@ mod context;
 mod keys;
 mod migration;
 mod organization;
+mod paging;
 mod provider;
 mod secret_store;
 pub use context::{change, trace};
 pub use keys::{RSA_TEST_PRIVATE_KEY_DER, RSA_TEST_PUBLIC_MODULUS, p256_pkcs8};
 pub use migration::{edited_migration_plan, migration_plan_before, migration_plan_with};
 pub use organization::provision_user;
+pub use paging::{page_request, read_pages};
 pub use provider::fixture_request_id;
 pub use secret_store::{InMemorySecretStore, secret_stores};
 
@@ -126,6 +128,18 @@ impl TestDatabase {
     #[must_use]
     pub fn database(&self) -> Arc<Database> {
         self.database.clone()
+    }
+
+    /// How many statements the fixture's database handle has sent, on either
+    /// database: one for each call that executes or fetches, inside a
+    /// transaction or not.
+    ///
+    /// A test reads this before and after an operation and asserts on the
+    /// difference, for example that a list sends as many statements for
+    /// twelve rows as for two. A peer handle keeps its own count.
+    #[must_use]
+    pub fn statements_sent(&self) -> u64 {
+        self.database.statements_sent()
     }
 
     /// Returns the connection options for this fixture's isolated storage.

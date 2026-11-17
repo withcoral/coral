@@ -5,6 +5,7 @@ use coral_db::Transaction;
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 
 use super::{OrganizationLifecycleAction, OrganizationLifecycleEvent, OrganizationMembership};
+use crate::list_repository::Users;
 use crate::{ChangeContext, Error, OrganizationRole, UserId};
 
 #[derive(Iden)]
@@ -229,18 +230,60 @@ fn decode_revision(revision: i64) -> Result<u64, Error> {
         .ok_or_else(|| Error::CorruptData("invalid Organization authority revision".into()))
 }
 
-pub(super) async fn current_members(tx: &mut Transaction<'_>) -> Result<Vec<UserId>, Error> {
-    let rows: Vec<(String,)> = tx
-        .fetch_all(
-            Query::select()
-                .column(OrganizationAuthorityRecords::UserId)
-                .from(OrganizationAuthorityRecords::Table)
-                .and_where(Expr::col(OrganizationAuthorityRecords::Removed).eq(0_i64))
-                .order_by(OrganizationAuthorityRecords::UserId, sea_query::Order::Asc)
-                .to_owned(),
-        )
-        .await?;
-    rows.into_iter().map(|(id,)| UserId::parse(&id)).collect()
+/// Every current Organization Membership, ordered by User.
+pub(super) async fn current_memberships(
+    tx: &mut Transaction<'_>,
+) -> Result<Vec<OrganizationMembership>, Error> {
+    let statement = current_memberships_statement()
+        .order_by(OrganizationAuthorityRecords::UserId, sea_query::Order::Asc)
+        .to_owned();
+    fetch_memberships(tx, statement).await
+}
+
+/// The current Organization Membership of every User of one list that has
+/// one, in one statement and in no order.
+pub(super) async fn find_listed_memberships(
+    tx: &mut Transaction<'_>,
+    users: Users<'_>,
+) -> Result<Vec<OrganizationMembership>, Error> {
+    let statement = current_memberships_statement()
+        .and_where(Expr::col(OrganizationAuthorityRecords::UserId).in_subquery(users.ids()))
+        .to_owned();
+    fetch_memberships(tx, statement).await
+}
+
+/// Selects the User ids of the current Organization Memberships, in one column.
+pub(crate) fn current_member_ids() -> sea_query::SelectStatement {
+    Query::select()
+        .column(OrganizationAuthorityRecords::UserId)
+        .from(OrganizationAuthorityRecords::Table)
+        .and_where(Expr::col(OrganizationAuthorityRecords::Removed).eq(0_i64))
+        .to_owned()
+}
+
+fn current_memberships_statement() -> sea_query::SelectStatement {
+    Query::select()
+        .columns([
+            OrganizationAuthorityRecords::UserId,
+            OrganizationAuthorityRecords::Revision,
+            OrganizationAuthorityRecords::Role,
+            OrganizationAuthorityRecords::Enabled,
+        ])
+        .from(OrganizationAuthorityRecords::Table)
+        .and_where(Expr::col(OrganizationAuthorityRecords::Removed).eq(0_i64))
+        .to_owned()
+}
+
+async fn fetch_memberships(
+    tx: &mut Transaction<'_>,
+    statement: sea_query::SelectStatement,
+) -> Result<Vec<OrganizationMembership>, Error> {
+    let rows: Vec<(String, i64, String, i64)> = tx.fetch_all(statement).await?;
+    rows.into_iter()
+        .map(|(user, revision, role, enabled)| {
+            decode_membership(&UserId::parse(&user)?, revision, &role, enabled)
+        })
+        .collect()
 }
 
 pub(super) async fn enabled_owner_count(tx: &mut Transaction<'_>) -> Result<i64, Error> {

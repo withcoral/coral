@@ -14411,9 +14411,13 @@ pub struct ListPrivateToolsRequest {
     /// Maximum results, bounded to 100; zero selects the default.
     #[prost(int32, tag = "2")]
     pub page_size: i32,
-    /// Opaque continuation from the preceding page in this scope.
+    /// next_after from the previous page. Empty starts at the first path. Pass
+    /// only a value that this list returned. Coral accepts any path as a
+    /// position, and the format can change. The value only positions the page:
+    /// each page lists the caller's own Private Tools in parent. Text that is not
+    /// a path is INVALID_ARGUMENT.
     #[prost(string, tag = "3")]
-    pub page_token: ::prost::alloc::string::String,
+    pub after: ::prost::alloc::string::String,
 }
 /// One scoped page of source-free Private Tool summaries in path order.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -14421,9 +14425,11 @@ pub struct ListPrivateToolsResponse {
     /// The caller's own Private Tools on this page.
     #[prost(message, repeated, tag = "1")]
     pub private_tools: ::prost::alloc::vec::Vec<PrivateToolSummary>,
-    /// Empty when no further page remains.
+    /// Pass as after to get the next page; empty on the last page. It is the path
+    /// of the last Private Tool on this page, and still works after that Private
+    /// Tool is deleted.
     #[prost(string, tag = "2")]
-    pub next_page_token: ::prost::alloc::string::String,
+    pub next_after: ::prost::alloc::string::String,
     /// The Workspace's Private Provider, workspaces/{workspace}/providers/{provider}.
     /// ToolPolicyService lists and sets the policy of these Private Tools under it.
     #[prost(string, tag = "3")]
@@ -16166,9 +16172,13 @@ pub struct ListSharedToolsRequest {
     /// Maximum results, bounded to 100; zero selects the default.
     #[prost(int32, tag = "2")]
     pub page_size: i32,
-    /// Opaque continuation from the preceding page in this scope.
+    /// next_after from the previous page. Empty starts at the first path. Pass
+    /// only a value that this list returned. Coral accepts any path as a
+    /// position, and the format can change. The value only positions the page:
+    /// each page lists the Shared Tools of parent. Text that is not a path is
+    /// INVALID_ARGUMENT.
     #[prost(string, tag = "3")]
-    pub page_token: ::prost::alloc::string::String,
+    pub after: ::prost::alloc::string::String,
 }
 /// One page of source-free Shared Tool summaries in path order.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -16176,9 +16186,11 @@ pub struct ListSharedToolsResponse {
     /// The Shared Tools on this page.
     #[prost(message, repeated, tag = "1")]
     pub shared_tools: ::prost::alloc::vec::Vec<SharedToolSummary>,
-    /// Empty when no further page remains.
+    /// Pass as after to get the next page; empty on the last page. It is the path
+    /// of the last Shared Tool on this page, and still works after that Shared
+    /// Tool is removed.
     #[prost(string, tag = "2")]
-    pub next_page_token: ::prost::alloc::string::String,
+    pub next_after: ::prost::alloc::string::String,
     /// The Workspace's Shared Provider, workspaces/{workspace}/providers/{provider}.
     #[prost(string, tag = "3")]
     pub shared_provider: ::prost::alloc::string::String,
@@ -16460,9 +16472,13 @@ pub struct ListSharedToolEventsRequest {
     /// Maximum results, bounded to 100; zero selects the default.
     #[prost(int32, tag = "3")]
     pub page_size: i32,
-    /// Opaque continuation from the preceding page in this scope.
+    /// next_after from the previous page. Empty starts at the newest event. Pass
+    /// only a value that this list returned. Coral accepts any text of the form
+    /// {event time in Unix nanoseconds}/{event id} as a position, and the format
+    /// can change. The value only positions the page: each page lists the events
+    /// that parent and shared_tool name. Other text is INVALID_ARGUMENT.
     #[prost(string, tag = "4")]
-    pub page_token: ::prost::alloc::string::String,
+    pub after: ::prost::alloc::string::String,
 }
 /// One page of Shared Tool events, newest first.
 #[derive(Clone, PartialEq, ::prost::Message)]
@@ -16470,9 +16486,10 @@ pub struct ListSharedToolEventsResponse {
     /// The events on this page.
     #[prost(message, repeated, tag = "1")]
     pub events: ::prost::alloc::vec::Vec<SharedToolEvent>,
-    /// Empty when no further page remains.
+    /// Pass as after to get the next page; empty on the last page. It is the time
+    /// and the id of the last event on this page.
     #[prost(string, tag = "2")]
-    pub next_page_token: ::prost::alloc::string::String,
+    pub next_after: ::prost::alloc::string::String,
 }
 /// One publish or removal of a Shared Tool. It never holds source.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

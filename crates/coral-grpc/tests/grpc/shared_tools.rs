@@ -358,7 +358,7 @@ async fn a_member_reads_the_shared_tool_its_summary_and_its_revisions() {
             management::ListSharedToolsRequest {
                 parent: parent.clone(),
                 page_size: 10,
-                page_token: String::new(),
+                after: String::new(),
             },
             &token,
             "reef",
@@ -426,7 +426,7 @@ async fn the_policy_service_lists_and_updates_shared_tool_policy_through_the_sha
             management::ListSharedToolsRequest {
                 parent: parent.clone(),
                 page_size: 10,
-                page_token: String::new(),
+                after: String::new(),
             },
             &f.token(&f.member, "reef"),
             "reef",
@@ -613,7 +613,7 @@ async fn events(
     user: &AuthenticatedUser,
     shared_tool: &str,
     page_size: i32,
-    page_token: &str,
+    after: &str,
 ) -> Result<management::ListSharedToolEventsResponse, tonic::Status> {
     f.shared_tools()
         .list_shared_tool_events(request(
@@ -621,7 +621,7 @@ async fn events(
                 parent: format!("workspaces/{}", f.workspace.id()),
                 shared_tool: shared_tool.into(),
                 page_size,
-                page_token: page_token.into(),
+                after: after.into(),
             },
             &f.token(user, "reef"),
             "reef",
@@ -758,7 +758,8 @@ async fn a_refused_history_read_maps_to_its_status_and_reason() {
 
 // Catches: a projection that drops or mislabels what Reef shows of a
 // removed Shared Tool: its name, its events and its kept revisions; or a
-// page token that repeats or skips an event.
+// cursor that repeats or skips an event, is not the time and the id of the
+// page's last event, or shows an event outside the request.
 #[tokio::test]
 async fn a_member_reads_the_history_and_the_revisions_of_a_removed_shared_tool() {
     use management::SharedToolEventAction::{Published, Removed};
@@ -822,7 +823,7 @@ async fn a_member_reads_the_history_and_the_revisions_of_a_removed_shared_tool()
             event(Published, &tool),
         ]
     );
-    assert_eq!(whole.next_page_token, "");
+    assert_eq!(whole.next_after, "");
     let of_the_removed = events(&f, &f.member, &tool.name, 10, "")
         .await
         .expect("list the removed Shared Tool's events");
@@ -831,23 +832,33 @@ async fn a_member_reads_the_history_and_the_revisions_of_a_removed_shared_tool()
         [event(Removed, &tool), event(Published, &tool)]
     );
 
-    // Each page continues the one before it, in its own listing only.
+    // Each page continues the one before it, from the time and the id of
+    // its last event.
     let first = events(&f, &f.member, "", 2, "").await.expect("page one");
-    let second = events(&f, &f.member, "", 2, &first.next_page_token)
+    let last = first.events.last().expect("the last event of page one");
+    let time = last.event_time.expect("the event time");
+    assert_eq!(
+        first.next_after,
+        format!(
+            "{}/{}",
+            time.seconds * 1_000_000_000 + i64::from(time.nanos),
+            last.id
+        )
+    );
+    let second = events(&f, &f.member, "", 2, &first.next_after)
         .await
         .expect("page two");
     assert_eq!(
         [first.events.clone(), second.events.clone()].concat(),
         whole.events
     );
-    assert_eq!(second.next_page_token, "");
-    let reused = events(&f, &f.member, &tool.name, 2, &first.next_page_token)
+    assert_eq!(second.next_after, "");
+    // The cursor binds nothing: in another listing it only positions the
+    // page, which shows that listing's events after it.
+    let reused = events(&f, &f.member, &tool.name, 2, &first.next_after)
         .await
-        .expect_err("a token of another listing");
-    assert_eq!(
-        (reused.code(), error_reason(&reused).as_str()),
-        (tonic::Code::InvalidArgument, "INVALID_ARGUMENT")
-    );
+        .expect("the removed Shared Tool's events after the position");
+    assert_eq!(project(&reused.events), [event(Published, &tool)]);
 
     // The removed Shared Tool's name still reads its revisions.
     let revisions = revisions(&f, &f.member, &tool.name).await;

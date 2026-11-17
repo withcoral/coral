@@ -65,20 +65,25 @@ fn in_another_workspace(agent: &str) -> String {
     format!("workspaces/{}/agents/{id}", uuid::Uuid::new_v4())
 }
 
+// Catches: a projection that drops or mislabels what Reef shows of a Private
+// Tool, a cursor that is not the path of the page's last Private Tool, a
+// cursor that shows another caller's Private Tools, or text that is no path
+// being served.
 #[tokio::test]
-async fn list_pages_round_trip_as_source_free_summaries_and_bind_their_token() {
+async fn list_pages_round_trip_as_source_free_summaries_and_continue_after_a_path() {
     let f = Fixture::new().await;
     for path in ["reports.total", "alpha.first", "zeta.last"] {
         save(&f, &f.owner, path, "export default () => 1;").await;
     }
+    save(&f, &f.member, "zulu.own", "export default () => 2;").await;
     let parent = format!("workspaces/{}", f.workspace.id());
-    let list = async |user: &AuthenticatedUser, page_token: String| {
+    let list = async |user: &AuthenticatedUser, after: &str| {
         f.private_tools()
             .list_private_tools(request(
                 management::ListPrivateToolsRequest {
                     parent: parent.clone(),
                     page_size: 2,
-                    page_token,
+                    after: after.into(),
                 },
                 &f.token(user, "reef"),
                 "reef",
@@ -87,7 +92,7 @@ async fn list_pages_round_trip_as_source_free_summaries_and_bind_their_token() {
             .map(tonic::Response::into_inner)
     };
 
-    let first = list(&f.owner, String::new()).await.unwrap();
+    let first = list(&f.owner, "").await.unwrap();
     assert_eq!(
         first.private_tools.first(),
         Some(&management::PrivateToolSummary {
@@ -99,17 +104,29 @@ async fn list_pages_round_trip_as_source_free_summaries_and_bind_their_token() {
             }),
         })
     );
-    let second = list(&f.owner, first.next_page_token.clone()).await.unwrap();
+    assert_eq!(first.next_after, "reports.total");
+    let second = list(&f.owner, &first.next_after).await.unwrap();
     let paths = [first.private_tools, second.private_tools]
         .concat()
         .into_iter()
         .map(|summary| summary.path)
         .collect::<Vec<_>>();
     assert_eq!(paths, ["alpha.first", "reports.total", "zeta.last"]);
-    assert_eq!(second.next_page_token, "");
+    assert_eq!(second.next_after, "");
 
-    let foreign = list(&f.member, first.next_page_token).await.unwrap_err();
-    assert_eq!((foreign.code(), error_reason(&foreign).as_str()), INVALID);
+    // The cursor binds nothing: for another caller it only positions that
+    // caller's own list.
+    let foreign = list(&f.member, &first.next_after).await.unwrap();
+    assert_eq!(
+        foreign
+            .private_tools
+            .iter()
+            .map(|summary| summary.path.as_str())
+            .collect::<Vec<_>>(),
+        ["zulu.own"]
+    );
+    let no_path = list(&f.owner, "not a path").await.unwrap_err();
+    assert_eq!((no_path.code(), error_reason(&no_path).as_str()), INVALID);
 }
 
 // Catches: a read that ignores `agent` and answers with the caller's own
@@ -332,7 +349,7 @@ async fn an_owner_manages_private_tool_policy_through_the_private_provider() {
             management::ListPrivateToolsRequest {
                 parent: format!("workspaces/{}", f.workspace.id()),
                 page_size: 0,
-                page_token: String::new(),
+                after: String::new(),
             },
             &f.token(&f.owner, "reef"),
             "reef",

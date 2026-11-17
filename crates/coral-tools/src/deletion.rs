@@ -60,10 +60,11 @@ impl PrivateToolDeletion {
             .await
             .map_err(conceal_agent_private_tool_error)?;
         let agent = Principal::from_parts(agent_id.clone(), PrincipalKind::Agent);
-        let tool = repository::find_current_in_transaction(transaction, workspace_id, &agent, path)
-            .await?
-            .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
-        delete_current_with_event(transaction, context, workspace_id, &tool).await
+        let tool =
+            repository::find_current_record_in_transaction(transaction, workspace_id, &agent, path)
+                .await?
+                .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
+        delete_current_with_event(transaction, context, &tool).await
     }
 
     /// Stages the deletion of the actor's own Private Tool at `path`, with
@@ -89,16 +90,13 @@ impl PrivateToolDeletion {
                 now_unix_nanos()?,
             )
             .await?;
-        let tool = repository::find_current_in_transaction(
-            transaction,
-            workspace_id,
-            context.actor().principal(),
-            path,
-        )
-        .await?
-        .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
+        let owner = context.actor().principal();
+        let tool =
+            repository::find_current_record_in_transaction(transaction, workspace_id, owner, path)
+                .await?
+                .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
         authority.require_current_at(now_unix_nanos()?)?;
-        delete_current_with_event(transaction, context, workspace_id, &tool).await
+        delete_current_with_event(transaction, context, &tool).await
     }
 }
 

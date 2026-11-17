@@ -946,6 +946,64 @@ async fn domain_repository_contract() {
     assert_domain_repository_contract(&fixture.database()).await;
 }
 
+// Catches: a count that misses the statements of a transaction, of a read
+// snapshot or of a direct query, or that counts a transaction's begin or end.
+// A test that bounds the statements of an operation would then pass on an
+// operation that sends one statement for each row.
+#[tokio::test]
+async fn the_statement_count_adds_one_for_each_statement_and_none_for_a_transaction() {
+    let fixture = TestDatabase::new(&MIGRATOR)
+        .await
+        .expect("create repository test database");
+    let database = fixture.database();
+    let sent = || fixture.statements_sent();
+
+    let before = sent();
+    let transaction = database.begin().await.expect("begin transaction");
+    transaction.commit().await.expect("commit transaction");
+    let snapshot = database
+        .begin_read_snapshot()
+        .await
+        .expect("begin snapshot");
+    snapshot.rollback().await.expect("roll back snapshot");
+    assert_eq!(sent() - before, 0, "a transaction alone sends no statement");
+
+    let before = sent();
+    let mut transaction = database.begin().await.expect("begin transaction");
+    transaction
+        .execute(insert_record("counted", "one"))
+        .await
+        .expect("insert record");
+    transaction
+        .execute_change(update_record("counted", "two"))
+        .await
+        .expect("update record");
+    transaction.commit().await.expect("commit transaction");
+    assert_eq!(sent() - before, 2, "writes in a transaction");
+
+    let before = sent();
+    let mut snapshot = database
+        .begin_read_snapshot()
+        .await
+        .expect("begin snapshot");
+    assert!(record(&mut snapshot, "counted").await.is_some());
+    assert!(record(&mut snapshot, "absent").await.is_none());
+    let all: Vec<Record> = snapshot
+        .fetch_all(records_query())
+        .await
+        .expect("read records");
+    snapshot.rollback().await.expect("roll back snapshot");
+    assert_eq!(sent() - before, 3, "reads in a read snapshot: {all:?}");
+
+    let before = sent();
+    assert!(record(&*database, "counted").await.is_some());
+    let all: Vec<Record> = database
+        .fetch_all(records_query())
+        .await
+        .expect("read records");
+    assert_eq!(sent() - before, 2, "direct reads: {all:?}");
+}
+
 #[tokio::test]
 async fn read_snapshots_cannot_write() {
     let fixture = TestDatabase::new(&MIGRATOR)

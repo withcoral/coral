@@ -1635,7 +1635,7 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
 }
 
 /// Publishes `public.getForecast` as POST, so it needs approval by default.
-async fn publish_approval_provider(fixture: &TestModules, tool: &ToolFixture) {
+pub(super) async fn publish_approval_provider(fixture: &TestModules, tool: &ToolFixture) {
     let context = change(tool.user.clone(), 40, '4');
     let setup = fixture.providers.prepare_openapi_fixture(&context, &tool.workspace_id,
         OpenApiDocument::parse(r#"{"openapi":"3.1.0","info":{"title":"Public weather","version":"1"},"servers":[{"url":"https://upstream.example"}],"paths":{"/forecast":{"post":{"operationId":"getForecast","responses":{"200":{"description":"Forecast"}}}}}}"#).unwrap(),
@@ -1729,4 +1729,332 @@ async fn the_queue_lists_each_request_most_urgent_first_across_runs() {
         crate::QueueCursor::parse(&cursor.to_string()).unwrap(),
         cursor
     );
+}
+
+/// A Run summary without its duration, which is the time of its read.
+fn undated(run: &crate::RunSummary) -> String {
+    format!(
+        "{:?}",
+        crate::RunSummary {
+            duration: 0,
+            ..run.clone()
+        }
+    )
+}
+
+/// An Invocation summary without its duration, which is the time of its read.
+fn undated_invocation(call: &crate::InvocationSummary) -> String {
+    format!(
+        "{:?}",
+        crate::InvocationSummary {
+            duration: 0,
+            ..call.clone()
+        }
+    )
+}
+
+/// A read of many rows.
+#[derive(Debug, Clone, Copy)]
+enum PageRead {
+    /// The Approval Requests of one Run.
+    RunApprovals,
+    /// The Required Actions that wait on a person, across Runs.
+    RequiredActions,
+    /// The Tool calls among one Run's Activity entries.
+    ActivityEntries,
+    /// The settled Approval Requests.
+    SettledApprovals,
+}
+
+/// The rows one [`PageRead`] returned.
+enum PageRows {
+    Requests(Vec<crate::approval::ApprovalRequest>),
+    Actions(Vec<crate::QueuedAction>),
+    Calls(Vec<crate::InvocationSummary>),
+    Settled(Vec<crate::SettledApproval>),
+}
+
+impl PageRows {
+    fn len(&self) -> usize {
+        match self {
+            Self::Requests(rows) => rows.len(),
+            Self::Actions(rows) => rows.len(),
+            Self::Calls(rows) => rows.len(),
+            Self::Settled(rows) => rows.len(),
+        }
+    }
+}
+
+/// Runs whose every [`PageRead`] has a short page and a long one.
+struct ManyRows {
+    fixture: TestModules,
+    tool: ToolFixture,
+    approvals: crate::approval::ApprovalModule,
+    /// A Run with [`Self::SHORT`] Approval Requests: one declined, the rest
+    /// pending.
+    short: crate::RunId,
+    /// A Run with [`Self::LONG`] Approval Requests: one declined, the rest
+    /// pending.
+    long: crate::RunId,
+}
+
+impl ManyRows {
+    const SHORT: usize = 2;
+    const LONG: usize = 12;
+
+    /// Starts the two Runs, and a third whose [`Self::LONG`] requests the
+    /// User declines, so that [`Self::LONG`] requests wait and more are
+    /// settled.
+    async fn new() -> Self {
+        let fixture = TestModules::new(Arc::new(
+            crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
+        ))
+        .await;
+        let tool = fixture.user_tool("user:page-reads", "Page reads").await;
+        publish_approval_provider(&fixture, &tool).await;
+        let approvals = fixture.approvals();
+        let (actor, workspace) = (&tool.principal, &tool.workspace_id);
+        // Each call waits for its own approval.
+        let waiting = async |calls: usize| {
+            let source = format!(
+                "await Promise.allSettled(Array.from({{length: {calls}}}, () => coral.providers.public.getForecast({{}})));"
+            );
+            let accepted = fixture.runs.start(actor, workspace, submission(&source));
+            let run = accepted.await.unwrap().run_id().clone();
+            let requests = async || {
+                approvals
+                    .list_for_run(actor, workspace, &run)
+                    .await
+                    .unwrap()
+            };
+            wait_until_async(async || requests().await.len() == calls).await;
+            let requests = requests().await;
+            (run, requests)
+        };
+        let (short, short_requests) = waiting(Self::SHORT).await;
+        let (long, long_requests) = waiting(Self::LONG).await;
+        let (_, declined_requests) = waiting(Self::LONG).await;
+        let declined = declined_requests
+            .iter()
+            .chain(short_requests.first())
+            .chain(long_requests.first());
+        for request in declined {
+            approvals
+                .decide(
+                    actor,
+                    workspace,
+                    &request.id,
+                    ApprovalDecision::Decline,
+                    None,
+                    &TraceId::parse(&"d".repeat(32)).unwrap(),
+                )
+                .await
+                .unwrap();
+        }
+        Self {
+            fixture,
+            tool,
+            approvals,
+            short,
+            long,
+        }
+    }
+
+    /// Reads the long page of `read`, or the short one.
+    async fn read(
+        &self,
+        tx: &mut coral_db::Transaction<'_>,
+        authority: &coral_workspace::HistoryAuthority,
+        read: PageRead,
+        long: bool,
+    ) -> PageRows {
+        let (actor, workspace) = (&self.tool.principal, &self.tool.workspace_id);
+        let limit = u16::try_from(if long { Self::LONG } else { Self::SHORT }).unwrap();
+        match read {
+            PageRead::RunApprovals => {
+                let run = if long { &self.long } else { &self.short };
+                let requests = self
+                    .approvals
+                    .list_for_run_in_transaction(tx, actor, workspace, run);
+                PageRows::Requests(requests.await.unwrap())
+            }
+            PageRead::RequiredActions => {
+                let page = self
+                    .fixture
+                    .runs
+                    .required_actions_in_transaction(tx, authority, None, None, limit);
+                PageRows::Actions(page.await.unwrap().actions)
+            }
+            PageRead::ActivityEntries => {
+                let page = self.fixture.runs.activity_entries_in_transaction(
+                    tx,
+                    actor,
+                    workspace,
+                    &self.long,
+                    &crate::RunEntryWindow::Start,
+                    &crate::RunEntryLevel::Every,
+                    limit,
+                    None,
+                );
+                let calls = page.await.unwrap().entries.into_iter();
+                PageRows::Calls(
+                    calls
+                        .filter_map(|entry| match entry {
+                            crate::RunEntry::Invocation(call) => Some(*call),
+                            crate::RunEntry::Event { .. } => None,
+                        })
+                        .collect(),
+                )
+            }
+            PageRead::SettledApprovals => {
+                let page = self
+                    .fixture
+                    .runs
+                    .settled_approvals_in_transaction(tx, actor, authority, None, limit);
+                PageRows::Settled(page.await.unwrap().approvals)
+            }
+        }
+    }
+
+    /// Asserts that each of `rows` is what the read of that row alone
+    /// returns, and that an ordered read's rows keep its order.
+    async fn assert_each_is_the_row_read_alone(
+        &self,
+        tx: &mut coral_db::Transaction<'_>,
+        authority: &coral_workspace::HistoryAuthority,
+        rows: &PageRows,
+    ) {
+        let (actor, workspace) = (&self.tool.principal, &self.tool.workspace_id);
+        let now = self.fixture.clock.now_unix_nanos().unwrap();
+        let alone = async |tx: &mut coral_db::Transaction<'_>, run: &crate::RunSummary| {
+            let run =
+                crate::history_repository::run_summary(tx, authority, &run.workspace, &run.id, now);
+            undated(&run.await.unwrap())
+        };
+        match rows {
+            PageRows::Requests(requests) => {
+                for request in requests {
+                    let alone = self.approvals.get(actor, workspace, &request.id).await;
+                    assert_eq!(request, &alone.unwrap());
+                }
+            }
+            PageRows::Actions(actions) => {
+                let urgency = actions.iter().map(|queued| {
+                    let action = &queued.action;
+                    (action.deadline_at_unix_nanos, action.request.to_string())
+                });
+                assert!(
+                    urgency.is_sorted(),
+                    "the long page keeps the order: the most urgent request first"
+                );
+                for queued in actions {
+                    let crate::RequiredActionRequest::InvocationApproval(id) =
+                        &queued.action.request
+                    else {
+                        panic!("an Approval Request: {:?}", queued.action.request)
+                    };
+                    let request = self.approvals.get(actor, workspace, id).await.unwrap();
+                    assert_eq!(queued.run.id, request.run_id, "a request has its own Run");
+                    assert_eq!(undated(&queued.run), alone(tx, &queued.run).await);
+                }
+            }
+            PageRows::Calls(calls) => {
+                let events = retained_events(&self.fixture.runs, actor, workspace, &self.long);
+                let started: Vec<_> = events
+                    .await
+                    .iter()
+                    .filter_map(|event| match event.kind() {
+                        RunEventKind::InvocationStarted { invocation_id } => {
+                            Some(invocation_id.clone())
+                        }
+                        _ => None,
+                    })
+                    .take(calls.len())
+                    .collect();
+                assert_eq!(
+                    calls.iter().map(|call| call.id.clone()).collect::<Vec<_>>(),
+                    started,
+                    "the calls are in the order of the Run's Events"
+                );
+                for call in calls {
+                    let alone = crate::history_repository::exact_invocation(
+                        tx, workspace, &self.long, &call.id, now,
+                    );
+                    assert_eq!(
+                        undated_invocation(call),
+                        undated_invocation(&alone.await.unwrap())
+                    );
+                }
+            }
+            PageRows::Settled(settled) => {
+                let oldest_first = settled
+                    .iter()
+                    .rev()
+                    .map(|row| (row.settled_at_unix_nanos, row.approval.to_string()));
+                assert!(
+                    oldest_first.is_sorted(),
+                    "the long page keeps the order: the newest decision first"
+                );
+                for row in settled {
+                    let request = self.approvals.get(actor, workspace, &row.approval).await;
+                    let request = request.unwrap();
+                    assert_eq!(row.run.id, request.run_id, "a request has its own Run");
+                    assert_eq!(
+                        row.approver.as_ref().map(|approver| &approver.principal),
+                        request.approver.as_ref()
+                    );
+                    assert_eq!(undated(&row.run), alone(tx, &row.run).await);
+                }
+            }
+        }
+    }
+}
+
+/// Catches: a read that sends a statement, or several, for each row of its
+/// page, so that a long page is many round trips inside one read snapshot;
+/// and a read of many rows that returns other rows than the read of one row
+/// at a time, or the right rows in another order.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_page_sends_the_statements_of_a_short_one() {
+    let rows = ManyRows::new().await;
+    // The Runs that wait keep sending statements on the fixture's handle:
+    // their owners renew leases and recheck parked waits. The reads run on a
+    // peer handle, which counts only its own statements.
+    let reads = rows.fixture.test_database.connect_peer().await.unwrap();
+    let mut tx = reads.begin_read_snapshot().await.unwrap();
+    let authority = rows
+        .fixture
+        .workspaces
+        .action_history_authority_in_transaction(&mut tx, &rows.tool.principal, None)
+        .await
+        .unwrap();
+    for read in [
+        PageRead::RunApprovals,
+        PageRead::RequiredActions,
+        PageRead::ActivityEntries,
+        PageRead::SettledApprovals,
+    ] {
+        let before = reads.statements_sent();
+        let short = rows.read(&mut tx, &authority, read, false).await;
+        let short_sent = reads.statements_sent() - before;
+        let before = reads.statements_sent();
+        let long = rows.read(&mut tx, &authority, read, true).await;
+        let long_sent = reads.statements_sent() - before;
+        assert!(
+            short.len() < long.len(),
+            "{read:?}: the long page has more rows: {} and {}",
+            short.len(),
+            long.len()
+        );
+        assert_eq!(
+            short_sent,
+            long_sent,
+            "{read:?}: {} rows send the statements of {}",
+            long.len(),
+            short.len()
+        );
+        rows.assert_each_is_the_row_read_alone(&mut tx, &authority, &long)
+            .await;
+    }
+    tx.commit().await.unwrap();
 }

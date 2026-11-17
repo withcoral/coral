@@ -1,5 +1,6 @@
 use super::{GrpcServices, PrivateAudience, management as wire, now};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use coral_db::{PageKey, PageRequest, PageSize};
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, ResourceMetadata, TraceId, WorkspaceDisplayName,
     WorkspaceEvidence, WorkspaceId,
@@ -29,14 +30,26 @@ impl GrpcServices {
             .inspect_workspace(user, id)
             .await
             .map_err(error)?;
-        let mut view = workspace(&evidence, meta);
+        let own = self
+            .workspaces
+            .inspect_user_profile(user, id, user.user_id())
+            .await
+            .map_err(error)?;
+        Ok(self.workspace_projection(user, &evidence, meta, profile(own)))
+    }
+
+    /// Projects one Workspace as `user` sees it, with `own`, that User's profile.
+    fn workspace_projection(
+        &self,
+        user: &AuthenticatedUser,
+        evidence: &WorkspaceEvidence,
+        meta: ResourceMetadata,
+        own: wire::UserProfile,
+    ) -> wire::Workspace {
+        let id = evidence.workspace().id();
+        let mut view = workspace(evidence, meta);
         view.current_user = format!("users/{}", user.user_id());
-        view.current_user_profile = Some(profile(
-            self.workspaces
-                .inspect_user_profile(user, id, user.user_id())
-                .await
-                .map_err(error)?,
-        ));
+        view.current_user_profile = Some(own);
         view.mcp_endpoint = self.mcp_origin.get().map_or_else(String::new, |origin| {
             format!("{origin}/workspaces/{id}/mcp")
         });
@@ -46,7 +59,7 @@ impl GrpcServices {
         {
             view.organization_mcp_endpoint = format!("{origin}/mcp");
         }
-        Ok(view)
+        view
     }
 }
 
@@ -257,6 +270,40 @@ pub(super) fn safe_status_with(
     Status::with_details(code, reason, status.encode_to_vec().into())
 }
 
+/// The size of the page a list request asks for: zero selects the default of
+/// 30, and a size over `limit`, or a continuation too long to be one, is
+/// refused.
+fn page_size(limit: i32, size: i32, continuation: &str) -> Result<u32, Status> {
+    if !(0..=limit).contains(&size) || continuation.len() > 4096 {
+        return Err(invalid());
+    }
+    if size == 0 {
+        Ok(30)
+    } else {
+        u32::try_from(size).map_err(|_error| invalid())
+    }
+}
+
+/// The page a request asks for, of a list that its owner pages by the key `K`
+/// (ADR 0037): at most `size` items after the key that `after` spells, or
+/// from the start when it is empty. The cursor binds nothing, so the owner
+/// scopes and authorizes every page from the request alone.
+pub(super) fn page_request<K: PageKey>(size: i32, after: &str) -> Result<PageRequest<K>, Status> {
+    let size = PageSize::new(page_size(100, size, after)?).ok_or_else(invalid)?;
+    let after = if after.is_empty() {
+        None
+    } else {
+        Some(K::from_cursor(after).ok_or_else(invalid)?)
+    };
+    Ok(PageRequest { after, size })
+}
+
+/// The cursor of the page after one whose owner returned `next_after`: the
+/// key as text, or empty on the last page.
+pub(super) fn next_after<K: PageKey>(next_after: Option<&K>) -> String {
+    next_after.map_or_default(PageKey::to_cursor)
+}
+
 /// Tokens are opaque continuation positions, never authority. Every page reloads
 /// current visibility; binding to User, parent and collection prevents reuse elsewhere.
 /// Decodes a non-authorizing continuation before a bounded repository read.
@@ -271,14 +318,7 @@ pub(super) fn page_start_within(
     token: &str,
     scope: &str,
 ) -> Result<(u32, String), Status> {
-    if !(0..=limit).contains(&size) || token.len() > 4096 {
-        return Err(invalid());
-    }
-    let size = if size == 0 {
-        30
-    } else {
-        u32::try_from(size).map_err(|_error| invalid())?
-    };
+    let size = page_size(limit, size, token)?;
     let after = if token.is_empty() {
         String::new()
     } else {
@@ -363,18 +403,23 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
     ) -> Result<Response<wire::ListWorkspacesResponse>, Status> {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
-        let values = self.workspaces.list(&user).await.map_err(error)?;
+        let listed = self
+            .workspaces
+            .inspect_workspaces(&user)
+            .await
+            .map_err(error)?;
+        let own = profile(listed.profile);
         let (values, next_page_token) = page(
-            values,
+            listed.workspaces,
             input.page_size,
             &input.page_token,
             &format!("{}:workspaces", user.user_id()),
-            coral_workspace::Workspace::listing_key,
+            |(evidence, _)| evidence.workspace().listing_key(),
         )?;
-        let mut workspaces = Vec::new();
-        for w in values {
-            workspaces.push(self.workspace_view(&user, w.id()).await?);
-        }
+        let workspaces = values
+            .into_iter()
+            .map(|(evidence, meta)| self.workspace_projection(&user, &evidence, meta, own.clone()))
+            .collect();
         Ok(Response::new(wire::ListWorkspacesResponse {
             workspaces,
             next_page_token,
@@ -453,8 +498,49 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
 
 #[cfg(test)]
 mod tests {
+    use coral_db::PageKey;
+    use coral_tools::{PrivateToolPath, SharedToolLifecycleEventKey};
     use coral_workspace::Error as E;
     use tonic::Code;
+
+    // Catches: a page size out of bounds or text that is no key of the list
+    // being served, a default other than 30, or a cursor that is not the
+    // key's own text.
+    #[test]
+    fn a_page_request_reads_its_size_and_the_key_its_cursor_spells() {
+        let path = |size, after: &str| {
+            super::page_request::<PrivateToolPath>(size, after)
+                .map(|page| (page.size.get(), page.after.as_ref().map(PageKey::to_cursor)))
+                .map_err(|status| (status.code(), status.message().to_owned()))
+        };
+        let invalid = || Err((Code::InvalidArgument, "INVALID_ARGUMENT".to_owned()));
+        for (size, after, expected) in [
+            (0, "", Ok((30, None))),
+            (1, "", Ok((1, None))),
+            (100, "", Ok((100, None))),
+            (
+                2,
+                "reports.total",
+                Ok((2, Some("reports.total".to_owned()))),
+            ),
+            (-1, "", invalid()),
+            (101, "", invalid()),
+            (2, "not a path", invalid()),
+            (2, "30/00000000-0000-4000-8000-000000000000", invalid()),
+        ] {
+            assert_eq!(path(size, after), expected, "{size} after {after:?}");
+        }
+        // Each list reads its own key: an event position is no path, and a
+        // path is no event position.
+        let position = "30/00000000-0000-4000-8000-000000000000";
+        let event = super::page_request::<SharedToolLifecycleEventKey>(2, position)
+            .expect("an event position");
+        assert_eq!(super::next_after(event.after.as_ref()), position);
+        let no_position =
+            super::page_request::<SharedToolLifecycleEventKey>(2, "reports.total").unwrap_err();
+        assert_eq!(no_position.code(), Code::InvalidArgument);
+        assert_eq!(super::next_after::<PrivateToolPath>(None), "");
+    }
 
     /// Reef names these reasons in management forms (`apps/reef/app/lib/management.server.ts`).
     #[test]

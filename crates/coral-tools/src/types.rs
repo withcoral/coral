@@ -117,6 +117,18 @@ impl PrivateToolPath {
     }
 }
 
+/// A list of Private Tools pages by path: a page's cursor is the path of its
+/// last Private Tool.
+impl coral_db::PageKey for PrivateToolPath {
+    fn to_cursor(&self) -> String {
+        self.0.clone()
+    }
+
+    fn from_cursor(text: &str) -> Option<Self> {
+        Self::parse(text).ok()
+    }
+}
+
 /// The stable identity of one Authored Tool, which names its kind. It is the
 /// Tool Key of the Tool in its kind's Provider.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -963,37 +975,6 @@ impl PrivateToolSummary {
     #[must_use]
     pub const fn saved_at_unix_nanos(&self) -> i64 {
         self.saved_at_unix_nanos
-    }
-}
-
-/// One bounded page of summaries in path order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrivateToolPage {
-    summaries: Vec<PrivateToolSummary>,
-    next_after: Option<PrivateToolPath>,
-}
-
-impl PrivateToolPage {
-    pub(crate) const fn new(
-        summaries: Vec<PrivateToolSummary>,
-        next_after: Option<PrivateToolPath>,
-    ) -> Self {
-        Self {
-            summaries,
-            next_after,
-        }
-    }
-
-    /// Returns this page's summaries in path order.
-    #[must_use]
-    pub fn summaries(&self) -> &[PrivateToolSummary] {
-        &self.summaries
-    }
-
-    /// Returns the path to pass as `after` for the next page, when one exists.
-    #[must_use]
-    pub const fn next_after(&self) -> Option<&PrivateToolPath> {
-        self.next_after.as_ref()
     }
 }
 

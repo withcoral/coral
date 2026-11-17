@@ -1,5 +1,7 @@
+use std::collections::BTreeMap;
+
 use coral_catalog::ToolAccessState;
-use coral_db::{RowLock, Transaction};
+use coral_db::{Page, PageRequest, RowLock, Transaction, text_key_order};
 use coral_workspace::{Principal, PrincipalId, PrincipalKind};
 use coral_workspace::{TraceId, WorkspaceId};
 use sea_query::{Cond, Expr, ExprTrait as _, Iden, Order, Query};
@@ -10,8 +12,7 @@ use crate::types::{
     AUTHORED_TOOL_DIAGNOSTIC_MAX_COUNT, AUTHORED_TOOL_DIAGNOSTIC_MESSAGE_MAX_BYTES,
     AdministrativeLifecycleEvent, AuthoredToolDeclaration, AuthoredToolDeclarationFieldProjection,
     AuthoredToolDescription, AuthoredToolDiagnostic, AuthoredToolSource, LifecycleAction,
-    LifecycleOutcome, PrivateTool, PrivateToolId, PrivateToolPage, PrivateToolPath,
-    PrivateToolSummary,
+    LifecycleOutcome, PrivateTool, PrivateToolId, PrivateToolPath, PrivateToolSummary,
 };
 
 #[derive(Iden)]
@@ -201,6 +202,75 @@ impl LifecycleEventRow {
     }
 }
 
+/// One current Private Tool without its definition: what names it, guards
+/// a write to it, and carries its default to the next save. It keeps the
+/// Workspace and the owner it was read under, so a write to it names the
+/// same scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrivateToolRecord {
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) owner: Principal,
+    pub(crate) id: PrivateToolId,
+    pub(crate) path: PrivateToolPath,
+    pub(crate) revision: u64,
+    pub(crate) default_access_state: ToolAccessState,
+}
+
+#[derive(Debug, FromRow)]
+struct PrivateToolRecordRow {
+    id: String,
+    path: String,
+    definition_revision: i64,
+    default_access_state: String,
+}
+
+impl PrivateToolRecordRow {
+    /// The record of a row read for `owner` in the Workspace.
+    fn decode(
+        self,
+        workspace_id: &WorkspaceId,
+        owner: &Principal,
+    ) -> Result<PrivateToolRecord, Error> {
+        Ok(PrivateToolRecord {
+            workspace_id: workspace_id.clone(),
+            owner: owner.clone(),
+            id: PrivateToolId::parse(&self.id).map_err(|_error| {
+                Error::CorruptData("Private Tool has invalid identity".to_string())
+            })?,
+            path: PrivateToolPath::parse(&self.path).map_err(|_error| {
+                Error::CorruptData("Private Tool has invalid path".to_string())
+            })?,
+            revision: decode_revision(self.definition_revision)?,
+            default_access_state: access_state_from_storage(&self.default_access_state)?,
+        })
+    }
+}
+
+/// Selects `columns` of every current Private Tool of `principal` in the
+/// Workspace.
+fn owned_statement<const N: usize>(
+    workspace_id: &WorkspaceId,
+    principal: &Principal,
+    columns: [PrivateToolRecords; N],
+) -> sea_query::SelectStatement {
+    Query::select()
+        .columns(columns)
+        .from(PrivateToolRecords::Table)
+        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
+        .and_where(
+            Expr::col(PrivateToolRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
+        )
+        .to_owned()
+}
+
+const RECORD_COLUMNS: [PrivateToolRecords; 4] = [
+    PrivateToolRecords::Id,
+    PrivateToolRecords::Path,
+    PrivateToolRecords::DefinitionRevision,
+    PrivateToolRecords::DefaultAccessState,
+];
+
 pub(crate) async fn find_current_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -211,6 +281,66 @@ pub(crate) async fn find_current_in_transaction(
         .fetch_optional(current_statement(workspace_id, principal, path))
         .await?;
     row.map(PrivateToolRow::decode).transpose()
+}
+
+/// The current Private Tool of `principal` at `path`, without its
+/// definition.
+pub(crate) async fn find_current_record_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    principal: &Principal,
+    path: &PrivateToolPath,
+) -> Result<Option<PrivateToolRecord>, Error> {
+    let mut statement = owned_statement(workspace_id, principal, RECORD_COLUMNS);
+    statement.and_where(Expr::col(PrivateToolRecords::Path).eq(path.as_str()));
+    let row: Option<PrivateToolRecordRow> = transaction.fetch_optional(statement).await?;
+    row.map(|row| row.decode(workspace_id, principal))
+        .transpose()
+}
+
+/// Every current Private Tool of `principal` in the Workspace, in path
+/// order, without its definition.
+pub(crate) async fn list_current_records_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    principal: &Principal,
+) -> Result<Vec<PrivateToolRecord>, Error> {
+    let mut statement = owned_statement(workspace_id, principal, RECORD_COLUMNS);
+    statement.order_by(PrivateToolRecords::Path, Order::Asc);
+    let rows: Vec<PrivateToolRecordRow> = transaction.fetch_all(statement).await?;
+    rows.into_iter()
+        .map(|row| row.decode(workspace_id, principal))
+        .collect()
+}
+
+/// The current declaration of each Private Tool of `principal` at `paths`.
+/// A path that names none is left out.
+pub(crate) async fn current_declarations_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    principal: &Principal,
+    paths: &[&PrivateToolPath],
+) -> Result<BTreeMap<PrivateToolPath, AuthoredToolDeclaration>, Error> {
+    if paths.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let mut statement = owned_statement(
+        workspace_id,
+        principal,
+        [PrivateToolRecords::Path, PrivateToolRecords::Declaration],
+    );
+    statement.and_where(
+        Expr::col(PrivateToolRecords::Path).is_in(paths.iter().map(|path| path.as_str())),
+    );
+    let rows: Vec<(String, String)> = transaction.fetch_all(statement).await?;
+    rows.into_iter()
+        .map(|(path, declaration)| {
+            let path = PrivateToolPath::parse(&path).map_err(|_error| {
+                Error::CorruptData("Private Tool has invalid path".to_string())
+            })?;
+            Ok((path, AuthoredToolDeclaration::from_persisted(&declaration)?))
+        })
+        .collect()
 }
 
 /// Whether `principal` has a Private Tool at `path`, holding its row
@@ -362,71 +492,44 @@ pub(crate) async fn list_current_in_transaction(
     workspace_id: &WorkspaceId,
     principal: &Principal,
 ) -> Result<Vec<PrivateTool>, Error> {
-    let rows: Vec<PrivateToolRow> = transaction
-        .fetch_all(
-            Query::select()
-                .columns(private_tool_columns())
-                .from(PrivateToolRecords::Table)
-                .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
-                .and_where(
-                    Expr::col(PrivateToolRecords::PrincipalKind)
-                        .eq(principal.kind().as_storage_str()),
-                )
-                .order_by(PrivateToolRecords::Path, Order::Asc)
-                .to_owned(),
-        )
-        .await?;
+    let mut statement = owned_statement(workspace_id, principal, private_tool_columns());
+    statement.order_by(PrivateToolRecords::Path, Order::Asc);
+    let rows: Vec<PrivateToolRow> = transaction.fetch_all(statement).await?;
     rows.into_iter().map(PrivateToolRow::decode).collect()
 }
 
-/// Reads one page of source-free summaries after `after` in path order.
+/// Reads one page of the source-free summaries of `principal`'s own Private
+/// Tools in the Workspace, in path order.
 pub(crate) async fn list_summary_page_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     principal: &Principal,
-    after: Option<&PrivateToolPath>,
-    page_size: u32,
-) -> Result<PrivateToolPage, Error> {
-    // Match Rust string ordering regardless of the Postgres locale, so the
-    // exclusive cursor predicate agrees with the page order. SQLite's TEXT
-    // columns use BINARY by default.
-    let path = match transaction.system() {
-        coral_db::DatabaseSystem::Sqlite => Expr::col(PrivateToolRecords::Path),
-        coral_db::DatabaseSystem::Postgres => Expr::cust("\"path\" COLLATE \"C\""),
-    };
-    let mut statement = Query::select();
-    statement
-        .columns([
+    request: &PageRequest<PrivateToolPath>,
+) -> Result<Page<PrivateToolSummary, PrivateToolPath>, Error> {
+    let path = text_key_order(transaction.system(), PrivateToolRecords::Path);
+    let mut statement = owned_statement(
+        workspace_id,
+        principal,
+        [
             PrivateToolRecords::Path,
             PrivateToolRecords::Description,
             PrivateToolRecords::SavedAtUnixNanos,
-        ])
-        .from(PrivateToolRecords::Table)
-        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
-        .and_where(
-            Expr::col(PrivateToolRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
-        )
+        ],
+    );
+    statement
         .order_by_expr(path.clone(), Order::Asc)
-        // One extra row shows whether another page follows.
-        .limit(u64::from(page_size) + 1);
-    if let Some(after) = after {
+        .limit(request.size.lookahead_limit());
+    if let Some(after) = &request.after {
         statement.and_where(path.gt(after.as_str()));
     }
     let rows: Vec<PrivateToolSummaryRow> = transaction.fetch_all(statement).await?;
-    let mut summaries = rows
+    let summaries = rows
         .into_iter()
         .map(PrivateToolSummaryRow::decode)
         .collect::<Result<Vec<_>, _>>()?;
-    let page_size = usize::try_from(page_size).unwrap_or(usize::MAX);
-    let next_after = if summaries.len() > page_size {
-        summaries.truncate(page_size);
-        summaries.last().map(|summary| summary.path().clone())
-    } else {
-        None
-    };
-    Ok(PrivateToolPage::new(summaries, next_after))
+    Ok(Page::from_lookahead(summaries, request.size, |summary| {
+        summary.path().clone()
+    }))
 }
 
 pub(crate) async fn insert_current(
@@ -485,9 +588,11 @@ pub(crate) async fn insert_current(
     Ok(())
 }
 
+/// Replaces the definition of `previous`, in the Workspace and for the
+/// owner it was read under, with that of `replacement`.
 pub(crate) async fn replace_current(
     transaction: &mut Transaction<'_>,
-    previous: &PrivateTool,
+    previous: &PrivateToolRecord,
     replacement: &PrivateTool,
 ) -> Result<(), Error> {
     let diagnostics_json = serde_json::to_string(replacement.diagnostics())?;
@@ -551,18 +656,13 @@ pub(crate) async fn replace_current(
                 Expr::val(replacement_revision),
             ),
         ])
+        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(previous.workspace_id.to_string()))
+        .and_where(Expr::col(PrivateToolRecords::Id).eq(previous.id.to_string()))
+        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(previous.owner.id().as_str()))
         .and_where(
-            Expr::col(PrivateToolRecords::WorkspaceId).eq(previous.workspace_id().to_string()),
+            Expr::col(PrivateToolRecords::PrincipalKind).eq(previous.owner.kind().as_storage_str()),
         )
-        .and_where(Expr::col(PrivateToolRecords::Id).eq(previous.id().to_string()))
-        .and_where(
-            Expr::col(PrivateToolRecords::PrincipalId).eq(previous.principal().id().as_str()),
-        )
-        .and_where(
-            Expr::col(PrivateToolRecords::PrincipalKind)
-                .eq(previous.principal().kind().as_storage_str()),
-        )
-        .and_where(Expr::col(PrivateToolRecords::Path).eq(previous.path().as_str()))
+        .and_where(Expr::col(PrivateToolRecords::Path).eq(previous.path.as_str()))
         .and_where(Expr::col(PrivateToolRecords::DefinitionRevision).eq(previous_revision))
         .to_owned();
     if transaction.execute(statement).await? != 1 {
@@ -573,20 +673,20 @@ pub(crate) async fn replace_current(
     Ok(())
 }
 
+/// Deletes `tool`, in the Workspace and for the owner it was read under.
 pub(crate) async fn delete_current(
     transaction: &mut Transaction<'_>,
-    tool: &PrivateTool,
+    tool: &PrivateToolRecord,
 ) -> Result<(), Error> {
     let statement = Query::delete()
         .from_table(PrivateToolRecords::Table)
-        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(tool.workspace_id().to_string()))
-        .and_where(Expr::col(PrivateToolRecords::Id).eq(tool.id().to_string()))
-        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(tool.principal().id().as_str()))
+        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(tool.workspace_id.to_string()))
+        .and_where(Expr::col(PrivateToolRecords::Id).eq(tool.id.to_string()))
+        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(tool.owner.id().as_str()))
         .and_where(
-            Expr::col(PrivateToolRecords::PrincipalKind)
-                .eq(tool.principal().kind().as_storage_str()),
+            Expr::col(PrivateToolRecords::PrincipalKind).eq(tool.owner.kind().as_storage_str()),
         )
-        .and_where(Expr::col(PrivateToolRecords::Path).eq(tool.path().as_str()))
+        .and_where(Expr::col(PrivateToolRecords::Path).eq(tool.path.as_str()))
         .and_where(
             Expr::col(PrivateToolRecords::DefinitionRevision).eq(stored_revision(tool.revision)?),
         )
@@ -746,16 +846,9 @@ fn current_statement(
     principal: &Principal,
     path: &PrivateToolPath,
 ) -> sea_query::SelectStatement {
-    Query::select()
-        .columns(private_tool_columns())
-        .from(PrivateToolRecords::Table)
-        .and_where(Expr::col(PrivateToolRecords::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(PrivateToolRecords::PrincipalId).eq(principal.id().as_str()))
-        .and_where(
-            Expr::col(PrivateToolRecords::PrincipalKind).eq(principal.kind().as_storage_str()),
-        )
-        .and_where(Expr::col(PrivateToolRecords::Path).eq(path.as_str()))
-        .to_owned()
+    let mut statement = owned_statement(workspace_id, principal, private_tool_columns());
+    statement.and_where(Expr::col(PrivateToolRecords::Path).eq(path.as_str()));
+    statement
 }
 
 fn private_tool_columns() -> [PrivateToolRecords; 17] {

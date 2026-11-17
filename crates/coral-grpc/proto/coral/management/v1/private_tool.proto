@@ -37,16 +37,22 @@ message ListPrivateToolsRequest {
   string parent = 1;
   // Maximum results, bounded to 100; zero selects the default.
   int32 page_size = 2;
-  // Opaque continuation from the preceding page in this scope.
-  string page_token = 3;
+  // next_after from the previous page. Empty starts at the first path. Pass
+  // only a value that this list returned. Coral accepts any path as a
+  // position, and the format can change. The value only positions the page:
+  // each page lists the caller's own Private Tools in parent. Text that is not
+  // a path is INVALID_ARGUMENT.
+  string after = 3;
 }
 
 // One scoped page of source-free Private Tool summaries in path order.
 message ListPrivateToolsResponse {
   // The caller's own Private Tools on this page.
   repeated PrivateToolSummary private_tools = 1;
-  // Empty when no further page remains.
-  string next_page_token = 2;
+  // Pass as after to get the next page; empty on the last page. It is the path
+  // of the last Private Tool on this page, and still works after that Private
+  // Tool is deleted.
+  string next_after = 2;
   // The Workspace's Private Provider, workspaces/{workspace}/providers/{provider}.
   // ToolPolicyService lists and sets the policy of these Private Tools under it.
   string private_provider = 3;

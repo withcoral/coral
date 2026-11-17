@@ -14,7 +14,7 @@ use crate::authoring::{
     tool_paths_overlap, v8_compiler,
 };
 use crate::linking::LinkedToolReference;
-use crate::repository;
+use crate::repository::{self, PrivateToolRecord};
 use crate::tool_typing::ToolDeclarationReader;
 use crate::types::AuthoredToolPath;
 use crate::types::{
@@ -215,11 +215,11 @@ impl PrivateToolModule {
                 &prepared.linked,
             )
             .await?;
-        save.admits(previous.as_ref().map(PrivateTool::revision))?;
+        save.admits(previous.as_ref().map(|previous| previous.revision))?;
         let (id, revision, action) = match previous.as_ref() {
             None => (PrivateToolId::generate(), 1, LifecycleAction::Created),
             Some(previous) => (
-                previous.id().clone(),
+                previous.id.clone(),
                 previous.revision.checked_add(1).ok_or_else(|| {
                     Error::CorruptData("Private Tool revision overflowed".to_string())
                 })?,
@@ -229,7 +229,9 @@ impl PrivateToolModule {
         // A new Private Tool's default is `enabled` unless the save
         // declares another, and a replacement keeps its Private Tool's unless the save
         // declares another. The Event names the default only when it moves.
-        let previous_default = previous.as_ref().map(PrivateTool::default_access_state);
+        let previous_default = previous
+            .as_ref()
+            .map(|previous| previous.default_access_state);
         let default_access_state = save.default_access_state(previous_default);
         let mut changed_field_paths = vec![
             "source",
@@ -385,18 +387,22 @@ impl PrivateToolModule {
         workspace_id: &WorkspaceId,
         path: &PrivateToolPath,
         references: &[LinkedToolReference],
-    ) -> Result<(PrincipalWorkspaceEvidence, Option<PrivateTool>), Error> {
+    ) -> Result<(PrincipalWorkspaceEvidence, Option<PrivateToolRecord>), Error> {
         let authority = self
             .authorize_active_in_transaction(transaction, actor, workspace_id)
             .await?;
         // The Workspace hold acquired above serializes namespace decisions for
-        // both absent and existing paths across SQLite and Postgres.
-        let current_private_tools =
-            repository::list_current_in_transaction(transaction, workspace_id, actor.principal())
-                .await?;
+        // both absent and existing paths across SQLite and Postgres. The
+        // decision reads no definition: a path conflicts by its name alone.
+        let current_private_tools = repository::list_current_records_in_transaction(
+            transaction,
+            workspace_id,
+            actor.principal(),
+        )
+        .await?;
         if current_private_tools
             .iter()
-            .any(|tool| tool_paths_overlap(tool.path().as_str(), path.as_str()))
+            .any(|tool| tool_paths_overlap(tool.path.as_str(), path.as_str()))
         {
             return Err(Error::PathConflict(AuthoredToolKind::Private));
         }
@@ -438,7 +444,7 @@ impl PrivateToolModule {
         }
         let previous = current_private_tools
             .into_iter()
-            .find(|tool| tool.path() == path);
+            .find(|tool| &tool.path == path);
         Ok((authority, previous))
     }
 
@@ -451,7 +457,7 @@ impl PrivateToolModule {
         path: &PrivateToolPath,
     ) -> Result<Option<u64>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
-        let current = repository::find_current_in_transaction(
+        let current = repository::find_current_record_in_transaction(
             &mut transaction,
             workspace_id,
             actor.principal(),
@@ -459,7 +465,7 @@ impl PrivateToolModule {
         )
         .await?;
         transaction.commit().await?;
-        Ok(current.as_ref().map(PrivateTool::revision))
+        Ok(current.map(|current| current.revision))
     }
 
     async fn authorize_active(
@@ -515,7 +521,9 @@ pub async fn delete_current_for_access_removal_in_transaction(
     );
     let mut deleted = Vec::new();
     for scope in prepared.lost_access() {
-        let tools = repository::list_current_in_transaction(
+        // A deletion names the Private Tool and guards on its revision, so
+        // it reads no definition.
+        let tools = repository::list_current_records_in_transaction(
             transaction,
             scope.workspace_id(),
             scope.principal(),
@@ -523,10 +531,7 @@ pub async fn delete_current_for_access_removal_in_transaction(
         .await?;
         let mut ids = Vec::with_capacity(tools.len());
         for tool in tools {
-            ids.push(
-                delete_current_with_event(transaction, &change, scope.workspace_id(), &tool)
-                    .await?,
-            );
+            ids.push(delete_current_with_event(transaction, &change, &tool).await?);
         }
         if !ids.is_empty() {
             deleted.push((scope.workspace_id().clone(), ids));
@@ -535,23 +540,24 @@ pub async fn delete_current_for_access_removal_in_transaction(
     Ok(deleted)
 }
 
+/// Deletes `tool`, in the Workspace and for the owner it was read under,
+/// and records the deletion as `context`'s actor.
 pub(crate) async fn delete_current_with_event(
     transaction: &mut Transaction<'_>,
     context: &PrivateToolChangeContext,
-    workspace_id: &WorkspaceId,
-    tool: &PrivateTool,
+    tool: &PrivateToolRecord,
 ) -> Result<PrivateToolId, Error> {
     repository::delete_current(transaction, tool).await?;
     repository::insert_lifecycle_event(
         transaction,
         repository::NewLifecycleEvent {
-            workspace_id,
+            workspace_id: &tool.workspace_id,
             actor: context.actor().principal(),
-            private_user_id: (tool.principal().kind() == coral_workspace::PrincipalKind::User)
-                .then_some(tool.principal().id()),
+            private_user_id: (tool.owner.kind() == coral_workspace::PrincipalKind::User)
+                .then_some(tool.owner.id()),
             action: LifecycleAction::Deleted,
-            target_id: tool.id(),
-            target_path: tool.path(),
+            target_id: &tool.id,
+            target_path: &tool.path,
             changed_field_paths: &[
                 "source",
                 "description",
@@ -564,5 +570,5 @@ pub(crate) async fn delete_current_with_event(
         },
     )
     .await?;
-    Ok(tool.id().clone())
+    Ok(tool.id.clone())
 }
