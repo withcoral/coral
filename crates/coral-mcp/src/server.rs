@@ -108,7 +108,7 @@ impl McpServer {
         &self,
         request: CallToolRequestParams,
         progress: Option<Progress>,
-    ) -> Result<CallToolResponse, DispatchError> {
+    ) -> Result<CallToolResponse, ToolCallError> {
         // Coral asks a client no in-band question, so no call is a retry that
         // answers one: a Run that waits on a person reports it in the Run
         // Update, and the person decides on the page its link opens.
@@ -135,7 +135,7 @@ impl McpServer {
                 let arguments = arguments::parse::<EndTaskArguments>(request.arguments)?;
                 self.end_task(arguments).await
             }
-            _ => Err(DispatchError::Protocol(ErrorData::invalid_params(
+            _ => Err(ToolCallError::Protocol(ErrorData::invalid_params(
                 "tool not found",
                 None,
             ))),
@@ -143,7 +143,7 @@ impl McpServer {
         complete.map(Into::into)
     }
 
-    async fn exec(&self, arguments: ExecArguments) -> Result<CallToolResponse, DispatchError> {
+    async fn exec(&self, arguments: ExecArguments) -> Result<CallToolResponse, ToolCallError> {
         // A later call that still carries its Task's `goal` continues the Task:
         // refusing it would only cost the agent a turn to send it again.
         let target = match (&arguments.task_id, &arguments.goal) {
@@ -237,7 +237,7 @@ impl McpServer {
         &self,
         arguments: WaitArguments,
         progress: Option<Progress>,
-    ) -> Result<CallToolResponse, DispatchError> {
+    ) -> Result<CallToolResponse, ToolCallError> {
         let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
         let cursor = arguments
             .cursor
@@ -278,14 +278,14 @@ impl McpServer {
         run_id: &RunId,
         observation: &RunObservation,
         reporter: Reporter<'_>,
-    ) -> Result<CallToolResponse, DispatchError> {
+    ) -> Result<CallToolResponse, ToolCallError> {
         let update = self
             .observe(run_id, observation)
             .await
             .map_err(run_failure)?;
         self.run_update(&update, reporter)
             .map(Into::into)
-            .map_err(DispatchError::Tool)
+            .map_err(ToolCallError::Tool)
     }
 
     async fn observe(
@@ -305,7 +305,7 @@ impl McpServer {
             .await
     }
 
-    async fn cancel(&self, arguments: CancelArguments) -> Result<CallToolResult, DispatchError> {
+    async fn cancel(&self, arguments: CancelArguments) -> Result<CallToolResult, ToolCallError> {
         let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
         let cursor = arguments
             .cursor
@@ -328,10 +328,10 @@ impl McpServer {
             .await
             .map_err(run_failure)?;
         self.run_update(&update, Reporter::Observer)
-            .map_err(DispatchError::Tool)
+            .map_err(ToolCallError::Tool)
     }
 
-    async fn end_task(&self, arguments: EndTaskArguments) -> Result<CallToolResult, DispatchError> {
+    async fn end_task(&self, arguments: EndTaskArguments) -> Result<CallToolResult, ToolCallError> {
         let task_id = TaskId::parse(&arguments.task_id).map_err(invalid_input)?;
         let outcome = match arguments.outcome {
             TaskOutcomeArgument::Success => TaskOutcome::Success,
@@ -354,12 +354,12 @@ impl McpServer {
         tool_call::record_task(task.telemetry_id());
         let durable_outcome = task
             .outcome()
-            .ok_or_else(|| DispatchError::Tool(ToolFailure::internal()))?;
+            .ok_or_else(|| ToolCallError::Tool(ToolFailure::internal()))?;
         projection::success(projection::EndedTask {
             task_id: task.id().to_string(),
             outcome: durable_outcome.into(),
         })
-        .map_err(DispatchError::Tool)
+        .map_err(ToolCallError::Tool)
     }
 
     fn run_update(
@@ -380,7 +380,7 @@ impl McpServer {
         &self,
         task_id: &str,
         intent: &str,
-    ) -> Result<coral_task::AttributedCommand, DispatchError> {
+    ) -> Result<coral_task::AttributedCommand, ToolCallError> {
         let task_id = TaskId::parse(task_id).map_err(invalid_input)?;
         Ok(coral_task::AttributedCommand::new(
             self.runtime.principal.clone(),
@@ -498,7 +498,7 @@ impl ServerHandler for McpServer {
     }
 }
 
-fn validated_wait(wait_ms: u64) -> Result<u64, DispatchError> {
+fn validated_wait(wait_ms: u64) -> Result<u64, ToolCallError> {
     if wait_ms > arguments::MAX_WAIT_MS {
         return Err(invalid_input_message(format!(
             "wait_ms must be at most {}",
@@ -508,15 +508,15 @@ fn validated_wait(wait_ms: u64) -> Result<u64, DispatchError> {
     Ok(wait_ms)
 }
 
-fn invalid_input(error: impl std::fmt::Display) -> DispatchError {
+fn invalid_input(error: impl std::fmt::Display) -> ToolCallError {
     invalid_input_message(error.to_string())
 }
 
-fn invalid_input_message(message: String) -> DispatchError {
-    DispatchError::Protocol(ErrorData::invalid_params(message, None))
+fn invalid_input_message(message: String) -> ToolCallError {
+    ToolCallError::Protocol(ErrorData::invalid_params(message, None))
 }
 
-fn task_failure(error: coral_task::Error) -> DispatchError {
+fn task_failure(error: coral_task::Error) -> ToolCallError {
     let failure = match error {
         coral_task::Error::InvalidInput(message) => ToolFailure::safe("invalid_input", message),
         coral_task::Error::TaskNotFound => {
@@ -549,16 +549,16 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
         | coral_task::Error::CorruptData(_)
         | coral_task::Error::Database(_) => ToolFailure::internal(),
     };
-    DispatchError::Tool(failure)
+    ToolCallError::Tool(failure)
 }
 
 /// A failure after an `exec` with `goal` started its Task. It names the Task,
 /// so the agent continues it with `task_id` instead of starting another with
 /// `goal`.
-fn started_task_failure(error: DispatchError, task: &TaskId) -> DispatchError {
+fn started_task_failure(error: ToolCallError, task: &TaskId) -> ToolCallError {
     match error {
-        DispatchError::Tool(failure) => DispatchError::Tool(failure.naming_started_task(task)),
-        protocol @ DispatchError::Protocol(_) => protocol,
+        ToolCallError::Tool(failure) => ToolCallError::Tool(failure.naming_started_task(task)),
+        protocol @ ToolCallError::Protocol(_) => protocol,
     }
 }
 
@@ -569,9 +569,9 @@ fn accepted_run_failure(
     failure: ToolFailure,
     run: &RunId,
     started: Option<&TaskId>,
-) -> DispatchError {
+) -> ToolCallError {
     let failure = failure.naming_accepted_run(run);
-    DispatchError::Tool(match started {
+    ToolCallError::Tool(match started {
         Some(task) => failure.naming_started_task(task),
         None => failure,
     })
@@ -596,9 +596,9 @@ const fn lookup_error_kind(error: &coral_search::Error) -> &'static str {
     }
 }
 
-fn search_failure(error: coral_search::Error) -> DispatchError {
+fn search_failure(error: coral_search::Error) -> ToolCallError {
     if let Some((code, message)) = error.safe_rejection() {
-        return DispatchError::Tool(ToolFailure::safe(code, message));
+        return ToolCallError::Tool(ToolFailure::safe(code, message));
     }
     let failure = match error {
         coral_search::Error::PermissionDenied(_) => {
@@ -619,13 +619,13 @@ fn search_failure(error: coral_search::Error) -> DispatchError {
         | coral_search::Error::Policy(_)
         | coral_search::Error::Database(_) => ToolFailure::internal(),
     };
-    DispatchError::Tool(failure)
+    ToolCallError::Tool(failure)
 }
 
-fn tools_failure(error: coral_tools::Error) -> DispatchError {
+fn tools_failure(error: coral_tools::Error) -> ToolCallError {
     use coral_tools::Error;
     if let Some((code, message)) = error.safe_rejection() {
-        return DispatchError::Tool(ToolFailure::safe(code, message));
+        return ToolCallError::Tool(ToolFailure::safe(code, message));
     }
     let failure = match error {
         Error::Workspace(error) => workspace_tool_failure(error),
@@ -653,12 +653,12 @@ fn tools_failure(error: coral_tools::Error) -> DispatchError {
         | Error::CorruptData(_)
         | Error::Database(_) => ToolFailure::internal(),
     };
-    DispatchError::Tool(failure)
+    ToolCallError::Tool(failure)
 }
 
-fn run_failure(error: coral_run::Error) -> DispatchError {
+fn run_failure(error: coral_run::Error) -> ToolCallError {
     if let Some((code, message)) = error.safe_rejection() {
-        return DispatchError::Tool(ToolFailure::safe(code, message));
+        return ToolCallError::Tool(ToolFailure::safe(code, message));
     }
     let failure = match error {
         coral_run::Error::RunNotFound => {
@@ -713,7 +713,7 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
         | coral_run::Error::CorruptData(_)
         | coral_run::Error::Database(_) => ToolFailure::internal(),
     };
-    DispatchError::Tool(failure)
+    ToolCallError::Tool(failure)
 }
 
 /// A refusal reports the same code and message whichever module's error
@@ -788,12 +788,16 @@ impl Progress {
     }
 }
 
-enum DispatchError {
+/// Why a tool call has no result.
+enum ToolCallError {
+    /// The request was wrong. The client gets a JSON-RPC error.
     Protocol(ErrorData),
+    /// Coral could not complete the call. The client gets the failure as the
+    /// tool's result.
     Tool(ToolFailure),
 }
 
-impl From<ErrorData> for DispatchError {
+impl From<ErrorData> for ToolCallError {
     fn from(error: ErrorData) -> Self {
         Self::Protocol(error)
     }

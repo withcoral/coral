@@ -7,7 +7,7 @@ use rmcp::ErrorData;
 use rmcp::model::CallToolResponse;
 use tracing::Instrument as _;
 
-use super::DispatchError;
+use super::ToolCallError;
 use crate::{arguments, projection};
 
 /// JSON-RPC codes for the caller's mistakes, such as unknown tools and
@@ -58,18 +58,18 @@ impl ToolCall {
     /// fault.
     pub(super) async fn run(
         &self,
-        dispatched: impl Future<Output = Result<CallToolResponse, DispatchError>>,
+        dispatched: impl Future<Output = Result<CallToolResponse, ToolCallError>>,
     ) -> Result<CallToolResponse, ErrorData> {
         let span = &self.span;
         match dispatched.instrument(span.clone()).await {
             Ok(response) => Ok(response),
-            Err(DispatchError::Tool(error)) => {
+            Err(ToolCallError::Tool(error)) => {
                 span.record("coral.mcp.failure.code", safe::kind(error.code()));
                 coral_telemetry::record_failure(span, "tool_error");
                 let trace = span.in_scope(TraceId::current_or_new);
                 Ok(projection::failure(&error, &trace).into())
             }
-            Err(DispatchError::Protocol(error)) => {
+            Err(ToolCallError::Protocol(error)) => {
                 let code = error.code.0;
                 let status = safe::json_rpc_code(i64::from(code));
                 span.record("rpc.response.status_code", safe::kind(status));
