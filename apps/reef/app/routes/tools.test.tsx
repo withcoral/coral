@@ -60,9 +60,17 @@ const githubId = '00000000-0000-4000-8000-0000000000a1'
 const github = `${parent}/providers/${githubId}`
 const toolName = (key: string) => `${github}/tools/${Buffer.from(key).toString('base64url')}`
 type Summary = MessageInitShape<typeof SummarizeActivityResponseSchema>
+/** `calls` spread over `days`, the remainder on the last day. */
+const series = (calls: number, days: number) =>
+  Array.from({ length: days }, (_, day) =>
+    BigInt(Math.floor(calls / days) + (day === days - 1 ? calls % days : 0)),
+  )
 
 interface Read {
-  /** Answers with `calls` to `issues.list`, as Coral would once the summary is ready. */
+  /**
+   * Answers with `calls` to `issues.list` across the read's days, as Coral would once the
+   * summary is ready: one count per day, oldest first, that add up to `calls`.
+   */
   answer: (calls: number) => Promise<void>
   /** Fails, as Coral would. */
   fail: (code: Code) => Promise<void>
@@ -141,14 +149,18 @@ async function renderTools(entry = tools) {
     privateTools: { listPrivateTools: () => ({ privateProvider: `${parent}/providers/p` }) },
     sharedTools: { listSharedTools: () => ({ sharedProvider: `${parent}/providers/s` }) },
     activity: {
-      summarizeActivity: () =>
+      summarizeActivity: ({ days }) =>
         new Promise<Summary>((resolve, reject) =>
           reads.push({
             answer: (calls) =>
               act(async () =>
                 resolve({
                   tools: [
-                    { tool: toolName('issues.list'), calls: BigInt(calls), daily: [BigInt(calls)] },
+                    {
+                      tool: toolName('issues.list'),
+                      calls: BigInt(calls),
+                      daily: series(calls, days),
+                    },
                   ],
                 }),
               ),
@@ -228,7 +240,7 @@ it('lists, searches and opens the whole catalog while the usage loads, then show
   expect(loadingUsage()).toBeNull()
   expect(usageOf('issues.list')).toBe('42 calls')
   expect(usageOf('issues.create')).toBe('0 calls')
-  expect(within(drawerUsage()).getByRole('group', { name: 'Calls in 1 days' })).toHaveTextContent(
+  expect(within(drawerUsage()).getByRole('group', { name: 'Calls in 30 days' })).toHaveTextContent(
     '42',
   )
 })
