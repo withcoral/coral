@@ -393,9 +393,14 @@ test.each([
       ? []
       : ['issues.list', 'repos.get', 'getForecast'].map((name) => {
           const row = within(table()).getByRole('link', { name }).closest('[role="row"]')!
-          return within(row as HTMLElement).getAllByRole('cell')[column]!.textContent
+          const rowCells = within(row as HTMLElement).getAllByRole('cell')
+          // A missing cell would move the next one under this heading.
+          expect(rowCells).toHaveLength(headers.length)
+          return rowCells[column]!.textContent
         })
   expect(cells).toEqual(counts)
+  // The hidden status does not stand in for the label people see.
+  if (column >= 0) within(headers[column]!).getByText('Usage')
   // Only the heading says the usage is unavailable, and it says so once.
   const unavailable =
     toolCalls !== null && 'state' in toolCalls && toolCalls.state === 'unavailable'
