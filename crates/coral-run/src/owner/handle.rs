@@ -239,10 +239,10 @@ pub(crate) enum Message {
     Stop,
     /// The mailbox is empty: commit when free.
     Drained,
-    /// Run stream request `number` (ADR 0027): `message` is what it asks of
-    /// the owner, or `None` for a request that leaves nothing to record
-    /// here. The owner applies requests in number order, so each chunk's
-    /// watermark covers every lower request.
+    /// Run stream request `number`: `message` is what it asks of the owner,
+    /// or `None` for a request that leaves nothing to record here. The
+    /// owner applies requests in number order, so each chunk's watermark
+    /// covers every lower request.
     Request {
         number: u64,
         message: Option<Box<Message>>,

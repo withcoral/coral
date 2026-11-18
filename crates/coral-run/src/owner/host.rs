@@ -70,9 +70,9 @@ pub(crate) enum OwnerStart {
         lease_until: Option<i64>,
         deadline: Option<i64>,
     },
-    /// The owner of a Run a Run Executor runs (ADR 0027): its start landed
-    /// before the owner exists and is queued in its mailbox, and the Run
-    /// stream is its Program.
+    /// The owner of a Run a Run Executor runs: its start landed before the
+    /// owner exists and is queued in its mailbox, and the Run stream is its
+    /// Program.
     Stream(std::sync::Arc<crate::run_stream::StreamRun>),
 }
 

@@ -1,8 +1,8 @@
-//! Coral's side of a Run stream (ADR 0027, The Run stream): the transient
-//! work of one open stream. `Open` is answered by the Run row; `Loaded`
-//! rechecks the Principal's authority and commits the start chunk; then the
-//! Run Owner's loop commits the Program's requests, in number order, with
-//! the stream in place of the in-process isolate ([`program`]).
+//! Coral's side of a Run stream: the transient work of one open stream.
+//! `Open` is answered by the Run row; `Loaded` rechecks the Principal's
+//! authority and commits the start chunk; then the Run Owner's loop commits
+//! the Program's requests, in number order, with the stream in place of the
+//! in-process isolate ([`program`]).
 //!
 //! Reopening a started Run is not served yet: its `Open` is refused as
 //! unavailable, and the Run Executor opens it again later.

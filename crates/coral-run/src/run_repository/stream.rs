@@ -1,5 +1,5 @@
-//! What a Run stream's loop reads and writes on its own (ADR 0027): the Run
-//! its `Open` names, the Tools the Run linked, and the start chunk.
+//! What a Run stream's loop reads and writes on its own: the Run its `Open`
+//! names, the Tools the Run linked, and the start chunk.
 
 use std::collections::HashMap;
 

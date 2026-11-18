@@ -1,5 +1,5 @@
-//! Coral's side of a Run stream (ADR 0027): `Open` is answered by the Run
-//! row, `Loaded` rechecks authority and starts the Run, and the Program's
+//! Coral's side of a Run stream: `Open` is answered by the Run row,
+//! `Loaded` rechecks authority and starts the Run, and the Program's
 //! requests commit in number order under the claim and the head.
 use super::*;
 use coral_run_executor::wire::v1::{

@@ -1,6 +1,6 @@
 //! Coral's side of a Run stream, behind a seam: the link authenticates the
 //! Run Executor and hands each Run stream to what this Coral Instance serves
-//! them with, which owns the Run's rows (ADR 0027).
+//! them with, which owns the Run's rows.
 
 use std::pin::Pin;
 

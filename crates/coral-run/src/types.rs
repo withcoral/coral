@@ -1171,7 +1171,7 @@ pub(crate) struct AcceptedRun {
     /// stored none.
     pub(crate) trace: Option<coral_telemetry::RunTrace>,
     /// The time limit acceptance stores, which a Run stream's start adds to
-    /// its own instant (ADR 0027).
+    /// its own instant.
     pub(crate) time_limit_nanos: Option<i64>,
 }
 

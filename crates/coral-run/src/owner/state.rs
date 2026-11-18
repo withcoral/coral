@@ -450,8 +450,8 @@ impl OwnerState {
         }
     }
 
-    /// An owner for a Run that a Run Executor runs (ADR 0027): it applies
-    /// the stream's numbered requests in order, from one.
+    /// An owner for a Run that a Run Executor runs: it applies the stream's
+    /// numbered requests in order, from one.
     pub(crate) fn for_run_stream(limits: OwnerLimits, accepted_at_unix_nanos: i64) -> Self {
         Self {
             requests: Some(RequestOrder {
