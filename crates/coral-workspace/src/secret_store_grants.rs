@@ -10,7 +10,8 @@ use coral_db::Transaction;
 use crate::secret_store_grant_repository as repository;
 use crate::{
     AuthenticatedUser, AuthoritySource, ChangeContext, Error, EventDetail, LifecycleAction,
-    LifecycleTargetKind, Workspace, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceState,
+    LifecycleTargetKind, RequestId, Workspace, WorkspaceAction, WorkspaceId, WorkspaceModule,
+    WorkspaceState,
 };
 
 /// One Secret Store granted to one Workspace, as an Organization Owner sees it.
@@ -24,20 +25,23 @@ pub struct SecretStoreGrant {
 
 impl WorkspaceModule {
     /// Grants a Secret Store to a Workspace. Granting it again changes nothing
-    /// and records no Event.
+    /// and records no Event. `request` names the grant, so that a repeat of it
+    /// does not grant a store that was revoked since.
     ///
     /// # Errors
     ///
-    /// Requires current Organization Owner authority and an active Workspace. A
-    /// rejected request changes nothing.
+    /// Requires current Organization Owner authority and an active Workspace.
+    /// Returns [`Error::RequestAlreadyApplied`] for a request that already
+    /// ran. A rejected request changes nothing.
     pub async fn grant_secret_store(
         &self,
         context: &ChangeContext,
+        request: &RequestId,
         workspace: &WorkspaceId,
         store: &str,
     ) -> Result<(), Error> {
         let mut tx = self.database.begin().await?;
-        admit_grant_change(&mut tx, context, workspace).await?;
+        admit_grant_change(&mut tx, context, request, workspace).await?;
         if repository::insert(&mut tx, workspace, store).await? {
             record(
                 &mut tx,
@@ -53,20 +57,23 @@ impl WorkspaceModule {
     }
 
     /// Revokes a Secret Store grant. Revoking a store that has no grant changes
-    /// nothing and records no Event.
+    /// nothing and records no Event. `request` names the revocation, so that a
+    /// repeat of it does not revoke a store that was granted again since.
     ///
     /// # Errors
     ///
-    /// Requires current Organization Owner authority and an active Workspace. A
-    /// rejected request changes nothing.
+    /// Requires current Organization Owner authority and an active Workspace.
+    /// Returns [`Error::RequestAlreadyApplied`] for a request that already
+    /// ran. A rejected request changes nothing.
     pub async fn revoke_secret_store(
         &self,
         context: &ChangeContext,
+        request: &RequestId,
         workspace: &WorkspaceId,
         store: &str,
     ) -> Result<(), Error> {
         let mut tx = self.database.begin().await?;
-        admit_grant_change(&mut tx, context, workspace).await?;
+        admit_grant_change(&mut tx, context, request, workspace).await?;
         if repository::delete(&mut tx, workspace, store).await? {
             record(
                 &mut tx,
@@ -155,6 +162,7 @@ impl WorkspaceModule {
 async fn admit_grant_change(
     tx: &mut Transaction<'_>,
     context: &ChangeContext,
+    request: &RequestId,
     workspace: &WorkspaceId,
 ) -> Result<(), Error> {
     crate::governance::require_organization_owner(
@@ -170,7 +178,7 @@ async fn admit_grant_change(
     if state == WorkspaceState::Archived {
         return Err(Error::WorkspaceArchived);
     }
-    crate::management::claim_request_in_context(tx, context).await
+    crate::management::claim_request(tx, context.actor().user_id(), request).await
 }
 
 async fn record(

@@ -7,8 +7,8 @@ use coral_credentials::{CredentialField, CredentialValues, Secret, SecretReferen
 use coral_secret_store::{Error as StoreError, SecretStores};
 use coral_test_support::InMemorySecretStore;
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, OrganizationRole, WorkspaceDisplayName, WorkspaceId,
-    WorkspaceModule, WorkspaceRole,
+    AuthenticatedUser, ChangeContext, OrganizationRole, RequestId, WorkspaceDisplayName,
+    WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
 
 use super::{
@@ -57,7 +57,7 @@ async fn shared() -> Shared {
         .await
         .unwrap();
     workspaces
-        .grant_secret_store(&owner, workspace.id(), "team")
+        .grant_secret_store(&owner, &RequestId::generate(), workspace.id(), "team")
         .await
         .unwrap();
     let store = Arc::new(InMemorySecretStore::new());
@@ -377,7 +377,7 @@ async fn a_store_the_workspace_lost_is_never_read() {
     f.save(reference("team", PATH, "token")).await.unwrap();
     let evidence = f.evidence().await;
     f.workspaces
-        .revoke_secret_store(&f.owner, &f.workspace, "team")
+        .revoke_secret_store(&f.owner, &RequestId::generate(), &f.workspace, "team")
         .await
         .unwrap();
     let reads = f.store.reads();
@@ -396,7 +396,7 @@ async fn a_store_the_workspace_lost_is_never_read() {
 
     // A store config removed reads the same, from a deployment without it.
     f.workspaces
-        .grant_secret_store(&f.owner, &f.workspace, "team")
+        .grant_secret_store(&f.owner, &RequestId::generate(), &f.workspace, "team")
         .await
         .unwrap();
     let without = f

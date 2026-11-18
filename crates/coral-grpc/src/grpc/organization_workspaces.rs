@@ -1,7 +1,7 @@
 use super::organization_memberships::member_id;
 use super::workspaces::{change, error, owner, page, state, workspace_id};
 use super::{GrpcServices, management as wire};
-use coral_workspace::{AuthenticatedUser, IfMatch, OrganizationWorkspace, WorkspaceId};
+use coral_workspace::{AuthenticatedUser, IfMatch, OrganizationWorkspace, RequestId, WorkspaceId};
 use tonic::{Request, Response, Status};
 
 fn view(workspace: OrganizationWorkspace) -> wire::OrganizationWorkspace {
@@ -67,11 +67,14 @@ impl wire::organization_workspace_service_server::OrganizationWorkspaceService f
         let actor = self.management_user(&request).await?;
         let input = request.into_inner();
         let id = workspace_id(&input.name)?;
-        let context = change(actor.clone())
-            .with_request_id(&input.request_id)
-            .map_err(error)?;
+        let assignment = RequestId::parse(&input.request_id).map_err(error)?;
         self.workspaces
-            .assign_owner(&context, &id, &member_id(&input.owner)?)
+            .assign_owner(
+                &change(actor.clone()),
+                &assignment,
+                &id,
+                &member_id(&input.owner)?,
+            )
             .await
             .map_err(error)?;
         self.organization_workspace_view(&actor, &id).await

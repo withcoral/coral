@@ -8,8 +8,8 @@ use coral_db::Transaction;
 use crate::list_repository::{Resources, Users};
 use crate::{
     AuthenticatedUser, AuthoritySource, ChangeContext, Error, EventDetail, IfMatch,
-    LifecycleAction, LifecycleTargetKind, OrganizationRole, ResourceMetadata, UserId, UserProfile,
-    Workspace, WorkspaceId, WorkspaceModule, WorkspaceRole, WorkspaceState,
+    LifecycleAction, LifecycleTargetKind, OrganizationRole, RequestId, ResourceMetadata, UserId,
+    UserProfile, Workspace, WorkspaceId, WorkspaceModule, WorkspaceRole, WorkspaceState,
 };
 
 /// One designated Owner on record.
@@ -237,15 +237,18 @@ impl WorkspaceModule {
 
     /// Makes one User a designated Owner of an active Workspace. A current
     /// Member is promoted; a current Owner is left unchanged with no Event.
+    /// `request` names the assignment, so that a repeat of it does not run again.
     ///
     /// # Errors
     ///
     /// Requires current Organization Owner authority, an active Workspace, and
-    /// an enabled Organization Membership for the target. A rejected assignment
-    /// changes nothing.
+    /// an enabled Organization Membership for the target. Returns
+    /// [`Error::RequestAlreadyApplied`] for a request that already assigned an
+    /// Owner. A rejected assignment changes nothing.
     pub async fn assign_owner(
         &self,
         context: &ChangeContext,
+        request: &RequestId,
         workspace: &WorkspaceId,
         target: &UserId,
     ) -> Result<(), Error> {
@@ -270,7 +273,7 @@ impl WorkspaceModule {
         if !crate::organization::is_enabled(&mut tx, target).await? {
             return Err(Error::OwnerTargetNotEnabled);
         }
-        crate::management::claim_request_in_context(&mut tx, context).await?;
+        crate::management::claim_request(&mut tx, context.actor().user_id(), request).await?;
         make_owner(&mut tx, context, workspace, target).await?;
         tx.commit().await?;
         Ok(())

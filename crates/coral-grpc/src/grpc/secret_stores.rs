@@ -3,7 +3,7 @@ use super::workspaces::{administration_error, change, error, state, workspace_id
 use super::{GrpcServices, management as wire};
 use coral_administration::GrantedSecretStore;
 use coral_secret_store::{ReferenceForm, SecretStoreKind, SecretStoreName, StoreStatus};
-use coral_workspace::ChangeContext;
+use coral_workspace::{ChangeContext, RequestId};
 use tonic::{Request, Response, Status};
 
 fn name(store: &str) -> String {
@@ -61,14 +61,15 @@ fn granted(store: &GrantedSecretStore) -> wire::SecretStore {
 }
 
 impl GrpcServices {
+    /// The context of a grant or a revocation, and the identity that makes
+    /// it run once.
     async fn request_change<T>(
         &self,
         request: &Request<T>,
         request_id: &str,
-    ) -> Result<ChangeContext, Status> {
-        change(self.management_user(request).await?)
-            .with_request_id(request_id)
-            .map_err(error)
+    ) -> Result<(ChangeContext, RequestId), Status> {
+        let context = change(self.management_user(request).await?);
+        Ok((context, RequestId::parse(request_id).map_err(error)?))
     }
 }
 
@@ -143,13 +144,14 @@ impl wire::secret_store_service_server::SecretStoreService for GrpcServices {
         &self,
         request: Request<wire::GrantSecretStoreRequest>,
     ) -> Result<Response<wire::GrantSecretStoreResponse>, Status> {
-        let context = self
+        let (context, change_id) = self
             .request_change(&request, &request.get_ref().request_id)
             .await?;
         let input = request.into_inner();
         self.secret_stores
             .grant(
                 &context,
+                &change_id,
                 &workspace_id(&input.workspace)?,
                 &store_name(&input.secret_store)?,
             )
@@ -163,13 +165,14 @@ impl wire::secret_store_service_server::SecretStoreService for GrpcServices {
         &self,
         request: Request<wire::RevokeSecretStoreRequest>,
     ) -> Result<Response<wire::RevokeSecretStoreResponse>, Status> {
-        let context = self
+        let (context, change_id) = self
             .request_change(&request, &request.get_ref().request_id)
             .await?;
         let input = request.into_inner();
         self.secret_stores
             .revoke(
                 &context,
+                &change_id,
                 &workspace_id(&input.workspace)?,
                 &store_name(&input.secret_store)?,
             )

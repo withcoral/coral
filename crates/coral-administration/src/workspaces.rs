@@ -14,7 +14,7 @@ use std::sync::Arc;
 use coral_db::Database;
 use coral_provider::ProviderModule;
 use coral_search::SearchIndex;
-use coral_workspace::{ChangeContext, Workspace, WorkspaceDisplayName, WorkspaceModule};
+use coral_workspace::{ChangeContext, RequestId, Workspace, WorkspaceDisplayName, WorkspaceModule};
 
 use crate::Error;
 
@@ -47,7 +47,8 @@ impl WorkspaceWorkflow {
     }
 
     /// Creates an active Workspace, the creator's Owner Membership, and the
-    /// Workspace's Built-in, Private and Shared Providers.
+    /// Workspace's Built-in, Private and Shared Providers. `request` names
+    /// the creation, so that a repeat of it creates no second Workspace.
     ///
     /// # Errors
     ///
@@ -57,12 +58,13 @@ impl WorkspaceWorkflow {
     pub async fn create_workspace(
         &self,
         context: &ChangeContext,
+        request: &RequestId,
         display_name: WorkspaceDisplayName,
     ) -> Result<Workspace, Error> {
         let mut transaction = self.database.begin().await?;
         let workspace = self
             .workspaces
-            .create_in_transaction(&mut transaction, context, display_name)
+            .create_in_transaction(&mut transaction, context, request, display_name)
             .await?;
         let installed = self
             .providers

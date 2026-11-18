@@ -17,7 +17,7 @@ use coral_catalog::ProviderCredentialContract;
 use coral_credentials::{CredentialValues, Secret};
 use coral_db::UnixNanos;
 use coral_outbound::DestinationPolicy;
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName};
+use coral_workspace::{OrganizationRole, RequestId, WorkspaceDisplayName};
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -3758,7 +3758,7 @@ async fn store_backed_discovery(scenario: StoreBackedDiscovery) {
     );
     harness
         .workspaces
-        .grant_secret_store(&governor, &owner, "team")
+        .grant_secret_store(&governor, &RequestId::generate(), &owner, "team")
         .await
         .unwrap();
     let store = std::sync::Arc::new(InterferingStore::default());
@@ -3878,7 +3878,7 @@ async fn store_backed_discovery(scenario: StoreBackedDiscovery) {
             let (governor, owner) = (governor.clone(), owner.clone());
             *store.change.lock().unwrap() = Some(Box::pin(async move {
                 workspaces
-                    .revoke_secret_store(&governor, &owner, "team")
+                    .revoke_secret_store(&governor, &RequestId::generate(), &owner, "team")
                     .await
                     .unwrap();
             }));
@@ -3981,7 +3981,7 @@ async fn a_grant_revoked_after_a_setups_read_saves_nothing() {
     );
     harness
         .workspaces
-        .grant_secret_store(&governor, &owner, "team")
+        .grant_secret_store(&governor, &RequestId::generate(), &owner, "team")
         .await
         .unwrap();
     let store = std::sync::Arc::new(InterferingStore::default());
@@ -4012,7 +4012,7 @@ async fn a_grant_revoked_after_a_setups_read_saves_nothing() {
     let revoker = (governor.clone(), owner.clone());
     *store.change.lock().unwrap() = Some(Box::pin(async move {
         workspaces
-            .revoke_secret_store(&revoker.0, &revoker.1, "team")
+            .revoke_secret_store(&revoker.0, &RequestId::generate(), &revoker.1, "team")
             .await
             .unwrap();
     }));

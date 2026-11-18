@@ -3,7 +3,8 @@ use super::status::invalid;
 use super::workspaces::{change, error, mask, page, role, timestamp, workspace_id};
 use super::{GrpcServices, management as wire};
 use coral_workspace::{
-    AuthenticatedUser, IfMatch, ResourceMetadata, UserId, WorkspaceMembership, WorkspaceRole,
+    AuthenticatedUser, IfMatch, RequestId, ResourceMetadata, UserId, WorkspaceMembership,
+    WorkspaceRole,
 };
 use tonic::{Request, Response, Status};
 
@@ -112,12 +113,16 @@ impl wire::workspace_membership_service_server::WorkspaceMembershipService for G
         let actor = self.management_user(&request).await?;
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
-        let context = change(actor.clone())
-            .with_request_id(&input.request_id)
-            .map_err(error)?;
+        let grant = RequestId::parse(&input.request_id).map_err(error)?;
         let granted = self
             .workspaces
-            .grant_membership_by_email(&context, &w, &input.email, parse_role(input.role)?)
+            .grant_membership_by_email(
+                &change(actor.clone()),
+                &grant,
+                &w,
+                &input.email,
+                parse_role(input.role)?,
+            )
             .await
             .map_err(error)?;
         Ok(Response::new(

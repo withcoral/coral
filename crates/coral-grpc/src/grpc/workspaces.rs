@@ -3,8 +3,8 @@ use super::{GrpcServices, PrivateAudience, management as wire};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use coral_db::{PageKey, PageRequest, PageSize, UnixNanos};
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, IfMatch, ResourceMetadata, TraceId, WorkspaceDisplayName,
-    WorkspaceEvidence, WorkspaceId,
+    AuthenticatedUser, ChangeContext, IfMatch, RequestId, ResourceMetadata, TraceId,
+    WorkspaceDisplayName, WorkspaceEvidence, WorkspaceId,
 };
 use tonic::{Request, Response, Status};
 
@@ -342,13 +342,11 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
     ) -> Result<Response<wire::Workspace>, Status> {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
-        let context = change(user.clone())
-            .with_request_id(&input.request_id)
-            .map_err(error)?;
         let created = self
             .workspace_workflow
             .create_workspace(
-                &context,
+                &change(user.clone()),
+                &RequestId::parse(&input.request_id).map_err(error)?,
                 WorkspaceDisplayName::parse(&input.display_name).map_err(error)?,
             )
             .await

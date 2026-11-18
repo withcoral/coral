@@ -1515,6 +1515,7 @@ async fn organization_owner_needs_a_workspace_membership_to_change_policy() {
     workspaces
         .assign_owner(
             &change(organization_owner.clone(), 308, 'f'),
+            &RequestId::generate(),
             workspace.id(),
             organization_owner.user_id(),
         )

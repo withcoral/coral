@@ -1654,7 +1654,12 @@ async fn grants_cross_the_wire_with_their_availability() {
     // Config defined this store once.
     fixture
         .workspaces
-        .grant_secret_store(&change(&fixture.owner), fixture.workspace.id(), "removed")
+        .grant_secret_store(
+            &change(&fixture.owner),
+            &RequestId::generate(),
+            fixture.workspace.id(),
+            "removed",
+        )
         .await
         .unwrap();
 

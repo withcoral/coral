@@ -129,6 +129,7 @@ async fn workspace_with_coral_defined_providers(
     )
     .create_workspace(
         &coral_test_support::change(owner.clone(), 10, '1'),
+        &RequestId::generate(),
         WorkspaceDisplayName::parse("Ops").unwrap(),
     )
     .await
@@ -168,7 +169,12 @@ async fn join_as_owner(
     workspace: &WorkspaceId,
 ) {
     workspaces
-        .assign_owner(&change(user), workspace, user.user_id())
+        .assign_owner(
+            &change(user),
+            &RequestId::generate(),
+            workspace,
+            user.user_id(),
+        )
         .await
         .unwrap();
 }

@@ -462,7 +462,12 @@ impl Changes {
                 .map(drop),
             Step::AssignOwner => {
                 module
-                    .assign_owner(context, workspace, self.member.user_id())
+                    .assign_owner(
+                        context,
+                        &RequestId::generate(),
+                        workspace,
+                        self.member.user_id(),
+                    )
                     .await
             }
             Step::CreateAgent => {

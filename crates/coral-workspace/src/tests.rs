@@ -294,7 +294,12 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
     ];
     for (actor, target, case) in rejected {
         let result = module
-            .assign_owner(&change(actor, 20, '4'), workspace.id(), target)
+            .assign_owner(
+                &change(actor, 20, '4'),
+                &RequestId::generate(),
+                workspace.id(),
+                target,
+            )
             .await;
         assert!(
             matches!(
@@ -339,6 +344,7 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
         module
             .assign_owner(
                 &change(organization_owner.clone(), 30, '5'),
+                &RequestId::generate(),
                 workspace.id(),
                 target,
             )
@@ -426,6 +432,7 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
         module
             .assign_owner(
                 &change(governor.clone(), 41, '7'),
+                &RequestId::generate(),
                 workspace.id(),
                 governor.user_id(),
             )
@@ -657,6 +664,7 @@ async fn the_last_designated_owner_cannot_leave_be_removed_or_be_demoted() {
     module
         .assign_owner(
             &change(organization_owner.clone(), 33, '6'),
+            &RequestId::generate(),
             workspace.id(),
             owner.user_id(),
         )

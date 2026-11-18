@@ -504,6 +504,7 @@ async fn the_launchs_clock_dates_an_agents_requests_past_the_listener() {
         .workspace_workflow
         .create_workspace(
             &context,
+            &RequestId::generate(),
             WorkspaceDisplayName::parse("Launched in 2001").expect("display name"),
         )
         .await

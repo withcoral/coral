@@ -12,8 +12,8 @@ use coral_provider::{
 use coral_telemetry::TraceId;
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, OrganizationRole, WorkspaceDisplayName, WorkspaceId,
-    WorkspaceModule,
+    AuthenticatedUser, ChangeContext, OrganizationRole, RequestId, WorkspaceDisplayName,
+    WorkspaceId, WorkspaceModule,
 };
 
 const SOURCE: &str = r#"{"openapi":"3.1.0","info":{"title":"Weather","version":"1"},"servers":[{"url":"https://weather.example"}],"security":[],"paths":{"/forecast":{"get":{"operationId":"forecast","responses":{"200":{"description":"OK"}}}}}}"#;
@@ -572,7 +572,12 @@ async fn publication_request_keys_are_workspace_scoped_and_actor_bound() {
     );
     let other = provision_user(db.database(), "user:other-owner", OrganizationRole::Owner).await;
     workspaces
-        .assign_owner(&context(&other), one.id(), other.user_id())
+        .assign_owner(
+            &context(&other),
+            &RequestId::generate(),
+            one.id(),
+            other.user_id(),
+        )
         .await
         .unwrap();
     assert!(matches!(
@@ -783,7 +788,12 @@ async fn existing_caller_binding_uses_the_workspace_provider_address() {
     )
     .await;
     workspaces
-        .assign_owner(&context(&other), workspace.id(), other.user_id())
+        .assign_owner(
+            &context(&other),
+            &RequestId::generate(),
+            workspace.id(),
+            other.user_id(),
+        )
         .await
         .unwrap();
     assert!(

@@ -615,7 +615,6 @@ impl fmt::Display for RequestId {
 pub struct ChangeContext {
     /// The etag as the Adapter sent it. A Provider's own check reads it.
     expected_etag: Option<String>,
-    request_id: Option<RequestId>,
     actor: AuthenticatedUser,
     occurred_at: UnixNanos,
     trace_id: TraceId,
@@ -627,7 +626,6 @@ impl ChangeContext {
     pub const fn new(actor: AuthenticatedUser, occurred_at: UnixNanos, trace_id: TraceId) -> Self {
         Self {
             expected_etag: None,
-            request_id: None,
             actor,
             occurred_at,
             trace_id,
@@ -643,24 +641,10 @@ impl ChangeContext {
         Ok(self)
     }
 
-    /// Adds a first-party request identity for a non-idempotent action.
-    /// A committed receipt is never replayed with another credential or resource.
-    /// # Errors
-    /// Rejects missing or malformed request identifiers, as
-    /// [`RequestId::parse`] does.
-    pub fn with_request_id(mut self, id: &str) -> Result<Self, Error> {
-        self.request_id = Some(RequestId::parse(id)?);
-        Ok(self)
-    }
-
     /// Returns the exact concurrency precondition supplied by the Adapter, if any.
     #[must_use]
     pub fn expected_etag(&self) -> Option<&str> {
         self.expected_etag.as_deref()
-    }
-
-    pub(crate) const fn request_id(&self) -> Option<&RequestId> {
-        self.request_id.as_ref()
     }
 
     /// Returns the accountable authenticated User.

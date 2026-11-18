@@ -8,7 +8,8 @@ use coral_telemetry::TraceId;
 use coral_test_support::TestDatabase;
 pub(crate) use coral_test_support::provision_user as organization_user;
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
+    AuthenticatedUser, ChangeContext, OrganizationRole, RequestId, WorkspaceDisplayName,
+    WorkspaceModule,
 };
 
 use crate::access::{CredentialRoute, ProviderCallRoot};
@@ -452,6 +453,7 @@ pub(crate) async fn join_as_owner(
     workspaces
         .assign_owner(
             &change_context(user.clone(), 1, 'f'),
+            &RequestId::generate(),
             workspace,
             user.user_id(),
         )

@@ -7,7 +7,7 @@ use coral_tools::{
 };
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, IfMatch, OrganizationModule,
-    OrganizationRole, WorkspaceDisplayName, WorkspaceModule, WorkspaceRole,
+    OrganizationRole, RequestId, WorkspaceDisplayName, WorkspaceModule, WorkspaceRole,
 };
 
 async fn fixture() -> TestDatabase {
@@ -49,7 +49,12 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
         .unwrap();
     // A second designated Owner, so removal needs no transfer target.
     workspaces
-        .assign_owner(&change(&owner), workspace.id(), owner.user_id())
+        .assign_owner(
+            &change(&owner),
+            &RequestId::generate(),
+            workspace.id(),
+            owner.user_id(),
+        )
         .await
         .unwrap();
     administration

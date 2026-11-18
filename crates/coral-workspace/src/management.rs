@@ -187,18 +187,6 @@ pub(super) async fn claim_request(
     }
 }
 
-/// Claims the request identity in the context, if it holds one, as
-/// [`claim_request`] does.
-pub(super) async fn claim_request_in_context(
-    tx: &mut Transaction<'_>,
-    context: &ChangeContext,
-) -> Result<(), Error> {
-    match context.request_id() {
-        Some(request) => claim_request(tx, context.actor().user_id(), request).await,
-        None => Ok(()),
-    }
-}
-
 impl WorkspaceModule {
     /// Inspects current Agents and etags in one Owner-authorized snapshot.
     /// # Errors
