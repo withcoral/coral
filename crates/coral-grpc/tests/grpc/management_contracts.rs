@@ -1021,3 +1021,326 @@ fn every_read_method_declares_that_repeating_it_is_safe() {
         "add `option idempotency_level = NO_SIDE_EFFECTS;` (or IDEMPOTENT when it records state) to {undeclared:?}"
     );
 }
+
+// Catches: a handler that passes a change on without the etag its caller
+// read, or a once-only action without its request identity. Each is an
+// argument of the domain method, so the Adapter must read it from the
+// request: an absent one is an invalid argument. The second pass sends a
+// well-formed value in the same requests, so that the absent value is the
+// one fault of the first.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one table names every handler that takes an etag or a request identity"
+)]
+async fn a_change_without_its_etag_or_its_request_identity_is_an_invalid_argument() {
+    /// The call's status and stable reason, or `None` when it is accepted.
+    type Answer = (&'static str, Option<(tonic::Code, String)>);
+    let f = Fixture::new().await;
+    let token = f.token(&f.owner, "reef");
+    macro_rules! answer {
+        ($client:expr, $method:ident, $message:expr $(,)?) => {
+            (
+                stringify!($method),
+                $client
+                    .$method(request($message, &token, "reef"))
+                    .await
+                    .err()
+                    .map(|status| (status.code(), error_reason(&status))),
+            )
+        };
+    }
+    let workspace = format!("workspaces/{}", f.workspace.id());
+    let issued = f
+        .workspaces
+        .create_agent(
+            &change(&f.owner),
+            &RequestId::generate(),
+            f.workspace.id(),
+            AgentDisplayName::parse("contract").unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let agent = format!("{workspace}/agents/{}", issued.agent.principal().id());
+    let registration = format!("{agent}/registration");
+    let membership = format!("{workspace}/memberships/member");
+    // No such Provider or Setup exists: a handler reads the etag first.
+    let provider = format!("{workspace}/providers/{}", uuid::Uuid::new_v4());
+    let setup = format!("{workspace}/providerSetups/{}", uuid::Uuid::new_v4());
+    let mask = |path: &str| {
+        Some(prost_types::FieldMask {
+            paths: vec![path.into()],
+        })
+    };
+    let fresh = || uuid::Uuid::new_v4().to_string();
+
+    let with_etag = async |etag: &dyn Fn() -> String| -> Vec<Answer> {
+        vec![
+            answer!(
+                f.workspace_service(),
+                update_workspace,
+                management::UpdateWorkspaceRequest {
+                    workspace: Some(management::Workspace {
+                        name: workspace.clone(),
+                        display_name: "Renamed".into(),
+                        etag: etag(),
+                        ..Default::default()
+                    }),
+                    update_mask: mask("display_name"),
+                },
+            ),
+            answer!(
+                f.workspace_service(),
+                archive_workspace,
+                management::ArchiveWorkspaceRequest {
+                    name: workspace.clone(),
+                    etag: etag(),
+                },
+            ),
+            answer!(
+                f.workspace_service(),
+                restore_workspace,
+                management::RestoreWorkspaceRequest {
+                    name: workspace.clone(),
+                    etag: etag(),
+                },
+            ),
+            answer!(
+                f.organization_workspaces(),
+                archive_organization_workspace,
+                management::ArchiveOrganizationWorkspaceRequest {
+                    name: workspace.clone(),
+                    etag: etag(),
+                },
+            ),
+            answer!(
+                f.organization_workspaces(),
+                restore_organization_workspace,
+                management::RestoreOrganizationWorkspaceRequest {
+                    name: workspace.clone(),
+                    etag: etag(),
+                },
+            ),
+            answer!(
+                f.memberships(),
+                update_workspace_membership,
+                management::UpdateWorkspaceMembershipRequest {
+                    membership: Some(management::WorkspaceMembership {
+                        name: membership.clone(),
+                        role: management::WorkspaceRole::Owner as i32,
+                        etag: etag(),
+                        ..Default::default()
+                    }),
+                    update_mask: mask("role"),
+                },
+            ),
+            answer!(
+                f.memberships(),
+                delete_workspace_membership,
+                management::DeleteWorkspaceMembershipRequest {
+                    name: membership.clone(),
+                    etag: etag(),
+                },
+            ),
+            answer!(
+                f.organization_memberships(),
+                delete_organization_membership,
+                management::DeleteOrganizationMembershipRequest {
+                    name: "organizationMemberships/member".into(),
+                    etag: etag(),
+                    transfer_to: String::new(),
+                },
+            ),
+            answer!(
+                f.agents(),
+                update_agent,
+                management::UpdateAgentRequest {
+                    agent: Some(management::Agent {
+                        name: agent.clone(),
+                        state: management::AgentState::Disabled as i32,
+                        etag: etag(),
+                        ..Default::default()
+                    }),
+                    update_mask: mask("state"),
+                },
+            ),
+            answer!(
+                f.agents(),
+                delete_agent,
+                management::DeleteAgentRequest {
+                    name: agent.clone(),
+                    etag: etag(),
+                },
+            ),
+            answer!(
+                f.registrations(),
+                update_agent_registration,
+                management::UpdateAgentRegistrationRequest {
+                    registration: Some(management::AgentRegistration {
+                        name: registration.clone(),
+                        enabled: false,
+                        etag: etag(),
+                        ..Default::default()
+                    }),
+                    update_mask: mask("enabled"),
+                },
+            ),
+            answer!(
+                f.registrations(),
+                rotate_agent_credential,
+                management::RotateAgentCredentialRequest {
+                    name: registration.clone(),
+                    etag: etag(),
+                    request_id: fresh(),
+                },
+            ),
+            answer!(
+                f.providers(),
+                update_provider,
+                management::UpdateProviderRequest {
+                    name: provider.clone(),
+                    etag: etag(),
+                    display_name: "Renamed".into(),
+                },
+            ),
+            answer!(
+                f.providers(),
+                set_provider_icon,
+                management::SetProviderIconRequest {
+                    name: provider.clone(),
+                    etag: etag(),
+                    content: b"<svg/>".to_vec(),
+                },
+            ),
+            answer!(
+                f.providers(),
+                delete_provider_icon,
+                management::DeleteProviderIconRequest {
+                    name: provider.clone(),
+                    etag: etag(),
+                },
+            ),
+            answer!(
+                f.providers(),
+                disable_provider,
+                management::DisableProviderRequest {
+                    name: provider.clone(),
+                    etag: etag(),
+                },
+            ),
+            answer!(
+                f.providers(),
+                restore_provider,
+                management::RestoreProviderRequest {
+                    name: provider.clone(),
+                    etag: etag(),
+                },
+            ),
+            answer!(
+                f.providers(),
+                delete_provider,
+                management::DeleteProviderRequest {
+                    name: provider.clone(),
+                    etag: etag(),
+                },
+            ),
+            // A Publication that names a Provider regenerates it.
+            answer!(
+                f.providers(),
+                publish_provider,
+                management::PublishProviderRequest {
+                    parent: workspace.clone(),
+                    setup: setup.clone(),
+                    request_id: fresh(),
+                    provider: provider.clone(),
+                    etag: etag(),
+                    ..Default::default()
+                },
+            ),
+        ]
+    };
+    let with_request_id = async |id: &dyn Fn() -> String| -> Vec<Answer> {
+        vec![
+            answer!(
+                f.workspace_service(),
+                create_workspace,
+                management::CreateWorkspaceRequest {
+                    display_name: "Created".into(),
+                    request_id: id(),
+                },
+            ),
+            answer!(
+                f.memberships(),
+                create_workspace_membership,
+                management::CreateWorkspaceMembershipRequest {
+                    parent: workspace.clone(),
+                    request_id: id(),
+                    email: "nobody@example.test".into(),
+                    role: management::WorkspaceRole::Member as i32,
+                },
+            ),
+            answer!(
+                f.agents(),
+                create_agent,
+                management::CreateAgentRequest {
+                    parent: workspace.clone(),
+                    display_name: "Created".into(),
+                    expire_time: None,
+                    request_id: id(),
+                },
+            ),
+            answer!(
+                f.registrations(),
+                rotate_agent_credential,
+                management::RotateAgentCredentialRequest {
+                    name: registration.clone(),
+                    etag: fresh(),
+                    request_id: id(),
+                },
+            ),
+            answer!(
+                f.organization_workspaces(),
+                assign_workspace_owner,
+                management::AssignWorkspaceOwnerRequest {
+                    name: workspace.clone(),
+                    owner: "organizationMemberships/member".into(),
+                    request_id: id(),
+                },
+            ),
+            answer!(
+                f.secret_stores(),
+                grant_secret_store,
+                management::GrantSecretStoreRequest {
+                    workspace: workspace.clone(),
+                    secret_store: "secretStores/absent".into(),
+                    request_id: id(),
+                },
+            ),
+            answer!(
+                f.secret_stores(),
+                revoke_secret_store,
+                management::RevokeSecretStoreRequest {
+                    workspace: workspace.clone(),
+                    secret_store: "secretStores/absent".into(),
+                    request_id: id(),
+                },
+            ),
+        ]
+    };
+
+    let invalid = Some((INVALID.0, INVALID.1.to_owned()));
+    for (method, answer) in with_etag(&String::new).await {
+        assert_eq!(answer, invalid, "{method} without an etag");
+    }
+    for (method, answer) in with_request_id(&String::new).await {
+        assert_eq!(answer, invalid, "{method} without a request id");
+    }
+    // A UUID that no resource has as its etag, and a request id never used.
+    for (method, answer) in with_etag(&fresh).await {
+        assert_ne!(answer, invalid, "{method} with a well-formed etag");
+    }
+    for (method, answer) in with_request_id(&fresh).await {
+        assert_ne!(answer, invalid, "{method} with a well-formed request id");
+    }
+}

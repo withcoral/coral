@@ -323,3 +323,77 @@ async fn rejoin_after_removal_keeps_the_recorded_disablement() {
         }
     }
 }
+
+// Catches: a role change or a disablement that passes a precondition the
+// Membership no longer meets, or one in a form its etag never has, and a
+// refused change that writes the Membership or an Event.
+#[tokio::test]
+async fn a_change_of_an_organization_membership_refuses_a_precondition_it_does_not_meet() {
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let organization = OrganizationModule::new(fixture.database());
+    let owner = context("owner", OrganizationRole::Owner);
+    let member = context("member", OrganizationRole::Member);
+    organization.provision_login(&owner).await.unwrap();
+    let read = organization.provision_login(&member).await.unwrap();
+    let member_id = member.actor().user_id();
+    // Every Membership as it stands, and every Event as its debug text.
+    let kept = || async {
+        let memberships: Vec<_> = organization
+            .list_memberships(owner.actor())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(membership, _profile)| membership)
+            .collect();
+        let events = organization
+            .list_lifecycle_events(owner.actor())
+            .await
+            .unwrap();
+        (memberships, format!("{events:?}"))
+    };
+
+    // The disablement leaves the Membership at its second version.
+    let disabled = organization
+        .set_enabled(&owner, member_id, &IfMatch::version(read.version()), false)
+        .await
+        .unwrap();
+    assert_eq!(disabled.version(), read.version().next().unwrap());
+    let before = kept().await;
+    for (case, stale) in [
+        ("the version before", IfMatch::version(read.version())),
+        ("a later version", at_version(3)),
+        ("a UUID", IfMatch::token(uuid::Uuid::new_v4())),
+    ] {
+        let enabled = organization
+            .set_enabled(&owner, member_id, &stale, true)
+            .await;
+        assert!(
+            matches!(enabled, Err(crate::Error::OrganizationAuthorityConflict)),
+            "{case}: {enabled:?}"
+        );
+        let promoted = organization
+            .set_role(&owner, member_id, &stale, OrganizationRole::Owner)
+            .await;
+        assert!(
+            matches!(promoted, Err(crate::Error::OrganizationAuthorityConflict)),
+            "{case}: {promoted:?}"
+        );
+        assert_eq!(kept().await, before, "{case}: a refusal changes nothing");
+    }
+
+    let current = IfMatch::version(disabled.version());
+    let promoted = organization
+        .set_role(&owner, member_id, &current, OrganizationRole::Owner)
+        .await
+        .unwrap();
+    assert_eq!(promoted.role(), OrganizationRole::Owner);
+    organization
+        .set_enabled(
+            &owner,
+            member_id,
+            &IfMatch::version(promoted.version()),
+            true,
+        )
+        .await
+        .unwrap();
+}
