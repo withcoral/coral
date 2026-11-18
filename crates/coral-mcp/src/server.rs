@@ -545,8 +545,7 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
             "snapshot_too_large",
             "Complete discovery snapshot exceeds its limit",
         ),
-        coral_task::Error::Clock
-        | coral_task::Error::IdentifierIssuance(_)
+        coral_task::Error::IdentifierIssuance(_)
         | coral_task::Error::CorruptData(_)
         | coral_task::Error::Database(_) => ToolFailure::internal(),
     };
@@ -650,7 +649,6 @@ fn tools_failure(error: coral_tools::Error) -> DispatchError {
         // `safe_rejection` has no answer for the rest.
         | Error::CompilerUnavailable(_)
         | Error::CompilerWorkerStopped
-        | Error::Clock(_)
         | Error::Json(_)
         | Error::CorruptData(_)
         | Error::Database(_) => ToolFailure::internal(),
