@@ -73,7 +73,116 @@ impl McpServer {
         self.title = Some(format!("Coral · {name}"));
         self
     }
+}
 
+impl ServerHandler for McpServer {
+    fn get_info(&self) -> ServerConfig {
+        // Embedded output blocks are `resource` content, and the spec asks servers
+        // that send them to declare resources. Nothing is listed or readable.
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_extensions_with(crate::app::extensions())
+                .build(),
+        )
+        .with_protocol_version(fallback_protocol_version())
+        .with_server_info({
+            let implementation = Implementation::new("Coral", env!("CARGO_PKG_VERSION"));
+            match &self.title {
+                Some(title) => implementation.with_title(title),
+                None => implementation,
+            }
+        })
+        .with_instructions(crate::instructions::INSTRUCTIONS)
+    }
+
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let parts = context.extensions.get::<axum::http::request::Parts>();
+        if let Some(parts) = parts {
+            // Each tool call records its request's duration under its tool.
+            coral_telemetry::name_request_operation(
+                &parts.extensions,
+                "tools/call",
+                crate::arguments::served_name(request.name.as_ref()),
+            );
+        }
+        let carrier = parts.and_then(|parts| coral_telemetry::request_span(&parts.extensions));
+        let call = ToolCall::open(
+            request.name.as_ref(),
+            carrier,
+            &self.workspace_id,
+            &self.runtime.principal,
+        );
+        let progress = context.meta.get_progress_token().map(|token| Progress {
+            token,
+            peer: context.peer.clone(),
+        });
+        let dispatched = Box::pin(self.dispatch(request, progress));
+        call.run(dispatched).await
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        let tools = self.listed_tools().await?;
+        // Protocol 2026-07-28 (SEP-2549) requires cache hints on list results
+        // and Claude Code rejects a tools/list result that omits them. Older
+        // versions ignore the extra fields, so the hints are not version-gated.
+        // The list is this caller's, never shared.
+        Ok(ListToolsResult::with_all_items(tools)
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private))
+    }
+
+    // Embedded output URIs label one result's blocks; they are never listed or read.
+    fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + MaybeSendFuture + '_ {
+        std::future::ready(Ok(ListResourcesResult::with_all_items(Vec::new())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)))
+    }
+
+    fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + MaybeSendFuture + '_ {
+        // The app that shows a Run's Required Action is the one readable
+        // resource; an embedded output block's URI stays unreadable.
+        std::future::ready(if request.uri == crate::app::RESOURCE_URI {
+            Ok(crate::app::resource().into())
+        } else {
+            Err(ErrorData::resource_not_found("Resource not found", None))
+        })
+    }
+
+    fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListResourceTemplatesResult, ErrorData>> + MaybeSendFuture + '_
+    {
+        std::future::ready(Ok(ListResourceTemplatesResult::with_all_items(Vec::new())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)))
+    }
+}
+
+impl McpServer {
     /// The tools this caller is served. `exec` names the namespaces the
     /// caller can search, so an agent passes `provider` from its first
     /// Program on. A caller that lost the Workspace meets that on every call,
@@ -388,113 +497,6 @@ impl McpServer {
             task_id,
             TaskIntent::parse(intent).map_err(invalid_input)?,
         ))
-    }
-}
-
-impl ServerHandler for McpServer {
-    fn get_info(&self) -> ServerConfig {
-        // Embedded output blocks are `resource` content, and the spec asks servers
-        // that send them to declare resources. Nothing is listed or readable.
-        ServerConfig::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .enable_extensions_with(crate::app::extensions())
-                .build(),
-        )
-        .with_protocol_version(fallback_protocol_version())
-        .with_server_info({
-            let implementation = Implementation::new("Coral", env!("CARGO_PKG_VERSION"));
-            match &self.title {
-                Some(title) => implementation.with_title(title),
-                None => implementation,
-            }
-        })
-        .with_instructions(crate::instructions::INSTRUCTIONS)
-    }
-
-    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
-        Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
-    }
-
-    async fn call_tool(
-        &self,
-        request: CallToolRequestParams,
-        context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResponse, ErrorData> {
-        let parts = context.extensions.get::<axum::http::request::Parts>();
-        if let Some(parts) = parts {
-            // Each tool call records its request's duration under its tool.
-            coral_telemetry::name_request_operation(
-                &parts.extensions,
-                "tools/call",
-                crate::arguments::served_name(request.name.as_ref()),
-            );
-        }
-        let carrier = parts.and_then(|parts| coral_telemetry::request_span(&parts.extensions));
-        let call = ToolCall::open(
-            request.name.as_ref(),
-            carrier,
-            &self.workspace_id,
-            &self.runtime.principal,
-        );
-        let progress = context.meta.get_progress_token().map(|token| Progress {
-            token,
-            peer: context.peer.clone(),
-        });
-        let dispatched = Box::pin(self.dispatch(request, progress));
-        call.run(dispatched).await
-    }
-
-    async fn list_tools(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, ErrorData> {
-        let tools = self.listed_tools().await?;
-        // Protocol 2026-07-28 (SEP-2549) requires cache hints on list results
-        // and Claude Code rejects a tools/list result that omits them. Older
-        // versions ignore the extra fields, so the hints are not version-gated.
-        // The list is this caller's, never shared.
-        Ok(ListToolsResult::with_all_items(tools)
-            .with_ttl_ms(0)
-            .with_cache_scope(CacheScope::Private))
-    }
-
-    // Embedded output URIs label one result's blocks; they are never listed or read.
-    fn list_resources(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + MaybeSendFuture + '_ {
-        std::future::ready(Ok(ListResourcesResult::with_all_items(Vec::new())
-            .with_ttl_ms(0)
-            .with_cache_scope(CacheScope::Private)))
-    }
-
-    fn read_resource(
-        &self,
-        request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + MaybeSendFuture + '_ {
-        // The app that shows a Run's Required Action is the one readable
-        // resource; an embedded output block's URI stays unreadable.
-        std::future::ready(if request.uri == crate::app::RESOURCE_URI {
-            Ok(crate::app::resource().into())
-        } else {
-            Err(ErrorData::resource_not_found("Resource not found", None))
-        })
-    }
-
-    fn list_resource_templates(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ListResourceTemplatesResult, ErrorData>> + MaybeSendFuture + '_
-    {
-        std::future::ready(Ok(ListResourceTemplatesResult::with_all_items(Vec::new())
-            .with_ttl_ms(0)
-            .with_cache_scope(CacheScope::Private)))
     }
 }
 
