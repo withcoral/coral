@@ -722,8 +722,22 @@ fn a_path_argument_cannot_become_a_dot_segment() {
 fn query_tool(parameters: &[String], body: bool) -> Prepared {
     let parameters = parameters
         .iter()
-        .map(|name| {
-            format!("        - {{ name: {name}, in: query, schema: {{ type: string }} }}\n")
+        .map(|name| (name.as_str(), false))
+        .collect::<Vec<_>>();
+    declaring_tool(&parameters, body.then_some(false))
+}
+
+/// One `POST` Tool with `parameters` query parameters, each a name and
+/// whether the Tool requires it, and a body when `body` says whether the Tool
+/// requires one.
+fn declaring_tool(parameters: &[(&str, bool)], body: Option<bool>) -> Prepared {
+    let parameters = parameters
+        .iter()
+        .map(|(name, required)| {
+            format!(
+                "        - {{ name: {name}, in: query, required: {required}, \
+                 schema: {{ type: string }} }}\n"
+            )
         })
         .collect::<Vec<_>>()
         .concat();
@@ -732,12 +746,12 @@ fn query_tool(parameters: &[String], body: bool) -> Prepared {
     } else {
         format!("      parameters:\n{parameters}")
     };
-    let body = if body {
-        r#"      requestBody: { content: { "application/json": { schema: { type: object } } } }
-"#
-    } else {
-        ""
-    };
+    let body = body.map_or_else(String::new, |required| {
+        format!(
+            "      requestBody: {{ required: {required}, content: \
+             {{ \"application/json\": {{ schema: {{ type: object }} }} }} }}\n"
+        )
+    });
     ready(&format!(
         r#"openapi: 3.1.0
 info: {{ title: Query arguments, version: "1" }}
@@ -752,13 +766,17 @@ paths:
     ))
 }
 
-fn rejection_of(prepared: &Prepared, argument: &str) -> String {
-    let arguments = serde_json::json!({argument: "secret-canary"});
-    match try_plan(prepared, &arguments) {
+/// Why the Tool refuses `arguments` as invalid.
+fn invalid_arguments(prepared: &Prepared, arguments: &serde_json::Value) -> String {
+    match try_plan(prepared, arguments) {
         Err(coral_upstream::PlanError::InvalidArguments(reason)) => reason,
         Err(error) => panic!("{error}"),
-        Ok(_dispatch) => panic!("an undeclared argument must be rejected"),
+        Ok(_dispatch) => panic!("{arguments} must be rejected"),
     }
+}
+
+fn rejection_of(prepared: &Prepared, argument: &str) -> String {
+    invalid_arguments(prepared, &serde_json::json!({argument: "secret-canary"}))
 }
 
 fn undeclared_reason(prepared: &Prepared) -> String {
@@ -888,6 +906,58 @@ fn the_declared_list_fills_the_cap_exactly_and_leaves_no_empty_list() {
         ),
     ] {
         assert_eq!(undeclared_reason(&query_tool(&names, false)), expected);
+    }
+}
+
+// Catches: a Program that learns one missing argument at a time, or that must
+// read the declaration again to learn what else the Tool requires; and a
+// mark that the cap on the declared list does not count.
+#[test]
+fn a_missing_argument_lists_what_the_tool_declares_and_requires() {
+    let parameters = [("city", true), ("day", true), ("units", false)];
+    // Unmarked, the two names fill the cap exactly.
+    let (a, b) = ("a".repeat(253), "b".repeat(253));
+    let (a, b) = (a.as_str(), b.as_str());
+    for (prepared, arguments, expected) in [
+        (
+            declaring_tool(&parameters, None),
+            serde_json::json!({"city": "secret-canary"}),
+            "required Tool argument `day` is missing. It declares: `city` (required), \
+             `day` (required), `units`."
+                .to_string(),
+        ),
+        // The first missing argument is named, and the list marks the others.
+        (
+            declaring_tool(&parameters, Some(true)),
+            serde_json::json!({"units": "secret-canary"}),
+            "required Tool argument `city` is missing. It declares: `body` (required), \
+             `city` (required), `day` (required), `units`."
+                .to_string(),
+        ),
+        (
+            declaring_tool(&parameters, Some(false)),
+            serde_json::json!({"city": "secret-canary"}),
+            "required Tool argument `day` is missing. It declares: `body`, \
+             `city` (required), `day` (required), `units`."
+                .to_string(),
+        ),
+        (
+            declaring_tool(&parameters, Some(true)),
+            serde_json::json!({"city": "secret-canary", "day": "secret-canary"}),
+            "required Tool argument `body` is missing. It declares: `body` (required), \
+             `city` (required), `day` (required), `units`."
+                .to_string(),
+        ),
+        (
+            declaring_tool(&[(a, true), (b, true)], None),
+            serde_json::json!({a: "secret-canary"}),
+            format!(
+                "required Tool argument `{b}` is missing. It declares: `{a}` (required), \
+                 and 1 more."
+            ),
+        ),
+    ] {
+        assert_eq!(invalid_arguments(&prepared, &arguments), expected);
     }
 }
 

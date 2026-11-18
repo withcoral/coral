@@ -223,12 +223,19 @@ impl UpstreamRejection {
         }
     }
 
-    /// Safe message without upstream content.
-    pub(crate) const fn message(self) -> &'static str {
-        match self {
+    /// Safe message without upstream content. It names the HTTP status of an
+    /// HTTP outcome, which is Coral's record of the response: a Program that
+    /// keeps only the message still tells a missing record from a refused
+    /// request or a rate limit. An MCP outcome has no status.
+    pub(crate) fn message(self, http_status: Option<u16>) -> std::borrow::Cow<'static, str> {
+        let message = match self {
             Self::Error => "The upstream service returned an error",
             Self::Undeclared => "The upstream response is not a success this Tool declares",
             Self::Undecodable => "The upstream response body could not be decoded",
+        };
+        match http_status {
+            Some(status) => format!("{message} (HTTP {status})").into(),
+            None => message.into(),
         }
     }
 }
@@ -907,6 +914,38 @@ mod tests {
                 .expect("rejection")
                 .code();
             assert_eq!(CoralFailure::from_code(code), None, "{code}");
+        }
+    }
+
+    // Catches: a Program that keeps only a Tool Error's message and cannot
+    // tell a missing record from a refused request, or an MCP outcome given
+    // a status it does not have.
+    #[test]
+    fn an_upstream_rejection_names_the_http_status_of_its_outcome() {
+        use super::UpstreamRejection;
+        for (rejection, http_status, message) in [
+            (
+                UpstreamRejection::Error,
+                Some(404),
+                "The upstream service returned an error (HTTP 404)",
+            ),
+            (
+                UpstreamRejection::Undeclared,
+                Some(299),
+                "The upstream response is not a success this Tool declares (HTTP 299)",
+            ),
+            (
+                UpstreamRejection::Undecodable,
+                Some(200),
+                "The upstream response body could not be decoded (HTTP 200)",
+            ),
+            (
+                UpstreamRejection::Error,
+                None,
+                "The upstream service returned an error",
+            ),
+        ] {
+            assert_eq!(rejection.message(http_status), message);
         }
     }
 }
