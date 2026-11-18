@@ -25,12 +25,12 @@ use opentelemetry::{InstrumentationScope, KeyValue};
 mod attribute;
 
 pub use attribute::{
-    AcquisitionOperation, AcquisitionOutcome, ClaimKind, ClaimOutcome, CompileOutcome,
-    CompilerBuildOutcome, CompilerBuildReason, CompilerOperation, CompilerOutcome, CompilerRole,
-    DbSystem, DropReason, EmbedBatchOutcome, GateKind, Interface, InvocationEnd, OutputKind,
-    PrincipalKind, ProviderProtocol, RecoveryOutcome, RequestOutcome, RunPhase, RunStatus,
-    SecretStoreRead, SignalKind, TerminationReason, ToolEffect, TransactionOutcome,
-    UpstreamOutcome, VisibilityPath,
+    AcquisitionOperation, AcquisitionOutcome, ClaimKind, ClaimOutcome, CompactionOutcome,
+    CompileOutcome, CompilerBuildOutcome, CompilerBuildReason, CompilerOperation, CompilerOutcome,
+    CompilerRole, DbSystem, DropReason, EmbedBatchOutcome, GateKind, Interface, InvocationEnd,
+    ModelCallOutcome, OutputKind, PrincipalKind, ProviderProtocol, RecoveryOutcome, RequestOutcome,
+    RunPhase, RunStatus, SecretStoreRead, SignalKind, SubAgentTurnOutcome, TerminationReason,
+    TokenType, ToolEffect, TransactionOutcome, UpstreamOutcome, VisibilityPath,
 };
 
 /// Histogram bounds for a duration in seconds, from 5 ms to an hour.
@@ -46,6 +46,27 @@ const CPU_FINE_SECONDS: [f64; 8] = [
 
 /// Histogram bounds for a size in bytes, from 256 B to 64 MiB.
 const BYTES: [f64; 10] = [
+    256.0,
+    1024.0,
+    4096.0,
+    16384.0,
+    65536.0,
+    262_144.0,
+    1_048_576.0,
+    4_194_304.0,
+    16_777_216.0,
+    67_108_864.0,
+];
+
+/// Histogram bounds for the model calls of one Sub-agent Turn, up to its 60.
+const MODEL_CALLS: [f64; 9] = [1.0, 2.0, 3.0, 5.0, 10.0, 20.0, 30.0, 45.0, 60.0];
+
+/// Histogram bounds for tokens, as OpenTelemetry's conventions for generative AI advise.
+const TOKENS: [f64; 14] = [
+    1.0,
+    4.0,
+    16.0,
+    64.0,
     256.0,
     1024.0,
     4096.0,
@@ -110,6 +131,13 @@ struct Catalog {
     output_rejections: Counter<u64>,
     run_claims: Counter<u64>,
     secret_store_read_duration: Histogram<f64>,
+    sub_agent_turn_ended: Counter<u64>,
+    sub_agent_turn_duration: Histogram<f64>,
+    sub_agent_turn_active: Level,
+    sub_agent_turn_model_calls: Histogram<u64>,
+    sub_agent_model_call_duration: Histogram<f64>,
+    sub_agent_model_call_tokens: Histogram<u64>,
+    sub_agent_compactions: Counter<u64>,
     telemetry_dropped: Counter<u64>,
 }
 
@@ -580,6 +608,44 @@ impl Metrics {
                 "{claim}",
                 "Claims a Coral Instance made to own a Program Run.",
             ),
+            sub_agent_turn_ended: counter(
+                "coral.sub_agent.turn.ended",
+                "{turn}",
+                "Sub-agent Turns that ended.",
+            ),
+            sub_agent_turn_duration: seconds(
+                "coral.sub_agent.turn.duration",
+                "How long a Sub-agent Turn took, from its start to its end.",
+            ),
+            sub_agent_turn_active: Level::new(
+                &meter,
+                "coral.sub_agent.turn.active",
+                "{turn}",
+                "Sub-agent Turns running on this Coral Instance.",
+            ),
+            sub_agent_turn_model_calls: meter
+                .u64_histogram("coral.sub_agent.turn.model_calls")
+                .with_unit("{call}")
+                .with_description("The model calls one Sub-agent Turn made.")
+                .with_boundaries(MODEL_CALLS.to_vec())
+                .build(),
+            sub_agent_model_call_duration: seconds(
+                "coral.sub_agent.model_call.duration",
+                "How long one call to a Sub-agent's model took, its retries included.",
+            ),
+            sub_agent_model_call_tokens: meter
+                .u64_histogram("coral.sub_agent.model_call.tokens")
+                .with_unit("{token}")
+                .with_description(
+                    "The tokens one call to a Sub-agent's model used, by type. Input excludes cached input.",
+                )
+                .with_boundaries(TOKENS.to_vec())
+                .build(),
+            sub_agent_compactions: counter(
+                "coral.sub_agent.compactions",
+                "{compaction}",
+                "Compactions of a Sub-agent's thread, done or skipped.",
+            ),
             telemetry_dropped: counter(
                 "coral.telemetry.dropped",
                 "{signal}",
@@ -1033,6 +1099,64 @@ pub fn secret_store_read(kind: &'static str, outcome: SecretStoreRead, elapsed: 
     });
 }
 
+/// Counts one Sub-agent Turn running on this Coral Instance until the
+/// returned level drops.
+#[must_use = "the Turn counts as running until the level drops"]
+pub fn sub_agent_turn_active() -> LevelGuard {
+    LevelGuard::start(Live::SubAgentTurn)
+}
+
+/// Records a Sub-agent Turn that ended `outcome`, with its failure code,
+/// `elapsed` after it started and after `model_calls` model calls.
+pub fn sub_agent_turn_ended(
+    outcome: SubAgentTurnOutcome,
+    code: Option<&'static str>,
+    elapsed: Duration,
+    model_calls: u64,
+) {
+    with(|catalog| {
+        let outcome = KeyValue::new("sub_agent.turn.outcome", outcome.as_str());
+        let ended = std::iter::once(outcome.clone())
+            .chain(failure_code(code))
+            .collect::<Vec<_>>();
+        catalog.sub_agent_turn_ended.add(1, &ended);
+        catalog
+            .sub_agent_turn_duration
+            .record(elapsed.as_secs_f64(), &[outcome]);
+        catalog.sub_agent_turn_model_calls.record(model_calls, &[]);
+    });
+}
+
+/// Records one call to a Sub-agent's model that took `elapsed`, its retries
+/// included, and the tokens it used, by type.
+pub fn sub_agent_model_called(
+    outcome: ModelCallOutcome,
+    elapsed: Duration,
+    tokens: &[(TokenType, u64)],
+) {
+    with(|catalog| {
+        catalog.sub_agent_model_call_duration.record(
+            elapsed.as_secs_f64(),
+            &[KeyValue::new("outcome", outcome.as_str())],
+        );
+        for (token_type, count) in tokens {
+            catalog.sub_agent_model_call_tokens.record(
+                *count,
+                &[KeyValue::new("gen_ai.token.type", token_type.as_str())],
+            );
+        }
+    });
+}
+
+/// Counts one compaction of a Sub-agent's thread, done or skipped.
+pub fn sub_agent_compacted(outcome: CompactionOutcome) {
+    with(|catalog| {
+        catalog
+            .sub_agent_compactions
+            .add(1, &[KeyValue::new("outcome", outcome.as_str())]);
+    });
+}
+
 /// Counts a Tool Invocation admitted for a Tool of `protocol` and `effect`,
 /// and measures it until [`InvocationMeasure::end`], or until it drops, which
 /// records a host defect.
@@ -1250,6 +1374,7 @@ impl Drop for Timer {
 enum Live {
     Run,
     Queued,
+    SubAgentTurn,
 }
 
 /// Counts one live thing on its gauge until it drops.
@@ -1274,6 +1399,7 @@ impl Metrics {
         match live {
             Live::Run => &self.0.run_active,
             Live::Queued => &self.0.run_queue_depth,
+            Live::SubAgentTurn => &self.0.sub_agent_turn_active,
         }
     }
 }
