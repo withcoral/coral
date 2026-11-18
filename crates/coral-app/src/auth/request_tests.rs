@@ -5,7 +5,7 @@ use coral_auth::{PrincipalAuthentication, SessionTokenIssuer};
 use coral_mcp::{McpEndpoint, McpModules, WorkspaceAuthenticator};
 use coral_provider::ProviderModule;
 use coral_workspace::{
-    AgentDisplayName, AgentState, AuthenticatedUser, ChangeContext, OrganizationModule,
+    AgentDisplayName, AgentState, AuthenticatedUser, ChangeContext, IfMatch, OrganizationModule,
     OrganizationRole, PrincipalKind, TraceId, UserId, WorkspaceDisplayName, WorkspaceId,
     WorkspaceModule, WorkspaceRole,
 };
@@ -476,7 +476,7 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
         .unwrap();
     fixture
         .workspaces
-        .archive(&fixture.owner, &fixture.other_workspace)
+        .archive(&fixture.owner, &fixture.other_workspace, &IfMatch::any())
         .await
         .unwrap();
     for (case, workspace) in [

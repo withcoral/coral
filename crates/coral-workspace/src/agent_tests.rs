@@ -49,7 +49,10 @@ async fn inspection_reports_all_coral_access_blockers_without_clearing_them() {
         )
         .await
         .unwrap();
-    module.archive(&context, w.id()).await.unwrap();
+    module
+        .archive(&context, w.id(), &IfMatch::any())
+        .await
+        .unwrap();
     assert_eq!(
         module
             .inspect_agent(&owner, w.id(), id)
@@ -63,7 +66,10 @@ async fn inspection_reports_all_coral_access_blockers_without_clearing_them() {
             AgentAccessBlocker::Expired
         ]
     );
-    module.restore(&context, w.id()).await.unwrap();
+    module
+        .restore(&context, w.id(), &IfMatch::any())
+        .await
+        .unwrap();
     module
         .set_agent_state(&context, w.id(), id, AgentState::Enabled)
         .await
@@ -332,7 +338,11 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
         Err(Error::WorkspaceNotFound)
     ));
     module
-        .archive(&change(owner.clone(), 20, '5'), workspace.id())
+        .archive(
+            &change(owner.clone(), 20, '5'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     for actor in [agent, AuthenticatedPrincipal::user(member)] {
@@ -454,7 +464,10 @@ async fn rejected_agent_administration_changes_neither_configuration_nor_events(
         )
         .await
         .unwrap();
-    module.archive(&context, workspace.id()).await.unwrap();
+    module
+        .archive(&context, workspace.id(), &IfMatch::any())
+        .await
+        .unwrap();
     assert!(matches!(
         module
             .create_agent(

@@ -13,7 +13,7 @@ use coral_db::{Transaction, UnixNanos, Version};
 
 use crate::types::Precondition;
 use crate::{
-    AuthenticatedUser, ChangeContext, Error, LifecycleTargetKind, WorkspaceAction,
+    AuthenticatedUser, ChangeContext, Error, IfMatch, LifecycleTargetKind, WorkspaceAction,
     WorkspaceEvidence, WorkspaceId, WorkspaceModule,
 };
 
@@ -119,22 +119,19 @@ pub(super) async fn record_change(
     .await
 }
 
-/// Checks the etag the caller read, if the context holds one, against the
-/// resource as it is now. The caller holds the resource's Workspace.
+/// Checks the etag the caller read against the resource as it is now. The
+/// caller holds the resource's Workspace.
 ///
 /// A UUID etag is one that an inspection showed: it is checked against the
 /// concurrency metadata. A version is checked against the resource's row,
 /// and a resource that has no row is at no version.
-pub(super) async fn check_etag(
+pub(super) async fn check(
     tx: &mut Transaction<'_>,
-    context: &ChangeContext,
+    if_match: &IfMatch,
     workspace: &WorkspaceId,
     kind: LifecycleTargetKind,
     id: &str,
 ) -> Result<(), Error> {
-    let Some(if_match) = context.if_match() else {
-        return Ok(());
-    };
     let admitted = match if_match.precondition() {
         Precondition::Token(_) => {
             if_match.admits_token(&repository::metadata_etag(tx, workspace, kind, id).await?)
@@ -149,6 +146,20 @@ pub(super) async fn check_etag(
         Ok(())
     } else {
         Err(Error::EtagMismatch)
+    }
+}
+
+/// Checks the etag in the context, if it holds one, as [`check`] does.
+pub(super) async fn check_etag(
+    tx: &mut Transaction<'_>,
+    context: &ChangeContext,
+    workspace: &WorkspaceId,
+    kind: LifecycleTargetKind,
+    id: &str,
+) -> Result<(), Error> {
+    match context.if_match() {
+        Some(if_match) => check(tx, if_match, workspace, kind, id).await,
+        None => Ok(()),
     }
 }
 

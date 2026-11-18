@@ -458,16 +458,19 @@ impl WorkspaceModule {
         .await
     }
 
-    /// Updates the mutable Workspace display name.
+    /// Updates the display name of the Workspace that the caller read at
+    /// `if_match`.
     ///
     /// # Errors
     ///
-    /// Returns an authority, archived-state, or persistence failure. A rejected
+    /// Returns an authority, archived-state, or persistence failure, and
+    /// [`Error::EtagMismatch`] for a Workspace that changed since. A rejected
     /// update changes neither the Workspace nor its lifecycle Events.
     pub async fn update_display_name(
         &self,
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
+        if_match: &IfMatch,
         display_name: WorkspaceDisplayName,
     ) -> Result<Workspace, Error> {
         let mut transaction = self.database.begin().await?;
@@ -478,9 +481,9 @@ impl WorkspaceModule {
             AuthorityAction::Public(WorkspaceAction::Configure),
         )
         .await?;
-        management::check_etag(
+        management::check(
             &mut transaction,
-            context,
+            if_match,
             workspace_id,
             LifecycleTargetKind::Workspace,
             &workspace_id.to_string(),
@@ -521,19 +524,22 @@ impl WorkspaceModule {
         ))
     }
 
-    /// Archives an active Workspace.
+    /// Archives the active Workspace that the caller read at `if_match`.
     ///
     /// # Errors
     ///
-    /// Requires a designated Owner and an active Workspace.
+    /// Requires a designated Owner and an active Workspace. Returns
+    /// [`Error::EtagMismatch`] for a Workspace that changed since.
     pub async fn archive(
         &self,
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
+        if_match: &IfMatch,
     ) -> Result<Workspace, Error> {
         self.change_lifecycle(
             context,
             workspace_id,
+            if_match,
             AuthorityAction::Archive,
             WorkspaceState::Archived,
             LifecycleAction::WorkspaceArchived,
@@ -541,19 +547,22 @@ impl WorkspaceModule {
         .await
     }
 
-    /// Restores an archived Workspace.
+    /// Restores the archived Workspace that the caller read at `if_match`.
     ///
     /// # Errors
     ///
-    /// Requires a designated Owner and an archived Workspace.
+    /// Requires a designated Owner and an archived Workspace. Returns
+    /// [`Error::EtagMismatch`] for a Workspace that changed since.
     pub async fn restore(
         &self,
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
+        if_match: &IfMatch,
     ) -> Result<Workspace, Error> {
         self.change_lifecycle(
             context,
             workspace_id,
+            if_match,
             AuthorityAction::Restore,
             WorkspaceState::Active,
             LifecycleAction::WorkspaceRestored,
@@ -815,6 +824,7 @@ impl WorkspaceModule {
         &self,
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
+        if_match: &IfMatch,
         authority_action: AuthorityAction,
         next_state: WorkspaceState,
         event_action: LifecycleAction,
@@ -834,9 +844,9 @@ impl WorkspaceModule {
             authority_action,
         )
         .await?;
-        management::check_etag(
+        management::check(
             &mut transaction,
-            context,
+            if_match,
             workspace_id,
             LifecycleTargetKind::Workspace,
             &workspace_id.to_string(),

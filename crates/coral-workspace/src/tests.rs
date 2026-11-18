@@ -13,7 +13,7 @@ use coral_db::UnixNanos;
 use coral_test_support::TestDatabase;
 
 use crate::{
-    AuthoritySource, ChangeContext, Denial, Error, LifecycleAction, LifecycleOutcome,
+    AuthoritySource, ChangeContext, Denial, Error, IfMatch, LifecycleAction, LifecycleOutcome,
     OrganizationRole, TraceId, UserId, WorkspaceAction, WorkspaceDisplayName, WorkspaceModule,
     WorkspaceRole, WorkspaceState, local_organization_owner,
 };
@@ -157,6 +157,7 @@ async fn organization_owner_without_a_membership_has_no_authority_inside_a_works
             .update_display_name(
                 &change(organization_owner.clone(), 20, '2'),
                 workspace.id(),
+                &IfMatch::any(),
                 WorkspaceDisplayName::parse("Renamed").expect("display name"),
             )
             .await,
@@ -380,14 +381,22 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
     // The Member-only `archive` conceals the Workspace from a non-Member governor.
     assert!(matches!(
         module
-            .archive(&change(governor.clone(), 39, '6'), workspace.id())
+            .archive(
+                &change(governor.clone(), 39, '6'),
+                workspace.id(),
+                &IfMatch::any()
+            )
             .await,
         Err(Error::WorkspaceNotFound)
     ));
     // Governance is the Organization Owner's: a Workspace Owner uses `archive`.
     assert!(matches!(
         module
-            .archive_as_organization_owner(&change(creator.clone(), 39, '6'), workspace.id())
+            .archive_as_organization_owner(
+                &change(creator.clone(), 39, '6'),
+                workspace.id(),
+                &IfMatch::any()
+            )
             .await,
         Err(Error::PermissionDenied(Denial::OrganizationOwnerRequired))
     ));
@@ -406,7 +415,11 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
         WorkspaceState::Active
     );
     module
-        .archive_as_organization_owner(&change(governor.clone(), 40, '6'), workspace.id())
+        .archive_as_organization_owner(
+            &change(governor.clone(), 40, '6'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .expect("Organization Owner archives without a Membership");
     assert!(matches!(
@@ -420,7 +433,11 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
         Err(Error::WorkspaceArchived)
     ));
     module
-        .restore_as_organization_owner(&change(governor.clone(), 42, '8'), workspace.id())
+        .restore_as_organization_owner(
+            &change(governor.clone(), 42, '8'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .expect("Organization Owner restores without a Membership");
     let after = events().await;
@@ -490,7 +507,8 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
         module
             .archive(
                 &change(outsider_member(module, &suffix).await, 43, '9'),
-                workspace.id()
+                workspace.id(),
+                &IfMatch::any(),
             )
             .await,
         Err(Error::WorkspaceNotFound)
@@ -829,6 +847,10 @@ async fn ordinary_workspace_roles_require_current_organization_membership() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Workspace is followed through archive, every refused action, and restoration"
+)]
 async fn archive_blocks_configuration_runs_and_dispatch_until_restoration() {
     let (_database, module) = test_module().await;
     let module = &module;
@@ -863,7 +885,11 @@ async fn archive_blocks_configuration_runs_and_dispatch_until_restoration() {
         .expect("grant Member");
 
     let archived = module
-        .archive(&change(owner.clone(), 220, '8'), workspace.id())
+        .archive(
+            &change(owner.clone(), 220, '8'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .expect("archive Workspace");
     assert_eq!(archived.state(), WorkspaceState::Archived);
@@ -893,7 +919,11 @@ async fn archive_blocks_configuration_runs_and_dispatch_until_restoration() {
     assert_archived_mutations_rejected(module, &owner, &member, workspace.id()).await;
 
     let restored = module
-        .restore(&change(owner.clone(), 270, 'd'), workspace.id())
+        .restore(
+            &change(owner.clone(), 270, 'd'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .expect("restore Workspace");
     assert_eq!(restored.state(), WorkspaceState::Active);
@@ -980,6 +1010,7 @@ async fn assert_archived_mutations_rejected(
             .update_display_name(
                 &change(owner.clone(), 230, '9'),
                 workspace_id,
+                &IfMatch::any(),
                 WorkspaceDisplayName::parse("Blocked rename").expect("display name"),
             )
             .await,
@@ -998,13 +1029,21 @@ async fn assert_archived_mutations_rejected(
     ));
     assert!(matches!(
         module
-            .archive(&change(owner.clone(), 250, 'b'), workspace_id)
+            .archive(
+                &change(owner.clone(), 250, 'b'),
+                workspace_id,
+                &IfMatch::any()
+            )
             .await,
         Err(Error::WorkspaceAlreadyArchived)
     ));
     assert!(matches!(
         module
-            .restore(&change(member.clone(), 260, 'c'), workspace_id)
+            .restore(
+                &change(member.clone(), 260, 'c'),
+                workspace_id,
+                &IfMatch::any()
+            )
             .await,
         Err(Error::PermissionDenied(Denial::WorkspaceOwnerRequired))
     ));
@@ -1127,7 +1166,10 @@ async fn sign_in_choices_are_active_memberships_with_their_role_and_only_they_ca
     let alpha = create("Alpha").await;
     create("alpha two").await;
     let archived = create("Archived").await;
-    module.archive(&context, archived.id()).await.unwrap();
+    module
+        .archive(&context, archived.id(), &IfMatch::any())
+        .await
+        .unwrap();
     module
         .set_membership(&context, beta.id(), &member, WorkspaceRole::Member)
         .await

@@ -5,7 +5,7 @@ use crate::{
     Error, ManagementRequestId, ProviderPublicationOutcome, ProviderRegenerationRequest,
     ProviderSetupState, ProviderState, WorkspaceProviderPublicationRequest,
 };
-use coral_workspace::{ChangeContext, OrganizationRole, WorkspaceDisplayName};
+use coral_workspace::{ChangeContext, IfMatch, OrganizationRole, WorkspaceDisplayName};
 
 fn document(title: &str) -> crate::OpenApiDocument {
     crate::OpenApiDocument::parse(&format!(
@@ -401,7 +401,10 @@ async fn provider_and_catalog_inspection_require_current_workspace_access() {
         .disable_provider(&context, workspace.id(), provider.id())
         .await
         .unwrap();
-    workspaces.archive(&context, workspace.id()).await.unwrap();
+    workspaces
+        .archive(&context, workspace.id(), &IfMatch::any())
+        .await
+        .unwrap();
     assert_eq!(
         providers
             .inspect_provider(&member, workspace.id(), provider.id())

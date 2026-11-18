@@ -9,8 +9,8 @@ use coral_catalog::ToolAccessState;
 use coral_test_support::{TestDatabase, provision_user as organization_user};
 use coral_v8::CompileFailure;
 use coral_workspace::{
-    AuthenticatedPrincipal, OrganizationRole, TraceId, WorkspaceDisplayName, WorkspaceModule,
-    WorkspaceRole,
+    AuthenticatedPrincipal, IfMatch, OrganizationRole, TraceId, WorkspaceDisplayName,
+    WorkspaceModule, WorkspaceRole,
 };
 
 use crate::authoring::{AuthoredToolCompiler, PreparedAuthoredTool};
@@ -1321,7 +1321,7 @@ async fn private_tool_compilation_holds_no_write_transaction_and_rechecks_active
         Duration::from_secs(2),
         fixture
             .workspaces
-            .archive(&change(user, 40, 'b'), &workspace_id),
+            .archive(&change(user, 40, 'b'), &workspace_id, &IfMatch::any()),
     )
     .await
     .expect("archive must not wait for authoring compilation")

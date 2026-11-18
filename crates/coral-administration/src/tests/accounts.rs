@@ -679,7 +679,7 @@ async fn disablement_and_archive_preserve_current_accounts() {
         member_account
     );
     f.workspaces
-        .archive(&change(&f.owner), f.workspace.id())
+        .archive(&change(&f.owner), f.workspace.id(), &IfMatch::any())
         .await
         .unwrap();
     f.workspaces
@@ -691,7 +691,7 @@ async fn disablement_and_archive_preserve_current_accounts() {
         .await
         .unwrap_err();
     f.workspaces
-        .restore(&change(&f.owner), f.workspace.id())
+        .restore(&change(&f.owner), f.workspace.id(), &IfMatch::any())
         .await
         .unwrap();
     assert_eq!(

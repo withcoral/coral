@@ -2,7 +2,9 @@
 //! solely owns to a transfer target, in the removal's own transaction.
 use super::*;
 use coral_catalog::AuthoredToolKind;
-use coral_workspace::{AuthoritySource, LifecycleAction, OrganizationModule, WorkspaceRole};
+use coral_workspace::{
+    AuthoritySource, IfMatch, LifecycleAction, OrganizationModule, WorkspaceRole,
+};
 
 /// One Workspace the departing User owns, with their connected Account, pending
 /// reconnect, and Private Tool there.
@@ -92,7 +94,11 @@ impl Departure {
         let [unjoined, joined, shared] = <[Owned; 3]>::try_from(owned).ok().unwrap();
         // Removal ignores archive state, so an archived Workspace is transferred too.
         workspaces
-            .archive_as_organization_owner(&change(&administrator), unjoined.workspace.id())
+            .archive_as_organization_owner(
+                &change(&administrator),
+                unjoined.workspace.id(),
+                &IfMatch::any(),
+            )
             .await
             .unwrap();
         Self {
@@ -318,7 +324,7 @@ async fn organization_removal_of_a_sole_workspace_owner_transfers_ownership_or_c
         // The new Owner of the archived Workspace restores it like any Owner.
         if workspace == f.unjoined.workspace.id() {
             f.workspaces
-                .restore(&change(owner), workspace)
+                .restore(&change(owner), workspace, &IfMatch::any())
                 .await
                 .unwrap();
         }

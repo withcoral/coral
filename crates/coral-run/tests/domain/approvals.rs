@@ -1217,7 +1217,7 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
             "archive" => {
                 fixture
                     .workspaces
-                    .archive(&context, &tool.workspace_id)
+                    .archive(&context, &tool.workspace_id, &IfMatch::any())
                     .await
                     .unwrap();
             }
@@ -2143,7 +2143,11 @@ async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_reque
     let held = probe.held();
     fixture
         .workspaces
-        .archive(&change(tool.user.clone(), 50, '5'), &tool.workspace_id)
+        .archive(
+            &change(tool.user.clone(), 50, '5'),
+            &tool.workspace_id,
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
 

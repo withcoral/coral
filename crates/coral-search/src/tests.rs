@@ -31,8 +31,8 @@ use coral_tools::{
 };
 use coral_workspace::AuthenticatedPrincipal;
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, OrganizationRole, UserId, WorkspaceDisplayName, WorkspaceId,
-    WorkspaceModule,
+    AuthenticatedUser, ChangeContext, IfMatch, OrganizationRole, UserId, WorkspaceDisplayName,
+    WorkspaceId, WorkspaceModule,
 };
 use wiremock::MockServer;
 
@@ -3476,7 +3476,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
     }
     fixture
         .workspaces
-        .archive(&context, &workspace)
+        .archive(&context, &workspace, &IfMatch::any())
         .await
         .unwrap();
     let path = CallPath::parse("coral.providers.weatherAgain.getForecast").unwrap();
@@ -3508,7 +3508,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
     }
     fixture
         .workspaces
-        .restore(&context, &workspace)
+        .restore(&context, &workspace, &IfMatch::any())
         .await
         .unwrap();
     for actor in [&principal, &agent, &member] {

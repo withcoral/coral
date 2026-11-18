@@ -284,7 +284,11 @@ impl GateLoss {
             }
             Self::Route => move_to_shared_account(waiting).await,
             Self::Authority => {
-                fixture.workspaces.archive(context, scope).await.unwrap();
+                fixture
+                    .workspaces
+                    .archive(context, scope, &IfMatch::any())
+                    .await
+                    .unwrap();
             }
             Self::Disconnect => {
                 let account = accounts

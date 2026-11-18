@@ -19,7 +19,8 @@ use coral_tools::{
     PrivateToolPath, PrivateToolSave,
 };
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, TraceId, WorkspaceDisplayName,
+    AuthenticatedPrincipal, AuthenticatedUser, IfMatch, OrganizationRole, TraceId,
+    WorkspaceDisplayName,
 };
 use repository::{EventFault, fixture};
 

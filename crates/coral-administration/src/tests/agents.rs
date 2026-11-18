@@ -182,7 +182,10 @@ async fn agent_deletion_requires_current_owner_and_exact_workspace_without_affec
         ),
         "{other_owner:?}"
     );
-    workspaces.archive(&context, left).await.unwrap();
+    workspaces
+        .archive(&context, left, &IfMatch::any())
+        .await
+        .unwrap();
     let archived = lifecycle
         .delete_agent(&context, left, agent.principal().id())
         .await;
@@ -193,7 +196,10 @@ async fn agent_deletion_requires_current_owner_and_exact_workspace_without_affec
         ),
         "{archived:?}"
     );
-    workspaces.restore(&context, left).await.unwrap();
+    workspaces
+        .restore(&context, left, &IfMatch::any())
+        .await
+        .unwrap();
     assert_eq!(
         (
             workspaces.list_agents(&administrator, left).await.unwrap(),

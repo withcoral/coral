@@ -3,7 +3,8 @@ use configured_provider_fixtures::ConfiguredProviderFixtures as _;
 use coral_db::UnixNanos;
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
-    AuthenticatedPrincipal, ChangeContext, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
+    AuthenticatedPrincipal, ChangeContext, IfMatch, OrganizationRole, WorkspaceDisplayName,
+    WorkspaceModule,
 };
 
 #[path = "activity_tests.rs"]
@@ -354,7 +355,7 @@ async fn archived_workspace_description_rejection_remains_in_authorized_task_his
     fixture
         .tasks
         .workspaces
-        .archive(&change, &fixture.workspace)
+        .archive(&change, &fixture.workspace, &IfMatch::any())
         .await
         .unwrap();
 
@@ -489,7 +490,7 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
     fixture
         .tasks
         .workspaces
-        .archive(&change, &fixture.workspace)
+        .archive(&change, &fixture.workspace, &IfMatch::any())
         .await
         .unwrap();
 

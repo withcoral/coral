@@ -1,5 +1,7 @@
 use super::{change, organization_user, test_module};
-use crate::{Error, MembershipChange, OrganizationRole, WorkspaceDisplayName, WorkspaceRole};
+use crate::{
+    Error, IfMatch, MembershipChange, OrganizationRole, WorkspaceDisplayName, WorkspaceRole,
+};
 use coral_db::UnixNanos;
 
 #[tokio::test]
@@ -240,10 +242,9 @@ async fn management_metadata_preserves_creation_time_and_scopes_membership_etags
 
     module
         .update_display_name(
-            &change(owner.clone(), 20, '2')
-                .with_etag(&initial.etag)
-                .unwrap(),
+            &change(owner.clone(), 20, '2'),
             first,
+            &IfMatch::parse(&initial.etag).unwrap(),
             WorkspaceDisplayName::parse("Renamed").unwrap(),
         )
         .await
@@ -257,10 +258,9 @@ async fn management_metadata_preserves_creation_time_and_scopes_membership_etags
     assert!(matches!(
         module
             .update_display_name(
-                &change(owner.clone(), 30, '3')
-                    .with_etag(&initial.etag)
-                    .unwrap(),
+                &change(owner.clone(), 30, '3'),
                 first,
+                &IfMatch::parse(&initial.etag).unwrap(),
                 WorkspaceDisplayName::parse("Stale update").unwrap(),
             )
             .await,
@@ -469,7 +469,11 @@ async fn email_grants_require_one_current_verified_exact_address() {
         ))
     ));
     module
-        .archive(&change(owner.clone(), 60, '6'), workspace.id())
+        .archive(
+            &change(owner.clone(), 60, '6'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     assert!(matches!(

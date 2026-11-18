@@ -12,7 +12,9 @@ use coral_catalog::{
     ToolAvailability, ToolKey,
 };
 pub(super) use coral_test_support::provision_user as organization_user;
-use coral_workspace::{AuthenticatedUser, OrganizationRole, WorkspaceDisplayName, WorkspaceModule};
+use coral_workspace::{
+    AuthenticatedUser, IfMatch, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
+};
 use tokio::sync::{Barrier, Notify};
 
 use crate::access::{CredentialRoute, ProviderNamespace};
@@ -1120,7 +1122,11 @@ async fn archived_workspace_permits_exact_replay_and_safe_inspection() {
         .id()
         .clone();
     workspaces
-        .archive(&change_context(owner.clone(), 44, '8'), workspace.id())
+        .archive(
+            &change_context(owner.clone(), 44, '8'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .expect("archive Workspace");
     let before = providers
@@ -2040,6 +2046,10 @@ async fn final_commit_refreshes_the_publishers_organization_membership() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Publication is followed through an archive during materialization and a retry"
+)]
 async fn materialization_holds_no_transaction_and_final_commit_rechecks_workspace() {
     let (fixture, database, workspaces) = test_foundation().await;
     let default_providers = ProviderModule::with_running_catalog(
@@ -2096,7 +2106,11 @@ async fn materialization_holds_no_transaction_and_final_commit_rechecks_workspac
 
     let archived = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        workspaces.archive(&change_context(owner.clone(), 530, '9'), workspace.id()),
+        workspaces.archive(
+            &change_context(owner.clone(), 530, '9'),
+            workspace.id(),
+            &IfMatch::any(),
+        ),
     )
     .await;
     if archived.is_err() {
@@ -2117,7 +2131,11 @@ async fn materialization_holds_no_transaction_and_final_commit_rechecks_workspac
     ));
 
     workspaces
-        .restore(&change_context(owner.clone(), 540, 'a'), workspace.id())
+        .restore(
+            &change_context(owner.clone(), 540, 'a'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .expect("restore Workspace");
     assert!(matches!(

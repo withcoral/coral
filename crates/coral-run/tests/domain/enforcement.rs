@@ -761,7 +761,11 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
             EnforcementRace::Workspace => {
                 fixture
                     .workspaces
-                    .archive(&change(tool.user.clone(), 100, 'a'), &tool.workspace_id)
+                    .archive(
+                        &change(tool.user.clone(), 100, 'a'),
+                        &tool.workspace_id,
+                        &IfMatch::any(),
+                    )
                     .await
                     .expect("archive before enforcement");
             }
@@ -1474,7 +1478,7 @@ async fn the_precheck_and_the_enforcement_point_reach_the_same_decision_on_the_s
         .unwrap();
     fixture
         .workspaces
-        .archive(&context, &tool.workspace_id)
+        .archive(&context, &tool.workspace_id, &IfMatch::any())
         .await
         .unwrap();
     let (precheck, enforced) = decide_twice(

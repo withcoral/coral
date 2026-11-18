@@ -1,6 +1,6 @@
 use super::{change, organization_user, test_module};
 use crate::{
-    AuthenticatedUser, AuthoritySource, Error, LifecycleAction, LifecycleTargetKind,
+    AuthenticatedUser, AuthoritySource, Error, IfMatch, LifecycleAction, LifecycleTargetKind,
     OrganizationRole, Workspace, WorkspaceAction, WorkspaceDisplayName, WorkspaceModule,
     WorkspaceRole,
 };
@@ -113,7 +113,11 @@ async fn a_refused_change_changes_nothing() {
             .unwrap();
         if archived {
             f.module
-                .archive_as_organization_owner(&change(f.governor.clone(), 11, '3'), id)
+                .archive_as_organization_owner(
+                    &change(f.governor.clone(), 11, '3'),
+                    id,
+                    &IfMatch::any(),
+                )
                 .await
                 .unwrap();
         }

@@ -1,7 +1,7 @@
 use super::organization_memberships::member_id;
 use super::workspaces::{change, error, owner, page, state, workspace_id};
 use super::{GrpcServices, management as wire};
-use coral_workspace::{AuthenticatedUser, OrganizationWorkspace, WorkspaceId};
+use coral_workspace::{AuthenticatedUser, IfMatch, OrganizationWorkspace, WorkspaceId};
 use tonic::{Request, Response, Status};
 
 fn view(workspace: OrganizationWorkspace) -> wire::OrganizationWorkspace {
@@ -85,11 +85,9 @@ impl wire::organization_workspace_service_server::OrganizationWorkspaceService f
         let actor = self.management_user(&request).await?;
         let input = request.into_inner();
         let id = workspace_id(&input.name)?;
-        let context = change(actor.clone())
-            .with_etag(&input.etag)
-            .map_err(error)?;
+        let if_match = IfMatch::parse(&input.etag).map_err(error)?;
         self.workspaces
-            .archive_as_organization_owner(&context, &id)
+            .archive_as_organization_owner(&change(actor.clone()), &id, &if_match)
             .await
             .map_err(error)?;
         self.organization_workspace_view(&actor, &id).await
@@ -103,11 +101,9 @@ impl wire::organization_workspace_service_server::OrganizationWorkspaceService f
         let actor = self.management_user(&request).await?;
         let input = request.into_inner();
         let id = workspace_id(&input.name)?;
-        let context = change(actor.clone())
-            .with_etag(&input.etag)
-            .map_err(error)?;
+        let if_match = IfMatch::parse(&input.etag).map_err(error)?;
         self.workspaces
-            .restore_as_organization_owner(&context, &id)
+            .restore_as_organization_owner(&change(actor.clone()), &id, &if_match)
             .await
             .map_err(error)?;
         self.organization_workspace_view(&actor, &id).await

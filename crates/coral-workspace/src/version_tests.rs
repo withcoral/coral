@@ -391,9 +391,14 @@ impl Changes {
         }
     }
 
-    /// Takes one step through the Interface, with the actor, the instant and
-    /// the etag that `context` holds.
-    async fn take(&mut self, step: Step, context: &ChangeContext) -> Result<(), Error> {
+    /// Takes one step through the Interface, with the actor and the instant
+    /// that `context` holds. A step that checks an etag checks `if_match`.
+    async fn take(
+        &mut self,
+        step: Step,
+        context: &ChangeContext,
+        if_match: &IfMatch,
+    ) -> Result<(), Error> {
         let module = &self.module;
         let workspace = &self.workspace;
         let agent = self.agent.as_ref();
@@ -401,17 +406,22 @@ impl Changes {
         let registration_id = || &agent.expect("the Agent is created").1;
         match step {
             Step::Rename(name) => module
-                .update_display_name(context, workspace, WorkspaceDisplayName::parse(name)?)
+                .update_display_name(
+                    context,
+                    workspace,
+                    if_match,
+                    WorkspaceDisplayName::parse(name)?,
+                )
                 .await
                 .map(drop),
-            Step::Archive => module.archive(context, workspace).await.map(drop),
-            Step::Restore => module.restore(context, workspace).await.map(drop),
+            Step::Archive => module.archive(context, workspace, if_match).await.map(drop),
+            Step::Restore => module.restore(context, workspace, if_match).await.map(drop),
             Step::GovernArchive => module
-                .archive_as_organization_owner(context, workspace)
+                .archive_as_organization_owner(context, workspace, if_match)
                 .await
                 .map(drop),
             Step::GovernRestore => module
-                .restore_as_organization_owner(context, workspace)
+                .restore_as_organization_owner(context, workspace, if_match)
                 .await
                 .map(drop),
             Step::CreateMembership => module
@@ -664,21 +674,34 @@ async fn every_change_moves_its_resources_and_no_other(form: EtagForm) {
         let owner = changes.owner.clone();
         at += 10;
 
-        let (refused_step, refused_context, is_refusal) = match refusal {
-            Refusal::StaleEtag => (
-                step,
-                change(owner.clone(), at, 'a')
-                    .with_etag(&form.stale(checked.expect("the step checks an etag")))
-                    .expect("a stale etag is well formed"),
-                etag_mismatch,
-            ),
-            Refusal::By(who, is_refusal) => {
-                (step, change(changes.who(who).clone(), at, 'a'), is_refusal)
+        // A step that checks no etag takes none.
+        let current = checked.map_or_else(IfMatch::any, |kept| {
+            IfMatch::parse(&form.current(kept)).expect("the current etag is well formed")
+        });
+        let (refused_step, refused_context, refused_if_match, is_refusal) = match refusal {
+            Refusal::StaleEtag => {
+                let stale = form.stale(checked.expect("the step checks an etag"));
+                (
+                    step,
+                    change(owner.clone(), at, 'a')
+                        .with_etag(&stale)
+                        .expect("a stale etag is well formed"),
+                    IfMatch::parse(&stale).expect("a stale etag is well formed"),
+                    etag_mismatch,
+                )
             }
-            Refusal::As(other, is_refusal) => (other, change(owner.clone(), at, 'a'), is_refusal),
+            Refusal::By(who, is_refusal) => (
+                step,
+                change(changes.who(who).clone(), at, 'a'),
+                current,
+                is_refusal,
+            ),
+            Refusal::As(other, is_refusal) => {
+                (other, change(owner.clone(), at, 'a'), current, is_refusal)
+            }
         };
         let error = changes
-            .take(refused_step, &refused_context)
+            .take(refused_step, &refused_context, &refused_if_match)
             .await
             .expect_err(&case);
         assert!(is_refusal(&error), "{case}: {error:?}");
@@ -696,7 +719,7 @@ async fn every_change_moves_its_resources_and_no_other(form: EtagForm) {
                 .expect("the current etag is well formed");
         }
         changes
-            .take(step, &context)
+            .take(step, &context, &current)
             .await
             .unwrap_or_else(|error| panic!("{case}: {error:?}"));
         let after = changes.kept().await;

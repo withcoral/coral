@@ -3,7 +3,7 @@ use super::{GrpcServices, PrivateAudience, management as wire};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use coral_db::{PageKey, PageRequest, PageSize, UnixNanos};
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, ResourceMetadata, TraceId, WorkspaceDisplayName,
+    AuthenticatedUser, ChangeContext, IfMatch, ResourceMetadata, TraceId, WorkspaceDisplayName,
     WorkspaceEvidence, WorkspaceId,
 };
 use tonic::{Request, Response, Status};
@@ -409,8 +409,9 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
         let id = workspace_id(&w.name)?;
         self.workspaces
             .update_display_name(
-                &change(user.clone()).with_etag(&w.etag).map_err(error)?,
+                &change(user.clone()),
                 &id,
+                &IfMatch::parse(&w.etag).map_err(error)?,
                 WorkspaceDisplayName::parse(&w.display_name).map_err(error)?,
             )
             .await
@@ -427,8 +428,9 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
         let id = workspace_id(&input.name)?;
         self.workspaces
             .archive(
-                &change(user.clone()).with_etag(&input.etag).map_err(error)?,
+                &change(user.clone()),
                 &id,
+                &IfMatch::parse(&input.etag).map_err(error)?,
             )
             .await
             .map_err(error)?;
@@ -444,8 +446,9 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
         let id = workspace_id(&input.name)?;
         self.workspaces
             .restore(
-                &change(user.clone()).with_etag(&input.etag).map_err(error)?,
+                &change(user.clone()),
                 &id,
+                &IfMatch::parse(&input.etag).map_err(error)?,
             )
             .await
             .map_err(error)?;

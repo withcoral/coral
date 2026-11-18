@@ -3,7 +3,7 @@ use coral_credentials::Secret;
 coral_test_support::provider_setup_fixtures!(crate);
 use crate::account_tests::{authorization_request, publish_provider};
 use crate::tests::{change_context, organization_user, test_modules};
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName};
+use coral_workspace::{IfMatch, OrganizationRole, WorkspaceDisplayName};
 
 #[tokio::test]
 #[expect(
@@ -163,7 +163,10 @@ async fn account_inspection_disconnect_and_reconnect_preserve_private_ownership(
         .unwrap();
     assert_eq!(reconnected.id, id);
     assert_eq!(reconnected.state, AccountState::Ready);
-    workspaces.archive(&context, scope).await.unwrap();
+    workspaces
+        .archive(&context, scope, &IfMatch::any())
+        .await
+        .unwrap();
     let archived = accounts
         .get_account(&context, scope, provider.id(), &AccountScope::User)
         .await

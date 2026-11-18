@@ -3,7 +3,7 @@
 //! permits the Workspace action it declares.
 use coral_db::UnixNanos;
 use coral_workspace::{
-    AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceAction,
+    AgentDisplayName, AuthenticatedPrincipal, IfMatch, OrganizationRole, WorkspaceAction,
     WorkspaceDisplayName, WorkspaceId, WorkspaceRole,
 };
 
@@ -752,7 +752,7 @@ async fn each_boot_moves_the_builtin_provider_to_the_booting_catalog_once() {
             Arranged::Archived => {
                 arranged
                     .workspaces
-                    .archive(&context, arranged.workspace.id())
+                    .archive(&context, arranged.workspace.id(), &IfMatch::any())
                     .await
                     .unwrap();
             }
@@ -1175,7 +1175,7 @@ async fn a_boot_installs_each_coral_defined_provider_only_where_a_workspace_has_
     );
     arranged
         .workspaces
-        .archive(&context, archived.id())
+        .archive(&context, archived.id(), &IfMatch::any())
         .await
         .unwrap();
     let events = async |workspace: &coral_workspace::Workspace| {

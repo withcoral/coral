@@ -2,7 +2,7 @@
 use super::*;
 use crate::Error;
 use coral_catalog::ServerSelection;
-use coral_workspace::{WorkspaceAction, WorkspaceRole, WorkspaceState};
+use coral_workspace::{IfMatch, WorkspaceAction, WorkspaceRole, WorkspaceState};
 
 enum InterveningChange {
     ArchiveWorkspace,
@@ -108,7 +108,7 @@ async fn rejected_regeneration(change: InterveningChange) {
         match change {
             InterveningChange::ArchiveWorkspace => {
                 workspaces
-                    .archive(&context, &fixture.workspace_id)
+                    .archive(&context, &fixture.workspace_id, &IfMatch::any())
                     .await
                     .unwrap();
             }
@@ -233,7 +233,7 @@ async fn rejected_regeneration(change: InterveningChange) {
     let revision = match change {
         InterveningChange::ArchiveWorkspace => {
             workspaces
-                .restore(&context, &fixture.workspace_id)
+                .restore(&context, &fixture.workspace_id, &IfMatch::any())
                 .await
                 .unwrap();
             1

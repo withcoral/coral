@@ -6,9 +6,9 @@ use coral_test_support::TestDatabase;
 
 use super::{change, organization_user, remove_access, test_module};
 use crate::{
-    AccessRemovalTarget, AgentDisplayName, AgentState, AuthenticatedUser, OrganizationModule,
-    OrganizationRole, PrincipalId, UserId, VerifiedUserProfile, Workspace, WorkspaceDisplayName,
-    WorkspaceId, WorkspaceModule, WorkspaceOwner, WorkspaceRole,
+    AccessRemovalTarget, AgentDisplayName, AgentState, AuthenticatedUser, IfMatch,
+    OrganizationModule, OrganizationRole, PrincipalId, UserId, VerifiedUserProfile, Workspace,
+    WorkspaceDisplayName, WorkspaceId, WorkspaceModule, WorkspaceOwner, WorkspaceRole,
 };
 
 /// One Organization whose lists have about `rows` rows each.
@@ -201,7 +201,7 @@ impl Lists {
             }
             if index == 1 {
                 module
-                    .archive(&change(owner.clone(), 17, '7'), other.id())
+                    .archive(&change(owner.clone(), 17, '7'), other.id(), &IfMatch::any())
                     .await
                     .unwrap();
             }

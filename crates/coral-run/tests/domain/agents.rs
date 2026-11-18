@@ -1,6 +1,6 @@
 use super::*;
 use coral_catalog::AuthoredToolKind;
-use coral_workspace::{AgentDisplayName, AgentRegistrationId, AgentState, WorkspaceId};
+use coral_workspace::{AgentDisplayName, AgentRegistrationId, AgentState, IfMatch, WorkspaceId};
 
 #[tokio::test]
 async fn deleting_agent_removes_current_work_but_retains_attribution() {
@@ -262,7 +262,11 @@ async fn action_queue_and_approval_decisions_agree_after_authority_or_policy_cha
             Change::WorkspaceArchived => {
                 fixture
                     .workspaces
-                    .archive(&change(tool.user.clone(), 40, '6'), workspace)
+                    .archive(
+                        &change(tool.user.clone(), 40, '6'),
+                        workspace,
+                        &IfMatch::any(),
+                    )
                     .await
                     .unwrap();
             }
