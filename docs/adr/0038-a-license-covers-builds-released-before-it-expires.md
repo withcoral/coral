@@ -9,19 +9,19 @@ when its License's signature checks out and the build's Release Date is on or be
 Commercial License, Coral never compares the expiry with the clock. A customer who does not renew keeps the Enterprise
 Features of the builds they already run, and loses support and new releases: a build released after the expiry
 refuses to start with that License. Starting it as Community would be worse: a rolling deploy would see it pass its
-health checks, retire the covered build, and leave every Enterprise Feature, such as each Vault-backed read, failing.
+health checks, retire the covered build, and leave every Enterprise Feature, such as each Secret Store read, failing.
 A refusal keeps the running deployment alive until the operator runs a covered build, renews, or removes the License
-to run as Community. There is no license server, no phone-home and no revocation, which keeps the promise that
-nothing leaves the customer's machine.
+to run as Community. There is no license server, no phone-home and no revocation of a License, so checking a
+License sends nothing out of the customer's machine.
 
 An Evaluation License is a trial, which nobody has paid for, so it gets no such fallback: trials run on the clock, paid
 Licenses on the Release Date. It also needs the UTC date of the clock to be on or before its expiry. After that, Coral
 refuses to start with it, and a running Coral stops: a periodic pass rechecks the License once a minute, and when the
 trial has ended it logs why, shuts the server down, and exits with an error. Coral never drops to Community while it
-runs, because Enterprise Features failing one by one would break a deployment quietly: Providers that read from Vault,
-or a sign-in that needs SAML. A deployment that stops is plain to see, and the operator either adds a Commercial
-License or removes the License to run as Community. Startup warns about the date from the first day, since a trial is
-short. The signer, not the binary, sets how long a trial lasts.
+runs, because Enterprise Features failing one by one would break a deployment quietly: Providers that read from a Secret
+Store, or a sign-in that needs SAML. A deployment that stops is plain to see, and the operator either adds a Commercial
+License or removes the License to run as Community. From the first day, startup warns of the expiry date, since a
+trial is short. The signer, not the binary, sets how long a trial lasts.
 
 The release workflow fixes the Release Date into every build it publishes, as the committer date of the merge-base of
 the release tag and `main`. A release tagged on `main` gets its own commit's date. A security fix backported to an
@@ -38,12 +38,14 @@ names the signing key by its PASERK id (`k4.pid`), and the crate keeps each publ
 or seat count: the Edition is all it sets. A binary refuses a format version or a `kind` it does not know.
 
 A build with a Release Date trusts only the production public keys. A build without one, any source or development
-build, trusts only a test public key. Its private half stays in the Coral team's password vault, outside this
-repository and CI. The repository keeps three Licenses signed with it: a Commercial License that covers every
-development build, which Reel and developers load to run as Enterprise, one that has lapsed, and an Evaluation License
-that never expires, to show the trial path. Tests that need other Licenses sign them with
-keys they generate, which they pass to the check directly. So no published binary ever accepts a test License, and
-CI holds no signing key. ADR 0033 already lets any source build run as Enterprise, so the test key opens nothing new.
+build, trusts only a test public key, and counts as released on its own commit's date, or on the current date when git
+is unavailable. The test key's private half stays in the Coral team's password vault, outside this repository and CI. The
+repository keeps three Licenses signed with it: a Commercial License that covers every development build, which Reel and
+developers load to run as Enterprise, one that has lapsed, and an Evaluation License that never expires, to show the
+trial path. Tests that need other Licenses sign them with keys they generate, which they pass to the check directly. So
+no published binary ever accepts a test License, and CI holds no long-lived signing key. ADR 0033 protects `ee/` code
+with its licence, not with access to it: anyone with the source can already change the check, so the test key grants
+nothing the licence does not already govern.
 
 ## Considered options
 
@@ -73,18 +75,19 @@ CI holds no signing key. ADR 0033 already lets any source build run as Enterpris
 ## Consequences
 
 - A leaked License unlocks Enterprise on every build released up to its expiry. The contract covers that misuse.
-- A leaked signing key is revoked only in builds released after the leak. We move its id from the trusted keys to a
-  list of revoked keys, so those builds refuse its Licenses with a message that names the revoked key, and issue every
-  customer a new License under a new key. Builds already released go on trusting it. Builds trust several keys at once
-  to make this possible. A cut-off date cannot save the Licenses signed before the leak: whoever holds the key can
-  sign any `iat`.
-- Code signing does not guard against the licensee. Release builds are signed so that customers can check where a
-  binary came from, but a customer can run a patched copy of their own binary, and any source build can already run as
-  Enterprise. The License terms and the contract cover that.
+- A leaked signing key is revoked only in builds whose source lists it as revoked. We move the key from the trusted keys
+  to a list of revoked keys, so every build made after that change refuses its Licenses with a message that names the
+  revoked key, and issue every customer a new License under a new key. No date decides this: a fix backported to an
+  older release line revokes the key there too, though it keeps that line's Release Date. Builds already released go on
+  trusting it. Builds trust several keys at once to make this possible. A cut-off date cannot save the Licenses signed
+  before the leak: whoever holds the key can sign any `iat`.
+- Code signing does not guard against the licensee. Release builds are signed, except the Linux AppImage, so that
+  customers can check where a binary came from. But a customer can run a patched copy of their own binary, and anyone
+  with the source can change the check. The License terms and the contract cover that.
 - Setting the server's clock back extends an Evaluation License. We accept that: a trial is short and unpaid, and its
   terms cover the misuse. An Evaluation License still covers no build released after its expiry.
 - The Edition does not change while Coral runs. An Evaluation License that expires stops Coral, within a minute of
-  midnight UTC on its expiry date, in every Coral Instance at once. An orchestrator that restarts it then sees it refuse
-  to start.
+  midnight UTC at the end of its expiry date, in every Coral Instance at once. An orchestrator that restarts it then
+  sees it refuse to start.
 - The EULA must grant continued use of Enterprise Features on covered builds after the term ends, and state that
   backported fixes keep their release line's Release Date.

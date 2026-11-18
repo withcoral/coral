@@ -49,11 +49,12 @@ says otherwise. _Avoid_: OSS edition, core, free edition
 paths), commercial edition, pro
 
 **Enterprise Feature**: A product feature that only the Enterprise Edition enables, such as reading credentials from a
-customer's own vault. A build that contains it enables it only while the Edition is Enterprise; a build that lacks
+customer's Secret Store. A build that contains it enables it only while the Edition is Enterprise; a build that lacks
 it does not know it exists. _Avoid_: capability (a Program term), entitlement, add-on
 
 **License**: A grant signed by Coral that sets a self-hosted deployment's Edition to Enterprise on every build whose
-Release Date is on or before the License's expiry. It is a Commercial License or an Evaluation License. It names its
+Release Date is on or before the License's expiry. An Evaluation License also needs the clock on or before its
+expiry. It is a Commercial License or an Evaluation License. It names its
 customer for people to read, and binds to no deployment. _Avoid_: licence, license key, token, entitlement, license
 file
 
@@ -64,7 +65,8 @@ that date passes, and a build released later refuses to start with it. _Avoid_: 
 stops, and does not start again with it. _Avoid_: trial license
 
 **Release Date**: The date a Coral build counts as released, fixed into the build when it is made. A License compares
-its expiry with this date. Only an Evaluation License also compares it with the clock. _Avoid_: build date, build time
+its expiry with this date. Only an Evaluation License also compares it with the clock. A source or development build
+counts as released on its own commit's date. _Avoid_: build date, build time
 
 **OAuth Client**: Client software that a User signs in to Coral through, identified by a DCR client ID or a CIMD URL.
 A public client proves only that it holds the PKCE verifier for a code issued to its redirect. A confidential client
