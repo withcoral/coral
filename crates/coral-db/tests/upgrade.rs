@@ -575,6 +575,149 @@ async fn upgrade_renames_what_named_saved_functions_and_nothing_a_program_wrote(
     .await;
 }
 
+/// The step that keeps a version on each Workspace Membership, Agent and
+/// Agent Registration row, and the two times on an Agent's and a
+/// Registration's row.
+const RESOURCE_VERSIONS: i64 = 77;
+
+/// A Workspace's Membership, Agents and Registration as the release before
+/// the step wrote them, with the concurrency metadata that held their times.
+/// Beside them is metadata that the step must not read for them: the same
+/// target under another kind, and in another Workspace.
+const ROWS_BEFORE_RESOURCE_VERSIONS: &str = r"
+    INSERT INTO workspace_records
+        (id, display_name, state, lifecycle_version, created_at_unix_nanos, updated_at_unix_nanos)
+    VALUES ('workspace', 'Upgrade', 'active', 3, 1, 9), ('other', 'Other', 'active', 1, 2, 2);
+    INSERT INTO workspace_memberships
+        (workspace_id, user_id, role, created_at_unix_nanos, updated_at_unix_nanos)
+    VALUES ('workspace', 'user:upgrade', 'owner', 1, 4);
+    INSERT INTO workspace_agents (id, workspace_id, display_name, created_by, deleted, state)
+    VALUES ('agent:current', 'workspace', 'Current', 'user:upgrade', 0, 'enabled'),
+        ('agent:deleted', 'workspace', 'Deleted', 'user:upgrade', 1, 'disabled'),
+        ('agent:bare', 'workspace', 'No metadata', 'user:upgrade', 0, 'enabled');
+    INSERT INTO agent_registrations
+        (id, workspace_id, agent_id, enabled, expires_at_unix_nanos, credential_verifier)
+    VALUES ('registration', 'workspace', 'agent:current', 1, NULL, 'verifier');
+    INSERT INTO workspace_resource_metadata
+        (workspace_id, kind, target_id, etag, created_at, updated_at)
+    VALUES ('workspace', 'workspace', 'workspace', 'etag-workspace', 1, 9),
+        ('workspace', 'workspace_membership', 'user:upgrade', 'etag-membership', 1, 4),
+        ('workspace', 'agent', 'agent:current', 'etag-agent', 10, 30),
+        ('workspace', 'agent', 'agent:deleted', 'etag-deleted', 11, 40),
+        ('workspace', 'agent_registration', 'registration', 'etag-registration', 10, 20),
+        ('workspace', 'agent_registration', 'agent:current', 'etag-other-kind', 71, 72),
+        ('workspace', 'agent', 'registration', 'etag-other-kind', 73, 74),
+        ('other', 'agent', 'agent:current', 'etag-other-workspace', 81, 82),
+        ('other', 'agent_registration', 'registration', 'etag-other-workspace', 83, 84);
+";
+
+/// A database from before each row kept its own version: the upgrade gives
+/// every Membership, Agent and Registration the first version, and gives each
+/// Agent and each Registration the times that its own concurrency metadata
+/// holds. It keeps the metadata, which Coral still shows. An Agent that a
+/// Coral from before the step creates afterwards, with its own column list,
+/// takes the first version and no times.
+// Catches: an upgrade that leaves the times off the rows, so that the release
+// which reads them from the row shows none; one that takes them from another
+// kind's or another Workspace's metadata; one that fails on a row without
+// metadata; and a version column that an older Coral's insert cannot fill.
+#[tokio::test]
+async fn upgrade_gives_each_row_the_first_version_and_the_times_its_metadata_holds() {
+    let before = coral_test_support::migration_plan_before(RESOURCE_VERSIONS);
+    let fixture = TestDatabase::new(&before).await.unwrap();
+    fixture
+        .execute_fixture_sql(ROWS_BEFORE_RESOURCE_VERSIONS)
+        .await
+        .unwrap();
+    let database = fixture.database();
+
+    database
+        .migrate(coral_db::migration_plan())
+        .await
+        .expect("apply the upgrade");
+
+    fixture
+        .execute_fixture_sql(
+            "INSERT INTO workspace_agents (id, workspace_id, display_name, created_by, state) \
+             VALUES ('agent:peer', 'workspace', 'Peer', 'user:upgrade', 'enabled'); \
+             INSERT INTO agent_registrations \
+                 (id, workspace_id, agent_id, enabled, expires_at_unix_nanos, credential_verifier) \
+             VALUES ('peer-registration', 'workspace', 'agent:peer', 1, NULL, 'peer-verifier')",
+        )
+        .await
+        .expect("a Coral from before the step still creates an Agent");
+    let times = "COALESCE(CAST(created_at_unix_nanos AS TEXT), 'none') || ':' || \
+                 COALESCE(CAST(updated_at_unix_nanos AS TEXT), 'none')";
+    let agent = |id: &str| {
+        format!("SELECT id, CAST(version AS TEXT), {times} FROM workspace_agents WHERE id = '{id}'")
+    };
+    let registration = |id: &str| {
+        format!(
+            "SELECT id, CAST(version AS TEXT), {times} FROM agent_registrations WHERE id = '{id}'"
+        )
+    };
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    assert_each_row(
+        &mut transaction,
+        [
+            (
+                agent("agent:current").as_str(),
+                ["agent:current", "1", "10:30"],
+            ),
+            (
+                agent("agent:deleted").as_str(),
+                ["agent:deleted", "1", "11:40"],
+            ),
+            (
+                agent("agent:bare").as_str(),
+                ["agent:bare", "1", "none:none"],
+            ),
+            (
+                agent("agent:peer").as_str(),
+                ["agent:peer", "1", "none:none"],
+            ),
+            (
+                registration("registration").as_str(),
+                ["registration", "1", "10:20"],
+            ),
+            (
+                registration("peer-registration").as_str(),
+                ["peer-registration", "1", "none:none"],
+            ),
+            (
+                "SELECT user_id, role, CAST(version AS TEXT) FROM workspace_memberships",
+                ["user:upgrade", "owner", "1"],
+            ),
+            (
+                "SELECT id, state, CAST(lifecycle_version AS TEXT) FROM workspace_records \
+                 WHERE id = 'workspace'",
+                ["workspace", "active", "3"],
+            ),
+            (
+                "SELECT etag, CAST(created_at AS TEXT), CAST(updated_at AS TEXT) \
+                 FROM workspace_resource_metadata \
+                 WHERE workspace_id = 'workspace' AND kind = 'agent' \
+                     AND target_id = 'agent:current'",
+                ["etag-agent", "10", "30"],
+            ),
+        ],
+    )
+    .await;
+    transaction.commit().await.unwrap();
+
+    // A version is a positive count on both databases.
+    for table in [
+        "workspace_memberships",
+        "workspace_agents",
+        "agent_registrations",
+    ] {
+        fixture
+            .execute_fixture_sql(&format!("UPDATE {table} SET version = 0"))
+            .await
+            .expect_err("a version that is not positive is refused");
+    }
+}
+
 /// Asserts that each query reads back exactly one row of three text columns.
 async fn assert_each_row<const N: usize>(
     transaction: &mut Transaction<'_>,
