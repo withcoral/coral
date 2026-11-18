@@ -256,7 +256,7 @@ export async function startStack(options: {
             ? "[database]\nbackend = 'postgres'\nurl_env = 'E2E_STACK_POSTGRES_URL'\n"
             : '') +
           (credentialKey ? "[credentials]\nkey_env = 'E2E_CREDENTIAL_KEY'\n" : '') +
-          (license ? `[license]\ntext = '${license}'\n` : '') +
+          (license ? `[license]\nkey = '${license}'\n` : '') +
           (secretStore
             ? secretStore.config('E2E_SECRET_STORE_SECRET_ID') + envSecretStore.config
             : '') +

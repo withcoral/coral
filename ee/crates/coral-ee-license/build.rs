@@ -3,10 +3,11 @@
 //! Fixes this build's Release Date into the crate (ADR 0038).
 //!
 //! The release workflow sets `CORAL_RELEASE_DATE` for every build it
-//! publishes, and such a build trusts the production keys only. Any other
-//! build is a development build: its date is its own commit's, or today's
-//! when git is unavailable, and it trusts only the test key. A release build
-//! (`CORAL_RELEASE_BUILD=1`) without a Release Date does not compile.
+//! publishes, and such a build trusts the production signing keys only. Any
+//! other build is a development build: its date is its own commit's, or
+//! today's when git is unavailable, and it trusts only the test signing key.
+//! A release build (`CORAL_RELEASE_BUILD=1`) without a Release Date does not
+//! compile.
 
 #![allow(
     clippy::disallowed_methods,

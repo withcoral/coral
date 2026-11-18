@@ -20,22 +20,22 @@ which files.
 ## Running as the Enterprise Edition
 
 `config.toml` takes one License, in a `[license]` section with exactly one of
-`text` or `text_env`. Coral reads it at startup. Restart Coral to apply a new
-one.
+`key`, the License itself, or `key_env`, the environment variable that holds
+it. Coral reads it at startup. Restart Coral to apply a new one.
 
 ```toml
 [license]
-text_env = "CORAL_LICENSE"
+key_env = "CORAL_LICENSE"
 ```
 
 A build from source is not a published build: it counts as released on its own
 commit's date, or today when git is unavailable, and it trusts only the test
-key. It runs as Community until you add a test License. To run as Enterprise, load the
-covering Commercial License, which never expires:
+signing key. It runs as Community until you add a test License. To run as
+Enterprise, load the covering Commercial License, which never expires:
 
 ```toml
 [license]
-text = "v4.public.eyJjdXN0b21lciI6IkNvcmFsIGRldmVsb3BtZW50ICh0ZXN0IGtleSkiLCJleHBfZGF0ZSI6Ijk5OTktMTItMzEiLCJpYXQiOiIyMDI2LTExLTE4VDAwOjAwOjAwWiIsImtpbmQiOiJjb21tZXJjaWFsIiwibGlkIjoibGljX3Rlc3RfY292ZXJpbmciLCJ2IjoxfflEZrsafdS9BJkmESZ1K5vYGO6YXDe7ZWoDo25DkaEeihtow4Oax3mey2Jmqp4UuQugdEoqT8C3B1FaCzJZewQ.eyJraWQiOiJrNC5waWQuNlFCWlJLYmNiYWFEZ09wVTd1TjhGbW9hY1htM0dWNzRhTEdwM0tiUTVFMjcifQ"
+key = "v4.public.eyJjdXN0b21lciI6IkNvcmFsIGRldmVsb3BtZW50ICh0ZXN0IGtleSkiLCJleHBfZGF0ZSI6Ijk5OTktMTItMzEiLCJpYXQiOiIyMDI2LTExLTE4VDAwOjAwOjAwWiIsImtpbmQiOiJjb21tZXJjaWFsIiwibGlkIjoibGljX3Rlc3RfY292ZXJpbmciLCJ2IjoxfflEZrsafdS9BJkmESZ1K5vYGO6YXDe7ZWoDo25DkaEeihtow4Oax3mey2Jmqp4UuQugdEoqT8C3B1FaCzJZewQ.eyJraWQiOiJrNC5waWQuNlFCWlJLYmNiYWFEZ09wVTd1TjhGbW9hY1htM0dWNzRhTEdwM0tiUTVFMjcifQ"
 ```
 
 That is the `v4.public.` line of
@@ -52,9 +52,10 @@ the clock and the build's Release Date on or before its expiry. When the clock
 passes it, Coral stops and does not start again with it. A build released after
 it does not start with it either.
 
-A published build trusts only the production keys, so it refuses all three. The
-test private key is in the team's password vault, not in this repository or
-CI. Tests sign the other Licenses they need with keys they generate.
+A published build trusts only the production signing keys, so it refuses all
+three. The private half of the test signing key is in the team's password
+vault, not in this repository or CI. Tests sign the other Licenses they need
+with signing keys they generate.
 
 [ADR 0033](../docs/adr/0033-enterprise-code-lives-in-ee-and-runs-only-in-the-enterprise-edition.md)
 explains the split.
