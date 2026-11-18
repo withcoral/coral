@@ -24,7 +24,8 @@ use wiremock::matchers::{any, body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::model::{Block, Message, ModelClient, Role, ToolCall};
-use crate::sub_agents::{Error, SubAgents, TURN_LEASE, TurnState};
+use crate::run_tools::Caller;
+use crate::sub_agents::{Error, RunningTurn, SubAgents, TURN_LEASE, TurnState};
 use crate::{MODEL_CALL_TIMEOUT, SubAgentFactory, repository};
 
 const POLICY: DestinationPolicy =
@@ -581,8 +582,8 @@ async fn cancel_ends_a_running_turn_for_good() {
     let late = TurnState::Completed {
         answer: "late".to_owned(),
     };
-    let ended = sub_agents.end_turn(workspace_id, &turn_id, &late).await;
-    assert!(!ended.unwrap(), "the first ending stands");
+    let ended = sub_agents.end_turn(workspace_id, sub_agent_id, &turn_id, &late);
+    assert!(!ended.await.unwrap(), "the first ending stands");
     assert_eq!(result(call(&*tools, &caller, "wait", by_id).await), stopped);
 }
 
@@ -663,4 +664,53 @@ async fn a_wait_returns_once_the_lease_of_its_turn_lapses() {
         "the wait ran out"
     );
     assert_eq!(waited.get("state"), Some(&json!("interrupted")), "{waited}");
+}
+
+// Catches: an interrupted Turn that leaves tool calls without results, which
+// the model refuses in the thread of the next Turn.
+#[tokio::test]
+async fn an_interrupted_turn_closes_the_calls_it_left_without_results() {
+    let lead = Lead::new().await;
+    lead.model_answers(no_reply()).await;
+    let (sub_agents, task_id) = (lead.sub_agents(), lead.task().await);
+    let (actor, workspace_id) = (&lead.actor, &lead.workspace_id);
+    let started = sub_agents.start(actor, workspace_id, &task_id, MESSAGE.to_owned());
+    let sub_agent_id = started.await.unwrap();
+    let turn = sub_agents
+        .turn(actor, workspace_id, &sub_agent_id)
+        .await
+        .unwrap();
+    // The Turn's instance stored the model's calls, then stopped.
+    let calls = [
+        tool_call("a", "exec", &json!({})),
+        tool_call("b", "search", &json!({})),
+    ];
+    let asked = Message {
+        role: Role::Assistant,
+        content: calls.iter().cloned().map(Block::ToolUse).collect(),
+    };
+    let running = RunningTurn {
+        id: turn.id,
+        sub_agent_id: sub_agent_id.clone(),
+        caller: Caller {
+            principal: actor.clone(),
+            workspace_id: workspace_id.clone(),
+            task_id,
+        },
+    };
+    let mut transaction = lead.database.begin().await.unwrap();
+    repository::insert_message(&mut transaction, &running, 1, &asked, None)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+
+    lead.clock.set(UnixNanos::new(i64::MAX));
+    let read = sub_agents.wait(actor, workspace_id, &sub_agent_id, Duration::ZERO);
+    assert_eq!(read.await.unwrap(), TurnState::Interrupted);
+
+    let no_result = "No result: the Turn stopped before this call returned. A Run that the call started may still be running.";
+    let closed = calls.iter().map(|call| call.result(no_result.to_owned()));
+    let thread = lead.thread(&sub_agent_id).await;
+    let after_the_brief = [asked, Message::tool_results(closed.collect())];
+    assert_eq!(thread.get(1..), Some(&after_the_brief[..]));
 }

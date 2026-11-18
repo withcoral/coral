@@ -17,6 +17,7 @@ use crate::run_tools::{Caller, RunTools};
 use crate::{prompt, repository};
 
 mod interruption;
+use interruption::close_calls;
 
 /// How long a running Turn stays held after its Coral Instance last renewed
 /// the lease.
@@ -137,7 +138,8 @@ impl SubAgents {
         sub_agent_id: &str,
     ) -> Result<TurnState, Error> {
         let turn = self.turn(actor, workspace_id, sub_agent_id).await?;
-        self.end_turn(workspace_id, &turn.id, &TurnState::Canceled)
+        let canceled = &TurnState::Canceled;
+        self.end_turn(workspace_id, sub_agent_id, &turn.id, canceled)
             .await?;
         Ok(self.turn(actor, workspace_id, sub_agent_id).await?.state)
     }
@@ -154,7 +156,8 @@ impl SubAgents {
         let turn = repository::find_turn(&*self.database, workspace_id, sub_agent_id, principal)
             .await?
             .ok_or(Error::SubAgentNotFound)?;
-        self.interrupt_if_lapsed(workspace_id, turn).await
+        self.interrupt_if_lapsed(workspace_id, sub_agent_id, turn)
+            .await
     }
 
     /// Runs the Turn to its end, under its lease.
@@ -163,7 +166,7 @@ impl SubAgents {
         let answered = tokio::select! {
             answered = self.answer(&turn) => answered,
             () = self.hold_lease(workspace_id, &turn.id) => return,
-            () = self.interrupt_at_shutdown(workspace_id, &turn.id) => return,
+            () = self.interrupt_at_shutdown(&turn) => return,
         };
         let ending = match answered {
             Ok(answer) => TurnState::Completed { answer },
@@ -171,7 +174,8 @@ impl SubAgents {
                 failure: failure.to_string(),
             },
         };
-        if let Err(error) = self.end_turn(workspace_id, &turn.id, &ending).await {
+        let ended = self.end_turn(workspace_id, &turn.sub_agent_id, &turn.id, &ending);
+        if let Err(error) = ended.await {
             tracing::warn!(
                 error.type = safe::kind(error.code()),
                 "the end of a Sub-agent Turn was not recorded"
@@ -256,15 +260,20 @@ impl SubAgents {
         }
     }
 
-    /// Ends the Turn unless it has ended already: the first ending stands.
+    /// Ends the Turn unless it has ended already, and closes the tool calls
+    /// that it left without results: the first ending stands.
     pub(crate) async fn end_turn(
         &self,
         workspace_id: &WorkspaceId,
+        sub_agent_id: &str,
         turn_id: &str,
         ending: &TurnState,
-    ) -> Result<bool, coral_db::Error> {
+    ) -> Result<bool, Error> {
         let mut transaction = self.database.begin().await?;
         let ended = repository::end_turn(&mut transaction, workspace_id, turn_id, ending).await?;
+        if ended {
+            close_calls(&mut transaction, workspace_id, sub_agent_id, turn_id).await?;
+        }
         transaction.commit().await?;
         Ok(ended)
     }
