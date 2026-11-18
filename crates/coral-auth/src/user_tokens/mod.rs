@@ -34,9 +34,11 @@
 //! already issued keep their own expiry and live authority checks.
 //!
 //! An authorization code is spent in the transaction that writes what it
-//! issues, so a code is spent exactly when its tokens were issued: a
-//! redemption that fails issues nothing and leaves the code redeemable. A
-//! spent code is refused, and that refusal changes nothing.
+//! issues. A redemption that cannot issue (storage does not answer, or a
+//! token cannot be made) rolls the spend back and leaves the code
+//! redeemable. One refusal spends the code and issues nothing: a code that
+//! repeats every binding and is presented for a target it does not support.
+//! A spent code is refused, and that refusal changes nothing.
 //!
 //! Only the SHA-256 digest of a refresh token is stored. Nothing is returned
 //! before its writes commit. A storage failure is reported as
