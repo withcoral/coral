@@ -37,8 +37,9 @@ pub const TEST_COMPILATION_TIMEOUT: Duration = Duration::from_secs(30);
 pub const EVENTUALLY: Duration = Duration::from_secs(60);
 
 /// A `config.toml` table that turns semantic search off, for a test server
-/// whose subject is not semantic search. With the default on, each start
-/// downloads the search model (133 MB) from GitHub and runs the Embedder.
+/// whose subject is not semantic search. With the default on, a start whose
+/// state root holds no model, as a test's fresh one does, downloads the
+/// search model (133 MB) from GitHub and runs the Embedder.
 /// Append it to a config that sets no `[search]` table.
 pub const SEMANTIC_SEARCH_OFF: &str = "\n[search]\nsemantic_search_enabled = false\n";
 

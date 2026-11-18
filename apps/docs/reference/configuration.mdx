@@ -6,7 +6,7 @@ sidebarTitle: "Configuration"
 Your configuration is in the `config.toml` file of Coral's configuration folder. The location of that folder depends on how you run Coral:
 
 - **Container image.** The `ghcr.io/withcoral/coral` image uses `/var/lib/coral/config`. Mount a volume at `/var/lib/coral` so the folder outlives the container. You can also pass the contents of `config.toml` in the `CORAL_CONFIG` variable. See [Container image](#container-image).
-- **Desktop app.** The desktop app uses the `runtime` folder of its data folder, for example `~/Library/Application Support/com.withcoral.app/runtime` on macOS. The desktop app writes this `config.toml` again at each launch, so you lose your edits to it.
+- **Desktop app.** The desktop app uses the `runtime` folder of its data folder, for example `~/Library/Application Support/com.withcoral.app/runtime` on macOS. The desktop app writes this `config.toml` again at each launch, so you lose your edits to it. To turn semantic search off in the desktop app, quit it and add `"search": { "semantic": false }` to `desktop.json` in its data folder.
 - **The `coral` binary.** When you start the binary yourself, it uses:
   - macOS: `~/Library/Application Support/com.withcoral.coral`
   - Linux: `~/.config/coral`

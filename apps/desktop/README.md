@@ -256,8 +256,9 @@ state that it sealed.
 
 The runtime finds tools by semantic search. When it does not find the model
 files, it downloads them (133 MB) from GitHub into `runtime/models`. On a
-Postgres database, semantic search needs the pgvector extension, version 0.7 or
-later. Without it, the runtime does not start.
+Postgres database, semantic search needs pgvector 0.7 or later. The runtime
+creates the `vector` extension when its database role may: a superuser, or the
+master user on Amazon RDS. Otherwise, the runtime does not start.
 
 To turn semantic search off, quit Coral and add a `search` section to
 `desktop.json`. Keep the sections that are already there:
