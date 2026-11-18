@@ -722,8 +722,8 @@ async fn upgrade_gives_each_row_the_first_version_and_the_times_its_metadata_hol
     }
 }
 
-/// The step that copies the times again to each Agent and Agent Registration
-/// row that has concurrency metadata.
+/// The step that brings each Agent and Agent Registration row up to the times
+/// that its concurrency metadata holds.
 const RESOURCE_TIMES_REPAIR: i64 = 78;
 
 /// Agents and Registrations on the schema of the resource version step, as
@@ -740,6 +740,12 @@ const RESOURCE_TIMES_REPAIR: i64 = 78;
 /// - `agent:stale` and its Registration: the rows hold the times that the
 ///   resource version step copied, and the older Coral changed them since,
 ///   so the metadata holds a later time of change.
+/// - `agent:newer` and its Registration: the rows hold a later time of change
+///   than the metadata. The Coral with the step leaves a row so when its
+///   change commits while the repair waits for it: the repair then reads the
+///   changed row and the metadata from before the change. The Registration
+///   also holds another creation time than its metadata, which no Coral
+///   leaves, to show that the repair fills a creation time and replaces none.
 /// - `agent:bare` and `agent:unrecorded` have no metadata. The second holds
 ///   times.
 ///
@@ -757,6 +763,7 @@ const ROWS_BEFORE_RESOURCE_TIMES_REPAIR: &str = r"
         ('agent:deleted', 'workspace', 'Deleted', 'user:repair', 1, 'disabled', 1, NULL, NULL),
         ('agent:changed', 'workspace', 'Changed', 'user:repair', 0, 'disabled', 2, NULL, 60),
         ('agent:stale', 'workspace', 'Stale', 'user:repair', 0, 'disabled', 1, 10, 30),
+        ('agent:newer', 'workspace', 'Newer', 'user:repair', 0, 'disabled', 5, 10, 90),
         ('agent:bare', 'workspace', 'No metadata', 'user:repair', 0, 'enabled', 1, NULL, NULL),
         ('agent:unrecorded', 'workspace', 'Times alone', 'user:repair', 0, 'enabled', 2, 12, 34);
     INSERT INTO agent_registrations
@@ -765,6 +772,7 @@ const ROWS_BEFORE_RESOURCE_TIMES_REPAIR: &str = r"
     VALUES ('current-registration', 'workspace', 'agent:current', 1, NULL, 'current', 4, 10, 20),
         ('older-registration', 'workspace', 'agent:older', 1, NULL, 'older', 1, NULL, NULL),
         ('stale-registration', 'workspace', 'agent:stale', 0, NULL, 'stale', 1, 10, 20),
+        ('newer-registration', 'workspace', 'agent:newer', 0, NULL, 'newer', 6, 11, 95),
         ('unrecorded-registration', 'workspace', 'agent:unrecorded', 1, NULL, 'alone', 2, 12, 35);
     INSERT INTO workspace_resource_metadata
         (workspace_id, kind, target_id, etag, created_at, updated_at)
@@ -773,9 +781,11 @@ const ROWS_BEFORE_RESOURCE_TIMES_REPAIR: &str = r"
         ('workspace', 'agent', 'agent:deleted', 'etag-deleted', 52, 58),
         ('workspace', 'agent', 'agent:changed', 'etag-changed', 51, 60),
         ('workspace', 'agent', 'agent:stale', 'etag-stale', 10, 70),
+        ('workspace', 'agent', 'agent:newer', 'etag-newer', 10, 80),
         ('workspace', 'agent_registration', 'current-registration', 'etag-current', 10, 20),
         ('workspace', 'agent_registration', 'older-registration', 'etag-registration', 50, 57),
         ('workspace', 'agent_registration', 'stale-registration', 'etag-stale', 10, 75),
+        ('workspace', 'agent_registration', 'newer-registration', 'etag-newer', 10, 85),
         ('workspace', 'agent_registration', 'agent:older', 'etag-other-kind', 71, 72),
         ('workspace', 'agent', 'older-registration', 'etag-other-kind', 73, 74),
         ('workspace', 'agent_registration', 'agent:unrecorded', 'etag-other-kind', 75, 76),
@@ -786,12 +796,15 @@ const ROWS_BEFORE_RESOURCE_TIMES_REPAIR: &str = r"
 
 /// A database where a Coral from before the resource version step served
 /// beside one that had it: the upgrade gives each Agent and each Registration
-/// row the times that its own concurrency metadata holds. That fills a row
-/// which the older Coral created, and corrects one which it changed last. It
-/// leaves a row that has no metadata, each version, and the metadata.
+/// row the times that its own concurrency metadata holds, where the row holds
+/// none or an earlier time of change. That fills a row which the older Coral
+/// created, and corrects one which it changed last. It never sets a time
+/// back, and it leaves a row that has no metadata, each version, and the
+/// metadata.
 // Catches: a release that reads the times from the row and shows none for an
 // Agent that the older Coral created, or an earlier time of change than the
 // one it showed before for a resource that the older Coral changed; a repair
+// that sets back the time of a change which commits while it runs; and one
 // that takes the times from another kind's or another Workspace's metadata,
 // sets the times of a row without metadata to NULL, or moves a version.
 #[tokio::test]
@@ -825,6 +838,7 @@ async fn upgrade_gives_each_row_the_times_its_metadata_holds_after_an_older_cora
         ["agent:deleted", "1", "52:58"],
         ["agent:changed", "2", "51:60"],
         ["agent:stale", "1", "10:70"],
+        ["agent:newer", "5", "10:90"],
         ["agent:bare", "1", "none:none"],
         ["agent:unrecorded", "2", "12:34"],
     ];
@@ -832,6 +846,7 @@ async fn upgrade_gives_each_row_the_times_its_metadata_holds_after_an_older_cora
         ["current-registration", "4", "10:20"],
         ["older-registration", "1", "50:57"],
         ["stale-registration", "1", "10:75"],
+        ["newer-registration", "6", "11:95"],
         ["unrecorded-registration", "2", "12:35"],
     ];
     let mut transaction = database.begin_read_snapshot().await.unwrap();
