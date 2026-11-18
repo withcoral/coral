@@ -702,7 +702,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
             .cancel_setup(&context, &owner, &id)
             .await
             .map_err(error)?;
-        let now = context.occurred_at_unix_nanos();
+        let now = context.occurred_at().get();
         self.setup_response(context.actor(), &owner, &id, now).await
     }
 
