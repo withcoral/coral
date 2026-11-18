@@ -228,7 +228,7 @@ fn read_after(cursor: Option<&str>) -> Result<RunObservation, Failure> {
 /// The first [`TASK_INTENT_MAX_CHARS`] characters of `intent`.
 fn shortened_intent(intent: &str) -> &str {
     match intent.char_indices().nth(TASK_INTENT_MAX_CHARS) {
-        Some((end, _)) => &intent[..end],
+        Some((end, _)) => intent.split_at(end).0,
         None => intent,
     }
 }
@@ -241,12 +241,10 @@ fn shortened(text: String) -> String {
     }
     let head_end = text.floor_char_boundary(RESULT_END_BYTES);
     let tail_start = text.ceil_char_boundary(text.len() - RESULT_END_BYTES);
-    let cut = tail_start - head_end;
-    format!(
-        "{}\n[... {cut} bytes cut from the middle of this result ...]\n{}",
-        &text[..head_end],
-        &text[tail_start..],
-    )
+    let (head, rest) = text.split_at(head_end);
+    let (middle, tail) = rest.split_at(tail_start - head_end);
+    let cut = middle.len();
+    format!("{head}\n[... {cut} bytes cut from the middle of this result ...]\n{tail}")
 }
 
 /// Why a tool call failed, as the model reads it.
@@ -610,6 +608,10 @@ fn action(action: &RequiredAction) -> Action<'_> {
 
 /// The Event as the model reads it, or `None` for an Event that a Run
 /// Update does not carry: an update carries the Program's output only.
+#[expect(
+    clippy::match_same_arms,
+    reason = "the named arm lists every kind there is; `RunEventKind` is non-exhaustive, so the compiler also requires the wildcard"
+)]
 fn event(event: &RunEvent) -> Option<Event<'_>> {
     let sequence = event.sequence();
     let occurred_at = timestamp(event.occurred_at_unix_nanos());
@@ -646,20 +648,18 @@ fn program_failure<'a>(update: &'a RunUpdate, failure: &'a RunFailure) -> Progra
         code: failure_code(failure.code()),
         message: failure.message(),
         error: failure.error(),
-        tool_result_shapes: shapes
-            .map(|shapes| {
-                shapes
-                    .shapes()
-                    .iter()
-                    .map(|shape| ToolResultShape {
-                        call_path: shape.call_path(),
-                        invocations: shape.invocations(),
-                        data: shape.data(),
-                        parsed_text: shape.parsed_text(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
+        tool_result_shapes: shapes.map_or_default(|shapes| {
+            shapes
+                .shapes()
+                .iter()
+                .map(|shape| ToolResultShape {
+                    call_path: shape.call_path(),
+                    invocations: shape.invocations(),
+                    data: shape.data(),
+                    parsed_text: shape.parsed_text(),
+                })
+                .collect()
+        }),
         unsketched_tool_results: shapes
             .map(coral_run::ToolResultShapes::unsketched)
             .filter(|count| *count > 0),
