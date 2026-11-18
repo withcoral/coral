@@ -227,12 +227,16 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
     let license_lapse = server.license_lapse();
     let shutdown = server.shutdown().await;
     wait.map_err(anyhow::Error::from)?;
-    shutdown.map_err(anyhow::Error::from)?;
     // A License that ended while Coral ran stops it with an error, so that
-    // an orchestrator sees the exit (ADR 0038).
+    // an orchestrator sees the exit (ADR 0038). That error wins over a
+    // shutdown that failed, which is only printed.
     if let Some(refusal) = license_lapse {
+        if let Err(error) = shutdown {
+            eprintln!("Error: {:?}", anyhow::Error::from(error));
+        }
         return Err(ProcessError::from(anyhow::Error::from(refusal)));
     }
+    shutdown.map_err(anyhow::Error::from)?;
     Ok(())
 }
 
@@ -502,18 +506,31 @@ mod tests {
     fn telemetry_reports_the_status_the_process_exits_with() {
         use coral_app::RunErrorTelemetry as _;
 
+        let runtime = |error: coral_app::AppError| {
+            ProcessError::from(anyhow::Error::from(coral_app::RuntimeError::from(error)))
+        };
         for (error, exit_code, error_code) in [
             (
-                coral_app::AppError::StateLocked {
+                runtime(coral_app::AppError::StateLocked {
                     path: "state".into(),
-                },
+                }),
                 STATE_LOCKED_EXIT_CODE,
                 "state_locked",
             ),
-            (coral_app::AppError::MissingConfigDir, 1, "internal"),
+            (
+                runtime(coral_app::AppError::MissingConfigDir),
+                1,
+                "internal",
+            ),
+            // A License that ended while Coral ran (ADR 0038).
+            (
+                ProcessError::from(anyhow::Error::from(coral_edition::LicenseRefusal::new(
+                    "The Evaluation License ended.",
+                ))),
+                1,
+                "license_ended",
+            ),
         ] {
-            let error =
-                ProcessError::from(anyhow::Error::from(coral_app::RuntimeError::from(error)));
             assert_eq!(error.exit_status(), exit_code);
             assert_eq!(error.telemetry_exit_code(), exit_code);
             assert_eq!(error.telemetry_error_code(), error_code);

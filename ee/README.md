@@ -28,8 +28,9 @@ one.
 text_env = "CORAL_LICENSE"
 ```
 
-A build from source has no Release Date, so it trusts only the test key and
-runs as Community until you add a test License. To run as Enterprise, load the
+A build from source is not a published build: it counts as released on its own
+commit's date, or today when git is unavailable, and it trusts only the test
+key. It runs as Community until you add a test License. To run as Enterprise, load the
 covering Commercial License, which never expires:
 
 ```toml
@@ -46,8 +47,10 @@ in the same way. Coral refuses to start and says what to do. A build released
 on or before the expiry would stay Enterprise. To see the
 trial path, load
 [`test-licenses/evaluation.license`](../crates/coral-test-support/test-licenses/evaluation.license),
-an Evaluation License that ends on 9999-12-31. An Evaluation License runs on
-the clock: when it expires, Coral stops and does not start again with it.
+an Evaluation License that ends on 9999-12-31. An Evaluation License needs both
+the clock and the build's Release Date on or before its expiry. When the clock
+passes it, Coral stops and does not start again with it. A build released after
+it does not start with it either.
 
 A published build trusts only the production keys, so it refuses all three. The
 test private key is in the team's password vault, not in this repository or
