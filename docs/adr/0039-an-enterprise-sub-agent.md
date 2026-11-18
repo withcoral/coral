@@ -66,10 +66,10 @@ explains how each part works in detail.
 
 **Serves points 2 and 5.**
 
-We will keep all Sub-agent code in `ee/`. Core's MCP shell will ask a tool surface interface for the instructions, for
-the list of tools, and to run each tool call. Core will supply the default implementation, which serves the tools that
-Coral serves today. `ee/` will supply a second implementation that wraps the first. It adds the `agent` tool, lets
-`wait` and `cancel` accept a `sub_agent_id`, and passes every other call to core unchanged.
+We will keep all Sub-agent code in `ee/`. Core's MCP shell will ask a tool surface interface, `McpInterface`, for the
+instructions, for the list of tools, and to run each tool call. Core will supply the default implementation, which
+serves the tools that Coral serves today. `ee/` will supply a second implementation that wraps the first. It adds the
+`agent` tool, lets `wait` and `cancel` accept a `sub_agent_id`, and passes every other call to core unchanged.
 
 ```mermaid
 flowchart TD
@@ -108,10 +108,15 @@ called it, inside that agent's Task. Each Run it starts is recorded as the calli
 same Policy Enforcement Point.
 
 Because those Runs belong to the lead's own Task, the lead can check an answer for itself. Each result from `wait`
-lists the steps the Sub-agent took, and a step that started a Run includes its `run_id`. The lead reads that Run's
-Program and Final Value with `wait`.
+lists the steps the Sub-agent took. A step that started a Run holds the intent the Sub-agent gave for it and its
+`run_id`, and nothing else. The lead reads that Run's Program and Final Value with `wait`.
 
-**Rejected:** a summary of evidence that the Sub-agent writes for the lead. The lead can already read the Run itself.
+**Rejected:**
+
+- **A summary of evidence that the Sub-agent writes for the lead.** The lead can already read the Run itself.
+- **A summary under the steps of what each Run called**, such as calls for each Provider, refused calls and pages not
+  read. It would show a mistake at a glance, but core would need a new read of a Run's calls to supply it. The lead
+  reads the Run when it wants that detail.
 
 ### 3. The Sub-agent calls core's Task and Run modules directly
 
@@ -401,7 +406,7 @@ because that code is not written yet.
 ### What `ee/` receives at startup
 
 `ee/` registers the factory for its tool surface through `Extensions`, in the same way that it registers a Secret Store
-kind. At startup, core calls the factory and gives it:
+kind. At startup, when the config file has the factory's section, core calls the factory and gives it:
 
 - the `[sub_agent]` section of the config file, as unparsed TOML;
 - the database, and the Task, Workspace, Run and search modules;
@@ -434,7 +439,8 @@ The Edition can change while Coral runs. When it does:
 | The name, description and argument schema of `search`, `exec`, `wait` and `cancel` | `ee/` | Yes |
 | The field names of each tool result | `ee/` | Yes |
 | The declaration of a Provider, Private or Shared Tool, returned by `search` | core | No. The model reads it each time it searches. |
-| Error messages and Program diagnostics | core | No. The model reads each one when it occurs. |
+| The wording of each failure | `ee/` | No. The model reads each one when it occurs. |
+| Program diagnostics, and other text that a core module marks as safe to show | core | No. The model reads each one when it occurs. |
 
 The first version of the text in `ee/` starts from what core serves today:
 
