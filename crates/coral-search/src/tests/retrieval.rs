@@ -1083,9 +1083,10 @@ async fn postgres_selects_a_held_word_by_its_lexemes_and_another_by_its_substrin
     }
 }
 
-#[tokio::test]
-async fn postgres_selects_by_a_common_word_only_while_no_rarer_word_is_held() {
-    coral_test_support::database_only!(Postgres);
+/// The Zentro and Widgets Providers of
+/// [`postgres_selects_by_a_common_word_only_while_no_rarer_word_is_held`],
+/// published and converged.
+async fn common_word_corpus() -> (TestModules, AuthenticatedPrincipal, WorkspaceId) {
     let operation = |path: String, id: String, summary: String, schema_text: Option<&str>| {
         let parameters =
             schema_text.map_or_else(Vec::new, |text| vec![query_parameter("note", text)]);
@@ -1093,7 +1094,7 @@ async fn postgres_selects_by_a_common_word_only_while_no_rarer_word_is_held() {
     };
     // `list` is in 1,002 of about 3,000 rows: more than 20% of them, more than
     // the 1,000-row floor, and few enough to weigh more than `gorvex` in
-    // schema text.
+    // schema text. So is `plonklist`, the compact variant of `plonk_list`.
     let zentro = (0..1_001)
         .map(|i| {
             operation(
@@ -1111,11 +1112,19 @@ async fn postgres_selects_by_a_common_word_only_while_no_rarer_word_is_held() {
                 Some("Gorvex."),
             )
         }))
-        .chain((0..1_900).map(|i| {
+        .chain((0..850).map(|i| {
             operation(
                 format!("/f{i}"),
                 format!("fill{i}"),
                 format!("Filler {i}"),
+                None,
+            )
+        }))
+        .chain((0..1_050).map(|i| {
+            operation(
+                format!("/p{i}"),
+                format!("plonklist{i}"),
+                format!("Plonklist {i}"),
                 None,
             )
         }))
@@ -1156,12 +1165,20 @@ async fn postgres_selects_by_a_common_word_only_while_no_rarer_word_is_held() {
             .await;
     }
     modules.converge().await;
+    (modules, principal, workspace)
+}
+
+#[tokio::test]
+async fn postgres_selects_by_a_common_word_only_while_no_rarer_word_is_held() {
+    coral_test_support::database_only!(Postgres);
+    let (modules, principal, workspace) = common_word_corpus().await;
     // While a rarer typed word, or a spelling one edit from it, fills the
     // window, `list` selects no row: the `list` Tools, which outrank the
     // `gorvex` ones, leave the page. A rarer word that meets no row, the
     // compact variant `tracerlist`, a rarer word that fills less than the
     // window (`wimble`), and a filter to a Provider without `gorvex` all
-    // leave `list` selecting.
+    // leave `list` selecting. A compact variant always selects, however
+    // common: the `plonklist` Tools outrank the `gorvex` ones.
     let item = "coral.providers.zentro.readItem0";
     let tracer = "coral.providers.zentro.listTracer0";
     for (query, filter, on_page, off_page) in [
@@ -1170,6 +1187,12 @@ async fn postgres_selects_by_a_common_word_only_while_no_rarer_word_is_held() {
         ("list qwxyzz", None, tracer, None),
         ("tracer list", None, tracer, None),
         ("list wimble", None, tracer, None),
+        (
+            "plonk_list gorvex",
+            None,
+            "coral.providers.zentro.plonklist0",
+            None,
+        ),
         (
             "list gorvex",
             Some("coral.providers.widgets"),

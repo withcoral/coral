@@ -220,9 +220,12 @@ impl QueryPlan {
     /// query has a spelling some row holds: the common word still scores the
     /// rows the rarer words select, and its low IDF ranks a row that holds it
     /// alone below them. Otherwise every word selects, so a misspelt rare
-    /// word does not empty the list. A compact variant never stops a common
-    /// word from selecting: `violetledger` holds far fewer rows than the
-    /// typed words `violet` and `ledger`, and would leave only its own.
+    /// word does not empty the list. The cap reads typed words alone. A
+    /// compact variant never stops a common word from selecting:
+    /// `violetledger` holds far fewer rows than the typed words `violet` and
+    /// `ledger`, and would leave only its own. Nor does the cap stop a
+    /// compact variant: it is the query's own identifier, and the rows that
+    /// hold it, `plonklist` for `plonk_list`, would leave the list.
     pub(super) fn scoring(&self, statistics: &Statistics) -> ScoringPlan {
         /// One word as the cap reads it.
         struct Word {
@@ -269,7 +272,7 @@ impl QueryPlan {
             words: words
                 .into_iter()
                 .map(|word| ScoredWord {
-                    selects: !(word.common && rarer_typed_word_held),
+                    selects: !(word.typed && word.common && rarer_typed_word_held),
                     spellings: word.spellings,
                 })
                 .collect(),
