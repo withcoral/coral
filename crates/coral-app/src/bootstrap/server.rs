@@ -623,7 +623,7 @@ async fn private_authentication(
     coral_workspace::OrganizationModule::new(database.clone())
         .provision_login(&coral_workspace::ChangeContext::new(
             coral_workspace::local_organization_owner(),
-            coral_db::UnixNanos::new(0),
+            clock.now(),
             coral_workspace::TraceId::current_or_new(),
         ))
         .await
@@ -1028,6 +1028,30 @@ mod tests {
             );
         }
         assert_eq!(std::fs::read(&damaged).unwrap(), [7_u8; 8]);
+    }
+
+    // Catches: the login dated by a fixed zero, which records the local
+    // Organization Owner as created on 1 January 1970.
+    #[tokio::test]
+    async fn the_local_owners_login_is_dated_by_the_launchs_clock() {
+        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
+            .await
+            .expect("apply current migrations");
+        let started = coral_db::UnixNanos::new(4_102_444_800_000_000_000);
+        let clock = coral_test_support::ManualClock::starting_at(started);
+
+        private_authentication(None, &fixture.database(), std::sync::Arc::new(clock))
+            .await
+            .expect("provision the local login");
+
+        let events = coral_workspace::OrganizationModule::new(fixture.database())
+            .list_lifecycle_events(&coral_workspace::local_organization_owner())
+            .await
+            .expect("the local Owner reads the Organization's events");
+        assert!(!events.is_empty(), "the login records an event");
+        for event in &events {
+            assert_eq!(event.occurred_at, started, "{event:?}");
+        }
     }
 
     /// Catches: a start that says only that the local authority failed, with
