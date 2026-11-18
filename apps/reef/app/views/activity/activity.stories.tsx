@@ -146,7 +146,7 @@ const execution: ActivityRow & { kind: 'run' } = {
   task,
   state: 'running',
   startedAt: at,
-  executionStartedAt: at,
+  executionStartedAt: '2026-09-18T14:02:01.000Z',
   endedAt: null,
   durationNanos: '242000000000',
   requiresAction: true,
@@ -831,6 +831,8 @@ const largeRun = (
   name,
   task: taskName,
   startedAt,
+  // It starts as soon as Coral accepts it.
+  executionStartedAt: startedAt,
   state: i % 4 === 0 ? 'running' : i % 6 === 0 ? 'failed' : 'succeeded',
   requiresAction: false,
   submission: taskName
@@ -940,7 +942,11 @@ export const DayBoundary: Story = {
           intent: 'Send the morning digest',
           startedAt: '2026-09-29T00:04:00.000Z',
         },
-        { ...standalone, startedAt: '2026-09-28T23:58:00.000Z' },
+        {
+          ...standalone,
+          startedAt: '2026-09-28T23:58:00.000Z',
+          executionStartedAt: '2026-09-28T23:58:01.000Z',
+        },
         {
           ...goal,
           name: `${task}-evening`,
