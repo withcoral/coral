@@ -295,7 +295,7 @@ spec:
 </Tab>
 <Tab title="With Postgres">
 
-Your Postgres server needs pgvector 0.7 or later. If it does not have pgvector, add `semantic_search_enabled = false` under `[search]` in the `config.toml` key of the `coral-config` ConfigMap in step 2, then restart the `coral` Deployment. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector).
+Your Postgres server needs pgvector 0.7 or later. Coral creates the `vector` extension at startup only when its database role may create it; otherwise, create it first. If your server does not have pgvector, add `semantic_search_enabled = false` under `[search]` in the `config.toml` key of the `coral-config` ConfigMap in step 2, then restart the `coral` Deployment. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector).
 
 2. Create the config and the Coral server deployment. Save this manifest to `coral.yaml`.
 

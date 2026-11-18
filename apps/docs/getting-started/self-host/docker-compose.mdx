@@ -227,6 +227,9 @@ CORAL_CREDENTIALS_KEY=...
 
 # Password of the postgres container - create with: openssl rand -hex 32
 POSTGRES_PASSWORD=...
+
+# With your own Postgres server instead of the postgres container
+# CORAL_DATABASE_URL=postgres://coral:PASSWORD@db.example.com:5432/coral?sslmode=verify-full
 ```
 
 3. Start Coral with `docker compose up -d`.
