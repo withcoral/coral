@@ -64,7 +64,9 @@ pub(super) struct EmbedderState {
     wake: Notify,
     /// How many times something woke the Embedder, boot counting as one.
     requested: watch::Sender<u64>,
-    /// The highest wake count a finished drain started after.
+    /// The highest wake count a finished drain started after. Only tests
+    /// read it, through [`Self::drained`].
+    #[cfg(any(test, feature = "test-fixtures"))]
     drained: watch::Sender<u64>,
     /// Rows that failed while others succeeded, by key, with the stamp of
     /// the row that failed.
@@ -78,6 +80,7 @@ impl EmbedderState {
             wake: Notify::new(),
             // The drain at boot answers the first wake.
             requested: watch::Sender::new(1),
+            #[cfg(any(test, feature = "test-fixtures"))]
             drained: watch::Sender::new(0),
             skipped: std::sync::Mutex::new(HashMap::new()),
         }
@@ -91,6 +94,7 @@ impl EmbedderState {
 
     /// Waits until a drain that started after every wake before this call
     /// has finished.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub(super) async fn drained(&self) {
         let target = *self.requested.borrow();
         let mut drained = self.drained.subscribe();
@@ -199,6 +203,7 @@ impl SearchIndex {
                 );
                 return;
             }
+            #[cfg(any(test, feature = "test-fixtures"))]
             state
                 .drained
                 .send_modify(|drained| *drained = (*drained).max(target));
