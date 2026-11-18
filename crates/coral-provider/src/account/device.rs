@@ -188,24 +188,23 @@ impl AccountModule {
             policy: row.contract.oauth_client(),
             secret: secret.as_ref(),
         };
+        // Read before any request leaves Coral, so that a missing deadline is
+        // never masked by what the service answers.
+        let deadline = row
+            .authorization_expires_at_unix_nanos
+            .ok_or_else(no_stored_deadline)?;
         let (device, schedule) = if row.user_code.is_some() {
-            let private = row.private_flow.as_deref().ok_or(Error::AccountInput)?;
+            let private = row.private_flow.as_deref().ok_or_else(no_stored_flow)?;
             let device =
                 repository::decode_device(&self.vault.open_sealed(&id.to_string(), private)?)?;
-            let expires = row
-                .authorization_expires_at_unix_nanos
-                .ok_or(Error::AccountInput)?;
-            let schedule = PollSchedule::resumed(lease.timing(), UnixNanos::new(expires));
+            let schedule = PollSchedule::resumed(lease.timing(), UnixNanos::new(deadline));
             (device, schedule)
         } else {
             let device =
                 request_device(self.providers.outbound_policy, requirement, &authentication)
                     .await?;
             let now = advanced(context, started);
-            let expires = device.validate(now.occurred_at_unix_nanos())?.min(
-                row.authorization_expires_at_unix_nanos
-                    .ok_or(Error::AccountInput)?,
-            );
+            let expires = device.validate(now.occurred_at_unix_nanos())?.min(deadline);
             let private = self
                 .vault
                 .seal(&id.to_string(), &repository::encode_device(&device)?)?;
@@ -459,7 +458,7 @@ impl AccountModule {
             .device_account(&mut tx, &advanced(context, started), owner, id)
             .await?;
         if row.state == super::AuthorizationState::Exchanging {
-            let private = row.private_flow.as_deref().ok_or(Error::AccountInput)?;
+            let private = row.private_flow.as_deref().ok_or_else(no_stored_flow)?;
             let token =
                 repository::decode_token(&self.vault.open_sealed(&id.to_string(), private)?)?;
             tx.commit().await?;
@@ -479,7 +478,7 @@ impl AccountModule {
             secret: secret.as_ref(),
         };
         let (device, schedule) = if row.user_code.is_some() {
-            let private = row.private_flow.as_deref().ok_or(Error::AccountInput)?;
+            let private = row.private_flow.as_deref().ok_or_else(no_stored_flow)?;
             let device =
                 repository::decode_device(&self.vault.open_sealed(&id.to_string(), private)?)?;
             let schedule =
@@ -631,6 +630,17 @@ impl Polling<'_> {
             tx.commit().await?;
         }
     }
+}
+
+/// A device sign-in that shows a user code, or is exchanging, stored its
+/// flow. A row without it is corrupt: the worker reads it for no caller.
+fn no_stored_flow() -> Error {
+    Error::CorruptData("device sign-in holds no stored flow".into())
+}
+
+/// A Setup's device sign-in stored its deadline when it opened.
+fn no_stored_deadline() -> Error {
+    Error::CorruptData("device sign-in holds no stored deadline".into())
 }
 
 /// The error of a poll that stopped because the database gave no answer, or

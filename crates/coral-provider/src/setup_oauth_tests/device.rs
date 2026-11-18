@@ -1681,7 +1681,7 @@ async fn recovery_passes_over_a_reconnection_that_fails_and_tries_it_again_after
     let faults = [
         RecoveryFault {
             fails: "the authorization does not load",
-            code: "invalid_input",
+            code: "corrupt_data",
             statements: |authorization, provider| {
                 let stored = |provider: &str| {
                     format!(
