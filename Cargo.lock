@@ -1181,6 +1181,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "coral-sub-agent"
+version = "1.10.0"
+dependencies = [
+ "coral-app",
+ "coral-mcp",
+ "coral-outbound",
+ "coral-secret-store",
+ "serde",
+ "thiserror",
+ "toml",
+ "url",
+]
+
+[[package]]
 name = "coral-task"
 version = "1.10.0"
 dependencies = [

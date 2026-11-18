@@ -1,0 +1,21 @@
+[package]
+name = "coral-sub-agent"
+description = "The Sub-agent: a model that Coral runs to do data work for the agent that calls it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+coral-app.workspace = true
+coral-mcp.workspace = true
+coral-outbound.workspace = true
+coral-secret-store.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+url.workspace = true
