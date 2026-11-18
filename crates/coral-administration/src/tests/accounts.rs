@@ -318,6 +318,7 @@ async fn shared_account_survives_its_provisioner_but_pending_replacement_is_canc
     providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             coral_provider::ProviderRegenerationRequest::new(
                 request(),
                 f.workspace.id().clone(),

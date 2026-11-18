@@ -72,7 +72,7 @@ async fn provider_deletion_cancels_ready_updates_and_rejects_late_secrets() {
         .await
         .unwrap();
     h.providers
-        .delete_provider(&context, owner, provider.id())
+        .delete_provider(&context, owner, provider.id(), &IfMatch::any())
         .await
         .unwrap()
         .skip_search();
@@ -169,7 +169,7 @@ async fn provider_deletion_scrubs_update_application_secrets_before_consent() {
     assert!(before.client_secret_configured);
     assert!(before.authorization.is_none());
     h.providers
-        .delete_provider(&context, owner, provider.id())
+        .delete_provider(&context, owner, provider.id(), &IfMatch::any())
         .await
         .unwrap()
         .skip_search();
@@ -251,7 +251,7 @@ async fn deletion_fences_callback(in_flight: bool) {
         None
     };
     h.providers
-        .delete_provider(&context, owner, provider.id())
+        .delete_provider(&context, owner, provider.id(), &IfMatch::any())
         .await
         .unwrap()
         .skip_search();
@@ -397,7 +397,7 @@ async fn provider_deletion_discards_in_flight_update_discovery() {
         .await
         .unwrap();
     h.providers
-        .delete_provider(&context, owner, provider.id())
+        .delete_provider(&context, owner, provider.id(), &IfMatch::any())
         .await
         .unwrap()
         .skip_search();

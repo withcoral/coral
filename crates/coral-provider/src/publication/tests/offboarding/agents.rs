@@ -278,7 +278,11 @@ async fn agent_removal(shared: bool) {
     );
     assert_eq!(
         h.providers
-            .regenerate_provider(&change_context(owner.clone(), 20, '2'), update)
+            .regenerate_provider(
+                &change_context(owner.clone(), 20, '2'),
+                &IfMatch::any(),
+                update
+            )
             .await
             .unwrap()
             .skip_search(),

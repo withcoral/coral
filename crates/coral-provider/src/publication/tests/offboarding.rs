@@ -397,7 +397,7 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
         .await
         .unwrap_err();
     h.providers
-        .regenerate_provider(&context, update)
+        .regenerate_provider(&context, &IfMatch::any(), update)
         .await
         .unwrap_err();
     assert_eq!(

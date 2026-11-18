@@ -511,7 +511,7 @@ async fn provider_disablement_at_the_enforcement_point_blocks_dispatch() {
     wait_until(|| gate.entered()).await;
     fixture
         .providers
-        .disable_provider(&context, &workspace, provider.id())
+        .disable_provider(&context, &workspace, provider.id(), &IfMatch::any())
         .await
         .unwrap();
     release.send(()).unwrap();
@@ -620,6 +620,7 @@ async fn provider_disablement_and_deletion_after_the_enforcement_point_preserve_
                             &change(tool.user.clone(), 100, 'd'),
                             &tool.workspace_id.clone(),
                             &tool.provider_id,
+                            &IfMatch::any(),
                         )
                         .await
                         .expect("revoke Provider after enforcement");
@@ -631,6 +632,7 @@ async fn provider_disablement_and_deletion_after_the_enforcement_point_preserve_
                             &change(tool.user.clone(), 100, 'e'),
                             &tool.workspace_id,
                             &tool.provider_id,
+                            &IfMatch::any(),
                         )
                         .await
                         .expect("remove Provider after enforcement")
@@ -796,6 +798,7 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
                         &change(tool.user.clone(), 100, 'c'),
                         &tool.workspace_id.clone(),
                         &tool.provider_id,
+                        &IfMatch::any(),
                     )
                     .await
                     .expect("revoke Provider before enforcement");
@@ -807,6 +810,7 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
                         &change(tool.user.clone(), 100, 'd'),
                         &tool.workspace_id,
                         &tool.provider_id,
+                        &IfMatch::any(),
                     )
                     .await
                     .expect("remove Provider before enforcement")
@@ -938,6 +942,7 @@ async fn dispatches_the_resolved_generation_after_regeneration_at(point: GatePoi
         .providers
         .regenerate_provider(
             &change(tool.user.clone(), 101, 'f'),
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse("00000000-0000-4000-8000-000000000058")
                     .expect("request id"),
@@ -1306,7 +1311,7 @@ async fn enforcement_checks_of_two_runs_share_their_locks_and_an_authority_write
     let provider_id = tool.provider_id.clone();
     let mut writer = tokio::spawn(async move {
         providers
-            .disable_provider(&context, &workspace_id, &provider_id)
+            .disable_provider(&context, &workspace_id, &provider_id, &IfMatch::any())
             .await
     });
     assert!(

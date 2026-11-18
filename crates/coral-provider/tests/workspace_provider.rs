@@ -12,7 +12,7 @@ use coral_provider::{
 use coral_telemetry::TraceId;
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, OrganizationRole, RequestId, WorkspaceDisplayName,
+    AuthenticatedUser, ChangeContext, IfMatch, OrganizationRole, RequestId, WorkspaceDisplayName,
     WorkspaceId, WorkspaceModule,
 };
 
@@ -198,9 +198,10 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
 
     let renamed = providers
         .rename_provider(
-            &context(&actor).with_etag(&provider.etag()).unwrap(),
+            &context(&actor),
             workspace.id(),
             provider.id(),
+            &provider.if_match(),
             ProviderDisplayName::parse("Forecast").unwrap(),
         )
         .await
@@ -212,10 +213,11 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     assert!(matches!(
         providers
             .rename_provider(
-                &context(&actor).with_etag(&provider.etag()).unwrap(),
+                &context(&actor),
                 workspace.id(),
                 provider.id(),
-                ProviderDisplayName::parse("Stale").unwrap()
+                &provider.if_match(),
+                ProviderDisplayName::parse("Stale").unwrap(),
             )
             .await,
         Err(coral_provider::Error::EtagMismatch)
@@ -229,7 +231,8 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         .revision;
     providers
         .regenerate_provider(
-            &context(&actor).with_etag(&renamed.etag()).unwrap(),
+            &context(&actor),
+            &renamed.if_match(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse("81000000-0000-4000-8000-000000000003").unwrap(),
                 workspace.id().clone(),
@@ -288,9 +291,10 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
         .unwrap();
     let disabled = providers
         .disable_provider(
-            &context(&actor).with_etag(&updated.etag()).unwrap(),
+            &context(&actor),
             workspace.id(),
             provider.id(),
+            &updated.if_match(),
         )
         .await
         .unwrap();
@@ -359,9 +363,10 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     tx.rollback().await.unwrap();
     let restored = providers
         .restore_provider(
-            &context(&actor).with_etag(&disabled.etag()).unwrap(),
+            &context(&actor),
             workspace.id(),
             provider.id(),
+            &disabled.if_match(),
         )
         .await
         .unwrap();
@@ -406,9 +411,10 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
 
     providers
         .delete_provider(
-            &context(&actor).with_etag(&restored.etag()).unwrap(),
+            &context(&actor),
             workspace.id(),
             provider.id(),
+            &restored.if_match(),
         )
         .await
         .unwrap()
@@ -439,13 +445,23 @@ async fn one_provider_owns_namespace_lifecycle_and_retained_generation() {
     );
     assert!(matches!(
         providers
-            .delete_provider(&context(&actor), workspace.id(), provider.id())
+            .delete_provider(
+                &context(&actor),
+                workspace.id(),
+                provider.id(),
+                &IfMatch::any()
+            )
             .await,
         Err(coral_provider::Error::ProviderNotFound)
     ));
     assert!(matches!(
         providers
-            .restore_provider(&context(&actor), workspace.id(), provider.id())
+            .restore_provider(
+                &context(&actor),
+                workspace.id(),
+                provider.id(),
+                &IfMatch::any()
+            )
             .await,
         Err(coral_provider::Error::ProviderNotFound)
     ));
@@ -614,7 +630,7 @@ async fn publication_request_keys_are_workspace_scoped_and_actor_bound() {
     );
     assert!(matches!(
         providers
-            .regenerate_provider(&context(&actor), update)
+            .regenerate_provider(&context(&actor), &IfMatch::any(), update)
             .await,
         Err(coral_provider::Error::RequestIdConflict)
     ));
@@ -627,14 +643,14 @@ async fn publication_request_keys_are_workspace_scoped_and_actor_bound() {
         revision,
     );
     let committed = providers
-        .regenerate_provider(&context(&actor), update.clone())
+        .regenerate_provider(&context(&actor), &IfMatch::any(), update.clone())
         .await
         .unwrap()
         .skip_search();
     assert_eq!(committed.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(
         providers
-            .regenerate_provider(&context(&actor), update.clone())
+            .regenerate_provider(&context(&actor), &IfMatch::any(), update.clone())
             .await
             .unwrap()
             .skip_search(),
@@ -642,7 +658,7 @@ async fn publication_request_keys_are_workspace_scoped_and_actor_bound() {
     );
     assert!(matches!(
         providers
-            .regenerate_provider(&context(&other), update)
+            .regenerate_provider(&context(&other), &IfMatch::any(), update)
             .await,
         Err(coral_provider::Error::RequestIdConflict)
     ));
@@ -665,6 +681,7 @@ async fn publication_request_keys_are_workspace_scoped_and_actor_bound() {
     let independent = providers
         .regenerate_provider(
             &context(&actor),
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(update_key).unwrap(),
                 two.id().clone(),
@@ -893,7 +910,12 @@ async fn existing_caller_binding_uses_the_workspace_provider_address() {
     );
     tx.rollback().await.unwrap();
     providers
-        .delete_provider(&context(&actor), workspace.id(), provider.id())
+        .delete_provider(
+            &context(&actor),
+            workspace.id(),
+            provider.id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap()
         .skip_search();
@@ -1068,7 +1090,7 @@ async fn foreign_workspace_mutations_are_denied_and_change_nothing() {
         (
             "disable",
             providers
-                .disable_provider(&context(&actor), foreign_id, provider.id())
+                .disable_provider(&context(&actor), foreign_id, provider.id(), &IfMatch::any())
                 .await
                 .map(drop),
             "ProviderNotFound",
@@ -1076,7 +1098,7 @@ async fn foreign_workspace_mutations_are_denied_and_change_nothing() {
         (
             "restore",
             providers
-                .restore_provider(&context(&actor), foreign_id, provider.id())
+                .restore_provider(&context(&actor), foreign_id, provider.id(), &IfMatch::any())
                 .await
                 .map(drop),
             "ProviderNotFound",
@@ -1084,7 +1106,7 @@ async fn foreign_workspace_mutations_are_denied_and_change_nothing() {
         (
             "delete",
             providers
-                .delete_provider(&context(&actor), foreign_id, provider.id())
+                .delete_provider(&context(&actor), foreign_id, provider.id(), &IfMatch::any())
                 .await
                 .map(drop),
             "ProviderNotFound",
@@ -1107,6 +1129,7 @@ async fn foreign_workspace_mutations_are_denied_and_change_nothing() {
             providers
                 .regenerate_provider(
                     &context(&actor),
+                    &IfMatch::any(),
                     ProviderRegenerationRequest::new(
                         ManagementRequestId::parse("85000000-0000-4000-8000-000000000003").unwrap(),
                         foreign_id.clone(),

@@ -557,7 +557,12 @@ async fn destructive_lifecycle_keeps_exact_agent_invocation_and_approval_history
     .unwrap();
     fixture
         .providers
-        .delete_provider(&context, &tool.workspace_id.clone(), &tool.provider_id)
+        .delete_provider(
+            &context,
+            &tool.workspace_id.clone(),
+            &tool.provider_id,
+            &IfMatch::any(),
+        )
         .await
         .unwrap()
         .skip_search();
@@ -1220,7 +1225,12 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
             "revoke" => {
                 fixture
                     .providers
-                    .disable_provider(&context, &tool.workspace_id.clone(), &tool.provider_id)
+                    .disable_provider(
+                        &context,
+                        &tool.workspace_id.clone(),
+                        &tool.provider_id,
+                        &IfMatch::any(),
+                    )
                     .await
                     .unwrap();
             }

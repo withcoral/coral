@@ -397,11 +397,10 @@ async fn search_and_describe_read_a_private_tools_rule_and_its_providers_state()
     fixture
         .providers
         .disable_provider(
-            &change(scope.user.clone(), 50, 'd')
-                .with_etag(&provider.etag())
-                .unwrap(),
+            &change(scope.user.clone(), 50, 'd'),
             &scope.workspace_id,
             provider.id(),
+            &provider.if_match(),
         )
         .await
         .expect("disable the Private Provider");
@@ -429,11 +428,10 @@ async fn the_private_provider_is_not_blocked_for_tools_its_generation_never_hold
     fixture
         .providers
         .disable_provider(
-            &change(scope.user.clone(), 50, 'd')
-                .with_etag(&provider.etag())
-                .unwrap(),
+            &change(scope.user.clone(), 50, 'd'),
             &scope.workspace_id,
             provider.id(),
+            &provider.if_match(),
         )
         .await
         .expect("disable the Private Provider");
@@ -1472,6 +1470,7 @@ async fn regeneration_atomically_replaces_the_active_search_generation() {
         .providers
         .regenerate_provider(
             &change(user, 60, '6'),
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse("61000000-0000-4000-8000-000000000002")
                     .expect("request id"),
@@ -3007,7 +3006,13 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
     }
     fixture
         .providers
-        .change_account_setting_fixture(&context, &workspace, second.id(), CredentialRoute::Caller)
+        .change_account_setting_fixture(
+            &context,
+            &workspace,
+            second.id(),
+            &IfMatch::any(),
+            CredentialRoute::Caller,
+        )
         .await
         .unwrap();
     // The User connects its own Account during Invocation; the Agent needs one now.
@@ -3077,6 +3082,7 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&setup.id().to_string()).unwrap(),
                 workspace.clone(),
@@ -3270,7 +3276,7 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
     }
     fixture
         .providers
-        .disable_provider(&context, &workspace, provider)
+        .disable_provider(&context, &workspace, provider, &IfMatch::any())
         .await
         .unwrap();
     fixture
@@ -3278,7 +3284,7 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
         .await;
     fixture
         .providers
-        .restore_provider(&context, &workspace, provider)
+        .restore_provider(&context, &workspace, provider, &IfMatch::any())
         .await
         .unwrap();
     fixture
@@ -3298,6 +3304,7 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&setup.id().to_string()).unwrap(),
                 workspace.clone(),
@@ -3815,6 +3822,7 @@ async fn provider_inspection_reports_policy_and_lifecycle_blockers() {
             &change(user.clone(), 60, '6'),
             &workspace.clone(),
             &published.provider_id,
+            &IfMatch::any(),
         )
         .await
         .unwrap();
@@ -4091,6 +4099,7 @@ impl TestModules {
             .providers
             .regenerate_provider(
                 context,
+                &IfMatch::any(),
                 ProviderRegenerationRequest::new(
                     ManagementRequestId::parse(&setup.id().to_string()).unwrap(),
                     workspace.clone(),

@@ -996,6 +996,7 @@ async fn disabled_provider_remains_an_administrative_policy_target() {
             &change(owner.clone(), 53, '6'),
             &workspace.id().clone(),
             provider_access.id(),
+            &IfMatch::any(),
         )
         .await
         .expect("disable Provider");
@@ -1437,6 +1438,7 @@ async fn provider_removal_discards_current_policy_but_retains_its_event() {
             &change(owner.clone(), 253, 'f'),
             workspace.id(),
             target.provider_id(),
+            &IfMatch::any(),
         )
         .await
         .expect("remove Provider and current policy")
@@ -1843,6 +1845,7 @@ async fn rules_hold_the_exact_rules_of_current_provider_tools_by_call_path() {
                 providers
                     .regenerate_provider(
                         &context,
+                        &IfMatch::any(),
                         coral_provider::ProviderRegenerationRequest::new(
                             ManagementRequestId::parse(&coral_test_support::fixture_request_id())
                                 .expect("request id"),
@@ -1858,7 +1861,7 @@ async fn rules_hold_the_exact_rules_of_current_provider_tools_by_call_path() {
             }
             ThenProvider::Disabled => {
                 providers
-                    .disable_provider(&context, workspace.id(), provider.id())
+                    .disable_provider(&context, workspace.id(), provider.id(), &IfMatch::any())
                     .await
                     .expect("disable Provider");
             }
@@ -1970,7 +1973,7 @@ async fn access_states_by_call_path_set_each_sent_path_and_keep_the_rest() {
             .expect("set a rule the call does not name");
         if matches!(then, ThenProvider::Disabled) {
             providers
-                .disable_provider(&context, workspace.id(), provider.id())
+                .disable_provider(&context, workspace.id(), provider.id(), &IfMatch::any())
                 .await
                 .expect("disable Provider");
         }

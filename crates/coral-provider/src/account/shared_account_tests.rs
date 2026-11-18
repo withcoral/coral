@@ -72,7 +72,7 @@ async fn workspace_owner_inspects_one_shared_account_with_management_authority()
         "shared credentials never become the configuring human's private Account"
     );
     providers
-        .disable_provider(&admin, workspace.id(), provider.id())
+        .disable_provider(&admin, workspace.id(), provider.id(), &IfMatch::any())
         .await
         .unwrap();
     assert_eq!(

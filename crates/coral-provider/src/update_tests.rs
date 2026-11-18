@@ -103,6 +103,7 @@ async fn incompatible_shared_update_without_replacement_preserves_the_active_pai
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 request_id(),
                 workspace.id().clone(),
@@ -152,6 +153,7 @@ async fn account_setting_change_scrubs_old_credentials_and_requires_fresh_shared
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 request_id(),
                 workspace.id().clone(),
@@ -195,7 +197,7 @@ async fn account_setting_change_scrubs_old_credentials_and_requires_fresh_shared
     .with_account_setting(CredentialRoute::Fixed)
     .with_incompatible_configuration_confirmation();
     h.providers
-        .regenerate_provider(&context, request.clone())
+        .regenerate_provider(&context, &IfMatch::any(), request.clone())
         .await
         .unwrap_err();
     let grant = h
@@ -213,7 +215,7 @@ async fn account_setting_change_scrubs_old_credentials_and_requires_fresh_shared
         .unwrap();
     let changed = h
         .providers
-        .regenerate_provider(&context, request.with_account_grant(grant))
+        .regenerate_provider(&context, &IfMatch::any(), request.with_account_grant(grant))
         .await
         .unwrap()
         .skip_search();
@@ -309,6 +311,7 @@ async fn reconnect_after_update_preparation_fences_the_staged_replacement() {
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 request_id(),
                 workspace.id().clone(),
@@ -399,14 +402,14 @@ async fn explicit_shared_replacement_publishes_configuration_and_account_togethe
     .with_account_grant(grant);
     let result = h
         .providers
-        .regenerate_provider(&context, request.clone())
+        .regenerate_provider(&context, &IfMatch::any(), request.clone())
         .await
         .unwrap()
         .skip_search();
     assert_eq!(result.outcome(), ProviderPublicationOutcome::Succeeded);
     assert_eq!(
         h.providers
-            .regenerate_provider(&context, request)
+            .regenerate_provider(&context, &IfMatch::any(), request)
             .await
             .unwrap()
             .skip_search(),
@@ -528,6 +531,7 @@ async fn an_update_to_a_credential_free_source_takes_only_the_none_route() {
             .providers
             .regenerate_provider(
                 &context,
+                &IfMatch::any(),
                 ProviderRegenerationRequest::new(
                     request_id(),
                     workspace.id().clone(),

@@ -129,6 +129,7 @@ pub(crate) async fn oauth_account(
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 workspace.clone(),

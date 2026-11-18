@@ -43,7 +43,7 @@ async fn expired_shared_replacement_records_one_terminal_failure_and_scrubs_the_
     let expired = change_context(actor.clone(), grant.expires_at.unwrap().get() + 1, '3');
     let failed = h
         .providers
-        .regenerate_provider(&expired, request.clone())
+        .regenerate_provider(&expired, &IfMatch::any(), request.clone())
         .await
         .expect("expiry is a terminal domain diagnostic")
         .skip_search();
@@ -98,7 +98,7 @@ async fn expired_shared_replacement_records_one_terminal_failure_and_scrubs_the_
     );
     assert_eq!(
         h.providers
-            .regenerate_provider(&expired, request)
+            .regenerate_provider(&expired, &IfMatch::any(), request)
             .await
             .unwrap()
             .skip_search(),

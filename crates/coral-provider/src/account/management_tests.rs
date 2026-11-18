@@ -51,7 +51,7 @@ async fn account_inspection_disconnect_and_reconnect_preserve_private_ownership(
         .await
         .unwrap();
     providers
-        .disable_provider(&context, scope, provider.id())
+        .disable_provider(&context, scope, provider.id(), &IfMatch::any())
         .await
         .unwrap();
     assert_eq!(
@@ -63,7 +63,7 @@ async fn account_inspection_disconnect_and_reconnect_preserve_private_ownership(
         "exact replay does not reinterpret today's Provider configuration"
     );
     providers
-        .restore_provider(&context, scope, provider.id())
+        .restore_provider(&context, scope, provider.id(), &IfMatch::any())
         .await
         .unwrap();
     let completed = accounts

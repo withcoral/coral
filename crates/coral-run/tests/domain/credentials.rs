@@ -329,6 +329,7 @@ impl PublicClientAccount {
             .providers
             .regenerate_provider(
                 &context,
+                &IfMatch::any(),
                 ProviderRegenerationRequest::new(
                     ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                     owner.clone(),
@@ -1153,6 +1154,7 @@ async fn agent_caller_dispatch_uses_only_preprovisioned_credentials_without_inte
                 .providers
                 .regenerate_provider(
                     &context,
+                    &IfMatch::any(),
                     ProviderRegenerationRequest::new(
                         ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                         scope.clone(),

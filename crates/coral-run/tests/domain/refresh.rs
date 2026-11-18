@@ -210,6 +210,7 @@ async fn reconnect_disconnect_and_setting_changes_block_invocations_waiting_on_a
                 .providers
                 .regenerate_provider(
                     &context,
+                    &IfMatch::any(),
                     ProviderRegenerationRequest::new(
                         ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                         tool.workspace_id.clone(),
@@ -517,6 +518,7 @@ async fn concurrent_invocations_wait_for_one_refresh_across_catalog_update_and_e
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 tool.workspace_id.clone(),

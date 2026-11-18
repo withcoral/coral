@@ -255,6 +255,7 @@ async fn rejected_regeneration(change: InterveningChange) {
     let retried = providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 request.request_id().clone(),
                 owner,

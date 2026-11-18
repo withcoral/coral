@@ -8,7 +8,7 @@ use coral_telemetry::TraceId;
 use coral_test_support::TestDatabase;
 pub(crate) use coral_test_support::provision_user as organization_user;
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, OrganizationRole, RequestId, WorkspaceDisplayName,
+    AuthenticatedUser, ChangeContext, IfMatch, OrganizationRole, RequestId, WorkspaceDisplayName,
     WorkspaceModule,
 };
 
@@ -64,7 +64,7 @@ async fn disabled_provider_remains_a_valid_tool_policy_target() {
     )
     .await;
     providers
-        .disable_provider(&context, workspace.id(), provider.id())
+        .disable_provider(&context, workspace.id(), provider.id(), &IfMatch::any())
         .await
         .unwrap();
     let mut transaction = providers

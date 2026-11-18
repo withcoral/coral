@@ -534,11 +534,10 @@ async fn search_and_describe_read_a_shared_tools_rule_and_its_providers_state() 
         .fixture
         .providers
         .disable_provider(
-            &change(shared.scope.user.clone(), 90, 'd')
-                .with_etag(&provider.etag())
-                .unwrap(),
+            &change(shared.scope.user.clone(), 90, 'd'),
             &shared.scope.workspace_id,
             provider.id(),
+            &provider.if_match(),
         )
         .await
         .expect("disable the Shared Provider");

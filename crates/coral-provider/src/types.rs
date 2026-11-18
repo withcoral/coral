@@ -8,7 +8,7 @@ use coral_catalog::{
 };
 use coral_db::UnixNanos;
 use coral_telemetry::TraceId;
-use coral_workspace::{AuthoritySource, UserId};
+use coral_workspace::{AuthoritySource, IfMatch, UserId};
 use uuid::Uuid;
 
 use crate::access::{ProviderAccess, ProviderCallRoot};
@@ -377,8 +377,23 @@ impl Provider {
     pub fn etag(&self) -> String {
         self.id().etag(self.version)
     }
-    pub(crate) fn check_etag(&self, context: &coral_workspace::ChangeContext) -> Result<(), Error> {
-        check_etag(context.expected_etag(), &self.etag())
+    /// The precondition that the Provider is as it is here, for a caller
+    /// inside the process that changes the Provider it just read.
+    #[must_use]
+    pub fn if_match(&self) -> IfMatch {
+        IfMatch::token(self.id().etag_token(self.version))
+    }
+    /// Checks the etag a caller read against the Provider as it is now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::EtagMismatch`] for a Provider that changed since.
+    pub(crate) fn admit(&self, if_match: &IfMatch) -> Result<(), Error> {
+        if if_match.admits_token(&self.id().etag_token(self.version)) {
+            Ok(())
+        } else {
+            Err(Error::EtagMismatch)
+        }
     }
     /// Immutable Provider identity.
     #[must_use]
@@ -436,22 +451,14 @@ impl Provider {
     }
 }
 impl ProviderId {
+    /// The etag of the Provider at `version`, as an Adapter shows it.
     pub(crate) fn etag(&self, version: i64) -> String {
-        resource_etag(&self.0, version)
+        self.etag_token(version).hyphenated().to_string()
     }
-}
-/// Derives a deterministic, non-authorizing UUID token from one identity and version.
-pub(crate) fn resource_etag(id: &Uuid, version: i64) -> String {
-    Uuid::new_v5(id, version.to_string().as_bytes())
-        .hyphenated()
-        .to_string()
-}
-
-/// Applies an explicit etag precondition when one is present.
-pub(crate) fn check_etag(expected: Option<&str>, current: &str) -> Result<(), Error> {
-    match expected {
-        Some(expected) if expected != current => Err(Error::EtagMismatch),
-        _ => Ok(()),
+    /// The etag of the Provider at `version`: a deterministic,
+    /// non-authorizing UUID derived from the identity and the version.
+    fn etag_token(&self, version: i64) -> Uuid {
+        Uuid::new_v5(&self.0, version.to_string().as_bytes())
     }
 }
 

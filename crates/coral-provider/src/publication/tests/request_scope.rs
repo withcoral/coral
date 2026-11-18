@@ -18,6 +18,7 @@ async fn creation_and_update_share_the_workspace_publication_request_namespace()
         providers
             .regenerate_provider(
                 &change_context(fixture.owner.clone(), 50, '5'),
+                &IfMatch::any(),
                 fixture.request(setup.id(), creation_id),
             )
             .await,
@@ -36,6 +37,7 @@ async fn creation_and_update_share_the_workspace_publication_request_namespace()
     providers
         .regenerate_provider(
             &change_context(fixture.owner.clone(), 60, '6'),
+            &IfMatch::any(),
             fixture.request(setup.id(), update_id),
         )
         .await

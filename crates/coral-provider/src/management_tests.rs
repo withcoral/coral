@@ -5,7 +5,7 @@ use crate::{
     Error, ManagementRequestId, ProviderPublicationOutcome, ProviderRegenerationRequest,
     ProviderSetupState, ProviderState, WorkspaceProviderPublicationRequest,
 };
-use coral_workspace::{ChangeContext, IfMatch, OrganizationRole, WorkspaceDisplayName};
+use coral_workspace::{IfMatch, OrganizationRole, WorkspaceDisplayName};
 
 fn document(title: &str) -> crate::OpenApiDocument {
     crate::OpenApiDocument::parse(&format!(
@@ -15,10 +15,6 @@ fn document(title: &str) -> crate::OpenApiDocument {
 "paths":{{"/data":{{"get":{{"operationId":"getData","responses":{{"200":{{"description":"Data"}}}}}}}}}}}}"#
     ))
     .unwrap()
-}
-
-fn with_etag(context: ChangeContext, etag: &str) -> ChangeContext {
-    context.with_etag(etag).unwrap()
 }
 
 #[tokio::test]
@@ -78,13 +74,14 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
         .published_provider()
         .unwrap()
         .clone();
-    let stale = provider.etag();
+    let stale = provider.if_match();
     let scope = workspace.id().clone();
     providers
         .rename_provider(
-            &with_etag(change_context(owner.clone(), 5, '5'), &stale),
+            &change_context(owner.clone(), 5, '5'),
             &scope,
             provider.id(),
+            &stale,
             crate::ProviderDisplayName::parse("Renamed").unwrap(),
         )
         .await
@@ -97,13 +94,14 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
         .into_iter()
         .find(|inspection| inspection.id() == provider.id())
         .unwrap();
-    assert_ne!(current.etag(), stale);
+    assert_ne!(current.if_match(), stale);
     assert!(matches!(
         providers
             .disable_provider(
-                &with_etag(change_context(owner.clone(), 6, '6'), &stale),
+                &change_context(owner.clone(), 6, '6'),
                 &scope,
-                provider.id()
+                provider.id(),
+                &stale,
             )
             .await,
         Err(Error::EtagMismatch)
@@ -111,9 +109,10 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
     assert_eq!(current.state(), ProviderState::Active);
     let revoked = providers
         .disable_provider(
-            &with_etag(change_context(owner.clone(), 7, '7'), &current.etag()),
+            &change_context(owner.clone(), 7, '7'),
             &scope,
             provider.id(),
+            &current.if_match(),
         )
         .await
         .unwrap();
@@ -122,18 +121,20 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
     assert!(matches!(
         providers
             .restore_provider(
-                &with_etag(change_context(owner.clone(), 8, '8'), &current.etag()),
+                &change_context(owner.clone(), 8, '8'),
                 &scope,
-                provider.id()
+                provider.id(),
+                &current.if_match(),
             )
             .await,
         Err(Error::EtagMismatch)
     ));
     let restored = providers
         .restore_provider(
-            &with_etag(change_context(owner.clone(), 9, '9'), &revoked.etag()),
+            &change_context(owner.clone(), 9, '9'),
             &scope,
             provider.id(),
+            &revoked.if_match(),
         )
         .await
         .unwrap();
@@ -141,16 +142,14 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
 
     // Route changes use the Provider resource etag and advance account-setting evidence.
     let provider_access = restored.access();
-    let stale_provider_etag = restored.etag();
+    let stale_provider = restored.if_match();
     assert!(matches!(
         providers
             .change_account_setting_fixture(
-                &with_etag(
-                    change_context(owner.clone(), 10, 'a'),
-                    &uuid::Uuid::new_v4().to_string()
-                ),
+                &change_context(owner.clone(), 10, 'a'),
                 workspace.id(),
                 provider_access.id(),
+                &IfMatch::token(uuid::Uuid::new_v4()),
                 CredentialRoute::Caller,
             )
             .await,
@@ -158,9 +157,10 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
     ));
     let rerouted = providers
         .change_account_setting_fixture(
-            &with_etag(change_context(owner.clone(), 11, 'b'), &stale_provider_etag),
+            &change_context(owner.clone(), 11, 'b'),
             workspace.id(),
             provider_access.id(),
+            &stale_provider,
             CredentialRoute::Caller,
         )
         .await
@@ -169,14 +169,15 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
         .inspect_provider(&owner, &scope, provider.id())
         .await
         .unwrap();
-    assert_ne!(rerouted_provider.etag(), stale_provider_etag);
+    assert_ne!(rerouted_provider.if_match(), stale_provider);
     assert_eq!(rerouted_provider.access(), &rerouted);
     assert!(matches!(
         providers
             .delete_provider(
-                &with_etag(change_context(owner.clone(), 12, 'c'), &stale_provider_etag),
+                &change_context(owner.clone(), 12, 'c'),
                 workspace.id(),
                 provider_access.id(),
+                &stale_provider,
             )
             .await,
         Err(Error::EtagMismatch)
@@ -203,8 +204,9 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
     assert!(matches!(
         providers
             .regenerate_provider(
-                &with_etag(change_context(owner.clone(), 15, 'f'), &stale),
-                request.clone()
+                &change_context(owner.clone(), 15, 'f'),
+                &stale,
+                request.clone(),
             )
             .await,
         Err(Error::EtagMismatch)
@@ -219,10 +221,8 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
     );
     let regenerated = providers
         .regenerate_provider(
-            &with_etag(
-                change_context(owner.clone(), 16, '1'),
-                &rerouted_provider.etag(),
-            ),
+            &change_context(owner.clone(), 16, '1'),
+            &rerouted_provider.if_match(),
             request,
         )
         .await
@@ -242,9 +242,10 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
     assert!(matches!(
         providers
             .delete_provider(
-                &with_etag(change_context(owner.clone(), 17, '2'), &restored.etag()),
+                &change_context(owner.clone(), 17, '2'),
                 &scope,
-                provider.id()
+                provider.id(),
+                &restored.if_match(),
             )
             .await,
         Err(Error::EtagMismatch)
@@ -254,6 +255,7 @@ async fn stale_etag_preconditions_abort_lifecycle_and_configuration_changes() {
             &change_context(owner.clone(), 18, '3'),
             &scope,
             provider.id(),
+            &IfMatch::any(),
         )
         .await
         .unwrap()
@@ -398,7 +400,7 @@ async fn provider_and_catalog_inspection_require_current_workspace_access() {
         Err(Error::ProviderNotFound)
     ));
     let disabled = providers
-        .disable_provider(&context, workspace.id(), provider.id())
+        .disable_provider(&context, workspace.id(), provider.id(), &IfMatch::any())
         .await
         .unwrap();
     workspaces
@@ -497,9 +499,10 @@ async fn an_owner_reads_a_providers_configuration_by_namespace() {
     // A rename publishes no Generation.
     let renamed = providers
         .rename_provider(
-            &with_etag(change_context(owner.clone(), 11, 'b'), &published.etag()),
+            &change_context(owner.clone(), 11, 'b'),
             workspace.id(),
             published.id(),
+            &published.if_match(),
             crate::ProviderDisplayName::parse("Forecasts").unwrap(),
         )
         .await
@@ -507,9 +510,10 @@ async fn an_owner_reads_a_providers_configuration_by_namespace() {
         .skip_search();
     let disabled = providers
         .disable_provider(
-            &with_etag(change_context(owner.clone(), 12, 'c'), &renamed.etag()),
+            &change_context(owner.clone(), 12, 'c'),
             workspace.id(),
             published.id(),
+            &renamed.if_match(),
         )
         .await
         .unwrap();
@@ -651,7 +655,7 @@ async fn active_provider_names_cover_only_inspectable_workspaces() {
     )
     .await;
     providers
-        .disable_provider(&context, used.id(), gone.id())
+        .disable_provider(&context, used.id(), gone.id(), &IfMatch::any())
         .await
         .unwrap();
 
@@ -744,6 +748,7 @@ async fn a_member_cannot_change_a_provider_and_the_refusal_changes_nothing() {
                     &by_member,
                     workspace.id(),
                     provider.id(),
+                    &IfMatch::any(),
                     crate::ProviderDisplayName::parse("Taken over").unwrap(),
                 )
                 .await
@@ -756,6 +761,7 @@ async fn a_member_cannot_change_a_provider_and_the_refusal_changes_nothing() {
                     &by_member,
                     workspace.id(),
                     provider.id(),
+                    &IfMatch::any(),
                     Some(crate::ProviderIcon::parse(b"<svg/>".to_vec()).unwrap()),
                 )
                 .await
@@ -764,14 +770,14 @@ async fn a_member_cannot_change_a_provider_and_the_refusal_changes_nothing() {
         (
             "disable",
             providers
-                .disable_provider(&by_member, workspace.id(), provider.id())
+                .disable_provider(&by_member, workspace.id(), provider.id(), &IfMatch::any())
                 .await
                 .map(|disabled| disabled.etag()),
         ),
         (
             "delete",
             providers
-                .delete_provider(&by_member, workspace.id(), provider.id())
+                .delete_provider(&by_member, workspace.id(), provider.id(), &IfMatch::any())
                 .await
                 .map(crate::Committed::skip_search)
                 .map(|()| String::new()),
@@ -842,9 +848,10 @@ async fn an_owner_sets_and_removes_a_providers_icon_that_members_read() {
 
     let set = providers
         .set_provider_icon(
-            &with_etag(change_context(owner.clone(), 2, '2'), &provider.etag()),
+            &change_context(owner.clone(), 2, '2'),
             workspace.id(),
             provider.id(),
+            &provider.if_match(),
             Some(icon.clone()),
         )
         .await
@@ -922,9 +929,10 @@ async fn an_owner_sets_and_removes_a_providers_icon_that_members_read() {
 
     let unchanged = providers
         .set_provider_icon(
-            &with_etag(change_context(owner.clone(), 3, '3'), &set.etag()),
+            &change_context(owner.clone(), 3, '3'),
             workspace.id(),
             provider.id(),
+            &set.if_match(),
             Some(icon.clone()),
         )
         .await
@@ -936,9 +944,10 @@ async fn an_owner_sets_and_removes_a_providers_icon_that_members_read() {
     assert!(matches!(
         providers
             .set_provider_icon(
-                &with_etag(change_context(owner.clone(), 4, '4'), &provider.etag()),
+                &change_context(owner.clone(), 4, '4'),
                 workspace.id(),
                 provider.id(),
+                &provider.if_match(),
                 Some(replacement),
             )
             .await,
@@ -956,9 +965,10 @@ async fn an_owner_sets_and_removes_a_providers_icon_that_members_read() {
 
     let removed = providers
         .set_provider_icon(
-            &with_etag(change_context(owner.clone(), 5, '5'), &set.etag()),
+            &change_context(owner.clone(), 5, '5'),
             workspace.id(),
             provider.id(),
+            &set.if_match(),
             None,
         )
         .await
@@ -974,9 +984,10 @@ async fn an_owner_sets_and_removes_a_providers_icon_that_members_read() {
     assert_eq!(events().await.len(), before + 2);
     let again = providers
         .set_provider_icon(
-            &with_etag(change_context(owner.clone(), 6, '6'), &removed.etag()),
+            &change_context(owner.clone(), 6, '6'),
             workspace.id(),
             provider.id(),
+            &removed.if_match(),
             None,
         )
         .await

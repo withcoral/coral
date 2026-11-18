@@ -904,6 +904,7 @@ async fn a_wait_returns_when_the_waiting_tools_provider_is_renamed() {
             &change(tool.user.clone(), 50, '5'),
             scope,
             &tool.provider_id,
+            &IfMatch::any(),
             coral_provider::ProviderDisplayName::parse("Forecasts").unwrap(),
         )
         .await

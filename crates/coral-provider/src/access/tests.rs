@@ -6,7 +6,7 @@ use crate::tests::{
     CREDENTIAL_FREE_OPENAPI, change_context, organization_user, publish_provider, test_modules,
 };
 use coral_credentials::Secret;
-use coral_workspace::{OrganizationRole, RequestId, WorkspaceDisplayName, WorkspaceRole};
+use coral_workspace::{IfMatch, OrganizationRole, RequestId, WorkspaceDisplayName, WorkspaceRole};
 
 #[tokio::test]
 async fn exact_inspection_uses_workspace_scope_and_requires_a_membership() {
@@ -46,6 +46,7 @@ async fn exact_inspection_uses_workspace_scope_and_requires_a_membership() {
                 &change_context(administrator.clone(), 11, 'b'),
                 workspace.id(),
                 provider.id(),
+                &IfMatch::any(),
             )
             .await,
         Err(Error::Workspace(coral_workspace::Error::WorkspaceNotFound))
@@ -70,6 +71,7 @@ async fn exact_inspection_uses_workspace_scope_and_requires_a_membership() {
             &change_context(administrator.clone(), 11, 'b'),
             workspace.id(),
             provider.id(),
+            &IfMatch::any(),
         )
         .await
         .unwrap()
@@ -104,18 +106,20 @@ async fn route_etag_race_has_one_winner_and_no_op_preserves_version_and_evidence
         )
         .await
         .unwrap();
-    let stale = context.clone().with_etag(&provider.etag()).unwrap();
+    let read = provider.if_match();
     let (left, right) = tokio::join!(
         providers.change_account_setting_fixture(
-            &stale,
+            &context,
             workspace.id(),
             provider.id(),
+            &read,
             CredentialRoute::Caller
         ),
         providers.change_account_setting_fixture(
-            &stale,
+            &context,
             workspace.id(),
             provider.id(),
+            &read,
             CredentialRoute::Caller
         ),
     );
@@ -143,13 +147,13 @@ async fn route_etag_race_has_one_winner_and_no_op_preserves_version_and_evidence
         .inspect_provider(&owner, workspace.id(), provider.id())
         .await
         .unwrap();
-    let current_context = context.with_etag(&current.etag()).unwrap();
     assert_eq!(
         providers
             .change_account_setting_fixture(
-                &current_context,
+                &context,
                 workspace.id(),
                 provider.id(),
+                &current.if_match(),
                 CredentialRoute::Caller
             )
             .await
@@ -168,7 +172,7 @@ async fn route_etag_race_has_one_winner_and_no_op_preserves_version_and_evidence
     );
     assert!(matches!(
         providers
-            .delete_provider(&stale, workspace.id(), provider.id())
+            .delete_provider(&context, workspace.id(), provider.id(), &read)
             .await,
         Err(Error::EtagMismatch)
     ));
@@ -544,7 +548,8 @@ async fn workspace_member_cannot_change_provider_configuration() {
                 &unauthorized,
                 workspace.id(),
                 provider.id(),
-                CredentialRoute::Caller
+                &IfMatch::any(),
+                CredentialRoute::Caller,
             )
             .await,
         Err(Error::Workspace(coral_workspace::Error::PermissionDenied(
@@ -553,7 +558,12 @@ async fn workspace_member_cannot_change_provider_configuration() {
     ));
     assert!(matches!(
         providers
-            .delete_provider(&unauthorized, workspace.id(), provider.id())
+            .delete_provider(
+                &unauthorized,
+                workspace.id(),
+                provider.id(),
+                &IfMatch::any()
+            )
             .await,
         Err(Error::Workspace(coral_workspace::Error::PermissionDenied(
             _
@@ -642,7 +652,8 @@ async fn fixed_routes_require_exact_provider_and_eligible_administrative_owner()
                     &context,
                     workspace.id(),
                     target.id(),
-                    CredentialRoute::Fixed
+                    &IfMatch::any(),
+                    CredentialRoute::Fixed,
                 )
                 .await,
             Err(Error::AccountRequired)
@@ -675,7 +686,8 @@ async fn fixed_routes_require_exact_provider_and_eligible_administrative_owner()
                 &context,
                 left.id(),
                 provider.id(),
-                CredentialRoute::None
+                &IfMatch::any(),
+                CredentialRoute::None,
             )
             .await,
         Err(Error::AccountRequired)

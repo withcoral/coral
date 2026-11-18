@@ -7,7 +7,7 @@ use coral_credentials::{CredentialField, CredentialValues, Secret, SecretReferen
 use coral_secret_store::{Error as StoreError, SecretStores};
 use coral_test_support::InMemorySecretStore;
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, OrganizationRole, RequestId, WorkspaceDisplayName,
+    AuthenticatedUser, ChangeContext, IfMatch, OrganizationRole, RequestId, WorkspaceDisplayName,
     WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
 
@@ -1296,6 +1296,7 @@ async fn updating_a_provider_moves_the_setups_references_to_its_shared_account()
     f.providers
         .regenerate_provider(
             &f.owner,
+            &IfMatch::any(),
             crate::ProviderRegenerationRequest::new(
                 authorization_request(),
                 f.workspace.clone(),

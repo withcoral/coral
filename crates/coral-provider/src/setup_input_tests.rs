@@ -10,7 +10,7 @@ use crate::{
     Error, LifecycleAction, ManagementRequestId, ProviderId, ProviderSetupSource, WorkspaceId,
     WorkspaceProviderPublicationRequest,
 };
-use coral_workspace::OrganizationRole;
+use coral_workspace::{IfMatch, OrganizationRole};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -172,7 +172,8 @@ async fn target_deleted_during_acquisition_leaves_no_setup_or_creation_evidence(
     // This must complete before the network request is released: acquisition holds no write transaction.
     tokio::time::timeout(
         Duration::from_secs(5),
-        h.providers.delete_provider(&context, &scope, &target),
+        h.providers
+            .delete_provider(&context, &scope, &target, &IfMatch::any()),
     )
     .await
     .unwrap()

@@ -158,6 +158,7 @@ async fn current_mcp_catalog_can_change_application_and_complete_fresh_discovery
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             crate::ProviderRegenerationRequest::new(
                 crate::account_tests::authorization_request(),
                 owner.clone(),

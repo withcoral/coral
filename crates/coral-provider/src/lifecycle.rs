@@ -1,25 +1,34 @@
 //! Destructive Provider lifecycle never repairs authority-bearing references.
-use crate::change::{Committed, ProviderChange, SearchChange};
+use crate::change::{Committed, GuardedChange, SearchChange};
 use crate::{Error, LifecycleAction, ProviderId, ProviderModule, account, repository};
-use coral_workspace::ChangeContext;
-use coral_workspace::WorkspaceId;
+use coral_workspace::{ChangeContext, IfMatch, WorkspaceId};
 
 impl ProviderModule {
-    /// Irreversibly removes current configuration, retaining Publication and
-    /// Invocation provenance, in its own transaction. Retires the Provider's
-    /// unfinished Update Setups, Accounts and pending authorizations with it.
+    /// Irreversibly removes the current configuration of the Provider that
+    /// the caller read at `if_match`, retaining Publication and Invocation
+    /// provenance, in its own transaction. Retires the Provider's unfinished
+    /// Update Setups, Accounts and pending authorizations with it.
     ///
     /// # Errors
-    /// Requires current owner configuration authority and the exact Provider etag.
+    /// Requires current owner configuration authority. Returns
+    /// [`Error::EtagMismatch`] for a Provider that changed since.
     pub async fn delete_provider(
         &self,
         context: &ChangeContext,
         owner: &WorkspaceId,
         provider: &ProviderId,
+        if_match: &IfMatch,
     ) -> Result<Committed<()>, Error> {
         let mut tx = self.database.begin().await?;
         let held = self
-            .hold_for_change(&mut tx, context, owner, provider, ProviderChange::Delete)
+            .hold_for_change(
+                &mut tx,
+                context,
+                owner,
+                provider,
+                GuardedChange::Delete,
+                if_match,
+            )
             .await?;
         account::delete_workspace_provider_current_in_transaction(
             &mut tx,
