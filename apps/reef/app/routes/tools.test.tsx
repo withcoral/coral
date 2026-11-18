@@ -217,6 +217,8 @@ it('lists, searches and opens the whole catalog while the usage loads, then show
   expect(rowNames()).toEqual(['issues.create', 'issues.list'])
 
   await user.click(linkOf('issues.list'))
+  // The router commits a navigation in a transition, after its state already names the tool.
+  await screen.findByRole('dialog')
   expect(router.state.location.pathname).toBe(
     `/workspaces/${id}/providers/${githubId}/tools/issues.list`,
   )
