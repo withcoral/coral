@@ -30,7 +30,7 @@ fn client(server: &MockServer, api_key: Option<&str>) -> ModelClient {
     let api_key = api_key.map(|key| Secret::new(key.to_owned()).unwrap());
     ModelClient {
         retry_waits: [Duration::ZERO; 3],
-        ..ModelClient::new(http, &base_url, MODEL.to_owned(), api_key)
+        ..ModelClient::new(http, &base_url, MODEL.to_owned(), api_key, None)
     }
 }
 

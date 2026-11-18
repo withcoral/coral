@@ -19,6 +19,7 @@ pub(crate) struct ModelClient {
     completions_url: String,
     model: String,
     api_key: Option<Secret>,
+    context_window: Option<u32>,
     retry_waits: [Duration; 3],
 }
 
@@ -30,6 +31,7 @@ impl ModelClient {
         base_url: &Url,
         model: String,
         api_key: Option<Secret>,
+        context_window: Option<u32>,
     ) -> Self {
         Self {
             http,
@@ -39,8 +41,14 @@ impl ModelClient {
             ),
             model,
             api_key,
+            context_window,
             retry_waits: RETRY_WAITS,
         }
+    }
+
+    /// The model's context window in tokens, when the operator set it.
+    pub(crate) const fn context_window(&self) -> Option<u32> {
+        self.context_window
     }
 
     /// Sends `system`, the conversation and the tools the model may call, and returns its reply.
@@ -56,14 +64,37 @@ impl ModelClient {
             model: &self.model,
             messages: chat_messages(system, conversation, &self.model),
             tools: tools.iter().map(ChatTool::from).collect(),
+            max_completion_tokens: None,
         };
-        let mut result = self.send(&request).await;
+        self.complete(&request).await
+    }
+
+    /// Sends `system` and the conversation without tools, for a reply of at most `max_tokens`.
+    /// # Errors
+    /// Returns why the model gave no reply.
+    pub(crate) async fn summarize(
+        &self,
+        system: &str,
+        conversation: &[Message],
+        max_tokens: u32,
+    ) -> Result<Reply, ModelError> {
+        let request = CompletionRequest {
+            model: &self.model,
+            messages: chat_messages(system, conversation, &self.model),
+            tools: Vec::new(),
+            max_completion_tokens: Some(max_tokens),
+        };
+        self.complete(&request).await
+    }
+
+    async fn complete(&self, request: &CompletionRequest<'_>) -> Result<Reply, ModelError> {
+        let mut result = self.send(request).await;
         for wait in self.retry_waits {
             if !matches!(result, Err(ModelError::Unavailable)) {
                 break;
             }
             tokio::time::sleep(wait).await;
-            result = self.send(&request).await;
+            result = self.send(request).await;
         }
         result
     }
@@ -142,7 +173,10 @@ impl Message {
     pub(crate) fn text(&self) -> String {
         let texts = self.content.iter().filter_map(|block| match block {
             Block::Text { text } => Some(text.as_str()),
-            Block::Reasoning { .. } | Block::ToolUse(_) | Block::ToolResult { .. } => None,
+            Block::Reasoning { .. }
+            | Block::ToolUse(_)
+            | Block::ToolResult { .. }
+            | Block::Summary { .. } => None,
         });
         texts.collect()
     }
@@ -151,7 +185,10 @@ impl Message {
     pub(crate) fn tool_calls(&self) -> impl Iterator<Item = &ToolCall> {
         self.content.iter().filter_map(|block| match block {
             Block::ToolUse(call) => Some(call),
-            Block::Text { .. } | Block::Reasoning { .. } | Block::ToolResult { .. } => None,
+            Block::Text { .. }
+            | Block::Reasoning { .. }
+            | Block::ToolResult { .. }
+            | Block::Summary { .. } => None,
         })
     }
 
@@ -162,7 +199,10 @@ impl Message {
                 text,
                 model: writer,
             } => (writer == model).then_some(text.as_str()),
-            Block::Text { .. } | Block::ToolUse(_) | Block::ToolResult { .. } => None,
+            Block::Text { .. }
+            | Block::ToolUse(_)
+            | Block::ToolResult { .. }
+            | Block::Summary { .. } => None,
         })
     }
 }
@@ -190,6 +230,12 @@ pub(crate) enum Block {
     ToolResult {
         tool_use_id: String,
         content: String,
+    },
+    /// The model's summary of the thread's older messages, which later calls read in their place.
+    Summary {
+        text: String,
+        /// The position of the first message that the summary leaves whole.
+        kept_from: usize,
     },
 }
 
@@ -269,7 +315,10 @@ const BODY_LIMIT: usize = 4 << 20;
 struct CompletionRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<ChatTool<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
 }
 
 /// The conversation as Chat Completions messages: a user's text as content parts, an assistant
@@ -294,7 +343,7 @@ fn chat_messages<'a>(
                             tool_call_id: tool_use_id,
                             content,
                         }),
-                        Block::Reasoning { .. } | Block::ToolUse(_) => {}
+                        Block::Reasoning { .. } | Block::ToolUse(_) | Block::Summary { .. } => {}
                     }
                 }
                 if !parts.is_empty() {
