@@ -11,7 +11,7 @@ use crate::{
     AccessRemovalTarget, AgentDisplayName, AgentRegistrationId, AgentState, AuthenticatedUser,
     ChangeContext, Denial, Error, IfMatch, LifecycleTargetKind, MembershipChange, OrganizationRole,
     PrincipalId, RequestId, UserId, WorkspaceDisplayName, WorkspaceId, WorkspaceModule,
-    WorkspaceRole, local_organization_owner,
+    WorkspaceRole,
 };
 
 /// One resource that a management change can conflict on.
@@ -724,17 +724,13 @@ async fn every_change_moves_its_resources_and_no_other(form: EtagForm) {
             IfMatch::parse(&form.current(kept)).expect("the current etag is well formed")
         });
         let (refused_step, refused_context, refused_if_match, is_refusal) = match refusal {
-            Refusal::StaleEtag => {
-                let stale = form.stale(checked.expect("the step checks an etag"));
-                (
-                    step,
-                    change(owner.clone(), at, 'a')
-                        .with_etag(&stale)
-                        .expect("a stale etag is well formed"),
-                    IfMatch::parse(&stale).expect("a stale etag is well formed"),
-                    etag_mismatch,
-                )
-            }
+            Refusal::StaleEtag => (
+                step,
+                change(owner.clone(), at, 'a'),
+                IfMatch::parse(&form.stale(checked.expect("the step checks an etag")))
+                    .expect("a stale etag is well formed"),
+                etag_mismatch,
+            ),
             Refusal::By(who, is_refusal) => (
                 step,
                 change(changes.who(who).clone(), at, 'a'),
@@ -757,14 +753,8 @@ async fn every_change_moves_its_resources_and_no_other(form: EtagForm) {
         );
 
         at += 10;
-        let mut context = change(owner, at, 'b');
-        if let Some(checked) = checked {
-            context = context
-                .with_etag(&form.current(checked))
-                .expect("the current etag is well formed");
-        }
         changes
-            .take(step, &context, &current)
+            .take(step, &change(owner, at, 'b'), &current)
             .await
             .unwrap_or_else(|error| panic!("{case}: {error:?}"));
         let after = changes.kept().await;
@@ -1018,26 +1008,19 @@ async fn a_change_by_an_older_coral_shows_in_the_etag_and_refuses_the_one_read_b
 fn an_etag_is_the_canonical_text_of_a_version_or_a_uuid() {
     let uuid = uuid::Uuid::new_v4();
     let version = |count| Version::new(count).unwrap();
-    let context = || change(local_organization_owner(), 1, '1');
     for (etag, expected) in [
         ("1".to_owned(), IfMatch::version(Version::FIRST)),
         ("42".to_owned(), IfMatch::version(version(42))),
         (uuid.to_string(), IfMatch::token(uuid)),
     ] {
         assert_eq!(IfMatch::parse(&etag).expect(&etag), expected);
-        let read = context().with_etag(&etag).expect(&etag);
-        assert_eq!(read.expected_etag(), Some(etag.as_str()));
     }
     for etag in ["", "0", "-1", "+1", "01", "stale"] {
-        for refused in [
-            IfMatch::parse(etag).map(drop),
-            context().with_etag(etag).map(drop),
-        ] {
-            assert!(
-                matches!(&refused, Err(Error::InvalidInput(message)) if message == "etag is required"),
-                "{etag:?}: {refused:?}"
-            );
-        }
+        let refused = IfMatch::parse(etag);
+        assert!(
+            matches!(&refused, Err(Error::InvalidInput(message)) if message == "etag is required"),
+            "{etag:?}: {refused:?}"
+        );
     }
 
     let at_version = IfMatch::version(version(2));

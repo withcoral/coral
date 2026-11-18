@@ -490,7 +490,9 @@ impl WorkspaceEvidence {
     }
 }
 
-/// The etag a caller read, as the precondition of one change.
+/// The etag a caller read, as the precondition of one change. A method whose
+/// change can conflict takes one as an argument, so that no call leaves the
+/// check out.
 ///
 /// An etag is the text of a resource's version, or a UUID. A Workspace, a
 /// Workspace Membership, an Agent and an Agent Registration each keep a
@@ -610,11 +612,14 @@ impl fmt::Display for RequestId {
     }
 }
 
-/// Authenticated and correlated context for one administrative change.
+/// Authenticated and correlated context for one administrative change: who
+/// makes it, when, and under which trace.
+///
+/// It carries no precondition and no request identity. A change that can
+/// conflict takes an [`IfMatch`] argument, and one that must not run twice
+/// takes a [`RequestId`] argument, so a call cannot leave either out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeContext {
-    /// The etag as the Adapter sent it. A Provider's own check reads it.
-    expected_etag: Option<String>,
     actor: AuthenticatedUser,
     occurred_at: UnixNanos,
     trace_id: TraceId,
@@ -625,26 +630,10 @@ impl ChangeContext {
     #[must_use]
     pub const fn new(actor: AuthenticatedUser, occurred_at: UnixNanos, trace_id: TraceId) -> Self {
         Self {
-            expected_etag: None,
             actor,
             occurred_at,
             trace_id,
         }
-    }
-
-    /// Adds an exact concurrency precondition for the mutation's target resource.
-    /// # Errors
-    /// Rejects missing or malformed etags, as [`IfMatch::parse`] does.
-    pub fn with_etag(mut self, etag: &str) -> Result<Self, Error> {
-        IfMatch::parse(etag)?;
-        self.expected_etag = Some(etag.to_owned());
-        Ok(self)
-    }
-
-    /// Returns the exact concurrency precondition supplied by the Adapter, if any.
-    #[must_use]
-    pub fn expected_etag(&self) -> Option<&str> {
-        self.expected_etag.as_deref()
     }
 
     /// Returns the accountable authenticated User.
