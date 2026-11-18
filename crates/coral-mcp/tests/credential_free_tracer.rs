@@ -737,7 +737,6 @@ async fn the_servers_clock_dates_a_request() {
         Some(&json!("success")),
         "{ended}"
     );
-    // The local Owner reads the Agent's Task.
     let owner = coral_workspace::AuthenticatedPrincipal::user(tracer.local_user.clone());
     let recorded = tasks
         .get(&owner, &tracer.workspace_a, task.id())

@@ -52,8 +52,9 @@ pub(crate) struct EngineParts {
     /// The one readiness of every listener, so shutdown takes them all out
     /// of rotation at once.
     pub(crate) readiness: EngineReadiness,
-    /// The instance's one clock. Every module that reads the time, the boot
-    /// writes and the periodic passes read it.
+    /// The instance's one clock. The modules this Engine gives it to, the
+    /// boot writes and the periodic passes read it. The Run module and the
+    /// Run Executor link keep their own until ADR 0027.
     pub(crate) clock: Arc<dyn coral_db::Clock>,
     pub(crate) policy: coral_outbound::DestinationPolicy,
     pub(crate) runtime_limits: coral_run::RuntimeLimits,
