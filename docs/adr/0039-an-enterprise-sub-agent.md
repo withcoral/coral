@@ -42,22 +42,20 @@ flowchart LR
     subgraph core["core"]
         shell["MCP shell<br/>authenticates"]
         coresurface["Core surface<br/>exec, wait, cancel"]
-        ai["Agent tool functions<br/>exec, wait, cancel, search"]
         modules["Core modules<br/>Tasks, Runs, Tool search"]
     end
     lead --> shell --> eesurface
     eesurface --> subagent
     eesurface --> coresurface
-    coresurface --> ai
-    subagent --> ai
+    coresurface --> modules
+    subagent --> modules
     subagent --> model
     subagent --> db
-    ai --> modules
 ```
 
 The lead's request enters through core's MCP shell and reaches the `ee/` surface. A call to `agent` starts a Sub-agent
 Turn, and every other call passes to the core surface. The Sub-agent sends the conversation to the model, and it
-reaches Tasks, Runs and Tool search only through the agent tool functions.
+reaches Tasks, Runs and Tool search by calling core's modules directly, as core's own tools do.
 
 The sections below give each decision, the points it serves, and the alternatives we rejected. The appendix at the end
 explains how each part works in detail.
@@ -115,13 +113,12 @@ Program and Final Value with `wait`.
 
 **Rejected:** a summary of evidence that the Sub-agent writes for the lead. The lead can already read the Run itself.
 
-### 3. The MCP tools and the Sub-agent's tools call the same functions
+### 3. The Sub-agent calls core's Task and Run modules directly
 
-**Serves points 6 and 9.**
+**Serves point 6. It goes against point 9 in a small way, which is described below.**
 
 Today, each of the MCP handlers `exec`, `wait` and `cancel` is one private function that does three jobs. It parses the
-MCP arguments, it carries out the request, and it writes the result as MCP JSON. No other code can call the second job
-on its own.
+MCP arguments, it carries out the request, and it writes the result as MCP JSON.
 
 ```mermaid
 flowchart TD
@@ -139,41 +136,54 @@ flowchart TD
     handlers --> search["Tool search"]
 ```
 
-We will move the second job into a new crate in core, `coral-agent-tools`, without changing what it does. The crate
-holds one function for each tool, named after the tool: `exec`, `wait` and `cancel`. This record calls them the agent
-tool functions. Core's MCP tools and the Sub-agent's tools will both call them. Each keeps only its own parsing and
-its own writing of results.
+The second job is small. It holds four rules:
 
-The crate is not an interface that a model sees. The interfaces are the two sets of tools, and each set has its own
-names, descriptions and results.
+- A Run with no time limit gets 15 minutes, and a call that starts a Run waits up to 30 seconds for it.
+- The wait is checked before anything starts, so a refused wait starts no Run.
+- A Run that started is always reported, even when Coral cannot read it back in the same call.
+- Each failure becomes a code and a message for the agent.
+
+The checks that decide what a caller may do are not in the handlers. They are in the Task and Run modules, and every
+caller passes through them.
+
+We will leave core's `exec`, `wait` and `cancel` handlers as they are. The Sub-agent's code in `ee/` will call the Task
+and Run modules directly, as the handlers do. It will apply the same four rules in its own code, and it will choose its
+own wording for each failure.
 
 ```mermaid
 flowchart TD
     lead["Lead agent"]
     model["The Sub-agent's model"]
-    coresurface["Core surface<br/>job 1: parses MCP JSON<br/>job 3: writes MCP JSON"]
-    subagent["Sub-agent code in ee/<br/>job 1: parses the tool call<br/>job 3: writes its own JSON"]
-    ai["Agent tool functions, in core<br/>job 2: the logic"]
+    coresurface["Core's MCP handlers<br/>unchanged<br/>jobs 1, 2 and 3"]
+    subagent["Sub-agent code in ee/<br/>job 1: parses the tool call<br/>job 2: its own copy of the four rules<br/>job 3: writes its own JSON"]
     lead -- MCP tool calls --> coresurface
     model -- tool calls --> subagent
-    coresurface --> ai
-    subagent --> ai
-    ai --> task["Task module"]
-    ai --> run["Run module"]
-    ai --> search["Tool search"]
+    coresurface --> task["Task module"]
+    coresurface --> run["Run module"]
+    coresurface --> search["Tool search"]
+    subagent --> task
+    subagent --> run
+    subagent --> search
 ```
 
-A Run that a Sub-agent starts therefore goes through the same checks as a Run started over MCP, and a fix to that logic
-is made once. The Sub-agent also stops depending on the field names in core's MCP JSON.
+A Run that a Sub-agent starts passes the same permission checks and the same Policy Enforcement Point as a Run started
+over MCP, because both go through the same modules. The wording of a failure joins the rest of what the Sub-agent's
+model reads: `ee/` chooses it, so a change to the wording of core's MCP tools does not reach a trained model.
+
+This goes against point 9 in a small way. The four rules exist twice, once in core's handlers and once in `ee/`. A
+change to one of them in core is repeated in `ee/` by hand, and the two sets of tools can word the same failure
+differently.
 
 **Rejected:**
 
+- **Move the second job into shared functions that both sets of tools call.** We decided this first, and built it as a
+  crate with one function for each tool. It keeps one copy of the four rules and of the failure wording. But it needs a
+  rewrite of core's MCP handlers in order to share four small rules, and it makes core's failure wording part of what a
+  trained model reads.
 - **Make core's existing MCP handlers public.** Their argument types define the MCP tool schemas, so a change to an MCP
   tool's arguments would break `ee/`.
-- **Have `ee/` call the Task and Run modules directly.** `ee/` would need its own copy of the logic between those
-  modules, and every fix would have to be made twice.
-- **Have `ee/` call the MCP tools and read fields from their JSON results.** This needs no change in core. But the
-  Sub-agent's model would then read core's MCP JSON, and a renamed field would fail only when a call ran.
+- **Have `ee/` call the MCP tools and read fields from their JSON results.** The Sub-agent's model would then read
+  core's MCP JSON, and a renamed field would fail only when a call ran.
 
 ### 4. The text that the Sub-agent's model reads is written in `ee/`
 
@@ -183,8 +193,8 @@ A model can be trained by reinforcement learning against the Sub-agent's tools. 
 argument names and result fields that it is shown, and it keeps using them after they change.
 
 We will therefore write three things in `ee/`: the system prompt, the definition of each tool the model can call, and
-the code that writes each tool result. The Sub-agent's model will never receive core's MCP instructions or core's MCP
-tool descriptions, which change to suit outside agents.
+the code that writes each tool result, including the wording of each failure. The Sub-agent's model will never receive
+core's MCP instructions or core's MCP tool descriptions, which change to suit outside agents.
 
 When a change in core alters a value that `ee/` reads, `ee/` stops compiling in the same pull request. The author then
 updates `ee/` so that the model reads what it read before.
@@ -200,8 +210,8 @@ Outside agents find Tools by calling the Built-in Tool `coral.search` from insid
 changes `coral.search` to improve how they do it. Search is also the only Tool an agent must know how to call in
 advance, because an agent finds every other Tool by searching.
 
-We will give the Sub-agent's model a `search` tool that `ee/` defines. It runs the same search through the Agent
-Interface. We will also refuse any Sub-agent Program that calls a Built-in Tool, including `coral.search`. If
+We will give the Sub-agent's model a `search` tool that `ee/` defines. It runs the same search by calling core's search
+module directly. We will also refuse any Sub-agent Program that calls a Built-in Tool, including `coral.search`. If
 `coral.search` worked inside a Program, a model could learn during training to call it there, and it would depend on
 core's names again.
 
@@ -280,7 +290,7 @@ contain counts, token numbers and durations, and never text.
 **What gets better**
 
 - A change to core's MCP tools no longer changes what the Sub-agent's model reads.
-- The logic behind `exec`, `wait` and `cancel` has one copy with two callers.
+- Core's `exec`, `wait` and `cancel` handlers do not change.
 - A deployment with no `[sub_agent]` section, or under the Community Edition, behaves as it does today.
 - An operator configures the model the way it already configures the database.
 
@@ -289,8 +299,9 @@ contain counts, token numbers and durations, and never text.
 - A Workspace Owner cannot turn the Sub-agent off for one Workspace. It is on for the whole deployment.
 - A Sub-agent cannot administer Coral, even when its caller can.
 - An interrupted Turn does not continue. The lead must send its message again.
-- Error messages, Program diagnostics and Tool declarations still come from core, so a change to them changes what the
-  model reads.
+- Program diagnostics and Tool declarations still come from core, so a change to them changes what the model reads.
+- The four rules behind `exec`, `wait` and `cancel` exist twice, in core's handlers and in `ee/`. A change to one of
+  them in core is repeated in `ee/` by hand.
 - Coral does not record which version of the prompt and tool definitions a model was trained on. A team that trains a
   model records the Coral release.
 - With a hosted API, the operator cannot set the server's defaults, so the model reasons at the provider's default
@@ -307,7 +318,7 @@ contain counts, token numbers and durations, and never text.
 ## How we will confirm it
 
 - A test in `ee/` shows that the lead receives only core's tools under the Community Edition.
-- A test in `ee/` shows that, under the Enterprise Edition, a Turn calls the agent tool functions and `wait`
+- A test in `ee/` shows that, under the Enterprise Edition, a Turn starts a Run in the lead's Task and `wait`
   returns the answer.
 - Tests in `ee/` compare the system prompt, the tool definitions and a written result against the exact expected text.
 - A developer runs a Turn with several steps and a compaction against Sailfish with reasoning turned on, before the
@@ -328,28 +339,28 @@ contain counts, token numbers and durations, and never text.
 This appendix explains how each part of the Sub-agent works. It describes the design at the time of this record, and
 the code will later state much of it exactly.
 
-### The agent tool functions
+### What the Sub-agent's tools call in core
 
-Core binds the agent tool functions to one caller. There are four:
+Each of the Sub-agent's tools is code in `ee/` that calls a core module as the lead's caller:
 
-| Function      | What the caller passes                                            | What it returns                                 |
-| ------------- | ----------------------------------------------------------------- | ----------------------------------------------- |
-| `exec`        | the Task, an intent, the Program, a time limit, how long to wait  | a Run Update, or a failure                      |
-| `wait`        | the Run, a cursor, how long to wait                               | a Run Update, or a failure                      |
-| `cancel`      | the Run, a cursor                                                 | a Run Update, or a failure                      |
-| `search`      | a query or a list of Call Paths, a Provider filter, a limit       | search hits and Tool declarations, or a failure |
+| The Sub-agent's tool | What its code calls in core                                                             |
+| -------------------- | --------------------------------------------------------------------------------------- |
+| `exec`               | the Task module, which records the attempt and accepts the Program, then the Run module |
+| `wait`               | the Run module, to read a Run after a cursor                                            |
+| `cancel`             | the Run module, to cancel a Run and read it                                             |
+| `search`             | the search module, for the discovery that the Built-in Tool `coral.search` runs         |
 
-A failure is a code and a message. Only the Sub-agent's `search` tool calls `search`, because core's MCP tools search
-from inside a Program (ADR 0026).
+These are the calls that core's own MCP handlers and Built-in Tools make. `ee/` gets no entry point of its own.
 
-Each caller chooses for itself how much of a Run Update fits in one result. Core's MCP tools keep their existing rule
-for that.
+`ee/` chooses how much of a Run's output fits in one result, and it chooses the wording of each failure. Where a core
+module supplies text that is safe to show, such as a Program's diagnostics, `ee/` includes that text. For a failure
+that `ee/` has no wording for, the model reads one general message.
 
 ### How the call stack changes
 
 The three listings below follow one `exec` call. Indentation shows which function calls which. Each line is marked with
 the job it belongs to: job 1 parses the arguments, job 2 is the logic, and job 3 writes the result. Job 2 is the part
-that moves into the agent tool functions.
+that `ee/` writes for itself.
 
 Today on `main`, the lead calls `exec`:
 
@@ -369,11 +380,7 @@ Decided, the lead calls `exec`:
 ```text
 MCP shell: call_tool                     unchanged
   tool surface interface: call           the ee/ surface passes exec to the core surface
-    core surface: parse                  job 1: MCP JSON to values
-    agent tool function: exec            job 2: the same logic, moved here
-      Task module: submit
-      Run module: observe
-    core surface: write                  job 3: chooses the Events that fit, Run Update to MCP JSON
+    core surface: exec                   unchanged: jobs 1, 2 and 3, as in the listing above
 ```
 
 Decided, the Sub-agent's model calls `exec`:
@@ -382,8 +389,8 @@ Decided, the Sub-agent's model calls `exec`:
 Turn loop, in ee/
   Sub-agent code: parse                  job 1: the model's tool call to values
   Sub-agent code: check the Program      refuses a Built-in Tool
-  agent tool function: exec              job 2: the same function the core surface calls
-    Task module: submit
+  Sub-agent code: exec                   job 2: ee/'s own copy of the four rules
+    Task module: submit                  the same call that core's handler makes
     Run module: observe
   Sub-agent code: write                  job 3: Run Update to the JSON the model reads
 ```
@@ -397,8 +404,7 @@ because that code is not written yet.
 kind. At startup, core calls the factory and gives it:
 
 - the `[sub_agent]` section of the config file, as unparsed TOML;
-- the database, and the Task, Workspace and Run modules;
-- the agent tool functions;
+- the database, and the Task, Workspace, Run and search modules;
 - the operator's destination policy for outbound requests;
 - a signal that fires when the Coral Instance shuts down.
 
@@ -464,10 +470,12 @@ while it runs.
 | The arguments or result fields of `coral.search` change | None. If the change alters a Rust type that `ee/` uses, `ee/` stops compiling, and the author updates `ee/` so that the model's `search` tool stays the same. |
 | A Built-in Tool is added | None. A Sub-agent's Program cannot call it, and `search` does not return it. |
 | A field is added to a Run Update | None, until someone changes `ee/` to include it in a result. |
-| An input is added to an agent tool function | `ee/` stops compiling. The author decides what value `ee/` passes. |
+| A call that `ee/` makes on the Task, Run or search module gains an input | `ee/` stops compiling. The author decides what value `ee/` passes. |
 | A value that `ee/` reads is removed, or its type changes | `ee/` stops compiling. The author updates `ee/`. |
 | A Run state, Event kind or required-action kind is added | `ee/` stops compiling. The author writes the text the model reads for it, or leaves that Event out of results. |
-| An error message, a Program diagnostic or a Tool declaration changes | The model reads the new text. |
+| The wording of a failure in core's MCP tools changes | None. `ee/` chooses its own wording. |
+| A kind of failure is added in core | The model reads `ee/`'s general message for it, until someone gives it its own wording in `ee/`. |
+| A Program diagnostic or a Tool declaration changes | The model reads the new text. |
 
 `ee/` handles every Run state, Event kind and required-action kind by name and has no default case. That is why adding
 one stops `ee/` compiling, in the same pull request that adds it.
@@ -516,8 +524,8 @@ the `sub_agent_id`. The lead then calls `wait` with that `sub_agent_id` to read 
 answer.
 
 During a Turn, the Sub-agent repeats two steps. It sends the conversation to the model. It then runs the tool calls in
-the model's reply through the agent tool functions and adds their results to the conversation. The Turn ends when
-the model replies without a tool call, and that reply is the Sub-agent's answer.
+the model's reply and adds their results to the conversation. The Turn ends when the model replies without a tool
+call, and that reply is the Sub-agent's answer.
 
 ```mermaid
 flowchart TD
@@ -525,7 +533,7 @@ flowchart TD
     start["Coral starts the Turn<br/>in the background and<br/>returns the sub_agent_id"]
     send["The Turn sends the<br/>conversation to the model"]
     tools{"Tool calls<br/>in the reply?"}
-    run["The Turn runs each call<br/>through the agent tool functions<br/>and adds the results"]
+    run["The Turn runs each tool call<br/>and adds the results"]
     answer["The reply is the answer.<br/>The Turn ends."]
     wait["The lead calls wait with<br/>the sub_agent_id and reads<br/>the steps and the answer"]
     ask --> start --> send --> tools
@@ -546,7 +554,7 @@ flowchart TD
 | The Coral Instance stops without shutting down | The Turn's lease in the database expires. The next request that reads the Turn marks it as interrupted. |
 
 A Run that an interrupted Turn started continues under its Run Owner. A Turn itself does not use a Run Owner or a Run
-Executor, because those run Programs. A Turn only calls the model and the agent tool functions.
+Executor, because those run Programs. A Turn only calls the model and core's Task, Run and search modules.
 
 ### What telemetry records
 
