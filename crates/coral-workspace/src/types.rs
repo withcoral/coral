@@ -1,6 +1,6 @@
 use std::fmt;
 
-use coral_db::UnixNanos;
+use coral_db::{UnixNanos, Version};
 use coral_telemetry::TraceId;
 use uuid::Uuid;
 
@@ -206,7 +206,7 @@ pub struct Workspace {
     id: WorkspaceId,
     display_name: WorkspaceDisplayName,
     state: WorkspaceState,
-    lifecycle_version: i64,
+    version: Version,
 }
 
 impl Workspace {
@@ -214,13 +214,13 @@ impl Workspace {
         id: WorkspaceId,
         display_name: WorkspaceDisplayName,
         state: WorkspaceState,
-        lifecycle_version: i64,
+        version: Version,
     ) -> Self {
         Self {
             id,
             display_name,
             state,
-            lifecycle_version,
+            version,
         }
     }
 
@@ -255,10 +255,12 @@ impl Workspace {
         self.state
     }
 
-    /// Returns the version of state evidence consumed by Run admission and dispatch checks.
+    /// Returns the Workspace's version: the count of accepted changes to its
+    /// display name and its lifecycle state. Each rename, archive and restore
+    /// raises it by one.
     #[must_use]
-    pub const fn lifecycle_version(&self) -> i64 {
-        self.lifecycle_version
+    pub const fn version(&self) -> Version {
+        self.version
     }
 }
 
@@ -481,11 +483,133 @@ impl WorkspaceEvidence {
     }
 }
 
+/// The etag a caller read, as the precondition of one change.
+///
+/// An etag is the text of a resource's version, or a UUID. A Workspace, a
+/// Workspace Membership, an Agent and an Agent Registration each keep a
+/// [`Version`] on their row. A Provider's etag is a UUID, and so is the etag
+/// that Coral still shows for those four resources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IfMatch(Precondition);
+
+/// What an [`IfMatch`] holds the resource to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Precondition {
+    /// The version of the resource's row.
+    Version(Version),
+    /// A UUID etag.
+    Token(Uuid),
+    /// Nothing: a test writes whatever the resource holds.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    Any,
+}
+
+impl IfMatch {
+    /// Reads an etag at an Adapter boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] for text that is neither the canonical
+    /// decimal text of a version nor a UUID.
+    pub fn parse(etag: &str) -> Result<Self, Error> {
+        if let Ok(version) = etag.parse::<Version>() {
+            return Ok(Self::version(version));
+        }
+        Uuid::parse_str(etag)
+            .map(Self::token)
+            .map_err(|_error| Error::InvalidInput("etag is required".into()))
+    }
+
+    /// The precondition that a resource's row is at `version`.
+    #[must_use]
+    pub const fn version(version: Version) -> Self {
+        Self(Precondition::Version(version))
+    }
+
+    /// The precondition that a resource's etag is the UUID `token`.
+    #[must_use]
+    pub const fn token(token: Uuid) -> Self {
+        Self(Precondition::Token(token))
+    }
+
+    /// The precondition that every resource meets. Tests only: a test whose
+    /// subject is not the conflict check writes without reading an etag.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    #[must_use]
+    pub const fn any() -> Self {
+        Self(Precondition::Any)
+    }
+
+    /// Whether the precondition holds for a row at `current`. A UUID etag
+    /// never does.
+    #[must_use]
+    pub fn admits(&self, current: Version) -> bool {
+        match self.0 {
+            Precondition::Version(expected) => expected == current,
+            Precondition::Token(_) => false,
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Precondition::Any => true,
+        }
+    }
+
+    /// Whether the precondition holds for a resource whose etag is the UUID
+    /// `current`. A version never does.
+    #[must_use]
+    pub fn admits_token(&self, current: &Uuid) -> bool {
+        match self.0 {
+            Precondition::Token(expected) => expected == *current,
+            Precondition::Version(_) => false,
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Precondition::Any => true,
+        }
+    }
+
+    /// What the precondition holds the resource to, for the check that must
+    /// choose the record to read.
+    pub(crate) const fn precondition(&self) -> Precondition {
+        self.0
+    }
+}
+
+/// A first-party request identity for an action that must not run twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RequestId(Uuid);
+
+impl RequestId {
+    /// Reads a request identity at an Adapter boundary, in any form of a
+    /// UUID.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidInput`] for text that is not a UUID.
+    pub fn parse(id: &str) -> Result<Self, Error> {
+        Uuid::parse_str(id)
+            .map(Self)
+            .map_err(|_error| Error::InvalidInput("request_id must be a UUID".into()))
+    }
+
+    /// A new request identity, for a caller inside the process.
+    #[must_use]
+    pub fn generate() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
+/// The text a committed request is stored under: the hyphenated lowercase
+/// UUID, whichever form the caller sent.
+impl fmt::Display for RequestId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.0.hyphenated())
+    }
+}
+
 /// Authenticated and correlated context for one administrative change.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeContext {
+    /// The etag as the Adapter sent it. A Provider's own check reads it.
     expected_etag: Option<String>,
-    request_id: Option<String>,
+    if_match: Option<IfMatch>,
+    request_id: Option<RequestId>,
     actor: AuthenticatedUser,
     occurred_at: UnixNanos,
     trace_id: TraceId,
@@ -497,6 +621,7 @@ impl ChangeContext {
     pub const fn new(actor: AuthenticatedUser, occurred_at: UnixNanos, trace_id: TraceId) -> Self {
         Self {
             expected_etag: None,
+            if_match: None,
             request_id: None,
             actor,
             occurred_at,
@@ -506,10 +631,9 @@ impl ChangeContext {
 
     /// Adds an exact concurrency precondition for the mutation's target resource.
     /// # Errors
-    /// Rejects missing or malformed etags.
+    /// Rejects missing or malformed etags, as [`IfMatch::parse`] does.
     pub fn with_etag(mut self, etag: &str) -> Result<Self, Error> {
-        uuid::Uuid::parse_str(etag)
-            .map_err(|_error| Error::InvalidInput("etag is required".into()))?;
+        self.if_match = Some(IfMatch::parse(etag)?);
         self.expected_etag = Some(etag.to_owned());
         Ok(self)
     }
@@ -517,11 +641,10 @@ impl ChangeContext {
     /// Adds a first-party request identity for a non-idempotent action.
     /// A committed receipt is never replayed with another credential or resource.
     /// # Errors
-    /// Rejects missing or malformed request identifiers.
+    /// Rejects missing or malformed request identifiers, as
+    /// [`RequestId::parse`] does.
     pub fn with_request_id(mut self, id: &str) -> Result<Self, Error> {
-        let id = uuid::Uuid::parse_str(id)
-            .map_err(|_error| Error::InvalidInput("request_id must be a UUID".into()))?;
-        self.request_id = Some(id.to_string());
+        self.request_id = Some(RequestId::parse(id)?);
         Ok(self)
     }
 
@@ -530,8 +653,14 @@ impl ChangeContext {
     pub fn expected_etag(&self) -> Option<&str> {
         self.expected_etag.as_deref()
     }
-    pub(crate) fn request_id(&self) -> Option<&str> {
-        self.request_id.as_deref()
+
+    /// Returns the precondition that [`Self::with_etag`] read, if any.
+    pub(crate) const fn if_match(&self) -> Option<&IfMatch> {
+        self.if_match.as_ref()
+    }
+
+    pub(crate) const fn request_id(&self) -> Option<&RequestId> {
+        self.request_id.as_ref()
     }
 
     /// Returns the accountable authenticated User.

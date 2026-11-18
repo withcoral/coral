@@ -1,4 +1,4 @@
-use coral_db::{QueryExecutor, Transaction, UnixNanos};
+use coral_db::{QueryExecutor, Transaction, UnixNanos, Version};
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 use sqlx::FromRow;
 
@@ -16,6 +16,9 @@ enum WorkspaceAgents {
     CreatedBy,
     Deleted,
     State,
+    Version,
+    CreatedAtUnixNanos,
+    UpdatedAtUnixNanos,
 }
 
 #[derive(Iden)]
@@ -27,6 +30,9 @@ enum AgentRegistrations {
     Enabled,
     ExpiresAtUnixNanos,
     CredentialVerifier,
+    Version,
+    CreatedAtUnixNanos,
+    UpdatedAtUnixNanos,
 }
 
 pub(super) async fn has_creator(
@@ -94,11 +100,14 @@ impl RegistrationRow {
     }
 }
 
+/// Creates the Agent and its Registration, each at the first version, with
+/// `created_at` as the time of creation and of the last change.
 pub(super) async fn insert(
     transaction: &mut Transaction<'_>,
     agent: &Agent,
     registration: &AgentRegistration,
     verifier: &str,
+    created_at: UnixNanos,
 ) -> Result<(), Error> {
     transaction
         .execute(
@@ -110,6 +119,8 @@ pub(super) async fn insert(
                     WorkspaceAgents::DisplayName,
                     WorkspaceAgents::CreatedBy,
                     WorkspaceAgents::State,
+                    WorkspaceAgents::CreatedAtUnixNanos,
+                    WorkspaceAgents::UpdatedAtUnixNanos,
                 ])
                 .values_panic([
                     Expr::val(agent.principal().id().as_str()),
@@ -117,6 +128,8 @@ pub(super) async fn insert(
                     Expr::val(agent.display_name().as_str()),
                     Expr::val(agent.created_by().as_str()),
                     Expr::val(agent.state().as_storage_str()),
+                    Expr::val(created_at),
+                    Expr::val(created_at),
                 ])
                 .to_owned(),
         )
@@ -132,6 +145,8 @@ pub(super) async fn insert(
                     AgentRegistrations::Enabled,
                     AgentRegistrations::ExpiresAtUnixNanos,
                     AgentRegistrations::CredentialVerifier,
+                    AgentRegistrations::CreatedAtUnixNanos,
+                    AgentRegistrations::UpdatedAtUnixNanos,
                 ])
                 .values_panic([
                     Expr::val(registration.id().to_string()),
@@ -140,6 +155,8 @@ pub(super) async fn insert(
                     Expr::val(i64::from(registration.is_enabled())),
                     Expr::val(registration.expires_at()),
                     Expr::val(verifier),
+                    Expr::val(created_at),
+                    Expr::val(created_at),
                 ])
                 .to_owned(),
         )
@@ -204,6 +221,49 @@ pub(super) async fn find(
         )
         .await?;
     row.ok_or(Error::AgentNotFound)?.decode()
+}
+
+/// The current version of one Agent that is not deleted, or `None` when the
+/// Workspace has no such Agent.
+pub(super) async fn agent_version(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    agent: &str,
+) -> Result<Option<Version>, Error> {
+    let stored: Option<(i64,)> = tx
+        .fetch_optional(
+            agent_column(workspace, WorkspaceAgents::Version)
+                .and_where(Expr::col(WorkspaceAgents::Id).eq(agent))
+                .to_owned(),
+        )
+        .await?;
+    stored.map(|(version,)| row_version(version)).transpose()
+}
+
+/// The current version of one Registration, or `None` when the Workspace has
+/// no such Registration.
+pub(super) async fn registration_version(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    registration: &str,
+) -> Result<Option<Version>, Error> {
+    let stored: Option<(i64,)> = tx
+        .fetch_optional(
+            Query::select()
+                .column(AgentRegistrations::Version)
+                .from(AgentRegistrations::Table)
+                .and_where(Expr::col(AgentRegistrations::WorkspaceId).eq(workspace.to_string()))
+                .and_where(Expr::col(AgentRegistrations::Id).eq(registration))
+                .to_owned(),
+        )
+        .await?;
+    stored.map(|(version,)| row_version(version)).transpose()
+}
+
+/// The version a row holds. A version that is not positive is corrupt.
+fn row_version(stored: i64) -> Result<Version, Error> {
+    Version::new(stored)
+        .ok_or_else(|| Error::CorruptData("resource row has nonpositive version".to_string()))
 }
 
 pub(super) async fn history(
@@ -304,10 +364,13 @@ pub(super) async fn registration_by_id(
     row.ok_or(Error::AgentNotFound)?.decode()
 }
 
+/// Deletes the Agent's Registration and marks the Agent deleted, which raises
+/// the Agent's version by one.
 pub(super) async fn delete_current(
     transaction: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     agent: &PrincipalId,
+    deleted_at: UnixNanos,
 ) -> Result<(), Error> {
     transaction
         .execute(
@@ -328,6 +391,11 @@ pub(super) async fn delete_current(
                     WorkspaceAgents::State,
                     AgentState::Disabled.as_storage_str(),
                 )
+                .value(
+                    WorkspaceAgents::Version,
+                    Expr::col(WorkspaceAgents::Version).add(1_i64),
+                )
+                .value(WorkspaceAgents::UpdatedAtUnixNanos, deleted_at)
                 .and_where(Expr::col(WorkspaceAgents::WorkspaceId).eq(workspace.to_string()))
                 .and_where(Expr::col(WorkspaceAgents::Id).eq(agent.as_str()))
                 .to_owned(),
@@ -336,17 +404,24 @@ pub(super) async fn delete_current(
     Ok(())
 }
 
+/// Replaces the Registration's verifier and raises its version by one.
 pub(super) async fn update_verifier(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     id: &AgentRegistrationId,
     verifier: &str,
+    updated_at: UnixNanos,
 ) -> Result<(), Error> {
     transaction
         .execute(
             Query::update()
                 .table(AgentRegistrations::Table)
                 .value(AgentRegistrations::CredentialVerifier, verifier)
+                .value(
+                    AgentRegistrations::Version,
+                    Expr::col(AgentRegistrations::Version).add(1_i64),
+                )
+                .value(AgentRegistrations::UpdatedAtUnixNanos, updated_at)
                 .and_where(Expr::col(AgentRegistrations::WorkspaceId).eq(workspace_id.to_string()))
                 .and_where(Expr::col(AgentRegistrations::Id).eq(id.to_string()))
                 .to_owned(),
@@ -355,9 +430,12 @@ pub(super) async fn update_verifier(
     Ok(())
 }
 
+/// Replaces the Registration's enabled state and expiration, and raises its
+/// version by one.
 pub(super) async fn update_registration(
     transaction: &mut Transaction<'_>,
     registration: &AgentRegistration,
+    updated_at: UnixNanos,
 ) -> Result<(), Error> {
     transaction
         .execute(
@@ -371,6 +449,11 @@ pub(super) async fn update_registration(
                     AgentRegistrations::ExpiresAtUnixNanos,
                     registration.expires_at(),
                 )
+                .value(
+                    AgentRegistrations::Version,
+                    Expr::col(AgentRegistrations::Version).add(1_i64),
+                )
+                .value(AgentRegistrations::UpdatedAtUnixNanos, updated_at)
                 .and_where(
                     Expr::col(AgentRegistrations::WorkspaceId)
                         .eq(registration.workspace_id().to_string()),
@@ -382,15 +465,22 @@ pub(super) async fn update_registration(
     Ok(())
 }
 
+/// Replaces the Agent's state and raises its version by one.
 pub(super) async fn update_state(
     transaction: &mut Transaction<'_>,
     agent: &Agent,
+    updated_at: UnixNanos,
 ) -> Result<(), Error> {
     transaction
         .execute(
             Query::update()
                 .table(WorkspaceAgents::Table)
                 .value(WorkspaceAgents::State, agent.state().as_storage_str())
+                .value(
+                    WorkspaceAgents::Version,
+                    Expr::col(WorkspaceAgents::Version).add(1_i64),
+                )
+                .value(WorkspaceAgents::UpdatedAtUnixNanos, updated_at)
                 .and_where(
                     Expr::col(WorkspaceAgents::WorkspaceId).eq(agent.workspace_id().to_string()),
                 )

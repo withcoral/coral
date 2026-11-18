@@ -259,9 +259,14 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
     // An Agent whose Registration is gone has no authority to start a Run.
     let connection = database.database();
     let mut transaction = connection.begin().await.unwrap();
-    agent_repository::delete_current(&mut transaction, workspace.id(), agent.principal().id())
-        .await
-        .unwrap();
+    agent_repository::delete_current(
+        &mut transaction,
+        workspace.id(),
+        agent.principal().id(),
+        UnixNanos::new(15),
+    )
+    .await
+    .unwrap();
     assert!(matches!(
         module
             .check_run_start_in_transaction(

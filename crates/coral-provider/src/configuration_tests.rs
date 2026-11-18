@@ -2545,6 +2545,9 @@ async fn upgrade_renames_the_tools_a_setup_cached() {
     );
     let actor = organization_user(database.clone(), "user:upgrade", OrganizationRole::Member).await;
     let context = change_context(actor.clone(), 10, '1');
+    // This version writes the columns of the resource version step when it
+    // creates the Workspace. The fixture holds them until the upgrade.
+    coral_test_support::add_resource_version_columns(&db).await;
     let workspace = workspaces
         .create(
             &context,
@@ -2596,6 +2599,7 @@ async fn upgrade_renames_the_tools_a_setup_cached() {
     .await
     .unwrap();
 
+    coral_test_support::drop_resource_version_columns(&db).await;
     database
         .migrate(coral_db::migration_plan())
         .await

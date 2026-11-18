@@ -863,6 +863,10 @@ async fn naming_a_user_as_the_agent_selects_no_private_tool() {
 async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
     let before_upgrade = coral_test_support::migration_plan_before(63);
     let fixture = PrivateToolTestModules::on_plan(&before_upgrade).await;
+    // This version writes the columns of the resource version step when it
+    // creates the Workspace and the Agent. The fixture holds them until the
+    // upgrade.
+    coral_test_support::add_resource_version_columns(&fixture.fixture).await;
     let (workspace_id, owner) = fixture.user_workspace("user:upgrade-owner").await;
     let agent = registered_agent(&fixture.workspaces, &owner, &workspace_id).await;
     let declaration = "export default function lookup(input: { id: string }): Promise<string>;";
@@ -902,6 +906,7 @@ async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
             .expect("write a Saved Function as an earlier Coral did");
     }
 
+    coral_test_support::drop_resource_version_columns(&fixture.fixture).await;
     fixture
         .database
         .migrate(coral_db::migration_plan())

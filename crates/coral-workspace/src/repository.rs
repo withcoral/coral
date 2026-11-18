@@ -1,7 +1,7 @@
 use sea_query::{Alias, Condition, Expr, ExprTrait as _, Iden, OnConflict, Order, Query};
 use sqlx::FromRow;
 
-use coral_db::{Database, QueryExecutor, Transaction, UnixNanos};
+use coral_db::{Database, QueryExecutor, Transaction, UnixNanos, Version};
 
 use crate::{
     AdministrativeLifecycleEvent, AuthoritySource, Error, LifecycleAction, LifecycleOutcome,
@@ -26,6 +26,7 @@ enum WorkspaceMemberships {
     WorkspaceId,
     UserId,
     Role,
+    Version,
     CreatedAtUnixNanos,
     UpdatedAtUnixNanos,
 }
@@ -67,18 +68,18 @@ impl AuthorityRow {
                 ))
             })?;
         let state = WorkspaceState::from_storage_str(&self.state)?;
-        if self.lifecycle_version <= 0 {
-            return Err(Error::CorruptData(format!(
+        let version = Version::new(self.lifecycle_version).ok_or_else(|| {
+            Error::CorruptData(format!(
                 "Workspace '{workspace_id}' has nonpositive lifecycle version"
-            )));
-        }
+            ))
+        })?;
         let role = self
             .membership_role
             .as_deref()
             .map(WorkspaceRole::from_storage_str)
             .transpose()?;
         Ok((
-            Workspace::new(workspace_id, display_name, state, self.lifecycle_version),
+            Workspace::new(workspace_id, display_name, state, version),
             role,
         ))
     }
@@ -300,7 +301,7 @@ pub(super) async fn insert_workspace(
             Expr::val(workspace.id().to_string()),
             Expr::val(workspace.display_name().as_str()),
             Expr::val(workspace.state().as_storage_str()),
-            Expr::val(workspace.lifecycle_version()),
+            Expr::val(workspace.version().get()),
             Expr::val(occurred_at),
             Expr::val(occurred_at),
         ])
@@ -309,6 +310,27 @@ pub(super) async fn insert_workspace(
     Ok(())
 }
 
+/// The current version of one Workspace, or `None` when it does not exist.
+pub(super) async fn workspace_version(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<Option<Version>, Error> {
+    let statement = Query::select()
+        .column(WorkspaceRecords::LifecycleVersion)
+        .from(WorkspaceRecords::Table)
+        .and_where(Expr::col(WorkspaceRecords::Id).eq(workspace_id.to_string()))
+        .to_owned();
+    let stored: Option<(i64,)> = transaction.fetch_optional(statement).await?;
+    stored.map(|(version,)| row_version(version)).transpose()
+}
+
+/// The version a row holds. A version that is not positive is corrupt.
+fn row_version(stored: i64) -> Result<Version, Error> {
+    Version::new(stored)
+        .ok_or_else(|| Error::CorruptData("resource row has nonpositive version".to_string()))
+}
+
+/// Renames the Workspace and raises its version by one.
 pub(super) async fn update_display_name(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -322,6 +344,10 @@ pub(super) async fn update_display_name(
                 WorkspaceRecords::DisplayName,
                 Expr::val(display_name.as_str()),
             ),
+            (
+                WorkspaceRecords::LifecycleVersion,
+                Expr::col(WorkspaceRecords::LifecycleVersion).add(1_i64),
+            ),
             (WorkspaceRecords::UpdatedAtUnixNanos, Expr::val(updated_at)),
         ])
         .and_where(Expr::col(WorkspaceRecords::Id).eq(workspace_id.to_string()))
@@ -334,17 +360,14 @@ pub(super) async fn update_lifecycle(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     state: WorkspaceState,
-    lifecycle_version: i64,
+    version: Version,
     updated_at: UnixNanos,
 ) -> Result<(), Error> {
     let statement = Query::update()
         .table(WorkspaceRecords::Table)
         .values([
             (WorkspaceRecords::State, Expr::val(state.as_storage_str())),
-            (
-                WorkspaceRecords::LifecycleVersion,
-                Expr::val(lifecycle_version),
-            ),
+            (WorkspaceRecords::LifecycleVersion, Expr::val(version.get())),
             (WorkspaceRecords::UpdatedAtUnixNanos, Expr::val(updated_at)),
         ])
         .and_where(Expr::col(WorkspaceRecords::Id).eq(workspace_id.to_string()))
@@ -370,6 +393,25 @@ pub(super) async fn membership_role_in_transaction(
         .transpose()
 }
 
+/// The current version of one Workspace Membership, or `None` when the User
+/// holds none there.
+pub(super) async fn membership_version(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    user_id: &str,
+) -> Result<Option<Version>, Error> {
+    let statement = Query::select()
+        .column(WorkspaceMemberships::Version)
+        .from(WorkspaceMemberships::Table)
+        .and_where(Expr::col(WorkspaceMemberships::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(WorkspaceMemberships::UserId).eq(user_id))
+        .to_owned();
+    let stored: Option<(i64,)> = transaction.fetch_optional(statement).await?;
+    stored.map(|(version,)| row_version(version)).transpose()
+}
+
+/// Creates the Membership at the first version, or changes its role and
+/// raises its version by one.
 pub(super) async fn upsert_membership(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -402,6 +444,11 @@ pub(super) async fn upsert_membership(
                 WorkspaceMemberships::Role,
                 WorkspaceMemberships::UpdatedAtUnixNanos,
             ])
+            // The stored row's version, not the proposed row's.
+            .value(
+                WorkspaceMemberships::Version,
+                Expr::col((WorkspaceMemberships::Table, WorkspaceMemberships::Version)).add(1_i64),
+            )
             .to_owned(),
         )
         .to_owned();

@@ -42,11 +42,16 @@
 //!   verified email under the profile and authority holds and commits one stable
 //!   target. Committed requests are rejected before any new email resolution. Profile projections never
 //!   expose authentication records or a generic Organization directory.
-//! - [`ChangeContext::with_etag`] requires a resource's current version under the
-//!   same mutation hold; [`ChangeContext::with_request_id`] prevents duplicate
-//!   non-idempotent actions. A repeated committed request returns a safe failure,
-//!   never recovers a credential or silently rotates again. Metadata is independent
-//!   of retained lifecycle Events.
+//! - [`ChangeContext::with_etag`] reads the etag a caller read as an [`IfMatch`],
+//!   and the change checks it under the same mutation hold. A Workspace, a
+//!   Workspace Membership, an Agent and an Agent Registration each keep a version
+//!   on their own row, which every accepted change raises by one. An etag that is
+//!   a version is checked against the row. An etag that is a UUID is checked
+//!   against the concurrency metadata, which is still what the inspections show.
+//!   [`ChangeContext::with_request_id`] reads a [`RequestId`] and prevents
+//!   duplicate non-idempotent actions. A repeated committed request returns a safe
+//!   failure, never recovers a credential or silently rotates again. Metadata is
+//!   independent of retained lifecycle Events.
 //! - [`WorkspaceModule::list_memberships`] and
 //!   [`WorkspaceModule::list_lifecycle_events`] expose safe administration
 //!   projections through the same authority rules.
@@ -131,10 +136,11 @@ pub use principal::{
 };
 pub use principal_authority::PrincipalWorkspaceEvidence;
 pub use types::{
-    AdministrativeLifecycleEvent, AuthenticatedUser, AuthoritySource, ChangeContext,
+    AdministrativeLifecycleEvent, AuthenticatedUser, AuthoritySource, ChangeContext, IfMatch,
     LifecycleAction, LifecycleOutcome, LifecycleTargetKind, MembershipChange, OrganizationRole,
-    UserId, Workspace, WorkspaceAction, WorkspaceChoice, WorkspaceDisplayName, WorkspaceEvidence,
-    WorkspaceId, WorkspaceMembership, WorkspaceRole, WorkspaceState, local_organization_owner,
+    RequestId, UserId, Workspace, WorkspaceAction, WorkspaceChoice, WorkspaceDisplayName,
+    WorkspaceEvidence, WorkspaceId, WorkspaceMembership, WorkspaceRole, WorkspaceState,
+    local_organization_owner,
 };
 
 /// Workspace lifecycle, Membership, and authority Module.
@@ -202,7 +208,7 @@ impl WorkspaceModule {
             WorkspaceId::generate(),
             display_name,
             WorkspaceState::Active,
-            1,
+            coral_db::Version::FIRST,
         );
         repository::insert_workspace(transaction, &workspace, context.occurred_at()).await?;
         repository::upsert_membership(
@@ -483,6 +489,9 @@ impl WorkspaceModule {
         if evidence.workspace().display_name() == &display_name {
             return Ok(evidence.workspace().clone());
         }
+        // The Workspace is held, so the row is at the version just read and
+        // the update leaves it at the next one.
+        let next_version = next_workspace_version(evidence.workspace())?;
         repository::update_display_name(
             &mut transaction,
             workspace_id,
@@ -508,7 +517,7 @@ impl WorkspaceModule {
             workspace_id.clone(),
             display_name,
             evidence.workspace().state(),
-            evidence.workspace().lifecycle_version(),
+            next_version,
         ))
     }
 
@@ -833,13 +842,7 @@ impl WorkspaceModule {
             &workspace_id.to_string(),
         )
         .await?;
-        let next_version = evidence
-            .workspace()
-            .lifecycle_version()
-            .checked_add(1)
-            .ok_or_else(|| {
-                Error::CorruptData("Workspace lifecycle version overflowed".to_string())
-            })?;
+        let next_version = next_workspace_version(evidence.workspace())?;
         repository::update_lifecycle(
             &mut transaction,
             workspace_id,
@@ -946,6 +949,14 @@ fn authorize(
     }
 
     Ok(WorkspaceEvidence::new(workspace, effective_role, source))
+}
+
+/// The version an accepted change leaves the Workspace at.
+fn next_workspace_version(workspace: &Workspace) -> Result<coral_db::Version, Error> {
+    workspace
+        .version()
+        .next()
+        .ok_or_else(|| Error::CorruptData("Workspace lifecycle version overflowed".to_string()))
 }
 
 /// Denies a change that ends the Owner role of the last designated Owner. The

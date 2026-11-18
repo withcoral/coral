@@ -110,6 +110,7 @@ impl WorkspaceModule {
             &agent,
             &registration,
             &credential_verifier(credential.expose()),
+            context.occurred_at(),
         )
         .await?;
         record_event(
@@ -176,6 +177,7 @@ impl WorkspaceModule {
             workspace_id,
             registration_id,
             &credential_verifier(credential.expose()),
+            context.occurred_at(),
         )
         .await?;
         record_event(
@@ -223,7 +225,7 @@ impl WorkspaceModule {
             return Ok(agent);
         }
         agent.state = state;
-        repository::update_state(&mut transaction, &agent).await?;
+        repository::update_state(&mut transaction, &agent, context.occurred_at()).await?;
         record_event(
             &mut transaction,
             context,
@@ -283,7 +285,8 @@ impl WorkspaceModule {
         }
         registration.enabled = enabled;
         registration.expires_at = expires_at;
-        repository::update_registration(&mut transaction, &registration).await?;
+        repository::update_registration(&mut transaction, &registration, context.occurred_at())
+            .await?;
         record_event(
             &mut transaction,
             context,
