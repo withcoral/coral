@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # A License covers builds released before it expires

@@ -12,9 +12,11 @@ import {
   chooseAccount,
   chooseFile,
   confirmConfiguration,
+  enableTool,
   openCustomSource,
   openDialog,
   programRunner,
+  waitForPublication,
 } from '../../../support/providers.ts'
 import { ENV_SECRET_STORE, SECRET_STORE } from '../../../support/secret-store-fixture.ts'
 import { openSettings } from '../../../support/settings.ts'
@@ -98,10 +100,9 @@ async function grantStore(page: Page, store: string, workspaceDisplay: string) {
     .waitFor()
 }
 
-// Reel runs the released binary, and nothing sets its Edition yet, so it runs as the
-// Community Edition and the KV v2 store refuses every read. #3034 brings back the full
-// journey, from a reference to the stored value upstream, once a test licence sets it.
-test('Organization owner grants a KV v2 store, and a reference to it needs the Enterprise Edition', async (context) => {
+// Reel loads the covering test License, so Coral runs as the Enterprise Edition and the KV v2
+// store reads. The expired-License path is covered by Rust tests in coral-ee-license.
+test('Organization owner grants a KV v2 store, and a tool sends the value a reference names', async (context) => {
   const { owner, bob, upstream, origin, id, provider, workspaceDisplay } =
     await weatherProvider(context)
 
@@ -112,7 +113,7 @@ test('Organization owner grants a KV v2 store, and a reference to it needs the E
         await grantStore(page, SECRET_STORE.name, workspaceDisplay)
         await page
           .getByRole('row', { name: new RegExp(SECRET_STORE.name) })
-          .getByText('Needs Enterprise', { exact: true })
+          .getByText('Available', { exact: true })
           .waitFor()
       })
     },
@@ -122,12 +123,7 @@ test('Organization owner grants a KV v2 store, and a reference to it needs the E
   await withBrowserSession(
     context,
     async ({ page, target, step }) => {
-      await step('The workspace owner sees the granted store needs Enterprise', async () => {
-        await page.goto(`/workspaces/${id}`)
-        await page.getByRole('heading', { name: 'Secret stores' }).waitFor()
-        await page.getByText('Needs Enterprise', { exact: true }).waitFor()
-      })
-      await step('Coral refuses a reference to the store, and keeps the account', async () => {
+      await step('A reference to the stored entry saves', async () => {
         await page.goto(`/workspaces/${id}/providers/${provider}/accounts`)
         await page.getByRole('button', { name: 'Reconnect' }).click()
         await page.getByRole('dialog').getByRole('button', { name: 'Reconnect' }).click()
@@ -135,16 +131,22 @@ test('Organization owner grants a KV v2 store, and a reference to it needs the E
         await page.getByRole('textbox', { name: 'Path' }).fill(SECRET_STORE.path)
         await page.getByRole('textbox', { name: 'Key' }).fill(SECRET_STORE.key)
         await page.getByRole('button', { name: 'Connect account' }).click()
-        await page.getByText('This secret store needs the Enterprise Edition.').waitFor()
+        await page.getByText('Account connected.').waitFor()
+        await page.goto(`/workspaces/${id}/providers/${provider}/accounts`)
+        await page
+          .getByText(
+            `secret store ${SECRET_STORE.name}, path ${SECRET_STORE.path}, key ${SECRET_STORE.key}`,
+          )
+          .waitFor()
       })
-      await step('A tool still sends the typed value upstream', async () => {
+      await step('A tool sends the stored value upstream, not the typed one', async () => {
         const runner = programRunner(page, target, id, { accessToken: await mcpToken(page, id) })
         const run = (await runner.exec('return await coral.providers.weather.getForecast({});'))
           .structuredContent
         expect(run.state).toBe('succeeded')
-        expect(upstream.sent).toBe('Bearer typed-value-canary')
+        expect(upstream.sent).toBe(`Bearer ${SECRET_STORE.value}`)
       })
-      await step('Adding a provider with a reference asks for the Enterprise Edition', async () => {
+      await step('A provider added with a reference sends the stored value', async () => {
         await page.goto(`/workspaces/${id}/providers/new`)
         await openCustomSource(page)
         await chooseFile(
@@ -172,7 +174,15 @@ test('Organization owner grants a KV v2 store, and a reference to it needs the E
         await dialog
           .getByRole('button', { name: 'Save and share the account', exact: true })
           .click()
-        await page.getByText('This secret store needs the Enterprise Edition.').waitFor()
+        await page.getByRole('button', { name: 'Add provider', exact: true }).click()
+        await waitForPublication(page)
+        await enableTool(page, 'getClimate')
+        upstream.sent = ''
+        const runner = programRunner(page, target, id, { accessToken: await mcpToken(page, id) })
+        const run = (await runner.exec('return await coral.providers.climate.getClimate({});'))
+          .structuredContent
+        expect(run.state).toBe('succeeded')
+        expect(upstream.sent).toBe(`Bearer ${SECRET_STORE.value}`)
       })
     },
     { actor: bob.label, storageState: bob.storageState },

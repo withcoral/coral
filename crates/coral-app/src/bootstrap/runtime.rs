@@ -316,9 +316,24 @@ impl RunningRuntime {
         self.grpc.search_model()
     }
 
-    /// Completes when the runtime stops serving on its own.
+    /// What startup made of the configured License, for the launcher to
+    /// show the operator.
+    #[must_use]
+    pub fn license_notices(&self) -> &[coral_edition::LicenseNotice] {
+        self.grpc.license_notices()
+    }
+
+    /// Completes when the runtime stops serving on its own, or when the
+    /// License recheck finds that Coral must stop.
     pub async fn wait_for_exit(&self) {
         self.grpc.wait_for_exit().await;
+    }
+
+    /// Why the License recheck stopped Coral, if it has: shut down, then
+    /// exit with it as the error.
+    #[must_use]
+    pub fn license_lapse(&self) -> Option<coral_edition::LicenseRefusal> {
+        self.grpc.license_lapse()
     }
 
     /// Shuts the runtime down gracefully, then stops every listener.

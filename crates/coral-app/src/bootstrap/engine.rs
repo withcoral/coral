@@ -30,6 +30,16 @@ use coral_telemetry::safe;
 /// mid-flight.
 const DEVICE_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// How often the License recheck asks whether Coral may keep running. An
+/// Evaluation License that expires stops Coral within this span (ADR 0038).
+const LICENSE_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What the License recheck asks, and where it says that Coral must stop.
+pub(crate) struct LicenseRecheck {
+    pub(crate) edition: coral_edition::EditionCheck,
+    pub(crate) lapse: watch::Sender<Option<coral_edition::LicenseRefusal>>,
+}
+
 /// What bootstrap resolved for one [`Engine`]: every dependency it does not
 /// choose itself.
 pub(crate) struct EngineParts {
@@ -327,7 +337,7 @@ impl BootedEngine {
 
     /// Starts the periodic passes, the search reconcile task and the search
     /// model's delivery.
-    pub(crate) fn run(self) -> Engine {
+    pub(crate) fn run(self, license: LicenseRecheck) -> Engine {
         let Self {
             modules,
             usage_reporting,
@@ -344,6 +354,7 @@ impl BootedEngine {
             usage_reporting,
             &modules.clock,
         );
+        start_license_recheck(&mut passes, license, &modules.clock);
         let search_reconcile = modules.search_index.spawn_reconcile_task();
         let (search_model, search_model_delivery) = search_model.map(SearchModel::start).unzip();
         let search_model_load = search_model
@@ -750,6 +761,36 @@ fn start_passes(
         });
     }
     run_recovery
+}
+
+/// Schedules the License recheck. When it finds that Coral must stop, it
+/// logs why and says so on the lapse channel, which the launcher waits on.
+/// The Edition does not change before Coral stops.
+fn start_license_recheck(
+    passes: &mut Passes,
+    license: LicenseRecheck,
+    clock: &Arc<dyn coral_db::Clock>,
+) {
+    let clock = Arc::clone(clock);
+    passes.start(
+        "license_recheck",
+        Schedule::every(LICENSE_RECHECK_INTERVAL),
+        move || {
+            let today = super::server::utc_date(clock.as_ref());
+            if let Err(refusal) = license.edition.recheck_license(today) {
+                tracing::error!(
+                    coral.local.license = %refusal,
+                    "License ended; Coral stops"
+                );
+                license.lapse.send_if_modified(|lapse| {
+                    let first = lapse.is_none();
+                    lapse.get_or_insert(refusal);
+                    first
+                });
+            }
+            std::future::ready(Ok(()))
+        },
+    );
 }
 
 /// One pass of the expired-lease sweep. It fails with the error's code, and

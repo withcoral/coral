@@ -56,7 +56,9 @@ ee=ee/crates/coral-ee
 
 expect "a clean tree passes" ""
 
-append "$core/Cargo.toml" $'[dependencies]\ncoral-ee = { path = "../../ee/crates/coral-ee" }'
+# A subtable header, so the line is valid whether or not the manifest
+# already has a [dependencies] table.
+append "$core/Cargo.toml" $'[dependencies.coral-ee]\npath = "../../ee/crates/coral-ee"'
 expect "a dependency into ee/" "depends on coral-ee in ee/"
 
 in_tree perl -pi -e 's|^default-members = \[(.*)\]|default-members = [$1, "ee/crates/*"]|' Cargo.toml
@@ -65,7 +67,7 @@ expect "an ee/ default member" "is a default workspace member"
 write "$core/src/breach.rs" '#[cfg(feature = "enterprise")] fn a() {}'
 expect "a cfg feature switch" "compile-time enterprise switch"
 
-append "$core/Cargo.toml" $'[dependencies]\nserde = { workspace = true, features = ["derive", "enterprise"] }'
+append "$core/Cargo.toml" $'[dependencies.serde]\nworkspace = true\nfeatures = ["derive", "enterprise"]'
 expect "a features list switch" "compile-time enterprise switch"
 
 write "$core/src/breach.rs" 'const ON: bool = cfg!(enterprise);'
