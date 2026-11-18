@@ -1,3 +1,4 @@
+use coral_db::UnixNanos;
 use coral_run::{
     FinalValue, ProgramLogLevel, RequiredAction, RequiredActionRequest, RequiredActor, RunEvent,
     RunEventKind, RunFailureCode, RunId, RunState, RunTerminalOutcome, RunUpdate, RunUpdatePage,
@@ -584,14 +585,15 @@ fn required_action(action: &RequiredAction, human_interface: &crate::HumanInterf
         },
         tool: action.call_path.clone(),
         provider: action.provider_label.clone(),
-        deadline_at: timestamp(action.deadline_at_unix_nanos),
+        deadline_at: timestamp(UnixNanos::new(action.deadline_at_unix_nanos)),
         url: human_interface.page_url(&action.action_path),
     }
 }
 
-// Every i64 Unix-nanosecond value fits chrono's range. Keep conversion integral.
-fn timestamp(unix_nanos: i64) -> String {
-    chrono::DateTime::from_timestamp_nanos(unix_nanos)
+// The Adapter's one conversion from an instant to its wire text. Every
+// instant fits chrono's range. Keep conversion integral.
+fn timestamp(instant: UnixNanos) -> String {
+    chrono::DateTime::from_timestamp_nanos(instant.get())
         .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
 }
 
@@ -685,7 +687,7 @@ fn run_event<'a>(
     index: usize,
 ) -> Result<(Event<'a>, Option<ContentBlock>), ToolFailure> {
     let sequence = event.sequence().to_string();
-    let occurred_at = timestamp(event.occurred_at_unix_nanos());
+    let occurred_at = timestamp(UnixNanos::new(event.occurred_at_unix_nanos()));
     Ok(match event.kind() {
         RunEventKind::ProgramEmitted { value } => {
             let uri = format!("urn:coral:output:{run_id}:{}", event.sequence());

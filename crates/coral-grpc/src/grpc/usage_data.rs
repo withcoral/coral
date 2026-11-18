@@ -24,7 +24,7 @@ fn view(view: coral_usage::UsageDataView) -> wire::UsageData {
         }
         .into(),
         last_sent: view.last_sent.map(|sent| wire::SentUsageReport {
-            sent_time: Some(timestamp(sent.sent_at.get())),
+            sent_time: Some(timestamp(sent.sent_at)),
             json: sent.json,
         }),
         next_report_json: view.next_report_json,

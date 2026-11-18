@@ -14,7 +14,7 @@ fn summary(summary: &PrivateToolSummary) -> wire::PrivateToolSummary {
     wire::PrivateToolSummary {
         path: summary.path().as_str().to_owned(),
         description: summary.description().as_str().to_owned(),
-        update_time: Some(timestamp(summary.saved_at().get())),
+        update_time: Some(timestamp(summary.saved_at())),
     }
 }
 
@@ -26,7 +26,7 @@ fn private_tool(function: &PrivateTool) -> wire::PrivateTool {
         source: function.source().as_str().to_owned(),
         diagnostics: function.diagnostics().iter().map(diagnostic).collect(),
         diagnostics_truncated: function.diagnostics_truncated(),
-        update_time: Some(timestamp(function.saved_at().get())),
+        update_time: Some(timestamp(function.saved_at())),
     }
 }
 

@@ -105,7 +105,8 @@ pub(super) struct ValidatedOidcIdentity {
     pub(super) email: Option<String>,
     pub(super) email_verified: Option<bool>,
     pub(super) hosted_domain: Option<String>,
-    pub(super) profile_observed_at_unix_nanos: i64,
+    /// The token's `iat`: the instant the provider issued these profile claims.
+    pub(super) profile_observed_at: UnixNanos,
 }
 
 /// Verifies the ID token of one sign-in at `now`, the caller's one reading
@@ -359,17 +360,19 @@ fn validate_claims(
             .get(&provider.email_verified_claim)
             .and_then(Value::as_bool),
         hosted_domain: profile_text(claims, "hd", 255),
-        profile_observed_at_unix_nanos: i64::try_from(
-            Duration::try_from_secs_f64(
-                claims
-                    .get("iat")
-                    .and_then(Value::as_f64)
-                    .ok_or(TokenRejection::Times)?,
+        profile_observed_at: UnixNanos::new(
+            i64::try_from(
+                Duration::try_from_secs_f64(
+                    claims
+                        .get("iat")
+                        .and_then(Value::as_f64)
+                        .ok_or(TokenRejection::Times)?,
+                )
+                .map_err(|_error| TokenRejection::Times)?
+                .as_nanos(),
             )
-            .map_err(|_error| TokenRejection::Times)?
-            .as_nanos(),
-        )
-        .map_err(|_error| TokenRejection::Times)?,
+            .map_err(|_error| TokenRejection::Times)?,
+        ),
     })
 }
 
@@ -1064,7 +1067,7 @@ pub(in crate::auth) mod tests {
         set_claim(&mut newer, "iat", json!(now - 10));
         let newer = validate_claims(&provider, "expected-nonce", &newer, now).unwrap();
         let older = validate_claims(&provider, "expected-nonce", &older, now).unwrap();
-        assert!(older.profile_observed_at_unix_nanos < newer.profile_observed_at_unix_nanos);
+        assert!(older.profile_observed_at < newer.profile_observed_at);
     }
 
     #[test]

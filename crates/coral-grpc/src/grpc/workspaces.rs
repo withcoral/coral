@@ -108,7 +108,10 @@ pub(super) fn workspace_id(name: &str) -> Result<WorkspaceId, Status> {
     };
     WorkspaceId::parse(id).map_err(error)
 }
-pub(super) fn timestamp(nanos: i64) -> prost_types::Timestamp {
+/// An instant as the wire carries it. This is the adapter's one conversion
+/// from an instant to a protobuf `Timestamp`.
+pub(super) fn timestamp(instant: UnixNanos) -> prost_types::Timestamp {
+    let nanos = instant.get();
     prost_types::Timestamp {
         seconds: nanos.div_euclid(1_000_000_000),
         nanos: i32::try_from(nanos.rem_euclid(1_000_000_000))
@@ -126,8 +129,8 @@ fn workspace(evidence: &WorkspaceEvidence, meta: ResourceMetadata) -> wire::Work
         mcp_endpoint: String::new(),
         organization_mcp_endpoint: String::new(),
         etag: meta.etag,
-        create_time: Some(timestamp(meta.created_at.get())),
-        update_time: Some(timestamp(meta.updated_at.get())),
+        create_time: Some(timestamp(meta.created_at)),
+        update_time: Some(timestamp(meta.updated_at)),
         effective_role: role(evidence.effective_role()).into(),
     }
 }
