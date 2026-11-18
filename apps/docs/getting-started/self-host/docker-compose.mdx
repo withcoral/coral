@@ -180,7 +180,7 @@ To use your own Postgres server:
    CORAL_DATABASE_URL=postgres://coral:PASSWORD@db.example.com:5432/coral?sslmode=verify-full
    ```
 
-Your server needs pgvector 0.7 or later. If it does not have pgvector, set `semantic_search_enabled = false` in `[search]`. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector).
+Your server needs pgvector 0.7 or later. Coral creates the `vector` extension at startup only when its database role may create it; otherwise, create it first. If your server does not have pgvector, add `semantic_search_enabled = false` under `[search]` in `CORAL_CONFIG` of the `coral` service, then restart Coral. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector).
 
 If your Postgres server uses a custom CA for TLS, add the CA bundle to the Coral container, so that Coral can trust the certificate. For example, with AWS RDS:
 

@@ -37,7 +37,7 @@ With Postgres, semantic search needs the pgvector extension, version 0.7 or late
 
 Before you upgrade Coral on Postgres, install pgvector or turn the setting off.
 
-At startup, Coral creates the `vector` extension when pgvector is installed and Coral's database role is a superuser. If the extension is not available, Coral does not start and reports an error such as:
+At startup, Coral creates the `vector` extension when pgvector is installed and Coral's database role may create it: a superuser, or the master user on Amazon RDS. If the extension is not available, Coral does not start and reports an error such as:
 
 ```text
 Error: failed precondition: Postgres 17.11 does not provide required search feature: vector extension (error returned from database: extension "vector" is not available); install pgvector 0.7 or later in a schema on Coral's search path, let Coral's database role create it, or set `[search] semantic_search_enabled = false`
