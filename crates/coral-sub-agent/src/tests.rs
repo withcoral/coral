@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use coral_app::{McpInterfaceDependencies, McpInterfaceFactory as _};
@@ -10,7 +11,7 @@ use coral_run::{CoralInstanceId, RunInbox, RunModule, RuntimeLimits};
 use coral_search::UniversalSearchModule;
 use coral_task::{AttemptKind, TaskCommands, TaskId, TaskIntent, TaskModule};
 use coral_test_support::{
-    EVENTUALLY, TEST_COMPILATION_TIMEOUT, TestDatabase, change, provision_user,
+    EVENTUALLY, ManualClock, TEST_COMPILATION_TIMEOUT, TestDatabase, change, provision_user,
 };
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, WorkspaceDisplayName, WorkspaceId,
@@ -23,7 +24,7 @@ use wiremock::matchers::{any, body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::model::{Block, Message, ModelClient, Role, ToolCall};
-use crate::sub_agents::{Error, SubAgents, TurnState};
+use crate::sub_agents::{Error, SubAgents, TURN_LEASE, TurnState};
 use crate::{MODEL_CALL_TIMEOUT, SubAgentFactory, repository};
 
 const POLICY: DestinationPolicy =
@@ -31,15 +32,9 @@ const POLICY: DestinationPolicy =
 const MODEL: &str = "sailfish-1";
 const MESSAGE: &str = "How many invoices are open?";
 
-/// The clock of every Sub-agent here: noon on 18 November 2026, UTC.
-#[derive(Debug)]
-struct Noon;
-
-impl Clock for Noon {
-    fn now(&self) -> UnixNanos {
-        UnixNanos::new(1_795_003_200_000_000_000)
-    }
-}
+/// Where the clock of every Sub-agent here starts: noon on 18 November 2026,
+/// UTC.
+const NOON: UnixNanos = UnixNanos::new(1_795_003_200_000_000_000);
 
 /// A lead in a Workspace of its own, over the real modules, and the HTTP
 /// stub that stands in for the model.
@@ -51,6 +46,9 @@ struct Lead {
     actor: AuthenticatedPrincipal,
     workspace_id: WorkspaceId,
     model: MockServer,
+    clock: ManualClock,
+    /// Shuts the Coral Instance down.
+    stop: tokio::sync::watch::Sender<bool>,
 }
 
 impl Lead {
@@ -82,6 +80,8 @@ impl Lead {
             actor: AuthenticatedPrincipal::user(user),
             workspace_id,
             model: MockServer::start().await,
+            clock: ManualClock::starting_at(NOON),
+            stop: tokio::sync::watch::Sender::new(false),
             database,
             _fixture: fixture,
         }
@@ -95,8 +95,8 @@ impl Lead {
             modules: self.modules.clone(),
             outbound_policy: POLICY,
             env: Arc::new(|name: &str| Ok((name == "MODEL_KEY").then(|| "key".to_owned()))),
-            clock: Arc::new(Noon),
-            stopping: tokio::sync::watch::channel(false).1,
+            clock: Arc::new(self.clock.clone()),
+            stopping: self.stop.subscribe(),
         }
     }
 
@@ -119,13 +119,15 @@ impl Lead {
         let model = ModelClient::new(http, &base_url, MODEL.to_owned(), None);
         let modules = self.modules.clone();
         let (tasks, commands, runs) = (modules.tasks, modules.commands, modules.runs);
+        let (clock, stopping) = (Arc::new(self.clock.clone()), self.stop.subscribe());
         SubAgents::new(
             self.database.clone(),
             tasks,
             commands,
             runs,
             model,
-            Arc::new(Noon),
+            clock,
+            stopping,
         )
     }
 
@@ -582,4 +584,83 @@ async fn cancel_ends_a_running_turn_for_good() {
     let ended = sub_agents.end_turn(workspace_id, &turn_id, &late).await;
     assert!(!ended.unwrap(), "the first ending stands");
     assert_eq!(result(call(&*tools, &caller, "wait", by_id).await), stopped);
+}
+
+// Catches: a Turn that runs on, or reads as running, once its Coral Instance
+// begins to shut down.
+#[tokio::test]
+async fn shutdown_interrupts_a_running_turn() {
+    let lead = Lead::new().await;
+    lead.model_answers(no_reply()).await;
+    let (tools, caller) = (lead.tools(), lead.caller());
+    let agent = json!({"goal": "Count the invoices", "message": MESSAGE});
+    let started = result(call(&*tools, &caller, "agent", agent).await);
+    let sub_agent_id = started.get("sub_agent_id").unwrap();
+
+    lead.stop.send_replace(true);
+
+    let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
+    let waited = result(call(&*tools, &caller, "wait", wait).await);
+    let interrupted = json!({"sub_agent_id": sub_agent_id, "state": "interrupted"});
+    assert_eq!(waited, interrupted);
+}
+
+// Catches: a Turn that reads as running for ever once its Coral Instance
+// stopped without shutting down, and one interrupted while its lease holds.
+#[tokio::test]
+async fn the_next_read_interrupts_a_turn_whose_lease_lapsed() {
+    let lead = Lead::new().await;
+    lead.model_answers(no_reply()).await;
+    let (tools, caller) = (lead.tools(), lead.caller());
+    let agent = json!({"goal": "Count the invoices", "message": MESSAGE});
+    let started = result(call(&*tools, &caller, "agent", agent).await);
+    let sub_agent_id = started.get("sub_agent_id").and_then(Value::as_str);
+    let sub_agent_id = sub_agent_id.unwrap();
+    let by_id = json!({"sub_agent_id": sub_agent_id});
+    let sub_agents = lead.sub_agents();
+    let turn = sub_agents.turn(&lead.actor, &lead.workspace_id, sub_agent_id);
+    let lease_end = turn.await.unwrap().lease_expires_at;
+
+    lead.clock.set(UnixNanos::new(lease_end.get() - 1));
+    let held = result(call(&*tools, &caller, "wait", by_id.clone()).await);
+    assert_eq!(held.get("state"), Some(&json!("running")));
+    lead.clock.set(UnixNanos::new(i64::MAX));
+    let lapsed = result(call(&*tools, &caller, "cancel", by_id).await);
+
+    let interrupted = json!({"sub_agent_id": sub_agent_id, "state": "interrupted"});
+    assert_eq!(lapsed, interrupted);
+}
+
+/// A clock that reads one nanosecond later each time.
+#[derive(Debug)]
+struct Ticking(AtomicI64);
+
+impl Clock for Ticking {
+    fn now(&self) -> UnixNanos {
+        UnixNanos::new(self.0.fetch_add(1, Ordering::SeqCst))
+    }
+}
+
+// Catches: a wait that reads a Turn as running until its own deadline after
+// the Turn's lease lapsed, since no write marks the lapse.
+#[tokio::test]
+async fn a_wait_returns_once_the_lease_of_its_turn_lapses() {
+    let lead = Lead::new().await;
+    lead.model_answers(no_reply()).await;
+    let agent = json!({"goal": "Count the invoices", "message": MESSAGE});
+    let started = result(call(&*lead.tools(), &lead.caller(), "agent", agent).await);
+    let mut dependencies = lead.dependencies();
+    let lease_end = NOON.saturating_add(TURN_LEASE).get();
+    dependencies.clock = Arc::new(Ticking(AtomicI64::new(lease_end - 1)));
+    let section = format!("base_url = '{}'\nmodel = '{MODEL}'", lead.base_url());
+    let other = SubAgentFactory.build(&toml::from_str(&section).unwrap(), dependencies);
+
+    let wait = json!({"sub_agent_id": started.get("sub_agent_id"), "wait_ms": 30_000});
+    let asked_at = tokio::time::Instant::now();
+    let waited = result(call(&*other.unwrap(), &lead.caller(), "wait", wait).await);
+    assert!(
+        asked_at.elapsed() < Duration::from_secs(30),
+        "the wait ran out"
+    );
+    assert_eq!(waited.get("state"), Some(&json!("interrupted")), "{waited}");
 }

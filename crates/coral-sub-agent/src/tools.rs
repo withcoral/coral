@@ -169,7 +169,7 @@ struct AgentArguments {
 
 const SUB_AGENT_ID_DESCRIPTION: &str =
     "The sub_agent_id from agent. Pass it in place of run_id, without a cursor.";
-const WAIT_BY_SUB_AGENT_ID: &str = "With `sub_agent_id` in place of `run_id`, observe that Sub-agent: the call returns its `state` when it stops running or `wait_ms` runs out, with its `answer` once `completed` or its `failure` once `failed`.";
+const WAIT_BY_SUB_AGENT_ID: &str = "With `sub_agent_id` in place of `run_id`, observe that Sub-agent: the call returns its `state` when it stops running or `wait_ms` runs out, with its `answer` once `completed` or its `failure` once `failed`. `interrupted` means that Coral stopped before the Sub-agent answered: call `agent` again.";
 const WAIT_TAKES: &str = "with `sub_agent_id`, wait takes only `wait_ms` beside it";
 
 #[derive(Deserialize)]
@@ -253,6 +253,7 @@ fn turn_result(sub_agent_id: &str, turn: TurnState) -> CallToolResponse {
             json!({"sub_agent_id": sub_agent_id, "state": "failed", "failure": failure})
         }
         TurnState::Canceled => json!({"sub_agent_id": sub_agent_id, "state": "canceled"}),
+        TurnState::Interrupted => json!({"sub_agent_id": sub_agent_id, "state": "interrupted"}),
     })
 }
 

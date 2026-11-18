@@ -50,6 +50,7 @@ enum SubAgentThreadMessages {
 }
 
 const RUNNING: &str = "running";
+const INTERRUPTED: &str = "interrupted";
 
 /// Inserts the Sub-agent of `principal` in its Task. `false` means that `id`
 /// is in use and nothing was written.
@@ -132,6 +133,7 @@ pub(crate) async fn find_turn(
         .column((SubAgentTurns::Table, SubAgentTurns::State))
         .column((SubAgentTurns::Table, SubAgentTurns::Answer))
         .column((SubAgentTurns::Table, SubAgentTurns::Failure))
+        .column((SubAgentTurns::Table, SubAgentTurns::LeaseExpiresAtUnixNanos))
         .from(SubAgentTurns::Table)
         .inner_join(SubAgentRecords::Table, of_sub_agent)
         .and_where(
@@ -171,6 +173,25 @@ pub(crate) async fn end_turn(
         .and_where(Expr::col(SubAgentTurns::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(SubAgentTurns::Id).eq(turn_id))
         .and_where(Expr::col(SubAgentTurns::State).eq(RUNNING))
+        .to_owned();
+    Ok(transaction.execute_change(statement).await? == 1)
+}
+
+/// Ends the running Turn as interrupted if its lease lapsed by `now`.
+/// `false` means that it was renewed or had ended, and nothing was written.
+pub(crate) async fn interrupt_lapsed_turn(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    turn_id: &str,
+    now: UnixNanos,
+) -> Result<bool, coral_db::Error> {
+    let statement = Query::update()
+        .table(SubAgentTurns::Table)
+        .value(SubAgentTurns::State, INTERRUPTED)
+        .and_where(Expr::col(SubAgentTurns::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SubAgentTurns::Id).eq(turn_id))
+        .and_where(Expr::col(SubAgentTurns::State).eq(RUNNING))
+        .and_where(Expr::col(SubAgentTurns::LeaseExpiresAtUnixNanos).lte(now))
         .to_owned();
     Ok(transaction.execute_change(statement).await? == 1)
 }
@@ -289,6 +310,7 @@ struct TurnRow {
     state: String,
     answer: Option<String>,
     failure: Option<String>,
+    lease_expires_at_unix_nanos: UnixNanos,
 }
 
 impl TurnRow {
@@ -298,9 +320,14 @@ impl TurnRow {
             ("completed", Some(answer), None) => TurnState::Completed { answer },
             ("failed", None, Some(failure)) => TurnState::Failed { failure },
             ("canceled", None, None) => TurnState::Canceled,
+            (INTERRUPTED, None, None) => TurnState::Interrupted,
             _ => return Err(Error::CorruptData),
         };
-        Ok(Turn { id: self.id, state })
+        Ok(Turn {
+            id: self.id,
+            state,
+            lease_expires_at: self.lease_expires_at_unix_nanos,
+        })
     }
 }
 
@@ -311,5 +338,6 @@ fn stored(state: &TurnState) -> (&'static str, Option<&str>, Option<&str>) {
         TurnState::Completed { answer } => ("completed", Some(answer), None),
         TurnState::Failed { failure } => ("failed", None, Some(failure)),
         TurnState::Canceled => ("canceled", None, None),
+        TurnState::Interrupted => (INTERRUPTED, None, None),
     }
 }

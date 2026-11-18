@@ -16,9 +16,11 @@ use crate::model::{Message, ModelCall, ModelClient, ModelError, ToolCall};
 use crate::run_tools::{Caller, RunTools};
 use crate::{prompt, repository};
 
+mod interruption;
+
 /// How long a running Turn stays held after its Coral Instance last renewed
 /// the lease.
-const TURN_LEASE: Duration = Duration::from_secs(30);
+pub(crate) const TURN_LEASE: Duration = Duration::from_secs(30);
 
 /// The most model calls one Turn makes.
 const MODEL_CALLS_PER_TURN: usize = 60;
@@ -32,6 +34,7 @@ pub(crate) struct SubAgents {
     run_tools: Arc<RunTools>,
     model: Arc<ModelClient>,
     clock: Arc<dyn Clock>,
+    stopping: tokio::sync::watch::Receiver<bool>,
 }
 
 impl SubAgents {
@@ -42,6 +45,7 @@ impl SubAgents {
         runs: RunModule,
         model: ModelClient,
         clock: Arc<dyn Clock>,
+        stopping: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         Self {
             database,
@@ -50,6 +54,7 @@ impl SubAgents {
             runs,
             model: Arc::new(model),
             clock,
+            stopping,
         }
     }
 
@@ -111,7 +116,14 @@ impl SubAgents {
         loop {
             let turn = self.turn(actor, workspace_id, sub_agent_id).await?;
             let read_at = tokio::time::Instant::now();
-            if turn.state != TurnState::Running || !changes.pause(read_at).await {
+            if turn.state != TurnState::Running {
+                return Ok(turn.state);
+            }
+            // No write marks a lapsed lease: read again once it lapses.
+            let lapse = turn
+                .lease_expires_at
+                .saturating_duration_since(self.clock.now());
+            if tokio::time::timeout(lapse, changes.pause(read_at)).await == Ok(false) {
                 return Ok(turn.state);
             }
         }
@@ -130,7 +142,8 @@ impl SubAgents {
         Ok(self.turn(actor, workspace_id, sub_agent_id).await?.state)
     }
 
-    /// The Turn of the caller's own Sub-agent. Any other reads as not found.
+    /// The Turn of the caller's own Sub-agent, interrupted if its lease
+    /// lapsed. Any other reads as not found.
     pub(crate) async fn turn(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -138,9 +151,10 @@ impl SubAgents {
         sub_agent_id: &str,
     ) -> Result<Turn, Error> {
         let principal = actor.principal();
-        repository::find_turn(&*self.database, workspace_id, sub_agent_id, principal)
+        let turn = repository::find_turn(&*self.database, workspace_id, sub_agent_id, principal)
             .await?
-            .ok_or(Error::SubAgentNotFound)
+            .ok_or(Error::SubAgentNotFound)?;
+        self.interrupt_if_lapsed(workspace_id, turn).await
     }
 
     /// Runs the Turn to its end, under its lease.
@@ -149,6 +163,7 @@ impl SubAgents {
         let answered = tokio::select! {
             answered = self.answer(&turn) => answered,
             () = self.hold_lease(workspace_id, &turn.id) => return,
+            () = self.interrupt_at_shutdown(workspace_id, &turn.id) => return,
         };
         let ending = match answered {
             Ok(answer) => TurnState::Completed { answer },
@@ -266,6 +281,8 @@ pub(crate) enum TurnState {
     Failed { failure: String },
     /// The caller canceled the Turn.
     Canceled,
+    /// The Coral Instance that ran the Turn stopped before the Turn ended.
+    Interrupted,
 }
 
 /// A Turn as its row holds it.
@@ -273,6 +290,7 @@ pub(crate) enum TurnState {
 pub(crate) struct Turn {
     pub(crate) id: String,
     pub(crate) state: TurnState,
+    pub(crate) lease_expires_at: UnixNanos,
 }
 
 /// A Turn that this Coral Instance runs, and the caller its tools act as.
