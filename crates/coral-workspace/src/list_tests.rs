@@ -546,8 +546,9 @@ async fn a_list_returns_each_row_as_its_own_inspection_does_in_the_order_of_the_
 
 // Catches: a list or an inspection that reads a row's etag or times from the
 // table of concurrency metadata, with a statement of its own or inside
-// another. Coral only writes that table, for a Coral that still reads it, so
-// a read that names it fails here.
+// another. Coral has stopped using that table and a later step drops it, so
+// a read that names it fails here. The versions tests take every change
+// without the table.
 #[tokio::test]
 async fn no_list_or_inspection_reads_the_metadata_table() {
     let lists = lists(2).await;
