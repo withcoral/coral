@@ -5,6 +5,7 @@
 pub mod model;
 mod repository;
 mod sub_agents;
+mod tools;
 
 use std::error::Error;
 use std::sync::Arc;
@@ -16,6 +17,8 @@ use serde::Deserialize;
 use url::Url;
 
 use model::ModelClient;
+use sub_agents::SubAgents;
+use tools::CoreWithAgent;
 
 /// Builds core's MCP tools with the `agent` tool beside them, from the
 /// `[sub_agent]` section of the config file.
@@ -33,7 +36,10 @@ impl McpInterfaceFactory for SubAgentFactory {
     ) -> Result<Arc<dyn McpInterface>, Box<dyn Error + Send + Sync>> {
         let section: Section = StoreSettings::new(section.clone()).decode()?;
         section.model_client(&dependencies)?;
-        Ok(dependencies.modules.core_interface())
+        let core = dependencies.modules.core_interface();
+        let tasks = dependencies.modules.tasks;
+        let sub_agents = SubAgents::new(dependencies.database, tasks.clone(), dependencies.clock);
+        Ok(Arc::new(CoreWithAgent::new(core, tasks, sub_agents)))
     }
 }
 

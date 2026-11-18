@@ -620,6 +620,7 @@ dependencies = [
  "coral-grpc",
  "coral-mcp",
  "coral-run-executor",
+ "coral-sub-agent",
  "coral-test-support",
  "reqwest",
  "sha2 0.11.1",
@@ -1184,19 +1185,26 @@ dependencies = [
 name = "coral-sub-agent"
 version = "1.10.0"
 dependencies = [
+ "async-trait",
  "coral-app",
  "coral-db",
+ "coral-identifier",
  "coral-mcp",
  "coral-outbound",
  "coral-secret-store",
  "coral-task",
  "coral-workspace",
+ "rmcp",
+ "schemars",
  "sea-query",
  "serde",
+ "serde_json",
  "sqlx",
  "thiserror",
+ "tokio",
  "toml",
  "url",
+ "uuid",
 ]
 
 [[package]]

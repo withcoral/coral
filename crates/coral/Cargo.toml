@@ -29,6 +29,7 @@ coral-edition.workspace = true
 coral-embed.workspace = true
 coral-mcp.workspace = true
 coral-run-executor.workspace = true
+coral-sub-agent.workspace = true
 
 [dev-dependencies]
 coral-db.workspace = true
