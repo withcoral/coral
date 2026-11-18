@@ -66,7 +66,8 @@ stops, and does not start again with it. _Avoid_: trial license
 
 **Release Date**: The date a Coral build counts as released, fixed into the build when it is made. A License compares
 its expiry with this date. Only an Evaluation License also compares it with the clock. A source or development build
-counts as released on its own commit's date. _Avoid_: build date, build time
+counts as released on its own commit's date, or on the current date when git is unavailable. _Avoid_: build date,
+build time
 
 **OAuth Client**: Client software that a User signs in to Coral through, identified by a DCR client ID or a CIMD URL.
 A public client proves only that it holds the PKCE verifier for a code issued to its redirect. A confidential client
