@@ -574,8 +574,8 @@ async fn a_finish_at_the_deadline_times_out_once_corals_clock_passed_it() {
     }
 }
 
-/// Catches: an approval deadline the loop does not record, or one that
-/// overrides a decision committed before it.
+/// Catches: an Approval Request's deadline the loop does not record, or
+/// one that overrides a decision committed before it.
 #[tokio::test]
 async fn an_approval_expires_in_the_loop_unless_a_decision_committed_first() {
     for decided_first in [false, true] {
@@ -584,7 +584,7 @@ async fn an_approval_expires_in_the_loop_unless_a_decision_committed_first() {
         let tool = fixture.user_tool("user:review", "Expire in the loop").await;
         fixture.require_approval(&tool).await;
         let approvals = fixture.approvals();
-        let (run_id, stream) = started(&runs, &tool).await;
+        let (run_id, mut stream) = started(&runs, &tool).await;
         stream.request(1, invoke_forecast());
         let request =
             wait_for_approval(&approvals, &tool.principal, &tool.workspace_id, &run_id).await;
@@ -616,6 +616,15 @@ async fn an_approval_expires_in_the_loop_unless_a_decision_committed_first() {
                 .all(|row| row.ended_at_unix_nanos.is_some())
         })
         .await;
+        // The owner applies its mailbox in order: once the Finish sent after
+        // the timer is answered, the timer was applied.
+        stream.request(
+            2,
+            request::Kind::Finish(Finish {
+                completion: Some(finish::Completion::ValueJson("1".to_owned())),
+            }),
+        );
+        while !matches!(stream.next().await, run_response::Message::Ended(_)) {}
         let settled = approvals
             .get(&tool.principal, &tool.workspace_id, &request.id)
             .await

@@ -1203,10 +1203,14 @@ impl OwnerState {
         now_unix_nanos: i64,
     ) -> Vec<Effect> {
         let mut effects = Vec::new();
-        if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
+        let past_deadline = now_unix_nanos >= self.limits.deadline_at_unix_nanos;
+        if past_deadline {
             effects = self.deadline(now_unix_nanos);
         }
-        if self.termination.is_none() {
+        // A Run stream's deadline ends its Run on its own, written first or
+        // by its terminal write: the cancellation is then a repeat.
+        let deadline_decides = past_deadline && self.requests.is_some();
+        if self.termination.is_none() && !deadline_decides {
             effects.extend(self.terminate(
                 RunTerminationKind::Canceled,
                 Some(requester),
@@ -1231,8 +1235,10 @@ impl OwnerState {
     /// and never before the deadline, so the shutdown grace runs from then.
     /// Nothing more once a termination is applied (a cancel applied first
     /// decides the kind, a Run stream's is being written), or past the point
-    /// where the terminal write decides on its own. A running Run stream's
-    /// Run is ended with its termination written first instead.
+    /// where the terminal write decides on its own. A Run stream's Run takes
+    /// no intent and no grace: while its Program runs, it ends with its
+    /// termination written first; once the Program ended, its terminal write
+    /// times it out.
     fn deadline(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
         if self.termination.is_some()
             || self.stream_end.is_some()
@@ -1241,7 +1247,7 @@ impl OwnerState {
             return Vec::new();
         }
         let at = now_unix_nanos.max(self.limits.deadline_at_unix_nanos);
-        if self.requests.is_some() && self.phase == Phase::Running {
+        if self.requests.is_some() {
             return self.end_stream_run(RunTerminationKind::TimedOut, at);
         }
         self.terminate(RunTerminationKind::TimedOut, None, None, at)
@@ -1269,6 +1275,7 @@ impl OwnerState {
     /// the drain. No shutdown grace: a dispatch result that lands after the
     /// write is dropped.
     fn end_stream_run(&mut self, kind: RunTerminationKind, at_unix_nanos: i64) -> Vec<Effect> {
+        // Once the Program ended, its terminal write decides.
         if self.phase != Phase::Running {
             return Vec::new();
         }
@@ -1498,19 +1505,24 @@ impl OwnerState {
         if self.pending_chunks() > 0 {
             return self.commit_when_free();
         }
-        if let Some(termination) = &self.stream_end {
-            self.phase = Phase::Completing;
-            return vec![Effect::EndStreamRun(termination.clone())];
+        match self.terminal_write() {
+            Some(write) => vec![write],
+            None => self.retire(),
         }
-        if let Some(completion) = &self.completion {
-            self.phase = Phase::Completing;
-            vec![Effect::CompleteExecution {
-                completion: completion.clone(),
+    }
+
+    /// The terminal write once nothing is pending: a Run stream's end
+    /// written first, else the Program's completion; `None` with neither.
+    fn terminal_write(&mut self) -> Option<Effect> {
+        let write = match &self.stream_end {
+            Some(end) => Effect::EndStreamRun(end.clone()),
+            None => Effect::CompleteExecution {
+                completion: self.completion.clone()?,
                 intent: self.unrecorded_termination(),
-            }]
-        } else {
-            self.retire()
-        }
+            },
+        };
+        self.phase = Phase::Completing;
+        Some(write)
     }
 
     /// The termination intent the owner applied and no chunk recorded, for
@@ -1625,21 +1637,14 @@ impl OwnerState {
         match self.phase {
             Phase::Running => self.phase = Phase::Stopped(cause),
             Phase::Ending => {
-                if let (CommitRejection::Refused | CommitRejection::Failed, Some(completion)) =
-                    (cause, &self.completion)
-                {
-                    self.phase = Phase::Completing;
-                    effects.push(Effect::CompleteExecution {
-                        completion: completion.clone(),
-                        intent: self.unrecorded_termination(),
-                    });
-                } else if let (CommitRejection::Refused | CommitRejection::Failed, Some(end)) =
-                    (cause, &self.stream_end)
-                {
-                    self.phase = Phase::Completing;
-                    effects.push(Effect::EndStreamRun(end.clone()));
+                let write = if matches!(cause, CommitRejection::Refused | CommitRejection::Failed) {
+                    self.terminal_write()
                 } else {
-                    effects.extend(self.retire());
+                    None
+                };
+                match write {
+                    Some(write) => effects.push(write),
+                    None => effects.extend(self.retire()),
                 }
             }
             // The recorded termination still has to be settled; the owner
