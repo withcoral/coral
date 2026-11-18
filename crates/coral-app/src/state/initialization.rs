@@ -103,10 +103,22 @@ where
     let database = Database::connect(database_config).await?;
     // The chain's search steps need the features this checks.
     coral_search::prepare_storage(&database, vector_storage).await?;
-    super::migrations::migrate_current(&database, report_migration).await?;
+    let ahead = std::sync::atomic::AtomicBool::new(false);
+    super::migrations::migrate_current(&database, &|progress| {
+        if matches!(progress, coral_db::MigrationProgress::Ahead { .. }) {
+            ahead.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        report_migration(progress);
+    })
+    .await?;
     // After the chain: a table in a schema without the state marker reads
     // as pre-v1 state at the next boot.
-    coral_search::prepare_vector_table(&database, vector_storage).await?;
+    if ahead.into_inner() {
+        // A newer Coral owns the vector table's shape.
+        coral_search::prepare_vector_table_beside_a_newer_coral(&database, vector_storage).await?;
+    } else {
+        coral_search::prepare_vector_table(&database, vector_storage).await?;
+    }
 
     let state = InitializedState {
         credential_key_path: layout.config_dir().join("credentials.key"),
@@ -175,6 +187,9 @@ mod tests {
                     report.lock().unwrap().push(match progress {
                         coral_db::MigrationProgress::Pending { applied, pending } => {
                             format!("{applied} applied, {pending} pending")
+                        }
+                        coral_db::MigrationProgress::Ahead { steps } => {
+                            format!("{steps} ahead")
                         }
                         coral_db::MigrationProgress::Started { version, .. } => {
                             format!("started {version}")
@@ -292,6 +307,73 @@ mod tests {
                 .expect("EXISTS returns one row");
             database.close().await;
             assert_eq!(vector_table, expected, "{vector_storage:?}");
+        }
+    }
+
+    /// A newer Coral made the vector table and still writes it, so an older
+    /// Coral that starts beside it must not drop it.
+    #[tokio::test]
+    async fn only_a_coral_at_its_plan_replaces_a_vector_table_of_another_dimension() {
+        coral_test_support::database_only!(Postgres);
+        for (newer_step, expected) in [(false, "halfvec(4)"), (true, "halfvec(3)")] {
+            let options = coral_test_support::empty_postgres_schema(
+                coral_test_support::SearchPath::WithPublic,
+            )
+            .await
+            .expect("create an empty schema");
+            let temp = TempDir::new().unwrap();
+            let mut vector_type: Option<String> = None;
+            for dimension in [3, 4] {
+                let layout = AppStateLayout::discover(Some(temp.path().to_path_buf())).unwrap();
+                let options = options.clone();
+                let (state, ()) = super::initialize(
+                    layout,
+                    "",
+                    |_, _| Ok(options),
+                    || Ok(((), coral_search::VectorStorage::On { dimension })),
+                    &|_| {},
+                )
+                .await
+                .unwrap_or_else(|error| panic!("boot with dimension {dimension}: {error}"));
+                let (database, _lock) = state.into_parts();
+                if newer_step && dimension == 3 {
+                    let mut transaction = database.begin().await.unwrap();
+                    transaction
+                        .execute_script(
+                            "INSERT INTO _sqlx_migrations \
+                             (version, description, success, checksum, execution_time) \
+                             SELECT version + 1, 'from a newer Coral', success, checksum, execution_time \
+                             FROM _sqlx_migrations \
+                             WHERE version = (SELECT MAX(version) FROM _sqlx_migrations)",
+                        )
+                        .await
+                        .expect("record a newer Coral's migration");
+                    transaction.commit().await.unwrap();
+                }
+                (vector_type,) = database
+                    .fetch_optional(
+                        sea_query::Query::select()
+                            .expr(sea_query::Expr::cust(
+                                "(SELECT format_type(a.atttypid, a.atttypmod) \
+                                 FROM pg_catalog.pg_attribute a \
+                                 JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+                                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+                                 WHERE n.nspname = current_schema() \
+                                 AND c.relname = 'search_entity_embeddings' \
+                                 AND a.attname = 'embedding')",
+                            ))
+                            .to_owned(),
+                    )
+                    .await
+                    .expect("read the vector column")
+                    .expect("the subquery returns one row");
+                database.close().await;
+            }
+            assert_eq!(
+                vector_type.as_deref(),
+                Some(expected),
+                "newer step: {newer_step}"
+            );
         }
     }
 

@@ -35,6 +35,42 @@ pub enum Error {
         /// The tables that hold those rows, comma-separated.
         tables: String,
     },
+    /// A pending migration removes what Corals without step `required` use,
+    /// and no Coral with that step has started on a database that an older
+    /// Coral may still be serving. No migration was applied.
+    #[error(
+        "this upgrade skips a Coral version: database migration {migration:04} removes what \
+         older versions use, and no Coral that has migration {required:04} has started on this \
+         database. Start Coral {release} first: it is the first release that has migration \
+         {required:04}. Go one version at a time from the one that runs now. Then start this \
+         version again. No migration was applied."
+    )]
+    SkippedStep {
+        /// The migration's version.
+        migration: i64,
+        /// The step of the change that stopped using what the migration
+        /// removes.
+        required: i64,
+        /// The first release that has step `required`, as the migration
+        /// names it.
+        release: String,
+    },
+    /// The database requires a step that this Coral's plan lacks: a newer
+    /// Coral removes what Corals without that step use. Nothing was changed.
+    #[error(
+        "this Coral is too old for its database: the database requires database migration \
+         {required:04} of every Coral, and this version lacks it. A newer version removes what \
+         versions without that migration use. Start the newest Coral version that has run on \
+         this database. It is {release} or later: {release} is the first release that has \
+         migration {required:04}. Nothing was changed."
+    )]
+    CoralTooOld {
+        /// The step that the database requires of every Coral's plan.
+        required: i64,
+        /// The first release that has step `required`, as the database
+        /// records it.
+        release: String,
+    },
 }
 
 impl Error {
@@ -52,6 +88,8 @@ impl Error {
             Self::Sqlx { .. } => "sqlx",
             Self::Migration { .. } => "migration",
             Self::MigrationForeignKeys { .. } => "migration_foreign_keys",
+            Self::SkippedStep { .. } => "skipped_step",
+            Self::CoralTooOld { .. } => "coral_too_old",
         }
     }
 

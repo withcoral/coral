@@ -4,10 +4,15 @@
 # adds one where no ledger reads it. Databases record applied migrations by
 # checksum, so either change breaks a database created from an earlier main.
 #
+# Also fails when a migration it adds can break an older Coral that still runs
+# during a rolling upgrade, unless the migration declares why that Coral keeps
+# working. scripts/migration-compatibility.mjs has the rules.
+#
 #   scripts/check-migrations.sh [base-ref]   # default: origin/main
 set -euo pipefail
 
 base_ref="${1:-origin/main}"
+scripts="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$(git rev-parse --show-toplevel)"
 
 if ! git rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null; then
@@ -34,6 +39,12 @@ chain='crates/coral-db/migrations'
 chain_runs="^$chain/((postgres|sqlite)/)?[^/]+\.sql$"
 pathspec=":(glob)$chain/**/*.sql"
 
+# The versions of the chain's migrations in `ref`, one per line.
+chain_versions() {
+  git ls-tree -r --name-only "$1" -- "$chain" | { grep -E "$chain_runs" || true; } |
+    sed -nE 's#^.*/0*([0-9]+)_[^/]*$#\1#p'
+}
+
 status=0
 
 # The migration plan reads only the chain's files, so a migration added to
@@ -56,8 +67,7 @@ if [ -n "$changed" ]; then
   status=1
 fi
 
-on_base="$(git ls-tree -r --name-only "$base_ref" -- "$chain" | grep -E "$chain_runs" || true)"
-max="$(echo "$on_base" | sed -nE 's#^.*/0*([0-9]+)_[^/]*$#\1#p' | sort -n | tail -1)"
+max="$(chain_versions "$base_ref" | sort -n | tail -1)"
 # A chain with no migrations on main yet accepts any version, 0000 included.
 max="${max:--1}"
 
@@ -94,6 +104,49 @@ if [ -n "$pgvector" ]; then
   echo "check-migrations: these migrations name pgvector, which a Postgres without it cannot run; change coral_search::prepare_vector_table instead:" >&2
   echo "$pgvector" | sed 's/^/  /' >&2
   status=1
+fi
+
+# A rolling upgrade runs the previous Coral while this one migrates, so an
+# older Coral must keep working on the schema a new migration leaves. The
+# SQLite half of a step is the same step, often written as a table rebuild,
+# so the shared files and the Postgres halves stand for both.
+# A removal names the step of the change that stopped using what it removes.
+# A release user upgrades from one release to the next, so that step must be
+# in a release: the release then no longer uses what is removed, and does not
+# remove it yet. A step that any release has, the newest release has.
+# The removal also names the first release that has the step, which Coral
+# tells the operator. So this lists each released step as `step=release`:
+# the first release whose shared chain has the step. A later release adds
+# steps above those of the release before it. Coral reads a release as
+# `vX.Y.Z`, so a tag of another shape, a pre-release among them, is none.
+released_steps() {
+  # Below step 0000, the first step of the chain.
+  local highest=-1 tag version
+  while IFS= read -r tag; do
+    for version in $(chain_versions "$tag" | sort -n); do
+      if [ "$version" -gt "$highest" ]; then
+        highest="$version"
+        printf '%s=%s ' "$version" "$tag"
+      fi
+    done
+  done < <(git tag --merged "$fork_point" --list 'v[1-9]*' --sort=version:refname |
+    { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; })
+}
+compatibility=()
+while IFS= read -r file; do
+  if [ -n "$file" ] && [[ "$file" != "$chain/sqlite/"* ]]; then
+    compatibility+=("$file")
+  fi
+done <<<"$added"
+if [ "${#compatibility[@]}" -gt 0 ]; then
+  # Only a removal's declaration reads the releases.
+  released=""
+  if grep -qiE 'rolling-upgrade:[[:space:]]*unused since' "${compatibility[@]}"; then
+    released="$(released_steps)"
+  fi
+  if ! node "$scripts/migration-compatibility.mjs" --released "$released" "${compatibility[@]}"; then
+    status=1
+  fi
 fi
 
 exit "$status"

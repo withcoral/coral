@@ -6,7 +6,10 @@ use coral_db::{Database, DatabaseSystem};
 use coral_test_support::TestDatabase;
 use sea_query::{Expr, Query};
 
-use crate::{StorageError, VectorStorage, prepare_storage, prepare_vector_table};
+use crate::{
+    StorageError, VectorStorage, prepare_storage, prepare_vector_table,
+    prepare_vector_table_beside_a_newer_coral,
+};
 
 #[tokio::test]
 async fn a_reboot_keeps_the_vectors_and_another_dimension_recreates_the_table() {
@@ -43,6 +46,17 @@ async fn a_reboot_keeps_the_vectors_and_another_dimension_recreates_the_table() 
     prepare_vector_table(&database, VectorStorage::On { dimension: 3 })
         .await
         .expect("boot again with the same manifest");
+    assert_eq!(stored_vectors(&database).await, stored);
+
+    // A Coral older than its database runs beside the newer one that made
+    // the table and still writes it.
+    prepare_vector_table_beside_a_newer_coral(&database, VectorStorage::On { dimension: 4 })
+        .await
+        .expect("boot an older Coral with a manifest of another dimension");
+    assert_eq!(
+        vector_type(&database).await,
+        Some(column_type(&database, 3))
+    );
     assert_eq!(stored_vectors(&database).await, stored);
 
     prepare_vector_table(&database, VectorStorage::On { dimension: 4 })

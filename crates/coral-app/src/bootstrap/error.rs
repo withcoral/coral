@@ -75,6 +75,11 @@ pub enum AppError {
     /// The database options cannot be used as configured.
     #[error("failed precondition: {0}")]
     DatabaseOptions(coral_db::Error),
+    /// A rolling upgrade reached this Coral out of order: it skips a
+    /// version, or this version is too old for its database. Nothing was
+    /// changed.
+    #[error("failed precondition: {0}")]
+    UpgradeRefused(coral_db::Error),
     /// Durable app-state database access failed.
     #[error("database error: {0}")]
     Database(coral_db::Error),
@@ -183,9 +188,9 @@ pub enum StateRefusal {
         "the Coral database state format marker is malformed; move or remove the database before starting this version of Coral"
     )]
     MalformedDatabaseMarker,
-    /// The migration ledger holds a step this version's plan does not.
+    /// The migration ledger does not agree with this version's plan.
     #[error(
-        "the Coral database has applied migrations this version of Coral does not recognize: a migration was edited or reordered, or a newer version of Coral created the database; move or remove the database before starting this version of Coral"
+        "the Coral database has applied migrations this version of Coral does not recognize: a migration was edited, removed or reordered; move or remove the database before starting this version of Coral"
     )]
     UnknownMigrations,
     /// The `SQLite` file could not be opened to inspect it.
@@ -206,6 +211,9 @@ impl From<coral_db::Error> for AppError {
         match error {
             coral_db::Error::Config(_) | coral_db::Error::MissingDatabaseParent(_) => {
                 Self::DatabaseOptions(error)
+            }
+            coral_db::Error::SkippedStep { .. } | coral_db::Error::CoralTooOld { .. } => {
+                Self::UpgradeRefused(error)
             }
             coral_db::Error::Io(error) => Self::Io(error),
             coral_db::Error::Sqlx(_)
@@ -240,11 +248,12 @@ mod tests {
     /// Whether an error is the one a case expects.
     type Expected = fn(&AppError) -> bool;
 
-    /// The operator corrects the database options; every other database
+    /// The operator corrects the database options, and ends a refused
+    /// upgrade by starting another Coral version; every other database
     /// failure is the database's own. Each keeps the error it came from.
     #[test]
     fn database_failures_keep_their_category_and_their_cause() {
-        let cases: [(Error, Expected); 5] = [
+        let cases: [(Error, Expected); 7] = [
             (Error::Config("missing backend".to_string()), |error| {
                 matches!(error, AppError::DatabaseOptions(Error::Config(detail))
                     if detail == "missing backend")
@@ -274,6 +283,38 @@ mod tests {
                         AppError::Database(Error::Migration(
                             sqlx::migrate::MigrateError::VersionMissing(1)
                         ))
+                    )
+                },
+            ),
+            (
+                Error::SkippedStep {
+                    migration: 82,
+                    required: 81,
+                    release: "v1.9.0".to_owned(),
+                },
+                |error| {
+                    matches!(
+                        error,
+                        AppError::UpgradeRefused(Error::SkippedStep {
+                            migration: 82,
+                            required: 81,
+                            ..
+                        })
+                    ) && error.to_string().contains("Start Coral v1.9.0 first")
+                },
+            ),
+            (
+                Error::CoralTooOld {
+                    required: 81,
+                    release: "v1.9.0".to_owned(),
+                },
+                |error| {
+                    matches!(
+                        error,
+                        AppError::UpgradeRefused(Error::CoralTooOld { required: 81, .. })
+                    ) && error.to_string().contains(
+                        "Start the newest Coral version that has run on this database. It is \
+                         v1.9.0 or later",
                     )
                 },
             ),

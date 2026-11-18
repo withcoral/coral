@@ -32,6 +32,7 @@ async function repository(t, version, files = { [migration]: 'CREATE TABLE works
   git('commit', '--quiet', '-m', 'base')
   git('switch', '--quiet', '-c', 'change')
   return {
+    git,
     write,
     remove: (path) => rm(join(root, path)),
     check: () => spawnSync(script, ['main'], { cwd: root, encoding: 'utf8' }),
@@ -112,6 +113,95 @@ for (const [name, change] of Object.entries(accepted)) {
 test('a checkout that starts a ledger main does not have may begin at version 0', async (t) => {
   const repo = await repository(t, '1.0.0-beta.11', {})
   await repo.write('crates/coral-db/migrations/0000_state_format.sql', runs)
+  const result = repo.check()
+  assert.equal(result.status, 0, result.stderr)
+})
+
+// The statements and the declarations are tested in
+// migration-compatibility.test.mjs. These cases cover what only the script
+// does: it runs the check, reads the release tags and skips the SQLite halves.
+const next = 'crates/coral-db/migrations/0010_runs.sql'
+const drop = 'ALTER TABLE workspaces DROP COLUMN name;\n'
+
+test('a checkout whose migration can break an older release fails', async (t) => {
+  const repo = await repository(t, '1.0.0-beta.11')
+  await repo.write(next, drop)
+  const result = repo.check()
+  assert.equal(result.status, 1, result.stderr)
+  assert.match(result.stderr, /0010_runs\.sql can break an older Coral/)
+  assert.match(result.stderr, /drops a column/)
+})
+
+// A release user upgrades from one release to the next. A removal is safe for
+// them only when a release has stopped using what it removes and does not
+// remove it yet: a release that has the named step.
+test('a removal passes only when it names a step that a release has', async (t) => {
+  const marker = 'crates/coral-db/migrations/0010_stop_using_workspace_names.sql'
+  const removal = 'crates/coral-db/migrations/0011_runs.sql'
+  const declared = (step, release = 'v1.1.0') =>
+    `-- rolling-upgrade: unused since step ${step}, in ${release}. No query names the column.\n${drop}`
+  const repo = await repository(t, '1.0.0-beta.11')
+  repo.git('switch', '--quiet', 'main')
+  await repo.write('crates/coral-db/migrations/0000_state_format.sql', 'CREATE TABLE state_format (id TEXT);\n')
+  repo.git('add', '-A')
+  repo.git('commit', '--quiet', '-m', 'add the first step')
+  repo.git('tag', 'v1.0.0')
+  await repo.write(marker, '-- Stops using workspaces.name.\n')
+  repo.git('add', '-A')
+  repo.git('commit', '--quiet', '-m', 'stop using the column')
+  repo.git('switch', '--quiet', '-c', 'removal')
+
+  // The marker is on main, and no release has it.
+  await repo.write(removal, declared('0010'))
+  const unreleased = repo.check()
+  assert.equal(unreleased.status, 1, unreleased.stderr)
+  assert.match(unreleased.stderr, /names step 0010, which no release has \(the newest release ends at step 0009\)/)
+
+  // A pre-release is not a release that users upgrade through.
+  repo.git('tag', 'v1.1.0-beta.1', 'main')
+  const preRelease = repo.check()
+  assert.equal(preRelease.status, 1, preRelease.stderr)
+  assert.match(preRelease.stderr, /names step 0010, which no release has \(the newest release ends at step 0009\)/)
+
+  repo.git('tag', 'v1.1.0', 'main')
+  const accepted = repo.check()
+  assert.equal(accepted.status, 0, accepted.stderr)
+
+  // Coral tells the operator the release that the removal names, so it is the
+  // first release that has the step: not a later one, and not one before it.
+  repo.git('tag', 'v1.2.0', 'main')
+  assert.equal(repo.check().status, 0)
+  for (const release of ['v1.2.0', 'v1.0.0']) {
+    await repo.write(removal, declared('0010', release))
+    const result = repo.check()
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, new RegExp(`names ${release} for step 0010, but v1\\.1\\.0 is the first release`))
+  }
+  // A step that the first release already had, the first of the chain among them.
+  for (const step of ['0009', '0000']) {
+    await repo.write(removal, declared(step, 'v1.0.0'))
+    const result = repo.check()
+    assert.equal(result.status, 0, result.stderr)
+  }
+
+  // The removal's own step, and a step that does not exist.
+  for (const step of ['0011', '0099']) {
+    await repo.write(removal, declared(step))
+    const result = repo.check()
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, new RegExp(`names step ${step}, which no release has`))
+  }
+})
+
+test('a table rebuild in the SQLite half of an additive step passes', async (t) => {
+  const repo = await repository(t, '1.0.0-beta.11')
+  await repo.write('crates/coral-db/migrations/postgres/0010_runs.sql', 'ALTER TABLE workspaces ADD COLUMN owner TEXT;\n')
+  await repo.write(
+    'crates/coral-db/migrations/sqlite/0010_runs.sql',
+    'CREATE TABLE workspaces_new (id TEXT PRIMARY KEY, owner TEXT);\n' +
+      'INSERT INTO workspaces_new (id) SELECT id FROM workspaces;\n' +
+      'DROP TABLE workspaces;\nALTER TABLE workspaces_new RENAME TO workspaces;\n',
+  )
   const result = repo.check()
   assert.equal(result.status, 0, result.stderr)
 })
