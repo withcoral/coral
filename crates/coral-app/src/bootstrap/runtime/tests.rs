@@ -421,6 +421,26 @@ async fn recorded_run_state(dir: &std::path::Path, run_id: &str) -> String {
     state
 }
 
+/// The distinct stamps of the search rows in the SQLite state database at
+/// `dir`, once the index has written any.
+async fn search_row_stamps(dir: &std::path::Path) -> Vec<(i64,)> {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let stamps: Vec<(i64,)> =
+                sqlx::query_as("SELECT DISTINCT indexed_at_unix_nanos FROM search_entities")
+                    .fetch_all(&mut state_database(dir).await)
+                    .await
+                    .expect("read the search rows' stamps");
+            if !stamps.is_empty() {
+                break stamps;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the index writes the Built-in Provider's rows")
+}
+
 async fn mcp_tool(
     client: &rmcp::service::RunningService<rmcp::RoleClient, ()>,
     name: &'static str,
@@ -435,6 +455,173 @@ async fn mcp_tool(
         .unwrap_or_else(|error| panic!("call {name}: {error}"))
         .structured_content
         .unwrap_or_else(|| panic!("{name} returns structured content"))
+}
+
+/// The launch's one clock reaches the modules that date a request after the
+/// listener admitted it, and the search index. An Agent whose Registration
+/// ends an hour after that clock's start, in 2001, ends its Task over MCP,
+/// and the private API's modules check the Agent's authority for its Tools
+/// and Providers. The index stamps a new Workspace's rows by that clock.
+///
+/// Catches: bootstrap building the Task, authored Tool or search modules, or
+/// the search index, without the launch's clock. Each then reads the host's
+/// clock, a quarter of a century later: a module refuses the Agent that the
+/// listener admitted, and the index stamps its rows by the host.
+#[tokio::test(flavor = "multi_thread")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one launch shows each module that bootstrap hands its clock to"
+)]
+async fn the_launchs_clock_dates_an_agents_requests_past_the_listener() {
+    use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+
+    // 2001-01-01.
+    let launched_at = coral_db::UnixNanos::new(978_307_200 * 1_000_000_000);
+    let a_minute_in = launched_at
+        .checked_add(std::time::Duration::from_mins(1))
+        .unwrap();
+    let clock = coral_test_support::ManualClock::starting_at(launched_at);
+    let temp = TempDir::new().expect("temporary state root");
+    coral_test_support::write_server_config(temp.path(), WEB);
+    let launch = Launch {
+        clock: Some(std::sync::Arc::new(clock.clone())),
+        compile_in_process: true,
+        ..Launch::default()
+    };
+    let server = start(launch.configure(ServerBuilder::new().with_config_dir(temp.path())))
+        .await
+        .expect("start composed server");
+    let owner = local_organization_owner();
+    let context = ChangeContext::new(
+        owner.clone(),
+        launched_at,
+        TraceId::parse("33333333333333333333333333333333").expect("trace id"),
+    );
+    // The modules bootstrap built for the private API.
+    let modules = server.grpc.engine().grpc_dependencies();
+    let workspace = modules
+        .workspace_workflow
+        .create_workspace(
+            &context,
+            WorkspaceDisplayName::parse("Launched in 2001").expect("display name"),
+        )
+        .await
+        .expect("create Workspace");
+    // The workflow told the index of the Built-in Provider it installed.
+    assert_eq!(search_row_stamps(temp.path()).await, [(launched_at.get(),)]);
+    let workspaces = WorkspaceModule::new(server.grpc.database());
+    let issued = workspaces
+        .create_agent(
+            &context,
+            workspace.id(),
+            coral_workspace::AgentDisplayName::parse("Expiring Agent").expect("Agent name"),
+            Some(
+                launched_at
+                    .checked_add(std::time::Duration::from_hours(1))
+                    .unwrap(),
+            ),
+        )
+        .await
+        .expect("register the expiring Agent");
+    let agent = workspaces
+        .authenticate_agent(workspace.id(), issued.credential.expose(), launched_at)
+        .await
+        .expect("authenticate the Agent");
+    let task = modules
+        .tasks
+        .start(
+            &agent,
+            workspace.id(),
+            coral_task::TaskIntent::parse("Dated by the launch's clock").expect("Task intent"),
+            launched_at,
+        )
+        .await
+        .expect("the Task Module reads the launch's clock");
+
+    clock.set(a_minute_in);
+    let urls = crate::WorkspaceMcpUrls::new(
+        crate::CanonicalOauthUrl::parse(&format!("http://{}", server.mcp_http_addr()))
+            .expect("MCP origin"),
+    )
+    .expect("Workspace URLs");
+    let client = ()
+        .serve(StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(urls.resource(workspace.id()))
+                .auth_header(issued.credential.expose()),
+        ))
+        .await
+        .expect("connect MCP client as the Agent");
+    let ended = mcp_tool(
+        &client,
+        "end_task",
+        serde_json::json!({"task_id": task.id().to_string(), "outcome": "success"}),
+    )
+    .await;
+    assert_eq!(
+        ended.get("outcome"),
+        Some(&serde_json::json!("success")),
+        "{ended}"
+    );
+    let recorded = modules
+        .tasks
+        .get(
+            &coral_workspace::AuthenticatedPrincipal::user(owner),
+            workspace.id(),
+            task.id(),
+        )
+        .await
+        .expect("the Owner reads the Agent's Task");
+    assert_eq!(recorded.ended_at(), Some(a_minute_in));
+
+    modules
+        .private_tools
+        .list(
+            &agent,
+            workspace.id(),
+            &coral_test_support::page_request(None, 10),
+        )
+        .await
+        .expect("Private Tool inspection reads the launch's clock");
+    modules
+        .shared_tools
+        .list(
+            &agent,
+            workspace.id(),
+            &coral_test_support::page_request(None, 10),
+        )
+        .await
+        .expect("the Shared Tool Module reads the launch's clock");
+    modules
+        .provider_readiness
+        .searchable_providers(&agent, workspace.id())
+        .await
+        .expect("the search module reads the launch's clock");
+    // Deletion admits the Agent on the launch's clock, and then finds no
+    // Private Tool at the path.
+    let absent = modules
+        .private_tool_workflow
+        .delete(
+            &coral_tools::PrivateToolChangeContext::new(
+                agent.clone(),
+                a_minute_in,
+                TraceId::current_or_new(),
+            ),
+            workspace.id(),
+            None,
+            &coral_tools::PrivateToolPath::parse("absent").expect("path"),
+        )
+        .await;
+    assert!(
+        matches!(
+            absent,
+            Err(coral_tools::Error::NotFound(
+                coral_catalog::AuthoredToolKind::Private
+            ))
+        ),
+        "{absent:?}"
+    );
+    client.cancel().await.expect("close MCP client");
+    server.shutdown().await.expect("stop composed server");
 }
 
 /// The `[runtime]` section reaches the process's one Run module, which the

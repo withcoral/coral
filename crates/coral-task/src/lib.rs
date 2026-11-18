@@ -46,8 +46,11 @@
 //! goals too; associated nonterminal Runs protect the whole group.
 //!
 //! The Module reads no process environment. Adapters supply current
-//! authenticated Principal and time evidence explicitly. Persistence rows and
-//! transport envelopes do not cross the Interface.
+//! authenticated Principal and time evidence explicitly. For a reading the
+//! Module takes itself, such as the recheck after transaction work or an
+//! Attempt's time, it holds the clock bootstrap gives it
+//! ([`TaskModule::with_clock`]). Persistence rows and transport envelopes do
+//! not cross the Interface.
 
 mod activity;
 pub use activity::{
@@ -94,20 +97,39 @@ pub use types::{
 pub struct TaskModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
+    /// Dates what the Module and its commands record, and what they recheck
+    /// a caller's authority by after transaction work.
+    clock: Arc<dyn coral_db::Clock>,
     #[cfg(test)]
     pub(crate) retention_control: Arc<crate::command_tests::Control>,
 }
 
 impl TaskModule {
     /// Builds the Module from initialized persistence and Workspace authority.
+    /// It reads the host's clock until [`Self::with_clock`] replaces it.
     #[must_use]
     pub fn new(database: Arc<Database>, workspaces: WorkspaceModule) -> Self {
         Self {
             database,
             workspaces,
+            clock: Arc::new(coral_db::SystemClock),
             #[cfg(test)]
             retention_control: Arc::default(),
         }
+    }
+
+    /// Replaces the system clock, so that bootstrap gives the Module the
+    /// Coral Instance's one clock and a test drives time. A
+    /// [`TaskCommands`] built over this Module reads the same clock.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn coral_db::Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Reads the Module's clock.
+    pub(crate) fn now(&self) -> UnixNanos {
+        self.clock.now()
     }
 
     /// Generates an identity and durably starts one Task.
@@ -143,7 +165,7 @@ impl TaskModule {
         self.workspaces
             .check_principal_inspection_in_transaction(transaction, actor, workspace_id, started_at)
             .await?
-            .require_current_at(commands::now())?;
+            .require_current_at(self.now())?;
         // The primary key proves the identifier unused: a conflict writes
         // nothing, and the next attempt draws fresh words.
         let mut attempts = 0;
@@ -276,7 +298,7 @@ impl TaskModule {
                     error.into()
                 }
             })?
-            .require_current_at(commands::now())?;
+            .require_current_at(self.now())?;
         let task = repository::complete_for_principal(
             &mut transaction,
             workspace_id,

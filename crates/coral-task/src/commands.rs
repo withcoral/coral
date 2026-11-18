@@ -4,8 +4,7 @@ use crate::{
     NewTaskCommand, TaskModule,
 };
 use crate::{interaction_repository, repository};
-use coral_db::Clock as _;
-use coral_db::{Transaction, UnixNanos};
+use coral_db::Transaction;
 use coral_run::RunModule;
 use coral_search::{SearchPage, SearchRequest, UniversalSearchModule as SearchModule};
 use coral_telemetry::safe;
@@ -220,7 +219,7 @@ impl TaskCommands {
             .runs
             .prepare(&call.actor, &call.workspace_id, submission)
             .await?;
-        let started_at = now();
+        let started_at = self.tasks.now();
         let mut transaction = self.tasks.database.begin().await?;
         let task = self
             .tasks
@@ -315,7 +314,7 @@ impl TaskCommands {
         call: &AttributedCommand,
         kind: AttemptKind,
     ) -> Result<InteractionId, Error> {
-        let observed_at = now();
+        let observed_at = self.tasks.now();
         self.tasks
             .workspaces
             .check_principal_inspection(&call.actor, &call.workspace_id, observed_at)
@@ -335,7 +334,7 @@ impl TaskCommands {
                 &mut transaction,
                 &call.actor,
                 &call.workspace_id,
-                now(),
+                self.tasks.now(),
             )
             .await?;
         let task = repository::find_attributed(
@@ -356,7 +355,7 @@ impl TaskCommands {
         self.control
             .fault(crate::command_tests::Checkpoint::Begin, &mut transaction)
             .await?;
-        let now = now();
+        let now = self.tasks.now();
         authority.require_current_at(now)?;
         interaction_repository::insert(
             &mut transaction,
@@ -389,7 +388,7 @@ impl TaskCommands {
         if !repository::hold(transaction, &call.workspace_id, &call.task_id).await? {
             return Err(Error::TaskNotFound);
         }
-        let now = now();
+        let now = self.tasks.now();
         #[cfg(test)]
         self.control
             .fault(crate::command_tests::Checkpoint::Completion, transaction)
@@ -408,10 +407,6 @@ impl TaskCommands {
             .await?;
         Ok(())
     }
-}
-
-pub(super) fn now() -> UnixNanos {
-    coral_db::SystemClock.now()
 }
 
 /// One retained authoring Attempt: a `save` or `delete` that Task history
@@ -462,7 +457,7 @@ impl TaskCommands {
         };
         let id = self.begin(call, kind).await?;
         let result = async {
-            let context = retained_context(call);
+            let context = retained_context(call, self.tasks.now());
             // A save compiles before the transaction, as Coral did.
             let ready = match change {
                 RetainedChange::Save {
@@ -526,10 +521,13 @@ enum RetainedReady {
 }
 
 #[cfg(any(test, feature = "test-fixtures"))]
-fn retained_context(call: &AttributedCommand) -> coral_tools::PrivateToolChangeContext {
+fn retained_context(
+    call: &AttributedCommand,
+    occurred_at: coral_db::UnixNanos,
+) -> coral_tools::PrivateToolChangeContext {
     coral_tools::PrivateToolChangeContext::new(
         call.actor.clone(),
-        now(),
+        occurred_at,
         coral_workspace::TraceId::current_or_new(),
     )
 }

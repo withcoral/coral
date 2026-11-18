@@ -13,8 +13,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use coral_db::Clock as _;
-use coral_db::{Database, UnixNanos};
+use coral_db::Database;
 use coral_run_executor::{CompilerClient, time_left};
 use coral_telemetry::safe;
 use coral_v8::{
@@ -33,10 +32,6 @@ use crate::types::{
     PrivateToolPath,
 };
 use crate::{Error, repository, shared_tool_repository};
-
-pub(crate) fn now() -> UnixNanos {
-    coral_db::SystemClock.now()
-}
 
 /// What the compiler made of one authored source.
 pub(crate) struct PreparedAuthoredTool {

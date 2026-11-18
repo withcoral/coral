@@ -170,12 +170,14 @@ pub(crate) trait EntityIndexer: Send + Sync {
     /// the stamp is later than each stamp a statistics count saw before it
     /// while the clock moves forward. The write counts no statistics: once it
     /// commits, the caller schedules the Workspace's recount, or, in a
-    /// reconcile pass, leaves it to the pass's statistics step.
+    /// reconcile pass, leaves it to the pass's statistics step. It reads
+    /// `clock`, the index's, for the stamp.
     async fn index(
         &self,
         transaction: &mut Transaction<'_>,
         entry: &Self::Entry,
         rows: &Self::Rows<'_>,
+        clock: &dyn coral_db::Clock,
     ) -> Result<IndexEffect, IndexError>;
 
     /// Removes the rows and state the removal names. Returns the Workspace

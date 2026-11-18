@@ -71,13 +71,14 @@ impl EntityIndexer for ToolIndexer {
         transaction: &mut Transaction<'_>,
         entries: &GenerationEntries,
         rows: &GenerationRows<'_>,
+        clock: &dyn coral_db::Clock,
     ) -> Result<super::IndexEffect, IndexError> {
         let rows = &rows.rows;
         let workspace_id = entries.workspace_id();
         let generation_id = entries.generation_id();
         let visibility =
             repository::generation_visibility(transaction, workspace_id, generation_id).await?;
-        let attempted_at = crate::now();
+        let attempted_at = clock.now();
         repository::upsert_tool_rows(transaction, rows, attempted_at).await?;
         // A Generation keeps its Tools, but the reconcile task prepares
         // entries under the current rules, which may leave one out; a rewrite
@@ -369,6 +370,7 @@ pub(crate) async fn record_failed_attempt(
     generation: AttemptedGeneration<'_>,
     error: &IndexError,
     reconcile_interval: Duration,
+    clock: &dyn coral_db::Clock,
 ) -> Result<bool, IndexError> {
     let prior = repository::failed_generation_retry_rule(
         transaction,
@@ -382,7 +384,7 @@ pub(crate) async fn record_failed_attempt(
         generation.generation_id,
     )
     .await?;
-    let attempted_at = crate::now();
+    let attempted_at = clock.now();
     let state = AttemptState::Failed {
         error: error.to_string(),
         failure: error.failure(),

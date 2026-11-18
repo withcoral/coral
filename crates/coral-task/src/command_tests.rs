@@ -120,6 +120,12 @@ impl Fixture {
     }
 
     async fn new() -> Self {
+        Self::at(std::sync::Arc::new(coral_db::SystemClock)).await
+    }
+
+    /// The fixture whose Task, search and Private Tool modules read `clock`,
+    /// for a test that moves time. Its Run Module reads the host's clock.
+    async fn at(clock: std::sync::Arc<dyn coral_db::Clock>) -> Self {
         let migrator = coral_test_support::migration_plan_with([sqlx::migrate::Migration::new(
             9000,
             "Task fault controls".into(),
@@ -147,14 +153,15 @@ impl Fixture {
             .unwrap();
         install_private_provider(&database, &workspaces, &user, workspace.id()).await;
         let actor = AuthenticatedPrincipal::user(user.clone());
-        let tasks = TaskModule::new(database.clone(), workspaces.clone());
+        let tasks = TaskModule::new(database.clone(), workspaces.clone()).with_clock(clock.clone());
         let functions = coral_tools::PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
             coral_tools::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
-        .unwrap();
+        .unwrap()
+        .with_clock(clock.clone());
         let loopback = coral_outbound::DestinationPolicy::default()
             .with_loopback(coral_outbound::NetworkAccess::HttpAndHttps);
         let runs = coral_run::RunModule::new(
@@ -172,8 +179,10 @@ impl Fixture {
             coral_run::RunInbox::table(database.clone()),
         )
         .unwrap();
-        let index = coral_search::SearchIndex::new(database.clone(), RECONCILE_INTERVAL);
-        let search = coral_search::UniversalSearchModule::new(database, workspaces);
+        let index = coral_search::SearchIndex::new(database.clone(), RECONCILE_INTERVAL)
+            .with_clock(clock.clone());
+        let search =
+            coral_search::UniversalSearchModule::new(database, workspaces).with_clock(clock);
         let commands = TaskCommands::new(tasks.clone(), search, runs.clone());
         Self {
             test_database: fixture,
@@ -1658,6 +1667,122 @@ async fn search_request_validation_happens_after_durable_begin() {
         );
         assert_eq!(failure.code, code);
     }
+}
+
+/// The Task Module reads the clock it was given, and the commands over it
+/// read the same one. An Agent whose Registration ends an hour after that
+/// clock's start, in 2001, starts a Task, records an Attempt and ends the
+/// Task. Once the clock reaches the Registration's end, an instant the
+/// caller read earlier ends no Task.
+///
+/// Catches: the Module or its commands reading the host's clock, a quarter
+/// of a century later. The recheck after transaction work would refuse the
+/// Agent from the start, and the host would date the Attempt.
+#[tokio::test]
+async fn the_task_modules_clock_dates_its_rechecks_and_its_commands_attempts() {
+    // 2001-01-01.
+    let start = UnixNanos::new(978_307_200 * 1_000_000_000);
+    let expiry = start
+        .checked_add(std::time::Duration::from_hours(1))
+        .unwrap();
+    let clock = coral_test_support::ManualClock::starting_at(start);
+    let fixture = Fixture::at(std::sync::Arc::new(clock.clone())).await;
+    let issued = fixture
+        .tasks
+        .workspaces
+        .create_agent(
+            &ChangeContext::new(fixture.user.clone(), start, coral_test_support::trace('1')),
+            &fixture.workspace,
+            coral_workspace::AgentDisplayName::parse("Expiring worker").unwrap(),
+            Some(expiry),
+        )
+        .await
+        .unwrap();
+    let agent = fixture
+        .tasks
+        .workspaces
+        .authenticate_agent(&fixture.workspace, issued.credential.expose(), start)
+        .await
+        .unwrap();
+    let start_task = async |intent: &str, at: UnixNanos| {
+        fixture
+            .tasks
+            .start(
+                &agent,
+                &fixture.workspace,
+                TaskIntent::parse(intent).unwrap(),
+                at,
+            )
+            .await
+    };
+    let end_task = async |task: &Task, at: UnixNanos| {
+        fixture
+            .tasks
+            .end(
+                &agent,
+                &fixture.workspace,
+                task.id(),
+                TaskOutcome::Success,
+                None,
+                at,
+            )
+            .await
+    };
+
+    let goal = start_task("Finish before expiry", start)
+        .await
+        .expect("the Registration lasts on the Module's clock");
+    let left_open = start_task("Still open at expiry", start).await.unwrap();
+    let a_minute_in = start
+        .checked_add(std::time::Duration::from_mins(1))
+        .unwrap();
+    clock.set(a_minute_in);
+    let call = AttributedCommand::new(
+        agent.clone(),
+        fixture.workspace.clone(),
+        goal.id().clone(),
+        TaskIntent::parse("Search on the Module's clock").unwrap(),
+    );
+    fixture
+        .commands
+        .search(&call, coral_search::SearchInput::default())
+        .await
+        .expect("the commands recheck the Agent on the Module's clock");
+    // The Workspace Owner reads the Agent's history.
+    let attempts = fixture
+        .tasks
+        .interactions(&fixture.actor, &fixture.workspace, goal.id(), None, 100)
+        .await
+        .unwrap();
+    assert_eq!(
+        attempts
+            .iter()
+            .map(|attempt| (attempt.started_at, attempt.completed_at))
+            .collect::<Vec<_>>(),
+        [(a_minute_in, Some(a_minute_in))]
+    );
+    let ended = end_task(&goal, a_minute_in)
+        .await
+        .expect("the Registration lasts on the Module's clock");
+    assert_eq!(ended.ended_at(), Some(a_minute_in));
+
+    clock.set(expiry);
+    let refused = end_task(&left_open, a_minute_in).await;
+    assert!(
+        matches!(
+            refused,
+            Err(Error::Workspace(
+                coral_workspace::Error::AgentRegistrationExpired
+            ))
+        ),
+        "{refused:?}"
+    );
+    let unchanged = fixture
+        .tasks
+        .get(&fixture.actor, &fixture.workspace, left_open.id())
+        .await
+        .unwrap();
+    assert_eq!(unchanged, left_open);
 }
 
 #[tokio::test]

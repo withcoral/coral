@@ -1,9 +1,10 @@
+use std::sync::Arc;
+
 use coral_catalog::AuthoredToolKind;
 use coral_db::Transaction;
 use coral_workspace::{Principal, PrincipalId, PrincipalKind, WorkspaceId, WorkspaceModule};
 
 use crate::Error;
-use crate::authoring::now;
 use crate::private_tool::delete_current_with_event;
 use crate::repository;
 use crate::types::{PrivateToolChangeContext, PrivateToolId, PrivateToolPath};
@@ -22,13 +23,27 @@ use crate::types::{PrivateToolChangeContext, PrivateToolId, PrivateToolPath};
 #[derive(Clone)]
 pub struct PrivateToolDeletion {
     workspaces: WorkspaceModule,
+    /// Dates the check of the caller's authority and its recheck.
+    clock: Arc<dyn coral_db::Clock>,
 }
 
 impl PrivateToolDeletion {
-    /// Builds deletion over the application's Workspace authority.
+    /// Builds deletion over the application's Workspace authority. It reads
+    /// the host's clock until [`Self::with_clock`] replaces it.
     #[must_use]
-    pub const fn new(workspaces: WorkspaceModule) -> Self {
-        Self { workspaces }
+    pub fn new(workspaces: WorkspaceModule) -> Self {
+        Self {
+            workspaces,
+            clock: Arc::new(coral_db::SystemClock),
+        }
+    }
+
+    /// Replaces the system clock, so that bootstrap gives deletion the Coral
+    /// Instance's one clock and a test drives time.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn coral_db::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Stages the deletion of one Workspace-owned Agent Private Tool as a
@@ -83,14 +98,19 @@ impl PrivateToolDeletion {
     ) -> Result<PrivateToolId, Error> {
         let authority = self
             .workspaces
-            .check_authoring_in_transaction(transaction, context.actor(), workspace_id, now())
+            .check_authoring_in_transaction(
+                transaction,
+                context.actor(),
+                workspace_id,
+                self.clock.now(),
+            )
             .await?;
         let owner = context.actor().principal();
         let tool =
             repository::find_current_record_in_transaction(transaction, workspace_id, owner, path)
                 .await?
                 .ok_or(Error::NotFound(AuthoredToolKind::Private))?;
-        authority.require_current_at(now())?;
+        authority.require_current_at(self.clock.now())?;
         delete_current_with_event(transaction, context, &tool).await
     }
 }

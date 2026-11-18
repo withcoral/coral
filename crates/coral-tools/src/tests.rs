@@ -2093,6 +2093,19 @@ async fn registered_agent(
     owner: &AuthenticatedPrincipal,
     workspace_id: &coral_workspace::WorkspaceId,
 ) -> AuthenticatedPrincipal {
+    let authenticated_at = coral_db::UnixNanos::new(11);
+    agent_registered_until(workspaces, owner, workspace_id, None, authenticated_at).await
+}
+
+/// An Agent whose Registration ends at `expires_at`, if it ends, as
+/// authentication admitted it at `authenticated_at`.
+async fn agent_registered_until(
+    workspaces: &WorkspaceModule,
+    owner: &AuthenticatedPrincipal,
+    workspace_id: &coral_workspace::WorkspaceId,
+    expires_at: Option<coral_db::UnixNanos>,
+    authenticated_at: coral_db::UnixNanos,
+) -> AuthenticatedPrincipal {
     let issued = workspaces
         .create_agent(
             &change(
@@ -2102,16 +2115,12 @@ async fn registered_agent(
             ),
             workspace_id,
             coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
-            None,
+            expires_at,
         )
         .await
         .expect("create Agent");
     workspaces
-        .authenticate_agent(
-            workspace_id,
-            issued.credential.expose(),
-            coral_db::UnixNanos::new(11),
-        )
+        .authenticate_agent(workspace_id, issued.credential.expose(), authenticated_at)
         .await
         .expect("authenticate Agent")
 }
@@ -2126,6 +2135,112 @@ fn private_tool_change(
         coral_db::UnixNanos::new(at),
         TraceId::parse(&digit.to_string().repeat(32)).expect("trace id"),
     )
+}
+
+/// Each Module reads the clock it was given, and the inspection and the
+/// deletion that a Private Tool Module holds read that Module's clock. An
+/// Agent whose Registration ends an hour after the clock's start, in 2001,
+/// saves, reads and deletes its Private Tools and lists the Shared Tools.
+/// Once the clock reaches the Registration's end, each is refused.
+///
+/// Catches: a Module, or the inspection or the deletion inside one, reading
+/// the host's clock, a quarter of a century later. It would refuse the Agent
+/// from the start.
+#[tokio::test]
+async fn an_agents_authority_is_checked_on_the_modules_clock() {
+    // 2001-01-01.
+    let start = coral_db::UnixNanos::new(978_307_200 * 1_000_000_000);
+    let expiry = start.checked_add(Duration::from_hours(1)).unwrap();
+    let clock = coral_test_support::ManualClock::starting_at(start);
+    let fixture = PrivateToolTestModules::new().await;
+    let private_tools = fixture
+        .private_tools
+        .clone()
+        .with_clock(Arc::new(clock.clone()));
+    let shared_tools = crate::SharedToolModule::new(
+        fixture.database.clone(),
+        fixture.workspaces.clone(),
+        crate::IsolateLimits::default(),
+        coral_test_support::TEST_COMPILATION_TIMEOUT,
+    )
+    .expect("start the Shared Tool compiler")
+    .with_clock(Arc::new(clock.clone()));
+    let (workspace_id, owner) = fixture.user_workspace("user:clock-owner").await;
+    let workspaces = &fixture.workspaces;
+    let agent =
+        agent_registered_until(workspaces, &owner, &workspace_id, Some(expiry), start).await;
+    let get = async |path: &str| {
+        private_tools
+            .get(
+                &agent,
+                &workspace_id,
+                &PrivateToolPath::parse(path).unwrap(),
+            )
+            .await
+    };
+    let save = async |path: &str| {
+        private_tools
+            .save(
+                &private_tool_change(agent.clone(), start.get(), '2'),
+                &workspace_id,
+                PrivateToolSave::new(
+                    PrivateToolPath::parse(path).unwrap(),
+                    AuthoredToolDescription::parse("Answer").unwrap(),
+                    AuthoredToolSource::parse("export default () => 42;").unwrap(),
+                ),
+            )
+            .await
+    };
+    let delete = async |path: &str| {
+        private_tools
+            .delete(
+                &private_tool_change(agent.clone(), start.get(), '3'),
+                &workspace_id,
+                &PrivateToolPath::parse(path).unwrap(),
+            )
+            .await
+    };
+    let list_shared = async || {
+        shared_tools
+            .list(&agent, &workspace_id, &page_request(None, 100))
+            .await
+    };
+
+    let kept = save("kept")
+        .await
+        .expect("the Registration lasts on the Module's clock");
+    save("spare").await.unwrap();
+    let read = get("kept").await;
+    assert_eq!(read.expect("inspection reads the Module's clock"), kept);
+    delete("spare")
+        .await
+        .expect("deletion reads the Module's clock");
+    list_shared()
+        .await
+        .expect("the Shared Tool Module reads its clock");
+
+    clock.set(expiry);
+    let expired = |result: Result<(), Error>| {
+        matches!(
+            result,
+            Err(Error::Workspace(
+                coral_workspace::Error::AgentRegistrationExpired
+            ))
+        )
+    };
+    assert!(expired(save("late").await.map(drop)));
+    assert!(expired(delete("kept").await.map(drop)));
+    assert!(expired(get("kept").await.map(drop)));
+    assert!(expired(list_shared().await.map(drop)));
+    assert_eq!(
+        fixture
+            .inspection
+            .list_agent(&owner, &workspace_id, agent.principal().id())
+            .await
+            .unwrap(),
+        [kept],
+        "a refusal changes nothing"
+    );
 }
 
 #[tokio::test]
