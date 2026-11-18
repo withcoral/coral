@@ -194,7 +194,6 @@ async fn insert_record(
             ProgramRunRecords::AccumulatedOutputBytes,
             ProgramRunRecords::ChunkSequence,
             ProgramRunRecords::TimeLimitNanos,
-            ProgramRunRecords::AgentRegistrationId,
         ])
         .values_panic([
             Expr::val(run.id.to_string()),
@@ -216,8 +215,7 @@ async fn insert_record(
             Expr::val(2_i64),
             Expr::val(0_i64),
             Expr::val(0_i64),
-            Expr::val(run.start.time_limit_nanos),
-            Expr::val(run.start.agent_registration_id.as_deref()),
+            Expr::val(run.time_limit_nanos),
         ])
         .on_conflict(
             OnConflict::column(ProgramRunRecords::Id)

@@ -85,7 +85,6 @@ enum ProgramRunRecords {
     RunExecutorKind,
     CommittedRequestNumber,
     TimeLimitNanos,
-    AgentRegistrationId,
 }
 
 /// Reads the Run row in one statement, outside any transaction and without
@@ -218,7 +217,7 @@ fn exact_run_statement(workspace_id: &WorkspaceId, run_id: &RunId) -> sea_query:
 }
 
 /// The columns `RunRow` decodes, shared by Run reads and retention's hold.
-const RUN_COLUMNS: [ProgramRunRecords; 33] = [
+const RUN_COLUMNS: [ProgramRunRecords; 32] = [
     ProgramRunRecords::Id,
     ProgramRunRecords::WorkspaceId,
     ProgramRunRecords::PrincipalId,
@@ -248,7 +247,6 @@ const RUN_COLUMNS: [ProgramRunRecords; 33] = [
     ProgramRunRecords::AccumulatedOutputBytes,
     ProgramRunRecords::ChunkSequence,
     ProgramRunRecords::TimeLimitNanos,
-    ProgramRunRecords::AgentRegistrationId,
     ProgramRunRecords::RunExecutorKind,
     ProgramRunRecords::CommittedRequestNumber,
     ProgramRunRecords::LastCommitAtUnixNanos,

@@ -40,8 +40,6 @@ pub(crate) struct RunRecord {
     /// The time limit acceptance stored, which a Run stream's start adds
     /// to its own instant; `None` for a Run accepted before it was stored.
     pub(crate) time_limit_nanos: Option<i64>,
-    /// The Agent Registration that authenticated the accepting Agent.
-    pub(crate) agent_registration_id: Option<String>,
     /// A take gave the Run to a Run Executor: no Run Owner's worker claim
     /// ever fences it.
     pub(crate) on_run_executor: bool,

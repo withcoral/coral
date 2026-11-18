@@ -1,9 +1,9 @@
 use coral_db::{Transaction, UnixNanos};
 
 use crate::{
-    AgentRegistrationId, AuthenticatedPrincipal, AuthorityAction, Error, Principal, PrincipalKind,
-    UserId, Workspace, WorkspaceAction, WorkspaceEvidence, WorkspaceId, WorkspaceModule,
-    agent_repository, current_user_workspace_authority, repository, require_active_for_run,
+    AuthenticatedPrincipal, AuthorityAction, Error, Principal, PrincipalKind, UserId, Workspace,
+    WorkspaceAction, WorkspaceEvidence, WorkspaceId, WorkspaceModule, agent_repository,
+    current_user_workspace_authority, repository, require_active_for_run,
 };
 
 /// Live Workspace authority for a Principal's authoring, Run, or dispatch.
@@ -233,18 +233,17 @@ impl WorkspaceModule {
     /// rechecks and holds its Run authority, as
     /// [`Self::check_run_admission_in_transaction`] does: for a Coral
     /// Instance that starts a Run another one accepted. A User is read from
-    /// its current Organization Membership, an Agent from the Registration
-    /// that authenticated it at acceptance.
+    /// its current Organization Membership, an Agent from its one
+    /// Registration in the Workspace.
     ///
     /// # Errors
     ///
-    /// Applies Run admission rules. An Agent with no stored Registration
-    /// has no authority. The caller owns commit/rollback and the final time check.
+    /// Applies Run admission rules. An Agent with no Registration has no
+    /// authority. The caller owns commit/rollback and the final time check.
     pub async fn check_run_start_in_transaction(
         &self,
         transaction: &mut Transaction<'_>,
         principal: &Principal,
-        agent_registration_id: Option<&AgentRegistrationId>,
         workspace_id: &WorkspaceId,
         now_unix_nanos: UnixNanos,
     ) -> Result<(AuthenticatedPrincipal, PrincipalWorkspaceEvidence), Error> {
@@ -258,18 +257,10 @@ impl WorkspaceModule {
                     .map_err(crate::conceal_missing_user)?;
                 AuthenticatedPrincipal::user(user)
             }
-            PrincipalKind::Agent => {
-                let id = agent_registration_id.ok_or(Error::WorkspaceNotFound)?;
-                let registration =
-                    agent_repository::registration_by_id(&mut *transaction, workspace_id, id)
-                        .await?;
-                // The actor is the Registration's Agent: it must be the one
-                // the Run names.
-                if registration.agent_id() != principal.id() {
-                    return Err(Error::WorkspaceNotFound);
-                }
-                AuthenticatedPrincipal::agent(registration)
-            }
+            PrincipalKind::Agent => AuthenticatedPrincipal::agent(
+                agent_repository::registration(&mut *transaction, workspace_id, principal.id())
+                    .await?,
+            ),
         };
         if !repository::hold_workspace(transaction, workspace_id).await? {
             return Err(Error::WorkspaceNotFound);

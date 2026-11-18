@@ -246,10 +246,7 @@ impl RunModule {
                     })
                     .collect(),
                 trace: trace.clone(),
-                start: crate::types::RunStartFacts {
-                    time_limit_nanos: Some(submission.timeout().nanoseconds()),
-                    agent_registration_id: actor.agent_registration_id().map(ToString::to_string),
-                },
+                time_limit_nanos: Some(submission.timeout().nanoseconds()),
             };
             if run_repository::insert_acceptance(
                 transaction,

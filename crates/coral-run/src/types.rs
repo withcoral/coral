@@ -1170,17 +1170,9 @@ pub(crate) struct AcceptedRun {
     /// The Run Trace every span of the Run joins; `None` when acceptance
     /// stored none.
     pub(crate) trace: Option<coral_telemetry::RunTrace>,
-    /// What acceptance stores for a start that another Coral Instance may
-    /// make.
-    pub(crate) start: RunStartFacts,
-}
-
-/// What a Run stream's start reads from the Run row (ADR 0027): the time
-/// limit and the Agent Registration of the accepting Agent.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct RunStartFacts {
+    /// The time limit acceptance stores, which a Run stream's start adds to
+    /// its own instant (ADR 0027).
     pub(crate) time_limit_nanos: Option<i64>,
-    pub(crate) agent_registration_id: Option<String>,
 }
 
 /// One Private Tool definition or Shared Tool revision a Run linked: which

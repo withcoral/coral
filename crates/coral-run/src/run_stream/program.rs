@@ -52,7 +52,6 @@ pub(crate) fn start(
     let now = module.now().unwrap_or(deadline_at_unix_nanos);
     let cpu_budget = module.cpu_budget.and_then(|budget| {
         accepted
-            .start
             .time_limit_nanos
             .and_then(|limit| budget.below(crate::nanos_duration(limit)))
     });

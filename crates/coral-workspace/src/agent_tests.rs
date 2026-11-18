@@ -237,64 +237,41 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
                 .await
                 .map(drop)
         ));
-        // A Run stream's start rebuilds the same actor from what the Run
-        // stored, and admits exactly whom admission admits.
+        // A Run stream's start rebuilds the same actor from the Run's
+        // Principal, and admits exactly whom admission admits.
         let rebuilt = module
             .check_run_start_in_transaction(
                 &mut transaction,
                 actor.principal(),
-                actor.agent_registration_id(),
                 workspace.id(),
                 UnixNanos::new(15),
             )
             .await;
         if let Ok((rebuilt, _evidence)) = &rebuilt {
             assert_eq!(
-                (rebuilt.principal(), rebuilt.agent_registration_id()),
-                (actor.principal(), actor.agent_registration_id())
+                (rebuilt.principal(), rebuilt.agent_registration()),
+                (actor.principal(), actor.agent_registration())
             );
         }
         assert!(expected(permitted, rebuilt.map(drop)));
         transaction.rollback().await.unwrap();
     }
-    // An Agent's start needs the Registration that authenticated it, and
-    // one that authenticates another Agent admits nobody.
-    let another = module
-        .create_agent(
-            &change(owner.clone(), 16, '6'),
-            workspace.id(),
-            AgentDisplayName::parse("Other worker").unwrap(),
-            Some(UnixNanos::new(100)),
-        )
-        .await
-        .unwrap();
+    // An Agent whose Registration is gone has no authority to start a Run.
     let connection = database.database();
     let mut transaction = connection.begin().await.unwrap();
-    assert!(expected(
-        false,
+    agent_repository::delete_current(&mut transaction, workspace.id(), agent.principal().id())
+        .await
+        .unwrap();
+    assert!(matches!(
         module
             .check_run_start_in_transaction(
                 &mut transaction,
                 agent.principal(),
-                Some(another.registration.id()),
                 workspace.id(),
                 UnixNanos::new(15),
             )
-            .await
-            .map(drop)
-    ));
-    assert!(expected(
-        false,
-        module
-            .check_run_start_in_transaction(
-                &mut transaction,
-                agent.principal(),
-                None,
-                workspace.id(),
-                UnixNanos::new(15),
-            )
-            .await
-            .map(drop)
+            .await,
+        Err(Error::AgentNotFound)
     ));
     transaction.rollback().await.unwrap();
     assert!(matches!(
@@ -367,12 +344,10 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
             Err(Error::WorkspaceArchived)
         ));
     }
-    let by_id = |agent: &Agent| agent.principal().id().as_str().to_owned();
-    let mut listed = module.list_agents(&owner, workspace.id()).await.unwrap();
-    listed.sort_by_key(by_id);
-    let mut agents = vec![issued.agent, another.agent];
-    agents.sort_by_key(by_id);
-    assert_eq!(listed, agents);
+    assert_eq!(
+        module.list_agents(&owner, workspace.id()).await.unwrap(),
+        [issued.agent]
+    );
 }
 
 #[tokio::test]

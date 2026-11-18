@@ -15,7 +15,7 @@ use coral_run_executor::wire::v1::{
     RunResponse, Terminate, TerminateReason, run_request, run_response,
 };
 use coral_run_executor::{Closing, PROTOCOL_LEVEL, RunStreamServer, ServedRunStream};
-use coral_workspace::{AgentRegistrationId, AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
+use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
 use tokio::sync::{mpsc, watch};
 use tokio_stream::StreamExt as _;
 
@@ -24,7 +24,7 @@ use crate::execution::until_answered;
 use crate::lifecycle::{RunRecord, RunTerminationKind};
 use crate::owner::{self, Message, OwnerHandle, OwnerStart, StartedExecution};
 use crate::trace::RunEnd;
-use crate::types::{AcceptedRun, HeldRunId, LinkedTool, RunStartFacts};
+use crate::types::{AcceptedRun, HeldRunId, LinkedTool};
 
 /// Each Private and Shared Tool a Run linked, by its complete Call Path.
 type LinkedTools = std::collections::HashMap<String, LinkedTool>;
@@ -495,20 +495,11 @@ impl RunModule {
         run: &RunRecord,
         now: i64,
     ) -> Result<Result<(AuthenticatedPrincipal, PrincipalWorkspaceEvidence), Error>, Error> {
-        let registration = run
-            .agent_registration_id
-            .as_deref()
-            .map(AgentRegistrationId::parse)
-            .transpose()
-            .map_err(|_invalid| {
-                Error::CorruptData("Run has an invalid Agent Registration".into())
-            })?;
         Ok(self
             .workspaces
             .check_run_start_in_transaction(
                 transaction,
                 &run.principal,
-                registration.as_ref(),
                 &run.workspace_id,
                 coral_db::UnixNanos::new(now),
             )
@@ -605,10 +596,7 @@ impl RunModule {
             worker_claim_expires_at_unix_nanos: run.accepted_at_unix_nanos,
             linked_snapshots,
             trace: run.trace,
-            start: RunStartFacts {
-                time_limit_nanos: run.time_limit_nanos,
-                agent_registration_id: run.agent_registration_id,
-            },
+            time_limit_nanos: run.time_limit_nanos,
         };
         let (handle, mailbox): (OwnerHandle, _) = OwnerHandle::new(accepted.held_id(), claim_id);
         // Decisions and cancellations reach it through the Run Inbox until

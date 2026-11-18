@@ -1656,7 +1656,7 @@ pub(crate) fn test_invoker(
             .unwrap_or(deadline),
         linked_snapshots: std::collections::HashMap::new(),
         trace: run.trace.clone(),
-        start: crate::types::RunStartFacts::default(),
+        time_limit_nanos: None,
     };
     let (owner, _mailbox) = crate::owner::OwnerHandle::new(accepted.held_id(), claim_id);
     crate::invocation::ToolInvoker::new(

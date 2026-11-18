@@ -42,7 +42,6 @@ pub(super) struct RunRow {
     accumulated_output_bytes: i64,
     chunk_sequence: i64,
     time_limit_nanos: Option<i64>,
-    agent_registration_id: Option<String>,
     run_executor_kind: Option<String>,
     committed_request_number: Option<i64>,
     last_commit_at_unix_nanos: Option<i64>,
@@ -246,7 +245,6 @@ impl RunRow {
             value_limits,
             trace: decode_trace(self.trace_parent.as_deref()),
             time_limit_nanos: self.time_limit_nanos,
-            agent_registration_id: self.agent_registration_id,
             on_run_executor: self.run_executor_kind.is_some(),
             committed_request_number: self
                 .committed_request_number
