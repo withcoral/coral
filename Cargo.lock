@@ -814,6 +814,7 @@ name = "coral-edition"
 version = "1.8.0"
 dependencies = [
  "chrono",
+ "coral-credentials",
 ]
 
 [[package]]
@@ -833,6 +834,7 @@ name = "coral-ee-license"
 version = "1.8.0"
 dependencies = [
  "chrono",
+ "coral-credentials",
  "coral-edition",
  "pasetors",
  "serde",

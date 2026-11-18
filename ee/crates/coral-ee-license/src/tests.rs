@@ -79,7 +79,7 @@ fn payload_of(kind: &str, exp_date: &str) -> Value {
     })
 }
 
-/// The customer every test License names.
+/// The customer each License a test signs names.
 const CUSTOMER: &str = "Acme Corp";
 
 fn date(text: &str) -> NaiveDate {
@@ -177,7 +177,7 @@ fn a_license_covers_builds_released_on_or_before_its_expiry() {
     ] {
         let edition = build(&[&key], &[], release_date);
         let notices = edition
-            .apply_license(Some(&key.sign(&payload("2027-06-30"))), date(today))
+            .apply(Some(&key.sign(&payload("2027-06-30"))), date(today))
             .expect(case);
         assert_eq!(edition.edition(), expected, "{case}");
         assert_notices(&notices, warns, says, case);
@@ -189,11 +189,9 @@ fn a_build_without_a_license_runs_as_community_and_says_nothing() {
     let key = Signer::new();
     let edition = build(&[&key], &[], "2027-01-01");
     edition
-        .apply_license(Some(&key.sign(&payload("2028-01-01"))), date("2026-11-18"))
+        .apply(Some(&key.sign(&payload("2028-01-01"))), date("2026-11-18"))
         .expect("covered");
-    let notices = edition
-        .apply_license(None, date("2026-11-18"))
-        .expect("no License");
+    let notices = edition.apply(None, date("2026-11-18")).expect("no License");
     assert_eq!(edition.edition(), Edition::Community);
     assert!(notices.is_empty(), "{notices:?}");
 }
@@ -229,9 +227,7 @@ fn an_evaluation_license_starts_only_until_its_expiry_on_the_clock() {
         ("on the last day", "2026-11-01", "2026-12-18"),
     ] {
         let edition = build(&[&key], &[], release_date);
-        let notices = edition
-            .apply_license(Some(&license), date(today))
-            .expect(case);
+        let notices = edition.apply(Some(&license), date(today)).expect(case);
         assert_eq!(edition.edition(), Edition::Enterprise, "{case}");
         assert_notices(
             &notices,
@@ -240,28 +236,30 @@ fn an_evaluation_license_starts_only_until_its_expiry_on_the_clock() {
             case,
         );
     }
-    for (case, release_date, today) in [
+    for (case, release_date, today, expected) in [
         (
             "the day after, on the build it ran",
             "2026-11-01",
             "2026-12-19",
+            Refusal::EvaluationEnded {
+                customer: CUSTOMER.to_owned(),
+                expiry: date("2026-12-18"),
+            },
         ),
         (
             "a build released after the expiry, with the clock set back",
             "2027-01-01",
             "2026-11-18",
+            Refusal::EvaluationTooOld {
+                customer: CUSTOMER.to_owned(),
+                expiry: date("2026-12-18"),
+                release_date: date("2027-01-01"),
+            },
         ),
     ] {
         let edition = build(&[&key], &[], release_date);
         let refusal = edition.apply(Some(&license), date(today)).expect_err(case);
-        assert_eq!(
-            refusal,
-            Refusal::EvaluationEnded {
-                customer: CUSTOMER.to_owned(),
-                expiry: date("2026-12-18"),
-            },
-            "{case}"
-        );
+        assert_eq!(refusal, expected, "{case}");
         assert_eq!(edition.edition(), Edition::Community, "{case}");
     }
 }
@@ -275,7 +273,7 @@ fn only_an_evaluation_license_stops_coral_once_it_expires() {
     for (kind, stops) in [("evaluation", true), ("commercial", false)] {
         let edition = build(&[&key], &[], "2026-11-01");
         edition
-            .apply_license(
+            .apply(
                 Some(&key.sign(&payload_of(kind, "2026-12-18"))),
                 date("2026-11-18"),
             )
@@ -364,6 +362,16 @@ fn coral_refuses_to_start_with_a_license_it_cannot_trust() {
             Refusal::Malformed(Malformed::NotALicense),
         ),
         (
+            "missing lid",
+            key.sign(&json!({ "v": 1, "kind": "commercial", "customer": "Acme Corp", "iat": "2026-01-02T03:04:05Z", "exp_date": "2028-01-01" })),
+            Refusal::Malformed(Malformed::NotALicense),
+        ),
+        (
+            "missing iat",
+            key.sign(&json!({ "v": 1, "kind": "commercial", "lid": "lic_01", "customer": "Acme Corp", "exp_date": "2028-01-01" })),
+            Refusal::Malformed(Malformed::NotALicense),
+        ),
+        (
             "missing kind",
             key.sign(&json!({ "v": 1, "lid": "lic_01", "customer": "Acme Corp", "iat": "2026-01-02T03:04:05Z", "exp_date": "2028-01-01" })),
             Refusal::Malformed(Malformed::NoKind),
@@ -409,6 +417,35 @@ fn a_refusal_says_what_to_do() {
              or renew the License. To run as the Community Edition, remove the License from \
              config.toml.",
         ),
+        (
+            Refusal::EvaluationEnded {
+                customer: CUSTOMER.to_owned(),
+                expiry: date("2026-12-18"),
+            },
+            "The Evaluation License for Acme Corp ended on 2026-12-18, so Coral does not start. \
+             Add a Commercial License to config.toml. To run as the Community Edition, remove \
+             the License from config.toml.",
+        ),
+        (
+            Refusal::EvaluationTooOld {
+                customer: CUSTOMER.to_owned(),
+                expiry: date("2026-12-18"),
+                release_date: date("2027-01-01"),
+            },
+            "The Evaluation License for Acme Corp covers builds released on or before \
+             2026-12-18, and this build was released on 2027-01-01, so Coral does not start. \
+             Run a build released on or before 2026-12-18, or add a Commercial License to \
+             config.toml. To run as the Community Edition, remove the License from config.toml.",
+        ),
+        (
+            Refusal::EvaluationStopped {
+                customer: CUSTOMER.to_owned(),
+                expiry: date("2026-12-18"),
+            },
+            "The Evaluation License for Acme Corp ended on 2026-12-18, so Coral stops. Add a \
+             Commercial License to config.toml. To run as the Community Edition, remove the \
+             License from config.toml.",
+        ),
     ] {
         assert_eq!(refusal.to_string(), says);
     }
@@ -441,7 +478,7 @@ fn a_build_trusts_the_test_key_only_when_it_has_no_release_date() {
         ),
     ] {
         let notices = edition
-            .apply_license(Some(license), date("2026-11-18"))
+            .apply(Some(license), date("2026-11-18"))
             .expect(case);
         assert_eq!(edition.edition(), Edition::Enterprise, "{case}");
         assert_notices(&notices, warns, says, case);

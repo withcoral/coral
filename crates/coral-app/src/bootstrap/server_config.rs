@@ -400,30 +400,29 @@ impl DeploymentConfig {
     /// # Errors
     ///
     /// Returns what `read_env` refuses, or a refusal of a variable that holds
-    /// no License.
+    /// no License or one that is not a single line.
     pub(crate) fn license(
         &self,
         read_env: &dyn Fn(&str, &str) -> Result<String, AppError>,
-    ) -> Result<Option<String>, AppError> {
+    ) -> Result<Option<coral_credentials::Secret>, AppError> {
         let Some(source) = &self.license else {
             return Ok(None);
         };
-        let text = match source {
-            LicenseSource::Text(text) => text.clone(),
+        match source {
+            LicenseSource::Text(text) => license_secret(text.expose())
+                .map(Some)
+                .map_err(|message| refused("license.text", message)),
             LicenseSource::Env(name) => {
                 let value = read_env(LICENSE_TEXT_ENV, name)?;
-                let text = value.trim();
-                if text.is_empty() {
-                    return Err(AppError::invalid_secret(
+                license_secret(&value).map(Some).map_err(|message| {
+                    AppError::invalid_secret(
                         LICENSE_TEXT_ENV,
                         name,
-                        format!("{LICENSE_TEXT_ENV} names `{name}`, which holds no License"),
-                    ));
-                }
-                text.to_owned()
+                        format!("{LICENSE_TEXT_ENV} names `{name}`, which {message}"),
+                    )
+                })
             }
-        };
-        Ok(Some(text))
+        }
     }
 
     /// The `[otel]` section.
@@ -696,21 +695,29 @@ const LICENSE_TEXT_ENV: &str = "license.text_env";
 
 /// Where the configured License is.
 enum LicenseSource {
-    Text(String),
+    Text(coral_credentials::Secret),
     /// The environment variable that holds it.
     Env(String),
+}
+
+/// `text`, trimmed, as a secret: a leaked License unlocks Enterprise
+/// (ADR 0038), so it never reaches a log. Refuses what holds no License or
+/// is not one line.
+fn license_secret(text: &str) -> Result<coral_credentials::Secret, &'static str> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("holds no License");
+    }
+    coral_credentials::Secret::new(text.to_owned())
+        .map_err(|_not_one_line| "holds no License: a License is one line")
 }
 
 impl LicenseSettings {
     fn validate(self) -> Result<LicenseSource, AppError> {
         match (self.text, self.text_env) {
-            (Some(text), None) => {
-                let text = text.trim();
-                if text.is_empty() {
-                    return Err(refused("license.text", "must not be empty"));
-                }
-                Ok(LicenseSource::Text(text.to_owned()))
-            }
+            (Some(text), None) => license_secret(&text)
+                .map(LicenseSource::Text)
+                .map_err(|message| refused("license.text", message)),
             (None, Some(name)) => super::env_var_name(LICENSE_TEXT_ENV, &name)
                 .map(LicenseSource::Env)
                 .map_err(|message| AppError::config(LICENSE_TEXT_ENV, message)),
@@ -2046,12 +2053,9 @@ client_secret = 'test-secret'
                 Some("v4.public.from-env"),
             ),
         ] {
+            let license = section(raw).expect(raw).license(&read_env).expect(raw);
             assert_eq!(
-                section(raw)
-                    .expect(raw)
-                    .license(&read_env)
-                    .expect(raw)
-                    .as_deref(),
+                license.as_ref().map(coral_credentials::Secret::expose),
                 expected,
                 "{raw:?}"
             );
@@ -2063,6 +2067,10 @@ client_secret = 'test-secret'
                 Refused::Setting("license"),
             ),
             ("[license]\ntext = ' '", Refused::Setting("license.text")),
+            (
+                "[license]\ntext = \"v4.public.a\\nv4.public.b\"",
+                Refused::Setting("license.text"),
+            ),
             (
                 "[license]\ntext_env = ''",
                 Refused::Setting("license.text_env"),

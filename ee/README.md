@@ -39,10 +39,11 @@ text = "v4.public.eyJjdXN0b21lciI6IkNvcmFsIGRldmVsb3BtZW50ICh0ZXN0IGtleSkiLCJleH
 
 That is the `v4.public.` line of
 [`test-licenses/covering.license`](../crates/coral-test-support/test-licenses/covering.license).
-To see what a customer sees when a License has lapsed, load the `v4.public.`
-line of
+To see what a customer sees when they run a build released after their
+License expired, load the `v4.public.` line of
 [`test-licenses/lapsed.license`](../crates/coral-test-support/test-licenses/lapsed.license)
-in the same way. Coral refuses to start and says what to do. To see the
+in the same way. Coral refuses to start and says what to do. A build released
+on or before the expiry would stay Enterprise. To see the
 trial path, load
 [`test-licenses/evaluation.license`](../crates/coral-test-support/test-licenses/evaluation.license),
 an Evaluation License that ends on 9999-12-31. An Evaluation License runs on

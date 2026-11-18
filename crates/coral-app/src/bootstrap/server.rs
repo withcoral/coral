@@ -667,7 +667,7 @@ fn apply_license(
     launcher
         .extensions
         .edition
-        .apply_license(license.as_deref(), utc_date(clock))
+        .apply_license(license.as_ref(), utc_date(clock))
         .map_err(|refusal| AppError::config("license", refusal.to_string()))
 }
 

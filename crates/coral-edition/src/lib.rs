@@ -13,6 +13,8 @@
 use std::fmt;
 use std::sync::Arc;
 
+use coral_credentials::Secret;
+
 /// Whether a deployment runs as the Community Edition or the Enterprise
 /// Edition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,22 +54,22 @@ pub trait EditionSource: Send + Sync {
     /// `today` is the UTC date startup read from its clock. Only an
     /// Evaluation License is decided with it (ADR 0038).
     ///
-    /// The default is a build with no Enterprise Features: it keeps its
-    /// Edition and warns that it ignores a configured License.
+    /// The default is a source that reads no License: it keeps its Edition
+    /// and warns that it ignores a configured License.
     ///
     /// # Errors
     ///
     /// Returns [`LicenseRefusal`] when Coral must not start with `license`.
     fn apply_license(
         &self,
-        license: Option<&str>,
+        license: Option<&Secret>,
         today: chrono::NaiveDate,
     ) -> Result<Vec<LicenseNotice>, LicenseRefusal> {
         let _ = today;
         Ok(license
             .map(|_| {
                 LicenseNotice::warning(
-                    "This build has no Enterprise Features, so it ignores the configured License.",
+                    "This build reads no License, so it ignores the configured License.",
                 )
             })
             .into_iter()
@@ -182,7 +184,7 @@ impl EditionCheck {
     /// Returns [`LicenseRefusal`] when Coral must not start with `license`.
     pub fn apply_license(
         &self,
-        license: Option<&str>,
+        license: Option<&Secret>,
         today: chrono::NaiveDate,
     ) -> Result<Vec<LicenseNotice>, LicenseRefusal> {
         self.0.apply_license(license, today)
@@ -260,8 +262,11 @@ mod tests {
     fn a_source_that_reads_no_license_keeps_its_edition() {
         let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).expect("date");
         for (license, warns) in [(None, false), (Some("v4.public.anything"), true)] {
+            let license = license.map(|text: &str| Secret::new(text.to_owned()).expect("secret"));
             let check = EditionCheck::default();
-            let notices = check.apply_license(license, today).expect("never refused");
+            let notices = check
+                .apply_license(license.as_ref(), today)
+                .expect("never refused");
             check.recheck_license(today).expect("never stops Coral");
             assert_eq!(check.current(), Edition::Community);
             assert_eq!(

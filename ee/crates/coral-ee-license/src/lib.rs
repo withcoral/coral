@@ -15,6 +15,7 @@ use std::fmt;
 use std::sync::{PoisonError, RwLock};
 
 use chrono::NaiveDate;
+use coral_credentials::Secret;
 use coral_edition::{Edition, EditionSource, LicenseNotice, LicenseRefusal};
 use pasetors::keys::AsymmetricPublicKey;
 use pasetors::paserk::{FormatAsPaserk, Id};
@@ -159,8 +160,16 @@ impl LicensedEdition {
     ) -> Result<(Grant, Vec<LicenseNotice>), Refusal> {
         let expiry = license.exp_date;
         let customer = license.customer;
-        if today > expiry || self.build.release_date() > expiry {
+        let release_date = self.build.release_date();
+        if today > expiry {
             return Err(Refusal::EvaluationEnded { customer, expiry });
+        }
+        if release_date > expiry {
+            return Err(Refusal::EvaluationTooOld {
+                customer,
+                expiry,
+                release_date,
+            });
         }
         let notices = vec![
             LicenseNotice::info(format!(
@@ -229,6 +238,13 @@ enum Refusal {
     },
     /// An Evaluation License that ended before Coral started.
     EvaluationEnded { customer: String, expiry: NaiveDate },
+    /// An Evaluation License that has not ended, on a build released after
+    /// its expiry.
+    EvaluationTooOld {
+        customer: String,
+        expiry: NaiveDate,
+        release_date: NaiveDate,
+    },
     /// An Evaluation License that ended while Coral ran.
     EvaluationStopped { customer: String, expiry: NaiveDate },
 }
@@ -300,6 +316,17 @@ impl fmt::Display for Refusal {
                 "The Evaluation License for {customer} ended on {expiry}, so Coral does not \
                  start. Add a Commercial License to config.toml. {remove}"
             ),
+            Self::EvaluationTooOld {
+                customer,
+                expiry,
+                release_date,
+            } => write!(
+                f,
+                "The Evaluation License for {customer} covers builds released on or before \
+                 {expiry}, and this build was released on {release_date}, so Coral does not \
+                 start. Run a build released on or before {expiry}, or add a Commercial License \
+                 to config.toml. {remove}"
+            ),
             Self::EvaluationStopped { customer, expiry } => write!(
                 f,
                 "The Evaluation License for {customer} ended on {expiry}, so Coral stops. Add a \
@@ -325,10 +352,10 @@ impl EditionSource for LicensedEdition {
 
     fn apply_license(
         &self,
-        license: Option<&str>,
+        license: Option<&Secret>,
         today: NaiveDate,
     ) -> Result<Vec<LicenseNotice>, LicenseRefusal> {
-        Ok(self.apply(license, today)?)
+        Ok(self.apply(license.map(Secret::expose), today)?)
     }
 
     fn recheck_license(&self, today: NaiveDate) -> Result<(), LicenseRefusal> {
@@ -451,11 +478,16 @@ struct Footer {
     kid: String,
 }
 
-/// A License's payload.
+/// A License's payload. Format version 1 requires every field, including
+/// `lid` and `iat`, which only people read.
 #[derive(Deserialize)]
 struct License {
     kind: Kind,
+    #[expect(dead_code, reason = "required by the format; only people read it")]
+    lid: String,
     customer: String,
+    #[expect(dead_code, reason = "required by the format; only people read it")]
+    iat: chrono::DateTime<chrono::Utc>,
     exp_date: NaiveDate,
 }
 
