@@ -168,7 +168,8 @@ struct Reader {
     /// The Program and each linked Tool's source, by the Tool's id.
     sources: HashMap<String, AuthoredSource>,
     performed: Arc<Mutex<HashMap<u64, Performed>>>,
-    /// The Performs a `Complete` ended: a later call their bodies make is
+    /// The Performs a `Complete` ended, and on a reopened stream every
+    /// Perform its rows record as ended: a later call their bodies make is
     /// refused, not a broken protocol.
     completed: std::collections::HashSet<u64>,
     /// The last request number read.
@@ -201,7 +202,8 @@ impl Reader {
                     Read::Detached
                 };
             };
-            if request.number <= self.covered {
+            // Number 0 is no request: the check below refuses it.
+            if (1..=self.covered).contains(&request.number) {
                 continue;
             }
             // The Run Executor holds no more than its held cap above the
@@ -326,8 +328,7 @@ impl Reader {
         match performed.get(&perform) {
             Some(performed) => Body::Running(performed.body.clone()),
             // A completed Perform's body ended: its later calls are refused.
-            // So did one from before a reopen that is no longer open.
-            None if self.completed.contains(&perform) || perform <= self.covered => Body::Ended,
+            None if self.completed.contains(&perform) => Body::Ended,
             None => Body::Unknown,
         }
     }

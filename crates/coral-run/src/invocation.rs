@@ -714,6 +714,7 @@ impl ToolInvoker {
     }
 
     /// [`Self::dispatch`] in its plan span, recording the protocol it plans.
+    /// A resumed Perform records [`PERFORMED_PROTOCOL`] without a plan.
     fn planned(
         &self,
         admitted: &AdmittedInvocation,
@@ -726,11 +727,9 @@ impl ToolInvoker {
             Dispatch::Upstream(ReadyDispatch::Http(_)) => "http",
             Dispatch::Upstream(ReadyDispatch::Mcp(_)) => "mcp",
             Dispatch::Builtin(_) => "builtin",
-            Dispatch::Performed => "code",
+            Dispatch::Performed => PERFORMED_PROTOCOL,
         };
-        admitted
-            .span
-            .record("coral.provider.protocol", safe::kind(protocol));
+        record_protocol(&admitted.span, protocol);
         Ok(planned)
     }
 
@@ -2944,4 +2943,12 @@ struct Permit {
     ready: Dispatch,
     slot: DispatchSlot,
     progress: InvocationProgress,
+}
+
+/// The protocol of a Perform, whose body Coral performs in the Program.
+const PERFORMED_PROTOCOL: &str = "code";
+
+/// Records on an Invocation's `span` the protocol its call takes.
+fn record_protocol(span: &tracing::Span, protocol: &'static str) {
+    span.record("coral.provider.protocol", safe::kind(protocol));
 }

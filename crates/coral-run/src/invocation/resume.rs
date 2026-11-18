@@ -12,7 +12,7 @@ use tracing::Instrument as _;
 
 use super::{
     AdmittedInvocation, DispatchSlot, InvocationHostError, InvocationProgress, OpenChild,
-    PerformedCall, Permit, ToolBody, ToolInvoker,
+    PERFORMED_PROTOCOL, PerformedCall, Permit, ToolBody, ToolInvoker, record_protocol,
 };
 use crate::invocation_repository::StreamInvocation;
 use crate::trace::InvocationTrace;
@@ -62,6 +62,7 @@ impl ToolInvoker {
         body: Option<&Arc<ToolBody>>,
     ) -> PerformedCall {
         let (admitted, trace, child) = self.reopened(row, target, body);
+        record_protocol(&admitted.span, PERFORMED_PROTOCOL);
         trace.sending();
         PerformedCall {
             invoker: self.clone(),

@@ -50,6 +50,15 @@ impl Scripted {
         }
         read
     }
+
+    /// Reads past any messages to how Coral closed the stream.
+    async fn closed(&mut self) -> coral_run_executor::Closing {
+        loop {
+            if let Err(closing) = self.recv().await {
+                return closing;
+            }
+        }
+    }
 }
 
 /// The Approval Requests of `run`, once there are `count`.
@@ -628,6 +637,42 @@ async fn a_performs_body_keeps_running_across_a_reopen_unless_its_end_was_lost()
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_reopened_stream_refuses_a_call_under_an_ended_perform_and_breaks_on_a_wrong_number() {
+    // A request that breaks the protocol after the reopen, by its number:
+    // a call under request 2, which was an Emission, and a request
+    // numbered 0.
+    for (number, broken) in [
+        (5, forecast(Some(2))),
+        (0, emit(&serde_json::json!({"late": true}))),
+    ] {
+        let upstream = SequencedUpstream::new(HttpOutcome::new(
+            200,
+            serde_json::json!({"temperature": 21}),
+        ));
+        let (moving, mut stream) = moving_bodies(upstream, None).await;
+        stream.request(1, title());
+        assert!(permitted(&answer(&mut stream, 1).await), "{number}");
+        stream.request(2, emit(&serde_json::json!({"early": true})));
+        stream.request(3, returned(1, "21"));
+        stream.until(|read| read.contains(&committed(3))).await;
+        drop(stream);
+        let mut stream = reopen(&moving, &[]);
+        assert_eq!(stream.next().await, committed(3), "{number}");
+        stream.request(4, forecast(Some(1)));
+        assert!(
+            failed_with(&answer(&mut stream, 4).await, "parent_invocation_ended"),
+            "{number}"
+        );
+        stream.request(number, broken);
+        let closing = stream.closed().await;
+        assert!(
+            matches!(closing, coral_run_executor::Closing::InvalidArgument(_)),
+            "{number}: {closing:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_perform_waiting_for_its_approval_is_permitted_after_a_reopen() {
     let upstream = SequencedUpstream::new(HttpOutcome::new(
         200,
@@ -694,14 +739,22 @@ async fn a_reopen_ends_a_run_whose_termination_the_loop_before_recorded() {
                 .await
         })
     };
-    // The stream drops once `Terminate` arrives, before the Program's
-    // `Finish`.
+    // The stream drops once `Terminate` arrives and the cancellation is
+    // recorded, before the Program's `Finish`. `Terminate` goes out before
+    // the chunk that records it commits.
     stream
         .until(|read| {
             read.iter()
                 .any(|message| matches!(message, run_response::Message::Terminate(_)))
         })
         .await;
+    wait_until_async(async || {
+        retained_events(&runs, &principal, &workspace_id, &run_id)
+            .await
+            .iter()
+            .any(|event| matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
+    })
+    .await;
     drop(stream);
     let mut stream = Scripted::open(&runs, &run_id.to_string(), &claim);
     assert_eq!(stream.next().await, ended(WireEnd::Canceled));

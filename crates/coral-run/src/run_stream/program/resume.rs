@@ -23,6 +23,7 @@ impl Reader {
     pub(super) fn resume(&mut self, resume: Resume, linked: &HashMap<String, LinkedTool>) {
         self.last = resume.watermark;
         self.covered = resume.watermark;
+        self.completed.extend(resume.ended_performs);
         // Each request's recorded end, `None` while open, and whether it is
         // a Perform, whose permit is never a value.
         let mut ends: HashMap<u64, (Option<RecordedOutcome>, bool)> = HashMap::new();

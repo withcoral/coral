@@ -1062,6 +1062,43 @@ pub(crate) async fn for_run_stream(
     rows.into_iter().map(StreamInvocationRow::decode).collect()
 }
 
+/// The request numbers of `run`'s ended Invocations whose call path is one
+/// of `performs`: the Performs that ended.
+pub(crate) async fn ended_performs<'a>(
+    transaction: &mut Transaction<'_>,
+    run: &RunRecord,
+    performs: impl ExactSizeIterator<Item = &'a String>,
+) -> Result<Vec<u64>, Error> {
+    if performs.len() == 0 {
+        return Ok(Vec::new());
+    }
+    let numbers: Vec<(i64,)> = transaction
+        .fetch_all(
+            Query::select()
+                .column(ToolInvocations::RequestNumber)
+                .from(ToolInvocations::Table)
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(run.workspace_id.to_string()))
+                .and_where(Expr::col(ToolInvocations::RunId).eq(run.id.to_string()))
+                .and_where(Expr::col(ToolInvocations::RequestNumber).is_not_null())
+                .and_where(
+                    Expr::col(ToolInvocations::State).eq(InvocationState::Ended.as_storage_str()),
+                )
+                .and_where(Expr::col(ToolInvocations::CallPath).is_in(performs))
+                .to_owned(),
+        )
+        .await?;
+    numbers
+        .into_iter()
+        .map(|(number,)| request_number(number))
+        .collect()
+}
+
+fn request_number(stored: i64) -> Result<u64, Error> {
+    u64::try_from(stored).map_err(|_negative| {
+        Error::CorruptData("Invocation has an invalid request number".to_string())
+    })
+}
+
 impl StreamInvocationRow {
     fn decode(self) -> Result<StreamInvocation, Error> {
         let corrupt = |what: &str| Error::CorruptData(format!("Invocation has {what}"));
@@ -1084,18 +1121,19 @@ impl StreamInvocationRow {
         }
         Ok(StreamInvocation {
             id: invocation_id(&self.id)?,
-            request_number: u64::try_from(self.request_number)
-                .map_err(|_negative| corrupt("an invalid request number"))?,
+            request_number: request_number(self.request_number)?,
             state,
-            provider_id: coral_provider::ProviderId::parse(&self.provider_id)?,
+            provider_id: coral_provider::ProviderId::parse(&self.provider_id)
+                .map_err(|_invalid| corrupt("an invalid Provider id"))?,
             credential_route: coral_provider::access::CredentialRoute::from_storage_str(
                 &self.credential_route,
-            )?,
+            )
+            .map_err(|_invalid| corrupt("an invalid credential route"))?,
             provider_version: self.provider_account_setting_version,
             generation: coral_catalog::ProviderGenerationId::parse(&self.provider_generation_id)
-                .map_err(coral_provider::Error::from)?,
+                .map_err(|_invalid| corrupt("an invalid Provider Generation id"))?,
             tool: coral_catalog::ToolKey::parse(&self.tool_key)
-                .map_err(coral_provider::Error::from)?,
+                .map_err(|_invalid| corrupt("an invalid Tool key"))?,
             call_path: self.call_path,
             arguments_json: self.arguments_json,
             parent: self

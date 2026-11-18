@@ -32,7 +32,8 @@ impl Scripted {
         )
     }
 
-    /// Opens the stream with `open`.
+    /// Opens the stream with an `Open` the test builds, such as a reopen's,
+    /// which names the requests it waits on.
     pub(super) fn open_with(runs: &RunModule, open: Open) -> Self {
         let (requests, received) = mpsc::unbounded_channel();
         let (responses, sent) = mpsc::unbounded_channel();

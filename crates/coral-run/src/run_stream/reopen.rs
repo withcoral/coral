@@ -34,8 +34,11 @@ pub(crate) struct Resume {
     /// The Run Output Budget total the Run row recorded then.
     pub(crate) output_total: usize,
     /// Each Invocation a request opened that is open, with the Tool it
-    /// retained, or that the Run Executor waits on, in admission order.
+    /// retained, or that the Run Executor waits on, in request order.
     pub(crate) invocations: Vec<(StreamInvocation, Option<ResolvedInvocationTool>)>,
+    /// The request numbers of every Perform that ended, the reopen's own
+    /// settles included: `invocations` holds only the open and awaited ones.
+    pub(crate) ended_performs: Vec<u64>,
     /// The requests the Run Executor waits on an answer to that the
     /// watermark covers.
     pub(crate) awaited: Vec<Awaited>,
@@ -285,6 +288,9 @@ impl RunModule {
             }
             resumed.push((invocation, target));
         }
+        // Read after the settles above, which this transaction wrote.
+        let ended_performs =
+            invocation_repository::ended_performs(&mut transaction, &run, linked.keys()).await?;
         run_repository::reopen_taken(
             &mut transaction,
             &run,
@@ -301,6 +307,7 @@ impl RunModule {
             watermark,
             output_total: run.accumulated_output_bytes,
             invocations: resumed,
+            ended_performs,
             awaited: answered,
         };
         Ok(Reopen::Reopened(Box::new((actor, run, resume))))
