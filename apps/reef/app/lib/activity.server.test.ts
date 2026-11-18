@@ -6,7 +6,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { Activity } from '@/views/activity/activity'
 import { activityNavigation } from '@/views/activity/navigation'
 import { stored } from '@/views/activity/discovery/fixtures'
-import type { ActivityPage, LiveLatest } from '@/views/activity/types'
+import type { ActivityPage, LiveLatest, RunDetail } from '@/views/activity/types'
 import {
   ActivityRunState,
   ActivityInvocationState,
@@ -443,6 +443,7 @@ function runDetail(
     retainedConnection?: boolean
     noFinalValue?: boolean
     unmeasured?: boolean
+    executionStartedAt?: bigint
   } = {},
 ): Handlers {
   return {
@@ -457,6 +458,7 @@ function runDetail(
           run: {
             ...execution,
             agent: agentOf(options),
+            executionStartedAtUnixNanos: options.executionStartedAt,
             // The parts below net to this total: 4 + 2 − 150.
             contextImpactBytes: options.unmeasured ? undefined : -144n,
             actionPage: {
@@ -842,6 +844,16 @@ describe('hierarchical activity through the private server interface', () => {
     const value = await loadActivity(new Request(input), api, { scope })
     expect(value.initialRequest).toBeUndefined()
     expect(value.detail).toMatchObject({ kind: 'run', request: null })
+  })
+  // Catches: a Run detail that drops the start mark, or reads a waiting Run as started.
+  it.each<[string, bigint | undefined, string | undefined]>([
+    ['waiting', undefined, undefined],
+    ['started', 3_000_000_000n, '1970-01-01T00:00:03.000Z'],
+  ])('reads the start mark of a %s Run', async (_, mark, shown) => {
+    const { api } = coral(list(), taskDetail(), runDetail({ executionStartedAt: mark }))
+    const { detail } = await loadActivity(request({ record: run }), api, { scope })
+    expect(detail).toMatchObject({ kind: 'run' })
+    expect((detail as RunDetail).run.executionStartedAt).toBe(shown)
   })
   it.each([undefined, `${task}-neighbor`])(
     'opens a pending approval in its real Task and Run hierarchy from a list at anchor %s',

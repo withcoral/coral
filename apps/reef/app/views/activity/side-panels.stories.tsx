@@ -1135,6 +1135,12 @@ export const RunRunning: Story = {
     await expect(duration.textContent).toMatch(/^(\d+s|\d+m \d+s|\d+h \d+m)$/)
   },
 }
+/** Accepted, and no run executor has started it yet. */
+export const RunWaitingToStart = panel(
+  'Program run · waiting to start',
+  runPage(runDetail(run({ executionStartedAt: undefined, durationNanos: '4000000000' }))),
+  { evidence: 'Send invoice reminders' },
+)
 export const RunRunningReconnecting = panel(
   'Program run · running, reconnecting',
   runPage(runDetail(run())),
@@ -2307,7 +2313,7 @@ function connectionStory(
         within(list)
           .getAllByRole('term')
           .map((term) => term.textContent),
-      ).toEqual(['Run intent', 'Requested by', 'Run duration', 'Run started'])
+      ).toEqual(['Run intent', 'Requested by', 'Run duration', 'Run accepted', 'Run started'])
       if (state === 'pending') {
         await expect(header.getByText('Expires in 15 minutes')).toBeVisible()
         await expect(opened.getByText('Connect your Linear account to continue.')).toBeVisible()

@@ -125,6 +125,7 @@ pub(super) fn run(value: &coral_run::RunSummary) -> wire::ActivityRun {
         workspace: format!("workspaces/{}", value.workspace),
         state: state(value.state),
         started_at_unix_nanos: value.started_at,
+        execution_started_at_unix_nanos: value.execution_started_at.map(coral_db::UnixNanos::get),
         ended_at_unix_nanos: value.ended_at,
         duration_nanos: value.duration,
         requires_action: value.requires_action,

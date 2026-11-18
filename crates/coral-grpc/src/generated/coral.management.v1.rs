@@ -5919,6 +5919,10 @@ pub struct ActivityRun {
     /// Absent does not mean there are no actions.
     #[prost(message, optional, tag = "15")]
     pub action_page: ::core::option::Option<ActivityActionPage>,
+    /// When the Run started executing. Absent while it waits to start, and on a
+    /// Run that ended before it started.
+    #[prost(int64, optional, tag = "16")]
+    pub execution_started_at_unix_nanos: ::core::option::Option<i64>,
 }
 /// Summary of one Tool call.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

@@ -76,13 +76,15 @@ export interface ExecutionRow {
   workspace: string
   state: RunState
   startedAt: string
+  /** A Run's start mark. Absent while the Run waits to start, and on a Run that ended first. */
+  executionStartedAt?: string
   endedAt: string | null
   durationNanos: string
   requiresAction: boolean
   task: string
   actor: string
 }
-export interface InvocationRow extends Omit<ExecutionRow, 'state'> {
+export interface InvocationRow extends Omit<ExecutionRow, 'state' | 'executionStartedAt'> {
   state: InvocationState
   run: string
   provider: string

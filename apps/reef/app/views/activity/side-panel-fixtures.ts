@@ -100,6 +100,7 @@ export function run(overrides: Partial<RunRow> = {}): RunRow {
     task: taskName,
     state: 'running',
     startedAt: at,
+    executionStartedAt: '2026-09-18T14:02:03.000Z',
     endedAt: null,
     durationNanos: '242000000000',
     requiresAction: false,
