@@ -23,9 +23,9 @@ fn membership(
         ),
         user: format!("users/{}", m.user_id()),
         role: role(m.role()).into(),
-        etag: meta.etag,
-        create_time: Some(timestamp(meta.created_at)),
-        update_time: Some(timestamp(meta.updated_at)),
+        etag: meta.version.to_string(),
+        create_time: meta.created_at.map(timestamp),
+        update_time: meta.updated_at.map(timestamp),
         profile: None,
         enabled,
     }

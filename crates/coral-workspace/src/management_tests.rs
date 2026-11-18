@@ -1,9 +1,10 @@
 use super::{at_version, change, organization_user, test_module};
 use crate::{
     AgentDisplayName, AgentRegistrationId, AuthenticatedUser, Error, IfMatch, MembershipChange,
-    OrganizationRole, RequestId, WorkspaceDisplayName, WorkspaceId, WorkspaceModule, WorkspaceRole,
+    OrganizationRole, RequestId, ResourceMetadata, WorkspaceDisplayName, WorkspaceId,
+    WorkspaceModule, WorkspaceRole,
 };
-use coral_db::UnixNanos;
+use coral_db::{UnixNanos, Version};
 use coral_test_support::TestDatabase;
 
 #[tokio::test]
@@ -204,91 +205,126 @@ async fn email_grant_serializes_resolution_with_profile_ingestion() {
     );
 }
 
+// Catches: a change that moves the creation time, or leaves the time of the
+// last change; a refused change that moves either; and a change to one
+// resource that moves the etag of another. Two Memberships may show the same
+// etag, since each counts its own changes, so each one's own rise is what
+// tells them apart.
 #[tokio::test]
 async fn management_metadata_preserves_creation_time_and_scopes_membership_etags() {
     let (_database, module) = test_module().await;
-    let owner = organization_user(
-        module.database.clone(),
-        "user:metadata-owner",
-        OrganizationRole::Member,
-    )
-    .await;
+    let module = &module;
+    let user =
+        |id: &'static str| organization_user(module.database.clone(), id, OrganizationRole::Member);
+    let owner = user("user:metadata-owner").await;
+    let member = user("user:metadata-member").await;
     let mut workspaces = Vec::new();
     for name in ["First", "Second"] {
-        workspaces.push(
-            module
-                .create(
-                    &change(owner.clone(), 10, '1'),
-                    WorkspaceDisplayName::parse(name).unwrap(),
-                )
-                .await
-                .unwrap(),
-        );
+        let workspace = module
+            .create(
+                &change(owner.clone(), 10, '1'),
+                WorkspaceDisplayName::parse(name).unwrap(),
+            )
+            .await
+            .unwrap();
+        module
+            .set_membership(
+                &change(owner.clone(), 10, '1'),
+                workspace.id(),
+                &member,
+                WorkspaceRole::Member,
+            )
+            .await
+            .unwrap();
+        workspaces.push(workspace);
     }
     let first = workspaces.first().unwrap().id();
     let second = workspaces.last().unwrap().id();
-    let (_, initial) = module.inspect_workspace(&owner, first).await.unwrap();
-    let (_, first_member, _) = module
-        .inspect_membership(&owner, first, owner.user_id())
-        .await
-        .unwrap();
-    let (_, second_member, _) = module
-        .inspect_membership(&owner, second, owner.user_id())
-        .await
-        .unwrap();
-    assert_ne!(first_member.etag, second_member.etag);
-    assert_eq!(
-        (initial.created_at, initial.updated_at),
-        (UnixNanos::new(10), UnixNanos::new(10))
-    );
+    let at = |version, created_at, updated_at| ResourceMetadata {
+        version: Version::new(version).unwrap(),
+        created_at: Some(UnixNanos::new(created_at)),
+        updated_at: Some(UnixNanos::new(updated_at)),
+    };
+    let workspace_shown = || async {
+        let (evidence, metadata) = module.inspect_workspace(&owner, first).await.unwrap();
+        (
+            evidence.workspace().display_name().as_str().to_owned(),
+            metadata,
+        )
+    };
+    // The Memberships of the Owner and the Member in each Workspace.
+    let memberships_shown = || async {
+        let mut shown = Vec::new();
+        for workspace in [first, second] {
+            for user in [&owner, &member] {
+                let (_, metadata, _) = module
+                    .inspect_membership(&owner, workspace, user.user_id())
+                    .await
+                    .unwrap();
+                shown.push(metadata);
+            }
+        }
+        shown
+    };
+    assert_eq!(workspace_shown().await, ("First".to_owned(), at(1, 10, 10)));
+    assert_eq!(memberships_shown().await, [at(1, 10, 10); 4]);
 
+    let initial = at_version(1);
+    let rename = |at, name| {
+        let context = change(owner.clone(), at, '2');
+        let name = WorkspaceDisplayName::parse(name).unwrap();
+        async move {
+            module
+                .update_display_name(&context, first, &initial, name)
+                .await
+        }
+    };
+    rename(20, "Renamed").await.unwrap();
+    let renamed = ("Renamed".to_owned(), at(2, 10, 20));
+    assert_eq!(workspace_shown().await, renamed);
+    assert!(matches!(
+        rename(30, "Stale update").await,
+        Err(Error::EtagMismatch)
+    ));
+    assert_eq!(workspace_shown().await, renamed);
+    assert_eq!(memberships_shown().await, [at(1, 10, 10); 4]);
+
+    // A role change raises the etag of that one Membership: not the same
+    // User's in the other Workspace, and not the other User's in this one.
     module
-        .update_display_name(
-            &change(owner.clone(), 20, '2'),
+        .manage_membership(
+            &change(owner.clone(), 40, '4'),
             first,
-            &IfMatch::parse(&initial.etag).unwrap(),
-            WorkspaceDisplayName::parse("Renamed").unwrap(),
+            &member,
+            MembershipChange::UpdateRole {
+                role: WorkspaceRole::Owner,
+                if_match: initial,
+            },
         )
         .await
         .unwrap();
-    let (_, updated) = module.inspect_workspace(&owner, first).await.unwrap();
-    assert_ne!(updated.etag, initial.etag);
-    assert_eq!(
-        (updated.created_at, updated.updated_at),
-        (UnixNanos::new(10), UnixNanos::new(20))
-    );
+    let promoted = [at(1, 10, 10), at(2, 10, 40), at(1, 10, 10), at(1, 10, 10)];
+    assert_eq!(memberships_shown().await, promoted);
+    // The etag read of the Membership in the first Workspace before its
+    // change is the current etag of the one in the second. It is stale for
+    // the first alone.
+    let role_change = MembershipChange::UpdateRole {
+        role: WorkspaceRole::Member,
+        if_match: initial,
+    };
     assert!(matches!(
         module
-            .update_display_name(
-                &change(owner.clone(), 30, '3'),
-                first,
-                &IfMatch::parse(&initial.etag).unwrap(),
-                WorkspaceDisplayName::parse("Stale update").unwrap(),
-            )
+            .manage_membership(&change(owner.clone(), 50, '5'), first, &member, role_change)
             .await,
         Err(Error::EtagMismatch)
     ));
-    let (evidence, unchanged) = module.inspect_workspace(&owner, first).await.unwrap();
-    assert_eq!(evidence.workspace().display_name().as_str(), "Renamed");
-    assert_eq!(unchanged.etag, updated.etag);
-    assert_eq!(unchanged.updated_at, UnixNanos::new(20));
-    for (workspace, original) in [(first, first_member), (second, second_member)] {
-        let (_, member, _) = module
-            .inspect_membership(&owner, workspace, owner.user_id())
-            .await
-            .unwrap();
-        assert_eq!(member.etag, original.etag);
-        assert_eq!(
-            (member.created_at, member.updated_at),
-            (UnixNanos::new(10), UnixNanos::new(10))
-        );
-    }
+    assert_eq!(memberships_shown().await, promoted);
+    assert_eq!(workspace_shown().await, renamed);
 }
 
 // Catches: a role change that checks its precondition before it finds the
-// Membership. For a User who was never a Member that check finds no
-// concurrency metadata and reports corrupt data, and for a removed Member it
-// reports a stale etag. Either hides that the Membership is absent.
+// Membership. That check has no version to compare and reports a stale
+// etag, which hides that the Membership is absent.
 #[tokio::test]
 async fn a_role_change_of_an_absent_membership_is_not_found_whatever_its_precondition() {
     let (_database, module) = test_module().await;
@@ -314,11 +350,6 @@ async fn a_role_change_of_an_absent_membership_is_not_found_whatever_its_precond
         )
         .await
         .unwrap();
-    let (_, shown, _) = module
-        .inspect_membership(&owner, workspace, removed.user_id())
-        .await
-        .unwrap();
-    let shown = IfMatch::parse(&shown.etag).unwrap();
     super::remove_membership_authority(
         &module,
         &change(owner.clone(), 30, '3'),
@@ -346,7 +377,11 @@ async fn a_role_change_of_an_absent_membership_is_not_found_whatever_its_precond
             IfMatch::token(uuid::Uuid::new_v4()),
         ),
         ("removed, the version it had", &removed, at_version(1)),
-        ("removed, the etag it showed", &removed, shown),
+        (
+            "removed, a UUID",
+            &removed,
+            IfMatch::token(uuid::Uuid::new_v4()),
+        ),
     ] {
         let refused = module
             .manage_membership(
@@ -563,8 +598,8 @@ impl Requests {
             .map(|agent| {
                 (
                     agent.agent,
-                    agent.agent_metadata.etag,
-                    agent.registration_metadata.etag,
+                    agent.agent_metadata.version,
+                    agent.registration_metadata.version,
                 )
             })
             .collect();

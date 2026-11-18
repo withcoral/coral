@@ -272,6 +272,7 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
         &mut transaction,
         workspace.id(),
         agent.principal().id(),
+        coral_db::Version::FIRST,
         UnixNanos::new(15),
     )
     .await

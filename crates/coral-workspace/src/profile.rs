@@ -187,8 +187,9 @@ impl WorkspaceModule {
         let evidence = self
             .check_in_transaction(tx, actor, workspace, WorkspaceAction::Inspect)
             .await?;
-        let designated =
-            crate::repository::membership_role_in_transaction(tx, workspace, user).await?;
+        let designated = crate::repository::membership_in_transaction(tx, workspace, user)
+            .await?
+            .map(|(role, _metadata)| role);
         let designated_owner = designated == Some(WorkspaceRole::Owner);
         let owner = evidence.effective_role() == WorkspaceRole::Owner;
         let creator = if owner {

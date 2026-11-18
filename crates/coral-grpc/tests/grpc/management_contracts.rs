@@ -856,6 +856,101 @@ async fn management_registration_masks_preserve_unmasked_fields_and_reject_stale
     );
 }
 
+// Catches: an Adapter that shows another etag than the text of the version,
+// sends a time that the row does not hold, or answers the etag of the earlier
+// form, a UUID, as malformed, so that Reef blames the form's fields when the
+// page only needs a reload.
+#[tokio::test]
+async fn a_registration_shows_its_version_as_its_etag_and_no_time_that_its_row_lacks() {
+    let f = Fixture::new().await;
+    let created = f
+        .workspaces
+        .create_agent(
+            &change(&f.owner),
+            &RequestId::generate(),
+            f.workspace.id(),
+            AgentDisplayName::parse("versioned").unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let name = format!(
+        "workspaces/{}/agents/{}/registration",
+        f.workspace.id(),
+        created.agent.principal().id()
+    );
+    let token = f.token(&f.owner, "reef");
+    let mut reader = f.registrations();
+    let mut shown = async || {
+        reader
+            .get_agent_registration(request(
+                management::GetAgentRegistrationRequest { name: name.clone() },
+                &token,
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+    };
+    let first = shown().await;
+    assert_eq!(first.etag, "1");
+    assert!(first.create_time.is_some());
+    assert_eq!(first.update_time, first.create_time);
+
+    // A Coral from before the row kept its times created this Registration.
+    f.database
+        .execute_fixture_sql(
+            "UPDATE agent_registrations \
+             SET created_at_unix_nanos = NULL, updated_at_unix_nanos = NULL",
+        )
+        .await
+        .unwrap();
+    let without_times = shown().await;
+    assert_eq!(
+        without_times,
+        management::AgentRegistration {
+            create_time: None,
+            update_time: None,
+            ..first
+        }
+    );
+
+    let mut client = f.registrations();
+    let mut disable = async |etag: &str| {
+        client
+            .update_agent_registration(request(
+                management::UpdateAgentRegistrationRequest {
+                    registration: Some(management::AgentRegistration {
+                        enabled: false,
+                        etag: etag.into(),
+                        ..without_times.clone()
+                    }),
+                    update_mask: Some(prost_types::FieldMask {
+                        paths: vec!["enabled".into()],
+                    }),
+                },
+                &token,
+                "reef",
+            ))
+            .await
+    };
+    let earlier_form = uuid::Uuid::new_v4().to_string();
+    for sent in ["2", earlier_form.as_str()] {
+        let error = disable(sent).await.unwrap_err();
+        assert_eq!(
+            (error.code(), error_reason(&error).as_str()),
+            (tonic::Code::Aborted, "ETAG_MISMATCH"),
+            "{sent:?}"
+        );
+        assert_eq!(shown().await, without_times, "{sent:?}");
+    }
+    let disabled = disable("1").await.unwrap().into_inner();
+    assert_eq!(disabled.etag, "2");
+    assert_eq!(disabled.create_time, None);
+    assert!(disabled.update_time.is_some());
+    assert!(!disabled.enabled);
+}
+
 /// A second Organization Owner and designated Workspace Owner, who may list
 /// the same collections.
 async fn second_owner(f: &Fixture) -> AuthenticatedUser {
