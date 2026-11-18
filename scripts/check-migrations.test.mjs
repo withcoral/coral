@@ -142,6 +142,9 @@ test('a removal passes only when it names a step that a release has', async (t) 
     `-- rolling-upgrade: unused since step ${step}, in ${release}. No query names the column.\n${drop}`
   const repo = await repository(t, '1.0.0-beta.11')
   repo.git('switch', '--quiet', 'main')
+  await repo.write('crates/coral-db/migrations/0000_state_format.sql', 'CREATE TABLE state_format (id TEXT);\n')
+  repo.git('add', '-A')
+  repo.git('commit', '--quiet', '-m', 'add the first step')
   repo.git('tag', 'v1.0.0')
   await repo.write(marker, '-- Stops using workspaces.name.\n')
   repo.git('add', '-A')
@@ -174,9 +177,12 @@ test('a removal passes only when it names a step that a release has', async (t) 
     assert.equal(result.status, 1, result.stderr)
     assert.match(result.stderr, new RegExp(`names ${release} for step 0010, but v1\\.1\\.0 is the first release`))
   }
-  // A step that the first release already had.
-  await repo.write(removal, declared('0009', 'v1.0.0'))
-  assert.equal(repo.check().status, 0)
+  // A step that the first release already had, the first of the chain among them.
+  for (const step of ['0009', '0000']) {
+    await repo.write(removal, declared(step, 'v1.0.0'))
+    const result = repo.check()
+    assert.equal(result.status, 0, result.stderr)
+  }
 
   // The removal's own step, and a step that does not exist.
   for (const step of ['0011', '0099']) {
