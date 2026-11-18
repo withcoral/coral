@@ -40,8 +40,8 @@ pub struct McpInterfaceDependencies {
     pub env: coral_secret_store::EnvReader,
     /// The one clock of this Coral Instance.
     pub clock: Arc<dyn coral_db::Clock>,
-    /// True once this Coral Instance stops its listeners, which is after the
-    /// Shutdown Drain. A dropped sender reads the same.
+    /// True once this Coral Instance begins to shut down, before the Shutdown
+    /// Drain. A dropped sender reads the same.
     pub stopping: tokio::sync::watch::Receiver<bool>,
 }
 
