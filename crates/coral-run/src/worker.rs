@@ -64,7 +64,16 @@ impl RunModule {
     /// that arrives first still finds it, and starts the Run Inbox reader
     /// that delivers its outside requests.
     pub(crate) fn register_owner(&self, handle: &OwnerHandle) -> owner::OwnerRegistration {
-        let registration = self.owners.register(handle.clone());
+        self.registered(self.owners.register(handle.clone()))
+    }
+
+    /// [`Self::register_owner`] for a Run stream's owner, which detaches
+    /// the one it replaces ([`owner::Owners::register_stream`]).
+    pub(crate) fn register_stream_owner(&self, handle: &OwnerHandle) -> owner::OwnerRegistration {
+        self.registered(self.owners.register_stream(handle.clone()))
+    }
+
+    fn registered(&self, registration: owner::OwnerRegistration) -> owner::OwnerRegistration {
         self.inbox.owner_registered(
             &self.owners,
             &self.instance,

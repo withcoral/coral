@@ -38,6 +38,7 @@ enum ToolInvocations {
     ParentInvocationId,
     DeclaredDefaultAccessState,
     RequestNumber,
+    UpstreamRejection,
 }
 
 impl InvocationState {
@@ -381,12 +382,21 @@ pub(super) async fn finish(
     completion: &InvocationCompletion,
     ended_at_unix_nanos: i64,
 ) -> Result<bool, Error> {
-    let (result_json, failure_code, failure_message) = match completion {
-        InvocationCompletion::Upstream { result_json } => (Some(result_json.as_str()), None, None),
+    let (result_json, failure_code, failure_message, rejection) = match completion {
+        InvocationCompletion::Upstream {
+            result_json,
+            rejection,
+        } => (
+            Some(result_json.as_str()),
+            None,
+            None,
+            rejection.map(crate::error::UpstreamRejection::code),
+        ),
         InvocationCompletion::Failure(failure) => (
             None,
             Some(failure.code()),
             Some(failure.message().into_owned()),
+            None,
         ),
     };
     let result_bytes = i64::try_from(result_json.map_or(0, str::len))
@@ -414,6 +424,7 @@ pub(super) async fn finish(
             (ToolInvocations::ResultBytes, Expr::val(result_bytes)),
             (ToolInvocations::FailureCode, Expr::val(failure_code)),
             (ToolInvocations::FailureMessage, Expr::val(failure_message)),
+            (ToolInvocations::UpstreamRejection, Expr::val(rejection)),
         ])
         .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(admitted.workspace_id.to_string()))
         .and_where(Expr::col(ToolInvocations::Id).eq(admitted.id.to_string()))
@@ -892,4 +903,208 @@ pub(crate) async fn ended_by_result_kind(
             ))
         })
         .collect()
+}
+
+/// How an ended Invocation ended, as its row recorded it: what a Run stream
+/// that moved answers its call with again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RecordedOutcome {
+    /// A declared success, as native JSON.
+    Returned(String),
+    /// An Upstream Outcome that rejects the call.
+    Rejected {
+        rejection: crate::error::UpstreamRejection,
+        outcome_json: String,
+    },
+    /// A Coral Failure, with the message it recorded.
+    Failed {
+        failure: CoralFailure,
+        message: String,
+    },
+    /// Dispatch started, and no complete result won.
+    Indeterminate,
+    /// The Run's termination ended it.
+    RunTerminated,
+}
+
+impl RecordedOutcome {
+    /// The outcome an ended row of `kind` records with these columns.
+    pub(crate) fn of(
+        kind: InvocationResultKind,
+        result_json: Option<String>,
+        failure_code: Option<&str>,
+        failure_message: Option<String>,
+        upstream_rejection: Option<&str>,
+    ) -> Result<Self, Error> {
+        let corrupt = |what: &str| Error::CorruptData(format!("Invocation has {what}"));
+        Ok(match kind {
+            InvocationResultKind::UpstreamOutcome => {
+                let json = result_json.ok_or_else(|| corrupt("no Tool Result"))?;
+                match upstream_rejection {
+                    None => Self::Returned(json),
+                    Some(code) => Self::Rejected {
+                        rejection: crate::error::UpstreamRejection::from_code(code)
+                            .ok_or_else(|| corrupt("an invalid upstream rejection"))?,
+                        outcome_json: json,
+                    },
+                }
+            }
+            InvocationResultKind::CoralFailure => Self::Failed {
+                failure: failure_code
+                    .and_then(CoralFailure::from_code)
+                    .ok_or_else(|| corrupt("an invalid failure code"))?,
+                message: failure_message.unwrap_or_default(),
+            },
+            InvocationResultKind::Indeterminate => Self::Indeterminate,
+            InvocationResultKind::RunTerminated => Self::RunTerminated,
+        })
+    }
+
+    /// `failure`, with its own message.
+    pub(crate) fn failed(failure: CoralFailure) -> Self {
+        Self::Failed {
+            failure,
+            message: failure.message().to_owned(),
+        }
+    }
+}
+
+/// An Invocation a Run stream request opened, as a reopened stream rebuilds
+/// it.
+#[derive(Debug, Clone)]
+pub(crate) struct StreamInvocation {
+    pub(crate) id: InvocationId,
+    pub(crate) request_number: u64,
+    pub(crate) state: InvocationState,
+    pub(crate) provider_id: coral_provider::ProviderId,
+    pub(crate) credential_route: coral_provider::access::CredentialRoute,
+    pub(crate) provider_version: i64,
+    pub(crate) generation: coral_catalog::ProviderGenerationId,
+    pub(crate) tool: coral_catalog::ToolKey,
+    pub(crate) call_path: String,
+    pub(crate) arguments_json: String,
+    pub(crate) parent: Option<InvocationId>,
+    pub(crate) admitted_at_unix_nanos: i64,
+    /// `None` while it is nonterminal.
+    pub(crate) outcome: Option<RecordedOutcome>,
+}
+
+#[derive(FromRow)]
+struct StreamInvocationRow {
+    id: String,
+    request_number: i64,
+    state: String,
+    provider_id: String,
+    credential_route: String,
+    provider_account_setting_version: i64,
+    provider_generation_id: String,
+    tool_key: String,
+    call_path: String,
+    arguments_json: String,
+    parent_invocation_id: Option<String>,
+    admitted_at_unix_nanos: i64,
+    result_kind: Option<String>,
+    result_json: Option<String>,
+    failure_code: Option<String>,
+    failure_message: Option<String>,
+    upstream_rejection: Option<String>,
+}
+
+/// The Invocations of `run` that Run stream requests opened and that are
+/// nonterminal or that one of `requests` opened, in request order.
+pub(crate) async fn for_run_stream(
+    transaction: &mut Transaction<'_>,
+    run: &RunRecord,
+    requests: &[u64],
+) -> Result<Vec<StreamInvocation>, Error> {
+    let requests = requests
+        .iter()
+        .map(|number| i64::try_from(*number))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_error| Error::CorruptData("Run request number overflowed".to_string()))?;
+    let rows: Vec<StreamInvocationRow> = transaction
+        .fetch_all(
+            Query::select()
+                .columns([
+                    ToolInvocations::Id,
+                    ToolInvocations::RequestNumber,
+                    ToolInvocations::State,
+                    ToolInvocations::ProviderId,
+                    ToolInvocations::CredentialRoute,
+                    ToolInvocations::ProviderAccountSettingVersion,
+                    ToolInvocations::ProviderGenerationId,
+                    ToolInvocations::ToolKey,
+                    ToolInvocations::CallPath,
+                    ToolInvocations::ArgumentsJson,
+                    ToolInvocations::ParentInvocationId,
+                    ToolInvocations::AdmittedAtUnixNanos,
+                    ToolInvocations::ResultKind,
+                    ToolInvocations::ResultJson,
+                    ToolInvocations::FailureCode,
+                    ToolInvocations::FailureMessage,
+                    ToolInvocations::UpstreamRejection,
+                ])
+                .from(ToolInvocations::Table)
+                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(run.workspace_id.to_string()))
+                .and_where(Expr::col(ToolInvocations::RunId).eq(run.id.to_string()))
+                .and_where(Expr::col(ToolInvocations::RequestNumber).is_not_null())
+                .and_where(
+                    Expr::col(ToolInvocations::State)
+                        .ne(InvocationState::Ended.as_storage_str())
+                        .or(Expr::col(ToolInvocations::RequestNumber).is_in(requests)),
+                )
+                // A body's call is numbered after its Perform, whatever the
+                // clocks of the Coral Instances that admitted them.
+                .order_by(ToolInvocations::RequestNumber, Order::Asc)
+                .to_owned(),
+        )
+        .await?;
+    rows.into_iter().map(StreamInvocationRow::decode).collect()
+}
+
+impl StreamInvocationRow {
+    fn decode(self) -> Result<StreamInvocation, Error> {
+        let corrupt = |what: &str| Error::CorruptData(format!("Invocation has {what}"));
+        let state = InvocationState::from_storage_str(&self.state)?;
+        let outcome = self
+            .result_kind
+            .as_deref()
+            .map(|kind| {
+                RecordedOutcome::of(
+                    InvocationResultKind::from_storage_str(kind)?,
+                    self.result_json,
+                    self.failure_code.as_deref(),
+                    self.failure_message,
+                    self.upstream_rejection.as_deref(),
+                )
+            })
+            .transpose()?;
+        if outcome.is_some() != matches!(state, InvocationState::Ended) {
+            return Err(corrupt("a result that contradicts its state"));
+        }
+        Ok(StreamInvocation {
+            id: invocation_id(&self.id)?,
+            request_number: u64::try_from(self.request_number)
+                .map_err(|_negative| corrupt("an invalid request number"))?,
+            state,
+            provider_id: coral_provider::ProviderId::parse(&self.provider_id)?,
+            credential_route: coral_provider::access::CredentialRoute::from_storage_str(
+                &self.credential_route,
+            )?,
+            provider_version: self.provider_account_setting_version,
+            generation: coral_catalog::ProviderGenerationId::parse(&self.provider_generation_id)
+                .map_err(coral_provider::Error::from)?,
+            tool: coral_catalog::ToolKey::parse(&self.tool_key)
+                .map_err(coral_provider::Error::from)?,
+            call_path: self.call_path,
+            arguments_json: self.arguments_json,
+            parent: self
+                .parent_invocation_id
+                .as_deref()
+                .map(invocation_id)
+                .transpose()?,
+            admitted_at_unix_nanos: self.admitted_at_unix_nanos,
+            outcome,
+        })
+    }
 }

@@ -427,6 +427,9 @@ struct Shared {
     sender: mpsc::UnboundedSender<Message>,
     stop: Arc<ExecutionStop>,
     stopped: AtomicBool,
+    /// Its Run's stream ended, or a reopen of it on this Coral Instance
+    /// replaced it: the Run goes on without it.
+    detached: AtomicBool,
     /// The number of the Run stream request being handed to the Program's
     /// host, until the call it makes takes it.
     request: std::sync::Mutex<Option<u64>>,
@@ -483,6 +486,7 @@ impl OwnerHandle {
                 sender,
                 stop: Arc::new(ExecutionStop::new()),
                 stopped: AtomicBool::new(false),
+                detached: AtomicBool::new(false),
                 request: std::sync::Mutex::new(None),
             }),
         };
@@ -528,6 +532,19 @@ impl OwnerHandle {
     /// needs to keep trying on its behalf.
     pub(crate) fn is_retired(&self) -> bool {
         self.shared.stopped.load(Ordering::SeqCst)
+    }
+
+    /// Whether its Run's stream left this owner ([`Self::detach`]): it
+    /// commits only on the head it tracks, and ends no call for it.
+    pub(crate) fn is_detached(&self) -> bool {
+        self.shared.detached.load(Ordering::SeqCst)
+    }
+
+    /// Its Run's stream ended, or reopens elsewhere: the Run goes on
+    /// without this owner, which commits what it applied and retires.
+    pub(crate) fn detach(&self) {
+        self.shared.detached.store(true, Ordering::SeqCst);
+        self.send(Message::Detached);
     }
 
     /// Delivers one message; a retired owner has dropped its mailbox and
@@ -675,6 +692,25 @@ impl Owners {
         registration
     }
 
+    /// Registers the owner of a Run stream: one for its Run that is live
+    /// here still, whose stream ended or never reached it, is detached, not
+    /// stopped, since the Run goes on.
+    pub(crate) fn register_stream(&self, handle: OwnerHandle) -> OwnerRegistration {
+        let (registration, replaced) = self.insert(&mut self.lock(), handle);
+        if let Some(replaced) = replaced {
+            replaced.detach();
+        }
+        registration
+    }
+
+    /// Detaches the owner of `run_id` live here, if any: its Run's stream
+    /// reopens here, and it commits nothing more on a moved head.
+    pub(crate) fn supersede(&self, run_id: &RunId) {
+        if let Some(replaced) = self.get(run_id) {
+            replaced.detach();
+        }
+    }
+
     /// Registers a recovered owner, unless an owner for its Run is live here
     /// already: a local owner is never swept, it continues while its commits
     /// find its claim.
@@ -736,9 +772,11 @@ impl Owners {
 
     fn remove(&self, handle: &OwnerHandle) {
         let mut owners = self.lock();
+        // Only itself: a reopened Run stream's owner replaces one with the
+        // same claim.
         if owners
             .get(handle.run_id())
-            .is_some_and(|registered| registered.claim_id() == handle.claim_id())
+            .is_some_and(|registered| Arc::ptr_eq(&registered.shared, &handle.shared))
         {
             owners.remove(handle.run_id());
             self.live.send_replace(owners.len());

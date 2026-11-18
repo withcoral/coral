@@ -162,7 +162,13 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   `dispatching` Invocation that has no result at once, with a compare-and-set on the Invocation's state; a result that
   lands later fails its predicate and is dropped. The Invocation ends `indeterminate`, and the Program gets a
   `ToolError` with code `upstream_incomplete`: the state every tool can already produce once its request was sent. The
-  Run goes on. No list of live Coral Instances, no instance lease, no heartbeat.
+  Run goes on. No list of live Coral Instances, no instance lease, no heartbeat. A Private or Shared Tool's body still
+  runs on the Run Executor, so its `dispatching` Invocation stays, unless its `Complete` committed and its end was lost:
+  then it ends `indeterminate` too.
+- **The answers the Run Executor may not have.** A reopen's `Open` names each request that waits on its answer. Coral
+  answers again each one the watermark covers, from its row; one that left no row, refused before admission, gets
+  `invocation_not_admitted`, since it did not run. A reopen sends `Started` again after `Committed`. The Run Executor
+  ignores an answer it has.
 - **The loop is rebuilt from the ledger.** A `pending` Invocation re-enters its wait or the enforcement queue from its
   rows; the Fan-out slots are the count of `dispatching` Invocations; the output total is the committed total with the
   resent requests applied on top. The reconnect's write records the new holder.

@@ -14,13 +14,26 @@ use super::agents::{AgentLoss, agent_scope};
 use crate::run_repository::{self, Chunk, OwnedEvent, OwnedEventKind, Taker};
 
 /// One Run stream served by `runs`, driven as a scripted Run Executor.
-struct Scripted {
+pub(super) struct Scripted {
     requests: mpsc::UnboundedSender<RunRequest>,
     responses: mpsc::UnboundedReceiver<Result<RunResponse, Closing>>,
 }
 
 impl Scripted {
-    fn open(runs: &RunModule, run_id: &str, claim_id: &str) -> Self {
+    pub(super) fn open(runs: &RunModule, run_id: &str, claim_id: &str) -> Self {
+        Self::open_with(
+            runs,
+            Open {
+                run_id: run_id.to_owned(),
+                claim_id: claim_id.to_owned(),
+                protocol_level: PROTOCOL_LEVEL,
+                awaited: Vec::new(),
+            },
+        )
+    }
+
+    /// Opens the stream with `open`.
+    pub(super) fn open_with(runs: &RunModule, open: Open) -> Self {
         let (requests, received) = mpsc::unbounded_channel();
         let (responses, sent) = mpsc::unbounded_channel();
         let server = runs.run_stream_server();
@@ -36,15 +49,11 @@ impl Scripted {
             requests,
             responses: sent,
         };
-        stream.send(run_request::Message::Open(Open {
-            run_id: run_id.to_owned(),
-            claim_id: claim_id.to_owned(),
-            protocol_level: PROTOCOL_LEVEL,
-        }));
+        stream.send(run_request::Message::Open(open));
         stream
     }
 
-    fn send(&self, message: run_request::Message) {
+    pub(super) fn send(&self, message: run_request::Message) {
         self.requests
             .send(RunRequest {
                 message: Some(message),
@@ -52,21 +61,21 @@ impl Scripted {
             .expect("the stream is served");
     }
 
-    fn request(&self, number: u64, kind: request::Kind) {
+    pub(super) fn request(&self, number: u64, kind: request::Kind) {
         self.send(run_request::Message::Request(WireRequest {
             number,
             kind: Some(kind),
         }));
     }
 
-    async fn recv(&mut self) -> Result<RunResponse, Closing> {
+    pub(super) async fn recv(&mut self) -> Result<RunResponse, Closing> {
         tokio::time::timeout(EVENTUALLY, self.responses.recv())
             .await
             .expect("Coral answers in time")
             .expect("the stream is open")
     }
 
-    async fn next(&mut self) -> run_response::Message {
+    pub(super) async fn next(&mut self) -> run_response::Message {
         self.recv()
             .await
             .expect("a message, not a close")
@@ -80,7 +89,7 @@ impl Scripted {
     }
 
     /// Opens, loads and expects `Started`.
-    async fn start(&mut self) {
+    pub(super) async fn start(&mut self) {
         assert!(matches!(
             self.next().await,
             run_response::Message::Package(_)
@@ -93,25 +102,25 @@ impl Scripted {
     }
 }
 
-fn emit(value: &serde_json::Value) -> request::Kind {
+pub(super) fn emit(value: &serde_json::Value) -> request::Kind {
     request::Kind::Emit(Emit {
         value_json: value.to_string(),
         location: None,
     })
 }
 
-fn ended(end: WireEnd) -> run_response::Message {
+pub(super) fn ended(end: WireEnd) -> run_response::Message {
     run_response::Message::Ended(coral_run_executor::wire::v1::Ended { end: end.into() })
 }
 
-fn committed(number: u64) -> run_response::Message {
+pub(super) fn committed(number: u64) -> run_response::Message {
     run_response::Message::Committed(coral_run_executor::wire::v1::Committed {
         request_number: number,
     })
 }
 
 /// Takes the oldest waiting Run as a Run Executor would, and returns its claim.
-async fn take(runs: &RunModule) -> String {
+pub(super) async fn take(runs: &RunModule) -> String {
     let mut transaction = runs.database.begin().await.expect("begin the take");
     let claimed = run_repository::take_oldest(
         &mut transaction,
@@ -129,7 +138,7 @@ async fn take(runs: &RunModule) -> String {
 }
 
 /// What a Run's Events say, without identities and times.
-fn shape(events: &[RunEvent]) -> Vec<String> {
+pub(super) fn shape(events: &[RunEvent]) -> Vec<String> {
     events
         .iter()
         .map(|event| match event.kind() {

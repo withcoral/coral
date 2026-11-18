@@ -1,5 +1,9 @@
 //! V8 host callbacks and the synchronous/asynchronous execution bridge.
 
+mod resume;
+
+pub(crate) use resume::Resumed;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -63,7 +67,7 @@ pub(crate) fn program_host(
     value_limits: ValueLimits,
     cpu_budget: Option<std::time::Duration>,
     stop: Arc<ExecutionStop>,
-) -> Arc<dyn coral_v8::ProgramHost> {
+) -> Arc<RunProgramHost> {
     Arc::new(RunProgramHost {
         runtime: tokio::runtime::Handle::current(),
         span: tracing::Span::current(),
@@ -77,7 +81,7 @@ pub(crate) fn program_host(
     })
 }
 
-struct RunProgramHost {
+pub(crate) struct RunProgramHost {
     runtime: tokio::runtime::Handle,
     /// The Run's execute span: each Tool Invocation's span is its child.
     span: tracing::Span,
@@ -198,6 +202,23 @@ impl coral_v8::ToolCalls for RunBodyCalls {
         self.host
             .clone()
             .perform_as(Some(&self.body), call_path, arguments_json, location)
+    }
+}
+
+impl RunToolCompletion {
+    /// What completes `performed`, whose body's calls `host` makes.
+    fn boxed(
+        host: &Arc<RunProgramHost>,
+        performed: PerformedCall,
+    ) -> Box<dyn coral_v8::ToolCompletion> {
+        Box::new(Self {
+            body_calls: Arc::new(RunBodyCalls {
+                host: host.clone(),
+                body: performed.body(),
+            }),
+            host: host.clone(),
+            performed: Some(performed),
+        })
     }
 }
 
@@ -333,15 +354,7 @@ impl RunProgramHost {
                     .perform(relative_path, linked, arguments, source_location)
                     .await
                 {
-                    Ok(performed) => Ok(Box::new(RunToolCompletion {
-                        body_calls: Arc::new(RunBodyCalls {
-                            host: self.clone(),
-                            body: performed.body(),
-                        }),
-                        host: self.clone(),
-                        performed: Some(performed),
-                    })
-                        as Box<dyn coral_v8::ToolCompletion>),
+                    Ok(performed) => Ok(RunToolCompletion::boxed(&self, performed)),
                     Err(error) => Err(self.host_error(error)),
                 }
             }

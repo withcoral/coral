@@ -140,7 +140,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   That owner has no worker lease, marks each chunk by its commit time,
   applies the stream's requests in number order, and rebuilds a chunk on a
   head that another writer moved under the claim, dropping the requests that
-  writer committed.
+  writer committed. A reopen of the stream (#2905) rebuilds that owner from
+  the ledger. An owner whose stream moved, to another Coral Instance or to a
+  reopen on its own, rebuilds nothing: its chunk is refused.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of

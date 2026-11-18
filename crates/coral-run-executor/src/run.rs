@@ -174,6 +174,7 @@ pub(crate) async fn hold(
             run_id: taken.run_id,
             claim_id: taken.claim_id,
             protocol_level: PROTOCOL_LEVEL,
+            awaited: Vec::new(),
         },
         isolates,
         unit: Some(held.unit),
@@ -247,8 +248,12 @@ impl Run {
             answered: false,
         };
         let (outbound, requests) = mpsc::unbounded_channel();
+        let mut open = self.open.clone();
+        if let Some(Program { host, .. }) = &self.program {
+            open.awaited = host.awaited();
+        }
         drop(outbound.send(RunRequest {
-            message: Some(run_request::Message::Open(self.open.clone())),
+            message: Some(run_request::Message::Open(open)),
         }));
         let Ok(response) = client.run(UnboundedReceiverStream::new(requests)).await else {
             return lost;

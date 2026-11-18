@@ -483,7 +483,16 @@ pub(crate) async fn share_user(
     tx: &mut Transaction<'_>,
     user_id: &UserId,
 ) -> Result<AuthenticatedUser, Error> {
-    repository::find_membership_locked(tx, user_id, coral_db::RowLock::Shared)
+    user_locked(tx, user_id, coral_db::RowLock::Shared).await
+}
+
+/// Reads the current User, holding its row as `lock` says.
+pub(crate) async fn user_locked(
+    tx: &mut Transaction<'_>,
+    user_id: &UserId,
+    lock: coral_db::RowLock,
+) -> Result<AuthenticatedUser, Error> {
+    repository::find_membership_locked(tx, user_id, lock)
         .await?
         .ok_or(Error::PermissionDenied(
             crate::Denial::NoOrganizationMembership,

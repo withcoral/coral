@@ -4,8 +4,8 @@
 //! the Program's requests, in number order, with the stream in place of the
 //! in-process isolate ([`program`]).
 //!
-//! Reopening a started Run is not served yet: its `Open` is refused as
-//! unavailable, and the Run Executor opens it again later.
+//! The `Open` of a started Run reopens its stream on this Coral Instance
+//! ([`reopen`]).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -34,8 +34,10 @@ use crate::{
 };
 
 mod program;
+mod reopen;
 
 pub(crate) use program::{Requests, start as start_program};
+pub(crate) use reopen::Resume;
 
 impl RunModule {
     /// What serves this Coral Instance's Run streams, for its link.
@@ -154,6 +156,8 @@ pub(crate) struct StreamRun {
     pub(crate) link: Arc<StreamLink>,
     /// The Program's requests, until the Program starts and reads them.
     pub(crate) requests: Mutex<Option<Requests>>,
+    /// What a reopened stream's loop starts from, until the Program starts.
+    pub(crate) resume: Mutex<Option<Resume>>,
 }
 
 impl RunModule {
@@ -182,15 +186,13 @@ impl RunModule {
         )
         .await;
         let (run, package, linked) = match read {
+            Ok(Some((run, Some((package, linked))))) if run.execution_started() => {
+                return self
+                    .reopen_stream(requests, link, run, claim, package, linked, open.awaited)
+                    .await;
+            }
             Ok(Some((run, Some((package, linked))))) => (run, package, linked),
-            Ok(Some((run, None))) if run.state.is_terminal() => {
-                return link.end(wire_end(run.state));
-            }
-            Ok(Some(_started)) => {
-                return link.close(Closing::Unavailable(
-                    "a started Run's stream is not served yet",
-                ));
-            }
+            Ok(Some((run, None))) => return link.end(wire_end(run.state)),
             Ok(None) => return link.end(WireEnd::NotHeld),
             Err(_unanswered) => return link.close(Closing::Unavailable("the Run is not read")),
         };
@@ -225,18 +227,11 @@ impl RunModule {
             }
         };
         let (workspace_id, id) = (run.workspace_id.clone(), run.id.clone());
-        self.run_on_stream(run, claim, linked, actor, started, requests, link, admitted)
-            .await;
-        if link.violated.load(Ordering::SeqCst) {
-            return link.close(Closing::InvalidArgument(
-                "the Run stream broke the protocol",
-            ));
-        }
-        if let Ok(Some(run)) = run_repository::find_exact(&self.database, &workspace_id, &id).await
-            && run.state.is_terminal()
-        {
-            link.end(wire_end(run.state));
-        }
+        self.run_on_stream(
+            run, claim, linked, actor, started, requests, link, admitted, None,
+        )
+        .await;
+        self.close_served(link, &workspace_id, &id).await;
     }
 
     /// Waits for `Loaded` after the package: `false` once the stream is
@@ -300,7 +295,7 @@ impl RunModule {
     }
 
     /// The Run an `Open` names, by its claim: with its package and the Tools
-    /// it linked while it has not started, in two reads that hold nothing.
+    /// it linked while it has not ended, in two reads that hold nothing.
     async fn open_taken(
         &self,
         run_id: &RunId,
@@ -313,7 +308,7 @@ impl RunModule {
         else {
             return Ok(None);
         };
-        if run.state.is_terminal() || run.execution_started() {
+        if run.state.is_terminal() {
             return Ok(Some((run, None)));
         }
         let linked =
@@ -553,7 +548,7 @@ impl RunModule {
     }
 
     /// Runs the started Run's owner, with the stream as its Program, until
-    /// it retires.
+    /// it retires; `resume` rebuilds a reopened stream's loop.
     #[expect(
         clippy::too_many_arguments,
         reason = "each is one part of the started Run its owner takes"
@@ -568,6 +563,7 @@ impl RunModule {
         requests: Requests,
         link: &Arc<StreamLink>,
         admitted: crate::shutdown::Admitted,
+        resume: Option<Resume>,
     ) {
         let accepted = AcceptedRun {
             id: run.id,
@@ -586,13 +582,14 @@ impl RunModule {
         let (handle, mailbox): (OwnerHandle, _) = OwnerHandle::new(accepted.held_id(), claim_id);
         // Decisions and cancellations reach it through the Run Inbox until
         // the receiver commits them itself (#2907).
-        let registration = self.register_owner(&handle);
+        let registration = self.register_stream_owner(&handle);
         drop(admitted);
         handle.send(Message::Started(Ok(Some(started))));
         let stream = Arc::new(StreamRun {
             actor,
             link: link.clone(),
             requests: Mutex::new(Some(requests)),
+            resume: Mutex::new(resume),
         });
         owner::host(
             self.clone(),

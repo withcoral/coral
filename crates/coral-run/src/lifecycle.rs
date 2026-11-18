@@ -74,6 +74,18 @@ impl RunRecord {
             .ok_or_else(|| Error::CorruptData("Run output bytes overflowed".into()))
     }
 
+    /// The commit time a chunk on this row records for `now`: never before
+    /// acceptance, and never the instant the row carries, so a reread can
+    /// tell the chunk landed.
+    pub(crate) fn commit_mark(&self, now: i64) -> i64 {
+        let mark = now.max(self.accepted_at_unix_nanos);
+        if Some(mark) == self.last_commit_at_unix_nanos {
+            mark.saturating_add(1)
+        } else {
+            mark
+        }
+    }
+
     /// Whether the Run row still takes the Run Owner's chunks: a running Run
     /// that holds `claim_id` as its owner's claim ([`Self::holds_owner_claim`]:
     /// both claim columns, or the execution claim alone for a Run a Run

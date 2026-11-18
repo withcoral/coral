@@ -175,12 +175,27 @@ pub(crate) async fn finish_approval_failure(
     failure: CoralFailure,
     now: i64,
 ) -> Result<Option<OwnedEvent>, Error> {
-    if !invocation_repository::end_pending_with_failure(tx, run, invocation, failure, now).await? {
+    let ended = end_pending(tx, run, invocation, failure, now).await?;
+    if ended.is_none() {
         tracing::warn!(
             coral.run.id = safe::id(&run.held_id()),
             coral.invocation.id = safe::id(&invocation),
             "approval decision found its Invocation no longer pending"
         );
+    }
+    Ok(ended)
+}
+
+/// Ends a `pending` Invocation with `failure` and returns its
+/// `invocation.ended`; `None` when it is no longer pending.
+async fn end_pending(
+    tx: &mut Transaction<'_>,
+    run: &RunRecord,
+    invocation: &InvocationId,
+    failure: CoralFailure,
+    now: i64,
+) -> Result<Option<OwnedEvent>, Error> {
+    if !invocation_repository::end_pending_with_failure(tx, run, invocation, failure, now).await? {
         return Ok(None);
     }
     Ok(Some(OwnedEvent::new(
@@ -286,4 +301,133 @@ pub(crate) async fn end_for_termination(
         OwnedEventKind::InvocationEnded(invocation.id.clone(), result_kind),
         ended_at_unix_nanos,
     )))
+}
+
+/// Settles each `dispatching` Invocation in `invocations` whose dispatch was
+/// in flight on the loop that held the Run's stream before it moved: an
+/// upstream or Built-in call ends `indeterminate`, unless Coral's own records
+/// establish its Tool Result; a Tool whose body runs in the Program (one
+/// that `performs`) keeps running, unless its body's end was lost with that
+/// loop (its `Complete` committed, and its number is in `completes_lost`).
+/// Each end is predicated on the state read, and `invocations` is updated
+/// to it. Returns their `invocation.ended` Events for the reopen's chunk.
+///
+/// # Errors
+///
+/// [`Error::HeadMismatch`] when another writer ended one meanwhile: the
+/// caller reads the Run again.
+pub(crate) async fn settle_lost_dispatches(
+    transaction: &mut Transaction<'_>,
+    run: &RunRecord,
+    invocations: &mut [invocation_repository::StreamInvocation],
+    performs: impl Fn(&invocation_repository::StreamInvocation) -> bool,
+    completes_lost: &std::collections::HashSet<u64>,
+    ended_at_unix_nanos: i64,
+) -> Result<Vec<OwnedEvent>, Error> {
+    let mut events = Vec::new();
+    for invocation in invocations
+        .iter_mut()
+        .filter(|invocation| matches!(invocation.state, InvocationState::Dispatching))
+    {
+        let recovered = if performs(invocation) {
+            if !completes_lost.contains(&invocation.request_number) {
+                continue;
+            }
+            None
+        } else {
+            crate::builtin::recover(
+                transaction,
+                run,
+                &invocation.id,
+                &invocation.generation,
+                &invocation.tool,
+            )
+            .await?
+        };
+        events
+            .push(settle_lost(transaction, run, invocation, recovered, ended_at_unix_nanos).await?);
+    }
+    Ok(events)
+}
+
+/// Ends the `dispatching` `invocation`, whose dispatch was lost with the loop
+/// before, with the Tool Result Coral's records establish, if any, and
+/// otherwise as `indeterminate`: the Run goes on, so a recovery's answer
+/// that the Run ended first counts as no answer.
+///
+/// # Errors
+///
+/// [`Error::HeadMismatch`] when it is no longer dispatching.
+pub(crate) async fn settle_lost(
+    transaction: &mut Transaction<'_>,
+    run: &RunRecord,
+    invocation: &mut invocation_repository::StreamInvocation,
+    recovered: Option<(InvocationResultKind, Option<String>)>,
+    ended_at_unix_nanos: i64,
+) -> Result<OwnedEvent, Error> {
+    let (result_kind, result_json) = match recovered {
+        Some((InvocationResultKind::UpstreamOutcome, Some(json))) => {
+            (InvocationResultKind::UpstreamOutcome, Some(json))
+        }
+        _ => (InvocationResultKind::Indeterminate, None),
+    };
+    let unfinished = UnfinishedInvocation {
+        id: invocation.id.clone(),
+        state: invocation.state,
+        generation: invocation.generation.clone(),
+        tool: invocation.tool.clone(),
+    };
+    let event = end_for_termination(
+        transaction,
+        run,
+        &unfinished,
+        result_kind,
+        result_json.as_deref(),
+        ended_at_unix_nanos,
+    )
+    .await?
+    .ok_or(Error::HeadMismatch)?;
+    invocation.state = InvocationState::Ended;
+    invocation.outcome = Some(invocation_repository::RecordedOutcome::of(
+        result_kind,
+        result_json,
+        None,
+        None,
+        None,
+    )?);
+    Ok(event)
+}
+
+/// Ends a `pending` Invocation whose retained Tool is gone at a reopen of
+/// its Run's stream, as `dispatch_authority_lost`, the failure the
+/// enforcement point would give it, closing its Approval Request, and
+/// returns its `invocation.ended`.
+///
+/// # Errors
+///
+/// [`Error::HeadMismatch`] when it is no longer pending: the caller reads
+/// the Run again.
+pub(crate) async fn end_unreachable(
+    transaction: &mut Transaction<'_>,
+    run: &RunRecord,
+    invocation: &InvocationId,
+    ended_at_unix_nanos: i64,
+) -> Result<OwnedEvent, Error> {
+    let ended = end_pending(
+        transaction,
+        run,
+        invocation,
+        CoralFailure::AuthorityLost,
+        ended_at_unix_nanos,
+    )
+    .await?
+    .ok_or(Error::HeadMismatch)?;
+    approval::close_for_invocation(
+        transaction,
+        &run.workspace_id,
+        invocation,
+        ended_at_unix_nanos,
+    )
+    .await?;
+    Ok(ended)
 }
