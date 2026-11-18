@@ -38,13 +38,8 @@ impl AccountModule {
                 WorkspaceAction::Inspect,
             )
             .await?;
-        let mut pending = connection::pending_for_user(
-            &mut tx,
-            workspace,
-            user,
-            context.occurred_at_unix_nanos(),
-        )
-        .await?;
+        let mut pending =
+            connection::pending_for_user(&mut tx, workspace, user, context.occurred_at()).await?;
         let caller = AccountCaller::User(user.clone());
         let mut result = Vec::new();
         for stored in crate::listed_providers(&mut tx, workspace, None).await? {

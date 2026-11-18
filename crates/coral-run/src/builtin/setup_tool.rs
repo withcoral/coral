@@ -116,7 +116,7 @@ async fn end_setup(host: &BuiltinHost<'_>, setup: &ProviderSetupId) {
     };
     let _ended = host
         .providers
-        .abandon_setup(host.workspace_id, setup, now)
+        .abandon_setup(host.workspace_id, setup, coral_db::UnixNanos::new(now))
         .await;
 }
 

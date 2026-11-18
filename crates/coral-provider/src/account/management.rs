@@ -3,6 +3,7 @@ use super::{
     AccountModule, ChangeContext, Error, LifecycleAction, LifecycleOutcome, ProviderAccountId,
     ProviderCredentialContract, ProviderId, event, repository,
 };
+use coral_db::UnixNanos;
 use coral_workspace::{PrincipalId, UserId, WorkspaceAction, WorkspaceId};
 
 /// The exact Account scope a human may inspect. Never another User.
@@ -32,7 +33,7 @@ pub enum AccountState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountSummary {
     /// Latest successful connection, absent until one succeeds.
-    pub connected_at_unix_nanos: Option<i64>,
+    pub connected_at: Option<UnixNanos>,
     /// Configuring Coral User, not the upstream identity.
     pub configured_by_user_id: Option<UserId>,
     /// Whether the current OAuth grant can refresh without consent.
@@ -69,7 +70,7 @@ pub struct AccountView {
 }
 
 pub(super) struct AccountInspection {
-    pub(super) connected_at_unix_nanos: Option<i64>,
+    pub(super) connected_at: Option<UnixNanos>,
     pub(super) configured_by_user_id: Option<UserId>,
     pub(super) automatic_refresh: Option<bool>,
     pub(super) id: ProviderAccountId,
@@ -95,7 +96,7 @@ fn summary(
         AccountState::Ready
     };
     AccountSummary {
-        connected_at_unix_nanos: row.connected_at_unix_nanos,
+        connected_at: row.connected_at,
         configured_by_user_id: row.configured_by_user_id,
         automatic_refresh: row.automatic_refresh,
         id: row.id,

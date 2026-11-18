@@ -56,7 +56,7 @@ pub use types::{
 pub(crate) use types::{PublicationEvidence, Published};
 
 use coral_catalog::{AuthenticationConfiguration, MaterializationOutcome, ProviderSetupInput};
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::{AuthenticatedUser, AuthoritySource, ChangeContext, WorkspaceAction};
 
 use crate::account::setup as setup_credentials;
@@ -212,7 +212,7 @@ impl AppliedPublication {
         id: ProviderPublicationId,
         request: ProviderRegenerationRequest,
         activated: Option<ActivatedGeneration>,
-        completed_at: i64,
+        completed_at: UnixNanos,
     ) -> Self {
         Self {
             terminal: Terminal::Regeneration(ProviderRegenerationPublication::succeeded(
@@ -242,7 +242,7 @@ impl AppliedPublication {
         id: ProviderPublicationId,
         request: ProviderRegenerationRequest,
         diagnostic: PublicationDiagnostic,
-        completed_at: i64,
+        completed_at: UnixNanos,
     ) -> Self {
         Self {
             terminal: Terminal::Regeneration(ProviderRegenerationPublication::failed(
@@ -484,9 +484,10 @@ impl ProviderModule {
             return Err(Error::EtagMismatch);
         }
         // A Setup that reached its deadline publishes nothing, ready or not.
-        let materialized = if current_setup.setup.is_past_deadline(
-            credential_decision_context(context, started).occurred_at_unix_nanos(),
-        ) {
+        let materialized = if current_setup
+            .setup
+            .is_past_deadline(credential_decision_context(context, started).occurred_at())
+        {
             MaterializationOutcome::Rejected(PublicationDiagnostic::stable(
                 "setup_expired",
                 "the Setup expired before Publication",
@@ -646,7 +647,7 @@ impl ProviderModule {
                     ProviderPublicationOutcome::Failed => LifecycleOutcome::Failed,
                 },
                 changed_field_paths: &changed_field_paths,
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                occurred_at: context.occurred_at(),
                 trace_id: context.trace_id(),
             },
         )
@@ -701,7 +702,7 @@ impl TerminalContext<'_> {
             transaction,
             &provider,
             &generation,
-            self.context.occurred_at_unix_nanos(),
+            self.context.occurred_at(),
         )
         .await?;
         crate::account::oauth_client_secret_repository::promote(
@@ -1176,7 +1177,7 @@ impl ProviderModule {
                         publication_id,
                         request,
                         provider,
-                        context.occurred_at_unix_nanos(),
+                        context.occurred_at(),
                     ),
                     evidence,
                 )
@@ -1186,7 +1187,7 @@ impl ProviderModule {
                     publication_id,
                     request,
                     diagnostic,
-                    context.occurred_at_unix_nanos(),
+                    context.occurred_at(),
                 ),
                 PublicationEvidence::Failed,
             ),
@@ -1231,7 +1232,7 @@ impl ProviderModule {
                     publication_id,
                     request,
                     diagnostic,
-                    context.occurred_at_unix_nanos(),
+                    context.occurred_at(),
                 ));
             }
         };
@@ -1282,7 +1283,7 @@ impl ProviderModule {
                         publication_id,
                         request,
                         diagnostic,
-                        context.occurred_at_unix_nanos(),
+                        context.occurred_at(),
                     ));
                 }
             }
@@ -1319,7 +1320,7 @@ impl ProviderModule {
             publication_id,
             request,
             activated,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
         ))
     }
 
@@ -1483,7 +1484,7 @@ async fn change_credential_route(
             target_id: &provider.to_string(),
             outcome: LifecycleOutcome::Accepted,
             changed_field_paths: &["credential_route", "account_setting_version"],
-            occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+            occurred_at: context.occurred_at(),
             trace_id: context.trace_id(),
         },
     )

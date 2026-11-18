@@ -328,7 +328,7 @@ async fn reconnect_after_update_preparation_fences_the_staged_replacement() {
     );
     assert!(
         !h.providers
-            .setup_authentication(&actor, workspace.id(), candidate.id(), 11)
+            .setup_authentication(&actor, workspace.id(), candidate.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -432,7 +432,7 @@ async fn explicit_shared_replacement_publishes_configuration_and_account_togethe
     );
     assert!(
         !h.providers
-            .setup_authentication(&actor, workspace.id(), candidate.id(), 11)
+            .setup_authentication(&actor, workspace.id(), candidate.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -469,7 +469,12 @@ async fn an_update_ended_before_confirmation_stays_inspectable() {
         }
         let inspected = h
             .providers
-            .inspect_setup(&actor, workspace.id(), candidate.id(), inspected_at)
+            .inspect_setup(
+                &actor,
+                workspace.id(),
+                candidate.id(),
+                UnixNanos::new(inspected_at),
+            )
             .await
             .unwrap();
         assert_eq!(inspected.setup.state(), expected);

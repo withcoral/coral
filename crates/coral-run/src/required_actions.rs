@@ -430,7 +430,7 @@ pub(crate) async fn snapshot(
                 actions.push(RequiredAction {
                     request: RequiredActionRequest::AccountConnection(id),
                     required_actor: RequiredActor::InvokingUser,
-                    deadline_at_unix_nanos: pending.expires_at_unix_nanos,
+                    deadline_at_unix_nanos: pending.expires_at.get(),
                     action_path,
                     call_path: None,
                     provider_label: None,

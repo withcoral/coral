@@ -143,7 +143,11 @@ async fn builtin_tools_a_rule_and_a_private_tool(
         .resolve_invocation_tool_in_transaction(
             &mut transaction,
             &workspace_id,
-            coral_provider::InvocationCaller::new(&fixture.workspaces, &owner, 12),
+            coral_provider::InvocationCaller::new(
+                &fixture.workspaces,
+                &owner,
+                coral_db::UnixNanos::new(12),
+            ),
             "coral.getProvider",
         )
         .await

@@ -95,13 +95,13 @@ impl EntityIndexer for ToolIndexer {
         Ok(match visibility {
             None => super::IndexEffect::FirstVisible {
                 target: target(),
-                published_at: UnixNanos::new(entries.published_at_unix_nanos()),
+                published_at: entries.published_at(),
                 path: coral_telemetry::metric::VisibilityPath::Initial,
             },
             Some(repository::RecordedVisibility::NeverVisible) => {
                 super::IndexEffect::FirstVisible {
                     target: target(),
-                    published_at: UnixNanos::new(entries.published_at_unix_nanos()),
+                    published_at: entries.published_at(),
                     path: coral_telemetry::metric::VisibilityPath::Retried,
                 }
             }

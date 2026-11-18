@@ -256,7 +256,7 @@ async fn pending_authorization_cap_rejects_excess_workflows_per_principal() {
             .await,
         Err(crate::Error::PendingAuthorizationLimit)
     ));
-    let later = change_context(context.actor().clone(), first.expires_at_unix_nanos, 'b');
+    let later = change_context(context.actor().clone(), first.expires_at.get(), 'b');
     accounts
         .start_user_authorization(
             &later,

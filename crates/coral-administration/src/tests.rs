@@ -586,7 +586,7 @@ async fn rejoined_member_connects_a_fresh_account_and_cannot_reconnect_the_old_o
         .account
         .unwrap();
     assert_ne!(fresh.id, f.connected.account);
-    assert_eq!(fresh.connected_at_unix_nanos, None);
+    assert_eq!(fresh.connected_at, None);
     accounts
         .cancel(&change(&f.member), f.workspace.id(), rejoined.id)
         .await

@@ -152,7 +152,7 @@ impl ProviderModule {
                 target_id: &id.to_string(),
                 outcome: LifecycleOutcome::Accepted,
                 changed_field_paths: &["update_target"],
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                occurred_at: context.occurred_at(),
                 trace_id: context.trace_id(),
             },
         )
@@ -469,7 +469,7 @@ impl ProviderModule {
                 target_id: &id.to_string(),
                 outcome: LifecycleOutcome::Accepted,
                 changed_field_paths: &["configuration"],
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                occurred_at: context.occurred_at(),
                 trace_id: context.trace_id(),
             },
         )
@@ -530,9 +530,7 @@ pub(crate) fn require_editable(
         ProviderSetupState::Consumed(_)
             | ProviderSetupState::Expired
             | ProviderSetupState::Canceled
-    ) || loaded
-        .setup
-        .is_past_deadline(context.occurred_at_unix_nanos())
+    ) || loaded.setup.is_past_deadline(context.occurred_at())
     {
         return Err(Error::ProviderSetupNotApplicable);
     }

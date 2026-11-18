@@ -192,7 +192,11 @@ async fn builtin_add_provider_waits_for_approval_by_default() {
         .resolve_invocation_tool_in_transaction(
             &mut transaction,
             &workspace_id,
-            coral_provider::InvocationCaller::new(&fixture.workspaces, &owner, 12),
+            coral_provider::InvocationCaller::new(
+                &fixture.workspaces,
+                &owner,
+                coral_db::UnixNanos::new(12),
+            ),
             "coral.addProvider",
         )
         .await

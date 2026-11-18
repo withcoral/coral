@@ -1,4 +1,5 @@
 use super::*;
+use coral_db::UnixNanos;
 
 #[tokio::test]
 async fn agent_removal_after_owner_update_preflight_allows_publication_without_restoring_account() {
@@ -83,7 +84,7 @@ async fn agent_removal(shared: bool) {
     let retained = evidence(&h, workspace.id(), "updated", agent.principal()).await;
     assert_eq!(
         h.accounts
-            .credentials(workspace.id(), provider.id(), &retained, 11)
+            .credentials(workspace.id(), provider.id(), &retained, UnixNanos::new(11))
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -118,7 +119,7 @@ async fn agent_removal(shared: bool) {
         before
     );
     h.accounts
-        .credentials(workspace.id(), provider.id(), &retained, 31)
+        .credentials(workspace.id(), provider.id(), &retained, UnixNanos::new(31))
         .await
         .unwrap_err();
     let removed_events = h
@@ -191,7 +192,12 @@ async fn agent_removal(shared: bool) {
         );
         assert!(
             !h.providers
-                .setup_authentication(&owner, workspace.id(), update.setup_id(), 31)
+                .setup_authentication(
+                    &owner,
+                    workspace.id(),
+                    update.setup_id(),
+                    UnixNanos::new(31)
+                )
                 .await
                 .unwrap()
                 .authorized
@@ -217,7 +223,7 @@ async fn agent_removal(shared: bool) {
         .await
         .unwrap_err();
     h.accounts
-        .credentials(workspace.id(), provider.id(), &retained, 31)
+        .credentials(workspace.id(), provider.id(), &retained, UnixNanos::new(31))
         .await
         .unwrap_err();
     let events = h
@@ -298,7 +304,7 @@ async fn agent_removal(shared: bool) {
         workspace_events
     );
     h.accounts
-        .credentials(workspace.id(), provider.id(), &retained, 32)
+        .credentials(workspace.id(), provider.id(), &retained, UnixNanos::new(32))
         .await
         .unwrap_err();
 }

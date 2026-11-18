@@ -6,6 +6,7 @@
 
 coral_test_support::provider_setup_fixtures!(crate);
 use coral_catalog::AuthenticationConfiguration;
+use coral_db::UnixNanos;
 use coral_outbound::DestinationPolicy;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -428,7 +429,7 @@ async fn reviewed_public_application_changes_cancel_consent_and_persist_for_call
     );
     assert!(
         h.providers
-            .setup_authentication(&actor, &owner, setup.id(), 11)
+            .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .provisional_grant_id
@@ -747,7 +748,7 @@ async fn oauth_configuration_edit(phase: OAuthStage) {
     // even while token exchange is in flight. No account credential is re-entered.
     let before = h
         .providers
-        .setup_authentication(&actor, &owner, setup.id(), 11)
+        .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(11))
         .await
         .unwrap();
     let mut equivalent = confirmed.confirmed.unwrap();
@@ -769,7 +770,7 @@ async fn oauth_configuration_edit(phase: OAuthStage) {
     );
     assert_eq!(
         h.providers
-            .setup_authentication(&actor, &owner, setup.id(), 11)
+            .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(11))
             .await
             .unwrap(),
         before
@@ -798,7 +799,7 @@ async fn oauth_configuration_edit(phase: OAuthStage) {
     }
     let reset = h
         .providers
-        .setup_authentication(&actor, &owner, setup.id(), 12)
+        .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(12))
         .await
         .unwrap();
     assert!(!reset.authorized);
@@ -2369,11 +2370,11 @@ async fn confirmation_conceals_other_workspaces_and_rechecks_expiry_and_authorit
             .await,
         Err(Error::ProviderSetupNotFound)
     ));
-    let deadline = setup.expires_at_unix_nanos();
+    let deadline = setup.expires_at();
     assert!(matches!(
         h.providers
             .confirm_setup_configuration(
-                &change_context(actor.clone(), deadline, '2'),
+                &change_context(actor.clone(), deadline.get(), '2'),
                 &owner,
                 setup.id(),
                 0,
@@ -2471,7 +2472,7 @@ async fn modules_retain_independent_outbound_permissions_for_preview_and_publica
             let mut counted = current.clone();
             counted.preparation = counted.preparation.with_materializer(count.clone());
             let inspected = counted
-                .inspect_setup(context.actor(), &owner, setup.id(), 11)
+                .inspect_setup(context.actor(), &owner, setup.id(), UnixNanos::new(11))
                 .await
                 .unwrap();
             assert_eq!(

@@ -112,7 +112,7 @@ impl HeldProvider {
                 target_id: &self.current.provider.id().to_string(),
                 outcome: LifecycleOutcome::Accepted,
                 changed_field_paths,
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                occurred_at: context.occurred_at(),
                 trace_id: context.trace_id(),
             },
         )

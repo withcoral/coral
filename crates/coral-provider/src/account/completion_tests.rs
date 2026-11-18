@@ -145,7 +145,7 @@ async fn initial_completion_fence(for_agent: bool, shared: bool) {
         .unwrap();
     assert_eq!(before.state, AccountState::Disconnected);
     if !shared {
-        assert_eq!(before.connected_at_unix_nanos, None);
+        assert_eq!(before.connected_at, None);
         assert_eq!(before.configured_by_user_id, None);
     }
     let first = accounts
@@ -193,10 +193,7 @@ async fn initial_completion_fence(for_agent: bool, shared: bool) {
         .unwrap();
     assert_eq!(after.id, before.id);
     assert_eq!(after.state, AccountState::Disconnected);
-    assert_eq!(
-        after.connected_at_unix_nanos,
-        connected.connected_at_unix_nanos
-    );
+    assert_eq!(after.connected_at, connected.connected_at);
     assert_eq!(after.configured_by_user_id, connected.configured_by_user_id);
     assert_eq!(
         accounts

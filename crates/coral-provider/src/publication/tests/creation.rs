@@ -1,5 +1,6 @@
 //! Discovery grant retention through Workspace publication interrupted around its commit.
 use super::*;
+use coral_db::UnixNanos;
 use coral_outbound::DestinationPolicy;
 
 use crate::Error;
@@ -144,7 +145,7 @@ async fn workspace_account_promotion_is_atomic_and_replays_after_restart() {
             assert!(interrupted.await.unwrap_err().is_cancelled());
             assert_eq!(
                 providers
-                    .setup_authentication(&actor, &owner, setup.id(), 21)
+                    .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(21))
                     .await
                     .unwrap()
                     .authorized,
@@ -250,7 +251,7 @@ async fn workspace_account_promotion_is_atomic_and_replays_after_restart() {
             let accounts = crate::tests::accounts_for(&restarted, directory.path());
             assert!(
                 !restarted
-                    .setup_authentication(&actor, &owner, setup.id(), 22)
+                    .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(22))
                     .await
                     .unwrap()
                     .authorized
@@ -287,7 +288,7 @@ async fn workspace_account_promotion_is_atomic_and_replays_after_restart() {
             );
             if let Some(account) = shared.or(caller) {
                 assert_eq!(account.state, crate::account::AccountState::Ready);
-                assert_eq!(account.connected_at_unix_nanos, Some(20));
+                assert_eq!(account.connected_at, Some(UnixNanos::new(20)));
                 assert_eq!(
                     account.configured_by_user_id.as_ref(),
                     Some(actor.user_id())
@@ -523,7 +524,7 @@ async fn unreadable_setup_credential_records_no_outcome_and_leaves_setup_reusabl
         .unwrap();
     assert!(
         providers
-            .setup_authentication(&actor, owner, &setup.id, 21)
+            .setup_authentication(&actor, owner, &setup.id, UnixNanos::new(21))
             .await
             .unwrap()
             .authorized,

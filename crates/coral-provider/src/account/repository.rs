@@ -20,7 +20,7 @@ use super::{AuthorizationReplay, AuthorizationRequest};
 use crate::access::ProviderAccess;
 use crate::{Error, ProviderId};
 use coral_catalog::ProviderCredentialContract;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::{Principal, PrincipalKind, UserId, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 
@@ -302,7 +302,7 @@ pub(super) async fn retire_access_account(
                 ),
                 (
                     ProviderAccounts::TokenExpiresAtUnixNanos,
-                    Expr::val(Option::<i64>::None),
+                    Expr::val(Option::<UnixNanos>::None),
                 ),
                 (ProviderAccounts::AuthorizationVersion, Expr::val(version)),
                 (ProviderAccounts::MaterialRevision, Expr::val(version)),
@@ -313,7 +313,7 @@ pub(super) async fn retire_access_account(
                 ),
                 (
                     ProviderAccounts::RefreshDeadline,
-                    Expr::val(Option::<i64>::None),
+                    Expr::val(Option::<UnixNanos>::None),
                 ),
             ])
             .and_where(scope)
@@ -694,7 +694,7 @@ pub(super) async fn insert_authorization(
                 Expr::val(row.contract.to_storage()?),
                 Expr::val(row.authorization_url.clone()),
                 Expr::val(row.private_flow.clone()),
-                Expr::val(row.expires_at_unix_nanos),
+                Expr::val(row.expires_at),
                 Expr::val(intent.expected_account_id),
                 Expr::val(intent.expected_authorization_version),
                 Expr::val(intent.provider_account_setting_version),
@@ -747,14 +747,14 @@ pub(super) async fn insert_account(
                 Expr::val(account.provider.to_string()),
                 Expr::val(account.generation),
                 Expr::val(account.generation),
-                Expr::val(context.occurred_at_unix_nanos()),
+                Expr::val(context.occurred_at()),
                 Expr::val(context.actor().user_id().as_str()),
                 Expr::val(account.contract.to_storage()?),
                 Expr::val(account.ciphertext),
                 Expr::val(account.secret_references),
                 Expr::val(account.granted_scope),
                 Expr::val(account.automatic_refresh.map(i64::from)),
-                Expr::val(account.token_expires_at_unix_nanos),
+                Expr::val(account.token_expires_at),
                 Expr::val(user.map(UserId::as_str)),
                 Expr::val(agent.map(ToString::to_string)),
             ])
@@ -926,7 +926,7 @@ pub(super) async fn disconnect_account(
                 ),
                 (
                     ProviderAccounts::TokenExpiresAtUnixNanos,
-                    Expr::val(Option::<i64>::None),
+                    Expr::val(Option::<UnixNanos>::None),
                 ),
                 (
                     ProviderAccounts::AuthorizationVersion,
@@ -940,7 +940,7 @@ pub(super) async fn disconnect_account(
                 ),
                 (
                     ProviderAccounts::RefreshDeadline,
-                    Expr::val(Option::<i64>::None),
+                    Expr::val(Option::<UnixNanos>::None),
                 ),
             ])
             .and_where(account_scope(row))
@@ -1003,7 +1003,7 @@ pub(super) async fn connect_account(
                     ),
                     (
                         ProviderAccounts::ConnectedAtUnixNanos,
-                        Expr::val(context.occurred_at_unix_nanos()),
+                        Expr::val(context.occurred_at()),
                     ),
                     (
                         ProviderAccounts::ConfiguredByUserId,
@@ -1023,7 +1023,7 @@ pub(super) async fn connect_account(
                     ),
                     (
                         ProviderAccounts::TokenExpiresAtUnixNanos,
-                        Expr::val(authorized.token_expires_at_unix_nanos),
+                        Expr::val(authorized.token_expires_at),
                     ),
                     (ProviderAccounts::RequiresAuthorization, Expr::val(0_i64)),
                     (
@@ -1036,7 +1036,7 @@ pub(super) async fn connect_account(
                     ),
                     (
                         ProviderAccounts::RefreshDeadline,
-                        Expr::val(Option::<i64>::None),
+                        Expr::val(Option::<UnixNanos>::None),
                     ),
                 ])
                 .and_where(account_scope(row))
@@ -1072,7 +1072,7 @@ pub(super) async fn claim_refresh(
     tx: &mut Transaction<'_>,
     row: &LoadedAccount,
     attempt: &str,
-    deadline: i64,
+    deadline: UnixNanos,
 ) -> Result<bool, Error> {
     let claimed = tx
         .execute(
@@ -1095,7 +1095,7 @@ pub(super) async fn release_refresh(
     tx: &mut Transaction<'_>,
     row: &LoadedAccount,
     attempt: &str,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<u64, Error> {
     Ok(tx
         .execute(
@@ -1108,7 +1108,7 @@ pub(super) async fn release_refresh(
                     ),
                     (
                         ProviderAccounts::RefreshDeadline,
-                        Expr::val(Option::<i64>::None),
+                        Expr::val(Option::<UnixNanos>::None),
                     ),
                 ])
                 .and_where(account_scope(row))
@@ -1130,7 +1130,7 @@ pub(super) async fn replace_refreshed_credentials(
     material_revision: &str,
     ciphertext: &str,
     granted_scope: &str,
-    token_expires_at_unix_nanos: Option<i64>,
+    token_expires_at: Option<UnixNanos>,
 ) -> Result<(), Error> {
     tx.execute(
         Query::update()
@@ -1146,7 +1146,7 @@ pub(super) async fn replace_refreshed_credentials(
                 ),
                 (
                     ProviderAccounts::TokenExpiresAtUnixNanos,
-                    Expr::val(token_expires_at_unix_nanos),
+                    Expr::val(token_expires_at),
                 ),
                 (ProviderAccounts::GrantedScope, Expr::val(granted_scope)),
             ])
@@ -1165,7 +1165,7 @@ fn require_authorization() -> sea_query::UpdateStatement {
             (ProviderAccounts::RequiresAuthorization, Expr::val(1_i64)),
             (
                 ProviderAccounts::TokenExpiresAtUnixNanos,
-                Expr::val(Option::<i64>::None),
+                Expr::val(Option::<UnixNanos>::None),
             ),
             (
                 ProviderAccounts::RefreshAttemptId,
@@ -1173,7 +1173,7 @@ fn require_authorization() -> sea_query::UpdateStatement {
             ),
             (
                 ProviderAccounts::RefreshDeadline,
-                Expr::val(Option::<i64>::None),
+                Expr::val(Option::<UnixNanos>::None),
             ),
         ])
         .to_owned()
@@ -1335,7 +1335,7 @@ pub(super) async fn pending_connection_by_id(
     user: &UserId,
     request: ConnectionRequestId,
 ) -> Result<Option<PendingConnection>, Error> {
-    let row: Option<(i64, String)> = tx
+    let row: Option<(UnixNanos, String)> = tx
         .fetch_optional(
             pending_connection_statement(
                 Expr::val(workspace.to_string()),
@@ -1346,10 +1346,10 @@ pub(super) async fn pending_connection_by_id(
             .to_owned(),
         )
         .await?;
-    row.map(|(expires_at_unix_nanos, provider)| {
+    row.map(|(expires_at, provider)| {
         Ok(PendingConnection {
             provider_id: ProviderId::parse(&provider)?,
-            expires_at_unix_nanos,
+            expires_at,
         })
     })
     .transpose()
@@ -1415,7 +1415,7 @@ pub(super) async fn insert_connection(
     target_provider: &ProviderAccess,
     id: ConnectionRequestId,
     contract: &ProviderCredentialContract,
-    expires: i64,
+    expires: UnixNanos,
     account: &LoadedAccount,
 ) -> Result<bool, Error> {
     let workspace = target_provider.workspace_id();
@@ -1488,7 +1488,7 @@ struct AuthorizationRow {
     authorization_url: Option<String>,
     user_code: Option<String>,
     private_flow: Option<String>,
-    expires_at_unix_nanos: i64,
+    expires_at_unix_nanos: UnixNanos,
     #[sqlx(flatten)]
     intent: intent::IntentColumns,
     failure_code: Option<String>,
@@ -1522,7 +1522,7 @@ impl AuthorizationRow {
             authorization_url: self.authorization_url,
             user_code: self.user_code,
             private_flow: self.private_flow,
-            expires_at_unix_nanos: self.expires_at_unix_nanos,
+            expires_at: self.expires_at_unix_nanos,
             intent,
             failure_code: self.failure_code,
             granted_scope: self.granted_scope,
@@ -1532,7 +1532,7 @@ impl AuthorizationRow {
 
 #[derive(sqlx::FromRow)]
 struct AccountInspectionRow {
-    connected_at_unix_nanos: Option<i64>,
+    connected_at_unix_nanos: Option<UnixNanos>,
     configured_by_user_id: Option<String>,
     automatic_refresh: Option<i64>,
     id: String,
@@ -1546,7 +1546,7 @@ struct AccountInspectionRow {
 impl AccountInspectionRow {
     fn decode(self) -> Result<AccountInspection, Error> {
         Ok(AccountInspection {
-            connected_at_unix_nanos: self.connected_at_unix_nanos,
+            connected_at: self.connected_at_unix_nanos,
             configured_by_user_id: stored(
                 self.configured_by_user_id
                     .as_deref()
@@ -1590,8 +1590,8 @@ struct AccountRow {
     requires_authorization: i64,
     granted_scope: String,
     refresh_attempt_id: Option<String>,
-    refresh_deadline: Option<i64>,
-    token_expires_at_unix_nanos: Option<i64>,
+    refresh_deadline: Option<UnixNanos>,
+    token_expires_at_unix_nanos: Option<UnixNanos>,
 }
 
 /// An Account's Secret References as stored, not yet decoded.
@@ -1642,7 +1642,7 @@ impl AccountRow {
             granted_scope: self.granted_scope,
             refresh_attempt_id: self.refresh_attempt_id,
             refresh_deadline: self.refresh_deadline,
-            token_expires_at_unix_nanos: self.token_expires_at_unix_nanos,
+            token_expires_at: self.token_expires_at_unix_nanos,
         })
     }
 }
@@ -1657,7 +1657,7 @@ struct ConnectionRow {
     account_authorization_version: String,
     resolved_account_authorization_version: Option<String>,
     state: String,
-    expires_at_unix_nanos: i64,
+    expires_at_unix_nanos: UnixNanos,
 }
 
 impl ConnectionRow {
@@ -1680,7 +1680,7 @@ impl ConnectionRow {
             account_authorization_version: self.account_authorization_version,
             resolved_account_authorization_version: self.resolved_account_authorization_version,
             state: ConnectionState::try_from(self.state)?,
-            expires_at_unix_nanos: self.expires_at_unix_nanos,
+            expires_at: self.expires_at_unix_nanos,
         })
     }
 }
@@ -1742,7 +1742,7 @@ pub(super) async fn set_device(
     id: AuthorizationId,
     device: &super::device::DeviceResponse,
     private: &str,
-    expires: i64,
+    expires: UnixNanos,
 ) -> Result<(), Error> {
     use ProviderAccountAuthorizations as C;
     tx.execute(
@@ -1790,7 +1790,7 @@ pub(super) async fn stage_device_token(
 #[cfg(test)]
 mod tests {
     use super::{
-        AccountInspectionRow, AccountRow, AuthorizationRow, ConnectionRow, Error,
+        AccountInspectionRow, AccountRow, AuthorizationRow, ConnectionRow, Error, UnixNanos,
         intent::IntentColumns,
     };
 
@@ -1813,7 +1813,7 @@ mod tests {
             authorization_url: None,
             user_code: None,
             private_flow: None,
-            expires_at_unix_nanos: 0,
+            expires_at_unix_nanos: UnixNanos::new(0),
             intent: IntentColumns {
                 expected_account_id: ID.into(),
                 expected_authorization_version: "v1".into(),
@@ -1932,7 +1932,7 @@ mod tests {
             account_authorization_version: "v1".into(),
             resolved_account_authorization_version: None,
             state: "pending".into(),
-            expires_at_unix_nanos: 0,
+            expires_at_unix_nanos: UnixNanos::new(0),
         };
         row().decode().expect("a valid row decodes");
         let corrupt: [(&str, Break); 5] = [

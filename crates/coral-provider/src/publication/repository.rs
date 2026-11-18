@@ -2,7 +2,7 @@ use coral_workspace::WorkspaceId;
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 use sqlx::FromRow;
 
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::UserId;
 
 use crate::access::{CredentialRoute, ProviderAccess, ProviderNamespace};
@@ -213,7 +213,7 @@ struct PublicationRow {
     provider_id: Option<String>,
     provider_display_name: Option<String>,
     provider_account_setting_version: Option<i64>,
-    completed_at_unix_nanos: i64,
+    completed_at_unix_nanos: UnixNanos,
 }
 
 impl PublicationRow {
@@ -305,7 +305,7 @@ struct RegenerationPublicationRow {
     outcome: String,
     diagnostic_code: Option<String>,
     diagnostic_message: Option<String>,
-    completed_at_unix_nanos: i64,
+    completed_at_unix_nanos: UnixNanos,
 }
 
 impl RegenerationPublicationRow {
@@ -489,7 +489,7 @@ pub(super) async fn insert_regeneration_publication(
                             .diagnostic()
                             .map(|diagnostic| diagnostic.message().to_string()),
                     ),
-                    Expr::val(publication.completed_at_unix_nanos()),
+                    Expr::val(publication.completed_at()),
                     Expr::val(request.account_grant().map(|id| id.to_string())),
                     Expr::val(
                         request
@@ -616,7 +616,7 @@ pub(super) async fn insert_publication(
             Expr::val(published.map(|resources| resources.id().to_string())),
             Expr::val(published.map(|resources| resources.display_name().to_string())),
             Expr::val(published.map(super::super::types::Provider::account_setting_version)),
-            Expr::val(publication.completed_at_unix_nanos()),
+            Expr::val(publication.completed_at()),
         ])
         .to_owned();
     transaction.execute(statement).await?;

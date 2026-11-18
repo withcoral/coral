@@ -15,6 +15,7 @@ use crate::{
 use coral_catalog::AuthenticationConfiguration;
 use coral_catalog::ProviderCredentialContract;
 use coral_credentials::{CredentialValues, Secret};
+use coral_db::UnixNanos;
 use coral_outbound::DestinationPolicy;
 use coral_workspace::{OrganizationRole, WorkspaceDisplayName};
 use serde_json::{Value, json};
@@ -42,7 +43,7 @@ async fn unconfirmed_authentication_review_does_not_require_a_materializable_cat
     let owner = workspace.id().clone();
     let inspected = h
         .providers
-        .inspect_setup(&actor, &owner, setup.id(), 3)
+        .inspect_setup(&actor, &owner, setup.id(), UnixNanos::new(3))
         .await
         .unwrap();
     assert_eq!(
@@ -122,7 +123,7 @@ async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
     .await;
     harness
         .providers
-        .abandon_setup(&owner, abandoned.id(), 3)
+        .abandon_setup(&owner, abandoned.id(), UnixNanos::new(3))
         .await
         .unwrap();
     let review = harness
@@ -165,7 +166,7 @@ async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
 
     let inspected = harness
         .providers
-        .inspect_setup(&actor, &owner, weather.id(), 3)
+        .inspect_setup(&actor, &owner, weather.id(), UnixNanos::new(3))
         .await
         .unwrap();
     assert_eq!(
@@ -199,7 +200,7 @@ async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
             Some(request("tides", CredentialRoute::Fixed)),
         ),
     ];
-    assert_eq!(listed(3).await, both);
+    assert_eq!(listed(UnixNanos::new(3)).await, both);
     // Acting on a Setup configures the Workspace: a User demoted to Member
     // lists none, and their Setups stay open for when they are an Owner again.
     for (role, expected) in [
@@ -211,20 +212,20 @@ async fn a_requested_setup_keeps_its_request_and_is_listed_while_open() {
             .set_membership(&change_context(other.clone(), 3, '4'), &owner, &actor, role)
             .await
             .unwrap();
-        assert_eq!(listed(3).await, expected, "{role:?}");
+        assert_eq!(listed(UnixNanos::new(3)).await, expected, "{role:?}");
     }
     // Each Setup expires an hour after it was created.
     let deadline = |created: i64| created + HOUR;
-    assert_eq!(listed(deadline(2) - 1).await, both);
+    assert_eq!(listed(UnixNanos::new(deadline(2) - 1)).await, both);
     assert_eq!(
-        listed(deadline(2)).await,
+        listed(UnixNanos::new(deadline(2))).await,
         [(
             tides.id().clone(),
             Some(request("tides", CredentialRoute::Fixed))
         )]
     );
     assert_eq!(
-        listed(deadline(3)).await,
+        listed(UnixNanos::new(deadline(3))).await,
         [] as [(crate::ProviderSetupId, Option<crate::SetupRequest>); 0]
     );
 }
@@ -269,7 +270,7 @@ async fn upgrade_gives_a_setup_without_a_deadline_the_one_creation_stores() {
             .unwrap()
     };
     let (without, moved) = (create().await, create().await);
-    assert_eq!(without.expires_at_unix_nanos(), 10 + HOUR);
+    assert_eq!(without.expires_at(), UnixNanos::new(10 + HOUR));
     for (setup, stored) in [(&without, "NULL"), (&moved, "5000")] {
         fixture
             .execute_fixture_sql(&format!(
@@ -294,10 +295,10 @@ async fn upgrade_gives_a_setup_without_a_deadline_the_one_creation_stores() {
 
     for (setup, deadline) in [(&without, 10 + HOUR), (&moved, 5_000)] {
         let inspected = providers
-            .inspect_setup(&actor, owner, setup.id(), 11)
+            .inspect_setup(&actor, owner, setup.id(), UnixNanos::new(11))
             .await
             .expect("the upgraded Setup decodes");
-        assert_eq!(inspected.setup.expires_at_unix_nanos(), deadline);
+        assert_eq!(inspected.setup.expires_at(), UnixNanos::new(deadline));
     }
 }
 
@@ -375,7 +376,7 @@ async fn configuration_confirmation_pins_input_and_invalid_edits_preserve_author
     assert!(
         harness
             .providers
-            .setup_authentication(&actor, &owner, setup.id(), 3)
+            .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(3))
             .await
             .unwrap()
             .authorized
@@ -393,7 +394,7 @@ async fn configuration_confirmation_pins_input_and_invalid_edits_preserve_author
     assert!(
         !harness
             .providers
-            .setup_authentication(&actor, &owner, setup.id(), 3)
+            .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(3))
             .await
             .unwrap()
             .authorized
@@ -635,7 +636,7 @@ async fn protected_update(borrow: bool, route: CredentialRoute) {
         .unwrap();
     let grant_id = harness
         .providers
-        .setup_authentication(&actor, &owner, initial.id(), 11)
+        .setup_authentication(&actor, &owner, initial.id(), UnixNanos::new(11))
         .await
         .unwrap()
         .provisional_grant_id
@@ -755,7 +756,7 @@ async fn protected_update(borrow: bool, route: CredentialRoute) {
     assert!(
         !harness
             .providers
-            .setup_authentication(&actor, &owner, replacement.id(), 12)
+            .setup_authentication(&actor, &owner, replacement.id(), UnixNanos::new(12))
             .await
             .unwrap()
             .authorized
@@ -803,7 +804,7 @@ async fn changing_mcp_url_requires_fresh_discovery_without_forwarding_old_creden
     assert!(
         harness
             .providers
-            .setup_authentication(&actor, &owner, setup.id(), 11)
+            .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -816,7 +817,7 @@ async fn changing_mcp_url_requires_fresh_discovery_without_forwarding_old_creden
     assert!(
         !harness
             .providers
-            .setup_authentication(&actor, &owner, setup.id(), 11)
+            .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -963,7 +964,7 @@ async fn anonymous_mcp_catalog_still_requires_explicit_configuration_confirmatio
     assert!(
         harness
             .providers
-            .setup_authentication(&actor, &owner, setup.id(), 11)
+            .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .provisional_grant_id
@@ -1005,7 +1006,7 @@ async fn setup_inspection_settles_expiry_before_returning_consistent_state_and_c
         .unwrap();
     let inspected = harness
         .providers
-        .inspect_setup(&actor, &owner, setup.id(), 11 + HOUR)
+        .inspect_setup(&actor, &owner, setup.id(), UnixNanos::new(11 + HOUR))
         .await
         .unwrap();
     assert_eq!(inspected.setup.state(), ProviderSetupState::Expired);
@@ -1109,7 +1110,7 @@ async fn stale_secret_submission_cannot_authorize_replacement_configuration() {
     assert!(
         !harness
             .providers
-            .setup_authentication(&actor, &owner, setup.id(), 11)
+            .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -1420,7 +1421,7 @@ pub(super) async fn credential_for(
     .await?;
     harness
         .accounts
-        .credentials(workspace, provider, &evidence, now)
+        .credentials(workspace, provider, &evidence, UnixNanos::new(now))
         .await
 }
 
@@ -1479,7 +1480,7 @@ async fn openapi_url_source_is_pinned_once_and_publication_never_refetches() {
     assert_eq!(setup.input_kind(), crate::ProviderSetupInputKind::OpenApi);
     let authentication = harness
         .providers
-        .setup_authentication(&owner, &scope, setup.id(), 11)
+        .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(11))
         .await
         .unwrap();
     assert_eq!(authentication.contract, ProviderCredentialContract::NONE);
@@ -1702,7 +1703,7 @@ async fn mcp_bearer_source_seals_a_credential_that_publication_promotes_to_the_s
     assert_eq!(setup.input_kind(), crate::ProviderSetupInputKind::Mcp);
     let authentication = harness
         .providers
-        .setup_authentication(&owner, &scope, setup.id(), 11)
+        .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(11))
         .await
         .unwrap();
     assert_eq!(
@@ -1713,7 +1714,7 @@ async fn mcp_bearer_source_seals_a_credential_that_publication_promotes_to_the_s
     let grant_id = authentication
         .provisional_grant_id
         .expect("reviewed provisional grant");
-    assert_eq!(authentication.expires_at_unix_nanos, Some(10 + HOUR));
+    assert_eq!(authentication.expires_at, Some(UnixNanos::new(10 + HOUR)));
 
     let publication = harness
         .providers
@@ -1750,7 +1751,7 @@ async fn mcp_bearer_source_seals_a_credential_that_publication_promotes_to_the_s
         .account
         .expect("promoted Account");
     assert_eq!(stored.id, grant_id);
-    assert_eq!(stored.connected_at_unix_nanos, Some(20));
+    assert_eq!(stored.connected_at, Some(UnixNanos::new(20)));
     assert_eq!(stored.configured_by_user_id.as_ref(), Some(owner.user_id()));
     assert_eq!(stored.management_scope, scope);
     assert!(stored.can_manage);
@@ -1776,7 +1777,7 @@ async fn mcp_bearer_source_seals_a_credential_that_publication_promotes_to_the_s
     // Publication consumed the Setup and scrubbed the setup-scoped copy.
     let after = harness
         .providers
-        .setup_authentication(&owner, &scope, setup.id(), 31)
+        .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(31))
         .await
         .unwrap();
     assert!(!after.authorized);
@@ -1881,7 +1882,7 @@ async fn caller_route_discards_discovery_credentials_without_creating_a_personal
     assert!(
         !harness
             .providers
-            .setup_authentication(&owner, &scope, setup.id(), 30)
+            .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(30))
             .await
             .unwrap()
             .authorized
@@ -1963,7 +1964,12 @@ async fn workspace_publication_promotes_the_exact_grant_to_the_shared_account() 
         .unwrap();
     let grant_id = harness
         .providers
-        .setup_authentication(&owner, &workspace.id().clone(), setup.id(), 11)
+        .setup_authentication(
+            &owner,
+            &workspace.id().clone(),
+            setup.id(),
+            UnixNanos::new(11),
+        )
         .await
         .unwrap()
         .provisional_grant_id
@@ -2046,7 +2052,7 @@ async fn route_none_with_a_sealed_credential_fails_publication_and_scrubs_it() {
     assert!(
         harness
             .providers
-            .setup_authentication(&owner, &scope, setup.id(), 11)
+            .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -2079,7 +2085,7 @@ async fn route_none_with_a_sealed_credential_fails_publication_and_scrubs_it() {
     );
     let after = harness
         .providers
-        .setup_authentication(&owner, &scope, setup.id(), 22)
+        .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(22))
         .await
         .unwrap();
     assert!(!after.authorized);
@@ -2164,7 +2170,7 @@ impl Choices {
                 .map(|method| method.with_oauth_client(&application));
             harness
                 .providers
-                .abandon_setup(scope, setup.id(), 10)
+                .abandon_setup(scope, setup.id(), UnixNanos::new(10))
                 .await
                 .unwrap();
         }
@@ -3022,7 +3028,7 @@ async fn ending_cancels_an_open_setup_and_expires_one_past_its_deadline() {
                 Ender::Coral => {
                     harness
                         .providers
-                        .abandon_setup(&scope, setup.id(), now)
+                        .abandon_setup(&scope, setup.id(), UnixNanos::new(now))
                         .await
                         .unwrap();
                 }
@@ -3080,7 +3086,7 @@ async fn expired_setup_credential_fails_publication_and_creates_no_account() {
         .unwrap();
     let grant_id = harness
         .providers
-        .setup_authentication(&owner, &scope, setup.id(), 11)
+        .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(11))
         .await
         .unwrap()
         .provisional_grant_id
@@ -3088,7 +3094,7 @@ async fn expired_setup_credential_fails_publication_and_creates_no_account() {
     assert!(
         !harness
             .providers
-            .setup_authentication(&owner, &scope, setup.id(), 10 + HOUR)
+            .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(10 + HOUR))
             .await
             .unwrap()
             .authorized
@@ -3156,7 +3162,7 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
         .unwrap();
     let before = harness
         .providers
-        .setup_authentication(&owner, &scope, setup.id(), 11)
+        .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(11))
         .await
         .unwrap();
     assert_eq!(
@@ -3177,8 +3183,8 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
         .unwrap();
     assert!(authorized.authorized);
     assert_eq!(
-        authorized.expires_at_unix_nanos,
-        Some(10 + HOUR),
+        authorized.expires_at,
+        Some(UnixNanos::new(10 + HOUR)),
         "the deadline runs from Setup creation, not from secret entry"
     );
     let grant_id = authorized.provisional_grant_id.unwrap();
@@ -3240,7 +3246,7 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
             "inspect",
             harness
                 .providers
-                .inspect_setup(&other, &scope, setup.id(), 13)
+                .inspect_setup(&other, &scope, setup.id(), UnixNanos::new(13))
                 .await
                 .map(drop),
         ),
@@ -3342,7 +3348,7 @@ async fn secret_entry_authorizes_an_openapi_bearer_setup_for_its_configuring_use
     // The refusals changed nothing: the configuring User still holds the sign-in.
     let kept = harness
         .providers
-        .setup_authentication(&owner, &scope, setup.id(), 16)
+        .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(16))
         .await
         .unwrap();
     assert!(kept.authorized);
@@ -3403,7 +3409,7 @@ async fn secret_entry_rejects_credential_free_and_oauth_contracts() {
             .unwrap();
         let before = harness
             .providers
-            .setup_authentication(&owner, &scope, setup.id(), 11)
+            .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(11))
             .await
             .unwrap();
         assert!(
@@ -3427,7 +3433,7 @@ async fn secret_entry_rejects_credential_free_and_oauth_contracts() {
         assert_eq!(
             harness
                 .providers
-                .setup_authentication(&owner, &scope, setup.id(), 11)
+                .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(11))
                 .await
                 .unwrap(),
             before,
@@ -3454,7 +3460,7 @@ async fn publication_replay_returns_the_committed_result_without_a_second_accoun
         .unwrap();
     let grant_id = harness
         .providers
-        .setup_authentication(&owner, &scope, setup.id(), 11)
+        .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(11))
         .await
         .unwrap()
         .provisional_grant_id
@@ -3522,7 +3528,7 @@ async fn compatible_regeneration_discards_temporary_credentials_without_reconnec
         .unwrap();
     let grant_id = harness
         .providers
-        .setup_authentication(&owner, &scope, first.id(), 11)
+        .setup_authentication(&owner, &scope, first.id(), UnixNanos::new(11))
         .await
         .unwrap()
         .provisional_grant_id
@@ -3575,7 +3581,7 @@ async fn compatible_regeneration_discards_temporary_credentials_without_reconnec
     assert!(
         !harness
             .providers
-            .setup_authentication(&owner, &scope, second.id(), 41)
+            .setup_authentication(&owner, &scope, second.id(), UnixNanos::new(41))
             .await
             .unwrap()
             .authorized
@@ -3593,7 +3599,7 @@ async fn compatible_regeneration_discards_temporary_credentials_without_reconnec
         .account
         .unwrap();
     assert_eq!(account.id, grant_id);
-    assert_eq!(account.connected_at_unix_nanos, Some(20));
+    assert_eq!(account.connected_at, Some(UnixNanos::new(20)));
 }
 
 coral_test_support::provider_setup_fixtures!(crate);
@@ -3772,7 +3778,7 @@ async fn store_backed_discovery(scenario: StoreBackedDiscovery) {
         .unwrap();
     let grant_id = harness
         .providers
-        .setup_authentication(&actor, &owner, initial.id(), 11)
+        .setup_authentication(&actor, &owner, initial.id(), UnixNanos::new(11))
         .await
         .unwrap()
         .provisional_grant_id
@@ -4034,7 +4040,7 @@ async fn a_grant_revoked_after_a_setups_read_saves_nothing() {
     // The refusal saved neither a typed value nor a reference.
     let authentication = harness
         .providers
-        .setup_authentication(&actor, &owner, setup.id(), 11)
+        .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(11))
         .await
         .unwrap();
     assert!(!authentication.authorized);

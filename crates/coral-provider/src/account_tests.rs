@@ -1807,7 +1807,7 @@ async fn shared_authorization_survives_restart_and_preserves_account_without_exp
         )
         .await
         .expect("expiring authorization");
-    let late = change_context(owner.clone(), pending.expires_at_unix_nanos, 'b');
+    let late = change_context(owner.clone(), pending.expires_at.get(), 'b');
     assert_eq!(
         accounts
             .get_authorization(&late, &scope, pending.id)

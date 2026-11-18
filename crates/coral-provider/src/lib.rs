@@ -70,7 +70,7 @@ mod update_tests;
 
 use std::sync::Arc;
 
-use coral_db::Database;
+use coral_db::{Database, UnixNanos};
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, AuthoritySource, ChangeContext, WorkspaceAction,
     WorkspaceEvidence, WorkspaceModule, WorkspaceRole,
@@ -141,7 +141,7 @@ pub struct ProviderModule {
 #[derive(Clone, Copy)]
 pub(crate) struct Started<'a> {
     clock: &'a dyn coral_db::Clock,
-    at: coral_db::UnixNanos,
+    at: UnixNanos,
 }
 
 impl<'a> Started<'a> {
@@ -160,7 +160,7 @@ impl<'a> Started<'a> {
     /// work runs shortens the span, so this reading can be earlier than the
     /// one before it. A clock that reads earlier than it did when the work
     /// began gives no span: the result is never before `at`.
-    pub(crate) fn now_from(self, at: coral_db::UnixNanos) -> coral_db::UnixNanos {
+    pub(crate) fn now_from(self, at: UnixNanos) -> UnixNanos {
         at.saturating_add(self.clock.now().saturating_duration_since(self.at))
     }
 }
@@ -331,7 +331,7 @@ impl ProviderModule {
             .await?;
         let source_analysis = self.preparation.analyze(setup_input.as_ref()).await?;
         let input_url = input_url.or_else(|| input::snapshot_source_url(setup_input.as_ref()));
-        let expires_at = setup_credentials::setup_deadline(context.occurred_at_unix_nanos())?;
+        let expires_at = setup_credentials::setup_deadline(context.occurred_at())?;
         let requirement = metadata
             .as_ref()
             .and_then(|metadata| metadata.requirement.as_ref())
@@ -347,7 +347,7 @@ impl ProviderModule {
                 .as_ref()
                 .map(ProviderSetupInputDigest::of_setup_input),
             ProviderSetupState::AwaitingConfiguration,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
             expires_at,
         )
         .with_input_url(input_url)
@@ -385,7 +385,7 @@ impl ProviderModule {
                 } else {
                     &["source", "authorization_requirement"]
                 },
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                occurred_at: context.occurred_at(),
                 trace_id: context.trace_id(),
             },
         )
@@ -890,7 +890,7 @@ pub async fn builtin_tool_paths_in_transaction(
 pub struct InvocationCaller<'a> {
     workspaces: &'a WorkspaceModule,
     actor: &'a AuthenticatedPrincipal,
-    now_unix_nanos: i64,
+    now: UnixNanos,
 }
 
 impl<'a> InvocationCaller<'a> {
@@ -899,12 +899,12 @@ impl<'a> InvocationCaller<'a> {
     pub const fn new(
         workspaces: &'a WorkspaceModule,
         actor: &'a AuthenticatedPrincipal,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Self {
         Self {
             workspaces,
             actor,
-            now_unix_nanos,
+            now,
         }
     }
 
@@ -921,7 +921,7 @@ impl<'a> InvocationCaller<'a> {
                 transaction,
                 self.actor,
                 workspace_id,
-                coral_db::UnixNanos::new(self.now_unix_nanos),
+                self.now,
                 coral_db::RowLock::None,
             )
             .await

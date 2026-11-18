@@ -6,6 +6,7 @@ use coral_catalog::{
     CatalogSearchTarget, MaterializedTool, ProviderGenerationId, ProviderSetupInputDigest,
     ProviderSetupInputKind,
 };
+use coral_db::UnixNanos;
 use coral_telemetry::TraceId;
 use coral_workspace::{AuthoritySource, UserId};
 use uuid::Uuid;
@@ -161,9 +162,9 @@ pub struct ProviderSetup {
     input_kind: ProviderSetupInputKind,
     input_digest: Option<ProviderSetupInputDigest>,
     state: ProviderSetupState,
-    created_at_unix_nanos: i64,
+    created_at: UnixNanos,
     input_url: Option<String>,
-    expires_at_unix_nanos: i64,
+    expires_at: UnixNanos,
     request: Option<SetupRequest>,
 }
 
@@ -178,8 +179,8 @@ pub struct SetupRequest {
 }
 
 impl ProviderSetup {
-    /// `created_at_unix_nanos` is when the Setup was created, and
-    /// `expires_at_unix_nanos`, the later of the two times, is its host
+    /// `created_at` is when the Setup was created, and
+    /// `expires_at`, the later of the two times, is its host
     /// deadline. Creation stores both, and neither changes afterwards.
     pub(crate) const fn new(
         id: ProviderSetupId,
@@ -187,8 +188,8 @@ impl ProviderSetup {
         input_kind: ProviderSetupInputKind,
         input_digest: Option<ProviderSetupInputDigest>,
         state: ProviderSetupState,
-        created_at_unix_nanos: i64,
-        expires_at_unix_nanos: i64,
+        created_at: UnixNanos,
+        expires_at: UnixNanos,
     ) -> Self {
         Self {
             id,
@@ -196,9 +197,9 @@ impl ProviderSetup {
             input_kind,
             input_digest,
             state,
-            created_at_unix_nanos,
+            created_at,
             input_url: None,
-            expires_at_unix_nanos,
+            expires_at,
             request: None,
         }
     }
@@ -227,15 +228,15 @@ impl ProviderSetup {
 
     /// Returns the Setup's host deadline, stored once when the Setup is created.
     #[must_use]
-    pub const fn expires_at_unix_nanos(&self) -> i64 {
-        self.expires_at_unix_nanos
+    pub const fn expires_at(&self) -> UnixNanos {
+        self.expires_at
     }
 
     /// Whether `now` is at or past the Setup's host deadline. Ask here
     /// instead of adding the Setup lifetime to the creation time again.
     #[must_use]
-    pub const fn is_past_deadline(&self, now: i64) -> bool {
-        now >= self.expires_at_unix_nanos
+    pub fn is_past_deadline(&self, now: UnixNanos) -> bool {
+        now >= self.expires_at
     }
 
     /// Returns the stable Setup identity.
@@ -270,8 +271,8 @@ impl ProviderSetup {
 
     /// Returns when the Setup was accepted.
     #[must_use]
-    pub const fn created_at_unix_nanos(&self) -> i64 {
-        self.created_at_unix_nanos
+    pub const fn created_at(&self) -> UnixNanos {
+        self.created_at
     }
 }
 
@@ -824,7 +825,7 @@ pub struct AdministrativeLifecycleEvent {
     target_id: String,
     outcome: LifecycleOutcome,
     changed_field_paths: Vec<String>,
-    occurred_at_unix_nanos: i64,
+    occurred_at: UnixNanos,
     trace_id: TraceId,
 }
 
@@ -840,7 +841,7 @@ impl AdministrativeLifecycleEvent {
         target_id: String,
         outcome: LifecycleOutcome,
         changed_field_paths: Vec<String>,
-        occurred_at_unix_nanos: i64,
+        occurred_at: UnixNanos,
         trace_id: TraceId,
     ) -> Self {
         Self {
@@ -850,7 +851,7 @@ impl AdministrativeLifecycleEvent {
             target_id,
             outcome,
             changed_field_paths,
-            occurred_at_unix_nanos,
+            occurred_at,
             trace_id,
         }
     }
@@ -893,8 +894,8 @@ impl AdministrativeLifecycleEvent {
 
     /// Returns when the change committed.
     #[must_use]
-    pub const fn occurred_at_unix_nanos(&self) -> i64 {
-        self.occurred_at_unix_nanos
+    pub const fn occurred_at(&self) -> UnixNanos {
+        self.occurred_at
     }
 
     /// Returns safe trace correlation evidence.

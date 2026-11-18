@@ -1,7 +1,7 @@
 //! Explicit discovery borrows only the exact Provider's shared or configuring User's Account.
 use super::{intent::Caller, repository, setup_repository};
 use crate::{CredentialRoute, Error, repository as providers};
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::ChangeContext;
 
 pub(super) struct DiscoveryCredential {
@@ -26,7 +26,7 @@ impl DiscoveryCredential {
         &self,
         accounts: &super::AccountModule,
         workspace: &coral_workspace::WorkspaceId,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<coral_credentials::Secret, Error> {
         match &self.material {
             // Discovery sends a bearer token, whichever method the Account holds.
@@ -70,7 +70,7 @@ impl DiscoveryCredential {
         accounts: &super::AccountModule,
         tx: &mut Transaction<'_>,
         workspace: &coral_workspace::WorkspaceId,
-        now: i64,
+        now: UnixNanos,
         read: coral_credentials::Secret,
     ) -> Result<coral_credentials::Secret, Error> {
         let DiscoveryMaterial::Account { provider, evidence } = &self.material else {
@@ -115,7 +115,7 @@ pub(super) async fn load(
         let row = setup_repository::load(tx, workspace, setup)
             .await?
             .ok_or(Error::AccountRequired)?;
-        if !row.belongs_to(context.actor()) || !row.is_live(context.occurred_at_unix_nanos()) {
+        if !row.belongs_to(context.actor()) || !row.is_live(context.occurred_at()) {
             return Err(Error::AccountRequired);
         }
         return Ok(DiscoveryCredential {

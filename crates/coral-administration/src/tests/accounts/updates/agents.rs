@@ -149,7 +149,12 @@ async fn agent_update(shared: bool, removal_first: bool) {
         .await
         .unwrap_err();
     f.accounts
-        .credentials(f.workspace.id(), &f.provider, &evidence, 100)
+        .credentials(
+            f.workspace.id(),
+            &f.provider,
+            &evidence,
+            coral_db::UnixNanos::new(100),
+        )
         .await
         .unwrap_err();
     let events = providers
@@ -199,7 +204,12 @@ async fn agent_update(shared: bool, removal_first: bool) {
         let evidence = credential_evidence(&f.db.database(), f.workspace.id(), &f.member).await;
         assert_eq!(
             f.accounts
-                .credentials(f.workspace.id(), &f.provider, &evidence, 100)
+                .credentials(
+                    f.workspace.id(),
+                    &f.provider,
+                    &evidence,
+                    coral_db::UnixNanos::new(100)
+                )
                 .await
                 .unwrap()
                 .get(coral_credentials::CredentialValues::TOKEN)

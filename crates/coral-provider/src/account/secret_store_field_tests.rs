@@ -1,4 +1,5 @@
 //! A shared Account whose Credential Fields a Secret Store holds.
+use coral_db::UnixNanos;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -168,7 +169,12 @@ impl Shared {
 
     async fn read(&self, evidence: &CredentialEvidence) -> Result<String, Error> {
         self.accounts
-            .credentials(&self.workspace, &self.provider, evidence, 20)
+            .credentials(
+                &self.workspace,
+                &self.provider,
+                evidence,
+                UnixNanos::new(20),
+            )
             .await
             .map(|values| {
                 values
@@ -322,7 +328,7 @@ async fn a_failed_read_fails_closed_without_naming_the_path() {
 
     let reads = f.store.reads();
     f.accounts
-        .prepare_dispatch(&f.workspace, &f.provider, &evidence, 20)
+        .prepare_dispatch(&f.workspace, &f.provider, &evidence, UnixNanos::new(20))
         .await
         .unwrap();
     assert_eq!(f.store.reads(), reads, "preparation never reads the store");
@@ -382,7 +388,7 @@ async fn a_store_the_workspace_lost_is_never_read() {
     ));
     assert!(matches!(
         f.accounts
-            .prepare_dispatch(&f.workspace, &f.provider, &evidence, 20)
+            .prepare_dispatch(&f.workspace, &f.provider, &evidence, UnixNanos::new(20))
             .await,
         Err(Error::AccountRequired)
     ));
@@ -399,7 +405,7 @@ async fn a_store_the_workspace_lost_is_never_read() {
         .with_secret_stores(SecretStores::default());
     assert!(matches!(
         without
-            .credentials(&f.workspace, &f.provider, &evidence, 20)
+            .credentials(&f.workspace, &f.provider, &evidence, UnixNanos::new(20))
             .await,
         Err(Error::AccountRequired)
     ));
@@ -763,7 +769,7 @@ async fn one_account_mixes_a_typed_value_and_a_reference() {
     .unwrap();
     let values = f
         .accounts
-        .credentials(&f.workspace, &provider, &evidence, 20)
+        .credentials(&f.workspace, &provider, &evidence, UnixNanos::new(20))
         .await
         .unwrap();
     assert_eq!(values.get("email").unwrap().expose(), "typed@example.com");
@@ -796,12 +802,12 @@ async fn one_account_mixes_a_typed_value_and_a_reference() {
         .await
         .unwrap();
     assert_eq!(
-        connected.account.as_ref().unwrap().connected_at_unix_nanos,
-        Some(10)
+        connected.account.as_ref().unwrap().connected_at,
+        Some(UnixNanos::new(10))
     );
     let values = f
         .accounts
-        .credentials(&f.workspace, &provider, &evidence, 20)
+        .credentials(&f.workspace, &provider, &evidence, UnixNanos::new(20))
         .await
         .unwrap();
     assert_eq!(values.get("email").unwrap().expose(), "typed@example.com");
@@ -1016,7 +1022,7 @@ async fn a_reference_refused_in_setup_changes_nothing() {
         assert_eq!(f.store.reads(), before + reads);
         let after = f
             .providers
-            .setup_authentication(f.owner.actor(), &f.workspace, &setup, 11)
+            .setup_authentication(f.owner.actor(), &f.workspace, &setup, UnixNanos::new(11))
             .await
             .unwrap();
         assert_eq!(after.provisional_grant_id, typed.provisional_grant_id);
@@ -1091,7 +1097,7 @@ async fn setup_refuses_a_reference_from_a_member_and_on_oauth() {
     for (setup, actor) in [(&setup, f.owner.actor()), (oauth.id(), f.owner.actor())] {
         assert!(
             !f.providers
-                .setup_authentication(actor, &f.workspace, setup, 11)
+                .setup_authentication(actor, &f.workspace, setup, UnixNanos::new(11))
                 .await
                 .unwrap()
                 .authorized,
@@ -1148,7 +1154,12 @@ async fn discovery_refuses_a_reference() {
     assert_eq!(f.store.reads(), reads);
     let inspected = f
         .providers
-        .inspect_setup(f.owner.actor(), &f.workspace, setup.id(), 11)
+        .inspect_setup(
+            f.owner.actor(),
+            &f.workspace,
+            setup.id(),
+            UnixNanos::new(11),
+        )
         .await
         .unwrap();
     assert_eq!(

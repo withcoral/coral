@@ -205,7 +205,7 @@ fn authorization_view(
             None => wire::ClientBootstrap::Unspecified,
         }
         .into(),
-        expire_time: Some(timestamp(authorization.expires_at_unix_nanos)),
+        expire_time: Some(timestamp(authorization.expires_at.get())),
         failure_code: authorization.failure_code.unwrap_or_default(),
         client_id: authorization.client_id.unwrap_or_default(),
     }
@@ -473,9 +473,11 @@ impl GrpcServices {
             automatic_refresh: authentication.automatic_refresh,
             holds_secret_references: authentication.holds_secret_references,
             granted_scope: authentication.granted_scope,
-            credential_expire_time: authentication.expires_at_unix_nanos.map(timestamp),
+            credential_expire_time: authentication
+                .expires_at
+                .map(|expires_at| timestamp(expires_at.get())),
             publication,
-            create_time: Some(timestamp(setup.created_at_unix_nanos())),
+            create_time: Some(timestamp(setup.created_at().get())),
             input_url: setup.input_url().unwrap_or_default().to_owned(),
             authorization,
             discovery_failure: authentication.discovery_failure.map(|code| {
@@ -484,7 +486,7 @@ impl GrpcServices {
                     message: "authenticated discovery did not complete".into(),
                 }
             }),
-            expire_time: Some(timestamp(setup.expires_at_unix_nanos())),
+            expire_time: Some(timestamp(setup.expires_at().get())),
             configuration: Some(review),
             request: setup.request().map(|request| wire::ProviderSetupRequest {
                 namespace: request.namespace.as_str().to_owned(),
@@ -507,7 +509,7 @@ impl GrpcServices {
     ) -> Result<Response<wire::ProviderSetup>, Status> {
         let inspected = self
             .providers
-            .inspect_setup(user, owner, id, now)
+            .inspect_setup(user, owner, id, coral_db::UnixNanos::new(now))
             .await
             .map_err(error)?;
         self.setup_view(user, inspected).await
@@ -740,7 +742,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         let now = self.now_after_outside_work();
         let mut inspected = self
             .providers
-            .inspect_setup(context.actor(), &owner, &id, now)
+            .inspect_setup(context.actor(), &owner, &id, coral_db::UnixNanos::new(now))
             .await
             .map_err(error)?;
         // Grant selection must use this mutation's receipt, never another command's
