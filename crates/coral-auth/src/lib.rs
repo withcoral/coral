@@ -49,7 +49,7 @@ pub use session::{IssuedAccessToken, SessionTokenError, SessionTokenIssuer};
 
 use std::sync::Arc;
 
-use coral_db::Database;
+use coral_db::{Database, UnixNanos};
 use coral_telemetry::safe;
 pub use coral_workspace::UserId;
 use coral_workspace::{
@@ -91,8 +91,8 @@ pub struct VerifiedOidcLogin<'a> {
     subject: &'a str,
     display_name: Option<&'a str>,
     profile: coral_workspace::VerifiedUserProfile<'a>,
-    profile_observed_at_unix_nanos: i64,
-    occurred_at_unix_nanos: i64,
+    profile_observed_at: UnixNanos,
+    occurred_at: UnixNanos,
 }
 
 impl<'a> VerifiedOidcLogin<'a> {
@@ -102,15 +102,15 @@ impl<'a> VerifiedOidcLogin<'a> {
         issuer: &'a str,
         subject: &'a str,
         display_name: Option<&'a str>,
-        occurred_at_unix_nanos: i64,
+        occurred_at: UnixNanos,
     ) -> Self {
         Self {
             issuer,
             subject,
             display_name,
             profile: coral_workspace::VerifiedUserProfile::new(None, None, None, None),
-            profile_observed_at_unix_nanos: occurred_at_unix_nanos,
-            occurred_at_unix_nanos,
+            profile_observed_at: occurred_at,
+            occurred_at,
         }
     }
 
@@ -124,8 +124,8 @@ impl<'a> VerifiedOidcLogin<'a> {
     /// Pins profile freshness to the verified token's issuance time, independently
     /// of the callback's completion/event time. Older completions cannot win.
     #[must_use]
-    pub const fn with_profile_observed_at(mut self, observed_at_unix_nanos: i64) -> Self {
-        self.profile_observed_at_unix_nanos = observed_at_unix_nanos;
+    pub const fn with_profile_observed_at(mut self, observed_at: UnixNanos) -> Self {
+        self.profile_observed_at = observed_at;
         self
     }
 }
@@ -214,7 +214,7 @@ impl UserDirectory {
             &mut transaction,
             &ChangeContext::new(
                 AuthenticatedUser::organization_member(user_id.clone(), initial_role),
-                login.occurred_at_unix_nanos,
+                login.occurred_at,
                 TraceId::current_or_new(),
             ),
         )
@@ -223,7 +223,7 @@ impl UserDirectory {
             &mut transaction,
             &user_id,
             login.profile,
-            login.profile_observed_at_unix_nanos,
+            login.profile_observed_at,
         )
         .await?;
         if !membership.enabled() {
@@ -264,7 +264,7 @@ mod tests {
         let workspaces = coral_workspace::WorkspaceModule::new(fixture.database());
         let context = coral_workspace::ChangeContext::new(
             actor.clone(),
-            11,
+            coral_db::UnixNanos::new(11),
             coral_workspace::TraceId::current_or_new(),
         );
         let workspace = workspaces
@@ -291,7 +291,7 @@ mod tests {
                                 None,
                                 None
                             ))
-                            .with_profile_observed_at(5)
+                            .with_profile_observed_at(coral_db::UnixNanos::new(5))
                     )
                     .await
                     .unwrap()
@@ -348,7 +348,11 @@ mod tests {
         let organization = OrganizationModule::new(fixture.database());
         let owner = organization.resolve_user_authority(&owner).await.unwrap();
         let workspaces = WorkspaceModule::new(fixture.database());
-        let context = ChangeContext::new(owner.clone(), 10, TraceId::current_or_new());
+        let context = ChangeContext::new(
+            owner.clone(),
+            coral_db::UnixNanos::new(10),
+            TraceId::current_or_new(),
+        );
         let workspace = workspaces
             .create(&context, WorkspaceDisplayName::parse("Collisions").unwrap())
             .await
@@ -418,7 +422,7 @@ mod tests {
         );
         let change = coral_workspace::ChangeContext::new(
             owner,
-            2,
+            coral_db::UnixNanos::new(2),
             coral_workspace::TraceId::parse(&"a".repeat(32)).unwrap(),
         );
         organization
@@ -514,7 +518,12 @@ mod tests {
         display_name: Option<&'a str>,
         occurred_at_unix_nanos: i64,
     ) -> VerifiedOidcLogin<'a> {
-        VerifiedOidcLogin::new(issuer, subject, display_name, occurred_at_unix_nanos)
+        VerifiedOidcLogin::new(
+            issuer,
+            subject,
+            display_name,
+            coral_db::UnixNanos::new(occurred_at_unix_nanos),
+        )
     }
 
     fn provisioned(outcome: LoginProvisioning) -> super::UserId {

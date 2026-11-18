@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 
 use coral_catalog::{AuthoredToolKind, ProviderGenerationId, ToolKey};
-use coral_db::{DatabaseSystem, Error, Transaction};
+use coral_db::{DatabaseSystem, Error, Transaction, UnixNanos};
 use coral_provider::ProviderId;
 use coral_tools::AuthoredToolId;
 use coral_workspace::{Principal, WorkspaceId};
@@ -310,12 +310,12 @@ async fn nearest(
     limit: usize,
 ) -> Result<Vec<NearestVector>, Error> {
     let (sql, values) = nearest_statement(transaction.system(), scope, revision, vector, limit);
-    let rows: Vec<(String, i64)> = transaction.fetch_all_sql(&sql, values).await?;
+    let rows: Vec<(String, UnixNanos)> = transaction.fetch_all_sql(&sql, values).await?;
     Ok(rows
         .into_iter()
-        .map(|(doc_id, source_indexed_at_unix_nanos)| NearestVector {
+        .map(|(doc_id, source_indexed_at)| NearestVector {
             doc_id,
-            source_indexed_at_unix_nanos,
+            source_indexed_at,
         })
         .collect())
 }
@@ -359,7 +359,7 @@ async fn current_rows<T>(
 ) -> Result<HashMap<String, CurrentRow<T>>, RetrievalError> {
     #[derive(sqlx::FromRow)]
     struct StampedRow {
-        indexed_at_unix_nanos: i64,
+        indexed_at_unix_nanos: UnixNanos,
         #[sqlx(flatten)]
         row: RankedRow,
     }
@@ -378,7 +378,7 @@ async fn current_rows<T>(
             Ok((
                 stamped.row.doc_id.clone(),
                 CurrentRow {
-                    indexed_at_unix_nanos: stamped.indexed_at_unix_nanos,
+                    indexed_at: stamped.indexed_at_unix_nanos,
                     entry: decode(stamped.row)?,
                 },
             ))

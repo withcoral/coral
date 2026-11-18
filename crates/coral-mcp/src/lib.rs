@@ -92,4 +92,8 @@ impl McpModules {
 pub(crate) struct McpRuntime {
     modules: McpModules,
     principal: AuthenticatedPrincipal,
+    /// The request's time: the instant its authentication read. It dates what
+    /// the request decides before it waits on a Run. Nothing here decides on
+    /// time after such a wait, so the Adapter holds no clock to read again.
+    now: coral_db::UnixNanos,
 }

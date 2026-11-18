@@ -45,7 +45,12 @@ async fn each_builtin_tool_reaches_the_principals_its_workspace_action_permits()
         let mut transaction = database.begin_read_snapshot().await.unwrap();
         let authority = arranged
             .workspaces
-            .check_discovery_in_transaction(&mut transaction, &principal, workspace, 13)
+            .check_discovery_in_transaction(
+                &mut transaction,
+                &principal,
+                workspace,
+                coral_db::UnixNanos::new(13),
+            )
             .await
             .unwrap();
         let [builtin] = crate::active_providers_in_transaction(&mut transaction, workspace)
@@ -675,7 +680,11 @@ impl BuiltinWorkspace {
             .await
             .unwrap();
         self.workspaces
-            .authenticate_agent(self.workspace.id(), issued.credential.expose(), at)
+            .authenticate_agent(
+                self.workspace.id(),
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(at),
+            )
             .await
             .unwrap()
     }

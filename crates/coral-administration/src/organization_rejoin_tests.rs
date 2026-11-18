@@ -111,7 +111,11 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
     let path = PrivateToolPath::parse("fresh").unwrap();
     let saved = private_tools
         .save(
-            &PrivateToolChangeContext::new(author.clone(), 100, change(&owner).trace_id().clone()),
+            &PrivateToolChangeContext::new(
+                author.clone(),
+                coral_db::UnixNanos::new(100),
+                change(&owner).trace_id().clone(),
+            ),
             workspace.id(),
             PrivateToolSave::new(
                 path.clone(),

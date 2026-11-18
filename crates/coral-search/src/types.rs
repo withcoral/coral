@@ -1056,7 +1056,8 @@ pub enum SearchIndexFailure {
     InvalidEntry,
     /// The write did not finish within its limit.
     TimedOut,
-    /// The system clock could not stamp the attempt.
+    /// An earlier Coral could not read the system clock to stamp the
+    /// attempt. This Coral records no such failure and still reads one.
     Clock,
     /// A search-owned row held a value its column does not admit.
     Corrupt,

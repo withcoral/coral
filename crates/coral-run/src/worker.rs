@@ -172,7 +172,7 @@ impl RunModule {
                 &mut transaction,
                 actor,
                 &accepted.workspace_id,
-                self.now()?,
+                coral_db::UnixNanos::new(self.now()?),
             )
             .await
             .map_err(Error::from)
@@ -201,7 +201,7 @@ impl RunModule {
             return Ok(None);
         }
         if let Err(error) = authority.and_then(|evidence| {
-            evidence.require_current_at(started_at)?;
+            evidence.require_current_at(coral_db::UnixNanos::new(started_at))?;
             Ok(())
         }) {
             // A database that failed, definitely or not, has not said

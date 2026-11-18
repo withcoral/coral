@@ -171,6 +171,8 @@ impl Launch {
             extensions: super::runtime::Extensions::default(),
             compile_in_process: false,
             migration_report: None,
+            // The host's clock: only a test supplies another.
+            clock: None,
         })
     }
 }

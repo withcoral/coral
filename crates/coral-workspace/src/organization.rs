@@ -16,7 +16,7 @@ pub(crate) use repository::{current_member_ids, enabled_member_total};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use coral_db::{Database, Transaction};
+use coral_db::{Database, Transaction, UnixNanos};
 
 use crate::list_repository::Users;
 use crate::{AuthenticatedUser, ChangeContext, Error, OrganizationRole, UserId};
@@ -132,7 +132,7 @@ pub struct OrganizationLifecycleEvent {
     /// Only accepted changes produce evidence.
     pub outcome: crate::LifecycleOutcome,
     /// Event time, not a concurrency control.
-    pub occurred_at_unix_nanos: i64,
+    pub occurred_at: UnixNanos,
     /// Safe trace correlation.
     pub trace_id: crate::TraceId,
 }

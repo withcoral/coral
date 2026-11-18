@@ -3560,6 +3560,95 @@ fn response_schema_drives_the_typescript_declaration() {
     assert!(declaration.ends_with("Promise<HttpResult<Forecast, 200, \"application/json\">>;"));
 }
 
+// Catches: a Tool that publishes as available and then fails every call,
+// because its path's fixed query holds the parameter the credential is sent
+// in.
+#[test]
+fn a_fixed_query_that_holds_the_credential_parameter_makes_the_tool_unavailable() {
+    let api_key = "security:\n  - key: []\ncomponents:\n  securitySchemes:\n    key: { type: apiKey, in: query, name: key }\npaths:";
+    for (path, collides) in [
+        ("/forecast?key=fixed", true),
+        ("/forecast?beta=true&key=fixed", true),
+        ("/forecast?beta=true", false),
+        ("/forecast", false),
+    ] {
+        let document = WEATHER_OPENAPI
+            .replace("security: []\npaths:", api_key)
+            .replace("  /forecast:", &format!("  \"{path}\":"));
+        let prepared = configured_ready(&document);
+        let [operation] = prepared.tools() else {
+            panic!("{path}: one Tool");
+        };
+        assert_eq!(
+            operation
+                .diagnostic()
+                .map(coral_catalog::CatalogDiagnostic::code),
+            collides.then_some("invalid_tool_path"),
+            "{path}"
+        );
+        assert_eq!(
+            operation.availability() == ToolAvailability::Unavailable,
+            collides,
+            "{path}"
+        );
+    }
+
+    // The server URL's query collides the same way. Only a document's own
+    // server can hold one; a configured base URL cannot.
+    let on_server = WEATHER_OPENAPI
+        .replace("security: []\npaths:", api_key)
+        .replace(
+            "  - url: https://weather.example",
+            "  - url: \"https://weather.example/v1?key=fixed\"",
+        );
+    let MaterializationOutcome::Ready(prepared) = materialize(
+        DestinationPolicy::default(),
+        &ProviderSetupInput::from(OpenApiDocument::parse(&on_server).expect("OpenAPI input")),
+        &[],
+    ) else {
+        panic!("the document materializes");
+    };
+    let [operation] = prepared.tools() else {
+        panic!("one Tool");
+    };
+    assert_eq!(
+        operation
+            .diagnostic()
+            .map(coral_catalog::CatalogDiagnostic::code),
+        Some("invalid_tool_path")
+    );
+
+    // An API key that the document declares and the configuration replaces
+    // is not sent, so the fixed query that names it collides with nothing.
+    let document = OpenApiDocument::parse(
+        &WEATHER_OPENAPI
+            .replace("security: []\npaths:", api_key)
+            .replace("  /forecast:", "  \"/forecast?key=fixed\":"),
+    )
+    .expect("OpenAPI input");
+    let mut configuration = document
+        .configuration_review()
+        .expect("configuration review")
+        .suggested;
+    configuration.authentication = Some(coral_catalog::AuthenticationConfiguration::None);
+    configuration.credential_fields.clear();
+    let configured = document
+        .configure(configuration)
+        .expect("a configuration with no credential applies");
+    let MaterializationOutcome::Ready(prepared) = materialize(
+        DestinationPolicy::default(),
+        &ProviderSetupInput::from(configured),
+        &[],
+    ) else {
+        panic!("the replaced configuration materializes");
+    };
+    let [operation] = prepared.tools() else {
+        panic!("one Tool");
+    };
+    assert!(operation.diagnostic().is_none());
+    assert_eq!(http_binding(operation).query(), Some("key=fixed"));
+}
+
 #[test]
 fn a_query_in_a_path_key_becomes_the_operations_fixed_query() {
     for (key, expected) in [

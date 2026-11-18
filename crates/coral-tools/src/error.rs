@@ -82,9 +82,6 @@ pub enum Error {
     /// A compiler worker stopped before returning its result.
     #[error("the authoring compiler worker stopped unexpectedly")]
     CompilerWorkerStopped,
-    /// The clock could not provide safe durable time evidence.
-    #[error("the authoring clock failed: {0}")]
-    Clock(String),
     /// Diagnostics or lifecycle fields could not be encoded.
     #[error("authored Tool evidence JSON was invalid: {0}")]
     Json(#[from] serde_json::Error),
@@ -142,7 +139,6 @@ impl Error {
             Self::NoCompiler => "no_compiler",
             Self::CompilerUnavailable { .. } => "compiler_unavailable",
             Self::CompilerWorkerStopped { .. } => "compiler_worker_stopped",
-            Self::Clock { .. } => "clock",
             Self::Json { .. } => "json",
             Self::Workspace { .. } => "workspace",
             Self::CorruptData { .. } => "corrupt_data",
@@ -177,9 +173,25 @@ impl Error {
             | Self::PermissionDenied(_)
             | Self::CompilerUnavailable(_)
             | Self::CompilerWorkerStopped
-            | Self::Clock(_)
             | Self::Json(_)
             | Self::CorruptData(_) => None,
+        }
+    }
+
+    /// The database error behind this one, by value, or this error back
+    /// when it holds none. [`Self::database_error`] says which it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error itself when no database error is behind it.
+    pub fn into_database_error(self) -> Result<coral_db::Error, Self> {
+        match self {
+            Self::Database(error) => Ok(error),
+            Self::Workspace(error) => error.into_database_error().map_err(Self::Workspace),
+            other => {
+                debug_assert!(other.database_error().is_none());
+                Err(other)
+            }
         }
     }
 
@@ -210,7 +222,6 @@ impl Error {
             | Self::PermissionDenied(_)
             | Self::CompilerUnavailable(_)
             | Self::CompilerWorkerStopped
-            | Self::Clock(_)
             | Self::Json(_)
             | Self::CorruptData(_) => None,
         }

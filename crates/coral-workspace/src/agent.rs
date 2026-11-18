@@ -5,6 +5,7 @@ use crate::{
     PrincipalKind, WorkspaceId, WorkspaceModule, agent_repository as repository,
     agent_types::credential_verifier, record_event,
 };
+use coral_db::UnixNanos;
 
 async fn finish_issuance(
     mut transaction: coral_db::Transaction<'_>,
@@ -79,7 +80,7 @@ impl WorkspaceModule {
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
         display_name: AgentDisplayName,
-        expires_at_unix_nanos: Option<i64>,
+        expires_at: Option<UnixNanos>,
     ) -> Result<IssuedAgentCredential, Error> {
         let credential = AgentCredential::generate()?;
         let agent = Agent {
@@ -97,7 +98,7 @@ impl WorkspaceModule {
             agent_id: agent.principal().id().clone(),
             workspace_id: workspace_id.clone(),
             enabled: true,
-            expires_at_unix_nanos,
+            expires_at,
         };
         let mut transaction = self.database.begin().await?;
         let evidence = self
@@ -254,7 +255,7 @@ impl WorkspaceModule {
         workspace_id: &WorkspaceId,
         registration_id: &AgentRegistrationId,
         enabled: bool,
-        expires_at_unix_nanos: Option<i64>,
+        expires_at: Option<UnixNanos>,
     ) -> Result<AgentRegistration, Error> {
         let mut transaction = self.database.begin().await?;
         let evidence = self
@@ -274,14 +275,14 @@ impl WorkspaceModule {
         if registration.enabled != enabled {
             fields.push("enabled");
         }
-        if registration.expires_at_unix_nanos != expires_at_unix_nanos {
+        if registration.expires_at != expires_at {
             fields.push("expires_at");
         }
         if fields.is_empty() {
             return Ok(registration);
         }
         registration.enabled = enabled;
-        registration.expires_at_unix_nanos = expires_at_unix_nanos;
+        registration.expires_at = expires_at;
         repository::update_registration(&mut transaction, &registration).await?;
         record_event(
             &mut transaction,
@@ -348,9 +349,9 @@ impl WorkspaceModule {
         &self,
         workspace_id: &WorkspaceId,
         credential: &str,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<AuthenticatedPrincipal, Error> {
-        self.authenticate_agent_in(Some(workspace_id), credential, now_unix_nanos)
+        self.authenticate_agent_in(Some(workspace_id), credential, now)
             .await
             .map(|(principal, _workspace)| principal)
     }
@@ -366,17 +367,16 @@ impl WorkspaceModule {
     pub async fn authenticate_agent_credential(
         &self,
         credential: &str,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<(AuthenticatedPrincipal, WorkspaceId), Error> {
-        self.authenticate_agent_in(None, credential, now_unix_nanos)
-            .await
+        self.authenticate_agent_in(None, credential, now).await
     }
 
     async fn authenticate_agent_in(
         &self,
         workspace_id: Option<&WorkspaceId>,
         credential: &str,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<(AuthenticatedPrincipal, WorkspaceId), Error> {
         if credential.len() != 55 || !credential.starts_with("coral_agent_") {
             return Err(Error::InvalidAgentCredential);
@@ -397,7 +397,7 @@ impl WorkspaceModule {
         )
         .await?;
         registration
-            .require_active(&agent, now_unix_nanos)
+            .require_active(&agent, now)
             .map_err(|_lifecycle_loss| Error::InvalidAgentCredential)?;
         transaction.commit().await?;
         let workspace = registration.workspace_id().clone();

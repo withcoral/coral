@@ -10,8 +10,8 @@ use coral_workspace::{
 };
 
 use crate::authoring::{
-    Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, now_unix_nanos,
-    tool_paths_overlap, v8_compiler,
+    Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, now, tool_paths_overlap,
+    v8_compiler,
 };
 use crate::linking::LinkedToolReference;
 use crate::repository::{self, PrivateToolRecord};
@@ -254,11 +254,11 @@ impl PrivateToolModule {
             prepared.declaration_field_projection,
             prepared.diagnostics,
             prepared.diagnostics_truncated,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
             revision,
             default_access_state,
         );
-        authority.require_current_at(now_unix_nanos()?)?;
+        authority.require_current_at(now())?;
         match previous.as_ref() {
             None => repository::insert_current(transaction, &tool).await?,
             Some(previous) => {
@@ -276,7 +276,7 @@ impl PrivateToolModule {
                 target_id: tool.id(),
                 target_path: tool.path(),
                 changed_field_paths: &changed_field_paths,
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                occurred_at: context.occurred_at(),
                 trace_id: context.trace_id(),
             },
         )
@@ -474,7 +474,7 @@ impl PrivateToolModule {
         workspace_id: &WorkspaceId,
     ) -> Result<(), Error> {
         self.workspaces
-            .check_authoring(actor, workspace_id, now_unix_nanos()?)
+            .check_authoring(actor, workspace_id, now())
             .await?;
         Ok(())
     }
@@ -486,7 +486,7 @@ impl PrivateToolModule {
         workspace_id: &WorkspaceId,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         self.workspaces
-            .check_authoring_in_transaction(transaction, actor, workspace_id, now_unix_nanos()?)
+            .check_authoring_in_transaction(transaction, actor, workspace_id, now())
             .await
             .map_err(Into::into)
     }
@@ -516,7 +516,7 @@ pub async fn delete_current_for_access_removal_in_transaction(
     prepared.verify_transaction(transaction, context)?;
     let change = PrivateToolChangeContext::new(
         AuthenticatedPrincipal::user(context.actor().clone()),
-        context.occurred_at_unix_nanos(),
+        context.occurred_at(),
         context.trace_id().clone(),
     );
     let mut deleted = Vec::new();
@@ -565,7 +565,7 @@ pub(crate) async fn delete_current_with_event(
                 "declaration_fields",
                 "diagnostics",
             ],
-            occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+            occurred_at: context.occurred_at(),
             trace_id: context.trace_id(),
         },
     )

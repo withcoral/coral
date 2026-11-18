@@ -1,6 +1,6 @@
 use super::status;
 use super::workspaces::timestamp;
-use super::{GrpcServices, management as wire, now};
+use super::{GrpcServices, management as wire};
 use tonic::{Request, Response, Status};
 
 fn view(view: coral_usage::UsageDataView) -> wire::UsageData {
@@ -24,7 +24,7 @@ fn view(view: coral_usage::UsageDataView) -> wire::UsageData {
         }
         .into(),
         last_sent: view.last_sent.map(|sent| wire::SentUsageReport {
-            sent_time: Some(timestamp(sent.sent_at_unix_nanos)),
+            sent_time: Some(timestamp(sent.sent_at.get())),
             json: sent.json,
         }),
         next_report_json: view.next_report_json,
@@ -58,7 +58,7 @@ impl wire::usage_data_service_server::UsageDataService for GrpcServices {
         let actor = self.management_user(&request).await?;
         let usage = self.usage()?;
         let data = usage
-            .view(&actor, now()?)
+            .view(&actor, actor.now())
             .await
             .map_err(|failure| error(&failure))?;
         Ok(Response::new(view(data)))
@@ -73,7 +73,7 @@ impl wire::usage_data_service_server::UsageDataService for GrpcServices {
         let sharing = request.get_ref().sharing;
         let usage = self.usage()?;
         let data = usage
-            .set_sharing(&actor, sharing, now()?)
+            .set_sharing(&actor, sharing, actor.now())
             .await
             .map_err(|failure| error(&failure))?;
         Ok(Response::new(view(data)))

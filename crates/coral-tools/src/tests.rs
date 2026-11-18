@@ -233,7 +233,7 @@ async fn a_save_keeps_the_declared_default_until_one_changes_it_and_names_each_c
             .expect("list lifecycle Events");
         let event = events
             .iter()
-            .max_by_key(|event| event.occurred_at_unix_nanos())
+            .max_by_key(|event| event.occurred_at())
             .expect("the save's Event");
         assert_eq!(
             event.changed_field_paths(),
@@ -320,7 +320,7 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
         .expect("replace despite older occurrence timestamp");
     assert_eq!(replacement.id(), original.id());
     assert_eq!(replacement.source().as_str(), replacement_source);
-    assert_eq!(replacement.saved_at_unix_nanos(), 50);
+    assert_eq!(replacement.saved_at(), coral_db::UnixNanos::new(50));
 
     let deleted_id = fixture
         .private_tools
@@ -932,7 +932,7 @@ async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
             diagnostics
         );
         assert!(!tool.diagnostics_truncated());
-        assert_eq!(tool.saved_at_unix_nanos(), 15);
+        assert_eq!(tool.saved_at(), coral_db::UnixNanos::new(15));
         assert_eq!(tool.revision(), revision);
         assert_eq!(tool.default_access_state(), ToolAccessState::Enabled);
         assert_eq!(tool.execution_binding().definition(), tool.id().to_string());
@@ -2107,19 +2107,23 @@ async fn registered_agent(
         .await
         .expect("create Agent");
     workspaces
-        .authenticate_agent(workspace_id, issued.credential.expose(), 11)
+        .authenticate_agent(
+            workspace_id,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(11),
+        )
         .await
         .expect("authenticate Agent")
 }
 
 fn private_tool_change(
     actor: AuthenticatedPrincipal,
-    occurred_at_unix_nanos: i64,
+    at: i64,
     digit: char,
 ) -> PrivateToolChangeContext {
     PrivateToolChangeContext::new(
         actor,
-        occurred_at_unix_nanos,
+        coral_db::UnixNanos::new(at),
         TraceId::parse(&digit.to_string().repeat(32)).expect("trace id"),
     )
 }
@@ -2187,7 +2191,7 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
                     &workspace_id,
                     registration.id(),
                     true,
-                    Some(0),
+                    Some(coral_db::UnixNanos::new(0)),
                 )
                 .await
                 .unwrap();
@@ -2313,7 +2317,7 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
     assert_eq!(paths(&first), ["Middle.upper", "alpha.first"]);
     let summary = first.items.last().expect("summary");
     assert_eq!(summary.description().as_str(), "Describe alpha.first");
-    assert_eq!(summary.saved_at_unix_nanos(), 20);
+    assert_eq!(summary.saved_at(), coral_db::UnixNanos::new(20));
     let first_after = first.next_after;
     let after = first_after.as_ref().expect("more pages").as_str();
     let second = list(&member, Some(after), 2).await.expect("second page");

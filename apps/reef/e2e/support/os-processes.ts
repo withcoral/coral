@@ -106,21 +106,25 @@ async function linuxListeners(pids: readonly number[]): Promise<Listener[]> {
       if (inode) owners.set(inode, pid)
     }
   }
-  const listeners: Listener[] = []
+  // By inode, which names one socket. A table takes several reads, and is not a
+  // snapshot: when a socket opens between them, the kernel lists its last
+  // sockets again.
+  const listeners = new Map<string, Listener>()
   for (const table of ['/proc/net/tcp', '/proc/net/tcp6']) {
     const rows = (await readFile(table, 'utf8').catch(() => '')).split('\n').slice(1)
     for (const row of rows) {
       const fields = row.trim().split(/\s+/)
       // Columns: sl, local address, remote address, state, …, inode (10th).
       const [, local, , state] = fields
-      const pid = owners.get(fields[9])
+      const inode = fields[9]
+      const pid = owners.get(inode)
       // 0A is TCP_LISTEN.
       if (state !== '0A' || pid === undefined) continue
       const [address, port] = local.split(':')
-      listeners.push({ pid, address: procAddress(address), port: Number.parseInt(port, 16) })
+      listeners.set(inode, { pid, address: procAddress(address), port: Number.parseInt(port, 16) })
     }
   }
-  return listeners
+  return [...listeners.values()]
 }
 
 /** Decodes /proc's hex address: 32-bit words in host byte order, little-endian here. */

@@ -101,7 +101,7 @@ impl SharedScope {
             .save(
                 &PrivateToolChangeContext::new(
                     author.clone(),
-                    60,
+                    coral_db::UnixNanos::new(60),
                     coral_workspace::TraceId::current_or_new(),
                 ),
                 &self.scope.workspace_id,

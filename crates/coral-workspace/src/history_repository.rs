@@ -1,6 +1,7 @@
 //! Narrow repository facet for authorized cross-Workspace history queries.
 //! Only owning repositories compose SQL with this facet. Domains receive typed history.
 use crate::HistoryAuthority;
+use coral_db::UnixNanos;
 use sea_query::{Alias, Expr, ExprTrait as _, Query, SelectStatement, SimpleExpr};
 
 /// Safe label for the Workspace of independently authorized history.
@@ -83,7 +84,7 @@ pub fn invoker_active(
     workspace: sea_query::ColumnRef,
     principal: sea_query::ColumnRef,
     kind: sea_query::ColumnRef,
-    now: i64,
+    now: UnixNanos,
 ) -> sea_query::SimpleExpr {
     use coral_db::col;
     let active_workspace = Expr::exists(

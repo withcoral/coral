@@ -140,6 +140,8 @@ impl Drop for RunningMcpHttpServer {
 /// must authenticate an Agent Registration. Each path fixes one Workspace, and normal authority is
 /// checked before transport dispatch. Domain Modules recheck exact authority,
 /// attribution, and resource visibility for each tool operation.
+/// `clock` is the deployment's one clock: it dates an Agent Registration's
+/// expiry.
 ///
 /// # Errors
 ///
@@ -148,9 +150,10 @@ pub async fn start_local(
     config: McpHttpConfig,
     modules: McpModules,
     readiness: ReadinessProbe,
+    clock: Arc<dyn coral_db::Clock>,
 ) -> Result<RunningMcpHttpServer, McpHttpError> {
     let authentication = Arc::new(LocalAuthentication(
-        coral_auth::PrincipalAuthentication::local(modules.workspaces.clone()),
+        coral_auth::PrincipalAuthentication::local(modules.workspaces.clone(), clock),
     ));
     start_server(config, modules, authentication, None, readiness).await
 }
@@ -305,14 +308,13 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
             None,
         );
     };
-    let (principal, workspace_id) = match state.authentication.authenticate(&endpoint, bearer).await
-    {
-        Ok(authenticated) => authenticated,
-        Err(error) => return unauthorized(&state, &endpoint, error, bearer),
-    };
-    let Some(now) = now_unix_nanos() else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
+    // The instant authentication read is the request's time: it dates
+    // Principal inspection here and what the tool call decides.
+    let (principal, workspace_id, now) =
+        match state.authentication.authenticate(&endpoint, bearer).await {
+            Ok(authenticated) => authenticated,
+            Err(error) => return unauthorized(&state, &endpoint, error, bearer),
+        };
     // At `/mcp` a lost Workspace answers 401 `invalid_token`, so the client
     // signs in again and its User picks another Workspace.
     let lost = || match endpoint {
@@ -331,16 +333,25 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
         .await
     {
         Ok(evidence) => evidence,
-        Err(
-            coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_),
-        ) => return lost(),
-        Err(_error) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(error) => {
+            return match refused(error.refusal()) {
+                Refused::Lost => lost(),
+                Refused::SignInAgain => unauthorized(
+                    &state,
+                    &endpoint,
+                    AuthenticationError::Unauthenticated,
+                    bearer,
+                ),
+                Refused::Unavailable => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            };
+        }
     };
     let workspace = evidence.workspace();
     let mut handler = McpServer::new(
         McpRuntime {
             modules: state.modules.clone(),
             principal: principal.clone(),
+            now,
         },
         workspace_id.clone(),
     );
@@ -387,6 +398,35 @@ fn bearer_credential(headers: &axum::http::HeaderMap) -> Result<Option<&str>, ()
         return Err(());
     }
     Ok(Some(token))
+}
+
+/// What the endpoint answers when the check of the caller's authority fails.
+#[derive(Debug, PartialEq, Eq)]
+enum Refused {
+    /// The caller cannot work in this Workspace, now or on a retry.
+    Lost,
+    /// The credential no longer works, so the client presents another.
+    SignInAgain,
+    /// The failure says nothing about the caller. A retry can succeed.
+    Unavailable,
+}
+
+/// The answer for each refusal, and for a failure that is none.
+const fn refused(refusal: Option<coral_workspace::AuthorityRefusal>) -> Refused {
+    use coral_workspace::AuthorityRefusal as Refusal;
+    match refusal {
+        Some(
+            Refusal::WorkspaceNotFound | Refusal::PermissionDenied | Refusal::WorkspaceArchived,
+        ) => Refused::Lost,
+        // The Agent's Registration ended after the request authenticated.
+        Some(
+            Refusal::AgentNotFound
+            | Refusal::AgentDisabled
+            | Refusal::AgentRegistrationExpired
+            | Refusal::InvalidAgentCredential,
+        ) => Refused::SignInAgain,
+        None => Refused::Unavailable,
+    }
 }
 
 /// A 401 whose challenge names `endpoint`'s protected-resource metadata.
@@ -440,11 +480,36 @@ fn is_loopback(ip: IpAddr) -> bool {
         || matches!(ip, IpAddr::V6(ip) if ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback()))
 }
 
-/// The request time that dates Principal inspection; `None` when the clock is unusable.
-fn now_unix_nanos() -> Option<i64> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_nanos();
-    i64::try_from(nanos).ok()
+#[cfg(test)]
+mod tests {
+    use super::{Refused, refused};
+    use coral_workspace::AuthorityRefusal as Refusal;
+
+    // Catches: an Agent whose Registration ended being told to retry a
+    // request that can never succeed, and a failure that says nothing about
+    // the caller being read as a lost Workspace.
+    #[test]
+    fn a_refused_caller_is_told_whether_to_leave_sign_in_again_or_retry() {
+        let answers = [
+            (Some(Refusal::WorkspaceNotFound), Refused::Lost),
+            (Some(Refusal::PermissionDenied), Refused::Lost),
+            (Some(Refusal::WorkspaceArchived), Refused::Lost),
+            (Some(Refusal::AgentNotFound), Refused::SignInAgain),
+            (Some(Refusal::AgentDisabled), Refused::SignInAgain),
+            (
+                Some(Refusal::AgentRegistrationExpired),
+                Refused::SignInAgain,
+            ),
+            (Some(Refusal::InvalidAgentCredential), Refused::SignInAgain),
+            (None, Refused::Unavailable),
+        ];
+        for (refusal, answer) in answers {
+            assert_eq!(refused(refusal), answer, "{refusal:?}");
+        }
+        // A database failure is no refusal.
+        assert_eq!(
+            refused(coral_workspace::Error::Database(coral_db::Error::WriterBusy).refusal()),
+            Refused::Unavailable
+        );
+    }
 }

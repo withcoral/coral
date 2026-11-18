@@ -85,7 +85,11 @@ impl SharedToolFixture {
             .await
             .expect("create Agent");
         let agent = workspaces
-            .authenticate_agent(&workspace, issued.credential.expose(), 13)
+            .authenticate_agent(
+                &workspace,
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(13),
+            )
             .await
             .expect("authenticate Agent");
         Self {
@@ -123,7 +127,7 @@ impl SharedToolFixture {
             .save(
                 &PrivateToolChangeContext::new(
                     author.clone(),
-                    20,
+                    coral_db::UnixNanos::new(20),
                     coral_workspace::TraceId::parse(&"b".repeat(32)).expect("trace id"),
                 ),
                 workspace,
@@ -1169,7 +1173,7 @@ async fn one_source_is_typed_alike_when_saved_and_when_published() {
         .prepare_save(
             &PrivateToolChangeContext::new(
                 owner.clone(),
-                40,
+                coral_db::UnixNanos::new(40),
                 coral_workspace::TraceId::parse(&"d".repeat(32)).expect("trace id"),
             ),
             &fixture.workspace,
@@ -1569,7 +1573,7 @@ async fn member_users_read_the_history_of_shared_tools_and_agents_cannot() {
                     event.path().as_str().to_string(),
                     event.revision(),
                     event.content_hash().to_string(),
-                    event.occurred_at_unix_nanos(),
+                    event.occurred_at().get(),
                 )
             })
             .collect::<Vec<_>>()
@@ -1805,8 +1809,7 @@ async fn pages_of_history_follow_one_another_without_a_gap_or_a_repeat() {
         "the newest Event is first"
     );
     // Events that occurred together follow one another in identity order.
-    let position =
-        |event: &SharedToolLifecycleEvent| (event.occurred_at_unix_nanos(), event.id().to_string());
+    let position = |event: &SharedToolLifecycleEvent| (event.occurred_at(), event.id().to_string());
     assert!(
         whole
             .iter()
@@ -2047,6 +2050,10 @@ async fn usage_data_counts_live_shared_tools_and_each_one_published_or_removed()
     // The live total, and the Shared Tools published and removed in
     // `[start, end)`.
     let usage = async |start, end| {
+        let (start, end) = (
+            coral_db::UnixNanos::new(start),
+            coral_db::UnixNanos::new(end),
+        );
         let mut tx = fixture
             .database
             .begin_read_snapshot()
@@ -2116,7 +2123,7 @@ fn summary_of(revision: &super::SharedToolRevision) -> super::SharedToolRevision
         default_access_state: revision.default_access_state(),
         published_by: revision.published_by().clone(),
         origin: revision.origin().clone(),
-        published_at_unix_nanos: revision.published_at_unix_nanos(),
+        published_at: revision.published_at(),
     }
 }
 

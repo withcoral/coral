@@ -4,6 +4,7 @@
 use std::future::Future;
 
 use coral_catalog::AuthoredToolKind;
+use coral_db::UnixNanos;
 use coral_provider::{GenerationEntries, ProviderId};
 use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
@@ -251,15 +252,7 @@ impl SearchIndex {
     /// watermarks: no span then records counts the pass did not take.
     async fn run_pass(&self) -> PassWork {
         let mut work = PassWork::default();
-        let Some(now) = crate::unix_now_nanos() else {
-            // TODO: an error monitor for failed index writes is still to be set up.
-            tracing::error!(
-                error.type = safe::kind(IndexError::Clock.code()),
-                "failed to start a search index reconcile pass"
-            );
-            work.step_failed = true;
-            return work;
-        };
+        let now = crate::now();
         work.step_failed |= step(
             step_span!("coral.search.reconcile.remove_superseded"),
             self.remove_superseded_generations(),
@@ -384,14 +377,14 @@ impl SearchIndex {
 
     /// Step 1 of a pass: indexes each active Generation the index lacks,
     /// holds under an old name, or holds as failed with a retry due at
-    /// `now_unix_nanos`.
-    async fn reconcile_generations(&self, now_unix_nanos: i64) -> Result<ItemWork, ()> {
+    /// `now`.
+    async fn reconcile_generations(&self, now: UnixNanos) -> Result<ItemWork, ()> {
         let stale = self
             .read_snapshot(async |transaction| {
                 let expected =
                     coral_provider::active_generations_in_transaction(transaction).await?;
                 let stale = ToolIndexer
-                    .reconcile(transaction, &expected, now_unix_nanos)
+                    .reconcile(transaction, &expected, now)
                     .await?
                     .into_iter()
                     .cloned()
@@ -413,7 +406,7 @@ impl SearchIndex {
         let mut work = ItemWork::default();
         for generation in &stale {
             let _write = self.writes.lock().await;
-            if !self.still_stale(generation, now_unix_nanos).await {
+            if !self.still_stale(generation, now).await {
                 continue;
             }
             let span = generation_span(
@@ -451,12 +444,12 @@ impl SearchIndex {
     async fn still_stale(
         &self,
         generation: &coral_provider::ActiveGeneration,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> bool {
         let needed = self
             .read_snapshot(async |transaction| {
                 let needed = ToolIndexer
-                    .still_needs_indexing(transaction, generation, now_unix_nanos)
+                    .still_needs_indexing(transaction, generation, now)
                     .await?;
                 Ok(needed)
             })
@@ -484,20 +477,17 @@ impl SearchIndex {
     }
 
     /// Step 2 of a pass: indexes each current Authored Tool whose failure
-    /// has a retry due at `now_unix_nanos` or another revision, and each
+    /// has a retry due at `now` or another revision, and each
     /// without a failure that the index lacks or holds at another revision.
     /// A failure of the current revision not yet due waits. Answers the
     /// work on Private Tools, then on Shared Tools.
-    async fn reconcile_authored_tools(
-        &self,
-        now_unix_nanos: i64,
-    ) -> Result<(ItemWork, ItemWork), ()> {
+    async fn reconcile_authored_tools(&self, now: UnixNanos) -> Result<(ItemWork, ItemWork), ()> {
         let stale = self
             .read_snapshot(async |transaction| {
                 let expected =
                     coral_tools::authored_tool_entries_in_transaction(transaction).await?;
                 let stale = AuthoredToolIndexer
-                    .reconcile(transaction, &expected, now_unix_nanos)
+                    .reconcile(transaction, &expected, now)
                     .await?
                     .into_iter()
                     .cloned()

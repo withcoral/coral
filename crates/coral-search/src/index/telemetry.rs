@@ -90,7 +90,7 @@ impl SearchIndex {
             // Age the snapshot from the start of its reads, not the end of
             // potentially slow scans.
             let sampled = Instant::now();
-            let observed_at = crate::unix_now_nanos().ok_or(crate::indexer::IndexError::Clock)?;
+            let observed_at = crate::now();
             let generations = coral_provider::active_generations_in_transaction(&mut tx).await?;
             let authored_tools =
                 coral_tools::authored_tool_index_revisions_in_transaction(&mut tx).await?;
@@ -111,7 +111,7 @@ impl SearchIndex {
                     oldest_age: publications
                         .values()
                         .min()
-                        .and_then(|at| observed_at.checked_sub(*at))
+                        .and_then(|at| observed_at.get().checked_sub(at.get()))
                         .and_then(|age| u64::try_from(age).ok())
                         .map(Duration::from_nanos),
                 })

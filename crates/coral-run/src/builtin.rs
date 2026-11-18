@@ -251,10 +251,48 @@ fn setup_url(host: &BuiltinHost<'_>, setup: &ProviderSetupId) -> String {
 /// A Principal that lost Workspace authority since admission is a failure
 /// the Program can catch; anything else is a host defect.
 fn authority_error(error: coral_provider::Error) -> Error {
-    match error {
-        coral_provider::Error::Workspace(error) if crate::enforcement::loses_authority(&error) => {
-            Error::InvocationRejected(CoralFailure::AuthorityLost.into())
+    if crate::enforcement::ended_authority(error.workspace_refusal()) {
+        Error::InvocationRejected(CoralFailure::AuthorityLost.into())
+    } else {
+        error.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CoralFailure, Error, authority_error};
+    use coral_provider::Error as Provider;
+    use coral_workspace::Error as Workspace;
+
+    // Catches: a Principal that lost its authority stopping the Run as a
+    // host defect, when the Program can catch that.
+    #[test]
+    fn a_refusal_that_ends_authority_is_a_failure_the_program_can_catch() {
+        for refusal in [
+            Workspace::WorkspaceNotFound,
+            Workspace::WorkspaceArchived,
+            Workspace::AgentDisabled,
+        ] {
+            let label = format!("{refusal:?}");
+            assert!(
+                matches!(
+                    authority_error(Provider::Workspace(refusal)),
+                    Error::InvocationRejected(rejection)
+                        if rejection == CoralFailure::AuthorityLost.into()
+                ),
+                "{label}"
+            );
         }
-        other => other.into(),
+        for defect in [
+            Provider::Workspace(Workspace::InvalidAgentCredential),
+            Provider::Workspace(Workspace::EtagMismatch),
+            Provider::ProviderNotFound,
+        ] {
+            let label = format!("{defect:?}");
+            assert!(
+                matches!(authority_error(defect), Error::Provider(_)),
+                "{label}"
+            );
+        }
     }
 }

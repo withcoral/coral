@@ -280,7 +280,7 @@ async fn a_row_whose_taker_stopped_fails_as_a_stopped_compiler_and_is_gone() {
     let mut transaction = db.begin().await.unwrap();
     let take = Take {
         taker: "stopped",
-        deadline_after: 0,
+        deadline_after: coral_db::UnixNanos::new(0),
         from: None,
     };
     let taken = take_oldest(&mut transaction, take).await.unwrap();

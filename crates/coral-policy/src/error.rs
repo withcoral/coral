@@ -54,6 +54,24 @@ impl Error {
         }
     }
 
+    /// The database error behind this one, by value, or this error back
+    /// when it holds none. [`Self::database_error`] says which it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error itself when no database error is behind it.
+    pub fn into_database_error(self) -> Result<coral_db::Error, Self> {
+        match self {
+            Self::Database(error) => Ok(error),
+            Self::Provider(error) => error.into_database_error().map_err(Self::Provider),
+            Self::Workspace(error) => error.into_database_error().map_err(Self::Workspace),
+            other => {
+                debug_assert!(other.database_error().is_none());
+                Err(other)
+            }
+        }
+    }
+
     /// The Workspace refusal this error wraps, directly or through another
     /// module's error. A refusal reads the same whichever module wrapped
     /// it, so a caller reports it without naming that module's variants.
@@ -118,6 +136,10 @@ mod tests {
                     .is_some_and(coral_db::Error::is_unanswered),
                 "{label}"
             );
+            assert!(
+                matches!(error.into_database_error(), Ok(coral_db::Error::WriterBusy)),
+                "{label}"
+            );
         }
         for error in [
             Error::ToolNotFound,
@@ -126,6 +148,40 @@ mod tests {
             Error::Provider(coral_provider::Error::ProviderNotFound),
         ] {
             assert!(error.database_error().is_none(), "{error:?}");
+            let label = format!("{error:?}");
+            let back = error.into_database_error().expect_err("no database error");
+            assert_eq!(format!("{back:?}"), label);
+        }
+    }
+
+    // Catches: a database failure inside a Provider or authored Tool read
+    // reported as corrupt policy data, which reads as a definite answer.
+    #[test]
+    fn a_read_keeps_a_wrapped_database_error_and_calls_the_rest_corrupt() {
+        let unanswered = || coral_db::Error::WriterBusy;
+        let kept = [
+            crate::tools_error(coral_tools::Error::Workspace(
+                coral_workspace::Error::Database(unanswered()),
+            )),
+            crate::tools_error(coral_tools::Error::Database(unanswered())),
+            crate::provider_read_error(coral_provider::Error::Catalog(
+                coral_catalog::Error::Database(unanswered()),
+            )),
+            crate::provider_read_error(coral_provider::Error::Workspace(
+                coral_workspace::Error::Database(unanswered()),
+            )),
+        ];
+        for error in kept {
+            assert!(
+                matches!(error, Error::Database(coral_db::Error::WriterBusy)),
+                "{error:?}"
+            );
+        }
+        for error in [
+            crate::tools_error(coral_tools::Error::PrivateToolExists),
+            crate::provider_read_error(coral_provider::Error::ProviderNotFound),
+        ] {
+            assert!(matches!(error, Error::CorruptData(_)), "{error:?}");
         }
     }
 

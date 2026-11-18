@@ -1,6 +1,7 @@
 use std::fmt;
 
 use coral_catalog::{AuthoredToolKind, ToolAccessState};
+use coral_db::UnixNanos;
 use coral_workspace::{AuthenticatedPrincipal, Principal};
 use coral_workspace::{TraceId, WorkspaceId};
 use serde::{Deserialize, Serialize};
@@ -753,7 +754,7 @@ impl PrivateToolSave {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrivateToolChangeContext {
     actor: AuthenticatedPrincipal,
-    occurred_at_unix_nanos: i64,
+    occurred_at: UnixNanos,
     trace_id: TraceId,
 }
 
@@ -762,12 +763,12 @@ impl PrivateToolChangeContext {
     #[must_use]
     pub const fn new(
         actor: AuthenticatedPrincipal,
-        occurred_at_unix_nanos: i64,
+        occurred_at: UnixNanos,
         trace_id: TraceId,
     ) -> Self {
         Self {
             actor,
-            occurred_at_unix_nanos,
+            occurred_at,
             trace_id,
         }
     }
@@ -780,8 +781,8 @@ impl PrivateToolChangeContext {
 
     /// Returns occurrence metadata; it is not a stale-write guard.
     #[must_use]
-    pub const fn occurred_at_unix_nanos(&self) -> i64 {
-        self.occurred_at_unix_nanos
+    pub const fn occurred_at(&self) -> UnixNanos {
+        self.occurred_at
     }
 
     /// Returns safe trace correlation evidence.
@@ -804,7 +805,7 @@ pub struct PrivateTool {
     declaration_field_projection: AuthoredToolDeclarationFieldProjection,
     diagnostics: Vec<AuthoredToolDiagnostic>,
     diagnostics_truncated: bool,
-    saved_at_unix_nanos: i64,
+    saved_at: UnixNanos,
     pub(crate) revision: u64,
     default_access_state: ToolAccessState,
 }
@@ -825,7 +826,7 @@ impl PrivateTool {
         declaration_field_projection: AuthoredToolDeclarationFieldProjection,
         diagnostics: Vec<AuthoredToolDiagnostic>,
         diagnostics_truncated: bool,
-        saved_at_unix_nanos: i64,
+        saved_at: UnixNanos,
         revision: u64,
         default_access_state: ToolAccessState,
     ) -> Self {
@@ -840,7 +841,7 @@ impl PrivateTool {
             declaration_field_projection,
             diagnostics,
             diagnostics_truncated,
-            saved_at_unix_nanos,
+            saved_at,
             revision,
             default_access_state,
         }
@@ -908,8 +909,8 @@ impl PrivateTool {
 
     /// Returns occurrence metadata from the latest accepted save.
     #[must_use]
-    pub const fn saved_at_unix_nanos(&self) -> i64 {
-        self.saved_at_unix_nanos
+    pub const fn saved_at(&self) -> UnixNanos {
+        self.saved_at
     }
 
     /// Returns the definition revision; each accepted save at this path adds one.
@@ -943,19 +944,19 @@ pub const PRIVATE_TOOL_PAGE_MAX_SIZE: u32 = 100;
 pub struct PrivateToolSummary {
     path: PrivateToolPath,
     description: AuthoredToolDescription,
-    saved_at_unix_nanos: i64,
+    saved_at: UnixNanos,
 }
 
 impl PrivateToolSummary {
     pub(crate) const fn new(
         path: PrivateToolPath,
         description: AuthoredToolDescription,
-        saved_at_unix_nanos: i64,
+        saved_at: UnixNanos,
     ) -> Self {
         Self {
             path,
             description,
-            saved_at_unix_nanos,
+            saved_at,
         }
     }
 
@@ -973,8 +974,8 @@ impl PrivateToolSummary {
 
     /// Returns occurrence metadata from the latest accepted save.
     #[must_use]
-    pub const fn saved_at_unix_nanos(&self) -> i64 {
-        self.saved_at_unix_nanos
+    pub const fn saved_at(&self) -> UnixNanos {
+        self.saved_at
     }
 }
 
@@ -1105,7 +1106,7 @@ pub struct AdministrativeLifecycleEvent {
     target_id: PrivateToolId,
     target_path: PrivateToolPath,
     changed_field_paths: Vec<String>,
-    occurred_at_unix_nanos: i64,
+    occurred_at: UnixNanos,
     trace_id: TraceId,
 }
 
@@ -1122,7 +1123,7 @@ impl AdministrativeLifecycleEvent {
         target_id: PrivateToolId,
         target_path: PrivateToolPath,
         changed_field_paths: Vec<String>,
-        occurred_at_unix_nanos: i64,
+        occurred_at: UnixNanos,
         trace_id: TraceId,
     ) -> Self {
         Self {
@@ -1133,7 +1134,7 @@ impl AdministrativeLifecycleEvent {
             target_id,
             target_path,
             changed_field_paths,
-            occurred_at_unix_nanos,
+            occurred_at,
             trace_id,
         }
     }
@@ -1182,8 +1183,8 @@ impl AdministrativeLifecycleEvent {
 
     /// Returns occurrence metadata for the committed change.
     #[must_use]
-    pub const fn occurred_at_unix_nanos(&self) -> i64 {
-        self.occurred_at_unix_nanos
+    pub const fn occurred_at(&self) -> UnixNanos {
+        self.occurred_at
     }
 
     /// Returns safe trace correlation evidence.

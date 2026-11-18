@@ -464,7 +464,7 @@ async fn a_missing_private_path_names_the_callers_own_nearest_private_tools() {
             fixture
                 .private_tools
                 .save(
-                    &PrivateToolChangeContext::new(principal, at, trace('6')),
+                    &PrivateToolChangeContext::new(principal, coral_db::UnixNanos::new(at), trace('6')),
                     workspace,
                     PrivateToolSave::new(
                         PrivateToolPath::parse(&path).expect("a path"),

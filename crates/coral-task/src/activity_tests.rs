@@ -1,5 +1,6 @@
 //! Current hierarchy contracts, replacing tests for superseded filters and sort modes.
 use super::*;
+use coral_db::UnixNanos;
 use coral_workspace::{HistoryScope, WorkspaceRole};
 
 #[tokio::test]
@@ -36,7 +37,7 @@ async fn activity_observation_wakes_for_task_creation_interactions_and_ending() 
             goal.id(),
             TaskOutcome::Success,
             None,
-            wall_time(),
+            UnixNanos::new(wall_time()),
         )
         .await
         .unwrap();
@@ -88,7 +89,7 @@ async fn context_impact_task_total_includes_unloaded_measurements_and_ignores_no
             goal.id(),
             TaskOutcome::Success,
             Some("Found an answer"),
-            wall_time(),
+            UnixNanos::new(wall_time()),
         )
         .await
         .unwrap();
@@ -166,7 +167,7 @@ async fn activity_summary_counts_context_as_the_task_total_does() {
         .tasks
         .workspaces
         .create_agent(
-            &ChangeContext::new(owner, 1, coral_test_support::trace('1')),
+            &ChangeContext::new(owner, UnixNanos::new(1), coral_test_support::trace('1')),
             &f.workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -176,7 +177,7 @@ async fn activity_summary_counts_context_as_the_task_total_does() {
     let agent = f
         .tasks
         .workspaces
-        .authenticate_agent(&f.workspace, issued.credential.expose(), 2)
+        .authenticate_agent(&f.workspace, issued.credential.expose(), UnixNanos::new(2))
         .await
         .unwrap();
     let goal = f.goal().await;
@@ -197,7 +198,7 @@ async fn activity_summary_counts_context_as_the_task_total_does() {
             &agent,
             &f.workspace,
             TaskIntent::parse("Agent goal").unwrap(),
-            3,
+            UnixNanos::new(3),
         )
         .await
         .unwrap();
@@ -468,7 +469,7 @@ async fn filled_task(f: &Fixture, workspace: &coral_workspace::WorkspaceId, runs
     let intent = TaskIntent::parse("Fill the task history").unwrap();
     let goal = f
         .tasks
-        .start(&f.actor, workspace, intent.clone(), 20)
+        .start(&f.actor, workspace, intent.clone(), UnixNanos::new(20))
         .await
         .unwrap();
     let call = AttributedCommand::new(
@@ -610,7 +611,7 @@ impl TiedRoots {
                             &f.actor,
                             workspace,
                             TaskIntent::parse("Equal intent É_%").unwrap(),
-                            10,
+                            UnixNanos::new(10),
                         )
                         .await
                         .unwrap(),
@@ -709,7 +710,7 @@ async fn root_windows_keep_their_rows_when_new_roots_arrive() {
             &f.actor,
             &f.workspace,
             TaskIntent::parse("New arrival").unwrap(),
-            20,
+            UnixNanos::new(20),
         )
         .await
         .unwrap();
@@ -762,7 +763,7 @@ async fn root_windows_conceal_another_users_private_anchor() {
             &AuthenticatedPrincipal::user(owner),
             &f.workspace,
             TaskIntent::parse("Other User's private goal").unwrap(),
-            30,
+            UnixNanos::new(30),
         )
         .await
         .unwrap();
@@ -792,7 +793,7 @@ async fn root_windows_reauthorize_rows_and_anchors_after_membership_loss() {
         f.tasks.workspaces.clone(),
     )
     .remove_workspace_member(
-        &ChangeContext::new(owner, 40, coral_test_support::trace('1')),
+        &ChangeContext::new(owner, UnixNanos::new(40), coral_test_support::trace('1')),
         &f.workspace,
         f.actor.authenticated_user().unwrap().user_id(),
     )
@@ -913,7 +914,11 @@ async fn empty_root_windows_distinguish_boundaries_from_lost_retained_identities
     assert!(!retained.anchor_unavailable && !retained.has_before && !retained.has_after);
     assert!(
         f.tasks
-            .expire_group(&f.workspace, goal.id(), 20 + HISTORY_RETENTION_NANOS)
+            .expire_group(
+                &f.workspace,
+                goal.id(),
+                UnixNanos::new(20 + HISTORY_RETENTION_NANOS)
+            )
             .await
             .unwrap()
     );
@@ -967,7 +972,11 @@ async fn root_and_child_reads_do_not_renew_retention_and_expired_anchors_do_not_
     assert!(children.rows.is_empty() && children.next_after.is_none());
     assert!(
         f.tasks
-            .expire_group(&f.workspace, goal.id(), 20 + HISTORY_RETENTION_NANOS)
+            .expire_group(
+                &f.workspace,
+                goal.id(),
+                UnixNanos::new(20 + HISTORY_RETENTION_NANOS)
+            )
             .await
             .unwrap()
     );
@@ -1011,7 +1020,11 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
         .tasks
         .workspaces
         .create_agent(
-            &ChangeContext::new(owner.clone(), 1, coral_test_support::trace('1')),
+            &ChangeContext::new(
+                owner.clone(),
+                UnixNanos::new(1),
+                coral_test_support::trace('1'),
+            ),
             &f.workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -1021,7 +1034,7 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
     let agent = f
         .tasks
         .workspaces
-        .authenticate_agent(&f.workspace, issued.credential.expose(), 2)
+        .authenticate_agent(&f.workspace, issued.credential.expose(), UnixNanos::new(2))
         .await
         .unwrap();
     let goal = f
@@ -1030,7 +1043,7 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
             &agent,
             &f.workspace,
             TaskIntent::parse("Agent goal").unwrap(),
-            3,
+            UnixNanos::new(3),
         )
         .await
         .unwrap();
@@ -1183,7 +1196,11 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
     f.tasks
         .workspaces
         .set_membership(
-            &ChangeContext::new(second.clone(), 10, coral_test_support::trace('1')),
+            &ChangeContext::new(
+                second.clone(),
+                UnixNanos::new(10),
+                coral_test_support::trace('1'),
+            ),
             &f.workspace,
             &owner,
             WorkspaceRole::Member,
@@ -1218,7 +1235,7 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
         f.tasks.workspaces.clone(),
     )
     .delete_agent(
-        &ChangeContext::new(second, 20, coral_test_support::trace('1')),
+        &ChangeContext::new(second, UnixNanos::new(20), coral_test_support::trace('1')),
         &f.workspace,
         agent.principal().id(),
     )

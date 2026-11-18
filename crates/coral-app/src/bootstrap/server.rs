@@ -210,6 +210,15 @@ impl ServerBuilder {
         self
     }
 
+    /// Supplies the clock this Coral Instance reads, for a test that starts
+    /// Coral in its own process and drives time itself. Without it, the
+    /// instance reads the host's clock.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn coral_db::Clock>) -> Self {
+        self.launcher.clock = Some(clock);
+        self
+    }
+
     /// Supplies where startup reports each database migration step it
     /// applies. Migrations run before telemetry starts and before any
     /// listener, so this is the one sign of a long step. Without it, startup
@@ -346,6 +355,7 @@ impl PreparedServerBuilder {
             private_listeners,
             authorization_server,
             workspace_authentication: _,
+            clock: _,
         } = self.compose(session_auth).await?;
         private_listeners
             .holding(authorization_server)
@@ -375,6 +385,7 @@ impl PreparedServerBuilder {
             deployment_config,
         } = self;
         let launcher = builder.launcher;
+        let clock = launcher.clock();
         let policy = deployment_config.outbound_policy(builder.outbound_defaults);
         let vault = open_credential_vault(
             deployment_config.credential_key_env(),
@@ -394,8 +405,9 @@ impl PreparedServerBuilder {
         };
         let workspace_authentication = session_auth
             .as_ref()
-            .map(|auth| auth.workspace_authentication(database.clone()));
-        let authentication = private_authentication(session_auth.as_ref(), &database).await?;
+            .map(|auth| auth.workspace_authentication(database.clone(), clock.clone()));
+        let authentication =
+            private_authentication(session_auth.as_ref(), &database, clock.clone()).await?;
         // Coral publishes its Client ID Metadata Document at Reef's public HTTPS
         // origin, which is what upstream authorization servers accept as client_id.
         let client_id_metadata_document = session_auth
@@ -406,9 +418,7 @@ impl PreparedServerBuilder {
         // rotation at once.
         let readiness = EngineReadiness::from_database(Arc::clone(&database));
         let authorization_server = session_auth
-            .map(|session_auth| {
-                build_authorization_server(session_auth, &database, policy, readiness.clone())
-            })
+            .map(|auth| build_authorization_server(auth, &database, policy, &readiness, &clock))
             .transpose()?;
         let releases = release_check(&deployment_config, policy)?;
         let usage =
@@ -431,6 +441,7 @@ impl PreparedServerBuilder {
             state_lock,
             instance,
             readiness,
+            clock: Arc::clone(&clock),
             policy,
             runtime_limits: deployment_config.runtime_limits(),
             credentials: CredentialParts {
@@ -459,11 +470,13 @@ impl PreparedServerBuilder {
             private_listeners: PrivateListeners {
                 grpc_bind: deployment_config.grpc_bind(),
                 authentication,
+                clock: clock.clone(),
                 run_executors,
                 held_authorization_server: None,
             },
             authorization_server,
             workspace_authentication,
+            clock,
         })
     }
 }
@@ -479,12 +492,16 @@ pub(crate) struct Composition {
     pub(crate) authorization_server: Option<Box<CoralAuthorizationServer>>,
     /// Public Workspace credential verification, when `[auth]` is configured.
     pub(crate) workspace_authentication: Option<crate::WorkspaceAuthentication>,
+    /// The instance's one clock, for the listeners the caller starts itself.
+    pub(crate) clock: Arc<dyn coral_db::Clock>,
 }
 
 /// The private gRPC listener and the Run Executor listener served beside it.
 pub(crate) struct PrivateListeners {
     grpc_bind: SocketAddr,
     authentication: coral_auth::PrincipalAuthentication,
+    /// The instance's one clock, the one `authentication` reads.
+    clock: Arc<dyn coral_db::Clock>,
     run_executors: RunExecutorLink,
     held_authorization_server: Option<Box<CoralAuthorizationServer>>,
 }
@@ -515,6 +532,7 @@ impl PrivateListeners {
             engine.grpc_dependencies(),
             coral_grpc::TransportContext {
                 authentication: self.authentication,
+                clock: self.clock,
                 mcp_origin: mcp_origin.clone(),
                 readiness: engine.readiness().probe(),
                 stopping: stopping.clone(),
@@ -583,20 +601,22 @@ fn release_check(
 async fn private_authentication(
     session_auth: Option<&SessionAuthSettings>,
     database: &Arc<Database>,
+    clock: Arc<dyn coral_db::Clock>,
 ) -> Result<coral_auth::PrincipalAuthentication, AppError> {
     if let Some(auth) = session_auth {
-        return Ok(auth.principal_authentication(database.clone()));
+        return Ok(auth.principal_authentication(database.clone(), clock));
     }
     coral_workspace::OrganizationModule::new(database.clone())
         .provision_login(&coral_workspace::ChangeContext::new(
             coral_workspace::local_organization_owner(),
-            0,
+            coral_db::UnixNanos::new(0),
             coral_workspace::TraceId::current_or_new(),
         ))
         .await
         .map_err(AppError::LocalAuthority)?;
     Ok(coral_auth::PrincipalAuthentication::local(
         coral_workspace::WorkspaceModule::new(database.clone()),
+        clock,
     ))
 }
 
@@ -608,12 +628,13 @@ fn build_authorization_server(
     session_auth: SessionAuthSettings,
     coral_db: &Arc<Database>,
     policy: coral_outbound::DestinationPolicy,
-    readiness: EngineReadiness,
+    readiness: &EngineReadiness,
+    clock: &Arc<dyn coral_db::Clock>,
 ) -> Result<Box<CoralAuthorizationServer>, AppError> {
     Ok(Box::new(
         session_auth
-            .into_authorization_server(policy, Arc::clone(coral_db))?
-            .with_readiness(readiness),
+            .into_authorization_server(policy, Arc::clone(coral_db), Arc::clone(clock))?
+            .with_readiness(readiness.clone()),
     ))
 }
 
@@ -947,7 +968,8 @@ mod tests {
             .await
             .expect("move the table the login holds");
 
-        let Err(error) = private_authentication(None, &fixture.database()).await else {
+        let clock: std::sync::Arc<dyn coral_db::Clock> = std::sync::Arc::new(coral_db::SystemClock);
+        let Err(error) = private_authentication(None, &fixture.database(), clock).await else {
             panic!("the login cannot be provisioned without its table");
         };
 

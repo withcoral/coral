@@ -170,7 +170,7 @@ impl RunModule {
     ) -> Result<PreparedRun, Error> {
         self.admission.check()?;
         self.workspaces
-            .check_run_admission(actor, workspace_id, self.now()?)
+            .check_run_admission(actor, workspace_id, coral_db::UnixNanos::new(self.now()?))
             .await?;
         let (package, linked) = self
             .compile_submission(actor, workspace_id, submission.source())
@@ -209,11 +209,16 @@ impl RunModule {
         let workspace_id = &workspace_id;
         let authority = self
             .workspaces
-            .check_run_admission_in_transaction(transaction, actor, workspace_id, self.now()?)
+            .check_run_admission_in_transaction(
+                transaction,
+                actor,
+                workspace_id,
+                coral_db::UnixNanos::new(self.now()?),
+            )
             .await?;
         hold_linked_sources(transaction, workspace_id, actor, &linked).await?;
         let accepted_at_unix_nanos = self.now()?;
-        authority.require_current_at(accepted_at_unix_nanos)?;
+        authority.require_current_at(coral_db::UnixNanos::new(accepted_at_unix_nanos))?;
         // The Run Owner's claim is written with acceptance, so no running Run
         // is ever unclaimed; the owner renews the lease with every chunk.
         let worker_claim_expires_at_unix_nanos =

@@ -38,6 +38,9 @@
 //!   portable statements cannot express.
 //! - [`ReadOnlyDatabase`] permits pre-migration inspection without write
 //!   authority or access to a concrete connection.
+//! - [`UnixNanos`] is an instant as the tables store it: a statement binds
+//!   one and a row decodes one as the integer its column holds.
+//!   [`SystemClock`] is the one reader of the host's clock, behind [`Clock`].
 //!
 //! # Invariants
 //!
@@ -66,6 +69,7 @@ mod options;
 mod page;
 mod query;
 mod statements;
+mod time;
 mod transaction;
 mod upgrade;
 
@@ -78,4 +82,5 @@ pub use migration::{MigrationPlan, MigrationProgress, MigrationReport, migration
 pub use options::DatabaseOptions;
 pub use page::{Page, PageKey, PageRequest, PageSize, text_key_order};
 pub use query::{col, column};
+pub use time::{Clock, SystemClock, UnixNanos};
 pub use transaction::{RowLock, Transaction, TransactionToken};

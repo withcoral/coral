@@ -30,15 +30,6 @@ use coral_telemetry::safe;
 /// mid-flight.
 const DEVICE_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// The wall clock in nanoseconds since 1970; none when it is set before then
-/// or past what the databases hold.
-fn unix_nanos() -> Option<i64> {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?;
-    i64::try_from(elapsed.as_nanos()).ok()
-}
-
 /// What bootstrap resolved for one [`Engine`]: every dependency it does not
 /// choose itself.
 pub(crate) struct EngineParts {
@@ -51,6 +42,9 @@ pub(crate) struct EngineParts {
     /// The one readiness of every listener, so shutdown takes them all out
     /// of rotation at once.
     pub(crate) readiness: EngineReadiness,
+    /// The instance's one clock. The Provider and Account modules, the boot
+    /// writes and the periodic passes read it.
+    pub(crate) clock: Arc<dyn coral_db::Clock>,
     pub(crate) policy: coral_outbound::DestinationPolicy,
     pub(crate) runtime_limits: coral_run::RuntimeLimits,
     pub(crate) credentials: CredentialParts,
@@ -76,11 +70,13 @@ impl CredentialParts {
     fn accounts(
         self,
         providers: coral_provider::ProviderModule,
+        clock: Arc<dyn coral_db::Clock>,
     ) -> (
         coral_provider::account::AccountModule,
         coral_secret_store::SecretStores,
     ) {
         let accounts = coral_provider::account::AccountModule::new(providers, self.vault)
+            .with_clock(clock)
             .with_secret_stores(self.secret_stores.clone())
             .with_client_bootstrap_policy(self.client_bootstrap_policy);
         let accounts = match self.client_id_metadata_document {
@@ -300,6 +296,8 @@ struct Modules {
     releases: Option<coral_release::ReleaseCheck>,
     usage: Option<coral_usage::UsageData>,
     readiness: EngineReadiness,
+    /// The instance's one clock, which the periodic passes read.
+    clock: Arc<dyn coral_db::Clock>,
     /// The local child supervisor; none with the children turned off.
     local_run_executors: Option<coral_run_executor::LocalRunExecutors>,
 }
@@ -344,6 +342,7 @@ impl BootedEngine {
             &modules.accounts,
             modules.releases.clone(),
             usage_reporting,
+            &modules.clock,
         );
         let search_reconcile = modules.search_index.spawn_reconcile_task();
         let (search_model, search_model_delivery) = search_model.map(SearchModel::start).unzip();
@@ -402,6 +401,7 @@ impl Engine {
             state_lock,
             instance,
             readiness,
+            clock,
             policy,
             runtime_limits,
             credentials,
@@ -421,12 +421,13 @@ impl Engine {
             coral_catalog::SchemaGraphCache::new(
                 coral_catalog::SchemaGraphCache::DEFAULT_BUDGET_BYTES,
             ),
-        );
-        let (accounts, secret_stores) = credentials.accounts(providers.clone());
+        )
+        .with_clock(clock.clone());
+        let (accounts, secret_stores) = credentials.accounts(providers.clone(), clock.clone());
         let (search_index, search_module, embedder_slot) = search.modules(&database, &workspaces);
         let provider_workflow =
             coral_administration::ProviderWorkflow::new(providers.clone(), search_index.clone());
-        install_coral_providers(&provider_workflow).await?;
+        install_coral_providers(&provider_workflow, clock.now()).await?;
         let RunExecutors {
             link,
             local: local_run_executors,
@@ -478,6 +479,7 @@ impl Engine {
                 releases,
                 usage: usage.as_ref().map(|usage| usage.data.clone()),
                 readiness,
+                clock,
                 local_run_executors,
             },
             usage_reporting: usage,
@@ -669,12 +671,12 @@ impl Drop for Engine {
 
 /// Every Workspace has a Built-in Provider with this process's catalog, and
 /// a Private Provider, before the process takes requests. A rollback moves
-/// Workspaces back the same way.
+/// Workspaces back the same way. `booted_at` dates every write: one reading
+/// of the instance's clock.
 async fn install_coral_providers(
     provider_workflow: &coral_administration::ProviderWorkflow,
+    booted_at: coral_db::UnixNanos,
 ) -> Result<(), AppError> {
-    let booted_at =
-        unix_nanos().ok_or_else(|| AppError::engine_boot("system clock is out of range"))?;
     provider_workflow
         .install_missing_coral_providers(booted_at)
         .await
@@ -688,13 +690,15 @@ async fn install_coral_providers(
 }
 
 /// Schedules the periodic passes and returns the expired-lease sweep's
-/// handle, which stops before the others.
+/// handle, which stops before the others. A pass that takes the time reads
+/// `clock`, the instance's one clock, when it runs.
 fn start_passes(
     passes: &mut Passes,
     runs: &coral_run::RunModule,
     accounts: &coral_provider::account::AccountModule,
     releases: Option<coral_release::ReleaseCheck>,
     usage: Option<UsageReporting>,
+    clock: &Arc<dyn coral_db::Clock>,
 ) -> AbortHandle {
     let run_recovery = {
         let runs = runs.clone();
@@ -707,16 +711,15 @@ fn start_passes(
     };
     let accounts = accounts.clone();
     let schedule = Schedule::every(DEVICE_RECOVERY_INTERVAL);
+    let recovery_clock = Arc::clone(clock);
     passes.start("device_authorization_recovery", schedule, move || {
         let accounts = accounts.clone();
+        let now = recovery_clock.now().get();
         async move {
-            // A clock that gives no time gets no pass.
-            if let Some(now) = unix_nanos() {
-                accounts
-                    .recover_device_authorizations(now)
-                    .await
-                    .map_err(|error| error.code())?;
-            }
+            accounts
+                .recover_device_authorizations(now)
+                .await
+                .map_err(|error| error.code())?;
             Ok(())
         }
     });
@@ -732,16 +735,16 @@ fn start_passes(
     }
     if let Some(usage) = usage {
         let schedule = Schedule::every(coral_usage::CHECK_INTERVAL);
+        let clock = Arc::clone(clock);
         passes.start("usage_report_check", schedule, move || {
             let (data, client) = (usage.data.clone(), usage.client.clone());
+            let clock = Arc::clone(&clock);
             async move {
                 // The collector answering late or not at all is no failure:
                 // the reports wait for the next check.
-                data.send_due(&client, coral_usage::COLLECTOR_URL, || {
-                    unix_nanos().unwrap_or(0)
-                })
-                .await
-                .map_err(|error| error.code())?;
+                data.send_due(&client, coral_usage::COLLECTOR_URL, || clock.now())
+                    .await
+                    .map_err(|error| error.code())?;
                 Ok(())
             }
         });
@@ -767,11 +770,121 @@ async fn sweep_expired_leases(runs: &coral_run::RunModule) -> Result<(), &'stati
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
+    use coral_db::UnixNanos;
+    use coral_test_support::ManualClock;
+    use coral_workspace::{
+        ChangeContext, TraceId, WorkspaceDisplayName, WorkspaceModule, local_organization_owner,
+    };
+    use sqlx::Connection as _;
     use tempfile::TempDir;
 
     use crate::ServerBuilder;
+
+    /// A connection of its own to the SQLite state database at `dir`.
+    async fn state_database(dir: &std::path::Path) -> sqlx::SqliteConnection {
+        sqlx::SqliteConnection::connect_with(
+            &sqlx::sqlite::SqliteConnectOptions::new().filename(dir.join("coral.db")),
+        )
+        .await
+        .expect("open the state database")
+    }
+
+    /// The lease of the one device job in the state database at `dir`.
+    async fn device_job_lease(dir: &std::path::Path) -> i64 {
+        let (lease_until,): (i64,) = sqlx::query_as("SELECT lease_until FROM provider_device_jobs")
+            .fetch_one(&mut state_database(dir).await)
+            .await
+            .expect("read the device job");
+        lease_until
+    }
+
+    /// The `Engine` reads the clock its launch supplied, and no other: for
+    /// the Provider install at boot and for the device recovery pass. Both
+    /// would read the host's clock, a lifetime before this one, if bootstrap
+    /// stopped handing its clock down.
+    #[tokio::test]
+    async fn the_boot_install_and_the_recovery_pass_read_the_clock_given_at_launch() {
+        // 2100-01-01: no host's clock reads it.
+        let launched_at = UnixNanos::new(4_102_444_800 * 1_000_000_000);
+        let temp = TempDir::new().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
+        )
+        .unwrap();
+        // A first start leaves what the second one finds: a Workspace with
+        // no Provider that Coral defines, and a device job that cannot be
+        // resumed, since `corrupt` is no trace id. Its lease ends just before
+        // the second start's clock, in this start's far future.
+        let owner = local_organization_owner();
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path())
+            .start()
+            .await
+            .unwrap();
+        let workspace = WorkspaceModule::new(server.database())
+            .create(
+                &ChangeContext::new(
+                    owner.clone(),
+                    coral_db::UnixNanos::new(coral_test_support::now_unix_nanos()),
+                    TraceId::current_or_new(),
+                ),
+                WorkspaceDisplayName::parse("Launched").unwrap(),
+            )
+            .await
+            .unwrap();
+        let lease_ended = launched_at.get() - 1;
+        let stored = sqlx::query(
+            "INSERT INTO provider_device_jobs \
+             (id, workspace_id, actor_user_id, trace_id, interval_seconds, next_poll_at, lease_until) \
+             VALUES ('job', ?, 'user:device-poll', 'corrupt', 5, 0, ?)",
+        )
+        .bind(workspace.id().to_string())
+        .bind(lease_ended)
+        .execute(&mut state_database(temp.path()).await)
+        .await
+        .unwrap();
+        assert_eq!(stored.rows_affected(), 1);
+        server.shutdown().await.unwrap();
+
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path())
+            .with_clock(Arc::new(ManualClock::starting_at(launched_at)))
+            .start()
+            .await
+            .unwrap();
+
+        let installs = server
+            .engine()
+            .modules
+            .providers
+            .list_lifecycle_events(&owner, workspace.id())
+            .await
+            .unwrap();
+        assert!(!installs.is_empty(), "boot installs Coral's Providers");
+        assert_eq!(
+            installs
+                .iter()
+                .map(coral_provider::AdministrativeLifecycleEvent::occurred_at_unix_nanos)
+                .collect::<std::collections::BTreeSet<_>>(),
+            [launched_at.get()].into(),
+            "every install is dated by the one reading of the launch's clock"
+        );
+        // The pass found the lease ended and moved it one lease on from its
+        // own reading: past the launch's clock.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while device_job_lease(temp.path()).await == lease_ended {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the recovery pass reads the launch's clock and finds the lease ended");
+        assert!(device_job_lease(temp.path()).await > launched_at.get());
+        server.shutdown().await.unwrap();
+    }
 
     #[tokio::test]
     async fn the_search_reconcile_task_runs_beside_the_engine_until_it_stops() {

@@ -133,7 +133,7 @@ async fn fingerprints_retain_confirmed_selection_provenance_and_persisted_config
             &input,
             &ProviderSetupInputDigest::of_setup_input(&input),
             catalog,
-            1,
+            coral_db::UnixNanos::new(1),
         )
         .await
         .unwrap();
@@ -1319,6 +1319,12 @@ fn header_credentials_report_the_header_or_field_at_fault_without_rejected_value
             vec![("cookie", field("key"))],
             presented(&["key"]),
             "authentication.headers.cookie",
+        ),
+        // A request with a body sets this header itself.
+        (
+            vec![("Content-Type", field("key"))],
+            presented(&["key"]),
+            "authentication.headers.Content-Type",
         ),
         (
             vec![("x-key", field("missing"))],

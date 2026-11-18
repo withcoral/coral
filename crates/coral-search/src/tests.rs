@@ -1870,7 +1870,11 @@ async fn private_tool_projection_bounds_do_not_become_authoring_limits() {
     let function = fixture
         .private_tools
         .save(
-            &PrivateToolChangeContext::new(principal.clone(), 20, trace('2')),
+            &PrivateToolChangeContext::new(
+                principal.clone(),
+                coral_db::UnixNanos::new(20),
+                trace('2'),
+            ),
             &workspace_id,
             PrivateToolSave::new(
                 PrivateToolPath::parse("largeProjection").expect("path"),
@@ -2264,7 +2268,11 @@ impl AgentRoute {
             .unwrap();
         let agent = fixture
             .workspaces
-            .authenticate_agent(&workspace, issued.credential.expose(), 21)
+            .authenticate_agent(
+                &workspace,
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(21),
+            )
             .await
             .unwrap();
         let provider = fixture
@@ -2922,7 +2930,11 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
         .unwrap();
     let agent = fixture
         .workspaces
-        .authenticate_agent(&workspace, issued.credential.expose(), 21)
+        .authenticate_agent(
+            &workspace,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(21),
+        )
         .await
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -3227,7 +3239,11 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
         .unwrap();
     let agent = fixture
         .workspaces
-        .authenticate_agent(&workspace, issued.credential.expose(), 21)
+        .authenticate_agent(
+            &workspace,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(21),
+        )
         .await
         .unwrap();
     let mut document = credential_document();
@@ -3338,7 +3354,11 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
         .unwrap();
     let agent = fixture
         .workspaces
-        .authenticate_agent(&workspace, issued.credential.expose(), 21)
+        .authenticate_agent(
+            &workspace,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(21),
+        )
         .await
         .unwrap();
     fixture
@@ -3422,7 +3442,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
             &workspace,
             issued.registration.id(),
             true,
-            Some(1),
+            Some(coral_db::UnixNanos::new(1)),
         )
         .await
         .unwrap();
@@ -3599,7 +3619,8 @@ async fn readiness_ignores_unreadable_private_tools_for_the_same_caller() {
     fixture
         .publish_tracer(&user, &workspace, &upstream.uri())
         .await;
-    let change = PrivateToolChangeContext::new(principal.clone(), 40, trace('4'));
+    let change =
+        PrivateToolChangeContext::new(principal.clone(), coral_db::UnixNanos::new(40), trace('4'));
     let mut saved = Vec::new();
     for index in 0..32 {
         let function = fixture
@@ -3892,7 +3913,7 @@ impl TestModules {
             .save(
                 &PrivateToolChangeContext::new(
                     principal.clone(),
-                    occurred_at_unix_nanos,
+                    coral_db::UnixNanos::new(occurred_at_unix_nanos),
                     trace('5'),
                 ),
                 workspace_id,
@@ -3919,7 +3940,7 @@ impl TestModules {
             .delete(
                 &PrivateToolChangeContext::new(
                     principal.clone(),
-                    occurred_at_unix_nanos,
+                    coral_db::UnixNanos::new(occurred_at_unix_nanos),
                     trace('5'),
                 ),
                 workspace_id,
@@ -4223,7 +4244,7 @@ impl TestModules {
             .save(
                 &PrivateToolChangeContext::new(
                     principal.clone(),
-                    100,
+                    coral_db::UnixNanos::new(100),
                     trace('7'),
                 ),
                 workspace_id,
@@ -4256,7 +4277,7 @@ impl TestModules {
             .save(
                 &PrivateToolChangeContext::new(
                     principal.clone(),
-                    occurred_at_unix_nanos,
+                    coral_db::UnixNanos::new(occurred_at_unix_nanos),
                     trace('4'),
                 ),
                 workspace_id,

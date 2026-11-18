@@ -210,7 +210,7 @@ impl Fixture {
                     .delete(
                         &PrivateToolChangeContext::new(
                             AuthenticatedPrincipal::user(by.clone()),
-                            50,
+                            coral_db::UnixNanos::new(50),
                             trace,
                         ),
                         &self.workspace,
@@ -331,7 +331,11 @@ async fn save_private_tools(
     for &(name, author, path) in tools {
         let saved = private_tools
             .save(
-                &PrivateToolChangeContext::new(author.clone(), 20, trace('2')),
+                &PrivateToolChangeContext::new(
+                    author.clone(),
+                    coral_db::UnixNanos::new(20),
+                    trace('2'),
+                ),
                 workspace,
                 PrivateToolSave::new(
                     PrivateToolPath::parse(path).unwrap(),

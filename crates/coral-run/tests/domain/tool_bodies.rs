@@ -90,7 +90,7 @@ impl BodyScope {
             .save(
                 &PrivateToolChangeContext::new(
                     self.tool.principal.clone(),
-                    60,
+                    coral_db::UnixNanos::new(60),
                     coral_workspace::TraceId::current_or_new(),
                 ),
                 &self.tool.workspace_id,

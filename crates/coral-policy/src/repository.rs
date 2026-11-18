@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use coral_catalog::ToolKey;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_provider::ProviderId;
 use coral_telemetry::TraceId;
 use coral_workspace::{AuthoritySource, UserId, WorkspaceId};
@@ -50,7 +50,7 @@ struct LifecycleEventRow {
     target_tool_key: String,
     outcome: String,
     changed_field_paths: String,
-    occurred_at_unix_nanos: i64,
+    occurred_at_unix_nanos: UnixNanos,
     trace_id: String,
 }
 
@@ -183,7 +183,7 @@ pub(super) async fn upsert_access_state(
     transaction: &mut Transaction<'_>,
     target: &ToolPolicyTarget,
     access_state: ToolAccessState,
-    occurred_at_unix_nanos: i64,
+    occurred_at: UnixNanos,
 ) -> Result<(), Error> {
     let statement = Query::insert()
         .into_table(ToolAccessRules::Table)
@@ -200,8 +200,8 @@ pub(super) async fn upsert_access_state(
             Expr::val(target.provider_id().to_string()),
             Expr::val(target.tool_key().as_str()),
             Expr::val(access_state.as_storage_str()),
-            Expr::val(occurred_at_unix_nanos),
-            Expr::val(occurred_at_unix_nanos),
+            Expr::val(occurred_at),
+            Expr::val(occurred_at),
         ])
         .on_conflict(
             OnConflict::columns([
@@ -243,7 +243,7 @@ pub(super) struct NewLifecycleEvent<'a> {
     pub(super) actor_user_id: &'a UserId,
     pub(super) authority_source: AuthoritySource,
     pub(super) changed_field_paths: &'a [&'a str],
-    pub(super) occurred_at_unix_nanos: i64,
+    pub(super) occurred_at: UnixNanos,
     pub(super) trace_id: &'a TraceId,
 }
 
@@ -277,7 +277,7 @@ pub(super) async fn insert_lifecycle_event(
             Expr::val(event.target.tool_key().as_str()),
             Expr::val(LifecycleOutcome::Accepted.as_storage_str()),
             Expr::val(changed_field_paths),
-            Expr::val(event.occurred_at_unix_nanos),
+            Expr::val(event.occurred_at),
             Expr::val(event.trace_id.as_str()),
         ])
         .to_owned();

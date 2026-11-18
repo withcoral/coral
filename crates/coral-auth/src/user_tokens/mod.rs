@@ -50,7 +50,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use coral_db::{Database, Transaction};
+use coral_db::{Database, Transaction, UnixNanos};
 use coral_workspace::{
     AuthenticatedPrincipal, ChangeContext, OrganizationModule, PreparedAccessRemoval,
     PrincipalKind, UserId, WorkspaceId, WorkspaceModule,
@@ -178,16 +178,16 @@ impl fmt::Debug for WebSessionHandle {
 pub struct StartedWebSession {
     /// The session's handle.
     pub handle: WebSessionHandle,
-    /// When the session ends, as Unix nanoseconds; never extended.
-    pub expires_at_unix_nanos: i64,
+    /// When the session ends; never extended.
+    pub expires_at: UnixNanos,
 }
 
 /// An access token a Web Session minted.
 pub struct WebSessionToken {
     /// The new access token. It never outlives its session.
     pub access_token: IssuedAccessToken,
-    /// When the session ends, as Unix nanoseconds.
-    pub session_expires_at_unix_nanos: i64,
+    /// When the session ends.
+    pub session_expires_at: UnixNanos,
 }
 
 /// What a successful token request returns.
@@ -263,7 +263,7 @@ impl UserTokens {
     }
 
     /// Spends `code` when `redemption` repeats its bindings, and issues an
-    /// access token for `target` at host time `now_unix_nanos`.
+    /// access token for `target` at host time `now`.
     ///
     /// A code whose client declared the `refresh_token` grant also starts a
     /// Refresh Grant when the User holds the authority a refresh would need;
@@ -278,11 +278,11 @@ impl UserTokens {
         code: &str,
         redemption: CodeRedemption<'_>,
         target: AccessTarget,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<IssuedTokens, TokenRefusal> {
         let grant = self
             .codes
-            .redeem(code, redemption, now_unix_nanos)
+            .redeem(code, redemption, now)
             .await
             .map_err(|error| match error {
                 AuthorizationCodeError::Corrupt(code) => TokenRefusal::Corrupt(code),
@@ -294,21 +294,20 @@ impl UserTokens {
         let scope = Scope::for_code(target, &grant)?;
         if !grant.refresh_eligible {
             return Ok(IssuedTokens {
-                access_token: self.mint(&scope, now_unix_nanos)?,
+                access_token: self.mint(&scope, now)?,
                 refresh_token: None,
             });
         }
-        let expires_at = i64::try_from(self.refresh_grant_lifetime.as_nanos())
-            .ok()
-            .and_then(|lifetime| now_unix_nanos.checked_add(lifetime))
+        let expires_at = now
+            .checked_add(self.refresh_grant_lifetime)
             .ok_or(TokenRefusal::Issuance)?;
         let mut tx = self.database.begin().await.map_err(unavailable)?;
-        match self.hold_authority(&mut tx, &scope, now_unix_nanos).await {
+        match self.hold_authority(&mut tx, &scope, now).await {
             Ok(()) => {}
             Err(TokenRefusal::InvalidGrant) => {
                 rollback(tx).await;
                 return Ok(IssuedTokens {
-                    access_token: self.mint(&scope, now_unix_nanos)?,
+                    access_token: self.mint(&scope, now)?,
                     refresh_token: None,
                 });
             }
@@ -325,12 +324,12 @@ impl UserTokens {
         )
         .await?;
         let grant_id = uuid::Uuid::new_v4().to_string();
-        repository::insert_grant(&mut tx, &grant_id, &scope, now_unix_nanos, expires_at).await?;
+        repository::insert_grant(&mut tx, &grant_id, &scope, now, expires_at).await?;
         let (refresh_token, digest) = RefreshToken::generate()?;
         repository::insert_token(&mut tx, &digest, &grant_id).await?;
-        let access_token = self.mint(&scope, now_unix_nanos)?;
+        let access_token = self.mint(&scope, now)?;
         tx.commit().await.map_err(unavailable)?;
-        self.purge_expired(now_unix_nanos).await;
+        self.purge_expired(now).await;
         Ok(IssuedTokens {
             access_token,
             refresh_token: Some(refresh_token),
@@ -339,11 +338,11 @@ impl UserTokens {
 
     /// Deletes a bounded batch of grants that can no longer refresh, in a
     /// transaction of its own. A failed pass is retried by the next sign-in.
-    async fn purge_expired(&self, now_unix_nanos: i64) {
+    async fn purge_expired(&self, now: UnixNanos) {
         let Ok(mut tx) = self.database.begin().await else {
             return;
         };
-        if repository::purge_expired(&mut tx, now_unix_nanos, PURGE_BATCH)
+        if repository::purge_expired(&mut tx, now, PURGE_BATCH)
             .await
             .is_ok()
         {
@@ -352,7 +351,7 @@ impl UserTokens {
     }
 
     /// Exchanges `refresh_token` for a new access token and its successor at
-    /// host time `now_unix_nanos`.
+    /// host time `now`.
     ///
     /// # Errors
     ///
@@ -363,17 +362,13 @@ impl UserTokens {
         &self,
         refresh_token: &str,
         request: RefreshRequest<'_>,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<IssuedTokens, TokenRefusal> {
         let (digest, presented) = self
-            .current_refresh_token(
-                refresh_token,
-                |scope| scope.accepts(request),
-                now_unix_nanos,
-            )
+            .current_refresh_token(refresh_token, |scope| scope.accepts(request), now)
             .await?;
         let (scope, grant_id) = (&presented.scope, presented.grant_id.as_str());
-        let mut tx = self.spend(&digest, &presented, now_unix_nanos).await?;
+        let mut tx = self.spend(&digest, &presented, now).await?;
         if !repository::record_rotation(&mut tx, grant_id, MAX_ROTATIONS).await? {
             repository::delete_grant(&mut tx, grant_id).await?;
             tx.commit().await.map_err(unavailable)?;
@@ -381,7 +376,7 @@ impl UserTokens {
         }
         let (successor, successor_digest) = RefreshToken::generate()?;
         repository::insert_token(&mut tx, &successor_digest, grant_id).await?;
-        let access_token = match self.mint(scope, now_unix_nanos) {
+        let access_token = match self.mint(scope, now) {
             Ok(token) => token,
             Err(refusal) => {
                 rollback(tx).await;
@@ -438,37 +433,35 @@ impl UserTokens {
         refresh_token: &str,
         client: &AuthenticatedClient,
         max_age: Duration,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<StartedWebSession, TokenRefusal> {
         let reef_grant = |scope: &Scope| {
             scope.client_id == client.client_id()
                 && scope.private_audience == Some(PrivateAudience::Reef)
         };
         let (digest, presented) = self
-            .current_refresh_token(refresh_token, reef_grant, now_unix_nanos)
+            .current_refresh_token(refresh_token, reef_grant, now)
             .await?;
         let grant_id = presented.grant_id.as_str();
-        let expires_at = i64::try_from(max_age.min(MAX_WEB_SESSION_AGE).as_nanos())
-            .ok()
-            .and_then(|max_age| now_unix_nanos.checked_add(max_age))
-            .unwrap_or(i64::MAX)
-            .min(presented.expires_at_unix_nanos);
-        if expires_at <= now_unix_nanos {
+        let expires_at = now
+            .saturating_add(max_age.min(MAX_WEB_SESSION_AGE))
+            .min(presented.expires_at);
+        if expires_at <= now {
             return Err(TokenRefusal::InvalidGrant);
         }
-        let mut tx = self.spend(&digest, &presented, now_unix_nanos).await?;
+        let mut tx = self.spend(&digest, &presented, now).await?;
         let (handle, session_digest) = generate_secret(WEB_SESSION_PREFIX)?;
         repository::insert_session(&mut tx, &session_digest, grant_id, expires_at).await?;
         tx.commit().await.map_err(unavailable)?;
-        self.purge_expired_sessions(now_unix_nanos).await;
+        self.purge_expired_sessions(now).await;
         Ok(StartedWebSession {
             handle: WebSessionHandle(handle),
-            expires_at_unix_nanos: expires_at,
+            expires_at,
         })
     }
 
     /// Mints a Reef access token for the Web Session `handle` names, under
-    /// the User's current authority, at host time `now_unix_nanos`.
+    /// the User's current authority, at host time `now`.
     ///
     /// Minting writes nothing, so any number of requests and processes can
     /// resolve one session at once. Each token serves one request, so it
@@ -484,15 +477,14 @@ impl UserTokens {
         &self,
         handle: &str,
         client: &AuthenticatedClient,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<WebSessionToken, TokenRefusal> {
         let digest = digest(handle).ok_or(TokenRefusal::InvalidGrant)?;
         let session = repository::find_session(&self.database, &digest)
             .await?
             .ok_or(TokenRefusal::InvalidGrant)?;
         let scope = &session.scope;
-        if scope.client_id != client.client_id() || session.expires_at_unix_nanos <= now_unix_nanos
-        {
+        if scope.client_id != client.client_id() || session.expires_at <= now {
             return Err(TokenRefusal::InvalidGrant);
         }
         self.organization
@@ -501,9 +493,7 @@ impl UserTokens {
             .map_err(|error| refusal(&error))?;
         // Tokens carry whole seconds. A session in its last second can carry
         // no token that ends with it, so it is already over.
-        let session_end = u64::try_from(session.expires_at_unix_nanos / 1_000_000_000)
-            .map_err(|_error| TokenRefusal::Issuance)?;
-        if i64::try_from(session_end).unwrap_or(i64::MAX) <= now_unix_nanos / 1_000_000_000 {
+        if session.expires_at.whole_seconds() <= now.whole_seconds() {
             return Err(TokenRefusal::InvalidGrant);
         }
         // A Web Session starts from a Reef grant alone, so a session whose
@@ -519,13 +509,13 @@ impl UserTokens {
                 &scope.client_id,
                 audience,
                 WEB_SESSION_TOKEN_LIFETIME,
-                session_end,
-                now_unix_nanos,
+                session.expires_at,
+                now,
             )
             .map_err(|_text| TokenRefusal::Issuance)?;
         Ok(WebSessionToken {
             access_token,
-            session_expires_at_unix_nanos: session.expires_at_unix_nanos,
+            session_expires_at: session.expires_at,
         })
     }
 
@@ -553,11 +543,11 @@ impl UserTokens {
     }
 
     /// Deletes a bounded batch of grants whose Web Session expired.
-    async fn purge_expired_sessions(&self, now_unix_nanos: i64) {
+    async fn purge_expired_sessions(&self, now: UnixNanos) {
         let Ok(mut tx) = self.database.begin().await else {
             return;
         };
-        if repository::purge_expired_sessions(&mut tx, now_unix_nanos, PURGE_BATCH)
+        if repository::purge_expired_sessions(&mut tx, now, PURGE_BATCH)
             .await
             .is_ok()
         {
@@ -576,13 +566,13 @@ impl UserTokens {
         &self,
         refresh_token: &str,
         binds: impl FnOnce(&Scope) -> bool,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<(String, repository::PresentedToken), TokenRefusal> {
         let digest = digest(refresh_token).ok_or(TokenRefusal::InvalidGrant)?;
         let presented = repository::find(&self.database, &digest)
             .await?
             .ok_or(TokenRefusal::InvalidGrant)?;
-        if !binds(&presented.scope) || presented.expires_at_unix_nanos <= now_unix_nanos {
+        if !binds(&presented.scope) || presented.expires_at <= now {
             return Err(TokenRefusal::InvalidGrant);
         }
         if presented.consumed {
@@ -604,22 +594,19 @@ impl UserTokens {
         &self,
         digest: &str,
         presented: &repository::PresentedToken,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<Transaction<'_>, TokenRefusal> {
         let grant_id = presented.grant_id.as_str();
         let mut tx = self.database.begin().await.map_err(unavailable)?;
-        if let Err(refusal) = self
-            .hold_authority(&mut tx, &presented.scope, now_unix_nanos)
-            .await
-        {
+        if let Err(refusal) = self.hold_authority(&mut tx, &presented.scope, now).await {
             rollback(tx).await;
             return Err(refusal);
         }
-        if !repository::hold_live_grant(&mut tx, grant_id, now_unix_nanos).await? {
+        if !repository::hold_live_grant(&mut tx, grant_id, now).await? {
             rollback(tx).await;
             return Err(TokenRefusal::InvalidGrant);
         }
-        if !repository::consume(&mut tx, digest, now_unix_nanos).await? {
+        if !repository::consume(&mut tx, digest, now).await? {
             repository::delete_grant(&mut tx, grant_id).await?;
             tx.commit().await.map_err(unavailable)?;
             return Err(TokenRefusal::InvalidGrant);
@@ -638,7 +625,7 @@ impl UserTokens {
         &self,
         tx: &mut Transaction<'_>,
         scope: &Scope,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<(), TokenRefusal> {
         let user = self
             .organization
@@ -651,7 +638,7 @@ impl UserTokens {
                     tx,
                     &AuthenticatedPrincipal::user(user),
                     workspace,
-                    now_unix_nanos,
+                    now,
                 )
                 .await
                 .map_err(|error| refusal(&error))?;
@@ -659,7 +646,7 @@ impl UserTokens {
         Ok(())
     }
 
-    fn mint(&self, scope: &Scope, now_unix_nanos: i64) -> Result<IssuedAccessToken, TokenRefusal> {
+    fn mint(&self, scope: &Scope, now: UnixNanos) -> Result<IssuedAccessToken, TokenRefusal> {
         let audience = match scope.private_audience {
             Some(audience) => audience.as_str(),
             None => scope.resource.as_str(),
@@ -671,12 +658,11 @@ impl UserTokens {
                 &scope.client_id,
                 audience,
                 workspace,
-                now_unix_nanos,
+                now,
             ),
-            None => {
-                self.issuer
-                    .issue_access_token(user_id, &scope.client_id, audience, now_unix_nanos)
-            }
+            None => self
+                .issuer
+                .issue_access_token(user_id, &scope.client_id, audience, now),
         }
         .map_err(|_text| TokenRefusal::Issuance)
     }
@@ -801,8 +787,10 @@ fn digest(secret: &str) -> Option<String> {
 /// An authority decision becomes a refusal unless storage failed to answer
 /// or holds authority that does not decode.
 fn refusal(error: &coral_workspace::Error) -> TokenRefusal {
+    if let Some(error) = error.database_error() {
+        return repository::unavailable(error);
+    }
     match error {
-        coral_workspace::Error::Database(error) => repository::unavailable(error),
         coral_workspace::Error::CorruptData(_) | coral_workspace::Error::EventFields(_) => {
             TokenRefusal::Corrupt("corrupt_authority")
         }

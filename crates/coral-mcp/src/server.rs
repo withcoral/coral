@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use coral_run::{RUN_EVENT_PAGE_MAX, RunCursor, RunId, RunObservation};
 use coral_task::{TaskId, TaskIntent, TaskOutcome};
@@ -347,7 +347,7 @@ impl McpServer {
                 &task_id,
                 outcome,
                 arguments.feedback.as_deref(),
-                now_unix_nanos()?,
+                self.runtime.now,
             )
             .await
             .map_err(task_failure)?;
@@ -508,14 +508,6 @@ fn validated_wait(wait_ms: u64) -> Result<u64, DispatchError> {
     Ok(wait_ms)
 }
 
-fn now_unix_nanos() -> Result<i64, DispatchError> {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))?;
-    i64::try_from(duration.as_nanos())
-        .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))
-}
-
 fn invalid_input(error: impl std::fmt::Display) -> DispatchError {
     invalid_input_message(error.to_string())
 }
@@ -553,8 +545,7 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
             "snapshot_too_large",
             "Complete discovery snapshot exceeds its limit",
         ),
-        coral_task::Error::Clock
-        | coral_task::Error::IdentifierIssuance(_)
+        coral_task::Error::IdentifierIssuance(_)
         | coral_task::Error::CorruptData(_)
         | coral_task::Error::Database(_) => ToolFailure::internal(),
     };
@@ -658,7 +649,6 @@ fn tools_failure(error: coral_tools::Error) -> DispatchError {
         // `safe_rejection` has no answer for the rest.
         | Error::CompilerUnavailable(_)
         | Error::CompilerWorkerStopped
-        | Error::Clock(_)
         | Error::Json(_)
         | Error::CorruptData(_)
         | Error::Database(_) => ToolFailure::internal(),

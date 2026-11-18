@@ -3,7 +3,7 @@
 //! `coral-v8` and the visibility rules at `coral-search`; these tests cover
 //! that the save command composes them with the caller's authority.
 
-use super::Fixture;
+use super::{Fixture, UnixNanos};
 use coral_workspace::{ChangeContext, WorkspaceModule};
 
 /// `repos.get` takes `owner` and `repo` and returns `id`, `full_name` and
@@ -48,7 +48,11 @@ async fn publish_github(fixture: &Fixture) {
     let workspaces = WorkspaceModule::new(database.clone());
     coral_policy::ToolPolicyModule::new(database, workspaces)
         .set_access_state(
-            &ChangeContext::new(fixture.user.clone(), 16, coral_test_support::trace('3')),
+            &ChangeContext::new(
+                fixture.user.clone(),
+                UnixNanos::new(16),
+                coral_test_support::trace('3'),
+            ),
             coral_policy::ToolPolicyTarget::new(
                 fixture.workspace.clone(),
                 provider.access().id().clone(),
@@ -172,7 +176,7 @@ async fn search_types_each_mode_with_the_result_it_returns() {
         &mut transaction,
         &coral_workspace::ChangeContext::new(
             fixture.user.clone(),
-            20,
+            UnixNanos::new(20),
             coral_test_support::trace('2'),
         ),
         &fixture.workspace,

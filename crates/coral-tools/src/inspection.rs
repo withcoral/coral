@@ -174,7 +174,7 @@ impl PrivateToolInspection {
                 transaction,
                 actor,
                 workspace_id,
-                crate::authoring::now_unix_nanos()?,
+                crate::authoring::now(),
             )
             .await?;
         Ok(())
@@ -201,10 +201,10 @@ impl PrivateToolInspection {
 
 fn conceal_inspection_error(error: Error) -> Error {
     match error {
-        Error::PermissionDenied(_)
-        | Error::Workspace(
-            coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_),
-        ) => Error::NotFound(AuthoredToolKind::Private),
+        Error::PermissionDenied(_) => Error::NotFound(AuthoredToolKind::Private),
+        Error::Workspace(error) if error.denies_access() => {
+            Error::NotFound(AuthoredToolKind::Private)
+        }
         other => other,
     }
 }

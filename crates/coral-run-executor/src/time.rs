@@ -1,18 +1,21 @@
 //! The time conversions the link's messages and rows carry.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
-/// Now, in Unix nanoseconds: the deadlines that rows and leases record
-/// across Coral Instances.
-pub(crate) fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, nanos)
+use coral_db::{Clock as _, UnixNanos};
+
+/// Now, on the clock that rows and leases record their deadlines by across
+/// Coral Instances.
+pub(crate) fn unix_now() -> UnixNanos {
+    coral_db::SystemClock.now()
 }
 
-/// `duration` in whole nanoseconds, as rows record it.
-pub(crate) fn nanos(duration: Duration) -> i64 {
-    i64::try_from(duration.as_nanos()).unwrap_or(i64::MAX)
+/// The instant `span` before `instant`, or the first instant a row can hold
+/// when the difference passes it.
+pub(crate) fn before(instant: UnixNanos, span: Duration) -> UnixNanos {
+    instant
+        .checked_sub(span)
+        .unwrap_or(UnixNanos::new(i64::MIN))
 }
 
 /// `time_left` in whole milliseconds, as a `Compile` carries it.

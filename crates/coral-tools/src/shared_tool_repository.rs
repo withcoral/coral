@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use coral_catalog::ToolAccessState;
-use coral_db::{Page, PageRequest, RowLock, Transaction, text_key_order};
+use coral_db::{Page, PageRequest, RowLock, Transaction, UnixNanos, text_key_order};
 use coral_workspace::{TraceId, UserId, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query, SelectStatement};
 use sqlx::FromRow;
@@ -90,7 +90,7 @@ pub(crate) struct SharedToolRecord {
     pub(crate) path: SharedToolPath,
     pub(crate) current_revision: u64,
     pub(crate) created_by: UserId,
-    pub(crate) created_at_unix_nanos: i64,
+    pub(crate) created_at: UnixNanos,
 }
 
 #[derive(Debug, FromRow)]
@@ -99,7 +99,7 @@ struct RecordRow {
     path: String,
     current_revision: i64,
     created_by_user_id: String,
-    created_at_unix_nanos: i64,
+    created_at_unix_nanos: UnixNanos,
 }
 
 impl RecordRow {
@@ -109,7 +109,7 @@ impl RecordRow {
             path: decode_path(&self.path)?,
             current_revision: decode_revision(self.current_revision)?,
             created_by: decode_user(&self.created_by_user_id)?,
-            created_at_unix_nanos: self.created_at_unix_nanos,
+            created_at: self.created_at_unix_nanos,
         })
     }
 }
@@ -125,7 +125,7 @@ struct RevisionSummaryRow {
     published_by_user_id: String,
     source_private_tool_id: Option<String>,
     restored_from_revision: Option<i64>,
-    published_at_unix_nanos: i64,
+    published_at_unix_nanos: UnixNanos,
 }
 
 impl RevisionSummaryRow {
@@ -139,7 +139,7 @@ impl RevisionSummaryRow {
             default_access_state: access_state_from_storage(&self.default_access_state)?,
             published_by: decode_user(&self.published_by_user_id)?,
             origin: decode_origin(self.source_private_tool_id, self.restored_from_revision)?,
-            published_at_unix_nanos: self.published_at_unix_nanos,
+            published_at: self.published_at_unix_nanos,
         })
     }
 }
@@ -184,7 +184,7 @@ impl RevisionRow {
             default_access_state: summary.default_access_state,
             published_by: summary.published_by,
             origin: summary.origin,
-            published_at_unix_nanos: summary.published_at_unix_nanos,
+            published_at: summary.published_at,
         })
     }
 }
@@ -486,7 +486,7 @@ pub(crate) async fn find_live_tool(
         workspace_id: workspace_id.clone(),
         path: record.path,
         created_by: record.created_by,
-        created_at_unix_nanos: record.created_at_unix_nanos,
+        created_at: record.created_at,
         current,
     }))
 }
@@ -497,7 +497,7 @@ struct SummaryRow {
     path: String,
     current_revision: i64,
     description: String,
-    published_at_unix_nanos: i64,
+    published_at_unix_nanos: UnixNanos,
 }
 
 /// One page of the Workspace's live Shared Tools in path order.
@@ -553,7 +553,7 @@ pub(crate) async fn list_live_page(
                         )
                     },
                 )?,
-                published_at_unix_nanos: row.published_at_unix_nanos,
+                published_at: row.published_at_unix_nanos,
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
@@ -738,7 +738,7 @@ pub(crate) async fn insert_record(
             Expr::val(tool.path().as_str()),
             Expr::val(stored_revision(tool.current().revision())?),
             Expr::val(tool.created_by().as_str()),
-            Expr::val(tool.created_at_unix_nanos()),
+            Expr::val(tool.created_at()),
         ])
         .to_owned();
     transaction.execute_change(statement).await?;
@@ -837,11 +837,11 @@ pub(crate) async fn tombstone(
     workspace_id: &WorkspaceId,
     id: &SharedToolId,
     current: u64,
-    removed_at_unix_nanos: i64,
+    removed_at: UnixNanos,
 ) -> Result<(), Error> {
     let statement = Query::update()
         .table(SharedToolRecords::Table)
-        .value(SharedToolRecords::RemovedAtUnixNanos, removed_at_unix_nanos)
+        .value(SharedToolRecords::RemovedAtUnixNanos, removed_at)
         .and_where(Expr::col(SharedToolRecords::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(SharedToolRecords::Id).eq(id.to_string()))
         .and_where(Expr::col(SharedToolRecords::CurrentRevision).eq(stored_revision(current)?))
@@ -908,7 +908,7 @@ pub(crate) async fn insert_revision(
             Expr::val(revision.published_by().as_str()),
             Expr::val(source_private_tool_id),
             Expr::val(restored_from_revision),
-            Expr::val(revision.published_at_unix_nanos()),
+            Expr::val(revision.published_at()),
         ])
         .to_owned();
     transaction.execute_change(statement).await?;
@@ -953,7 +953,7 @@ pub(crate) struct NewLifecycleEvent<'a> {
     pub(crate) target_path: &'a SharedToolPath,
     pub(crate) revision: u64,
     pub(crate) content_hash: &'a str,
-    pub(crate) occurred_at_unix_nanos: i64,
+    pub(crate) occurred_at: UnixNanos,
     pub(crate) trace_id: &'a TraceId,
 }
 
@@ -988,7 +988,7 @@ pub(crate) async fn insert_lifecycle_event(
             Expr::val(event.target_path.as_str()),
             Expr::val(stored_revision(event.revision)?),
             Expr::val(event.content_hash),
-            Expr::val(event.occurred_at_unix_nanos),
+            Expr::val(event.occurred_at),
             Expr::val(event.trace_id.as_str()),
         ])
         .to_owned();
@@ -1005,7 +1005,7 @@ struct EventRow {
     target_path: String,
     revision: i64,
     content_hash: String,
-    occurred_at_unix_nanos: i64,
+    occurred_at_unix_nanos: UnixNanos,
 }
 
 impl EventRow {
@@ -1020,7 +1020,7 @@ impl EventRow {
             path: decode_path(&self.target_path)?,
             revision: decode_revision(self.revision)?,
             content_hash: self.content_hash,
-            occurred_at_unix_nanos: self.occurred_at_unix_nanos,
+            occurred_at: self.occurred_at_unix_nanos,
         })
     }
 }
@@ -1060,9 +1060,9 @@ pub(crate) async fn list_lifecycle_event_page(
     if let Some(after) = &request.after {
         statement.and_where(
             Expr::col(SharedToolLifecycleEvents::OccurredAtUnixNanos)
-                .lt(after.occurred_at_unix_nanos)
+                .lt(after.occurred_at)
                 .or(Expr::col(SharedToolLifecycleEvents::OccurredAtUnixNanos)
-                    .eq(after.occurred_at_unix_nanos)
+                    .eq(after.occurred_at)
                     .and(Expr::col(SharedToolLifecycleEvents::Id).lt(after.id.to_string()))),
         );
     }
@@ -1107,15 +1107,15 @@ pub async fn shared_tool_total(tx: &mut Transaction<'_>) -> Result<u64, Error> {
 /// Returns a database failure.
 pub async fn shared_tools_published(
     tx: &mut Transaction<'_>,
-    start: i64,
-    end: i64,
+    start: UnixNanos,
+    end: UnixNanos,
 ) -> Result<u64, Error> {
     let mut events = lifecycle_events_in(SharedToolLifecycleAction::Published, start, end);
     events.and_where(Expr::col(SharedToolLifecycleEvents::Revision).eq(FIRST_REVISION));
     count_of(tx, events).await
 }
 
-/// Counts the Shared Tools removed in `[start, end)` unix nanoseconds,
+/// Counts the Shared Tools removed in `[start, end)`,
 /// across every Workspace. The caller authorizes the read.
 ///
 /// # Errors
@@ -1123,15 +1123,19 @@ pub async fn shared_tools_published(
 /// Returns a database failure.
 pub async fn shared_tools_removed(
     tx: &mut Transaction<'_>,
-    start: i64,
-    end: i64,
+    start: UnixNanos,
+    end: UnixNanos,
 ) -> Result<u64, Error> {
     let events = lifecycle_events_in(SharedToolLifecycleAction::Removed, start, end);
     count_of(tx, events).await
 }
 
 /// A query that counts the lifecycle Events of `action` in `[start, end)`.
-fn lifecycle_events_in(action: SharedToolLifecycleAction, start: i64, end: i64) -> SelectStatement {
+fn lifecycle_events_in(
+    action: SharedToolLifecycleAction,
+    start: UnixNanos,
+    end: UnixNanos,
+) -> SelectStatement {
     Query::select()
         .expr(Expr::col(SharedToolLifecycleEvents::Id).count())
         .from(SharedToolLifecycleEvents::Table)

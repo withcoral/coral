@@ -4,7 +4,7 @@
 //! so a new profile or eligibility change cannot introduce an unseen email collision.
 use crate::list_repository::Users;
 use crate::profile_repository as repository;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 
 use crate::{
     AuthenticatedUser, Error, OrganizationModule, UserId, WorkspaceAction, WorkspaceId,
@@ -70,7 +70,7 @@ impl OrganizationModule {
         tx: &mut Transaction<'_>,
         user: &UserId,
         profile: VerifiedUserProfile<'_>,
-        observed_at: i64,
+        observed_at: UnixNanos,
     ) -> Result<(), Error> {
         repository::upsert(
             tx,

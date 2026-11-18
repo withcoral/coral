@@ -1,7 +1,7 @@
 //! The install row and the stored reports.
 
 use chrono::NaiveDate;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use sea_query::{Expr, ExprTrait as _, Func, Iden, OnConflict, Order, Query};
 
 use crate::Error;
@@ -44,7 +44,7 @@ pub(crate) struct Install {
     /// When the setting last changed, or the row was made. While sharing is
     /// on, a day's counts start then. Milestones do not: they are the
     /// earliest date in the history Coral keeps.
-    pub sharing_since: i64,
+    pub sharing_since: UnixNanos,
     pub milestones: MilestoneDays,
 }
 
@@ -71,7 +71,7 @@ struct InstallRow {
     first_successful_run_day: Option<String>,
     first_saved_function_day: Option<String>,
     function_reused_day: Option<String>,
-    changed_at_unix_nanos: i64,
+    changed_at_unix_nanos: UnixNanos,
 }
 
 impl TryFrom<InstallRow> for Install {
@@ -98,7 +98,7 @@ impl TryFrom<InstallRow> for Install {
 struct ReportRow {
     report_day: String,
     body: String,
-    sent_at_unix_nanos: Option<i64>,
+    sent_at_unix_nanos: Option<UnixNanos>,
 }
 
 /// Inserts the install row unless one exists, with reports from `first_day`.
@@ -107,7 +107,7 @@ pub(crate) async fn insert_install(
     tx: &mut Transaction<'_>,
     install_id: &str,
     first_day: NaiveDate,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<(), Error> {
     tx.execute_change(
         Query::insert()
@@ -166,7 +166,7 @@ pub(crate) async fn set_sharing(
     tx: &mut Transaction<'_>,
     sharing: bool,
     from_day: NaiveDate,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<bool, Error> {
     let mut update = Query::update();
     update
@@ -346,9 +346,9 @@ pub(crate) async fn last_sent(tx: &mut Transaction<'_>) -> Result<Option<SentRep
         )
         .await?;
     Ok(row.and_then(|row| {
-        row.sent_at_unix_nanos.map(|sent_at_unix_nanos| SentReport {
+        row.sent_at_unix_nanos.map(|sent_at| SentReport {
             json: row.body,
-            sent_at_unix_nanos,
+            sent_at,
         })
     }))
 }
@@ -358,7 +358,7 @@ pub(crate) async fn last_sent(tx: &mut Transaction<'_>) -> Result<Option<SentRep
 pub(crate) async fn mark_sent(
     tx: &mut Transaction<'_>,
     day: NaiveDate,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<(), Error> {
     let day = day_string(day);
     let marked = tx

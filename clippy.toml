@@ -9,4 +9,5 @@ disallowed-methods = [
   { path = "std::env::var_os", reason = "Read process environment only through crate-owned env modules." },
   { path = "std::env::vars", reason = "Read process environment only through crate-owned env modules." },
   { path = "std::env::vars_os", reason = "Read process environment only through crate-owned env modules." },
+  { path = "std::time::SystemTime::now", reason = "Read the wall clock only through coral_db::SystemClock." },
 ]

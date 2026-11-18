@@ -193,10 +193,10 @@ impl ProviderModule {
                 Ok(_evidence) => {
                     names.insert(workspace.clone(), Vec::new());
                 }
-                Err(Error::Workspace(
-                    coral_workspace::Error::WorkspaceNotFound
-                    | coral_workspace::Error::PermissionDenied(_),
-                )) => {}
+                Err(error)
+                    if error
+                        .workspace_refusal()
+                        .is_some_and(coral_workspace::AuthorityRefusal::denies_access) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -230,7 +230,12 @@ impl ProviderModule {
     ) -> Result<Vec<crate::PublishedProvider>, Error> {
         let role = self
             .workspaces
-            .check_principal_inspection_in_snapshot(tx, actor, workspace, now)
+            .check_principal_inspection_in_snapshot(
+                tx,
+                actor,
+                workspace,
+                coral_db::UnixNanos::new(now),
+            )
             .await?
             .effective_user_role();
         let providers = crate::listed_providers(tx, workspace, None).await?;

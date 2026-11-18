@@ -61,3 +61,37 @@ test('listeners report each listening socket of the given processes with its add
   assert.deepEqual(ours.toSorted(byPort), expected.toSorted(byPort))
   assert.deepEqual(await tcpListeners([]), [])
 })
+
+// Catches: a socket listed twice. Linux reports the last sockets of its table
+// again when a socket opens while Reel reads it, as other tests' sockets do.
+test(
+  'listeners report each socket once while other sockets open and close',
+  { skip: process.platform !== 'linux' && 'Only Linux reads its socket table in several steps' },
+  async (t) => {
+    const open: Server[] = []
+    let other = createServer()
+    let churning = true
+    // Registered before any listener opens, so a failed bind leaves none behind.
+    t.after(() => {
+      churning = false
+      for (const server of [...open, other]) if (server.listening) server.close()
+    })
+    for (let count = 0; count < 4; count++) {
+      const server = createServer().listen(0, '127.0.0.1')
+      open.push(server)
+      await once(server, 'listening')
+    }
+    const ports = open.map((server) => (server.address() as AddressInfo).port).toSorted()
+    // Opens another listener, closes it, and starts again, once per turn of the event loop.
+    const churn = () => {
+      if (!churning) return
+      other = createServer().listen(0, '127.0.0.1', () => other.close(() => setImmediate(churn)))
+    }
+    churn()
+
+    for (let pass = 0; pass < 200; pass++) {
+      const listed = (await tcpListeners([process.pid])).map(({ port }) => port)
+      assert.deepEqual(listed.filter((port) => ports.includes(port)).toSorted(), ports)
+    }
+  },
+)

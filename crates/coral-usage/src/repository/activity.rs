@@ -8,22 +8,22 @@
 //! `private_tool.created`, which a CHECK constraint pins, so a rename
 //! fails the fixture inserts in this crate's tests.
 
-use coral_db::{DatabaseSystem, Transaction};
+use coral_db::{DatabaseSystem, Transaction, UnixNanos};
 use sea_query::Values;
 
 use crate::Error;
 
-/// A half-open window of unix nanoseconds: `[start, end)`.
+/// A half-open window of time: `[start, end)`.
 #[derive(Clone, Copy)]
 pub(crate) struct Window {
-    pub start: i64,
-    pub end: i64,
+    pub start: UnixNanos,
+    pub end: UnixNanos,
 }
 
 #[derive(sqlx::FromRow, Default)]
 pub(crate) struct ReuseRow {
     pub tasks: i64,
-    pub first_at: Option<i64>,
+    pub first_at: Option<UnixNanos>,
 }
 
 /// Tasks whose Runs, accepted in the window, used a Private Tool that

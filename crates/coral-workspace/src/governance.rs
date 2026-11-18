@@ -84,7 +84,7 @@ pub(super) async fn make_owner(
         workspace,
         target,
         WorkspaceRole::Owner,
-        context.occurred_at_unix_nanos(),
+        context.occurred_at(),
     )
     .await?;
     crate::record_event(

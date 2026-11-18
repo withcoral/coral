@@ -6,7 +6,7 @@
 //! Nothing observes these rows, so writes use `execute`, not `execute_change`:
 //! a grant changing must not wake activity observers or Run waits.
 
-use coral_db::{Database, Transaction};
+use coral_db::{Database, Transaction, UnixNanos};
 use coral_workspace::{UserId, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
 
@@ -51,14 +51,14 @@ enum Tokens {
 pub(super) struct PresentedSession {
     pub(super) grant_id: String,
     pub(super) scope: Scope,
-    pub(super) expires_at_unix_nanos: i64,
+    pub(super) expires_at: UnixNanos,
 }
 
 /// A presented refresh token's grant, and whether the token was spent.
 pub(super) struct PresentedToken {
     pub(super) grant_id: String,
     pub(super) scope: Scope,
-    pub(super) expires_at_unix_nanos: i64,
+    pub(super) expires_at: UnixNanos,
     pub(super) consumed: bool,
 }
 
@@ -71,8 +71,8 @@ struct PresentedRow {
     private_audience: Option<String>,
     workspace_id: Option<String>,
     scoped_tokens: bool,
-    expires_at_unix_nanos: i64,
-    consumed_at_unix_nanos: Option<i64>,
+    expires_at_unix_nanos: UnixNanos,
+    consumed_at_unix_nanos: Option<UnixNanos>,
 }
 
 impl PresentedRow {
@@ -104,7 +104,7 @@ impl PresentedRow {
                     }
                 },
             },
-            expires_at_unix_nanos: self.expires_at_unix_nanos,
+            expires_at: self.expires_at_unix_nanos,
             consumed: self.consumed_at_unix_nanos.is_some(),
         })
     }
@@ -124,7 +124,7 @@ struct SessionRow {
     private_audience: Option<String>,
     workspace_id: Option<String>,
     scoped_tokens: bool,
-    expires_at_unix_nanos: i64,
+    expires_at_unix_nanos: UnixNanos,
 }
 
 /// Reads the session a handle digest names and the grant it holds, without
@@ -173,7 +173,7 @@ pub(super) async fn find_session(
         Ok(PresentedSession {
             grant_id: token.grant_id,
             scope: token.scope,
-            expires_at_unix_nanos: token.expires_at_unix_nanos,
+            expires_at: token.expires_at,
         })
     })
     .transpose()
@@ -183,7 +183,7 @@ pub(super) async fn insert_session(
     tx: &mut Transaction<'_>,
     session_digest: &str,
     grant_id: &str,
-    expires_at_unix_nanos: i64,
+    expires_at: UnixNanos,
 ) -> Result<(), TokenRefusal> {
     tx.execute(
         Query::insert()
@@ -193,11 +193,7 @@ pub(super) async fn insert_session(
                 Sessions::GrantId,
                 Sessions::ExpiresAtUnixNanos,
             ])
-            .values_panic([
-                session_digest.into(),
-                grant_id.into(),
-                expires_at_unix_nanos.into(),
-            ])
+            .values_panic([session_digest.into(), grant_id.into(), expires_at.into()])
             .to_owned(),
     )
     .await
@@ -209,7 +205,7 @@ pub(super) async fn insert_session(
 /// session and its tokens.
 pub(super) async fn purge_expired_sessions(
     tx: &mut Transaction<'_>,
-    now_unix_nanos: i64,
+    now: UnixNanos,
     batch: u64,
 ) -> Result<(), TokenRefusal> {
     tx.execute(
@@ -220,7 +216,7 @@ pub(super) async fn purge_expired_sessions(
                     Query::select()
                         .column(Sessions::GrantId)
                         .from(Sessions::Table)
-                        .and_where(Expr::col(Sessions::ExpiresAtUnixNanos).lte(now_unix_nanos))
+                        .and_where(Expr::col(Sessions::ExpiresAtUnixNanos).lte(now))
                         .order_by(Sessions::ExpiresAtUnixNanos, Order::Asc)
                         .limit(batch)
                         .to_owned(),
@@ -270,8 +266,8 @@ pub(super) async fn insert_grant(
     tx: &mut Transaction<'_>,
     grant_id: &str,
     scope: &Scope,
-    created_at_unix_nanos: i64,
-    expires_at_unix_nanos: i64,
+    created_at: UnixNanos,
+    expires_at: UnixNanos,
 ) -> Result<(), TokenRefusal> {
     tx.execute(
         Query::insert()
@@ -299,8 +295,8 @@ pub(super) async fn insert_grant(
                     .into(),
                 scope.workspace.authority().map(ToString::to_string).into(),
                 scope.workspace.in_token().is_some().into(),
-                created_at_unix_nanos.into(),
-                expires_at_unix_nanos.into(),
+                created_at.into(),
+                expires_at.into(),
                 0_i64.into(),
             ])
             .to_owned(),
@@ -331,7 +327,7 @@ pub(super) async fn insert_token(
 pub(super) async fn hold_live_grant(
     tx: &mut Transaction<'_>,
     grant_id: &str,
-    now_unix_nanos: i64,
+    now: UnixNanos,
 ) -> Result<bool, TokenRefusal> {
     let held: Option<(i64,)> = tx
         .fetch_optional_locked(
@@ -339,7 +335,7 @@ pub(super) async fn hold_live_grant(
                 .column(Grants::Rotations)
                 .from(Grants::Table)
                 .and_where(Expr::col(Grants::GrantId).eq(grant_id))
-                .and_where(Expr::col(Grants::ExpiresAtUnixNanos).gt(now_unix_nanos))
+                .and_where(Expr::col(Grants::ExpiresAtUnixNanos).gt(now))
                 .to_owned(),
             coral_db::RowLock::Exclusive,
         )
@@ -352,13 +348,13 @@ pub(super) async fn hold_live_grant(
 pub(super) async fn consume(
     tx: &mut Transaction<'_>,
     token_digest: &str,
-    now_unix_nanos: i64,
+    now: UnixNanos,
 ) -> Result<bool, TokenRefusal> {
     let rows = tx
         .execute(
             Query::update()
                 .table(Tokens::Table)
-                .value(Tokens::ConsumedAtUnixNanos, now_unix_nanos)
+                .value(Tokens::ConsumedAtUnixNanos, now)
                 .and_where(Expr::col(Tokens::TokenDigest).eq(token_digest))
                 .and_where(Expr::col(Tokens::ConsumedAtUnixNanos).is_null())
                 .to_owned(),
@@ -408,7 +404,7 @@ pub(super) async fn delete_grant(
 /// tokens.
 pub(super) async fn purge_expired(
     tx: &mut Transaction<'_>,
-    now_unix_nanos: i64,
+    now: UnixNanos,
     batch: u64,
 ) -> Result<(), TokenRefusal> {
     tx.execute(
@@ -419,7 +415,7 @@ pub(super) async fn purge_expired(
                     Query::select()
                         .column(Grants::GrantId)
                         .from(Grants::Table)
-                        .and_where(Expr::col(Grants::ExpiresAtUnixNanos).lte(now_unix_nanos))
+                        .and_where(Expr::col(Grants::ExpiresAtUnixNanos).lte(now))
                         .order_by(Grants::ExpiresAtUnixNanos, Order::Asc)
                         .limit(batch)
                         .to_owned(),

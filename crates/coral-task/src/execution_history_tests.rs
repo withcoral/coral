@@ -485,7 +485,7 @@ async fn scoped_task_children_and_exact_execution_reads_keep_associations_privat
         .create(
             &ChangeContext::new(
                 fixture.actor.authenticated_user().unwrap().clone(),
-                30,
+                UnixNanos::new(30),
                 coral_test_support::trace('1'),
             ),
             WorkspaceDisplayName::parse("other").unwrap(),

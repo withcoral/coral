@@ -508,6 +508,10 @@ mod tests {
 
     #[test]
     fn write_base64_secret_rejects_whitespace_only_values() {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "xtask does not link coral-db, and the reading only names a temporary file"
+        )]
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system time")

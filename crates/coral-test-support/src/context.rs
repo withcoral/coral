@@ -7,7 +7,7 @@ use coral_workspace::{AuthenticatedUser, ChangeContext, TraceId};
 /// Panics when `digit` is not a lowercase hexadecimal digit.
 #[must_use]
 pub fn change(actor: AuthenticatedUser, at: i64, digit: char) -> ChangeContext {
-    ChangeContext::new(actor, at, trace(digit))
+    ChangeContext::new(actor, coral_db::UnixNanos::new(at), trace(digit))
 }
 
 /// A trace ID of `digit` repeated 32 times.

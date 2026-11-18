@@ -138,7 +138,12 @@ impl Fixture {
         };
         let code = format!("code-{index}");
         AuthorizationCodes::new(self.database.database())
-            .issue(&code, &format!("sign-in-{index}"), &grant, NOW)
+            .issue(
+                &code,
+                &format!("sign-in-{index}"),
+                &grant,
+                coral_db::UnixNanos::new(NOW),
+            )
             .await
             .unwrap();
         let issued = self
@@ -152,7 +157,7 @@ impl Fixture {
                     resource: &resource,
                 },
                 target,
-                NOW + 1,
+                coral_db::UnixNanos::new(NOW + 1),
             )
             .await
             .unwrap();
@@ -167,7 +172,7 @@ impl Fixture {
             audience: None,
         };
         tokens
-            .refresh(token, request, NOW + 2)
+            .refresh(token, request, coral_db::UnixNanos::new(NOW + 2))
             .await
             .map(|issued| issued.refresh_token.unwrap().expose().to_owned())
     }
@@ -198,7 +203,7 @@ async fn removal_ends_the_grants_it_takes_away_and_rejoining_revives_none() {
             &fixture.sign_in(AccessTarget::Reef).await,
             &fixture.client,
             Duration::from_hours(1),
-            NOW + 2,
+            coral_db::UnixNanos::new(NOW + 2),
         )
         .await
         .unwrap()
@@ -246,7 +251,11 @@ async fn removal_ends_the_grants_it_takes_away_and_rejoining_revives_none() {
     assert_eq!(
         fixture
             .tokens
-            .web_session_token(session.expose(), &fixture.client, NOW + 3)
+            .web_session_token(
+                session.expose(),
+                &fixture.client,
+                coral_db::UnixNanos::new(NOW + 3)
+            )
             .await
             .err(),
         Some(TokenRefusal::InvalidGrant),

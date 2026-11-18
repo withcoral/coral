@@ -145,3 +145,96 @@ fn an_undeclared_types_message_names_the_missing_types_and_a_bounded_declared_li
         assert_eq!(undeclared_types_message(&undeclared, &declared), expected);
     }
 }
+
+// Catches: a caller with no access to the Workspace learning that a Call
+// Path exists there, because a Provider or policy error held the refusal.
+#[test]
+fn a_caller_with_no_access_finds_no_authoring_description() {
+    use coral_workspace::Error as Workspace;
+    let concealed = [
+        Error::PermissionDenied("discovery"),
+        Error::Workspace(Workspace::WorkspaceNotFound),
+        Error::Provider(coral_provider::Error::Workspace(
+            Workspace::WorkspaceNotFound,
+        )),
+        Error::Policy(coral_policy::Error::Provider(
+            coral_provider::Error::Workspace(Workspace::PermissionDenied(
+                coral_workspace::Denial::WorkspaceOwnerRequired,
+            )),
+        )),
+        Error::Tools(coral_tools::Error::Workspace(Workspace::WorkspaceNotFound)),
+    ];
+    for error in concealed {
+        let label = format!("{error:?}");
+        assert!(
+            matches!(
+                crate::conceal_description_error(error),
+                Error::AuthoringDescriptionNotFound
+            ),
+            "{label}"
+        );
+    }
+    // What the caller may know stays as it is.
+    assert!(matches!(
+        crate::conceal_description_error(Error::Workspace(Workspace::WorkspaceArchived)),
+        Error::Workspace(Workspace::WorkspaceArchived)
+    ));
+    assert!(matches!(
+        crate::conceal_description_error(Error::ServiceUnavailable),
+        Error::ServiceUnavailable
+    ));
+}
+
+// Catches: a database error that a caller of Universal Search cannot find
+// through the Provider, policy or authored Tool error that holds it.
+#[test]
+fn a_search_error_states_the_database_error_behind_it() {
+    type Wrap = fn(coral_db::Error) -> Error;
+    let wrapped: [(Wrap, &str); 5] = [
+        (Error::Database, "search"),
+        (
+            |error| Error::Workspace(coral_workspace::Error::Database(error)),
+            "workspace",
+        ),
+        (
+            |error| Error::Provider(coral_provider::Error::Database(error)),
+            "provider",
+        ),
+        (
+            |error| {
+                Error::Policy(coral_policy::Error::Provider(
+                    coral_provider::Error::Database(error),
+                ))
+            },
+            "policy provider",
+        ),
+        (
+            |error| Error::Tools(coral_tools::Error::Database(error)),
+            "tools",
+        ),
+    ];
+    for (wrap, label) in wrapped {
+        assert!(
+            wrap(coral_db::Error::WriterBusy)
+                .database_error()
+                .is_some_and(coral_db::Error::is_unanswered),
+            "{label}"
+        );
+        assert!(
+            matches!(
+                wrap(coral_db::Error::WriterBusy).into_database_error(),
+                Ok(coral_db::Error::WriterBusy)
+            ),
+            "{label}"
+        );
+    }
+    for error in [
+        Error::ServiceUnavailable,
+        Error::PermissionDenied("discovery"),
+        Error::Provider(coral_provider::Error::ProviderNotFound),
+        Error::Workspace(coral_workspace::Error::WorkspaceArchived),
+    ] {
+        assert!(error.database_error().is_none(), "{error:?}");
+        error.into_database_error().expect_err("no database error");
+    }
+}

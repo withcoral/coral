@@ -4,11 +4,11 @@ use crate::{
     NewTaskCommand, TaskModule,
 };
 use crate::{interaction_repository, repository};
-use coral_db::Transaction;
+use coral_db::Clock as _;
+use coral_db::{Transaction, UnixNanos};
 use coral_run::RunModule;
 use coral_search::{SearchPage, SearchRequest, UniversalSearchModule as SearchModule};
 use coral_telemetry::safe;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The longest Call Path `describe` accepts. It lives here, not in `CallPath::parse`,
 /// until the catalog marks a Tool with a longer Call Path unavailable: search
@@ -220,7 +220,7 @@ impl TaskCommands {
             .runs
             .prepare(&call.actor, &call.workspace_id, submission)
             .await?;
-        let started_at = now()?;
+        let started_at = now();
         let mut transaction = self.tasks.database.begin().await?;
         let task = self
             .tasks
@@ -315,7 +315,7 @@ impl TaskCommands {
         call: &AttributedCommand,
         kind: AttemptKind,
     ) -> Result<InteractionId, Error> {
-        let observed_at = now()?;
+        let observed_at = now();
         self.tasks
             .workspaces
             .check_principal_inspection(&call.actor, &call.workspace_id, observed_at)
@@ -335,7 +335,7 @@ impl TaskCommands {
                 &mut transaction,
                 &call.actor,
                 &call.workspace_id,
-                now()?,
+                now(),
             )
             .await?;
         let task = repository::find_attributed(
@@ -356,14 +356,14 @@ impl TaskCommands {
         self.control
             .fault(crate::command_tests::Checkpoint::Begin, &mut transaction)
             .await?;
-        let now = now()?;
+        let now = now();
         authority.require_current_at(now)?;
         interaction_repository::insert(
             &mut transaction,
             call,
             &id,
             kind,
-            now.max(task.started_at_unix_nanos()),
+            now.max(task.started_at()),
         )
         .await?;
         repository::touch(&mut transaction, &call.workspace_id, &call.task_id, now).await?;
@@ -389,7 +389,7 @@ impl TaskCommands {
         if !repository::hold(transaction, &call.workspace_id, &call.task_id).await? {
             return Err(Error::TaskNotFound);
         }
-        let now = now()?;
+        let now = now();
         #[cfg(test)]
         self.control
             .fault(crate::command_tests::Checkpoint::Completion, transaction)
@@ -410,12 +410,8 @@ impl TaskCommands {
     }
 }
 
-pub(super) fn now() -> Result<i64, Error> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
-        .ok_or(Error::Clock)
+pub(super) fn now() -> UnixNanos {
+    coral_db::SystemClock.now()
 }
 
 /// One retained authoring Attempt: a `save` or `delete` that Task history
@@ -466,7 +462,7 @@ impl TaskCommands {
         };
         let id = self.begin(call, kind).await?;
         let result = async {
-            let context = retained_context(call)?;
+            let context = retained_context(call);
             // A save compiles before the transaction, as Coral did.
             let ready = match change {
                 RetainedChange::Save {
@@ -530,12 +526,10 @@ enum RetainedReady {
 }
 
 #[cfg(any(test, feature = "test-fixtures"))]
-fn retained_context(
-    call: &AttributedCommand,
-) -> Result<coral_tools::PrivateToolChangeContext, Error> {
-    Ok(coral_tools::PrivateToolChangeContext::new(
+fn retained_context(call: &AttributedCommand) -> coral_tools::PrivateToolChangeContext {
+    coral_tools::PrivateToolChangeContext::new(
         call.actor.clone(),
-        now()?,
+        now(),
         coral_workspace::TraceId::current_or_new(),
-    ))
+    )
 }

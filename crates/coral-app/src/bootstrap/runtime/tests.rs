@@ -295,7 +295,7 @@ async fn default_startup_exposes_the_mcp_contract_with_explicit_human_destinatio
         .create(
             &ChangeContext::new(
                 local_organization_owner(),
-                1,
+                coral_db::UnixNanos::new(1),
                 TraceId::parse("11111111111111111111111111111111").expect("trace id"),
             ),
             WorkspaceDisplayName::parse("MCP contract").expect("display name"),
@@ -361,7 +361,7 @@ async fn serve_with_mcp_client(
         .create(
             &ChangeContext::new(
                 local_organization_owner(),
-                1,
+                coral_db::UnixNanos::new(1),
                 TraceId::parse("22222222222222222222222222222222").expect("trace id"),
             ),
             WorkspaceDisplayName::parse("Shared Runs").expect("display name"),

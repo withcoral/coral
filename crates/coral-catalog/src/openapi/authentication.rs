@@ -1,6 +1,9 @@
 //! Shared authentication validation for document defaults and confirmed configuration.
 use crate::CatalogDiagnostic;
 
+/// A header Coral sends a credential in. The transport sets some headers
+/// itself, and a request with a body sets `content-type`. A credential in
+/// one of those cannot be sent, so none of them is accepted.
 pub(super) fn header(value: &str) -> Result<String, CatalogDiagnostic> {
     let header = value.to_ascii_lowercase();
     if header.is_empty()
@@ -10,7 +13,12 @@ pub(super) fn header(value: &str) -> Result<String, CatalogDiagnostic> {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         || matches!(
             header.as_str(),
-            "host" | "content-length" | "transfer-encoding" | "connection" | "cookie"
+            "host"
+                | "content-length"
+                | "content-type"
+                | "transfer-encoding"
+                | "connection"
+                | "cookie"
         )
     {
         return Err(CatalogDiagnostic::stable(

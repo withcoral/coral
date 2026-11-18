@@ -15,6 +15,7 @@ chrono.workspace = true
 axum = { workspace = true, features = ["http1", "tokio"] }
 coral-run.workspace = true
 coral-auth.workspace = true
+coral-db.workspace = true
 coral-tools.workspace = true
 coral-identifier.workspace = true
 coral-search.workspace = true
@@ -45,5 +46,4 @@ tracing-subscriber.workspace = true
 reqwest.workspace = true
 coral-policy.workspace = true
 coral-provider = { workspace = true, features = ["test-fixtures"] }
-coral-db.workspace = true
 coral-test-support.workspace = true

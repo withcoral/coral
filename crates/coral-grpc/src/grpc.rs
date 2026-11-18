@@ -19,6 +19,7 @@ use std::sync::Arc;
 
 use crate::coral::{internal::v1 as internal, management::v1 as management};
 use coral_auth::{PrincipalAuthentication, PrivateAudience};
+use coral_db::{Clock, UnixNanos};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId, WorkspaceModule};
 use tonic::{Request, Response, Status};
 
@@ -70,6 +71,10 @@ pub struct TransportContext {
     /// Principal authentication. With [`PrincipalAuthentication::local`] the
     /// application must bind to loopback.
     pub authentication: PrincipalAuthentication,
+    /// The deployment's one clock, the one `authentication` reads. A request's
+    /// time is the instant its authentication read; a handler reads this
+    /// clock again only after it waited on outside work.
+    pub clock: Arc<dyn Clock>,
     /// Canonical, validated MCP origin, published once after the companion binds.
     /// Until publication, Workspace responses contain an empty MCP endpoint.
     pub mcp_origin: Arc<std::sync::OnceLock<String>>,
@@ -90,6 +95,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
     let services = GrpcServices {
         organization: dependencies.organization,
         authentication: context.authentication,
+        clock: context.clock,
         mcp_origin: context.mcp_origin,
         stopping: context.stopping,
         workspaces: dependencies.workspaces,
@@ -192,6 +198,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
 struct GrpcServices {
     organization: coral_workspace::OrganizationModule,
     authentication: PrincipalAuthentication,
+    clock: Arc<dyn Clock>,
     mcp_origin: Arc<std::sync::OnceLock<String>>,
     stopping: tokio::sync::watch::Receiver<bool>,
     workspaces: WorkspaceModule,
@@ -240,6 +247,19 @@ impl GrpcServices {
         workspace: Option<&WorkspaceId>,
         allowed: PrivateAudience,
     ) -> Result<AuthenticatedPrincipal, Status> {
+        self.principal_at(request, workspace, allowed)
+            .await
+            .map(|(principal, _now)| principal)
+    }
+
+    /// Authenticates the request, and returns the instant authentication read
+    /// beside its Principal: the request's time.
+    async fn principal_at<T>(
+        &self,
+        request: &Request<T>,
+        workspace: Option<&WorkspaceId>,
+        allowed: PrivateAudience,
+    ) -> Result<(AuthenticatedPrincipal, UnixNanos), Status> {
         let audience = single_header(request.metadata(), "coral-audience")?
             .and_then(PrivateAudience::parse)
             .ok_or_else(status::unauthenticated)?;
@@ -278,6 +298,14 @@ impl GrpcServices {
             }
         }
         .map_err(authentication_error)
+    }
+
+    /// Reads the server's clock again, in Unix nanoseconds. It is only for a
+    /// decision a handler makes after it waited on outside work, such as a
+    /// provider's answer: the request's time is stale by then. Every other
+    /// decision takes the request's time from its `ManagementUser`.
+    fn now_after_outside_work(&self) -> i64 {
+        self.clock.now().get()
     }
 }
 
@@ -348,12 +376,4 @@ impl internal::task_service_server::TaskService for GrpcServices {
         self.task(&request, &request.get_ref().name, PrivateAudience::Mcp)
             .await
     }
-}
-
-fn now() -> Result<i64, Status> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_error| status::unavailable())?
-        .as_nanos();
-    i64::try_from(nanos).map_err(|_error| status::unavailable())
 }

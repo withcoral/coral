@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use coral_catalog::{CatalogSearchTarget, ToolAccessState, ToolKey, ToolPolicyFacts};
+use coral_db::UnixNanos;
 use coral_provider::ProviderId;
 use coral_telemetry::TraceId;
 use coral_workspace::{AuthoritySource, UserId, WorkspaceId};
@@ -289,7 +290,7 @@ pub struct AdministrativeLifecycleEvent {
     action: LifecycleAction,
     outcome: LifecycleOutcome,
     changed_field_paths: Vec<String>,
-    occurred_at_unix_nanos: i64,
+    occurred_at: UnixNanos,
     trace_id: TraceId,
 }
 
@@ -305,7 +306,7 @@ impl AdministrativeLifecycleEvent {
         action: LifecycleAction,
         outcome: LifecycleOutcome,
         changed_field_paths: Vec<String>,
-        occurred_at_unix_nanos: i64,
+        occurred_at: UnixNanos,
         trace_id: TraceId,
     ) -> Self {
         Self {
@@ -315,7 +316,7 @@ impl AdministrativeLifecycleEvent {
             action,
             outcome,
             changed_field_paths,
-            occurred_at_unix_nanos,
+            occurred_at,
             trace_id,
         }
     }
@@ -358,8 +359,8 @@ impl AdministrativeLifecycleEvent {
 
     /// Returns when the policy change committed.
     #[must_use]
-    pub const fn occurred_at_unix_nanos(&self) -> i64 {
-        self.occurred_at_unix_nanos
+    pub const fn occurred_at(&self) -> UnixNanos {
+        self.occurred_at
     }
 
     /// Returns safe trace correlation evidence.

@@ -12,3 +12,8 @@
   state, such as an expiry. After Coral drops Reef's HTTP/2 session, Reef sends
   a unary call to one of those methods again, and nothing else, so never mark a
   change that is unsafe to repeat. A test fails a read-named method without one.
+- A request's time is the instant its authentication read. `management_user`
+  returns it with the User, and `change` dates the change by it; take the time
+  again from there, never from a clock. A decision made after the handler
+  waited on outside work, such as a provider or a Secret Store, reads the
+  server's clock again with `now_after_outside_work`.

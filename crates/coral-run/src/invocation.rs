@@ -538,7 +538,7 @@ impl ToolInvoker {
                 &mut transaction,
                 &self.actor,
                 &self.workspace_id,
-                resolved_at,
+                coral_db::UnixNanos::new(resolved_at),
                 coral_db::RowLock::None,
             )
             .await
@@ -1015,7 +1015,7 @@ impl ToolInvoker {
         let context = match self.actor.authenticated_user() {
             Some(user) => Some(coral_workspace::ChangeContext::new(
                 user.clone(),
-                self.now()?,
+                coral_db::UnixNanos::new(self.now()?),
                 coral_workspace::TraceId::current_or_new(),
             )),
             None => None,

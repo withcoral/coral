@@ -58,7 +58,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use coral_catalog::{HttpMethod, ToolKey, ToolPolicyFacts};
-use coral_db::Database;
+use coral_db::{Database, UnixNanos};
 use coral_provider::ProviderCallRoot;
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, WorkspaceAction, WorkspaceEvidence,
@@ -265,17 +265,12 @@ impl ToolPolicyModule {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         under: Option<&str>,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<BTreeMap<String, ToolAccessState>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let evidence = self
             .workspaces
-            .check_principal_inspection_in_snapshot(
-                &mut transaction,
-                actor,
-                workspace_id,
-                now_unix_nanos,
-            )
+            .check_principal_inspection_in_snapshot(&mut transaction, actor, workspace_id, now)
             .await?;
         let owner = PrivateToolOwner::of(actor.principal().kind(), evidence.effective_user_role());
         let exact = repository::exact_rules_in_transaction(&mut transaction, workspace_id).await?;
@@ -683,9 +678,9 @@ fn declared_default_facts(default: ToolAccessState) -> ToolPolicyFacts {
 
 /// A coral-tools read failure: only persistence or corrupt data.
 fn tools_error(error: coral_tools::Error) -> Error {
-    match error {
-        coral_tools::Error::Database(error) => Error::Database(error),
-        other => Error::CorruptData(other.to_string()),
+    match error.into_database_error() {
+        Ok(error) => Error::Database(error),
+        Err(other) => Error::CorruptData(other.to_string()),
     }
 }
 
@@ -812,13 +807,8 @@ async fn write_access_state_in_transaction(
         .await?
         != Some(access_state)
     {
-        repository::upsert_access_state(
-            transaction,
-            &target,
-            access_state,
-            context.occurred_at_unix_nanos(),
-        )
-        .await?;
+        repository::upsert_access_state(transaction, &target, access_state, context.occurred_at())
+            .await?;
         repository::insert_lifecycle_event(
             transaction,
             repository::NewLifecycleEvent {
@@ -826,7 +816,7 @@ async fn write_access_state_in_transaction(
                 actor_user_id: context.actor().user_id(),
                 authority_source: evidence.authority_source(),
                 changed_field_paths: &["access_state"],
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                occurred_at: context.occurred_at(),
                 trace_id: context.trace_id(),
             },
         )
@@ -1119,13 +1109,9 @@ pub async fn remove_authored_tool_rules_in_transaction(
 
 /// A coral-provider read failure: only persistence or corrupt data.
 fn provider_read_error(error: coral_provider::Error) -> Error {
-    match error {
-        coral_provider::Error::Database(error)
-        | coral_provider::Error::Catalog(coral_catalog::Error::Database(error))
-        | coral_provider::Error::Workspace(coral_workspace::Error::Database(error)) => {
-            Error::Database(error)
-        }
-        other => Error::CorruptData(other.to_string()),
+    match error.into_database_error() {
+        Ok(error) => Error::Database(error),
+        Err(other) => Error::CorruptData(other.to_string()),
     }
 }
 

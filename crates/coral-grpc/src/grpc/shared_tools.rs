@@ -2,8 +2,8 @@ use super::authored_tools::{correctable, diagnostic, error, private_tool_agent};
 use super::policies::{access, access_state};
 use super::resource;
 use super::status::invalid;
-use super::workspaces::{next_after, page_request, timestamp, workspace_id};
-use super::{GrpcServices, management as wire, now};
+use super::workspaces::{change, next_after, page_request, timestamp, workspace_id};
+use super::{GrpcServices, management as wire};
 use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, PrivateToolPath, SharedTool, SharedToolId,
     SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolLifecycleEventKey,
@@ -11,8 +11,7 @@ use coral_tools::{
     SharedToolRevisionOrigin, SharedToolRevisionSummary, SharedToolSummary,
 };
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, Principal, PrincipalKind, TraceId,
-    WorkspaceId,
+    AuthenticatedPrincipal, AuthenticatedUser, Principal, PrincipalKind, WorkspaceId,
 };
 use tonic::{Request, Response, Status};
 
@@ -41,7 +40,7 @@ fn summary(workspace: &WorkspaceId, summary: &SharedToolSummary) -> wire::Shared
         path: summary.path().as_str().to_owned(),
         description: summary.description().as_str().to_owned(),
         revision: summary.current_revision(),
-        update_time: Some(timestamp(summary.published_at_unix_nanos())),
+        update_time: Some(timestamp(summary.published_at().get())),
         name: resource_name(workspace, summary.id()),
     }
 }
@@ -59,7 +58,7 @@ fn event(workspace: &WorkspaceId, event: &SharedToolLifecycleEvent) -> wire::Sha
         revision: event.revision(),
         content_hash: event.content_hash().to_owned(),
         actor: user_name(event.actor()),
-        event_time: Some(timestamp(event.occurred_at_unix_nanos())),
+        event_time: Some(timestamp(event.occurred_at().get())),
     }
 }
 
@@ -83,7 +82,7 @@ fn revision(revision: &SharedToolRevision) -> wire::SharedToolRevision {
         content_hash: revision.content_hash().to_owned(),
         default_access_state: access_state(revision.default_access_state()).into(),
         publisher: user_name(revision.published_by()),
-        publish_time: Some(timestamp(revision.published_at_unix_nanos())),
+        publish_time: Some(timestamp(revision.published_at().get())),
         restored_from_revision: restored_from(revision.origin()),
     }
 }
@@ -95,7 +94,7 @@ fn revision_summary(revision: &SharedToolRevisionSummary) -> wire::SharedToolRev
         content_hash: revision.content_hash().to_owned(),
         default_access_state: access_state(revision.default_access_state()).into(),
         publisher: user_name(revision.published_by()),
-        publish_time: Some(timestamp(revision.published_at_unix_nanos())),
+        publish_time: Some(timestamp(revision.published_at().get())),
         restored_from_revision: restored_from(revision.origin()),
     }
 }
@@ -104,7 +103,7 @@ fn shared_tool(tool: &SharedTool) -> wire::SharedTool {
     wire::SharedTool {
         path: tool.path().as_str().to_owned(),
         creator: user_name(tool.created_by()),
-        create_time: Some(timestamp(tool.created_at_unix_nanos())),
+        create_time: Some(timestamp(tool.created_at().get())),
         current_revision: Some(revision(tool.current())),
         name: resource_name(tool.workspace_id(), tool.id()),
     }
@@ -173,7 +172,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
             .map_err(super::providers::error)?;
         let page = self
             .shared_tools
-            .list(&AuthenticatedPrincipal::user(user), &w, &asked)
+            .list(&AuthenticatedPrincipal::user(user.into_user()), &w, &asked)
             .await
             .map_err(error)?;
         Ok(Response::new(wire::ListSharedToolsResponse {
@@ -198,7 +197,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let path = path(&input.path)?;
         let tool = self
             .shared_tools
-            .get(&AuthenticatedPrincipal::user(user), &w, &path)
+            .get(&AuthenticatedPrincipal::user(user.into_user()), &w, &path)
             .await
             .map_err(error)?;
         Ok(Response::new(shared_tool(&tool)))
@@ -214,7 +213,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let (w, id) = parse_resource_name(&input.shared_tool)?;
         let revisions = self
             .shared_tools
-            .list_revision_summaries(&AuthenticatedPrincipal::user(user), &w, &id)
+            .list_revision_summaries(&AuthenticatedPrincipal::user(user.into_user()), &w, &id)
             .await
             .map_err(error)?;
         Ok(Response::new(wire::ListSharedToolRevisionsResponse {
@@ -232,7 +231,12 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let (w, id) = parse_resource_name(&input.shared_tool)?;
         let found = self
             .shared_tools
-            .get_revision(&AuthenticatedPrincipal::user(user), &w, &id, input.revision)
+            .get_revision(
+                &AuthenticatedPrincipal::user(user.into_user()),
+                &w,
+                &id,
+                input.revision,
+            )
             .await
             .map_err(error)?;
         Ok(Response::new(revision(&found)))
@@ -261,7 +265,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         if !input.validate_only {
             publish = publish.approve(input.reviewed_declaration);
         }
-        let context = ChangeContext::new(user, now()?, TraceId::current_or_new());
+        let context = change(user);
         let published = self
             .shared_tool_workflow
             .publish(&context, &w, publish)
@@ -282,7 +286,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
         let path = path(&input.path)?;
-        let context = ChangeContext::new(user, now()?, TraceId::current_or_new());
+        let context = change(user);
         let removed = self
             .shared_tool_workflow
             .remove(&context, &w, &path, input.expected_revision)
@@ -314,7 +318,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let page = self
             .shared_tools
             .list_lifecycle_events(
-                &AuthenticatedPrincipal::user(user),
+                &AuthenticatedPrincipal::user(user.into_user()),
                 &w,
                 shared_tool.as_ref(),
                 &asked,

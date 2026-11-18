@@ -522,8 +522,11 @@ async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_c
         AuthoredToolDescription::parse("Late save").unwrap(),
         AuthoredToolSource::parse("export default () => 7;").unwrap(),
     );
-    let authoring =
-        PrivateToolChangeContext::new(principal.clone(), 101, context.trace_id().clone());
+    let authoring = PrivateToolChangeContext::new(
+        principal.clone(),
+        coral_db::UnixNanos::new(101),
+        context.trace_id().clone(),
+    );
     // Poll every competing command while removal retains its preparation holds.
     // The release is the final branch, so no sleeps or scheduler guesses order it.
     let (save, grant, connect, ()) = tokio::join!(
@@ -663,7 +666,7 @@ async fn disablement_and_archive_preserve_current_accounts() {
         .check_run_admission(
             &AuthenticatedPrincipal::user(f.member.clone()),
             f.workspace.id(),
-            100,
+            coral_db::UnixNanos::new(100),
         )
         .await
         .unwrap_err();

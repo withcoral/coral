@@ -682,7 +682,11 @@ async fn management_agent_deletion_preserves_attribution_and_checks_exact_worksp
     );
     let principal = f
         .workspaces
-        .authenticate_agent(f.workspace.id(), &issued.credential, 1)
+        .authenticate_agent(
+            f.workspace.id(),
+            &issued.credential,
+            coral_db::UnixNanos::new(1),
+        )
         .await
         .unwrap();
     let task = f.task(&principal).await;
@@ -737,7 +741,11 @@ async fn management_agent_deletion_preserves_attribution_and_checks_exact_worksp
         tonic::Code::NotFound
     );
     f.workspaces
-        .authenticate_agent(f.workspace.id(), &issued.credential, 1)
+        .authenticate_agent(
+            f.workspace.id(),
+            &issued.credential,
+            coral_db::UnixNanos::new(1),
+        )
         .await
         .unwrap_err();
     let mut tasks = f.task_service();

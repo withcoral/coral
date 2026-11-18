@@ -4,7 +4,7 @@
 //! a probe has no call, and its answer is empty. Writes join the caller's
 //! transaction.
 
-use coral_db::{Database, RowLock, Transaction};
+use coral_db::{Database, RowLock, Transaction, UnixNanos};
 use prost::Message as _;
 use sea_query::{Expr, ExprTrait as _, Iden, Order, Query};
 
@@ -32,10 +32,10 @@ pub(crate) struct NewRequest<'a> {
     pub(crate) requester: &'a str,
     /// None for a probe.
     pub(crate) call: Option<&'a Call>,
-    pub(crate) created_at: i64,
+    pub(crate) created_at: UnixNanos,
     /// The caller's deadline: the requester waits to it once a pickup took
     /// the row, and a little less while nobody has.
-    pub(crate) deadline: i64,
+    pub(crate) deadline: UnixNanos,
 }
 
 /// What a row asks for.
@@ -52,7 +52,7 @@ pub(crate) struct Taken {
     pub(crate) id: String,
     pub(crate) requester: String,
     pub(crate) request: Request,
-    pub(crate) deadline: i64,
+    pub(crate) deadline: UnixNanos,
 }
 
 /// A row's answer.
@@ -114,7 +114,7 @@ pub(crate) async fn request(
 pub(crate) async fn work_for(
     database: &Database,
     take: &Take<'_>,
-    expired: i64,
+    expired: UnixNanos,
 ) -> Result<bool, coral_db::Error> {
     let work = Query::select()
         .column(CompileRequests::Id)
@@ -133,7 +133,7 @@ pub(crate) async fn work_for(
 /// on them, so this wakes nobody.
 pub(crate) async fn delete_past(
     transaction: &mut Transaction<'_>,
-    expired: i64,
+    expired: UnixNanos,
 ) -> Result<(), coral_db::Error> {
     let delete = Query::delete()
         .from_table(CompileRequests::Table)
@@ -147,7 +147,7 @@ pub(crate) struct Take<'a> {
     /// The Coral Instance that takes it.
     pub(crate) taker: &'a str,
     /// The row's deadline must be after this.
-    pub(crate) deadline_after: i64,
+    pub(crate) deadline_after: UnixNanos,
     /// Only the calls of these Coral Instances, when set.
     pub(crate) from: Option<&'a [String]>,
 }
@@ -188,7 +188,7 @@ pub(crate) async fn take_oldest(
         .limit(1)
         .to_owned();
     let Some((id, requester, call, deadline)) = transaction
-        .fetch_optional_locked::<(String, String, Option<Vec<u8>>, i64)>(
+        .fetch_optional_locked::<(String, String, Option<Vec<u8>>, UnixNanos)>(
             oldest,
             RowLock::SkipLocked,
         )

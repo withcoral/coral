@@ -20,7 +20,7 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
             "owner",
             "untrusted-client",
             &fixture.urls.resource(&fixture.workspace),
-            coral_test_support::now_unix_nanos(),
+            coral_db::UnixNanos::new(coral_test_support::now_unix_nanos()),
         )
         .unwrap();
     let missing = fixture.request(&fixture.workspace).send().await.unwrap();
@@ -46,7 +46,7 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
             Some(&token.access_token),
         )
         .await
-        .map(|(principal, _workspace)| principal)
+        .map(|(principal, _workspace, _now)| principal)
         .unwrap();
     assert_eq!(principal.principal().id().as_str(), "owner");
     assert_eq!(principal.principal().kind(), PrincipalKind::User);
@@ -60,7 +60,7 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
             "other",
             "same-client",
             &fixture.urls.resource(&fixture.workspace),
-            coral_test_support::now_unix_nanos(),
+            coral_db::UnixNanos::new(coral_test_support::now_unix_nanos()),
         )
         .unwrap();
     let other = coral_workspace::AuthenticatedPrincipal::user(fixture.other.actor().clone());
@@ -159,7 +159,7 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
             Some(credential),
         )
         .await
-        .map(|(principal, _workspace)| principal)
+        .map(|(principal, _workspace, _now)| principal)
         .unwrap();
     assert_eq!(actor.principal(), issued.agent.principal());
     assert_eq!(actor.agent_workspace_id(), Some(&fixture.workspace));
@@ -290,7 +290,7 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
                 &fixture.workspace,
                 issued.registration.id(),
                 enabled,
-                expiry,
+                expiry.map(coral_db::UnixNanos::new),
             )
             .await
             .unwrap();
@@ -337,7 +337,7 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
                 "untrusted-client",
                 &organization,
                 workspace,
-                coral_test_support::now_unix_nanos(),
+                coral_db::UnixNanos::new(coral_test_support::now_unix_nanos()),
             )
             .unwrap()
             .access_token
@@ -411,7 +411,7 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
             "owner",
             "untrusted-client",
             &fixture.urls.resource(&fixture.workspace),
-            coral_test_support::now_unix_nanos(),
+            coral_db::UnixNanos::new(coral_test_support::now_unix_nanos()),
         )
         .unwrap()
         .access_token;
@@ -421,7 +421,7 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
             "owner",
             "untrusted-client",
             &organization,
-            coral_test_support::now_unix_nanos(),
+            coral_db::UnixNanos::new(coral_test_support::now_unix_nanos()),
         )
         .unwrap()
         .access_token;
@@ -528,7 +528,7 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
             Some(credential),
         )
         .await
-        .map(|(principal, _workspace)| principal)
+        .map(|(principal, _workspace, _now)| principal)
         .unwrap();
     fixture
         .assert_task_principal_at(
@@ -626,7 +626,12 @@ impl Fixture {
         )
         .unwrap();
         let auth = WorkspaceAuthentication::new(
-            PrincipalAuthentication::new(&issuer, organization.clone(), workspaces.clone()),
+            PrincipalAuthentication::new(
+                &issuer,
+                organization.clone(),
+                workspaces.clone(),
+                Arc::new(coral_db::SystemClock),
+            ),
             urls.clone(),
             "https://auth.example".into(),
         );
@@ -774,7 +779,7 @@ fn initialize_request(url: &str) -> reqwest::RequestBuilder {
 fn change(id: &str, role: OrganizationRole) -> ChangeContext {
     ChangeContext::new(
         AuthenticatedUser::organization_member(UserId::parse(id).unwrap(), role),
-        1,
+        coral_db::UnixNanos::new(1),
         TraceId::parse(&"a".repeat(32)).unwrap(),
     )
 }

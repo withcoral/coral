@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use coral_db::Database;
+use coral_db::{Database, UnixNanos};
 use sha2::{Digest as _, Sha256};
 
 use crate::oauth_clients::AuthenticatedClient;
@@ -116,7 +116,7 @@ impl AuthorizationCodes {
     }
 
     /// Stores `code` for `grant`, issued by the sign-in whose OIDC state is
-    /// `sign_in_state`, at host time `now_unix_nanos`.
+    /// `sign_in_state`, at host time `now`.
     ///
     /// # Errors
     ///
@@ -130,15 +130,14 @@ impl AuthorizationCodes {
         code: &str,
         sign_in_state: &str,
         grant: &AuthorizationGrant,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<CodeIssue, AuthorizationCodeError> {
         let (code_digest, sign_in_digest) = (digest(code)?, digest(sign_in_state)?);
-        let expires_at = i64::try_from(AUTHORIZATION_CODE_TTL.as_nanos())
-            .ok()
-            .and_then(|ttl| now_unix_nanos.checked_add(ttl))
+        let expires_at = now
+            .checked_add(AUTHORIZATION_CODE_TTL)
             .ok_or(AuthorizationCodeError::ClockOutOfRange)?;
         let mut tx = self.database.begin().await.map_err(unavailable)?;
-        repository::purge_expired(&mut tx, now_unix_nanos).await?;
+        repository::purge_expired(&mut tx, now).await?;
         let inserted =
             repository::insert(&mut tx, &code_digest, &sign_in_digest, grant, expires_at).await?;
         tx.commit().await.map_err(unavailable)?;
@@ -149,7 +148,7 @@ impl AuthorizationCodes {
         })
     }
 
-    /// Spends `code` at host time `now_unix_nanos` and returns its grant.
+    /// Spends `code` at host time `now` and returns its grant.
     ///
     /// Returns `None` for an unknown, spent or expired code, and for a
     /// redemption whose bindings differ from the grant's. A mismatched
@@ -164,7 +163,7 @@ impl AuthorizationCodes {
         &self,
         code: &str,
         redemption: CodeRedemption<'_>,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<Option<AuthorizationGrant>, AuthorizationCodeError> {
         let Ok(code_digest) = digest(code) else {
             return Ok(None);
@@ -173,13 +172,11 @@ impl AuthorizationCodes {
         // `BEGIN`. Only a code that can be spent opens a write transaction, so
         // guessed codes never hold the writer that sign-ins need. The update
         // below still decides single use if two redemptions pass this read.
-        if !repository::is_spendable(&self.database, &code_digest, redemption, now_unix_nanos)
-            .await?
-        {
+        if !repository::is_spendable(&self.database, &code_digest, redemption, now).await? {
             return Ok(None);
         }
         let mut tx = self.database.begin().await.map_err(unavailable)?;
-        let grant = repository::spend(&mut tx, &code_digest, redemption, now_unix_nanos).await?;
+        let grant = repository::spend(&mut tx, &code_digest, redemption, now).await?;
         tx.commit().await.map_err(unavailable)?;
         Ok(grant)
     }

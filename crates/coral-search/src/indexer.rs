@@ -22,7 +22,7 @@ use async_trait::async_trait;
 
 use crate::SearchIndexFailure;
 use crate::retriever::plan::split_words;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::WorkspaceId;
 
 /// The revision of the indexed text that this indexer writes. Raise it with
@@ -58,9 +58,6 @@ pub(crate) enum IndexError {
         .0.as_secs()
     )]
     WriterBusy(std::time::Duration),
-    /// The system clock cannot stamp the attempt.
-    #[error("system clock is before 1970 or past the durable nanosecond range")]
-    Clock,
     /// A search-owned row holds a value its column does not admit.
     #[error("corrupt search index: {0}")]
     Corrupt(&'static str),
@@ -83,7 +80,6 @@ impl IndexError {
             Self::TimedOut(_) => "timed_out",
             Self::Overran(_) => "overran",
             Self::WriterBusy(_) => "writer_busy",
-            Self::Clock => "clock",
             Self::Corrupt(_) => "corrupt",
             Self::Provider(_) => "provider",
             Self::AuthoredTools(_) => "authored_tools",
@@ -99,7 +95,6 @@ impl IndexError {
             Self::TimedOut(_) | Self::Overran(_) | Self::WriterBusy(_) => {
                 Some(SearchIndexFailure::TimedOut)
             }
-            Self::Clock => Some(SearchIndexFailure::Clock),
             Self::Corrupt(_) => Some(SearchIndexFailure::Corrupt),
             Self::Provider(_) => Some(SearchIndexFailure::Provider),
             Self::Database(_) => Some(SearchIndexFailure::Database),
@@ -122,12 +117,12 @@ pub(crate) enum IndexEffect {
     Updated,
     FirstVisible {
         target: IndexedCatalog,
-        published_at_unix_nanos: i64,
+        published_at: UnixNanos,
         path: coral_telemetry::metric::VisibilityPath,
     },
     Recovered {
         target: IndexedCatalog,
-        unavailable_since_unix_nanos: i64,
+        unavailable_since: UnixNanos,
     },
 }
 
@@ -195,7 +190,7 @@ pub(crate) trait EntityIndexer: Send + Sync {
     /// Compares the index with `expected`, everything the owners hold now,
     /// and returns what `expected` holds and the index lacks, holds stale, or
     /// holds as failed; a failure whose retry rule is not due at
-    /// `now_unix_nanos` is left for a later pass. Reads only, so a read
+    /// `now` is left for a later pass. Reads only, so a read
     /// snapshot serves it.
     ///
     /// The caller indexes each returned item in a transaction of its own, so
@@ -205,7 +200,7 @@ pub(crate) trait EntityIndexer: Send + Sync {
         &self,
         transaction: &mut Transaction<'_>,
         expected: &'e [Self::Expected],
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<Vec<&'e Self::Expected>, IndexError>;
 }
 
@@ -290,10 +285,6 @@ pub(crate) async fn recount_statistics(
     Ok(Some(
         repository::recount_workspace_statistics(transaction, workspace_id).await?,
     ))
-}
-
-fn now_unix_nanos() -> Result<i64, IndexError> {
-    crate::unix_now_nanos().ok_or(IndexError::Clock)
 }
 
 /// Schema text with each word once. Words split as the query planner splits

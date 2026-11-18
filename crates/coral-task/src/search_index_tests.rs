@@ -6,6 +6,7 @@
 //! the index through a test-only read of the search-owned tables.
 
 use super::*;
+use coral_db::UnixNanos;
 use coral_search::test_fixtures::WritePoint;
 use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
 use std::collections::BTreeMap;
@@ -100,11 +101,12 @@ async fn a_pass_retries_a_failed_private_tool_once_its_retry_is_due() {
                 .await
                 .unwrap();
             index.settled().await;
-            let attempted_at = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            let attempted_at = coral_db::Clock::now(&coral_db::SystemClock);
+            let retry_after = attempted_at
+                .checked_add(std::time::Duration::from_mins(5))
                 .unwrap()
-                .as_nanos();
-            let retry_after = attempted_at + std::time::Duration::from_mins(5).as_nanos();
+                .get();
+            let attempted_at = attempted_at.get();
             fixture
                 .test_database
                 .execute_fixture_sql(&format!(
@@ -487,7 +489,7 @@ async fn a_pass_removes_the_rows_of_the_private_tools_that_removing_access_delet
     let fixture = Fixture::new().await;
     let index = &fixture.index;
     let owner = fixture.actor.authenticated_user().unwrap().clone();
-    let change = ChangeContext::new(owner, 30, coral_test_support::trace('1'));
+    let change = ChangeContext::new(owner, UnixNanos::new(30), coral_test_support::trace('1'));
     let member = provision_user(
         fixture.tasks.database.clone(),
         "user:indexed-member",
@@ -516,10 +518,11 @@ async fn a_pass_removes_the_rows_of_the_private_tools_that_removing_access_delet
         )
         .await
         .unwrap();
+    let now = UnixNanos::new(40);
     let agent = fixture
         .tasks
         .workspaces
-        .authenticate_agent(&fixture.workspace, issued.credential.expose(), 40)
+        .authenticate_agent(&fixture.workspace, issued.credential.expose(), now)
         .await
         .unwrap();
     let mut calls = Vec::new();
@@ -714,7 +717,7 @@ async fn principal_call(fixture: &Fixture, actor: AuthenticatedPrincipal) -> Att
             &actor,
             &fixture.workspace,
             TaskIntent::parse("Save work").unwrap(),
-            50,
+            UnixNanos::new(50),
         )
         .await
         .unwrap();

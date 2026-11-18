@@ -25,6 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
+use coral_db::UnixNanos;
 use coral_embed::{Embed, EmbedError, MANIFEST};
 use coral_telemetry::metric::{self, EmbedBatchOutcome};
 use coral_telemetry::safe;
@@ -67,7 +68,7 @@ pub(super) struct EmbedderState {
     drained: watch::Sender<u64>,
     /// Rows that failed while others succeeded, by key, with the stamp of
     /// the row that failed.
-    skipped: std::sync::Mutex<HashMap<EntityKey, i64>>,
+    skipped: std::sync::Mutex<HashMap<EntityKey, UnixNanos>>,
 }
 
 impl EmbedderState {
@@ -117,7 +118,7 @@ impl EmbedderState {
         u64::try_from(self.skipped().len()).unwrap_or(u64::MAX)
     }
 
-    fn skipped(&self) -> std::sync::MutexGuard<'_, HashMap<EntityKey, i64>> {
+    fn skipped(&self) -> std::sync::MutexGuard<'_, HashMap<EntityKey, UnixNanos>> {
         // No code panics while holding this lock, so a poisoned one still
         // holds a valid list.
         self.skipped.lock().unwrap_or_else(PoisonError::into_inner)
@@ -129,7 +130,7 @@ impl EmbedderState {
         let key = EntityKey::of(entity);
         let mut skipped = self.skipped();
         match skipped.get(&key) {
-            Some(stamp) if *stamp == entity.indexed_at_unix_nanos => true,
+            Some(stamp) if *stamp == entity.indexed_at => true,
             Some(_) => {
                 skipped.remove(&key);
                 false
@@ -152,7 +153,7 @@ impl EmbedderState {
                 coral.workspace.id = safe::id(&entity.workspace_id),
                 "skipping a Search Entity whose vector keeps failing until its row changes"
             );
-            skipped.insert(EntityKey::of(&entity), entity.indexed_at_unix_nanos);
+            skipped.insert(EntityKey::of(&entity), entity.indexed_at);
         }
     }
 }
@@ -409,7 +410,7 @@ impl SearchIndex {
             .zip(&vectors)
             .map(|(row, vector)| EntityVector {
                 doc_id: &row.doc_id,
-                indexed_at_unix_nanos: row.indexed_at_unix_nanos,
+                indexed_at: row.indexed_at,
                 vector,
             })
             .collect::<Vec<_>>();

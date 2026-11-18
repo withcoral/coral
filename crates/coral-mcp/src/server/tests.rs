@@ -54,6 +54,7 @@ fn server_on(
                 crate::HumanInterfaceUrl::parse("https://reef.example.test").unwrap(),
             ),
             principal,
+            now: coral_db::Clock::now(&coral_db::SystemClock),
         },
         workspace,
     )
@@ -64,7 +65,11 @@ async fn workspace_server() -> (TestDatabase, McpServer) {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let user = local_organization_owner();
-    let change = ChangeContext::new(user.clone(), 1, TraceId::current_or_new());
+    let change = ChangeContext::new(
+        user.clone(),
+        coral_db::UnixNanos::new(1),
+        TraceId::current_or_new(),
+    );
     OrganizationModule::new(database.clone())
         .provision_login(&change)
         .await
@@ -118,7 +123,7 @@ async fn a_caller_that_lost_the_workspace_is_refused_the_tool_list() {
     OrganizationModule::new(database.clone())
         .provision_login(&ChangeContext::new(
             user.clone(),
-            1,
+            coral_db::UnixNanos::new(1),
             TraceId::current_or_new(),
         ))
         .await
@@ -334,7 +339,7 @@ fn run_error_codes() -> Vec<(coral_run::Error, &'static str)> {
             "private_tool_exists",
         ),
         (
-            Error::Tools(coral_tools::Error::Clock("bad".into())),
+            Error::Tools(coral_tools::Error::CompilerWorkerStopped),
             internal,
         ),
         (Error::PermissionDenied("denied"), "permission_denied"),
@@ -443,7 +448,6 @@ fn tools_error_codes() -> Vec<(coral_tools::Error, &'static str)> {
         (Error::PermissionDenied("denied"), "permission_denied"),
         (Error::CompilerUnavailable("bad".into()), internal),
         (Error::CompilerWorkerStopped, internal),
-        (Error::Clock("bad".into()), internal),
         (Error::Json(json_fault()), internal),
         (
             Error::Workspace(coral_workspace::Error::WorkspaceArchived),
@@ -509,7 +513,7 @@ fn search_error_codes() -> Vec<(coral_search::Error, &'static str, &'static str)
             "tools",
         ),
         (
-            Error::Tools(coral_tools::Error::Clock("bad".into())),
+            Error::Tools(coral_tools::Error::CompilerWorkerStopped),
             internal,
             "tools",
         ),
