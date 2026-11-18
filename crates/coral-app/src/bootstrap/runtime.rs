@@ -517,7 +517,7 @@ async fn start_mcp_http(
     let engine = grpc.engine();
     let readiness = engine.readiness().probe();
     let modules = engine.mcp_modules(settings.human_interface().clone());
-    let modules = with_registered_interface(modules, settings, grpc)?;
+    let modules = with_registered_interface(modules, settings, grpc, &clock)?;
     let server = match settings.mcp_http().clone() {
         McpHttpServeConfig::AuthDisabled { bind_addr } => {
             start_local(McpHttpConfig::new(bind_addr)?, modules, readiness, clock).await?
@@ -547,6 +547,7 @@ fn with_registered_interface(
     modules: McpModules,
     settings: &ServeSettings,
     grpc: &GrpcServer,
+    clock: &Arc<dyn coral_db::Clock>,
 ) -> Result<McpModules, McpStartError> {
     let Some(configured) = &settings.mcp_interface else {
         return Ok(modules);
@@ -555,6 +556,8 @@ fn with_registered_interface(
         database: grpc.engine().database(),
         modules: modules.clone(),
         outbound_policy: settings.outbound_policy(),
+        env: Arc::new(super::env_var),
+        clock: Arc::clone(clock),
         stopping: grpc.stopping(),
     })?;
     Ok(modules.with_interface(interface))

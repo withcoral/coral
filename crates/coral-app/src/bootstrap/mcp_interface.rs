@@ -36,6 +36,10 @@ pub struct McpInterfaceDependencies {
     pub modules: McpModules,
     /// The operator's destination policy, for `coral_outbound::Client`.
     pub outbound_policy: coral_outbound::DestinationPolicy,
+    /// Reads one variable of the process environment, which bootstrap owns.
+    pub env: coral_secret_store::EnvReader,
+    /// The one clock of this Coral Instance.
+    pub clock: Arc<dyn coral_db::Clock>,
     /// True once this Coral Instance stops its listeners, which is after the
     /// Shutdown Drain. A dropped sender reads the same.
     pub stopping: tokio::sync::watch::Receiver<bool>,

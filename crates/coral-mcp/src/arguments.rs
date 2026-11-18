@@ -149,7 +149,9 @@ fn namespace_line(provider: &coral_search::SearchableProvider) -> String {
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
 pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 30_000;
 pub(crate) const DEFAULT_WAIT_MS: u64 = 0;
-pub(crate) const MAX_WAIT_MS: u64 = 30_000;
+/// The longest one tool call waits, in milliseconds. A surface that wraps
+/// core's holds a wait of its own to it.
+pub const MAX_WAIT_MS: u64 = 30_000;
 
 /// Claude Code sends a tool with this `_meta` key in its first request instead
 /// of deferring it behind tool search. Other clients ignore the key.

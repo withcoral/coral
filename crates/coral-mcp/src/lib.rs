@@ -28,7 +28,7 @@ use coral_search::UniversalSearchModule;
 use coral_task::{TaskCommands, TaskModule};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceModule};
 
-pub use arguments::{CANCEL_TOOL_DESCRIPTION, WAIT_TOOL_DESCRIPTION};
+pub use arguments::{CANCEL_TOOL_DESCRIPTION, MAX_WAIT_MS, WAIT_TOOL_DESCRIPTION};
 pub use authentication::{AuthenticationError, OauthProtectedResource, WorkspaceAuthenticator};
 pub use coral_run::{HumanInterfaceUrl, HumanInterfaceUrlError};
 pub use http::{
