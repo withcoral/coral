@@ -1,11 +1,17 @@
 //! Safe management inspection and optimistic concurrency. All metadata changes
 //! join the owning mutation transaction; no retained Event is used as a version.
+//!
+//! The concurrency metadata is what an inspection shows and what a UUID etag is
+//! checked against. Each resource's row also keeps a version, which every
+//! accepted change raises by one, and an etag that is a version is checked
+//! against the row.
 use std::collections::HashMap;
 
 use crate::list_repository::{Resources, Users};
 use crate::management_repository::{self as repository, listed_metadata, metadata};
-use coral_db::{Transaction, UnixNanos};
+use coral_db::{Transaction, UnixNanos, Version};
 
+use crate::types::Precondition;
 use crate::{
     AuthenticatedUser, ChangeContext, Error, LifecycleTargetKind, WorkspaceAction,
     WorkspaceEvidence, WorkspaceId, WorkspaceModule,
@@ -113,6 +119,12 @@ pub(super) async fn record_change(
     .await
 }
 
+/// Checks the etag the caller read, if the context holds one, against the
+/// resource as it is now. The caller holds the resource's Workspace.
+///
+/// A UUID etag is one that an inspection showed: it is checked against the
+/// concurrency metadata. A version is checked against the resource's row,
+/// and a resource that has no row is at no version.
 pub(super) async fn check_etag(
     tx: &mut Transaction<'_>,
     context: &ChangeContext,
@@ -120,12 +132,47 @@ pub(super) async fn check_etag(
     kind: LifecycleTargetKind,
     id: &str,
 ) -> Result<(), Error> {
-    if let Some(expected) = context.expected_etag()
-        && metadata(tx, workspace, kind, id).await?.etag != expected
-    {
-        return Err(Error::EtagMismatch);
+    let Some(if_match) = context.if_match() else {
+        return Ok(());
+    };
+    let admitted = match if_match.precondition() {
+        Precondition::Token(_) => {
+            if_match.admits_token(&repository::metadata_etag(tx, workspace, kind, id).await?)
+        }
+        Precondition::Version(_) => row_version(tx, workspace, kind, id)
+            .await?
+            .is_some_and(|current| if_match.admits(current)),
+        #[cfg(any(test, feature = "test-fixtures"))]
+        Precondition::Any => true,
+    };
+    if admitted {
+        Ok(())
+    } else {
+        Err(Error::EtagMismatch)
     }
-    Ok(())
+}
+
+/// The version on the row of one resource, or `None` when it has no row.
+async fn row_version(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    kind: LifecycleTargetKind,
+    id: &str,
+) -> Result<Option<Version>, Error> {
+    match kind {
+        LifecycleTargetKind::Workspace => crate::repository::workspace_version(tx, workspace).await,
+        LifecycleTargetKind::WorkspaceMembership => {
+            crate::repository::membership_version(tx, workspace, id).await
+        }
+        LifecycleTargetKind::Agent => {
+            crate::agent_repository::agent_version(tx, workspace, id).await
+        }
+        LifecycleTargetKind::AgentRegistration => {
+            crate::agent_repository::registration_version(tx, workspace, id).await
+        }
+        // A Secret Store grant keeps no version, and no change checks one.
+        LifecycleTargetKind::SecretStore => Ok(None),
+    }
 }
 
 pub(super) async fn claim_request(

@@ -256,7 +256,13 @@ impl WorkspaceModule {
                 )
             }
             PreparedTarget::Agent(workspace, agent) => {
-                crate::agent_repository::delete_current(tx, &workspace, &agent).await?;
+                crate::agent_repository::delete_current(
+                    tx,
+                    &workspace,
+                    &agent,
+                    context.occurred_at(),
+                )
+                .await?;
                 (
                     workspace,
                     LifecycleAction::AgentDeleted,

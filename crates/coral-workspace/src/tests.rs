@@ -6,6 +6,8 @@ mod lists;
 mod management;
 #[path = "secret_store_grant_tests.rs"]
 mod secret_store_grants;
+#[path = "version_tests.rs"]
+mod versions;
 
 use coral_db::UnixNanos;
 use coral_test_support::TestDatabase;
@@ -37,7 +39,7 @@ async fn organization_member_creates_one_active_owned_workspace_with_safe_event(
 
     assert_eq!(workspace.display_name().as_str(), "Engineering");
     assert_eq!(workspace.state(), WorkspaceState::Active);
-    assert_eq!(workspace.lifecycle_version(), 1);
+    assert_eq!(workspace.version().get(), 1);
     let evidence = module
         .check(&creator, workspace.id(), WorkspaceAction::Configure)
         .await
@@ -865,7 +867,7 @@ async fn archive_blocks_configuration_runs_and_dispatch_until_restoration() {
         .await
         .expect("archive Workspace");
     assert_eq!(archived.state(), WorkspaceState::Archived);
-    assert_eq!(archived.lifecycle_version(), 2);
+    assert_eq!(archived.version().get(), 2);
     module
         .check(&member, workspace.id(), WorkspaceAction::Inspect)
         .await
@@ -895,7 +897,7 @@ async fn archive_blocks_configuration_runs_and_dispatch_until_restoration() {
         .await
         .expect("restore Workspace");
     assert_eq!(restored.state(), WorkspaceState::Active);
-    assert_eq!(restored.lifecycle_version(), 3);
+    assert_eq!(restored.version().get(), 3);
     module
         .check(&member, workspace.id(), WorkspaceAction::StartRun)
         .await
@@ -1470,6 +1472,8 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
     let fixture = TestDatabase::new(&before_backfill)
         .await
         .expect("create database from before the backfill");
+    // This version writes the columns of the resource version step.
+    coral_test_support::add_resource_version_columns(&fixture).await;
     let module = WorkspaceModule::new(fixture.database());
     let module = &module;
     let user = |name: &str, role| {
@@ -1539,6 +1543,7 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
         );
     }
 
+    coral_test_support::drop_resource_version_columns(&fixture).await;
     fixture
         .database()
         .migrate(coral_db::migration_plan())

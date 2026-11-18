@@ -253,6 +253,9 @@ async fn upgrade_gives_a_setup_without_a_deadline_the_one_creation_stores() {
     );
     let actor = organization_user(database.clone(), "user:upgrade", OrganizationRole::Member).await;
     let context = change_context(actor.clone(), 10, '1');
+    // This version writes the columns of the resource version step when it
+    // creates the Workspace. The fixture holds them until the upgrade.
+    coral_test_support::add_resource_version_columns(&fixture).await;
     let workspace = workspaces
         .create(&context, WorkspaceDisplayName::parse("Upgrade").unwrap())
         .await
@@ -288,6 +291,7 @@ async fn upgrade_gives_a_setup_without_a_deadline_the_one_creation_stores() {
         "{read:?}"
     );
 
+    coral_test_support::drop_resource_version_columns(&fixture).await;
     database
         .migrate(coral_db::migration_plan())
         .await
