@@ -59,6 +59,9 @@ pub struct RunSummary {
     pub state: RunState,
     /// Durable admission time.
     pub started_at: i64,
+    /// When the Run's execution started; absent while it waits to start, and on
+    /// a Run that ended before it started.
+    pub execution_started_at: Option<coral_db::UnixNanos>,
     /// Terminal time if ended.
     pub ended_at: Option<i64>,
     /// Elapsed nanoseconds at the page sample time.

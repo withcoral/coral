@@ -18,6 +18,7 @@ export const run: Extract<ActivityRow, { kind: 'run' }> = {
   task: '',
   state: 'running',
   startedAt: '2026-09-22T09:00:00Z',
+  executionStartedAt: '2026-09-22T09:00:01Z',
   endedAt: null,
   durationNanos: '1',
   requiresAction: true,
@@ -123,7 +124,7 @@ export function runRow(
   parent: string,
   overrides: Partial<Extract<ActivityRow, { kind: 'run' }>> = {},
 ): Extract<ActivityRow, { kind: 'run' }> {
-  return {
+  const row: Extract<ActivityRow, { kind: 'run' }> = {
     kind: 'run',
     name: `${workspace}/runs/${id}`,
     workspace,
@@ -137,6 +138,8 @@ export function runRow(
     requiresAction: false,
     ...overrides,
   }
+  // It starts when Coral accepts it, unless the caller sets its start mark.
+  return { executionStartedAt: row.startedAt, ...row }
 }
 
 /** An ended tool call that Run `owner` made, labelled by its call path. */

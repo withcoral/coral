@@ -257,6 +257,9 @@ message ActivityRun {
   // Pending actions. Set in the action queue and in InspectRun; absent elsewhere.
   // Absent does not mean there are no actions.
   ActivityActionPage action_page = 15;
+  // When the Run started executing. Absent while it waits to start, and on a
+  // Run that ended before it started.
+  optional int64 execution_started_at_unix_nanos = 16;
 }
 // Summary of one Tool call.
 message ActivityInvocation {

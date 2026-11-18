@@ -8,6 +8,7 @@ import { CodeBlock as Native } from '@/wax/components/code-block'
 import * as DescriptionList from '@/wax/components/description-list'
 import type {
   ActivityPage,
+  ExecutionRow,
   RunContextImpact,
   RunDetail,
   InvocationDetail,
@@ -59,6 +60,17 @@ export function ActivityDetail({ page }: { page: ActivityPage }) {
   return <RecordDetail page={page} />
 }
 
+/** When a Run started. A Run waits to start until its run executor starts it; a Run that
+ * ended while it waited has no start. */
+function RunStart({ run, label }: { run: ExecutionRow; label: string }) {
+  if (!run.executionStartedAt && run.state !== 'running') return null
+  return (
+    <DescriptionList.Row label={label}>
+      {run.executionStartedAt ? <Instant value={run.executionStartedAt} /> : 'Waiting to start'}
+    </DescriptionList.Row>
+  )
+}
+
 function ExecutionDetail({
   page,
   detail,
@@ -92,9 +104,10 @@ function ExecutionDetail({
           running={connected && running}
         />
       </DescriptionList.Row>
-      <DescriptionList.Row label="Run started">
+      <DescriptionList.Row label="Run accepted">
         <Instant value={run.startedAt} />
       </DescriptionList.Row>
+      <RunStart run={run} label="Run started" />
       {run.endedAt && (
         <DescriptionList.Row label="Run ended">
           <Instant value={run.endedAt} />
@@ -118,9 +131,10 @@ function ExecutionDetail({
                 running={connected && running}
               />
             </DescriptionList.Row>
-            <DescriptionList.Row label="Started">
+            <DescriptionList.Row label="Accepted">
               <Instant value={detail.run.startedAt} />
             </DescriptionList.Row>
+            <RunStart run={detail.run} label="Started" />
             {detail.run.endedAt && (
               <DescriptionList.Row label="Ended">
                 <Instant value={detail.run.endedAt} />
