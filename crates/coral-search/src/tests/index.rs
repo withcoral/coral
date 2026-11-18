@@ -219,12 +219,13 @@ async fn upgrading_preserves_visibility_even_when_an_older_writer_later_records_
     // and may read any of them. A later step needs no change to this range
     // unless it depends on one of the held-back steps: 0066 rebuilds the
     // search tables on SQLite, and renames the Saved Function table that
-    // they reference until 0049, so it waits too. The publish reads none of
-    // what it changes.
+    // they reference until 0049, so it waits too, and so does 0075, which
+    // adds columns to that renamed table. The publish reads none of what
+    // they change.
     let modules = TestModules::with_plan(&coral_test_support::edited_migration_plan(|steps| {
         steps
             .into_iter()
-            .filter(|step| !(48..55).contains(&step.version) && step.version != 66)
+            .filter(|step| !(48..55).contains(&step.version) && ![66, 75].contains(&step.version))
             .collect()
     }))
     .await;

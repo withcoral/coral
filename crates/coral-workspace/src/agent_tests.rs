@@ -237,8 +237,43 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
                 .await
                 .map(drop)
         ));
+        // A Run stream's start rebuilds the same actor from the Run's
+        // Principal, and admits exactly whom admission admits.
+        let rebuilt = module
+            .check_run_start_in_transaction(
+                &mut transaction,
+                actor.principal(),
+                workspace.id(),
+                UnixNanos::new(15),
+            )
+            .await;
+        if let Ok((rebuilt, _evidence)) = &rebuilt {
+            assert_eq!(
+                (rebuilt.principal(), rebuilt.agent_registration()),
+                (actor.principal(), actor.agent_registration())
+            );
+        }
+        assert!(expected(permitted, rebuilt.map(drop)));
         transaction.rollback().await.unwrap();
     }
+    // An Agent whose Registration is gone has no authority to start a Run.
+    let connection = database.database();
+    let mut transaction = connection.begin().await.unwrap();
+    agent_repository::delete_current(&mut transaction, workspace.id(), agent.principal().id())
+        .await
+        .unwrap();
+    assert!(matches!(
+        module
+            .check_run_start_in_transaction(
+                &mut transaction,
+                agent.principal(),
+                workspace.id(),
+                UnixNanos::new(15),
+            )
+            .await,
+        Err(Error::AgentNotFound)
+    ));
+    transaction.rollback().await.unwrap();
     assert!(matches!(
         module
             .check_run_admission(&agent, other.id(), UnixNanos::new(15))

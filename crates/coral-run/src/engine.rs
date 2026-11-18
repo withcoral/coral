@@ -23,7 +23,7 @@
 //! For example, changing console-level projection or panic termination changes
 //! `engine/host.rs`, not the main Run orchestration module.
 
-mod host;
+pub(crate) mod host;
 pub(crate) use host::execute;
 
 use std::sync::Arc;
@@ -143,6 +143,34 @@ pub(crate) trait ProgramEngine: Send + Sync {
         host: Arc<dyn coral_v8::ProgramHost>,
         stop: Arc<ExecutionStop>,
     ) -> ExecutionCompletion;
+}
+
+/// The completion of a Program that returned `value_json`, as native JSON,
+/// within the Run's value `limits`.
+pub(crate) fn final_value(
+    value_json: String,
+    limits: coral_value::ValueLimits,
+) -> ExecutionCompletion {
+    match ProgramValue::with_limits(value_json, limits) {
+        Ok(value) => ExecutionCompletion::Succeeded(FinalValue::Present(value)),
+        Err(error) => {
+            coral_telemetry::metric::output_rejected(
+                coral_telemetry::metric::OutputKind::FinalValue,
+            );
+            ExecutionCompletion::Failed(RunFailure::new(
+                RunFailureCode::InvalidProgramValue,
+                error.to_string(),
+            ))
+        }
+    }
+}
+
+/// The completion of a Program whose output exceeded the Run Output Budget.
+pub(crate) fn output_over_budget() -> ExecutionCompletion {
+    ExecutionCompletion::Failed(RunFailure::new(
+        RunFailureCode::ResourceLimitExceeded,
+        "Program output exceeds its limit".to_string(),
+    ))
 }
 
 pub(crate) trait Clock: Send + Sync {
@@ -282,27 +310,11 @@ impl ProgramEngine for V8ProgramEngine {
         {
             Ok(output) => match output.into_final_value_json() {
                 None => ExecutionCompletion::Succeeded(FinalValue::Absent),
-                Some(value) => match ProgramValue::with_limits(value, limits) {
-                    Ok(value) => ExecutionCompletion::Succeeded(FinalValue::Present(value)),
-                    Err(error) => {
-                        coral_telemetry::metric::output_rejected(
-                            coral_telemetry::metric::OutputKind::FinalValue,
-                        );
-                        ExecutionCompletion::Failed(RunFailure::new(
-                            RunFailureCode::InvalidProgramValue,
-                            error.to_string(),
-                        ))
-                    }
-                },
+                Some(value) => final_value(value, limits),
             },
             Err(coral_v8::Error::MemoryLimitExceeded) => ExecutionCompletion::MemoryLimitExceeded,
             Err(coral_v8::Error::CpuLimitExceeded) => ExecutionCompletion::CpuLimitExceeded,
-            Err(coral_v8::Error::ResourceLimitExceeded) => {
-                ExecutionCompletion::Failed(RunFailure::new(
-                    RunFailureCode::ResourceLimitExceeded,
-                    "Program output exceeds its limit".to_string(),
-                ))
-            }
+            Err(coral_v8::Error::ResourceLimitExceeded) => output_over_budget(),
             Err(coral_v8::Error::ProgramHostTerminated) => {
                 ExecutionCompletion::ProgramHostTerminated
             }

@@ -29,6 +29,7 @@ mod refresh;
 mod required_actions;
 mod resilience;
 mod run_inbox;
+mod run_streams;
 mod scoping;
 mod search;
 mod secret_stores;

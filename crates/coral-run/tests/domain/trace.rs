@@ -905,5 +905,9 @@ fn unstarted_run() -> crate::lifecycle::RunRecord {
         terminal_at_unix_nanos: None,
         value_limits: coral_value::ValueLimits::default(),
         trace: None,
+        time_limit_nanos: None,
+        on_run_executor: false,
+        committed_request_number: None,
+        last_commit_at_unix_nanos: None,
     }
 }

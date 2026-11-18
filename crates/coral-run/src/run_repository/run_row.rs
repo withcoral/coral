@@ -41,6 +41,10 @@ pub(super) struct RunRow {
     value_limits_json: String,
     accumulated_output_bytes: i64,
     chunk_sequence: i64,
+    time_limit_nanos: Option<i64>,
+    run_executor_kind: Option<String>,
+    committed_request_number: Option<i64>,
+    last_commit_at_unix_nanos: Option<i64>,
     /// Read beside the row; absent under retention's hold of a terminal Run.
     #[sqlx(default)]
     last_event_sequence: Option<i64>,
@@ -179,9 +183,10 @@ impl RunRow {
         let released_on_interruption = self.worker_claim_id.is_none()
             && termination
                 .is_some_and(|termination| termination.kind == RunTerminationKind::Interrupted);
-        // A taken Run has its claim and no Run Owner yet.
-        let taken =
-            self.worker_claim_id.is_none() && self.execution_started_at_unix_nanos.is_none();
+        // A taken Run has its claim and no Run Owner yet, and a Run that a
+        // Run Executor holds never has one.
+        let taken = self.worker_claim_id.is_none()
+            && (self.execution_started_at_unix_nanos.is_none() || self.run_executor_kind.is_some());
         if state == RunState::Running
             && self.execution_claim_id.is_some()
             && self.worker_claim_id != self.execution_claim_id
@@ -239,6 +244,16 @@ impl RunRow {
             terminal_at_unix_nanos: self.terminal_at_unix_nanos,
             value_limits,
             trace: decode_trace(self.trace_parent.as_deref()),
+            time_limit_nanos: self.time_limit_nanos,
+            on_run_executor: self.run_executor_kind.is_some(),
+            committed_request_number: self
+                .committed_request_number
+                .map(u64::try_from)
+                .transpose()
+                .map_err(|_error| {
+                    Error::CorruptData("Run has invalid committed request number".to_string())
+                })?,
+            last_commit_at_unix_nanos: self.last_commit_at_unix_nanos,
         })
     }
 }

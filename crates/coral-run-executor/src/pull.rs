@@ -31,7 +31,8 @@ use crate::wire::v1::{
     Welcome, pull_request, pull_response,
 };
 use crate::{
-    LocalRunExecutors, MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, PullStreamCompiler, lease_repository,
+    LocalRunExecutors, MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, PullStreamCompiler, RunStreamServer,
+    ServedRunStream, lease_repository,
 };
 
 /// How long the listener keeps a connection, and a pull stream its open
@@ -643,6 +644,8 @@ pub struct LinkServer {
     /// This Coral Instance's id, which Welcome carries.
     pub(crate) coral_instance_id: String,
     pub(crate) timing: Timing,
+    /// What serves the Run streams; `None` refuses them.
+    pub(crate) run_streams: Option<Arc<dyn RunStreamServer>>,
 }
 
 impl LinkServer {
@@ -660,7 +663,15 @@ impl LinkServer {
             database,
             coral_instance_id,
             timing: Timing::default(),
+            run_streams: None,
         }
+    }
+
+    /// Serves Run streams with `server`.
+    #[must_use]
+    pub fn with_run_streams(mut self, server: Arc<dyn RunStreamServer>) -> Self {
+        self.run_streams = Some(server);
+        self
     }
 
     /// The pull streams this link holds.
@@ -735,16 +746,43 @@ struct PullService {
 #[tonic::async_trait]
 impl LinkService for PullService {
     type PullStream = UnboundedReceiverStream<Result<PullResponse, Status>>;
-    type RunStream = tokio_stream::Empty<Result<RunResponse, Status>>;
+    type RunStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<RunResponse, Status>> + Send>>;
 
-    /// Refuses the Run rpc until #2903 serves it.
+    /// Hands an admitted Run Executor's Run stream to the Run stream server.
     async fn run(
         &self,
-        _request: Request<Streaming<RunRequest>>,
+        request: Request<Streaming<RunRequest>>,
     ) -> Result<Response<Self::RunStream>, Status> {
-        Err(Status::unimplemented(
-            "Coral does not serve Run streams yet",
-        ))
+        let authorization = request
+            .metadata()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok());
+        self.link.credentials.admit(authorization).ok_or_else(|| {
+            Status::unauthenticated("the Run Executor credential is not accepted")
+        })?;
+        let server =
+            self.link.run_streams.clone().ok_or_else(|| {
+                Status::unimplemented("this Coral Instance serves no Run streams")
+            })?;
+        let (responses, outbound) = mpsc::unbounded_channel();
+        // A message the link cannot decode ends the requests; the server
+        // sees the Run Executor's side end.
+        let requests = Box::pin(tokio_stream::StreamExt::map_while(
+            request.into_inner(),
+            Result::ok,
+        ));
+        tokio::spawn(async move {
+            server
+                .serve(ServedRunStream {
+                    requests,
+                    responses,
+                })
+                .await;
+        });
+        Ok(Response::new(Box::pin(tokio_stream::StreamExt::map(
+            UnboundedReceiverStream::new(outbound),
+            |message| message.map_err(Status::from),
+        ))))
     }
 
     async fn pull(

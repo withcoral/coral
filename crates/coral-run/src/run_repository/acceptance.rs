@@ -20,8 +20,8 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
-#[derive(Iden)]
-enum ProgramRunPackages {
+#[derive(Iden, Clone, Copy)]
+pub(super) enum ProgramRunPackages {
     Table,
     RunId,
     WorkspaceId,
@@ -39,8 +39,18 @@ enum ProgramRunPackages {
     CompilationTimeoutMillis,
 }
 
+/// The package columns a read decodes.
+pub(super) const PACKAGE_COLUMNS: [ProgramRunPackages; 6] = [
+    ProgramRunPackages::EmittedJavascript,
+    ProgramRunPackages::SourceMap,
+    ProgramRunPackages::CompilerDiagnosticsJson,
+    ProgramRunPackages::TypescriptProfileId,
+    ProgramRunPackages::CompilerVersion,
+    ProgramRunPackages::JavascriptTarget,
+];
+
 #[derive(Debug, FromRow)]
-struct PackageRow {
+pub(super) struct PackageRow {
     emitted_javascript: String,
     source_map: String,
     compiler_diagnostics_json: String,
@@ -50,7 +60,7 @@ struct PackageRow {
 }
 
 impl PackageRow {
-    fn decode(self) -> Result<ProgramPackage, Error> {
+    pub(super) fn decode(self) -> Result<ProgramPackage, Error> {
         let package = ProgramPackage::new(
             self.emitted_javascript,
             self.source_map,
@@ -183,6 +193,7 @@ async fn insert_record(
             ProgramRunRecords::NextEventSequence,
             ProgramRunRecords::AccumulatedOutputBytes,
             ProgramRunRecords::ChunkSequence,
+            ProgramRunRecords::TimeLimitNanos,
         ])
         .values_panic([
             Expr::val(run.id.to_string()),
@@ -204,6 +215,7 @@ async fn insert_record(
             Expr::val(2_i64),
             Expr::val(0_i64),
             Expr::val(0_i64),
+            Expr::val(run.time_limit_nanos),
         ])
         .on_conflict(
             OnConflict::column(ProgramRunRecords::Id)
@@ -220,20 +232,18 @@ pub(crate) async fn load_package_in_transaction(
     run_id: &RunId,
 ) -> Result<Option<ProgramPackage>, Error> {
     let statement = Query::select()
-        .columns([
-            ProgramRunPackages::EmittedJavascript,
-            ProgramRunPackages::SourceMap,
-            ProgramRunPackages::CompilerDiagnosticsJson,
-            ProgramRunPackages::TypescriptProfileId,
-            ProgramRunPackages::CompilerVersion,
-            ProgramRunPackages::JavascriptTarget,
-        ])
+        .columns(PACKAGE_COLUMNS)
         .from(ProgramRunPackages::Table)
         .and_where(Expr::col(ProgramRunPackages::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(ProgramRunPackages::RunId).eq(run_id.to_string()))
         .to_owned();
     let row: Option<PackageRow> = transaction.fetch_optional(statement).await?;
     row.map(PackageRow::decode).transpose()
+}
+
+fn stored_revision(snapshot: &LinkedToolSelection) -> Result<i64, Error> {
+    i64::try_from(snapshot.revision())
+        .map_err(|_error| Error::CorruptData("Tool revision exceeds durable range".to_string()))
 }
 
 fn stored_usize(value: usize) -> Result<i64, Error> {
@@ -249,6 +259,8 @@ pub(super) enum ProgramRunPrivateToolSnapshots {
     PrivateToolId,
     Path,
     Source,
+    Revision,
+    DefaultAccessState,
 }
 
 async fn insert_run_snapshot(
@@ -264,6 +276,8 @@ async fn insert_run_snapshot(
             ProgramRunPrivateToolSnapshots::PrivateToolId,
             ProgramRunPrivateToolSnapshots::Path,
             ProgramRunPrivateToolSnapshots::Source,
+            ProgramRunPrivateToolSnapshots::Revision,
+            ProgramRunPrivateToolSnapshots::DefaultAccessState,
         ])
         .values_panic([
             Expr::val(run.id.to_string()),
@@ -271,6 +285,8 @@ async fn insert_run_snapshot(
             Expr::val(snapshot.tool_key().as_str()),
             Expr::val(snapshot.path().relative_path()),
             Expr::val(snapshot.source().as_str()),
+            Expr::val(stored_revision(snapshot)?),
+            Expr::val(snapshot.default_access_state().as_storage_str()),
         ])
         .to_owned();
     transaction.execute(statement).await?;
@@ -286,6 +302,7 @@ pub(super) enum ProgramRunSharedToolSnapshots {
     Path,
     Revision,
     Source,
+    DefaultAccessState,
 }
 
 /// Records the Shared Tool revision the Run linked, with the source it runs.
@@ -294,9 +311,7 @@ async fn insert_shared_run_snapshot(
     run: &AcceptedRun,
     snapshot: &LinkedToolSelection,
 ) -> Result<(), Error> {
-    let revision = i64::try_from(snapshot.revision()).map_err(|_error| {
-        Error::CorruptData("Shared Tool revision exceeds durable range".to_string())
-    })?;
+    let revision = stored_revision(snapshot)?;
     let statement = Query::insert()
         .into_table(ProgramRunSharedToolSnapshots::Table)
         .columns([
@@ -306,6 +321,7 @@ async fn insert_shared_run_snapshot(
             ProgramRunSharedToolSnapshots::Path,
             ProgramRunSharedToolSnapshots::Revision,
             ProgramRunSharedToolSnapshots::Source,
+            ProgramRunSharedToolSnapshots::DefaultAccessState,
         ])
         .values_panic([
             Expr::val(run.id.to_string()),
@@ -314,6 +330,7 @@ async fn insert_shared_run_snapshot(
             Expr::val(snapshot.path().relative_path()),
             Expr::val(revision),
             Expr::val(snapshot.source().as_str()),
+            Expr::val(snapshot.default_access_state().as_storage_str()),
         ])
         .to_owned();
     transaction.execute(statement).await?;

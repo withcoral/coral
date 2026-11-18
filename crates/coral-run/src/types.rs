@@ -1170,6 +1170,9 @@ pub(crate) struct AcceptedRun {
     /// The Run Trace every span of the Run joins; `None` when acceptance
     /// stored none.
     pub(crate) trace: Option<coral_telemetry::RunTrace>,
+    /// The time limit acceptance stores, which a Run stream's start adds to
+    /// its own instant.
+    pub(crate) time_limit_nanos: Option<i64>,
 }
 
 /// One Private Tool definition or Shared Tool revision a Run linked: which

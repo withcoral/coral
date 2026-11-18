@@ -30,17 +30,14 @@ pub(crate) async fn execute(
     cpu_budget: Option<std::time::Duration>,
     stop: Arc<ExecutionStop>,
 ) -> ExecutionCompletion {
-    let host = Arc::new(RunProgramHost {
-        runtime: tokio::runtime::Handle::current(),
-        span: tracing::Span::current(),
-        trace_id: invoker.trace_id(),
+    let host = program_host(
+        linked_snapshots,
+        invoker,
+        output,
         value_limits,
         cpu_budget,
-        stop: stop.clone(),
-        linked_snapshots,
-        invoker: Arc::new(invoker),
-        output,
-    });
+        stop.clone(),
+    );
     // The Program's thread records its telemetry where this task does. Where
     // this task has no dispatcher, it is left to find the global one, which
     // may be set by then.
@@ -54,6 +51,30 @@ pub(crate) async fn execute(
     })
     .await
     .unwrap_or(ExecutionCompletion::ProgramHostTerminated)
+}
+
+/// The host one Run's Program calls, wherever it runs: in this process's
+/// isolate, or on a Run Executor through the Run stream. Built inside the
+/// Run's execute span, which each Tool Invocation's span is a child of.
+pub(crate) fn program_host(
+    linked_snapshots: HashMap<String, crate::types::LinkedTool>,
+    invoker: ToolInvoker,
+    output: ProgramOutputWriter,
+    value_limits: ValueLimits,
+    cpu_budget: Option<std::time::Duration>,
+    stop: Arc<ExecutionStop>,
+) -> Arc<dyn coral_v8::ProgramHost> {
+    Arc::new(RunProgramHost {
+        runtime: tokio::runtime::Handle::current(),
+        span: tracing::Span::current(),
+        trace_id: invoker.trace_id(),
+        value_limits,
+        cpu_budget,
+        stop,
+        linked_snapshots,
+        invoker: Arc::new(invoker),
+        output,
+    })
 }
 
 struct RunProgramHost {

@@ -99,6 +99,12 @@ pub(crate) struct ChunkBuild {
     pub(crate) bytes: usize,
     /// Row work items in this chunk.
     pub(crate) works: usize,
+    /// The highest Run stream request number this chunk commits: it and
+    /// every lower request are in this chunk or an earlier one.
+    pub(crate) request_number: Option<u64>,
+    /// Which items a Run stream request made, as (item index, number): a
+    /// commit that finds another writer committed the request drops its item.
+    pub(crate) numbered: Vec<(usize, u64)>,
 }
 
 impl ChunkBuild {
@@ -109,6 +115,7 @@ impl ChunkBuild {
             && self.requests.is_empty()
             && self.termination.is_none()
             && self.inbox_rows.is_empty()
+            && self.request_number.is_none()
     }
 
     /// Whether this chunk records the request `key` names.

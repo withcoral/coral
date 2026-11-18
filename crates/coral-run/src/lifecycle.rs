@@ -37,6 +37,15 @@ pub(crate) struct RunRecord {
     /// The Run Trace acceptance stored; `None` for a Run accepted before it
     /// was stored, or without an OpenTelemetry layer.
     pub(crate) trace: Option<coral_telemetry::RunTrace>,
+    /// The time limit acceptance stored, which a Run stream's start adds
+    /// to its own instant; `None` for a Run accepted before it was stored.
+    pub(crate) time_limit_nanos: Option<i64>,
+    /// A take gave the Run to a Run Executor: no Run Owner's worker claim
+    /// ever fences it.
+    pub(crate) on_run_executor: bool,
+    /// The highest Run stream request number committed.
+    pub(crate) committed_request_number: Option<u64>,
+    pub(crate) last_commit_at_unix_nanos: Option<i64>,
 }
 
 impl RunRecord {
@@ -66,21 +75,30 @@ impl RunRecord {
     }
 
     /// Whether the Run row still takes the Run Owner's chunks: a running Run
-    /// whose claim columns both hold `claim_id`. Never the clock: the owner
+    /// that holds `claim_id` as its owner's claim ([`Self::holds_owner_claim`]:
+    /// both claim columns, or the execution claim alone for a Run a Run
+    /// Executor holds, which no worker claim fences). Never the clock: the owner
     /// applies the Run deadline itself and records the timeout like a
     /// cancellation. A lapsed lease does not end ownership (a local owner
     /// continues while its commits show a matching claim), and a recorded
     /// termination intent does not stop the owner recording what it applied
     /// before the intent.
     pub(crate) fn accepts_owner_chunk(&self, claim_id: &str) -> bool {
-        self.state == RunState::Running
-            && self.execution_claim_id.as_deref() == Some(claim_id)
-            && self.worker_claim_id.as_deref() == Some(claim_id)
+        self.state == RunState::Running && self.holds_owner_claim(claim_id)
+    }
+
+    /// Whether `claim_id` is the Run's execution claim and, unless a Run
+    /// Executor holds the Run, its worker claim too.
+    pub(crate) fn holds_owner_claim(&self, claim_id: &str) -> bool {
+        self.execution_claim_id.as_deref() == Some(claim_id)
+            && (self.worker_claim_id.as_deref() == Some(claim_id)
+                || (self.on_run_executor && self.worker_claim_id.is_none()))
     }
 
     /// Whether the owner holding `claim_id` may still do Program work on
     /// this Run. True when the Run is running, no termination is recorded,
-    /// both claim columns hold `claim_id`, and the deadline has not passed.
+    /// it holds `claim_id` as its owner's claim ([`Self::holds_owner_claim`]),
+    /// and the deadline has not passed.
     ///
     /// The lease is deliberately not part of this check. The lease decides
     /// which process owns the Run; every commit renews it. Inside its own
@@ -92,8 +110,7 @@ impl RunRecord {
     pub(crate) fn program_work_is_current(&self, claim_id: &str, now_unix_nanos: i64) -> bool {
         self.state == RunState::Running
             && self.termination.is_none()
-            && self.execution_claim_id.as_deref() == Some(claim_id)
-            && self.worker_claim_id.as_deref() == Some(claim_id)
+            && self.holds_owner_claim(claim_id)
             && !self.deadline_passed(now_unix_nanos)
     }
 
