@@ -3,9 +3,7 @@
 //!
 //! Each resource's row keeps its version, which every accepted change raises
 //! by one, and its times. An inspection shows them, and a change is checked
-//! against the version on the row it changes. Every accepted change also
-//! gives the resource a new etag in the table that held the concurrency
-//! metadata before: a Coral that still reads that table shows and checks it.
+//! against the version on the row it changes.
 use std::collections::HashMap;
 
 use crate::list_repository::Users;
@@ -13,8 +11,8 @@ use crate::management_repository as repository;
 use coral_db::{Transaction, UnixNanos, Version};
 
 use crate::{
-    AuthenticatedUser, ChangeContext, Error, IfMatch, LifecycleTargetKind, RequestId, UserId,
-    WorkspaceAction, WorkspaceEvidence, WorkspaceId, WorkspaceModule,
+    AuthenticatedUser, Error, IfMatch, RequestId, UserId, WorkspaceAction, WorkspaceEvidence,
+    WorkspaceId, WorkspaceModule,
 };
 
 /// Non-secret configuration concurrency and timestamps, as the resource's own
@@ -129,24 +127,6 @@ impl AgentInspection {
         }
         blockers
     }
-}
-
-pub(super) async fn record_change(
-    tx: &mut Transaction<'_>,
-    context: &ChangeContext,
-    workspace: &WorkspaceId,
-    kind: LifecycleTargetKind,
-    id: &str,
-) -> Result<(), Error> {
-    repository::upsert_metadata(
-        tx,
-        workspace,
-        kind,
-        id,
-        &uuid::Uuid::new_v4().to_string(),
-        context.occurred_at(),
-    )
-    .await
 }
 
 /// Checks the etag the caller read against the version that the resource's
