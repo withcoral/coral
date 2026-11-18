@@ -38,13 +38,13 @@ text = "v4.public.eyJjdXN0b21lciI6IkNvcmFsIGRldmVsb3BtZW50ICh0ZXN0IGtleSkiLCJleH
 ```
 
 That is the `v4.public.` line of
-[`test-licenses/covering.license`](./crates/coral-ee-license/test-licenses/covering.license).
+[`test-licenses/covering.license`](../crates/coral-test-support/test-licenses/covering.license).
 To see what a customer sees when a License has lapsed, load the `v4.public.`
 line of
-[`test-licenses/lapsed.license`](./crates/coral-ee-license/test-licenses/lapsed.license)
+[`test-licenses/lapsed.license`](../crates/coral-test-support/test-licenses/lapsed.license)
 in the same way. Coral refuses to start and says what to do. To see the
 trial path, load
-[`test-licenses/evaluation.license`](./crates/coral-ee-license/test-licenses/evaluation.license),
+[`test-licenses/evaluation.license`](../crates/coral-test-support/test-licenses/evaluation.license),
 an Evaluation License that ends on 9999-12-31. An Evaluation License runs on
 the clock: when it expires, Coral stops and does not start again with it.
 

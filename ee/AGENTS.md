@@ -13,6 +13,6 @@ The root `AGENTS.md` applies here too. These rules add to it.
   used, not once at startup, so it never caches the Edition. Give each one a
   test that it refuses to work while the Edition is Community.
 - Never add a private signing key to the repository or CI. A test that needs
-  a License other than the ones in `coral-ee-license/test-licenses/` signs it
-  with a key it generates (ADR 0038). Those are for development and tests
-  only: no published build accepts them.
+  a License other than the ones in `crates/coral-test-support/test-licenses/`
+  signs it with a key it generates (ADR 0038). Those are for development and
+  tests only: no published build accepts them.

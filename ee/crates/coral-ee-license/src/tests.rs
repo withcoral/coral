@@ -418,9 +418,15 @@ fn a_refusal_says_what_to_do() {
 // build that trusts a production key.
 #[test]
 fn a_build_trusts_the_test_key_only_when_it_has_no_release_date() {
-    let covering = license_line(include_str!("../test-licenses/covering.license"));
-    let lapsed = license_line(include_str!("../test-licenses/lapsed.license"));
-    let evaluation = license_line(include_str!("../test-licenses/evaluation.license"));
+    let covering = license_line(include_str!(
+        "../../../../crates/coral-test-support/test-licenses/covering.license"
+    ));
+    let lapsed = license_line(include_str!(
+        "../../../../crates/coral-test-support/test-licenses/lapsed.license"
+    ));
+    let evaluation = license_line(include_str!(
+        "../../../../crates/coral-test-support/test-licenses/evaluation.license"
+    ));
     let development = Build::Development(date("2026-11-18"));
     let released = Build::Released(date("2026-11-18"));
 

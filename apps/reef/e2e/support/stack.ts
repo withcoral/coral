@@ -220,7 +220,7 @@ export async function startStack(options: {
     const license = secretStore
       ? (
           await readFile(
-            join(repoRoot, 'ee/crates/coral-ee-license/test-licenses/covering.license'),
+            join(repoRoot, 'crates/coral-test-support/test-licenses/covering.license'),
             'utf8',
           )
         )
