@@ -6,6 +6,7 @@ mod model;
 mod prompt;
 mod repository;
 mod run_tools;
+mod search;
 mod sub_agents;
 mod tools;
 
@@ -50,6 +51,7 @@ impl McpInterfaceFactory for SubAgentFactory {
             tasks.clone(),
             modules.commands,
             modules.runs,
+            modules.search,
             model,
             dependencies.clock,
             dependencies.stopping,

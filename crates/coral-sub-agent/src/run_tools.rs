@@ -64,11 +64,10 @@ impl RunTools {
             "cancel" => self.cancel(caller, arguments).await,
             _ => Err(Failure::unknown_tool(name)),
         };
-        let text = match outcome {
+        match outcome {
             Ok(update) => run_result(&update),
             Err(failure) => failure.text(),
-        };
-        shortened(text)
+        }
     }
 
     /// Runs a Program in the lead's Task, then waits for its Run.
@@ -236,7 +235,7 @@ fn shortened_intent(intent: &str) -> &str {
 
 /// `text` whole, or its first and last [`RESULT_END_BYTES`] around a marker
 /// that says how much was cut.
-fn shortened(text: String) -> String {
+pub(crate) fn shortened(text: String) -> String {
     if text.len() <= RESULT_MAX_BYTES {
         return text;
     }
