@@ -951,6 +951,110 @@ async fn a_registration_shows_its_version_as_its_etag_and_no_time_that_its_row_l
     assert!(!disabled.enabled);
 }
 
+// Catches, for the Agent's own projection, what the test above catches for
+// its Registration's: another etag than the text of the version, a time that
+// the row does not hold, and a UUID etag answered as malformed.
+#[tokio::test]
+async fn an_agent_shows_its_version_as_its_etag_and_no_time_that_its_row_lacks() {
+    let f = Fixture::new().await;
+    let token = f.token(&f.owner, "reef");
+    let mut client = f.agents();
+    let issued = client
+        .create_agent(request(
+            management::CreateAgentRequest {
+                parent: format!("workspaces/{}", f.workspace.id()),
+                display_name: "versioned".into(),
+                request_id: uuid::Uuid::new_v4().to_string(),
+                expire_time: None,
+            },
+            &token,
+            "reef",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    // The creation shows the etag and the times of both rows.
+    let (created, registration) = (issued.agent.unwrap(), issued.registration.unwrap());
+    for (etag, create_time, update_time) in [
+        (&created.etag, created.create_time, created.update_time),
+        (
+            &registration.etag,
+            registration.create_time,
+            registration.update_time,
+        ),
+    ] {
+        assert_eq!(etag, "1");
+        assert!(create_time.is_some());
+        assert_eq!(update_time, create_time);
+    }
+    let mut reader = f.agents();
+    let name = created.name.clone();
+    let mut shown = async || {
+        reader
+            .get_agent(request(
+                management::GetAgentRequest { name: name.clone() },
+                &token,
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+    };
+    assert_eq!(shown().await, created);
+
+    // A Coral from before the row kept its times created this Agent.
+    f.database
+        .execute_fixture_sql(
+            "UPDATE workspace_agents \
+             SET created_at_unix_nanos = NULL, updated_at_unix_nanos = NULL",
+        )
+        .await
+        .unwrap();
+    let without_times = shown().await;
+    assert_eq!(
+        without_times,
+        management::Agent {
+            create_time: None,
+            update_time: None,
+            ..created
+        }
+    );
+
+    let mut disable = async |etag: &str| {
+        client
+            .update_agent(request(
+                management::UpdateAgentRequest {
+                    agent: Some(management::Agent {
+                        state: management::AgentState::Disabled.into(),
+                        etag: etag.into(),
+                        ..without_times.clone()
+                    }),
+                    update_mask: Some(prost_types::FieldMask {
+                        paths: vec!["state".into()],
+                    }),
+                },
+                &token,
+                "reef",
+            ))
+            .await
+    };
+    let earlier_form = uuid::Uuid::new_v4().to_string();
+    for sent in ["2", earlier_form.as_str()] {
+        let error = disable(sent).await.unwrap_err();
+        assert_eq!(
+            (error.code(), error_reason(&error).as_str()),
+            (tonic::Code::Aborted, "ETAG_MISMATCH"),
+            "{sent:?}"
+        );
+        assert_eq!(shown().await, without_times, "{sent:?}");
+    }
+    let disabled = disable("1").await.unwrap().into_inner();
+    assert_eq!(disabled.etag, "2");
+    assert_eq!(disabled.create_time, None);
+    assert!(disabled.update_time.is_some());
+    assert_eq!(disabled.state, management::AgentState::Disabled as i32);
+}
+
 /// A second Organization Owner and designated Workspace Owner, who may list
 /// the same collections.
 async fn second_owner(f: &Fixture) -> AuthenticatedUser {
