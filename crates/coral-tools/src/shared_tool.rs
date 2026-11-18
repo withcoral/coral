@@ -29,8 +29,7 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use crate::authoring::{
-    Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, now, tool_paths_overlap,
-    v8_compiler,
+    Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, tool_paths_overlap, v8_compiler,
 };
 use crate::tool_typing::ToolDeclarationReader;
 use crate::types::AuthoredToolPath;
@@ -791,6 +790,8 @@ pub struct SharedToolModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     authoring: Authoring,
+    /// Dates the check of a reader's authority.
+    clock: Arc<dyn coral_db::Clock>,
 }
 
 impl SharedToolModule {
@@ -828,9 +829,18 @@ impl SharedToolModule {
     ) -> Self {
         Self {
             authoring: Authoring::new(database.clone(), v8_compiler(compiler), compilation_timeout),
+            clock: Arc::new(coral_db::SystemClock),
             database,
             workspaces,
         }
+    }
+
+    /// Replaces the system clock, so that bootstrap gives the Module the
+    /// Coral Instance's one clock and a test drives time.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn coral_db::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Publishes the exact content the Owner reviewed as the next revision
@@ -1437,7 +1447,12 @@ impl SharedToolModule {
         workspace_id: &WorkspaceId,
     ) -> Result<(), Error> {
         self.workspaces
-            .check_principal_inspection_in_snapshot(transaction, actor, workspace_id, now())
+            .check_principal_inspection_in_snapshot(
+                transaction,
+                actor,
+                workspace_id,
+                self.clock.now(),
+            )
             .await
             .map(drop)
             .map_err(|error| {

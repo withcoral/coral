@@ -90,7 +90,7 @@ impl SearchIndex {
             // Age the snapshot from the start of its reads, not the end of
             // potentially slow scans.
             let sampled = Instant::now();
-            let observed_at = crate::now();
+            let observed_at = self.clock.now();
             let generations = coral_provider::active_generations_in_transaction(&mut tx).await?;
             let authored_tools =
                 coral_tools::authored_tool_index_revisions_in_transaction(&mut tx).await?;

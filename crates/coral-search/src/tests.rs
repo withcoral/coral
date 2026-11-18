@@ -3317,6 +3317,95 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
         .await;
 }
 
+/// The search module reads the clock it was given. An Agent whose
+/// Registration ends an hour after the clock's start, in 2001, searches,
+/// lists the searchable Providers and reads a description until the clock
+/// reaches the Registration's end.
+///
+/// Catches: the module reading the host's clock, a quarter of a century
+/// later. It would refuse the Agent from the start.
+#[tokio::test]
+async fn an_agents_discovery_is_checked_on_the_modules_clock() {
+    const PATH: &str = "coral.providers.weather.getForecast";
+    // 2001-01-01.
+    let start = coral_db::UnixNanos::new(978_307_200 * 1_000_000_000);
+    let expiry = start
+        .checked_add(std::time::Duration::from_hours(1))
+        .unwrap();
+    let clock = coral_test_support::ManualClock::starting_at(start);
+    let fixture = TestModules::new().await;
+    let search = fixture
+        .search
+        .clone()
+        .with_clock(std::sync::Arc::new(clock.clone()));
+    let user = organization_user(fixture.search.database.clone(), "user:clock-search").await;
+    let workspace = fixture.create_workspace(&user).await;
+    let issued = fixture
+        .workspaces
+        .create_agent(
+            &change(user.clone(), 20, '2'),
+            &workspace,
+            coral_workspace::AgentDisplayName::parse("Expiring worker").unwrap(),
+            Some(expiry),
+        )
+        .await
+        .unwrap();
+    let agent = fixture
+        .workspaces
+        .authenticate_agent(&workspace, issued.credential.expose(), start)
+        .await
+        .unwrap();
+    fixture
+        .publish_tracer(&user, &workspace, "https://example.test")
+        .await;
+    fixture.converge().await;
+    let path = CallPath::parse(PATH).unwrap();
+    let found = async || {
+        let page = search
+            .search(&agent, &workspace, &SearchRequest::list())
+            .await?;
+        Ok::<_, Error>(
+            page.hits()
+                .iter()
+                .map(|hit| hit.call_path().as_str().to_owned())
+                .collect::<Vec<_>>(),
+        )
+    };
+    let call_roots = async || {
+        let providers = search.searchable_providers(&agent, &workspace).await?;
+        Ok::<_, Error>(
+            providers
+                .iter()
+                .map(|provider| provider.call_root().as_str().to_owned())
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    assert_eq!(found().await.unwrap(), [PATH]);
+    assert_eq!(call_roots().await.unwrap(), ["coral.providers.weather"]);
+    search
+        .check_description_visibility(&agent, &workspace, &path)
+        .await
+        .expect("the Registration lasts on the module's clock");
+
+    clock.set(expiry);
+    let expired = |result: Result<(), Error>| {
+        matches!(
+            result,
+            Err(Error::Workspace(
+                coral_workspace::Error::AgentRegistrationExpired
+            ))
+        )
+    };
+    assert!(expired(found().await.map(drop)));
+    assert!(expired(call_roots().await.map(drop)));
+    assert!(expired(
+        search
+            .check_description_visibility(&agent, &workspace, &path)
+            .await
+    ));
+}
+
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,

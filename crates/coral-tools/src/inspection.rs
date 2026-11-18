@@ -22,16 +22,28 @@ use crate::types::{PRIVATE_TOOL_PAGE_MAX_SIZE, PrivateTool, PrivateToolPath, Pri
 pub struct PrivateToolInspection {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
+    /// Dates the check of the caller's authority.
+    clock: Arc<dyn coral_db::Clock>,
 }
 
 impl PrivateToolInspection {
     /// Builds inspection over the application's shared database and Workspace authority.
+    /// It reads the host's clock until [`Self::with_clock`] replaces it.
     #[must_use]
-    pub const fn new(database: Arc<Database>, workspaces: WorkspaceModule) -> Self {
+    pub fn new(database: Arc<Database>, workspaces: WorkspaceModule) -> Self {
         Self {
             database,
             workspaces,
+            clock: Arc::new(coral_db::SystemClock),
         }
+    }
+
+    /// Replaces the system clock, so that bootstrap gives inspection the
+    /// Coral Instance's one clock and a test drives time.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn coral_db::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Returns the current definition at one path owned by the authenticated Principal.
@@ -174,7 +186,7 @@ impl PrivateToolInspection {
                 transaction,
                 actor,
                 workspace_id,
-                crate::authoring::now(),
+                self.clock.now(),
             )
             .await?;
         Ok(())

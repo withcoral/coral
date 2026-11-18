@@ -77,6 +77,8 @@ pub struct SearchIndex {
     /// reconcile pass's copy does not: the pass recounts what it changed.
     schedules_recounts: bool,
     telemetry: Arc<telemetry::IndexTelemetry>,
+    /// Stamps each row and attempt, and says when a retry rule is due.
+    clock: Arc<dyn coral_db::Clock>,
     /// The Embedder, when the vector side is on.
     embedder: Option<Arc<EmbedderState>>,
     /// The pause before the Embedder retries a failed batch.
@@ -145,7 +147,8 @@ impl SearchIndex {
     /// Builds the write side over migrated domain persistence. The reconcile task
     /// runs a pass every `reconcile_interval`, and a pass retries a failed
     /// Generation or Authored Tool by the retry module's rule, whose waits
-    /// start at that interval.
+    /// start at that interval. The index reads the host's clock until
+    /// [`Self::with_clock`] replaces it.
     #[must_use]
     pub fn new(database: Arc<Database>, reconcile_interval: Duration) -> Self {
         Self {
@@ -160,6 +163,7 @@ impl SearchIndex {
             recount_delay: statistics::RECOUNT_DELAY,
             schedules_recounts: true,
             telemetry: Arc::new(telemetry::IndexTelemetry::default()),
+            clock: Arc::new(coral_db::SystemClock),
             embedder: None,
             embedder_retry_pause: embedder::RETRY_PAUSE,
             #[cfg(test)]
@@ -171,6 +175,17 @@ impl SearchIndex {
             #[cfg(any(test, feature = "test-fixtures"))]
             stall_before_write: None,
         }
+    }
+
+    /// Replaces the system clock, so that bootstrap gives the index the
+    /// Coral Instance's one clock and a test drives time: the stamp of each
+    /// row and attempt, and the instant a pass compares each retry rule
+    /// with. The write limits and the reconcile interval are spans the
+    /// runtime's timer measures, not this clock.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn coral_db::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Turns the vector side on: the Embedder runs beside the reconcile
@@ -468,7 +483,7 @@ impl SearchIndex {
         workspace_id: &WorkspaceId,
         id: &AuthoredToolId,
     ) -> Result<bool, IndexError> {
-        let now = crate::now();
+        let now = self.clock.now();
         let sync = self
             .read_snapshot(async |transaction| {
                 AuthoredToolIndexer
@@ -779,7 +794,10 @@ impl SearchIndex {
         let write = async move {
             #[cfg(any(test, feature = "test-fixtures"))]
             self.at(WritePoint::HoldsLock).await;
-            let effect = match indexer.index(&mut transaction, entry, written_rows).await {
+            let effect = match indexer
+                .index(&mut transaction, entry, written_rows, self.clock.as_ref())
+                .await
+            {
                 Ok(effect) => effect,
                 Err(error) => {
                     rollback(transaction).await;
@@ -787,7 +805,7 @@ impl SearchIndex {
                 }
             };
             transaction.commit().await?;
-            Ok((effect, crate::now()))
+            Ok((effect, self.clock.now()))
         };
         let written = self
             .before_limit(self.write_limit, write)
@@ -931,6 +949,7 @@ impl SearchIndex {
                     generation,
                     error,
                     self.reconcile_interval,
+                    self.clock.as_ref(),
                 )
                 .await?;
                 transaction.commit().await?;
@@ -955,6 +974,7 @@ impl SearchIndex {
                     entry,
                     error,
                     self.reconcile_interval,
+                    self.clock.as_ref(),
                 )
                 .await?;
                 transaction.commit().await?;
