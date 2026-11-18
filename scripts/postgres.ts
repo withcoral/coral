@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process'
+import { execFile, type ExecFileException } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
@@ -44,19 +44,33 @@ export class LocalPostgres {
   }
 
   private async command(args: string[], timeout = 90_000) {
-    return exec(await this.selectedEngine(), args, {
-      env: this.env,
-      timeout,
-      killSignal: 'SIGKILL',
-    })
+    const engine = await this.selectedEngine()
+    try {
+      return await exec(engine, args, { env: this.env, timeout, killSignal: 'SIGKILL' })
+    } catch (error) {
+      // Name the subcommand and what ended it, never the whole command line.
+      // The message carries the engine's stderr: a caller shows it only when
+      // its commands print nothing private, and replaces it otherwise.
+      const { code, killed, signal, stderr } = error as ExecFileException & { stderr?: string }
+      const step = `${engine} ${args.slice(0, args[0] === 'container' ? 2 : 1).join(' ')}`
+      const reason = killed
+        ? `gave no answer within ${timeout / 1000} seconds`
+        : signal
+          ? `was ended by ${signal}`
+          : typeof code === 'number'
+            ? `exited with code ${code}`
+            : `did not run (${code ?? 'unknown error'})`
+      const output = (stderr ?? '').trim().split('\n').slice(-5).join('\n')
+      throw new Error(`${step} ${reason}${output ? `: ${output}` : ''}`)
+    }
   }
 
-  private async exists() {
+  private async exists(timeout = 10_000) {
     // Listing distinguishes an absent container from a failed engine. An inspect
     // failure alone cannot tell those apart and must not silently pass cleanup.
     const { stdout } = await this.command(
       ['container', 'ls', '--all', '--format', '{{.Names}}', '--filter', `name=${this.container}`],
-      10_000,
+      timeout,
     )
     return stdout.split('\n').some((name) => name.trim() === this.container)
   }
@@ -67,7 +81,10 @@ export class LocalPostgres {
     if (port && (!/^\d+$/.test(port) || Number(port) > 65535))
       throw new Error('LOCAL_POSTGRES_PORT must be a port number from 0 to 65535')
     try {
-      if (await this.exists()) await this.command(['start', this.container])
+      // A start is often the first command the engine's daemon answers, and a
+      // daemon that starts on demand has taken half a minute on CI runners.
+      // Give the listing two minutes here; a stop or a clean keeps the short wait.
+      if (await this.exists(120_000)) await this.command(['start', this.container])
       else
         await this.command([
           'run',
@@ -85,9 +102,10 @@ export class LocalPostgres {
           '1g',
           this.image,
         ])
-    } catch {
+    } catch (error) {
+      // These commands carry no secret, so the engine's own words are safe to show.
       throw new Error(
-        'Postgres startup failed; check Docker/Podman and the local Postgres configuration',
+        `Postgres startup failed; check Docker/Podman and the local Postgres configuration\n${(error as Error).message}`,
       )
     }
     const deadline = Date.now() + 60_000

@@ -265,3 +265,32 @@ test('explicit caller-owned Postgres is validated but never provisioned or dropp
 test('missing Postgres tooling fails setup rather than passing an unrequested suite', async () => {
   await assert.rejects(new LocalPostgres({ PATH: '' }).provision(), /Postgres startup failed/)
 })
+
+test('a failed startup names the engine command and what ended it', async (context) => {
+  const startup = 'Postgres startup failed; check Docker/Podman and the local Postgres configuration'
+  const cases = [
+    [
+      { fail: ['run'], stderr: 'first\n2\n3\n4\n5\nport is already allocated' },
+      'podman run exited with code 1: 2\n3\n4\n5\nport is already allocated',
+    ],
+    [
+      { fail: ['ls'], stderr: 'cannot reach the daemon' },
+      'podman container ls exited with code 1: cannot reach the daemon',
+    ],
+    [{ killed: ['ls'] }, 'podman container ls was ended by SIGKILL'],
+  ]
+  for (const [initial, cause] of cases) {
+    const fixture = await postgresFixture(context, initial)
+    await assert.rejects(new LocalPostgres(fixture.env).start(), {
+      message: `${startup}\n${cause}`,
+    })
+    assert.deepEqual((await fixture.state()).containers, {})
+  }
+  await assert.rejects(new LocalPostgres({ PATH: '' }).start(), {
+    message: `${startup}\nDocker or Podman is required for local Postgres`,
+  })
+  await assert.rejects(
+    new LocalPostgres({ PATH: '', POSTGRES_CONTAINER_ENGINE: 'absent-engine' }).start(),
+    { message: `${startup}\nabsent-engine container ls did not run (ENOENT)` },
+  )
+})
