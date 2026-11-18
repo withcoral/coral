@@ -46,14 +46,14 @@ jobs:
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/npm-install
         with:
           packages: apps/reef
       # Keeps the Reel image's layers and cache mounts between runs.
-      - uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184 # v2.2.0
+      - uses: useblacksmith/setup-docker-builder@06dd9c83a5d541274d2e3ac67625560979275267 # v2.3.0
         with:
           cache-key: reel
       - name: Record the suite
@@ -85,7 +85,7 @@ jobs:
       # keeps passing runs for review.
       - name: Retain review evidence, always for a failed or cancelled run
         if: ${{ always() && (failure() || cancelled() || github.event.repository.private) }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reel-${{ inputs.suite }}-${{ inputs.suite == 'multi-instance' && 'postgres' || inputs.database }}${{ inputs.shard && format('-{0}', inputs.shard) || '' }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: apps/reef/e2e/runs/
