@@ -7,6 +7,7 @@
 mod accounts;
 
 use super::{Fixture, error_reason, management, request};
+use coral_workspace::RequestId;
 use management::create_provider_setup_request::Input;
 use management::provider_configuration::Authentication;
 use serde_json::{Value, json};
@@ -1912,6 +1913,7 @@ async fn provider_route_mutation_requires_reef_user_owner_and_current_provider_e
         .workspaces
         .create_agent(
             &super::change(&f.owner),
+            &RequestId::generate(),
             f.workspace.id(),
             coral_workspace::AgentDisplayName::parse("route agent").unwrap(),
             None,

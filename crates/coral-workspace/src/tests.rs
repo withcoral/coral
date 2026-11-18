@@ -14,8 +14,8 @@ use coral_test_support::TestDatabase;
 
 use crate::{
     AuthoritySource, ChangeContext, Denial, Error, IfMatch, LifecycleAction, LifecycleOutcome,
-    OrganizationRole, TraceId, UserId, WorkspaceAction, WorkspaceDisplayName, WorkspaceModule,
-    WorkspaceRole, WorkspaceState, local_organization_owner,
+    OrganizationRole, RequestId, TraceId, UserId, WorkspaceAction, WorkspaceDisplayName,
+    WorkspaceModule, WorkspaceRole, WorkspaceState, local_organization_owner,
 };
 
 #[tokio::test]
@@ -1079,6 +1079,7 @@ async fn agent_creation_returns_one_credential_and_safe_durable_attribution() {
     let issued = module
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             crate::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -1269,6 +1270,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
     let issued = module
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             crate::AgentDisplayName::parse("Worker").unwrap(),
             Some(UnixNanos::new(100)),
@@ -1281,8 +1283,10 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
     let rotated = module
         .rotate_agent_credential(
             &change(owner.clone(), 20, '2'),
+            &RequestId::generate(),
             workspace.id(),
             issued.registration.id(),
+            &IfMatch::any(),
         )
         .await
         .unwrap();
@@ -1317,6 +1321,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
             &context,
             workspace.id(),
             issued.registration.id(),
+            &IfMatch::any(),
             true,
             None,
         )
@@ -1331,6 +1336,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
             &context,
             workspace.id(),
             actor.principal().id(),
+            &IfMatch::any(),
             crate::AgentState::Disabled,
         )
         .await
@@ -1346,6 +1352,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
             &context,
             workspace.id(),
             actor.principal().id(),
+            &IfMatch::any(),
             crate::AgentState::Enabled,
         )
         .await
@@ -1355,6 +1362,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
             &context,
             workspace.id(),
             issued.registration.id(),
+            &IfMatch::any(),
             false,
             None,
         )

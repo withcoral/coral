@@ -9,7 +9,7 @@ use coral_db::DatabaseSystem;
 use coral_policy::{ToolAccessState, ToolPolicyTarget};
 use coral_provider::ProviderId;
 use coral_provider::access::ProviderCallRoot;
-use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
+use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, RequestId, WorkspaceId};
 
 use super::{TestModules, change, organization_user, paths};
 use crate::{
@@ -122,6 +122,7 @@ impl Corpus {
             .workspaces
             .create_agent(
                 &change(self.user.clone(), 65, '6'),
+                &RequestId::generate(),
                 &self.workspace,
                 coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
                 None,

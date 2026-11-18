@@ -3,8 +3,8 @@
 //! permits the Workspace action it declares.
 use coral_db::UnixNanos;
 use coral_workspace::{
-    AgentDisplayName, AuthenticatedPrincipal, IfMatch, OrganizationRole, WorkspaceAction,
-    WorkspaceDisplayName, WorkspaceId, WorkspaceRole,
+    AgentDisplayName, AuthenticatedPrincipal, IfMatch, OrganizationRole, RequestId,
+    WorkspaceAction, WorkspaceDisplayName, WorkspaceId, WorkspaceRole,
 };
 
 use coral_catalog::{AuthenticationKind, BuiltinCatalog, ToolHints};
@@ -678,6 +678,7 @@ impl BuiltinWorkspace {
             .workspaces
             .create_agent(
                 &change_context(self.owner.clone(), at, '3'),
+                &RequestId::generate(),
                 self.workspace.id(),
                 AgentDisplayName::parse("Worker").unwrap(),
                 None,

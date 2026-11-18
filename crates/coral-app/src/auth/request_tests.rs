@@ -6,7 +6,7 @@ use coral_mcp::{McpEndpoint, McpModules, WorkspaceAuthenticator};
 use coral_provider::ProviderModule;
 use coral_workspace::{
     AgentDisplayName, AgentState, AuthenticatedUser, ChangeContext, IfMatch, OrganizationModule,
-    OrganizationRole, PrincipalKind, TraceId, UserId, WorkspaceDisplayName, WorkspaceId,
+    OrganizationRole, PrincipalKind, RequestId, TraceId, UserId, WorkspaceDisplayName, WorkspaceId,
     WorkspaceModule, WorkspaceRole,
 };
 use std::sync::Arc;
@@ -145,6 +145,7 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
         .workspaces
         .create_agent(
             &fixture.owner,
+            &RequestId::generate(),
             &fixture.workspace,
             AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -226,7 +227,13 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
     );
     let rotated = fixture
         .workspaces
-        .rotate_agent_credential(&fixture.other, &fixture.workspace, issued.registration.id())
+        .rotate_agent_credential(
+            &fixture.other,
+            &RequestId::generate(),
+            &fixture.workspace,
+            issued.registration.id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -258,6 +265,7 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
             &fixture.other,
             &fixture.workspace,
             actor.principal().id(),
+            &IfMatch::any(),
             AgentState::Disabled,
         )
         .await
@@ -278,6 +286,7 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
             &fixture.other,
             &fixture.workspace,
             actor.principal().id(),
+            &IfMatch::any(),
             AgentState::Enabled,
         )
         .await
@@ -289,6 +298,7 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
                 &fixture.other,
                 &fixture.workspace,
                 issued.registration.id(),
+                &IfMatch::any(),
                 enabled,
                 expiry.map(coral_db::UnixNanos::new),
             )
@@ -506,6 +516,7 @@ async fn http_organization_endpoint_serves_only_the_workspace_the_credential_fix
         .workspaces
         .create_agent(
             &fixture.owner,
+            &RequestId::generate(),
             &fixture.workspace,
             AgentDisplayName::parse("Worker").unwrap(),
             None,

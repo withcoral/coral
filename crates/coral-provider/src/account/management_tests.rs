@@ -3,7 +3,7 @@ use coral_credentials::Secret;
 coral_test_support::provider_setup_fixtures!(crate);
 use crate::account_tests::{authorization_request, publish_provider};
 use crate::tests::{change_context, organization_user, test_modules};
-use coral_workspace::{IfMatch, OrganizationRole, WorkspaceDisplayName};
+use coral_workspace::{IfMatch, OrganizationRole, RequestId, WorkspaceDisplayName};
 
 #[tokio::test]
 #[expect(
@@ -310,6 +310,7 @@ async fn pending_authorization_cap_counts_agent_reconnects_with_new_accounts() {
     let agent = workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,

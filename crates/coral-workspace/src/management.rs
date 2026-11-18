@@ -13,8 +13,8 @@ use coral_db::{Transaction, UnixNanos, Version};
 
 use crate::types::Precondition;
 use crate::{
-    AuthenticatedUser, ChangeContext, Error, IfMatch, LifecycleTargetKind, WorkspaceAction,
-    WorkspaceEvidence, WorkspaceId, WorkspaceModule,
+    AuthenticatedUser, ChangeContext, Error, IfMatch, LifecycleTargetKind, RequestId, UserId,
+    WorkspaceAction, WorkspaceEvidence, WorkspaceId, WorkspaceModule,
 };
 
 /// Non-secret configuration concurrency and timestamps.
@@ -186,16 +186,31 @@ async fn row_version(
     }
 }
 
+/// Claims `request` for `user`, so that the action it names runs once: the
+/// claim commits with the action, and a second claim of the same identity by
+/// the same User is refused.
 pub(super) async fn claim_request(
+    tx: &mut Transaction<'_>,
+    user: &UserId,
+    request: &RequestId,
+) -> Result<(), Error> {
+    if repository::insert_request(tx, user, request).await? {
+        Ok(())
+    } else {
+        Err(Error::RequestAlreadyApplied)
+    }
+}
+
+/// Claims the request identity in the context, if it holds one, as
+/// [`claim_request`] does.
+pub(super) async fn claim_request_in_context(
     tx: &mut Transaction<'_>,
     context: &ChangeContext,
 ) -> Result<(), Error> {
-    if let Some(id) = context.request_id()
-        && !repository::insert_request(tx, context.actor().user_id(), id).await?
-    {
-        return Err(Error::RequestAlreadyApplied);
+    match context.request_id() {
+        Some(request) => claim_request(tx, context.actor().user_id(), request).await,
+        None => Ok(()),
     }
-    Ok(())
 }
 
 impl WorkspaceModule {

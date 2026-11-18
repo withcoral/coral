@@ -9,7 +9,7 @@ use crate::setup_tests::{credential_for, user_principal, workspace_owner};
 use coral_administration::AccessLifecycleModule;
 use coral_credentials::Secret;
 use coral_db::UnixNanos;
-use coral_workspace::{ChangeContext, OrganizationModule, WorkspaceRole};
+use coral_workspace::{ChangeContext, OrganizationModule, RequestId, WorkspaceRole};
 use fixture::{assert_cleanup_events, candidate, evidence, harness, pause_update};
 
 #[derive(Clone, Copy)]

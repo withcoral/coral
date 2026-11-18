@@ -73,7 +73,7 @@ pub use workspaces::WorkspaceWorkflow;
 
 use coral_db::{Database, Transaction};
 use coral_workspace::{
-    AccessRemovalTarget, ChangeContext, PrincipalId, UserId, WorkspaceId, WorkspaceModule,
+    AccessRemovalTarget, ChangeContext, IfMatch, PrincipalId, UserId, WorkspaceId, WorkspaceModule,
 };
 use std::sync::Arc;
 
@@ -134,17 +134,23 @@ impl AccessLifecycleModule {
         )
         .await
     }
-    /// Removes one exact Agent's current work and Registration, retaining attribution.
+    /// Removes the current work and Registration of the Agent that the caller
+    /// read at `if_match`, retaining attribution.
     /// # Errors
-    /// Requires current Owner authority and rolls back all failed cleanup.
+    /// Requires current Owner authority, rejects an Agent that changed since,
+    /// and rolls back all failed cleanup.
     pub async fn delete_agent(
         &self,
         context: &ChangeContext,
         workspace: &WorkspaceId,
         agent: &PrincipalId,
+        if_match: &IfMatch,
     ) -> Result<(), Error> {
-        self.remove(context, AccessRemovalTarget::Agent(workspace, agent))
-            .await
+        self.remove(
+            context,
+            AccessRemovalTarget::Agent(workspace, agent, if_match),
+        )
+        .await
     }
     async fn remove(
         &self,

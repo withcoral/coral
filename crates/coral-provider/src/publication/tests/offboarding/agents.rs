@@ -30,6 +30,7 @@ async fn agent_removal(shared: bool) {
         .workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -105,6 +106,7 @@ async fn agent_removal(shared: bool) {
             &cleanup,
             workspace.id(),
             agent.principal().id(),
+            &IfMatch::any(),
         ),
     )
     .await

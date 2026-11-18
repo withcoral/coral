@@ -46,6 +46,7 @@ pub(crate) async fn registered_agent(
                 10,
                 '1',
             ),
+            &RequestId::generate(),
             workspace_id,
             coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
             None,

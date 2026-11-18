@@ -333,6 +333,7 @@ async fn management_profiles_follow_people_and_retained_creator_visibility() {
         .workspaces
         .create_agent(
             &change(&f.member),
+            &RequestId::generate(),
             f.workspace.id(),
             coral_workspace::AgentDisplayName::parse("Attribution").unwrap(),
             None,
@@ -770,6 +771,7 @@ async fn management_registration_masks_preserve_unmasked_fields_and_reject_stale
         .workspaces
         .create_agent(
             &change(&f.owner),
+            &RequestId::generate(),
             f.workspace.id(),
             AgentDisplayName::parse("masked").unwrap(),
             None,
@@ -860,6 +862,7 @@ async fn agent_and_organization_membership_pages_round_trip_and_bind_their_token
         f.workspaces
             .create_agent(
                 &change(&f.owner),
+                &RequestId::generate(),
                 f.workspace.id(),
                 AgentDisplayName::parse(name).unwrap(),
                 None,

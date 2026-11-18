@@ -3,8 +3,8 @@ use configured_provider_fixtures::ConfiguredProviderFixtures as _;
 use coral_db::UnixNanos;
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
-    AuthenticatedPrincipal, ChangeContext, IfMatch, OrganizationRole, WorkspaceDisplayName,
-    WorkspaceModule,
+    AuthenticatedPrincipal, ChangeContext, IfMatch, OrganizationRole, RequestId,
+    WorkspaceDisplayName, WorkspaceModule,
 };
 
 #[path = "activity_tests.rs"]
@@ -775,6 +775,7 @@ async fn completion_requires_exact_workspace_principal_and_current_authority() {
         .workspaces
         .create_agent(
             &change,
+            &RequestId::generate(),
             &f.workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -828,6 +829,7 @@ async fn completion_requires_exact_workspace_principal_and_current_authority() {
             &change,
             &f.workspace,
             agent.principal().id(),
+            &IfMatch::any(),
             coral_workspace::AgentState::Disabled,
         )
         .await
@@ -1458,6 +1460,7 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
         .workspaces
         .create_agent(
             &change,
+            &RequestId::generate(),
             &fixture.workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -1693,6 +1696,7 @@ async fn the_task_modules_clock_dates_its_rechecks_and_its_commands_attempts() {
         .workspaces
         .create_agent(
             &ChangeContext::new(fixture.user.clone(), start, coral_test_support::trace('1')),
+            &RequestId::generate(),
             &fixture.workspace,
             coral_workspace::AgentDisplayName::parse("Expiring worker").unwrap(),
             Some(expiry),
@@ -1805,6 +1809,7 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_run_acceptan
             .workspaces
             .create_agent(
                 &change,
+                &RequestId::generate(),
                 &fixture.workspace,
                 coral_workspace::AgentDisplayName::parse("Expiring worker").unwrap(),
                 Some(UnixNanos::new(expiry)),

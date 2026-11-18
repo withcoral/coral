@@ -1,8 +1,14 @@
 use super::*;
 use coral_catalog::AuthoredToolKind;
-use coral_workspace::{AgentDisplayName, AgentRegistrationId, AgentState, IfMatch, WorkspaceId};
+use coral_workspace::{
+    AgentDisplayName, AgentRegistrationId, AgentState, IfMatch, RequestId, WorkspaceId,
+};
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Agent is followed from a running Program through deletion to its retained history"
+)]
 async fn deleting_agent_removes_current_work_but_retains_attribution() {
     let (engine, release) = SnapshotEngine::new();
     let fixture = TestModules::new(Arc::new(engine.clone())).await;
@@ -44,7 +50,12 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
     );
     let context = change(owner.authenticated_user().unwrap().clone(), 30, '2');
     lifecycle
-        .delete_agent(&context, &workspace, agent.principal().id())
+        .delete_agent(
+            &context,
+            &workspace,
+            agent.principal().id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -69,7 +80,8 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
                 &context,
                 &workspace,
                 agent.principal().id(),
-                AgentState::Enabled
+                &IfMatch::any(),
+                AgentState::Enabled,
             )
             .await,
         Err(coral_workspace::Error::AgentNotFound)
@@ -151,7 +163,12 @@ impl AgentLoss {
                     fixture.database.clone(),
                     fixture.workspaces.clone(),
                 )
-                .delete_agent(&context, workspace_id, agent.principal().id())
+                .delete_agent(
+                    &context,
+                    workspace_id,
+                    agent.principal().id(),
+                    &IfMatch::any(),
+                )
                 .await
                 .unwrap();
             }
@@ -162,6 +179,7 @@ impl AgentLoss {
                         &context,
                         workspace_id,
                         agent.principal().id(),
+                        &IfMatch::any(),
                         AgentState::Disabled,
                     )
                     .await
@@ -170,7 +188,14 @@ impl AgentLoss {
             Self::RegistrationDisabled => {
                 fixture
                     .workspaces
-                    .update_agent_registration(&context, workspace_id, registration, false, None)
+                    .update_agent_registration(
+                        &context,
+                        workspace_id,
+                        registration,
+                        &IfMatch::any(),
+                        false,
+                        None,
+                    )
                     .await
                     .unwrap();
             }
@@ -181,6 +206,7 @@ impl AgentLoss {
                         &context,
                         workspace_id,
                         registration,
+                        &IfMatch::any(),
                         true,
                         Some(coral_db::UnixNanos::new(0)),
                     )
@@ -284,6 +310,7 @@ pub(super) async fn agent_scope(
         .workspaces
         .create_agent(
             &change(owner.authenticated_user().unwrap().clone(), 10, '1'),
+            &RequestId::generate(),
             workspace_id,
             AgentDisplayName::parse("Worker").unwrap(),
             Some(coral_db::UnixNanos::new(1_000_000)),
@@ -626,8 +653,10 @@ async fn rotation_during_a_pending_invocation_changes_neither_authority_nor_hist
         .workspaces
         .rotate_agent_credential(
             &change(tool.user.clone(), 30, '2'),
+            &RequestId::generate(),
             &tool.workspace_id,
             &registration,
+            &IfMatch::any(),
         )
         .await
         .unwrap();

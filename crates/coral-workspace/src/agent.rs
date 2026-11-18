@@ -1,8 +1,8 @@
 use crate::{
     Agent, AgentCredential, AgentDisplayName, AgentRegistration, AgentRegistrationId, AgentState,
-    AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, Error, EventDetail,
+    AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, Error, EventDetail, IfMatch,
     IssuedAgentCredential, LifecycleAction, LifecycleTargetKind, Principal, PrincipalId,
-    PrincipalKind, WorkspaceId, WorkspaceModule, agent_repository as repository,
+    PrincipalKind, RequestId, WorkspaceId, WorkspaceModule, agent_repository as repository,
     agent_types::credential_verifier, record_event,
 };
 use coral_db::UnixNanos;
@@ -71,13 +71,17 @@ impl WorkspaceModule {
     }
 
     /// Creates one Workspace-owned Agent, its Registration, and first credential atomically.
+    /// `request` names the creation, so that a repeat of it creates no second Agent.
     ///
     /// # Errors
     ///
-    /// Requires an active Workspace and effective Owner. Failure publishes nothing.
+    /// Requires an active Workspace and effective Owner. Returns
+    /// [`Error::RequestAlreadyApplied`] for a request that already created an
+    /// Agent. Failure publishes nothing.
     pub async fn create_agent(
         &self,
         context: &ChangeContext,
+        request: &RequestId,
         workspace_id: &WorkspaceId,
         display_name: AgentDisplayName,
         expires_at: Option<UnixNanos>,
@@ -104,7 +108,8 @@ impl WorkspaceModule {
         let evidence = self
             .check_configuration_in_transaction(&mut transaction, context.actor(), workspace_id)
             .await?;
-        crate::management::claim_request(&mut transaction, context).await?;
+        crate::management::claim_request(&mut transaction, context.actor().user_id(), request)
+            .await?;
         repository::insert(
             &mut transaction,
             &agent,
@@ -142,17 +147,25 @@ impl WorkspaceModule {
         finish_issuance(transaction, agent, registration, credential).await
     }
 
-    /// Rotates the verifier and shows a fresh credential once, without changing attribution.
+    /// Rotates the verifier of the Registration that the caller read at
+    /// `if_match`, and shows a fresh credential once, without changing
+    /// attribution. `request` names the rotation, so that a repeat of it does
+    /// not rotate again.
     ///
     /// # Errors
     ///
     /// Requires an active Workspace, effective Owner, and exact Registration.
-    /// Rotation does not enable a disabled Agent or extend its expiration.
+    /// Returns [`Error::EtagMismatch`] for a Registration that changed since,
+    /// and [`Error::RequestAlreadyApplied`] for a request that already
+    /// rotated. Rotation does not enable a disabled Agent or extend its
+    /// expiration.
     pub async fn rotate_agent_credential(
         &self,
         context: &ChangeContext,
+        request: &RequestId,
         workspace_id: &WorkspaceId,
         registration_id: &AgentRegistrationId,
+        if_match: &IfMatch,
     ) -> Result<IssuedAgentCredential, Error> {
         let credential = AgentCredential::generate()?;
         let mut transaction = self.database.begin().await?;
@@ -163,15 +176,16 @@ impl WorkspaceModule {
             repository::registration_by_id(&mut transaction, workspace_id, registration_id).await?;
         let agent =
             repository::find(&mut transaction, workspace_id, registration.agent_id()).await?;
-        crate::management::check_etag(
+        crate::management::check(
             &mut transaction,
-            context,
+            if_match,
             workspace_id,
             LifecycleTargetKind::AgentRegistration,
             &registration_id.to_string(),
         )
         .await?;
-        crate::management::claim_request(&mut transaction, context).await?;
+        crate::management::claim_request(&mut transaction, context.actor().user_id(), request)
+            .await?;
         repository::update_verifier(
             &mut transaction,
             workspace_id,
@@ -196,16 +210,19 @@ impl WorkspaceModule {
         finish_issuance(transaction, agent, registration, credential).await
     }
 
-    /// Changes Agent lifecycle without removing history or changing identity.
+    /// Changes the lifecycle of the Agent that the caller read at `if_match`,
+    /// without removing history or changing identity.
     ///
     /// # Errors
     ///
     /// Requires active effective Owner authority and an Agent in this Workspace.
+    /// Returns [`Error::EtagMismatch`] for an Agent that changed since.
     pub async fn set_agent_state(
         &self,
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
         agent_id: &PrincipalId,
+        if_match: &IfMatch,
         state: AgentState,
     ) -> Result<Agent, Error> {
         let mut transaction = self.database.begin().await?;
@@ -213,9 +230,9 @@ impl WorkspaceModule {
             .check_configuration_in_transaction(&mut transaction, context.actor(), workspace_id)
             .await?;
         let mut agent = repository::find(&mut transaction, workspace_id, agent_id).await?;
-        crate::management::check_etag(
+        crate::management::check(
             &mut transaction,
-            context,
+            if_match,
             workspace_id,
             LifecycleTargetKind::Agent,
             agent_id.as_str(),
@@ -243,7 +260,8 @@ impl WorkspaceModule {
         Ok(agent)
     }
 
-    /// Replaces an Agent Registration's enabled state and optional expiration.
+    /// Replaces the enabled state and optional expiration of the Agent
+    /// Registration that the caller read at `if_match`.
     ///
     /// A past deadline expires it immediately. Clearing or extending the deadline
     /// restores Registration authority only if the Agent itself is enabled.
@@ -251,11 +269,13 @@ impl WorkspaceModule {
     /// # Errors
     ///
     /// Requires active effective Owner authority and the exact Registration.
+    /// Returns [`Error::EtagMismatch`] for a Registration that changed since.
     pub async fn update_agent_registration(
         &self,
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
         registration_id: &AgentRegistrationId,
+        if_match: &IfMatch,
         enabled: bool,
         expires_at: Option<UnixNanos>,
     ) -> Result<AgentRegistration, Error> {
@@ -265,9 +285,9 @@ impl WorkspaceModule {
             .await?;
         let mut registration =
             repository::registration_by_id(&mut transaction, workspace_id, registration_id).await?;
-        crate::management::check_etag(
+        crate::management::check(
             &mut transaction,
-            context,
+            if_match,
             workspace_id,
             LifecycleTargetKind::AgentRegistration,
             &registration_id.to_string(),

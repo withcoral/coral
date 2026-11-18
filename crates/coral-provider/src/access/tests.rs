@@ -6,7 +6,7 @@ use crate::tests::{
     CREDENTIAL_FREE_OPENAPI, change_context, organization_user, publish_provider, test_modules,
 };
 use coral_credentials::Secret;
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName, WorkspaceRole};
+use coral_workspace::{OrganizationRole, RequestId, WorkspaceDisplayName, WorkspaceRole};
 
 #[tokio::test]
 async fn exact_inspection_uses_workspace_scope_and_requires_a_membership() {
@@ -751,6 +751,7 @@ async fn agent_inspection_shows_each_settings_account_for_that_agent_only() {
         h.workspaces
             .create_agent(
                 &context,
+                &RequestId::generate(),
                 workspace,
                 AgentDisplayName::parse(name).unwrap(),
                 None,

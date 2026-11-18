@@ -60,7 +60,7 @@ use coral_upstream::{HttpOutcome, ReadyDispatch, UpstreamOutcome};
 use coral_v8::CompileFailure;
 use coral_workspace::AuthenticatedPrincipal;
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, IfMatch, OrganizationRole, TraceId, UserId,
+    AuthenticatedUser, ChangeContext, IfMatch, OrganizationRole, RequestId, TraceId, UserId,
     WorkspaceDisplayName, WorkspaceModule, WorkspaceRole,
 };
 use sea_query::{Alias, Expr, ExprTrait as _, Query};

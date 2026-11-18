@@ -1,8 +1,8 @@
 use super::*;
 use coral_test_support::{ManualClock, TestDatabase};
 use coral_workspace::{
-    AgentDisplayName, AuthenticatedUser, ChangeContext, IssuedAgentCredential, OrganizationRole,
-    Principal, TraceId, UserId, WorkspaceDisplayName, WorkspaceRole,
+    AgentDisplayName, AuthenticatedUser, ChangeContext, IfMatch, IssuedAgentCredential,
+    OrganizationRole, Principal, RequestId, TraceId, UserId, WorkspaceDisplayName, WorkspaceRole,
 };
 use std::time::Duration;
 
@@ -238,7 +238,13 @@ async fn agent_authentication_uses_workspace_registration_not_user_authority() {
     assert_eq!(fixture.authenticate(Some(token)).await.unwrap(), principal);
     let rotated = fixture
         .workspaces
-        .rotate_agent_credential(&fixture.other, &fixture.workspace, issued.registration.id())
+        .rotate_agent_credential(
+            &fixture.other,
+            &RequestId::generate(),
+            &fixture.workspace,
+            issued.registration.id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -257,6 +263,7 @@ async fn agent_authentication_uses_workspace_registration_not_user_authority() {
                 &fixture.other,
                 &fixture.workspace,
                 issued.registration.id(),
+                &IfMatch::any(),
                 enabled,
                 expiry.map(UnixNanos::new),
             )
@@ -285,6 +292,7 @@ async fn a_credential_expires_when_the_clock_passes_its_expiry() {
             &fixture.other,
             &fixture.workspace,
             agent.registration.id(),
+            &IfMatch::any(),
             true,
             Some(UnixNanos::new(fixture.clock.now().get() + 30 * SECOND)),
         )
@@ -533,6 +541,7 @@ impl Fixture {
         self.workspaces
             .create_agent(
                 &self.owner,
+                &RequestId::generate(),
                 workspace,
                 AgentDisplayName::parse("Worker").unwrap(),
                 None,

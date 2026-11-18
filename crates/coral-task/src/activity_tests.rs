@@ -1,7 +1,7 @@
 //! Current hierarchy contracts, replacing tests for superseded filters and sort modes.
 use super::*;
 use coral_db::UnixNanos;
-use coral_workspace::{HistoryScope, WorkspaceRole};
+use coral_workspace::{HistoryScope, RequestId, WorkspaceRole};
 
 #[tokio::test]
 async fn activity_observation_wakes_for_task_creation_interactions_and_ending() {
@@ -168,6 +168,7 @@ async fn activity_summary_counts_context_as_the_task_total_does() {
         .workspaces
         .create_agent(
             &ChangeContext::new(owner, UnixNanos::new(1), coral_test_support::trace('1')),
+            &RequestId::generate(),
             &f.workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -1025,6 +1026,7 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
                 UnixNanos::new(1),
                 coral_test_support::trace('1'),
             ),
+            &RequestId::generate(),
             &f.workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -1238,6 +1240,7 @@ async fn agent_hierarchy_remains_owner_only_after_deletion_and_never_joins_perso
         &ChangeContext::new(second, UnixNanos::new(20), coral_test_support::trace('1')),
         &f.workspace,
         agent.principal().id(),
+        &IfMatch::any(),
     )
     .await
     .unwrap();

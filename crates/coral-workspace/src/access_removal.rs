@@ -1,8 +1,9 @@
 //! Authority preparation is separate from destructive writes so owning domains
 //! can retire current work and record evidence before authority disappears.
 use crate::{
-    AuthoritySource, ChangeContext, Error, EventDetail, LifecycleAction, LifecycleTargetKind,
-    Principal, PrincipalId, PrincipalKind, UserId, WorkspaceAction, WorkspaceId, WorkspaceModule,
+    AuthoritySource, ChangeContext, Error, EventDetail, IfMatch, LifecycleAction,
+    LifecycleTargetKind, Principal, PrincipalId, PrincipalKind, UserId, WorkspaceAction,
+    WorkspaceId, WorkspaceModule,
 };
 use coral_db::{Transaction, TransactionToken};
 
@@ -10,8 +11,9 @@ use coral_db::{Transaction, TransactionToken};
 pub enum AccessRemovalTarget<'a> {
     /// Remove an explicit Membership, including self-service leave.
     WorkspaceMember(&'a WorkspaceId, &'a UserId),
-    /// Remove current Agent authority, retaining attribution.
-    Agent(&'a WorkspaceId, &'a PrincipalId),
+    /// Remove the current authority of the Agent that the caller read at
+    /// this precondition, retaining attribution.
+    Agent(&'a WorkspaceId, &'a PrincipalId, &'a IfMatch),
     /// Remove Organization Membership at this exact revision. The transfer target
     /// becomes the designated Owner of every Workspace the User solely owns.
     OrganizationMember {
@@ -162,14 +164,14 @@ impl WorkspaceModule {
                     evidence.authority_source(),
                 )
             }
-            AccessRemovalTarget::Agent(workspace, agent) => {
+            AccessRemovalTarget::Agent(workspace, agent, if_match) => {
                 let evidence = self
                     .check_configuration_in_transaction(tx, context.actor(), workspace)
                     .await?;
                 let agent = crate::agent_repository::find(&mut *tx, workspace, agent).await?;
-                crate::management::check_etag(
+                crate::management::check(
                     tx,
-                    context,
+                    if_match,
                     workspace,
                     LifecycleTargetKind::Agent,
                     agent.principal().id().as_str(),

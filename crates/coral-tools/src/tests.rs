@@ -9,7 +9,7 @@ use coral_catalog::ToolAccessState;
 use coral_test_support::{TestDatabase, provision_user as organization_user};
 use coral_v8::CompileFailure;
 use coral_workspace::{
-    AuthenticatedPrincipal, IfMatch, OrganizationRole, TraceId, WorkspaceDisplayName,
+    AuthenticatedPrincipal, IfMatch, OrganizationRole, RequestId, TraceId, WorkspaceDisplayName,
     WorkspaceModule, WorkspaceRole,
 };
 
@@ -2118,6 +2118,7 @@ async fn agent_registered_until(
                 10,
                 '1',
             ),
+            &RequestId::generate(),
             workspace_id,
             coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
             expires_at,
@@ -2294,6 +2295,7 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
                     &context,
                     &workspace_id,
                     agent.principal().id(),
+                    &IfMatch::any(),
                     coral_workspace::AgentState::Disabled,
                 )
                 .await
@@ -2310,6 +2312,7 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
                     &context,
                     &workspace_id,
                     registration.id(),
+                    &IfMatch::any(),
                     true,
                     Some(coral_db::UnixNanos::new(0)),
                 )
@@ -2531,6 +2534,7 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
             &change(owner_user.clone(), 25, 'f'),
             &workspace_id,
             agent.principal().id(),
+            &IfMatch::any(),
             coral_workspace::AgentState::Disabled,
         )
         .await

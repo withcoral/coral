@@ -485,6 +485,10 @@ async fn a_delete_commits_while_an_index_write_holds_the_private_tools_search_ro
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one index is followed through a Member's removal and an Agent's deletion"
+)]
 async fn a_pass_removes_the_rows_of_the_private_tools_that_removing_access_deleted() {
     let fixture = Fixture::new().await;
     let index = &fixture.index;
@@ -512,6 +516,7 @@ async fn a_pass_removes_the_rows_of_the_private_tools_that_removing_access_delet
         .workspaces
         .create_agent(
             &change,
+            &RequestId::generate(),
             &fixture.workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -583,7 +588,12 @@ async fn a_pass_removes_the_rows_of_the_private_tools_that_removing_access_delet
     assert_eq!(state_principals(&fixture).await, remaining);
 
     lifecycle
-        .delete_agent(&change, &fixture.workspace, agent.principal().id())
+        .delete_agent(
+            &change,
+            &fixture.workspace,
+            agent.principal().id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     index.reconcile().await;

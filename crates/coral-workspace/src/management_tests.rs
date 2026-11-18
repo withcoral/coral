@@ -1,6 +1,7 @@
 use super::{change, organization_user, test_module};
 use crate::{
-    Error, IfMatch, MembershipChange, OrganizationRole, WorkspaceDisplayName, WorkspaceRole,
+    Error, IfMatch, MembershipChange, OrganizationRole, RequestId, WorkspaceDisplayName,
+    WorkspaceRole,
 };
 use coral_db::UnixNanos;
 
@@ -526,6 +527,7 @@ async fn profiles_are_workspace_scoped_and_creator_attribution_survives_removal(
     let issued = module
         .create_agent(
             &change(alice.clone(), 20, '2'),
+            &RequestId::generate(),
             workspace.id(),
             crate::AgentDisplayName::parse("Retained creator").unwrap(),
             None,

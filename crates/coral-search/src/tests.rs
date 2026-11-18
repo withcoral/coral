@@ -31,8 +31,8 @@ use coral_tools::{
 };
 use coral_workspace::AuthenticatedPrincipal;
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, IfMatch, OrganizationRole, UserId, WorkspaceDisplayName,
-    WorkspaceId, WorkspaceModule,
+    AuthenticatedUser, ChangeContext, IfMatch, OrganizationRole, RequestId, UserId,
+    WorkspaceDisplayName, WorkspaceId, WorkspaceModule,
 };
 use wiremock::MockServer;
 
@@ -2260,6 +2260,7 @@ impl AgentRoute {
             .workspaces
             .create_agent(
                 &context,
+                &RequestId::generate(),
                 &workspace,
                 coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
                 None,
@@ -2580,6 +2581,7 @@ async fn agent_discovery_hides_an_incompatible_account_and_rejects_a_disabled_ag
             context,
             workspace,
             agent.principal().id(),
+            &IfMatch::any(),
             coral_workspace::AgentState::Disabled,
         )
         .await
@@ -2922,6 +2924,7 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
         .workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             &workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -3231,6 +3234,7 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
         .workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             &workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -3344,6 +3348,7 @@ async fn an_agents_discovery_is_checked_on_the_modules_clock() {
         .workspaces
         .create_agent(
             &change(user.clone(), 20, '2'),
+            &RequestId::generate(),
             &workspace,
             coral_workspace::AgentDisplayName::parse("Expiring worker").unwrap(),
             Some(expiry),
@@ -3435,6 +3440,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
         .workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             &workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -3530,6 +3536,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
             &context,
             &workspace,
             issued.registration.id(),
+            &IfMatch::any(),
             true,
             Some(coral_db::UnixNanos::new(1)),
         )
@@ -3674,6 +3681,7 @@ async fn readiness_inspection_does_not_require_private_tool_persistence() {
         .workspaces
         .create_agent(
             &change(user.clone(), 50, '5'),
+            &RequestId::generate(),
             &workspace,
             coral_workspace::AgentDisplayName::parse("No function reads").unwrap(),
             None,

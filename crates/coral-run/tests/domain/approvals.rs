@@ -542,7 +542,12 @@ async fn destructive_lifecycle_keeps_exact_agent_invocation_and_approval_history
         fixture.database.clone(),
         fixture.workspaces.clone(),
     )
-    .delete_agent(&context, &tool.workspace_id, agent.principal().id())
+    .delete_agent(
+        &context,
+        &tool.workspace_id,
+        agent.principal().id(),
+        &IfMatch::any(),
+    )
     .await
     .unwrap();
     fixture
@@ -1957,6 +1962,7 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
                         &context,
                         &tool.workspace_id,
                         invoker.principal().id(),
+                        &IfMatch::any(),
                         coral_workspace::AgentState::Disabled,
                     )
                     .await

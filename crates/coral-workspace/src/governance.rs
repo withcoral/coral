@@ -270,7 +270,7 @@ impl WorkspaceModule {
         if !crate::organization::is_enabled(&mut tx, target).await? {
             return Err(Error::OwnerTargetNotEnabled);
         }
-        crate::management::claim_request(&mut tx, context).await?;
+        crate::management::claim_request_in_context(&mut tx, context).await?;
         make_owner(&mut tx, context, workspace, target).await?;
         tx.commit().await?;
         Ok(())

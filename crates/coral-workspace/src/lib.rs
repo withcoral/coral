@@ -203,7 +203,7 @@ impl WorkspaceModule {
                 Denial::OrganizationMembershipRequired,
             ));
         }
-        management::claim_request(transaction, context).await?;
+        management::claim_request_in_context(transaction, context).await?;
         let workspace = Workspace::new(
             WorkspaceId::generate(),
             display_name,
@@ -695,7 +695,7 @@ impl WorkspaceModule {
             )
             .await?;
         } else {
-            management::claim_request(&mut transaction, context).await?;
+            management::claim_request_in_context(&mut transaction, context).await?;
         }
         if matches!(change, MembershipChange::Create(_)) && previous.is_some() {
             return Err(Error::MembershipAlreadyExists);
@@ -757,7 +757,7 @@ impl WorkspaceModule {
             MembershipTarget::Email(email) => {
                 organization::hold_administration(tx).await?;
                 // Replays must fail before resolving a possibly reassigned address.
-                management::claim_request(tx, context).await?;
+                management::claim_request_in_context(tx, context).await?;
                 let authority = self
                     .check_in_transaction(tx, context.actor(), workspace, WorkspaceAction::Inspect)
                     .await?;

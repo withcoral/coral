@@ -768,6 +768,7 @@ async fn owner_provisions_an_agent_not_the_authorizing_human() {
     let agent = workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -777,6 +778,7 @@ async fn owner_provisions_an_agent_not_the_authorizing_human() {
     let other = workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             AgentDisplayName::parse("Other").unwrap(),
             None,
@@ -1329,7 +1331,7 @@ paths:
         '200':
           description: Forecast
 ";
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName};
+use coral_workspace::{OrganizationRole, RequestId, WorkspaceDisplayName};
 
 #[tokio::test]
 async fn oauth_callback_is_pinned_one_use_and_survives_request_loss() {
@@ -1388,6 +1390,7 @@ async fn oauth_callback_journey(provision_agent: bool) {
         let agent = workspaces
             .create_agent(
                 &context,
+                &RequestId::generate(),
                 workspace.id(),
                 coral_workspace::AgentDisplayName::parse("OAuth Agent").unwrap(),
                 None,

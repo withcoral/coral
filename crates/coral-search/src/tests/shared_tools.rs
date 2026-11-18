@@ -9,7 +9,7 @@ use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, SharedTool, SharedToolOrigin, SharedToolPath,
     SharedToolPublish,
 };
-use coral_workspace::AuthenticatedPrincipal;
+use coral_workspace::{AuthenticatedPrincipal, RequestId};
 use sea_query::{Alias, Expr, ExprTrait as _, Query};
 
 use super::{TestModules, TracerScope, organization_user};
@@ -45,6 +45,7 @@ impl SharedScope {
             .workspaces
             .create_agent(
                 &change(scope.user.clone(), 51, '5'),
+                &RequestId::generate(),
                 &scope.workspace_id,
                 coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
                 None,

@@ -20,6 +20,7 @@ async fn inspection_reports_all_coral_access_blockers_without_clearing_them() {
     let issued = module
         .create_agent(
             &context,
+            &RequestId::generate(),
             w.id(),
             AgentDisplayName::parse("Worker").unwrap(),
             Some(UnixNanos::new(100)),
@@ -36,7 +37,7 @@ async fn inspection_reports_all_coral_access_blockers_without_clearing_them() {
         [] as [management::AgentAccessBlocker; 0]
     );
     module
-        .set_agent_state(&context, w.id(), id, AgentState::Disabled)
+        .set_agent_state(&context, w.id(), id, &IfMatch::any(), AgentState::Disabled)
         .await
         .unwrap();
     module
@@ -44,6 +45,7 @@ async fn inspection_reports_all_coral_access_blockers_without_clearing_them() {
             &context,
             w.id(),
             issued.registration.id(),
+            &IfMatch::any(),
             false,
             Some(UnixNanos::new(100)),
         )
@@ -71,7 +73,7 @@ async fn inspection_reports_all_coral_access_blockers_without_clearing_them() {
         .await
         .unwrap();
     module
-        .set_agent_state(&context, w.id(), id, AgentState::Enabled)
+        .set_agent_state(&context, w.id(), id, &IfMatch::any(), AgentState::Enabled)
         .await
         .unwrap();
     assert_eq!(
@@ -144,6 +146,7 @@ async fn principal_authority_matrix_preserves_user_roles_and_agent_scope() {
     let issued = module
         .create_agent(
             &change(owner.clone(), 13, '4'),
+            &RequestId::generate(),
             workspace.id(),
             AgentDisplayName::parse("Worker").unwrap(),
             Some(UnixNanos::new(100)),
@@ -403,6 +406,7 @@ async fn rejected_agent_administration_changes_neither_configuration_nor_events(
     let issued = module
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -418,7 +422,13 @@ async fn rejected_agent_administration_changes_neither_configuration_nor_events(
         (context.clone(), other.id()),
     ] {
         module
-            .rotate_agent_credential(&context, target, issued.registration.id())
+            .rotate_agent_credential(
+                &context,
+                &RequestId::generate(),
+                target,
+                issued.registration.id(),
+                &IfMatch::any(),
+            )
             .await
             .unwrap_err();
         module
@@ -426,6 +436,7 @@ async fn rejected_agent_administration_changes_neither_configuration_nor_events(
                 &context,
                 target,
                 issued.agent.principal().id(),
+                &IfMatch::any(),
                 AgentState::Disabled,
             )
             .await
@@ -435,6 +446,7 @@ async fn rejected_agent_administration_changes_neither_configuration_nor_events(
                 &context,
                 target,
                 issued.registration.id(),
+                &IfMatch::any(),
                 false,
                 Some(UnixNanos::new(0)),
             )
@@ -472,16 +484,23 @@ async fn rejected_agent_administration_changes_neither_configuration_nor_events(
         module
             .create_agent(
                 &context,
+                &RequestId::generate(),
                 workspace.id(),
                 AgentDisplayName::parse("Blocked").unwrap(),
-                None
+                None,
             )
             .await,
         Err(Error::WorkspaceArchived)
     ));
     assert!(matches!(
         module
-            .rotate_agent_credential(&context, workspace.id(), issued.registration.id())
+            .rotate_agent_credential(
+                &context,
+                &RequestId::generate(),
+                workspace.id(),
+                issued.registration.id(),
+                &IfMatch::any()
+            )
             .await,
         Err(Error::WorkspaceArchived)
     ));
@@ -491,7 +510,8 @@ async fn rejected_agent_administration_changes_neither_configuration_nor_events(
                 &context,
                 workspace.id(),
                 issued.agent.principal().id(),
-                AgentState::Disabled
+                &IfMatch::any(),
+                AgentState::Disabled,
             )
             .await,
         Err(Error::WorkspaceArchived)
@@ -502,8 +522,9 @@ async fn rejected_agent_administration_changes_neither_configuration_nor_events(
                 &context,
                 workspace.id(),
                 issued.registration.id(),
+                &IfMatch::any(),
                 false,
-                None
+                None,
             )
             .await,
         Err(Error::WorkspaceArchived)
@@ -541,9 +562,10 @@ async fn event_failure_rolls_back_agent_registration_and_initial_credential_toge
             .1
             .create_agent(
                 &context,
+                &RequestId::generate(),
                 workspace.id(),
                 AgentDisplayName::parse("Worker").unwrap(),
-                None
+                None,
             )
             .await,
         Err(Error::Database(_))
@@ -583,6 +605,7 @@ async fn event_failure_rolls_back_rotation_and_lifecycle_changes() {
     let issued = module
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -591,7 +614,13 @@ async fn event_failure_rolls_back_rotation_and_lifecycle_changes() {
         .unwrap();
     assert!(matches!(
         module
-            .rotate_agent_credential(&context, workspace.id(), issued.registration.id())
+            .rotate_agent_credential(
+                &context,
+                &RequestId::generate(),
+                workspace.id(),
+                issued.registration.id(),
+                &IfMatch::any()
+            )
             .await,
         Err(Error::Database(_))
     ));
@@ -601,8 +630,9 @@ async fn event_failure_rolls_back_rotation_and_lifecycle_changes() {
                 &context,
                 workspace.id(),
                 issued.registration.id(),
+                &IfMatch::any(),
                 false,
-                Some(UnixNanos::new(0))
+                Some(UnixNanos::new(0)),
             )
             .await,
         Err(Error::Database(_))

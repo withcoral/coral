@@ -37,7 +37,7 @@ use coral_outbound::DestinationPolicy;
 use coral_test_support::TestDatabase;
 use coral_workspace::{
     AgentDisplayName, AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, OrganizationModule,
-    OrganizationRole, TraceId, UserId, Workspace, WorkspaceDisplayName, WorkspaceModule,
+    OrganizationRole, RequestId, TraceId, UserId, Workspace, WorkspaceDisplayName, WorkspaceModule,
     WorkspaceRole,
 };
 use listener::TestServer;
@@ -996,6 +996,7 @@ async fn local_agent_authentication_reports_database_outages_as_unavailable() {
         .workspaces
         .create_agent(
             &change(&f.owner),
+            &RequestId::generate(),
             f.workspace.id(),
             AgentDisplayName::parse("agent").unwrap(),
             None,
@@ -1063,6 +1064,7 @@ async fn audience_reachability_is_not_principal_authority() {
         .workspaces
         .create_agent(
             &change(&f.owner),
+            &RequestId::generate(),
             f.workspace.id(),
             AgentDisplayName::parse("agent").unwrap(),
             None,

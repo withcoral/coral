@@ -393,6 +393,10 @@ impl Changes {
 
     /// Takes one step through the Interface, with the actor and the instant
     /// that `context` holds. A step that checks an etag checks `if_match`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match names the call of every change"
+    )]
     async fn take(
         &mut self,
         step: Step,
@@ -449,7 +453,13 @@ impl Changes {
             }
             Step::CreateAgent => {
                 let issued = module
-                    .create_agent(context, workspace, AgentDisplayName::parse("Worker")?, None)
+                    .create_agent(
+                        context,
+                        &RequestId::generate(),
+                        workspace,
+                        AgentDisplayName::parse("Worker")?,
+                        None,
+                    )
                     .await?;
                 self.agent = Some((
                     issued.agent.principal().id().clone(),
@@ -458,7 +468,7 @@ impl Changes {
                 Ok(())
             }
             Step::SetAgentState(state) => module
-                .set_agent_state(context, workspace, agent_id(), state)
+                .set_agent_state(context, workspace, agent_id(), if_match, state)
                 .await
                 .map(drop),
             Step::UpdateRegistration => module
@@ -466,17 +476,24 @@ impl Changes {
                     context,
                     workspace,
                     registration_id(),
+                    if_match,
                     false,
                     Some(UnixNanos::new(9_000)),
                 )
                 .await
                 .map(drop),
             Step::RotateCredential => module
-                .rotate_agent_credential(context, workspace, registration_id())
+                .rotate_agent_credential(
+                    context,
+                    &RequestId::generate(),
+                    workspace,
+                    registration_id(),
+                    if_match,
+                )
                 .await
                 .map(drop),
             Step::DeleteAgent => {
-                let target = AccessRemovalTarget::Agent(workspace, agent_id());
+                let target = AccessRemovalTarget::Agent(workspace, agent_id(), if_match);
                 remove_access(module, context, target).await
             }
             Step::RemoveMembership => {
@@ -899,20 +916,29 @@ async fn a_change_by_an_older_coral_shows_in_the_etag_and_refuses_the_one_read_b
     assert_eq!(rows().await, [first_without_times; 2]);
 
     // The etag a client read before the older Coral's change is stale.
-    let stale = |etag: uuid::Uuid| {
-        change(owner.clone(), 70, '2')
-            .with_etag(&etag.to_string())
-            .unwrap()
-    };
+    let stale = change(owner.clone(), 70, '2');
     assert!(matches!(
         module
-            .set_agent_state(&stale(created[0]), workspace, &agent, AgentState::Enabled)
+            .set_agent_state(
+                &stale,
+                workspace,
+                &agent,
+                &IfMatch::token(created[0]),
+                AgentState::Enabled,
+            )
             .await,
         Err(Error::EtagMismatch)
     ));
     assert!(matches!(
         module
-            .update_agent_registration(&stale(created[1]), workspace, &registration, true, None)
+            .update_agent_registration(
+                &stale,
+                workspace,
+                &registration,
+                &IfMatch::token(created[1]),
+                true,
+                None,
+            )
             .await,
         Err(Error::EtagMismatch)
     ));
@@ -922,17 +948,26 @@ async fn a_change_by_an_older_coral_shows_in_the_etag_and_refuses_the_one_read_b
     // The etag it shows now is current. This Coral's change raises each
     // version and dates the change on the row, which still has no creation
     // time: only the metadata holds that.
-    let current = |etag: uuid::Uuid| {
-        change(owner.clone(), 80, '3')
-            .with_etag(&etag.to_string())
-            .unwrap()
-    };
+    let current = change(owner.clone(), 80, '3');
     module
-        .set_agent_state(&current(changed[0]), workspace, &agent, AgentState::Enabled)
+        .set_agent_state(
+            &current,
+            workspace,
+            &agent,
+            &IfMatch::token(changed[0]),
+            AgentState::Enabled,
+        )
         .await
         .expect("enable the Agent of an older Coral");
     module
-        .update_agent_registration(&current(changed[1]), workspace, &registration, true, None)
+        .update_agent_registration(
+            &current,
+            workspace,
+            &registration,
+            &IfMatch::token(changed[1]),
+            true,
+            None,
+        )
         .await
         .expect("enable the Registration of an older Coral");
     let raised = Some(StoredRow {

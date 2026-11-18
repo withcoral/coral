@@ -7,8 +7,8 @@ use coral_test_support::TestDatabase;
 use super::{change, organization_user, remove_access, test_module};
 use crate::{
     AccessRemovalTarget, AgentDisplayName, AgentState, AuthenticatedUser, IfMatch,
-    OrganizationModule, OrganizationRole, PrincipalId, UserId, VerifiedUserProfile, Workspace,
-    WorkspaceDisplayName, WorkspaceId, WorkspaceModule, WorkspaceOwner, WorkspaceRole,
+    OrganizationModule, OrganizationRole, PrincipalId, RequestId, UserId, VerifiedUserProfile,
+    Workspace, WorkspaceDisplayName, WorkspaceId, WorkspaceModule, WorkspaceOwner, WorkspaceRole,
 };
 
 /// One Organization whose lists have about `rows` rows each.
@@ -149,6 +149,7 @@ impl Lists {
             let issued = module
                 .create_agent(
                     &change(creator.clone(), 13, '3'),
+                    &RequestId::generate(),
                     workspace,
                     AgentDisplayName::parse(&format!("Agent {index}")).unwrap(),
                     (index % 3 == 0).then_some(UnixNanos::new(1_000)),
@@ -159,13 +160,19 @@ impl Lists {
             let context = change(self.owner.clone(), 14, '4');
             if index == rows {
                 // A deleted Agent is in no list.
-                let removal = AccessRemovalTarget::Agent(workspace, &id);
+                let removal = AccessRemovalTarget::Agent(workspace, &id, &IfMatch::any());
                 remove_access(module, &context, removal).await.unwrap();
                 continue;
             }
             if index == 0 {
                 module
-                    .set_agent_state(&context, workspace, &id, AgentState::Disabled)
+                    .set_agent_state(
+                        &context,
+                        workspace,
+                        &id,
+                        &IfMatch::any(),
+                        AgentState::Disabled,
+                    )
                     .await
                     .unwrap();
             }

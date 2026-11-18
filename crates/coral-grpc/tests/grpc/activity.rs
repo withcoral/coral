@@ -114,6 +114,7 @@ async fn a_removed_agent_keeps_owner_only_attribution_without_a_registration() {
         .workspaces
         .create_agent(
             &super::change(&f.owner),
+            &RequestId::generate(),
             f.workspace.id(),
             coral_workspace::AgentDisplayName::parse("Retained worker").unwrap(),
             None,
@@ -122,7 +123,12 @@ async fn a_removed_agent_keeps_owner_only_attribution_without_a_registration() {
         .unwrap();
     let agent = issued.agent.principal().id();
     coral_administration::AccessLifecycleModule::new(f.database.database(), f.workspaces.clone())
-        .delete_agent(&super::change(&f.owner), f.workspace.id(), agent)
+        .delete_agent(
+            &super::change(&f.owner),
+            f.workspace.id(),
+            agent,
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     let mut client = f.activity();
@@ -153,7 +159,7 @@ async fn a_removed_agent_keeps_owner_only_attribution_without_a_registration() {
     );
 }
 
-use coral_workspace::AuthenticatedPrincipal;
+use coral_workspace::{AuthenticatedPrincipal, IfMatch, RequestId};
 
 #[tokio::test]
 #[expect(
@@ -307,6 +313,7 @@ async fn execution_transport_keeps_large_exact_output_out_of_roots_and_detail_in
         .workspaces
         .create_agent(
             &super::change(&f.owner),
+            &RequestId::generate(),
             f.workspace.id(),
             coral_workspace::AgentDisplayName::parse("history agent").unwrap(),
             None,

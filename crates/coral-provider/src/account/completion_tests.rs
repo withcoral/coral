@@ -3,7 +3,7 @@ use super::*;
 use crate::account_tests::{CREDENTIAL_REQUIRED_OPENAPI, authorization_request, publish_provider};
 use crate::tests::{change_context, organization_user, test_modules};
 use coral_credentials::Secret;
-use coral_workspace::{AgentDisplayName, OrganizationRole, WorkspaceDisplayName};
+use coral_workspace::{AgentDisplayName, OrganizationRole, RequestId, WorkspaceDisplayName};
 coral_test_support::provider_setup_fixtures!(crate);
 
 #[tokio::test]
@@ -68,6 +68,7 @@ async fn initial_completion_fence(for_agent: bool, shared: bool) {
         let agent = workspaces
             .create_agent(
                 &context,
+                &RequestId::generate(),
                 scope,
                 AgentDisplayName::parse("Worker").unwrap(),
                 None,

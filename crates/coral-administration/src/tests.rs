@@ -19,7 +19,7 @@ use coral_tools::{
     PrivateToolPath, PrivateToolSave,
 };
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, IfMatch, OrganizationRole, TraceId,
+    AuthenticatedPrincipal, AuthenticatedUser, IfMatch, OrganizationRole, RequestId, TraceId,
     WorkspaceDisplayName,
 };
 use repository::{EventFault, fixture};
@@ -77,8 +77,10 @@ impl RemovalAttempt {
                         .remove_organization_member(&context, user, revision, transfer_to)
                         .await
                 }
-                AccessRemovalTarget::Agent(workspace, agent) => {
-                    lifecycle.delete_agent(&context, workspace, agent).await
+                AccessRemovalTarget::Agent(workspace, agent, if_match) => {
+                    lifecycle
+                        .delete_agent(&context, workspace, agent, if_match)
+                        .await
                 }
             }
         } else {
@@ -614,6 +616,7 @@ async fn member_removal_keeps_the_agents_they_provisioned() {
         .workspaces
         .create_agent(
             &change(&f.member),
+            &RequestId::generate(),
             f.workspace.id(),
             coral_workspace::AgentDisplayName::parse("Provisioned worker").unwrap(),
             None,
@@ -741,6 +744,7 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
         let issued = workspaces
             .create_agent(
                 &change(&owner),
+                &RequestId::generate(),
                 workspace.id(),
                 coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
                 None,
@@ -783,7 +787,12 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
                 .await
                 .unwrap(),
             AccessLoss::AgentDeletion => lifecycle
-                .delete_agent(&change(&owner), workspace.id(), agent.principal().id())
+                .delete_agent(
+                    &change(&owner),
+                    workspace.id(),
+                    agent.principal().id(),
+                    &IfMatch::any(),
+                )
                 .await
                 .unwrap(),
         }
@@ -905,6 +914,7 @@ async fn a_shared_tool_survives_the_loss_of_its_author() {
         let issued = workspaces
             .create_agent(
                 &change(&owner),
+                &RequestId::generate(),
                 workspace.id(),
                 coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
                 None,
@@ -987,7 +997,12 @@ async fn a_shared_tool_survives_the_loss_of_its_author() {
                     .unwrap();
             }
             AuthorLoss::AgentDeletion => lifecycle
-                .delete_agent(&change(&owner), workspace.id(), agent.principal().id())
+                .delete_agent(
+                    &change(&owner),
+                    workspace.id(),
+                    agent.principal().id(),
+                    &IfMatch::any(),
+                )
                 .await
                 .unwrap(),
         }
@@ -1322,6 +1337,7 @@ async fn agent_removal_rolls_back_registration_private_tools_and_events_together
     let issued = workspaces
         .create_agent(
             &change(&owner),
+            &RequestId::generate(),
             workspace.id(),
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -1449,7 +1465,7 @@ async fn agent_removal_rolls_back_registration_private_tools_and_events_together
                 &lifecycle,
                 &database,
                 &owner,
-                AccessRemovalTarget::Agent(workspace.id(), agent.principal().id()),
+                AccessRemovalTarget::Agent(workspace.id(), agent.principal().id(), &IfMatch::any()),
             )
             .await;
         assert_eq!(
@@ -1520,7 +1536,12 @@ async fn agent_removal_rolls_back_registration_private_tools_and_events_together
         );
     }
     lifecycle
-        .delete_agent(&change(&owner), workspace.id(), agent.principal().id())
+        .delete_agent(
+            &change(&owner),
+            workspace.id(),
+            agent.principal().id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     workspaces

@@ -10,7 +10,7 @@ use coral_provider::{
 use coral_test_support::change;
 use coral_test_support::{TestDatabase, provision_user as organization_user};
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, WorkspaceDisplayName,
+    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, RequestId, WorkspaceDisplayName,
     WorkspaceModule,
 };
 
@@ -1738,6 +1738,7 @@ async fn rules_hold_the_exact_rules_of_current_provider_tools_by_call_path() {
     let issued = workspaces
         .create_agent(
             &change(owner.clone(), 302, '1'),
+            &RequestId::generate(),
             workspace.id(),
             coral_workspace::AgentDisplayName::parse("Reader").expect("Agent name"),
             None,
@@ -2340,6 +2341,7 @@ impl PrivateTools {
         let issued = workspaces
             .create_agent(
                 &change(owner.clone(), 13, '4'),
+                &RequestId::generate(),
                 &workspace,
                 coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
                 None,

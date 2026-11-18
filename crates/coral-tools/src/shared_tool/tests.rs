@@ -4,8 +4,8 @@ use coral_catalog::{AuthoredToolKind, ToolAccessState};
 use coral_db::PageKey as _;
 use coral_test_support::{TestDatabase, change, page_request, provision_user, read_pages};
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, WorkspaceDisplayName, WorkspaceId,
-    WorkspaceModule, WorkspaceRole,
+    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, RequestId, WorkspaceDisplayName,
+    WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
 
 use super::{
@@ -78,6 +78,7 @@ impl SharedToolFixture {
         let issued = workspaces
             .create_agent(
                 &change(owner.clone(), 12, 'a'),
+                &RequestId::generate(),
                 &workspace,
                 coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
                 None,

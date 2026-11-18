@@ -170,7 +170,7 @@ async fn admit_grant_change(
     if state == WorkspaceState::Archived {
         return Err(Error::WorkspaceArchived);
     }
-    crate::management::claim_request(tx, context).await
+    crate::management::claim_request_in_context(tx, context).await
 }
 
 async fn record(
