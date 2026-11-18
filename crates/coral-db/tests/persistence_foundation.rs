@@ -478,7 +478,7 @@ async fn an_applied_step_the_plan_lacks_is_refused_unless_a_newer_coral_explains
 /// the removal removes.
 const FIRST_STEP: &str = "CREATE TABLE fixture_first (id TEXT NOT NULL PRIMARY KEY);";
 /// The table that records the required step, as Coral's own plan creates it.
-const UPGRADE_STATE: &str = include_str!("../migrations/0075_coral_upgrade_state.sql");
+const UPGRADE_STATE: &str = include_str!("../migrations/0076_coral_upgrade_state.sql");
 /// The step of the change that stopped using it: a marker, which changes no
 /// schema.
 const MARKER: &str = "-- Stops using fixture_first.\n";

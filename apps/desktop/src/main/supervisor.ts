@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import { readDatabase } from './database'
+import { readSearch } from './search'
 import { PortInUseError, resolvePorts, type PersistedListener, type Ports } from './ports'
 import type { Launcher, ManagedProcess, ProcessExit } from './process'
 import {
@@ -212,7 +213,8 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
   async function startRuntime(ports: Ports, signal: AbortSignal) {
     const stateDir = join(options.dataDir, 'runtime')
     const database = await readDatabase(join(options.dataDir, 'desktop.json'))
-    await writeRuntimeConfig(stateDir, ports, database, options.checkUpdates)
+    const search = await readSearch(join(options.dataDir, 'desktop.json'))
+    await writeRuntimeConfig(stateDir, ports, database, search, options.checkUpdates)
     const deadline = Date.now() + options.readinessTimeoutMs
     for (;;) {
       const runtime = launch(

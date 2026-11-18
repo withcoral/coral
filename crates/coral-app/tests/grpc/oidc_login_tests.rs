@@ -116,9 +116,9 @@ impl Composed {
             coral_test_support::p256_pkcs8(),
         )
         .unwrap();
-        std::fs::write(
-            temp.path().join("config.toml"),
-            format!(
+        coral_test_support::write_server_config(
+            temp.path(),
+            &format!(
                 "[outbound]\nloopback = 'http-and-https'\n\
                  [listeners.mcp]\nbind = '127.0.0.1:0'\npublic_url = 'https://mcp.example.test'\n\
                  [listeners.auth]\npublic_url = '{AUTH_ISSUER}'\n\
@@ -128,8 +128,7 @@ impl Composed {
                  client_secret = 'test-secret'\n",
                 provider.uri()
             ),
-        )
-        .unwrap();
+        );
         let mut server = ServerBuilder::new()
             .with_config_dir(temp.path())
             .start()

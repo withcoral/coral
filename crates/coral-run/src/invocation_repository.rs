@@ -37,6 +37,7 @@ enum ToolInvocations {
     FailureMessage,
     ParentInvocationId,
     DeclaredDefaultAccessState,
+    RequestNumber,
 }
 
 impl InvocationState {
@@ -88,6 +89,7 @@ pub(super) async fn insert_admission(
                 ToolInvocations::AdmittedAtUnixNanos,
                 ToolInvocations::ParentInvocationId,
                 ToolInvocations::DeclaredDefaultAccessState,
+                ToolInvocations::RequestNumber,
             ]
             .into_iter()
             .map(IntoIden::into_iden)
@@ -122,6 +124,15 @@ pub(super) async fn insert_admission(
                 Expr::val(
                     authored_tool_default(admitted.target.tool())
                         .map(coral_catalog::ToolAccessState::as_storage_str),
+                ),
+                Expr::val(
+                    admitted
+                        .request_number
+                        .map(i64::try_from)
+                        .transpose()
+                        .map_err(|_error| {
+                            Error::CorruptData("Run request number overflowed".to_string())
+                        })?,
                 ),
             ]
             .into_iter()

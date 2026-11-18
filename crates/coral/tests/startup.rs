@@ -134,12 +134,13 @@ fn runtime_command(state_root: &Path) -> std::process::Command {
 }
 
 /// Writes a local-mode state root whose listeners all take ephemeral
-/// loopback ports, so runtimes never contend for a fixed port.
+/// loopback ports, so runtimes never contend for a fixed port, and whose
+/// semantic search is off.
 fn local_state_root(temp: &tempfile::TempDir) -> PathBuf {
     let state_root = temp.path().join("coral-state");
     std::fs::create_dir(&state_root).expect("create state root");
-    std::fs::write(
-        state_root.join("config.toml"),
+    coral_test_support::write_server_config(
+        &state_root,
         "[listeners.grpc]
 bind = '127.0.0.1:0'
          [listeners.mcp]
@@ -147,8 +148,7 @@ bind = '127.0.0.1:0'
          [listeners.auth]
 bind = '127.0.0.1:0'
 ",
-    )
-    .expect("write config");
+    );
     state_root
 }
 

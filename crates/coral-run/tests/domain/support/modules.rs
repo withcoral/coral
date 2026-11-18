@@ -1625,6 +1625,7 @@ fn admitted(
         source_location: None,
         parent_invocation_id: None,
         admitted_at_unix_nanos: now,
+        request_number: None,
         span: tracing::Span::none(),
     })
 }
@@ -1655,6 +1656,7 @@ pub(crate) fn test_invoker(
             .unwrap_or(deadline),
         linked_snapshots: std::collections::HashMap::new(),
         trace: run.trace.clone(),
+        time_limit_nanos: None,
     };
     let (owner, _mailbox) = crate::owner::OwnerHandle::new(accepted.held_id(), claim_id);
     crate::invocation::ToolInvoker::new(

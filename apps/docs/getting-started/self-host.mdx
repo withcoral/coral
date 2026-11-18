@@ -16,7 +16,7 @@ You can deploy Coral with [Docker Compose](/getting-started/self-host/docker-com
 ## Before you start
 
 - **An OIDC identity provider.** Self-hosted Coral uses your own identity provider (IdP) to authenticate users. Any OIDC-compatible IdP works, such as Okta, Google Workspace or WorkOS. Configure an application for Coral at your IdP.
-- **A database.** Coral supports SQLite and Postgres. SQLite is the default. Choose the one that fits your setup.
+- **A database.** Coral supports SQLite and Postgres. SQLite is the default. Choose the one that fits your setup. Postgres needs the pgvector extension for [semantic search](/getting-started/self-host#semantic-search).
 - **TLS termination.** Coral requires TLS for user-facing connections, but Coral does not provide TLS itself. Use your preferred reverse proxy, such as nginx or Envoy. If you have none, use Caddy.
 - **Public endpoints.** Coral uses three endpoints that your users' systems must be able to reach. `<coral-host>` is the placeholder for the root domain of your Coral deployment:
   - `<coral-host>`: the URL of the Coral UI (`coral-web`).
@@ -24,6 +24,67 @@ You can deploy Coral with [Docker Compose](/getting-started/self-host/docker-com
   - `mcp.<coral-host>`: the MCP server endpoint.
 
 Make sure that you can point these names at your Coral deployment. The deployment guides have the details. Also make sure that you can create valid TLS certificates for these domains.
+
+## Semantic search
+
+Semantic search finds tools by what a query means, not only by its words. A model in the Coral process compares the meaning of a query with the text of each tool. No text goes out of your deployment.
+
+Semantic search is on by default. To turn it off, set `semantic_search_enabled = false` in `[search]`. Restart Coral after you change the setting. See the [configuration reference](/reference/configuration#search).
+
+### Postgres needs pgvector
+
+With Postgres, semantic search needs the pgvector extension, version 0.7 or later. With SQLite, you do not need to do anything.
+
+Before you upgrade Coral on Postgres, install pgvector or turn the setting off.
+
+At startup, Coral creates the `vector` extension when pgvector is installed and Coral's database role may create it: a superuser, or the master user on Amazon RDS. If the extension is not available, Coral does not start and reports an error such as:
+
+```text
+Error: failed precondition: Postgres 17.11 does not provide required search feature: vector extension (error returned from database: extension "vector" is not available); install pgvector 0.7 or later in a schema on Coral's search path, let Coral's database role create it, or set `[search] semantic_search_enabled = false`
+```
+
+To correct the error, do one of these steps:
+
+- Install pgvector 0.7 or later on your Postgres server. Then, as a superuser, run `CREATE EXTENSION vector;` in Coral's database. Use a schema on the search path of Coral's database role.
+- Set `semantic_search_enabled = false` in `[search]`. Coral then does not check for pgvector.
+
+Many managed Postgres services include pgvector, for example Amazon RDS. On Amazon RDS, the master user can create the extension.
+
+### The model
+
+The `ghcr.io/withcoral/coral` image holds the model, so Coral does not download it.
+
+Without the image, Coral looks for `model.onnx` and `tokenizer.json` in these folders, in this order:
+
+1. `/opt/coral/models/bge-small-en-v1.5/`. Coral looks here on Linux only.
+2. `models/bge-small-en-v1.5/` in Coral's [configuration folder](/reference/configuration).
+
+If neither folder holds the files, Coral downloads them from GitHub into the second folder. The [`[outbound]`](/reference/configuration#outbound) policy applies, so the host must reach GitHub. Then Coral tries to delete the other folders in `models`. Until the files are ready, search matches by words only.
+
+If Coral cannot read a model file, it reports the file and does not download. If a downloaded file is not correct, Coral tries again at its next start.
+
+A host without network access cannot download the files. On such a host, do one of these steps:
+
+- Download `model.onnx` and `tokenizer.json` from the [model release](https://github.com/withcoral/coral-releases/releases/tag/model-bge-small-en-v1.5-5c38ec7). Put both files in one of the folders above.
+- Set `semantic_search_enabled = false` in `[search]`.
+
+Coral uses a folder only when the SHA-256 of both files is correct. When Coral finds the files, its log shows `Coral search model ready in <folder>`.
+
+### Cost
+
+- **Memory.** The Coral process uses up to about 360 MiB more memory while it embeds tools.
+- **CPU.** Coral embeds tools on one background thread at low priority. All workspaces share this thread.
+- **Time.** A new or changed provider matches by words only until Coral embeds its tools. A provider with about 20,000 tools takes about 12 minutes on one x86 vCPU. Ten such providers take about two hours.
+- **Database.** In Postgres, the vectors of 20,000 tools use about 26 MB. Search is fast while the database server keeps them in memory.
+- **Disk.** The model files use about 133 MB.
+
+### Older CPUs
+
+On an x86-64 CPU, semantic search needs the x86-64-v3 features, such as AVX2. On an older CPU, Coral starts and does not download the model. Search matches by words only.
+
+To examine a Linux host with glibc 2.33 or later, run `/lib64/ld-linux-x86-64.so.2 --help`. The CPU has the features when the output shows `x86-64-v3 (supported, searched)`.
+
+Rosetta, which runs `linux/amd64` containers on Apple Silicon Macs, does not have these features.
 
 ## Upgrade Coral
 

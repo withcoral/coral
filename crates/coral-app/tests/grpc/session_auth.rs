@@ -27,8 +27,7 @@ impl SessionAuthFixture {
     /// silently invalidate every token the previous server handed out.
     pub(crate) fn write(config_dir: &Path) -> Self {
         let fixture = Self::key_in(config_dir);
-        fs::write(config_dir.join("config.toml"), Self::config_toml())
-            .expect("write the session auth config");
+        coral_test_support::write_server_config(config_dir, &Self::config_toml());
         fixture
     }
 

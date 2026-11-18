@@ -17,6 +17,17 @@ const MIN_TERM_CHARS: usize = 3;
 const NEAR_SPELLING_MIN_LETTERS: usize = 5;
 /// A word in more than half the corpus scores this instead of a negative IDF.
 const IDF_FLOOR: f64 = 1e-6;
+/// A word in more than this share of the Workspace's rows, and in more
+/// than [`CANDIDATE_CAP_MIN_ROWS`] rows, selects no Postgres candidates
+/// while a rarer typed word of the query is held. The reference
+/// implementation's 5% emptied the list of long queries, whose words are
+/// mostly common: lexical hit@10 fell from 0.667 to 0.622 on the Graph bench
+/// set (#3232). At 20% the top 10 stayed as before.
+const CANDIDATE_DOCUMENT_FREQUENCY_CAP: f64 = 0.20;
+/// A word in fewer rows costs little to select candidates by, so a small
+/// Workspace ranks as if there were no cap. The Postgres statement scores
+/// 1,000 candidates exactly; below that a common word adds little work.
+const CANDIDATE_CAP_MIN_ROWS: i64 = 1_000;
 /// What ends a word in the phrase test: any character but an ASCII letter or
 /// digit. `_` ends one too, so `pulls.get` meets the escaped name `pulls._get`.
 /// A letter outside ASCII also ends a word. Unicode classes would differ
@@ -201,10 +212,27 @@ impl QueryPlan {
     /// its substring pattern can still meet a mid-word match such as
     /// `enchmark` in `benchmark_runs`. It also gains as spellings the catalog
     /// words one edit away, each with its own IDF, so `colour` scores where
-    /// `color` would. The reference implementation also drops words above a
-    /// 5% document frequency from candidate selection, as a latency lever;
-    /// that cap is left out until profiles ask for it.
+    /// `color` would.
+    ///
+    /// A word in more than [`CANDIDATE_DOCUMENT_FREQUENCY_CAP`] of the
+    /// Workspace's rows, and in more than [`CANDIDATE_CAP_MIN_ROWS`] rows, selects
+    /// no candidates while a rarer typed word of the
+    /// query has a spelling some row holds: the common word still scores the
+    /// rows the rarer words select, and its low IDF ranks a row that holds it
+    /// alone below them. Otherwise every word selects, so a misspelt rare
+    /// word does not empty the list. The cap reads typed words alone. A
+    /// compact variant never stops a common word from selecting:
+    /// `violetledger` holds far fewer rows than the typed words `violet` and
+    /// `ledger`, and would leave only its own. Nor does the cap stop a
+    /// compact variant: it is the query's own identifier, and the rows that
+    /// hold it, `plonklist` for `plonk_list`, would leave the list.
     pub(super) fn scoring(&self, statistics: &Statistics) -> ScoringPlan {
+        /// One word as the cap reads it.
+        struct Word {
+            typed: bool,
+            common: bool,
+            spellings: Vec<Spelling>,
+        }
         let stats = statistics
             .words
             .iter()
@@ -214,24 +242,38 @@ impl QueryPlan {
         let spelling = |stat: &WordStatistics| Spelling {
             word: stat.word.clone(),
             idf: inverse_document_frequency(total, stat.ndoc),
+            held: stat.ndoc > 0,
         };
+        let words = stats
+            .iter()
+            .map(|stat| {
+                let applies = self.near_spelling_applies(stat);
+                let near = statistics
+                    .catalog_words
+                    .iter()
+                    .filter(|catalog| {
+                        applies
+                            && letters(&catalog.word) >= NEAR_SPELLING_MIN_LETTERS
+                            && one_edit_apart(&stat.word, &catalog.word)
+                    })
+                    .map(spelling);
+                Word {
+                    typed: !self.variant_words.contains(&stat.word),
+                    common: stat.ndoc > CANDIDATE_CAP_MIN_ROWS
+                        && as_f64(stat.ndoc) > CANDIDATE_DOCUMENT_FREQUENCY_CAP * as_f64(total),
+                    spellings: std::iter::once(spelling(stat)).chain(near).collect(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let rarer_typed_word_held = words.iter().any(|word| {
+            word.typed && !word.common && word.spellings.iter().any(|spelling| spelling.held)
+        });
         ScoringPlan {
-            words: stats
-                .iter()
-                .map(|stat| {
-                    let applies = self.near_spelling_applies(stat);
-                    let near = statistics
-                        .catalog_words
-                        .iter()
-                        .filter(|catalog| {
-                            applies
-                                && letters(&catalog.word) >= NEAR_SPELLING_MIN_LETTERS
-                                && one_edit_apart(&stat.word, &catalog.word)
-                        })
-                        .map(spelling);
-                    ScoredWord {
-                        spellings: std::iter::once(spelling(stat)).chain(near).collect(),
-                    }
+            words: words
+                .into_iter()
+                .map(|word| ScoredWord {
+                    selects: !(word.typed && word.common && rarer_typed_word_held),
+                    spellings: word.spellings,
                 })
                 .collect(),
             avgdl: if statistics.avgdl > 0.0 {
@@ -462,15 +504,32 @@ pub(super) struct ScoringPlan {
     pub(super) avgdl: f64,
 }
 
+impl ScoringPlan {
+    /// Makes every word select candidates, and says whether a word did not
+    /// before.
+    pub(super) fn select_by_every_word(&mut self) -> bool {
+        let mut changed = false;
+        for word in &mut self.words {
+            changed |= !word.selects;
+            word.selects = true;
+        }
+        changed
+    }
+}
+
 /// One query word that scores, and the spellings it scores by.
 pub(super) struct ScoredWord {
     pub(super) spellings: Vec<Spelling>,
+    /// Whether the word selects candidates, or only scores them.
+    pub(super) selects: bool,
 }
 
 /// One spelling a word scores by, with its inverse document frequency.
 pub(super) struct Spelling {
     pub(super) word: String,
     pub(super) idf: f64,
+    /// Whether a row of the Workspace holds the spelling as a lexeme.
+    pub(super) held: bool,
 }
 
 /// FTS5's IDF, `ln((N - n + 0.5) / (n + 0.5))`, floored so a word in more

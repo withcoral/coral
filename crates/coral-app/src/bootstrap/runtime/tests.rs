@@ -32,17 +32,16 @@ fn auth_bind_refused(error: &RuntimeError, address: std::net::SocketAddr) -> boo
 /// Writes an `[auth]` deployment, with its session signing key, into `dir`.
 fn write_authenticated_config(dir: &std::path::Path) {
     std::fs::write(dir.join("session.key"), coral_test_support::p256_pkcs8()).unwrap();
-    std::fs::write(
-        dir.join("config.toml"),
-        format!(
+    coral_test_support::write_server_config(
+        dir,
+        &format!(
             "[listeners.mcp]\npublic_url = 'https://mcp.example.test'\n{WEB}\
              [auth]\n[listeners.auth]\npublic_url = 'https://auth.example.test'\n\
              [auth.session]\nsigning_key_file = 'session.key'\n\
              [auth.provider]\nissuer = 'https://accounts.example.test'\n\
              client_id = 'upstream-client'\nclient_secret = 'test-secret'\n"
         ),
-    )
-    .unwrap();
+    );
 }
 
 /// The launcher gives the implicit-user local experience and Desktop local
@@ -60,7 +59,7 @@ async fn launch_selects_local_outbound_defaults_for_local_experiences() {
         if authenticated {
             write_authenticated_config(temp.path());
         } else {
-            std::fs::write(temp.path().join("config.toml"), WEB).unwrap();
+            coral_test_support::write_server_config(temp.path(), WEB);
         }
         let launch = Launch {
             desktop,
@@ -87,7 +86,7 @@ async fn launch_selects_local_outbound_defaults_for_local_experiences() {
 #[tokio::test]
 async fn listeners_report_readiness_separately_from_process_liveness() {
     let temp = TempDir::new().unwrap();
-    std::fs::write(temp.path().join("config.toml"), WEB).unwrap();
+    coral_test_support::write_server_config(temp.path(), WEB);
     let server = start(ServerBuilder::new().with_config_dir(temp.path()))
         .await
         .unwrap();
@@ -164,11 +163,10 @@ async fn configured_local_auth_bind_is_honored_without_enabling_oauth() {
     let (server, address) = loop {
         let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = occupied.local_addr().unwrap();
-        std::fs::write(
-            temp.path().join("config.toml"),
-            format!("[listeners.auth]\nbind = '{address}'\n{WEB}"),
-        )
-        .unwrap();
+        coral_test_support::write_server_config(
+            temp.path(),
+            &format!("[listeners.auth]\nbind = '{address}'\n{WEB}"),
+        );
         let error = match start(ServerBuilder::new().with_config_dir(temp.path())).await {
             Err(error) => error,
             Ok(server) => {
@@ -216,7 +214,7 @@ async fn configured_local_auth_bind_is_honored_without_enabling_oauth() {
 #[tokio::test]
 async fn an_auth_support_outage_does_not_change_mcp_readiness() {
     let temp = TempDir::new().unwrap();
-    std::fs::write(temp.path().join("config.toml"), WEB).unwrap();
+    coral_test_support::write_server_config(temp.path(), WEB);
     let mut server = start(ServerBuilder::new().with_config_dir(temp.path()))
         .await
         .unwrap();
@@ -250,13 +248,12 @@ async fn mcp_bind_failure_aborts_startup_and_releases_the_private_listener() {
     let mcp_addr = occupied_mcp.local_addr().expect("MCP address");
     let grpc_reservation = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve gRPC port");
     let grpc_addr = grpc_reservation.local_addr().expect("gRPC address");
-    std::fs::write(
-        temp.path().join("config.toml"),
-        format!(
+    coral_test_support::write_server_config(
+        temp.path(),
+        &format!(
             "[listeners.grpc]\nbind = '{grpc_addr}'\n[listeners.mcp]\nbind = '{mcp_addr}'\n{WEB}"
         ),
-    )
-    .expect("write listener config");
+    );
     drop(grpc_reservation);
 
     let result =
@@ -286,7 +283,7 @@ async fn mcp_bind_failure_aborts_startup_and_releases_the_private_listener() {
 #[tokio::test(flavor = "multi_thread")]
 async fn default_startup_exposes_the_mcp_contract_with_explicit_human_destination() {
     let temp = TempDir::new().expect("temporary state root");
-    std::fs::write(temp.path().join("config.toml"), WEB).unwrap();
+    coral_test_support::write_server_config(temp.path(), WEB);
     let server = start(ServerBuilder::new().with_config_dir(temp.path()))
         .await
         .expect("start composed server");
@@ -336,7 +333,7 @@ async fn runtime_with_mcp_client(
     rmcp::service::RunningService<rmcp::RoleClient, ()>,
 ) {
     let temp = TempDir::new().expect("temporary state root");
-    std::fs::write(temp.path().join("config.toml"), config).unwrap();
+    coral_test_support::write_server_config(temp.path(), config);
     let (server, workspace, client) = serve_with_mcp_client(temp.path()).await;
     (temp, server, workspace, client)
 }
@@ -523,7 +520,7 @@ async fn a_reef_cancel_stops_a_run_started_over_mcp_promptly() {
 #[test]
 fn the_boot_sweep_ends_a_run_whose_process_died() {
     let temp = TempDir::new().expect("temporary state root");
-    std::fs::write(temp.path().join("config.toml"), WEB).unwrap();
+    coral_test_support::write_server_config(temp.path(), WEB);
     // The process that dies: its runtime goes away with the Run executing,
     // and its owner writes nothing more.
     let dying = tokio::runtime::Builder::new_multi_thread()

@@ -7,7 +7,7 @@
 // setup refuses to start when Desktop data is already there, and each test
 // deletes only what an earlier test in this run left.
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -34,8 +34,9 @@ export function checkDesktopProfiles(desktop: DesktopApp): void {
 }
 
 /**
- * Creates an empty profile. `remove` deletes it; Windows has none, so the last
- * test's data stays and the Windows leg can check that uninstalling keeps it.
+ * Creates a profile that holds only a `desktop.json` with semantic search off.
+ * `remove` deletes it; Windows has none, so the last test's data stays and the
+ * Windows leg can check that uninstalling keeps it.
  */
 export async function freshDesktopProfile(
   desktop: DesktopApp,
@@ -44,21 +45,36 @@ export async function freshDesktopProfile(
     const appData = windowsAppData(desktop)
     // checkDesktopProfiles found no data here, so this run wrote what is here.
     await rm(join(appData, DESKTOP_DATA), { recursive: true, force: true })
+    await turnSemanticSearchOff(appData)
     return { profile: { appData, env: {} } }
   }
   const home = await mkdtemp(join(tmpdir(), 'coral-desktop-'))
+  const appData = join(home, '.config')
+  await turnSemanticSearchOff(appData)
   return {
     profile: {
-      appData: join(home, '.config'),
+      appData,
       env: {
         HOME: home,
-        XDG_CONFIG_HOME: join(home, '.config'),
+        XDG_CONFIG_HOME: appData,
         XDG_CACHE_HOME: join(home, '.cache'),
         XDG_DATA_HOME: join(home, '.local', 'share'),
       },
     },
     remove: () => rm(home, { recursive: true, force: true }),
   }
+}
+
+/**
+ * With semantic search on, each Desktop launch downloads the model (133 MB)
+ * from GitHub and runs the Embedder.
+ */
+async function turnSemanticSearchOff(appData: string): Promise<void> {
+  await mkdir(join(appData, DESKTOP_DATA), { recursive: true })
+  await writeFile(
+    join(appData, DESKTOP_DATA, 'desktop.json'),
+    `${JSON.stringify({ search: { semantic: false } })}\n`,
+  )
 }
 
 function windowsAppData(desktop: DesktopApp): string {

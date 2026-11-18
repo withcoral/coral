@@ -28,11 +28,13 @@ mod pull_compiler;
 mod relay;
 mod relay_repository;
 mod run;
+mod served;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 mod time;
 
 pub use compile_wire::ProtocolError;
+pub use compile_wire::package_sha256;
 pub use compiler::{
     AnalysisError, CompileError, CompilerClient, Diagnostics, Unavailable, time_left,
     tool_check_deadline,
@@ -49,6 +51,7 @@ pub use pull::{
 };
 pub use pull_compiler::PullStreamCompiler;
 pub use run::{APPLIED_CAP_BYTES, HELD_CAP_REQUESTS, PROGRAM_LOG_MESSAGE_MAX_BYTES, RunLimits};
+pub use served::{Closing, RunStreamServer, ServedRunStream};
 
 /// The link's wire contract, generated from `proto/`.
 #[allow(

@@ -102,9 +102,10 @@ runtime.
   gets the highest request number committed; a terminal Run, or one whose claim does not match, is told that it ended, or that it is not held.
 - **The start.** After the package the Run Executor loads the script into a fresh isolate and says so. The Coral
   Instance that holds the stream rebuilds the Run's actor from the row, runs the authority recheck with it, records the
-  start mark, the deadline, the Run Executor's id and itself as the stream's holder in one chunk, and sends the deadline
-  and the Run CPU Budget. Only then does the Program run. A lost authority fails the Run with `run_authority_lost`, and
-  no Program code runs. A Run **starts** when that chunk commits; its deadline runs from its start.
+  start mark, the deadline and itself as the stream's holder in one chunk (the take recorded the Run Executor's id), and
+  sends the deadline and the Run CPU Budget. Only then does the Program run. A lost authority fails the Run with
+  `run_authority_lost`, and no Program code runs. A Run **starts** when that chunk commits; its deadline runs from its
+  start.
 - **Requests are numbered by the Run Executor, from one per Run.** Each carries an Invoke, an Emit, a Log or the
   Finish. Coral answers an Invoke at Applied with the result, a rejection, an upstream error or a fatal. Nothing answers
   an Emit or a Log: the Run Executor checks the value against the package's value limits, counts the Run Output Budget

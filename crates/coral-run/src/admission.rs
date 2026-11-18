@@ -246,6 +246,7 @@ impl RunModule {
                     })
                     .collect(),
                 trace: trace.clone(),
+                time_limit_nanos: Some(submission.timeout().nanoseconds()),
             };
             if run_repository::insert_acceptance(
                 transaction,

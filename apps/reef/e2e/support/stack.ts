@@ -234,6 +234,9 @@ export async function startStack(options: {
         // The stack stops Coral within 5 s: Runs still live are interrupted at
         // once instead of draining.
         '[runtime]\nshutdown_drain_seconds = 0\n' +
+          // With semantic search on, each instance downloads the model
+          // (133 MB) from GitHub and runs the Embedder.
+          '[search]\nsemantic_search_enabled = false\n' +
           (options.privateNetworkAccess
             ? `[outbound]\nprivate_networks = "${options.privateNetworkAccess}"\n`
             : '') +

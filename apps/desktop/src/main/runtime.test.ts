@@ -22,6 +22,7 @@ describe('writeRuntimeConfig', () => {
       stateDir,
       { grpc: 1, mcp: 2, reef: 3 },
       { backend: 'sqlite' },
+      { semantic: true },
       checkUpdates,
     )
 

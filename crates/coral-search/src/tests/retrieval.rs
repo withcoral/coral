@@ -1049,65 +1049,372 @@ async fn a_word_that_only_resembles_a_rows_text_selects_nothing() {
     );
 }
 
+#[tokio::test]
+async fn postgres_selects_a_held_word_by_its_lexemes_and_another_by_its_substring() {
+    coral_test_support::database_only!(Postgres);
+    let document = r#"{
+      "openapi": "3.1.0",
+      "info": { "title": "Weather", "version": "1.0.0" },
+      "servers": [{ "url": "https://weather.example" }],
+      "security": [],
+      "paths": {
+        "/l": { "get": { "operationId": "labels/paint", "summary": "Set the color of a label",
+          "responses": { "200": { "description": "OK" } } } },
+        "/r": { "get": { "operationId": "items/relabel", "summary": "Tracer one",
+          "responses": { "200": { "description": "OK" } } } }
+      }
+    }"#;
+    let (modules, principal, workspace) = published(document, "weather").await;
+    // A row holds `label` as a word, so `relabel` no longer selects its row:
+    // the score gives a word inside a longer word nothing. No row holds
+    // `abel`, so its substring still selects both.
+    for (query, expected) in [
+        ("label", vec!["coral.providers.weather.labels.paint"]),
+        (
+            "abel",
+            vec![
+                "coral.providers.weather.items.relabel",
+                "coral.providers.weather.labels.paint",
+            ],
+        ),
+    ] {
+        let page = search_page(&modules, &principal, &workspace, query).await;
+        assert_eq!(paths(&page), expected, "{query}");
+    }
+}
+
+/// The Zentro and Widgets Providers of
+/// [`postgres_selects_by_a_common_word_only_while_no_rarer_word_is_held`],
+/// published and converged.
+async fn common_word_corpus() -> (TestModules, AuthenticatedPrincipal, WorkspaceId) {
+    let operation = |path: String, id: String, summary: String, schema_text: Option<&str>| {
+        let parameters =
+            schema_text.map_or_else(Vec::new, |text| vec![query_parameter("note", text)]);
+        (path, get_operation(&id, &summary, None, &parameters))
+    };
+    // `list` is in 1,002 of about 3,000 rows: more than 20% of them, more than
+    // the 1,000-row floor, and few enough to weigh more than `gorvex` in
+    // schema text. So is `plonklist`, the compact variant of `plonk_list`.
+    let zentro = (0..1_001)
+        .map(|i| {
+            operation(
+                format!("/t{i}"),
+                format!("listTracer{i}"),
+                format!("List tracer {i}"),
+                None,
+            )
+        })
+        .chain((0..120).map(|i| {
+            operation(
+                format!("/r{i}"),
+                format!("readItem{i}"),
+                format!("Read item {i}"),
+                Some("Gorvex."),
+            )
+        }))
+        .chain((0..850).map(|i| {
+            operation(
+                format!("/f{i}"),
+                format!("fill{i}"),
+                format!("Filler {i}"),
+                None,
+            )
+        }))
+        .chain((0..1_050).map(|i| {
+            operation(
+                format!("/p{i}"),
+                format!("plonklist{i}"),
+                format!("Plonklist {i}"),
+                None,
+            )
+        }))
+        .chain([
+            operation("/j".into(), "tracerlist".into(), "Joined".into(), None),
+            operation(
+                "/w".into(),
+                "readWimble".into(),
+                "Read".into(),
+                Some("Wimble."),
+            ),
+        ])
+        .collect();
+    let widgets = [operation(
+        "/w".into(),
+        "listWidgets".into(),
+        "List widgets".into(),
+        None,
+    )]
+    .into_iter()
+    .collect();
+    let modules = TestModules::new().await;
+    let user = organization_user(modules.search.database.clone(), USER).await;
+    let principal = AuthenticatedPrincipal::user(user.clone());
+    let workspace = modules.create_workspace(&user).await;
+    for (title, namespace, paths) in [
+        ("Zentro", "zentro", zentro),
+        ("Widgets", "widgets", widgets),
+    ] {
+        modules
+            .publish_openapi(
+                &user,
+                &workspace,
+                &openapi_document(title, &paths),
+                namespace,
+                20,
+            )
+            .await;
+    }
+    modules.converge().await;
+    (modules, principal, workspace)
+}
+
+#[tokio::test]
+async fn postgres_selects_by_a_common_word_only_while_no_rarer_word_is_held() {
+    coral_test_support::database_only!(Postgres);
+    let (modules, principal, workspace) = common_word_corpus().await;
+    // While a rarer typed word, or a spelling one edit from it, fills the
+    // window, `list` selects no row: the `list` Tools, which outrank the
+    // `gorvex` ones, leave the page. A rarer word that meets no row, the
+    // compact variant `tracerlist`, a rarer word that fills less than the
+    // window (`wimble`), and a filter to a Provider without `gorvex` all
+    // leave `list` selecting. A compact variant always selects, however
+    // common: the `plonklist` Tools outrank the `gorvex` ones.
+    let item = "coral.providers.zentro.readItem0";
+    let tracer = "coral.providers.zentro.listTracer0";
+    for (query, filter, on_page, off_page) in [
+        ("list gorvex", None, item, Some(".listTracer")),
+        ("list gorvez", None, item, Some(".listTracer")),
+        ("list qwxyzz", None, tracer, None),
+        ("tracer list", None, tracer, None),
+        ("list wimble", None, tracer, None),
+        (
+            "plonk_list gorvex",
+            None,
+            "coral.providers.zentro.plonklist0",
+            None,
+        ),
+        (
+            "list gorvex",
+            Some("coral.providers.widgets"),
+            "coral.providers.widgets.listWidgets",
+            None,
+        ),
+    ] {
+        let mut request = Corpus::query(query);
+        if let Some(filter) = filter {
+            request = request.with_provider(&ProviderCallRoot::parse(filter).unwrap());
+        }
+        let page = modules
+            .search
+            .search(&principal, &workspace, &request)
+            .await
+            .unwrap();
+        let ranked = paths(&page);
+        assert!(ranked.contains(&on_page), "{query} {filter:?}: {ranked:?}");
+        assert!(
+            off_page.is_none_or(|off| ranked.iter().all(|path| !path.contains(off))),
+            "{query} {filter:?}: {ranked:?}"
+        );
+    }
+}
+
+/// One operation of a test document: its path, operation id, summary,
+/// description and query parameters.
+type Operation<'a> = (
+    &'a str,
+    &'a str,
+    &'a str,
+    Option<&'a str>,
+    &'a [serde_json::Value],
+);
+
+/// A query parameter whose schema text is `description`.
+fn query_parameter(name: &str, description: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name, "in": "query",
+        "schema": { "type": "string", "description": description }
+    })
+}
+
+/// A `get` operation, with its description when there is one.
+fn get_operation(
+    id: &str,
+    summary: &str,
+    description: Option<&str>,
+    parameters: &[serde_json::Value],
+) -> serde_json::Value {
+    let mut operation = serde_json::json!({
+        "operationId": id, "summary": summary, "parameters": parameters,
+        "responses": { "200": { "description": "OK" } }
+    });
+    if let Some(description) = description {
+        operation
+            .as_object_mut()
+            .expect("an operation object")
+            .insert("description".to_string(), serde_json::json!(description));
+    }
+    serde_json::json!({ "get": operation })
+}
+
+/// An OpenAPI document of the Provider `title` over `paths`.
+fn openapi_document(title: &str, paths: &serde_json::Map<String, serde_json::Value>) -> String {
+    serde_json::json!({
+        "openapi": "3.1.0",
+        "info": { "title": title, "version": "1.0.0" },
+        "servers": [{ "url": format!("https://{}.example", title.to_lowercase()) }],
+        "security": [],
+        "paths": paths,
+    })
+    .to_string()
+}
+
 /// One Provider of invented words whose rows separate the scoring rules.
 /// Every row holds `zentro` through the Provider name, so a query of
 /// two words with it never meets a phrase; the long rows hold the query
 /// words out of the query's order, with no filler word between them, for
 /// the same reason.
 fn scoring_document() -> String {
-    let parameter = |name: String, description: &str| {
-        serde_json::json!({
-            "name": name, "in": "query",
-            "schema": { "type": "string", "description": description }
-        })
-    };
     // Words no query holds: they make a row long.
     let filler = (1..=30)
-        .map(|index| parameter(format!("filler{index}"), "Vash teln ober kip mun dral."))
+        .map(|index| query_parameter(&format!("filler{index}"), "Vash teln ober kip mun dral."))
         .collect::<Vec<_>>();
-    let tool =
-        |id: &str, summary: &str, description: Option<&str>, parameters: Vec<serde_json::Value>| {
-            let mut tool = serde_json::json!({
-                "operationId": id, "summary": summary, "parameters": parameters,
-                "responses": { "200": { "description": "OK" } }
-            });
-            if let Some(description) = description {
-                tool.as_object_mut()
-                    .expect("an operation object")
-                    .insert("description".to_string(), serde_json::json!(description));
-            }
-            serde_json::json!({ "get": tool })
-        };
     let schema_repeats = (1..=6)
-        .map(|index| parameter(format!("note{index}"), "Frosk the glimmet near a brandle."))
+        .map(|index| query_parameter(&format!("note{index}"), "Frosk the glimmet near a brandle."))
         .chain(filler.iter().cloned())
+        .collect::<Vec<_>>();
+    let long_body =
+        "Zinder of a snorf, quabble. Snorf with zinder, quabble. Zinder, snorf and quabble.";
+    let operations: [Operation<'_>; 12] = [
+        (
+            "/forms",
+            "storeQuib",
+            "Tracer one",
+            Some("Plonks, plonked, plonking, plonker and plonkish."),
+            &[],
+        ),
+        ("/plonk", "dropNib", "Plonk a nib", None, &[]),
+        (
+            "/snibs",
+            "storeMub",
+            "Snib, snibs, snibbed and snibbing",
+            Some("Tracer ten."),
+            &[],
+        ),
+        (
+            "/snib",
+            "pickSnib",
+            "Tracer eleven",
+            Some("Snib the pick."),
+            &[],
+        ),
+        ("/gorvex", "listGorvex", "Tracer two", None, &[]),
+        (
+            "/tupa",
+            "readTupa",
+            "Tracer three",
+            Some("Read the gorvex."),
+            &[],
+        ),
+        ("/wimble", "fetchZQXWimble", "Tracer four", None, &[]),
+        (
+            "/slib",
+            "readSlib",
+            "Tracer five",
+            Some("Read the wimble."),
+            &[],
+        ),
+        ("/short-schema", "brandleFrosk", "Tracer six", None, &[]),
+        (
+            "/long-schema",
+            "listYorbs",
+            "Tracer seven",
+            None,
+            &schema_repeats,
+        ),
+        (
+            "/short-body",
+            "quabbleSnorf",
+            "Tracer eight",
+            Some("Quabble the snorf."),
+            &[],
+        ),
+        (
+            "/long-body",
+            "listDrams",
+            "Tracer nine",
+            Some(long_body),
+            &filler,
+        ),
+    ];
+    let paths = operations
+        .into_iter()
+        .map(|(path, id, summary, description, parameters)| {
+            (
+                path.to_string(),
+                get_operation(id, summary, description, parameters),
+            )
+        })
         .collect();
-    serde_json::json!({
-        "openapi": "3.1.0",
-        "info": { "title": "Zentro", "version": "1.0.0" },
-        "servers": [{ "url": "https://zentro.example" }],
-        "security": [],
-        "paths": {
-            "/forms": tool("storeQuib", "Tracer one",
-                Some("Plonks, plonked, plonking, plonker and plonkish."), Vec::new()),
-            "/plonk": tool("dropNib", "Plonk a nib", None, Vec::new()),
-            "/snibs": tool("storeMub", "Snib, snibs, snibbed and snibbing",
-                Some("Tracer ten."), Vec::new()),
-            "/snib": tool("pickSnib", "Tracer eleven", Some("Snib the pick."), Vec::new()),
-            "/gorvex": tool("listGorvex", "Tracer two", None, Vec::new()),
-            "/tupa": tool("readTupa", "Tracer three", Some("Read the gorvex."), Vec::new()),
-            "/wimble": tool("fetchZQXWimble", "Tracer four", None, Vec::new()),
-            "/slib": tool("readSlib", "Tracer five", Some("Read the wimble."), Vec::new()),
-            "/short-schema": tool("brandleFrosk", "Tracer six", None, Vec::new()),
-            "/long-schema": tool("listYorbs", "Tracer seven", None, schema_repeats),
-            "/short-body": tool("quabbleSnorf", "Tracer eight",
-                Some("Quabble the snorf."), Vec::new()),
-            "/long-body": tool("listDrams", "Tracer nine",
-                Some("Zinder of a snorf, quabble. Snorf with zinder, quabble. Zinder, snorf and quabble."),
-                filler),
-        }
-    })
-    .to_string()
+    openapi_document("Zentro", &paths)
+}
+
+/// One Provider of `fills` Tools that each hold one form of `vorm` in
+/// their schema text, and of `readMany`, which holds eight forms there.
+fn exact_limit_document(fills: usize) -> String {
+    let forms = [
+        "Vorm.", "Vorms.", "Vormed.", "Vorming.", "Vormer.", "Vormish.", "Vormal.", "Vormly.",
+    ];
+    let notes = forms
+        .iter()
+        .enumerate()
+        .map(|(index, form)| query_parameter(&format!("note{index}"), form))
+        .collect::<Vec<_>>();
+    let many = get_operation("readMany", "Tracer many", None, &notes);
+    let paths = (0..fills)
+        .map(|index| {
+            (
+                format!("/fill{index}"),
+                get_operation(
+                    &format!("fill{index}"),
+                    &format!("Tracer {index}"),
+                    None,
+                    &[query_parameter("note", "Vormy.")],
+                ),
+            )
+        })
+        .chain([("/many".to_string(), many)])
+        .collect();
+    openapi_document("Zentro", &paths)
+}
+
+#[tokio::test]
+async fn postgres_orders_by_the_exact_score_only_the_best_thousand_by_estimate() {
+    coral_test_support::database_only!(Postgres);
+    // The exact score counts every form of `vorm` in schema text, so
+    // `readMany`'s is the best. The estimate counts one form there, and the
+    // longer text of `readMany` puts it below every `fill` Tool. Among the
+    // best 1,000 by estimate the exact score decides; past them a Tool
+    // stays off the page, and the `fill` Tools tie in Call Path order.
+    let many = "coral.providers.zentro.readMany";
+    for (fills, first, many_on_page) in [
+        (1, many, true),
+        (1_000, "coral.providers.zentro.fill0", false),
+    ] {
+        let (modules, principal, workspace) =
+            published(&exact_limit_document(fills), "zentro").await;
+        let page = search_page(&modules, &principal, &workspace, "vorm").await;
+        let ranked = paths(&page);
+        assert_eq!(
+            ranked.first(),
+            Some(&first),
+            "{fills} fill Tools: {ranked:?}"
+        );
+        assert_eq!(
+            ranked.contains(&many),
+            many_on_page,
+            "{fills} fill Tools: {ranked:?}"
+        );
+    }
 }
 
 #[tokio::test]

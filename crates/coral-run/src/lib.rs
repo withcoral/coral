@@ -177,6 +177,7 @@ mod run_inbox;
 pub mod usage_repository;
 pub use run_inbox::RunInbox;
 mod run_repository;
+mod run_stream;
 mod shutdown;
 mod source_location_repository;
 mod summary;

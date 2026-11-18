@@ -239,6 +239,20 @@ pub(crate) enum Message {
     Stop,
     /// The mailbox is empty: commit when free.
     Drained,
+    /// Run stream request `number`: `message` is what it asks of the owner,
+    /// or `None` for a request that leaves nothing to record here. The
+    /// owner applies requests in number order, so each chunk's watermark
+    /// covers every lower request.
+    Request {
+        number: u64,
+        message: Option<Box<Message>>,
+    },
+    /// The chunk in flight lands on a head another writer moved, which now
+    /// records `recorded_total` output bytes; its `Committed` follows.
+    Rebased { head: u64, recorded_total: usize },
+    /// The Run stream is gone: the owner records what it applied and
+    /// retires, and the Run stays as it is.
+    Detached,
 }
 
 impl fmt::Debug for Message {
@@ -317,6 +331,20 @@ impl fmt::Debug for Message {
             Self::Recover => formatter.write_str("Recover"),
             Self::Stop => formatter.write_str("Stop"),
             Self::Drained => formatter.write_str("Drained"),
+            Self::Request { number, message } => formatter
+                .debug_struct("Request")
+                .field("number", number)
+                .field("message", message)
+                .finish(),
+            Self::Rebased {
+                head,
+                recorded_total,
+            } => formatter
+                .debug_struct("Rebased")
+                .field("head", head)
+                .field("recorded_total", recorded_total)
+                .finish(),
+            Self::Detached => formatter.write_str("Detached"),
         }
     }
 }
@@ -399,6 +427,42 @@ struct Shared {
     sender: mpsc::UnboundedSender<Message>,
     stop: Arc<ExecutionStop>,
     stopped: AtomicBool,
+    /// The number of the Run stream request being handed to the Program's
+    /// host, until the call it makes takes it.
+    request: std::sync::Mutex<Option<u64>>,
+}
+
+/// The number of one Run stream request until its message reaches the
+/// owner. Dropped first, it tells the owner the request leaves nothing to
+/// record, so later requests do not wait for it.
+pub(crate) struct RequestTicket(Option<(u64, OwnerHandle)>);
+
+impl RequestTicket {
+    pub(crate) fn number(&self) -> Option<u64> {
+        self.0.as_ref().map(|(number, _owner)| *number)
+    }
+
+    /// `message` as the request it answers, once.
+    fn carry(&mut self, message: Message) -> Message {
+        match self.0.take() {
+            Some((number, _owner)) => Message::Request {
+                number,
+                message: Some(Box::new(message)),
+            },
+            None => message,
+        }
+    }
+}
+
+impl Drop for RequestTicket {
+    fn drop(&mut self) {
+        if let Some((number, owner)) = self.0.take() {
+            owner.send(Message::Request {
+                number,
+                message: None,
+            });
+        }
+    }
 }
 
 /// A handle on one live Run Owner: the Program host and the Invocation tasks
@@ -419,6 +483,7 @@ impl OwnerHandle {
                 sender,
                 stop: Arc::new(ExecutionStop::new()),
                 stopped: AtomicBool::new(false),
+                request: std::sync::Mutex::new(None),
             }),
         };
         (handle, mailbox)
@@ -471,15 +536,40 @@ impl OwnerHandle {
         let _retired = self.shared.sender.send(message);
     }
 
+    /// Hands Run stream request `number` to the next Program call made on
+    /// this thread.
+    pub(crate) fn hand_request(&self, number: u64) {
+        *self.request_cell() = Some(number);
+    }
+
+    /// The request number handed and not yet taken, as a ticket.
+    pub(crate) fn take_request(&self) -> RequestTicket {
+        RequestTicket(
+            self.request_cell()
+                .take()
+                .map(|number| (number, self.clone())),
+        )
+    }
+
+    fn request_cell(&self) -> std::sync::MutexGuard<'_, Option<u64>> {
+        self.shared
+            .request
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     pub(crate) async fn emit(
         &self,
         value: ProgramValue,
         location: Option<SourceLocation>,
     ) -> Result<(), Error> {
-        self.ask(|reply| Message::Emit {
-            value,
-            location,
-            reply,
+        let mut ticket = self.take_request();
+        self.ask(|reply| {
+            ticket.carry(Message::Emit {
+                value,
+                location,
+                reply,
+            })
         })
         .await
     }
@@ -490,17 +580,25 @@ impl OwnerHandle {
         message: String,
         location: Option<SourceLocation>,
     ) -> Result<(), Error> {
-        self.ask(|reply| Message::Log {
-            level,
-            message,
-            location,
-            reply,
+        let mut ticket = self.take_request();
+        self.ask(|reply| {
+            ticket.carry(Message::Log {
+                level,
+                message,
+                location,
+                reply,
+            })
         })
         .await
     }
 
-    pub(crate) async fn admit(&self, work: Box<dyn ChunkWork>) -> Result<(), Error> {
-        self.ask(|reply| Message::Admit { work, reply }).await
+    pub(crate) async fn admit(
+        &self,
+        work: Box<dyn ChunkWork>,
+        mut ticket: RequestTicket,
+    ) -> Result<(), Error> {
+        self.ask(|reply| ticket.carry(Message::Admit { work, reply }))
+            .await
     }
 
     pub(crate) async fn invocation_result(

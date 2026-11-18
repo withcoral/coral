@@ -26,8 +26,11 @@ pub(crate) use warm::Isolates;
 /// count their output bytes; an Invoke counts none.
 pub const APPLIED_CAP_BYTES: usize = 8 << 20;
 /// The most of a Run's requests kept above the committed watermark for a
-/// resend: while this many are, the Program's next request waits.
-pub const HELD_CAP_REQUESTS: usize = 512;
+/// resend: while this many are, the Program's next request waits. It is
+/// well above what one chunk commit confirms, so a Program that emits fast
+/// waits for the Applied cap, as it does in Coral's own process, and not
+/// for each commit.
+pub const HELD_CAP_REQUESTS: usize = 4096;
 /// Maximum UTF-8 byte length of one Program Log message.
 pub const PROGRAM_LOG_MESSAGE_MAX_BYTES: usize = 64 * 1024;
 

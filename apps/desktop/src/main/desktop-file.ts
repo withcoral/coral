@@ -1,7 +1,8 @@
 // `desktop.json`, Desktop's own state in its data folder. Each top-level
 // section has one owner: the kept ports (ports.ts) and the background notice
 // (background.ts). An owner replaces its section and never another's. The
-// person owns the database section (database.ts), which Desktop only reads.
+// person owns the database and search sections (database.ts, search.ts),
+// which Desktop only reads.
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 

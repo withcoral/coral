@@ -1014,23 +1014,20 @@ mod tests {
     async fn the_search_model_is_not_looked_for_while_the_setting_is_off() {
         // With the setting on, the delivery would request the real model
         // from GitHub. `docker/image-test.sh` boots the image with the
-        // setting on, and the delivery's own tests use a local server.
-        for search in ["", "[search]\nsemantic_search_enabled = false\n"] {
-            let temp = TempDir::new().unwrap();
-            std::fs::write(
-                temp.path().join("config.toml"),
-                format!("[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n{search}"),
-            )
+        // default on, and the delivery's own tests use a local server.
+        let temp = TempDir::new().unwrap();
+        coral_test_support::write_server_config(
+            temp.path(),
+            "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
+        );
+        let server = ServerBuilder::new()
+            .with_config_dir(temp.path())
+            .start()
+            .await
             .unwrap();
-            let server = ServerBuilder::new()
-                .with_config_dir(temp.path())
-                .start()
-                .await
-                .unwrap();
 
-            assert!(server.search_model().is_none(), "{search:?}");
+        assert!(server.search_model().is_none());
 
-            server.shutdown_inner().await.unwrap();
-        }
+        server.shutdown_inner().await.unwrap();
     }
 }
