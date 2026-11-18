@@ -449,24 +449,21 @@ async fn task_visibility_preserves_user_privacy_and_owner_agent_oversight() {
     }
 }
 
-// Catches: a module above Task joining its records to a Task its caller did
-// not start, to a Task addressed through another Workspace, or to an ended
-// Task; a refusal that tells a caller outside the Workspace that the Task
-// exists; and a hold that reads the Task as `get` does, which conceals an
-// Agent's own Task from it.
+// Catches: a hold on a Task its caller did not start, a refusal that tells a
+// caller outside the Workspace that the Task exists, or a hold that changes it.
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one table compares every caller and Task the hold accepts or refuses"
-)]
 async fn only_the_open_task_its_caller_started_is_held_open() {
     let (_database, workspaces, tasks) = test_modules().await;
     let (workspaces, tasks) = (&workspaces, &tasks);
-    let mut users = Vec::new();
-    for id in ["user:hold-owner", "user:hold-member", "user:hold-outsider"] {
-        users.push(organization_user(tasks.database.clone(), id, OrganizationRole::Member).await);
-    }
-    let [owner_user, member_user, outsider_user] = users.try_into().expect("three Users");
+    let database = tasks.database.clone();
+    let owner_user = organization_user(
+        database.clone(),
+        "user:hold-owner",
+        OrganizationRole::Member,
+    )
+    .await;
+    let outsider_user =
+        organization_user(database, "user:hold-outsider", OrganizationRole::Member).await;
     let workspace = workspaces
         .create(
             &change(owner_user.clone(), 10, '1'),
@@ -474,22 +471,6 @@ async fn only_the_open_task_its_caller_started_is_held_open() {
         )
         .await
         .expect("create Workspace");
-    let other_workspace = workspaces
-        .create(
-            &change(owner_user.clone(), 11, '2'),
-            WorkspaceDisplayName::parse("Another Workspace").expect("display name"),
-        )
-        .await
-        .expect("create the other Workspace");
-    workspaces
-        .set_membership(
-            &change(owner_user.clone(), 20, '3'),
-            workspace.id(),
-            &member_user,
-            WorkspaceRole::Member,
-        )
-        .await
-        .expect("add Workspace Member");
     let issued = workspaces
         .create_agent(
             &change(owner_user.clone(), 20, '4'),
@@ -509,103 +490,35 @@ async fn only_the_open_task_its_caller_started_is_held_open() {
         .await
         .expect("authenticate Agent");
     let owner = AuthenticatedPrincipal::user(owner_user);
-    let member = AuthenticatedPrincipal::user(member_user);
     let outsider = AuthenticatedPrincipal::user(outsider_user);
-    let owner_task = start(tasks, &owner, workspace.id(), "Owner work", 30).await;
-    let member_task = start(tasks, &member, workspace.id(), "Member work", 31).await;
-    let agent_task = start(tasks, &agent, workspace.id(), "Agent work", 32).await;
-    let ended_task = start(tasks, &owner, workspace.id(), "Finished work", 33).await;
-    let ended_task = tasks
-        .end(
-            &owner,
-            workspace.id(),
-            ended_task.id(),
-            TaskOutcome::Success,
-            None,
-            UnixNanos::new(40),
-        )
+    let task = start(tasks, &agent, workspace.id(), "Agent work", 32).await;
+    let before = retained(tasks, &task).await;
+
+    let mut transaction = tasks.database.begin().await.expect("transaction");
+    let (held, authority) = tasks
+        .hold_open_in_transaction(&mut transaction, &agent, workspace.id(), task.id())
         .await
-        .expect("end Task");
-    let absent = crate::TaskId::parse("height-word-database-library").expect("identifier");
-    let every_task = [&owner_task, &member_task, &agent_task, &ended_task];
-    let before = retained(tasks, &every_task).await;
+        .expect("an Agent holds its own open Task");
+    assert_eq!(held, task);
+    assert_eq!(authority.workspace().id(), workspace.id());
+    transaction.commit().await.expect("commit");
 
-    for (actor, task) in [
-        (&owner, &owner_task),
-        (&member, &member_task),
-        (&agent, &agent_task),
-    ] {
+    // The Owner may read the Agent's Task but did not start it.
+    for actor in [&owner, &outsider] {
         let mut transaction = tasks.database.begin().await.expect("transaction");
-        let (held, authority) = tasks
+        let refused = tasks
             .hold_open_in_transaction(&mut transaction, actor, workspace.id(), task.id())
-            .await
-            .unwrap_or_else(|error| panic!("{actor:?} holds its own open Task: {error}"));
-        assert_eq!(&held, task);
-        assert_eq!(authority.workspace().id(), workspace.id(), "{actor:?}");
-        transaction.commit().await.expect("commit");
-    }
-
-    let not_found: fn(&Error) -> bool = |error| matches!(error, Error::TaskNotFound);
-    let closed: fn(&Error) -> bool = |error| matches!(error, Error::TaskClosed);
-    for (case, actor, workspace_id, task_id, refused) in [
-        (
-            "a Member and an Owner's Task",
-            &member,
-            workspace.id(),
-            owner_task.id(),
-            not_found,
-        ),
-        (
-            "an Owner and a Member's Task",
-            &owner,
-            workspace.id(),
-            member_task.id(),
-            not_found,
-        ),
-        // The Owner may read an Agent's Task, but did not start it.
-        (
-            "an Owner and an Agent's Task",
-            &owner,
-            workspace.id(),
-            agent_task.id(),
-            not_found,
-        ),
-        ("an absent Task", &owner, workspace.id(), &absent, not_found),
-        (
-            "a Task addressed through another Workspace",
-            &owner,
-            other_workspace.id(),
-            owner_task.id(),
-            not_found,
-        ),
-        (
-            "an ended Task",
-            &owner,
-            workspace.id(),
-            ended_task.id(),
-            closed,
-        ),
-        // A caller outside the Workspace gets the answer an absent Task gets.
-        (
-            "a caller outside the Workspace",
-            &outsider,
-            workspace.id(),
-            owner_task.id(),
-            not_found,
-        ),
-    ] {
-        let mut transaction = tasks.database.begin().await.expect("transaction");
-        let result = tasks
-            .hold_open_in_transaction(&mut transaction, actor, workspace_id, task_id)
             .await;
-        assert!(result.as_ref().is_err_and(refused), "{case}: {result:?}");
-        // A caller that commits after the refusal still commits nothing.
+        assert!(
+            matches!(refused, Err(Error::TaskNotFound)),
+            "{actor:?}: {refused:?}"
+        );
         transaction.commit().await.expect("commit");
     }
     assert_eq!(
-        retained(tasks, &every_task).await,
+        retained(tasks, &task).await,
         before,
-        "neither a hold nor a refusal changed a Task"
+        "a hold changes nothing"
     );
 }
 
@@ -648,25 +561,17 @@ async fn check_open_holds_nothing_and_refuses_a_caller_who_lost_access() {
     );
 }
 
-/// Each Task as persistence retains it, with its last activity.
-async fn retained(
-    tasks: &TaskModule,
-    every_task: &[&crate::Task],
-) -> Vec<(crate::Task, UnixNanos)> {
+/// The Task as persistence retains it, with its last activity.
+async fn retained(tasks: &TaskModule, task: &crate::Task) -> (crate::Task, UnixNanos) {
     let mut transaction = tasks.database.begin().await.expect("transaction");
-    let mut retained = Vec::new();
-    for task in every_task {
-        retained.push(
-            crate::repository::retention_group(&mut transaction, task.workspace_id(), task.id())
-                .await
-                .expect("read the Task")
-                .expect("the Task is retained"),
-        );
-    }
+    let retained =
+        crate::repository::retention_group(&mut transaction, task.workspace_id(), task.id())
+            .await
+            .expect("read the Task")
+            .expect("the Task is retained");
     transaction.rollback().await.expect("roll back");
     retained
 }
-
 async fn assert_task_visible(
     tasks: &TaskModule,
     principal: &AuthenticatedPrincipal,

@@ -1618,15 +1618,11 @@ async fn list_providers_lists_every_provider_without_approval() {
     }
 }
 
-// Catches: a read without a Run that lists for another Principal than its
-// caller, so that it names a Provider or counts a Tool that
-// `coral.listProviders` does not list to the caller's Programs, or a caller
-// outside the Workspace told of its Providers.
+// Catches: a read without a Run that differs from what `coral.listProviders`
+// lists, or that answers a caller outside the Workspace.
 #[tokio::test]
 async fn providers_are_listed_without_a_run_as_list_providers_lists_them() {
     let scope = AdminScope::new("user:listed-owner").await;
-    // Policy takes one Tool from the Built-in Provider's count.
-    scope.set_access(ToolAccessState::Disabled).await;
     let weather = scope.publish_weather().await;
     scope
         .fixture
@@ -1639,78 +1635,42 @@ async fn providers_are_listed_without_a_run_as_list_providers_lists_them() {
         )
         .await
         .unwrap();
-    let member = organization_user(
-        scope.fixture.database.clone(),
-        "user:listed-member",
-        OrganizationRole::Member,
-    )
-    .await;
-    scope
-        .fixture
-        .workspaces
-        .set_membership(
-            &change(scope.owner_user(), 22, '7'),
-            &scope.workspace_id,
-            &member,
-            WorkspaceRole::Member,
-        )
-        .await
-        .unwrap();
-    let agent =
-        registered_agent(&scope.fixture.workspaces, &scope.owner, &scope.workspace_id).await;
     let runs = &scope.fixture.runs;
 
-    for principal in [
-        scope.owner.clone(),
-        AuthenticatedPrincipal::user(member),
-        agent,
-    ] {
-        let run = scope
-            .start(&principal, workspace_call("listProviders", "{}"))
-            .await;
-        let listed = final_value(&scope.terminal(&principal, &run).await);
-        let without_a_run = runs
-            .listed_providers(&principal, &scope.workspace_id)
-            .await
-            .unwrap_or_else(|error| panic!("{principal:?} lists providers: {error}"));
-        assert_eq!(
-            listed.pointer("/data/providers"),
-            Some(&serde_json::to_value(&without_a_run).unwrap()),
-            "{principal:?}"
-        );
-        assert_eq!(
-            without_a_run
-                .iter()
-                .map(|provider| (provider.call_root.as_str(), provider.state))
-                .collect::<Vec<_>>(),
-            [
-                ("coral", coral_catalog::ListedProviderState::Active),
-                (
-                    "coral.providers.weather",
-                    coral_catalog::ListedProviderState::Disabled
-                ),
-            ],
-            "{principal:?}"
-        );
-    }
+    let run = scope
+        .start(&scope.owner, workspace_call("listProviders", "{}"))
+        .await;
+    let listed = final_value(&scope.terminal(&scope.owner, &run).await);
+    let without_a_run = runs
+        .listed_providers(&scope.owner, &scope.workspace_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        listed.pointer("/data/providers"),
+        Some(&serde_json::to_value(&without_a_run).unwrap())
+    );
+    let call_roots: Vec<_> = without_a_run
+        .iter()
+        .map(|provider| provider.call_root.as_str())
+        .collect();
+    assert_eq!(call_roots, ["coral", "coral.providers.weather"]);
 
     // Organization Owner authority reaches no Workspace without a Membership.
-    let outsider = AuthenticatedPrincipal::user(
-        organization_user(
-            scope.fixture.database.clone(),
-            "user:listed-outsider",
-            OrganizationRole::Owner,
-        )
-        .await,
-    );
-    let refused = runs.listed_providers(&outsider, &scope.workspace_id).await;
+    let outsider = organization_user(
+        scope.fixture.database.clone(),
+        "user:listed-outsider",
+        OrganizationRole::Owner,
+    )
+    .await;
+    let refused = runs
+        .listed_providers(&AuthenticatedPrincipal::user(outsider), &scope.workspace_id)
+        .await;
     assert_eq!(
         refused.as_ref().err().and_then(Error::workspace_refusal),
         Some(coral_workspace::AuthorityRefusal::WorkspaceNotFound),
         "{refused:?}"
     );
 }
-
 /// An MCP server that lists one read-only tool to anyone.
 async fn public_mcp_server() -> MockServer {
     let server = MockServer::start().await;

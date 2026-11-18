@@ -147,48 +147,23 @@ impl ChangeSubscription {
     }
 }
 
-/// One bounded wait for committed changes, which paces a reader's reread
-/// loop. The reader reads, decides whether what it read is ready, and
-/// otherwise calls [`ChangeWait::pause`] before it reads again:
-///
-/// ```text
-/// let mut wait = database.wait_for_changes(deadline);
-/// loop {
-///     let snapshot = read().await?;
-///     let read_at = tokio::time::Instant::now();
-///     if ready(&snapshot) || !wait.pause(read_at).await {
-///         return Ok(snapshot);
-///     }
-/// }
-/// ```
-///
-/// A wake-up is only a hint and the database stays authoritative: while
-/// notifications are unavailable, the wait rereads on a slow poll instead of
-/// failing. The wait only reads the change signal. It writes nothing, so it
-/// wakes no other subscriber.
+/// A bounded wait for committed changes, which paces a reader's reread loop.
+/// It only reads the change signal, so it wakes no other subscriber.
 pub struct ChangeWait {
     deadline: tokio::time::Instant,
-    /// `None` once the deadline passed before the wait began, or while
-    /// notifications are unavailable.
+    /// `None` while notifications are unavailable: the wait polls instead.
     changes: Option<ChangeSubscription>,
 }
 
 impl ChangeWait {
-    /// Minimum spacing between one reader's rereads. Busy writers commit
-    /// often, and the gap coalesces their wake-ups into bounded rereads.
+    /// The least time between two reads, so a busy writer costs no read per commit.
     pub const MIN_REREAD_GAP: Duration = Duration::from_millis(50);
-    /// Reread cadence for a reader whose change notifications are unavailable.
+    /// How often a reader reads while notifications are unavailable.
     pub const FALLBACK_POLL: Duration = Duration::from_millis(500);
 
-    /// Waits, after the read the reader made at `read_at`, for a committed
-    /// change or the deadline, and for at least [`Self::MIN_REREAD_GAP`]
-    /// after `read_at`. Returns `false`, without waiting, when `read_at`
-    /// reached the deadline: the reader returns what it last read. The pause
-    /// that the deadline ends returns `true`, so the reader reads once more.
-    ///
-    /// The reader chooses what `read_at` measures from: the instant before a
-    /// read counts the read's own duration into the gap, and the instant
-    /// after it does not.
+    /// Waits for a committed change or the deadline, and at least
+    /// [`Self::MIN_REREAD_GAP`] after `read_at`. Returns `false`, without
+    /// waiting, once `read_at` has reached the deadline.
     pub async fn pause(&mut self, read_at: tokio::time::Instant) -> bool {
         if read_at >= self.deadline {
             return false;
@@ -208,10 +183,8 @@ impl ChangeWait {
 }
 
 impl Database {
-    /// Starts a wait for committed changes that ends at `deadline`. Start it
-    /// before the first read, so that a commit during that read still ends
-    /// the next pause. A wait whose deadline has already passed never pauses,
-    /// and takes no subscription.
+    /// Starts a wait that ends at `deadline`. Start it before the first read,
+    /// so that a commit during that read ends the next pause.
     #[must_use]
     pub fn wait_for_changes(&self, deadline: tokio::time::Instant) -> ChangeWait {
         ChangeWait {

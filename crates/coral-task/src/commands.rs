@@ -324,8 +324,7 @@ impl TaskCommands {
             .pause(crate::command_tests::Checkpoint::BeforeBeginLock)
             .await;
         let mut transaction = self.tasks.database.begin().await?;
-        // The check above already answered a caller with no access to the
-        // Workspace, so a refusal here is one the caller may know.
+        // Access was checked above, so a refusal here is not concealed.
         let (task, authority) = self
             .tasks
             .hold_open(

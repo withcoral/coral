@@ -14,8 +14,7 @@ use crate::{
 
 /// Reads `settled` again after every ring of the change signal, at most once
 /// per reread gap, until it holds or `until` passes, as [`RunModule::observe`]
-/// waits: without the signal it reads again at the fallback poll. The gap
-/// and the deadline are measured from before each read.
+/// waits: without the signal it reads again at the fallback poll.
 pub(crate) async fn read_until<Read>(
     database: &Database,
     until: tokio::time::Instant,
@@ -74,10 +73,7 @@ impl RunModule {
     ) -> Result<RunUpdate, Error> {
         validate_cursor(run_id, observation)?;
         let deadline = tokio::time::Instant::now() + observation.wait();
-        // Start the wait before the first snapshot so a commit during it still wakes
-        // this wait. A wake-up is only a hint: the database stays authoritative, so an
-        // unavailable notification path degrades to slow polling instead of failing
-        // the wait. An observation that does not wait takes no subscription.
+        // Start the wait before the first snapshot, so a commit during it still wakes this wait.
         let mut wait = self.database.wait_for_changes(deadline);
         let mut seen_sequence = None;
         loop {
@@ -91,8 +87,6 @@ impl RunModule {
             }
             let seen_sequence =
                 *seen_sequence.get_or_insert_with(|| observation.seen_sequence(&update));
-            // Busy Runs commit often. The pause coalesces their wake-ups into
-            // bounded rereads.
             if observation.is_ready(&update, seen_sequence) || !wait.pause(read_at).await {
                 return Ok(update);
             }

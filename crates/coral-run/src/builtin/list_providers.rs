@@ -1,5 +1,4 @@
-//! Performs `coral.listProviders`, and makes its read of the Providers for a
-//! caller that asks without a Program.
+//! Performs `coral.listProviders`.
 
 use coral_catalog::{ListProvidersResult, ListedProvider, ListedSetup, ListedSetupState};
 use coral_policy::ExactToolRules;
@@ -42,13 +41,12 @@ pub(super) async fn perform(host: &BuiltinHost<'_>) -> Result<serde_json::Value,
 }
 
 impl RunModule {
-    /// Lists every Provider in the Workspace that `actor` reaches, with what
-    /// each offers it: the `providers` that `coral.listProviders` returns to
-    /// a Program of `actor`'s, read without a Run. Both make the one read.
+    /// The Providers that `coral.listProviders` returns to `actor`'s
+    /// Programs, read without a Run.
     ///
     /// # Errors
     ///
-    /// Returns current Workspace authority and persistence failures.
+    /// Workspace authority and persistence failures.
     pub async fn listed_providers(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -66,9 +64,7 @@ impl RunModule {
     }
 }
 
-/// Every Provider in the Workspace that `actor` reaches, in one snapshot with
-/// the rules that count its Tools. `refused` says what a Provider Module
-/// refusal means to the caller: a Program learns that its authority ended.
+/// The read behind `coral.listProviders`; `refused` maps a Provider Module refusal.
 async fn reached_providers(
     database: &coral_db::Database,
     providers: &ProviderModule,

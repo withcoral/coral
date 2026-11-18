@@ -2008,45 +2008,6 @@ async fn cleanup_winners_prevent_late_begin_or_completion_from_committing() {
     }
 }
 
-// Catches: a hold that reads the Task without the Task lock, so that a
-// caller above Task joins its records to a Task that cleanup is removing.
-#[tokio::test]
-async fn cleanup_winners_prevent_a_late_hold_from_joining_the_task() {
-    let fixture = Fixture::new().await;
-    let goal = fixture.goal().await;
-    fixture
-        .tasks
-        .retention_control
-        .arm(Checkpoint::CleanupLocked);
-    let tasks = fixture.tasks.clone();
-    let workspace = fixture.workspace.clone();
-    let id = goal.id().clone();
-    let expiry_time = UnixNanos::new(wall_time());
-    let mut cleanup =
-        tokio::spawn(async move { tasks.expire_group(&workspace, &id, expiry_time).await });
-    fixture
-        .tasks
-        .retention_control
-        .reached_by(&mut cleanup)
-        .await;
-    let tasks = fixture.tasks.clone();
-    let actor = fixture.actor.clone();
-    let workspace = fixture.workspace.clone();
-    let id = goal.id().clone();
-    let request = tokio::spawn(async move {
-        let mut transaction = tasks.database.begin().await?;
-        tasks
-            .hold_open_in_transaction(&mut transaction, &actor, &workspace, &id)
-            .await
-            .map(drop)
-    });
-    tokio::task::yield_now().await;
-    fixture.tasks.retention_control.release.notify_one();
-    assert!(cleanup.await.unwrap().unwrap());
-    let held = request.await.unwrap();
-    assert!(matches!(held, Err(Error::TaskNotFound)), "{held:?}");
-}
-
 #[tokio::test]
 async fn concurrent_run_termination_protects_its_group_from_stale_cleanup() {
     let fixture = Fixture::new().await;

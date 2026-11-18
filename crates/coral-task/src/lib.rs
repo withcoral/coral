@@ -13,9 +13,8 @@
 //!   refused Program starts none.
 //! - [`TaskModule::end`] records the first terminal outcome and returns the
 //!   durable winner of a concurrent terminal race.
-//! - [`TaskModule::hold_open_in_transaction`] holds the caller's open Task in
-//!   the caller's transaction, as a command that begins in a Task holds it,
-//!   so that the Task cannot end before that transaction commits.
+//! - [`TaskModule::hold_open_in_transaction`] keeps the caller's open Task from
+//!   ending before the caller's transaction commits.
 //! - [`TaskModule::check_open`] checks the same on a read snapshot, holding
 //!   nothing.
 //! - [`TaskModule::get`] and [`TaskModule::list`] apply Principal-specific
@@ -199,26 +198,16 @@ impl TaskModule {
         }
     }
 
-    /// Holds the open Task that `actor` started for the rest of the caller's
-    /// transaction: an end of the Task waits for that transaction, so work
-    /// the caller commits there joins a Task that is still open. A command
-    /// of [`TaskCommands`] begins in its Task through the same hold. The
-    /// transaction must be a write transaction, and the hold marks no change.
-    ///
-    /// Returns the Task and the authority that lets `actor` work in its
-    /// Workspace. The hold reads the clock once, after it holds the Task, to
-    /// check that authority. The caller checks it again
-    /// (`require_current_at`) at its own final time, before it commits, as a
-    /// command does. Call this before the transaction holds anything else:
-    /// it holds the Task and then the caller's Workspace authority, in the
-    /// order [`Self::end`] holds them.
+    /// Holds the open Task that `actor` started until the caller's write
+    /// transaction ends, so the Task cannot end before the caller commits.
+    /// Call it first in the transaction: it locks the Task, then the caller's
+    /// Workspace authority, in the order [`Self::end`] does. Check the
+    /// returned authority again (`require_current_at`) before committing.
     ///
     /// # Errors
     ///
-    /// An absent Task, an inaccessible Workspace and another Principal's Task
-    /// all return [`Error::TaskNotFound`], as [`Self::end`] conceals them. An
-    /// ended Task returns [`Error::TaskClosed`]. Any other Workspace refusal,
-    /// such as an expired Agent Registration, returns the Workspace error.
+    /// [`Error::TaskNotFound`] for an absent Task, another Principal's Task
+    /// or an inaccessible Workspace. [`Error::TaskClosed`] for an ended Task.
     pub async fn hold_open_in_transaction(
         &self,
         transaction: &mut coral_db::Transaction<'_>,
@@ -264,10 +253,8 @@ impl TaskModule {
         Ok(())
     }
 
-    /// [`Self::hold_open_in_transaction`]; `refused` says what a Workspace
-    /// refusal means to the caller. A command that already checked the
-    /// caller's Workspace authority, before its transaction, keeps the
-    /// refusal as it is.
+    /// [`Self::hold_open_in_transaction`], with `refused` deciding what a
+    /// Workspace refusal becomes.
     pub(crate) async fn hold_open(
         &self,
         transaction: &mut coral_db::Transaction<'_>,

@@ -17,9 +17,7 @@
 //!   wake [`Database::subscribe_changes`] readers. `SQLite` uses the shared application
 //!   handle; Postgres propagates invalidations across workers. Notifications are
 //!   coalescing hints, not retained Events, payloads, or authority.
-//! - [`Database::wait_for_changes`] starts a [`ChangeWait`], which paces a
-//!   reader's reread loop on those commits until a deadline: it holds the
-//!   reread gap and the fallback poll of every reader-side wait.
+//! - [`Database::wait_for_changes`] paces a reader's reread loop on those commits.
 //! - [`Database::execute`], [`Database::fetch_optional`], and
 //!   [`Database::fetch_all`] execute domain-owned `SeaQuery` statements.
 //! - [`QueryExecutor`] lets one domain read run directly against a [`Database`]
