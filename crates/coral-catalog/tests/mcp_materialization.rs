@@ -320,6 +320,59 @@ fn tool_scoped_schema_names_do_not_collide_and_non_object_roots_are_unavailable(
 }
 
 #[test]
+fn a_snapshot_materializes_only_at_a_protocol_version_coral_speaks() {
+    for (version, supported) in [
+        (serde_json::json!("2025-03-26"), true),
+        (serde_json::json!("2025-06-18"), true),
+        (serde_json::json!("2025-11-25"), true),
+        (serde_json::json!("2024-11-05"), false),
+        (serde_json::json!("2026-07-28"), false),
+        (serde_json::json!(20_250_326), false),
+        (serde_json::Value::Null, false),
+    ] {
+        let snapshot = serde_json::json!({
+            "protocolVersion": version,
+            "serverInfo": { "name": "versions", "version": "1" },
+            "server": { "transport": "streamable_http", "url": "https://versions.example.test/mcp" },
+            "capabilities": { "tools": {} },
+            "tools": [{ "name": "query", "inputSchema": { "type": "object" } }]
+        });
+        let snapshot =
+            McpDiscoverySnapshot::parse(&snapshot.to_string()).expect("bounded snapshot");
+        let outcome = materialize(
+            DestinationPolicy::default(),
+            &ProviderSetupInput::from(snapshot),
+            &[],
+        );
+        match (outcome, supported) {
+            (MaterializationOutcome::Ready(prepared), true) => {
+                let ExecutionBinding::Mcp(binding) = prepared.tools()[0].execution_binding() else {
+                    panic!("an MCP snapshot binds its Tools to MCP");
+                };
+                assert_eq!(
+                    serde_json::json!(binding.protocol_version()),
+                    version,
+                    "the binding keeps the version the server answered"
+                );
+            }
+            (MaterializationOutcome::Rejected(diagnostic), false) => {
+                assert_eq!(
+                    diagnostic.code(),
+                    "unsupported_mcp_protocol_version",
+                    "{version}"
+                );
+            }
+            (MaterializationOutcome::Ready(_), false) => {
+                panic!("{version} should reject the snapshot")
+            }
+            (MaterializationOutcome::Rejected(diagnostic), true) => {
+                panic!("{version} should materialize: {}", diagnostic.code())
+            }
+        }
+    }
+}
+
+#[test]
 fn malformed_server_capability_rejects_the_snapshot() {
     let snapshot = serde_json::json!({
         "protocolVersion": "2025-11-25",

@@ -123,8 +123,8 @@ pub use declaration_path::{DECLARATION_PATH_MAX_BYTES, DeclarationPath};
 pub use error::Error;
 pub use inspection::{ToolListing, ToolSummary};
 pub use mcp::{
-    MCP_DISCOVERY_SNAPSHOT_MAX_BYTES, McpDiscoverySnapshot, McpExecutionBinding,
-    McpInvocationMethod, McpTaskSupport, McpToolAnnotations, McpTransport,
+    MCP_DISCOVERY_SNAPSHOT_MAX_BYTES, MCP_PROTOCOL_VERSIONS, McpDiscoverySnapshot,
+    McpExecutionBinding, McpInvocationMethod, McpTaskSupport, McpToolAnnotations, McpTransport,
 };
 pub use openapi::{
     HTTP_RESULT, HttpContentBinding, HttpCredentialSlot, HttpEncodingBinding, HttpExecutionBinding,
