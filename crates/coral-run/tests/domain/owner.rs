@@ -2959,3 +2959,53 @@ fn a_recovered_owner_writes_its_queued_expiries_in_one_chunk_and_retires() {
     );
     assert_eq!(state.phase(), Phase::Retired);
 }
+
+/// Catches: a Run stream's deadline that rides an intent with a shutdown
+/// grace, or a cancellation past it recorded beside the deadline's end, so
+/// that the Run ends Canceled while the stream hears `TIMED_OUT`.
+#[test]
+fn a_run_streams_deadline_is_written_after_its_chunks_and_a_cancel_past_it_is_a_repeat() {
+    use crate::lifecycle::RunTerminationKind;
+
+    let mut state = OwnerState::for_run_stream(LIMITS, 1, (0, 0));
+    deliver(apply_without_tick(&mut state, Message::Launch, 1));
+    deliver(apply_without_tick(
+        &mut state,
+        Message::Started(Ok(Some(StartedExecution {
+            package: ProgramPackage::scripted("x"),
+            head: 1,
+            deadline_at_unix_nanos: LIMITS.deadline_at_unix_nanos,
+        }))),
+        2,
+    ));
+    // One chunk in flight, one applied behind it.
+    let (effects, _first) = emit(&mut state, 8, 3);
+    deliver(effects);
+    committed_chunk(apply_without_tick(&mut state, Message::Drained, 3));
+    let (effects, _second) = emit(&mut state, 8, 4);
+    deliver(effects);
+
+    let past = LIMITS.deadline_at_unix_nanos + 1;
+    let effects = deliver(cancel(&mut state, "late", past));
+    assert!(
+        matches!(effects.as_slice(), [Effect::TerminateProgram]),
+        "the stop at once, no grace and no intent: {effects:?}"
+    );
+    assert_eq!(state.termination(), None);
+    let chunk = committed_chunk(apply_without_tick(&mut state, Message::Committed, past));
+    assert_eq!(
+        (chunk.events, chunk.inbox_rows, chunk.termination),
+        (1, 1, None),
+        "the applied Emission commits; the cancellation is a repeat"
+    );
+    let effects = apply_without_tick(&mut state, Message::Committed, past);
+    assert!(
+        matches!(
+            effects.as_slice(),
+            [Effect::EndStreamRun(end)]
+                if end.termination.kind == RunTerminationKind::TimedOut
+                    && end.termination.started_at_unix_nanos == past
+        ),
+        "{effects:?}"
+    );
+}

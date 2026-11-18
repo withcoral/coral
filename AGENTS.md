@@ -140,10 +140,12 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   That owner has no worker lease, marks each chunk by its commit time,
   applies the stream's requests in number order, and rebuilds a chunk on a
   head that another writer moved under the claim, dropping the requests that
-  writer committed. A reopen of the stream (#2905) starts a new owner,
-  rebuilt from the ledger. The owner it replaces, whose stream moved to
-  another Coral Instance or to a reopen on its own, rebuilds nothing: its
-  chunk is refused.
+  writer committed. At the Run's deadline, it commits what it applied, then
+  ends the Run and its open Invocations in one chunk, and only then sends
+  `Terminate`; no shutdown grace applies (#2904). A reopen of the stream
+  (#2905) starts a new owner, rebuilt from the ledger. The owner it
+  replaces, whose stream moved to another Coral Instance or to a reopen on
+  its own, rebuilds nothing: its chunk is refused.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of
@@ -195,8 +197,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   database ended or refused, a pool timeout, a lock race) means a reread and
   a retry with bounded backoff until the answer comes or the owner has
   retired, and a definite answer (a rejection, a claim mismatch, an ended
-  Run, a corrupt head) stops it; the Interrupted record alone retries every
-  answer but a claim mismatch or an ended Run. The worker lease is ownership
+  Run, a corrupt head) stops it; the Interrupted record, and a Run stream's
+  end at its deadline, alone retry every answer but a claim mismatch or an
+  ended Run. The worker lease is ownership
   between Coral Instances, renewed by every commit: never write a Run whose live lease another Coral Instance
   holds, except to insert an outside request into its Run Inbox.
   The lease never ends a Run from inside its own Coral Instance. The owner's

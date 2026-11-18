@@ -216,6 +216,9 @@ pub(crate) enum Message {
     },
     /// The Program's execution ended.
     ProgramEnded(ExecutionCompletion),
+    /// The Run Executor ended the Program at the Run's deadline (a Run
+    /// stream's `Finish`).
+    DeadlineReached,
     /// The chunk in flight landed.
     Committed,
     /// The chunk in flight did not land, definitively: an answer the database
@@ -312,6 +315,7 @@ impl fmt::Debug for Message {
                 .debug_tuple("ProgramEnded")
                 .field(completion)
                 .finish(),
+            Self::DeadlineReached => formatter.write_str("DeadlineReached"),
             Self::Committed => formatter.write_str("Committed"),
             Self::CommitRejected(rejection) => formatter
                 .debug_tuple("CommitRejected")
