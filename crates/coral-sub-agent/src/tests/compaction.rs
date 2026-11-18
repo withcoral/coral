@@ -7,7 +7,7 @@ const ANSWER: &str = "12 are open.";
 
 /// The stub writes a summary, with reasoning, when asked for one. Otherwise
 /// it makes `calls` failed searches of about 11,000 tokens each, then answers.
-async fn stub(lead: &Lead, calls: usize) {
+pub(super) async fn stub(lead: &Lead, calls: usize) {
     let summary = json!({"role": "assistant", "content": SUMMARY, "reasoning": "It is long."});
     Mock::given(body_string_contains("max_completion_tokens"))
         .respond_with(completion(&summary))

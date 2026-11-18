@@ -201,7 +201,8 @@ fn reason(failure: &coral_search::Error) -> (&'static str, String) {
         .unwrap_or_else(|| ("internal_error", "Search failed. Try again.".to_owned()))
 }
 
-/// A failure in the shape that `exec`, `wait` and `cancel` write one.
-fn error(code: &str, message: &str) -> String {
+/// A failure in the shape that `exec`, `wait` and `cancel` write one, recorded on the call's span.
+fn error(code: &'static str, message: &str) -> String {
+    coral_telemetry::record_failure(&tracing::Span::current(), code);
     json!({"error": {"code": code, "message": message}}).to_string()
 }

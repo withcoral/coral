@@ -8,6 +8,7 @@ mod repository;
 mod run_tools;
 mod search;
 mod sub_agents;
+mod telemetry;
 mod tools;
 
 #[cfg(test)]

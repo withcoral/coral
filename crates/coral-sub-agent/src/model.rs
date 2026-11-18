@@ -12,6 +12,7 @@ use tokio::time::Instant;
 use url::Url;
 
 use crate::prompt::ToolText;
+use crate::telemetry::ModelCallTrace;
 
 /// A model behind an OpenAI-compatible Chat Completions endpoint.
 pub(crate) struct ModelClient {
@@ -88,14 +89,17 @@ impl ModelClient {
     }
 
     async fn complete(&self, request: &CompletionRequest<'_>) -> Result<Reply, ModelError> {
+        let mut call = ModelCallTrace::open(&self.model, &self.completions_url);
         let mut result = self.send(request).await;
         for wait in self.retry_waits {
-            if !matches!(result, Err(ModelError::Unavailable)) {
+            if !matches!(result, Err(ModelError::Unavailable(_))) {
                 break;
             }
             tokio::time::sleep(wait).await;
+            call.retried();
             result = self.send(request).await;
         }
+        call.ended(&result);
         result
     }
 
@@ -114,12 +118,12 @@ impl ModelClient {
             .await
             .map_err(|error| match FetchError::from(error) {
                 FetchError::DestinationRejected => ModelError::Misconfigured,
-                FetchError::Http(_) => ModelError::Unavailable,
+                FetchError::Http(_) => ModelError::Unavailable(None),
             })?;
         match response.status() {
             status if status.is_success() => {}
             status if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() => {
-                return Err(ModelError::Unavailable);
+                return Err(ModelError::Unavailable(Some(status)));
             }
             status => return Err(ModelError::Refused(status)),
         }
@@ -127,15 +131,16 @@ impl ModelClient {
             .await
             .map_err(|error| match error {
                 OutboundUrlPolicyError::BodyTooLarge { .. } => ModelError::Misconfigured,
-                _ => ModelError::Unavailable,
+                _ => ModelError::Unavailable(None),
             })?;
         let latency = sent_at.elapsed();
         let completion: Completion =
             serde_json::from_slice(&body).map_err(|_error| ModelError::Misconfigured)?;
         let choice = completion.choices.into_iter().next();
-        let message = choice.ok_or(ModelError::Misconfigured)?.message;
+        let choice = choice.ok_or(ModelError::Misconfigured)?;
         Ok(Reply {
-            message: message.into_message(&self.model),
+            message: choice.message.into_message(&self.model),
+            finish_reason: choice.finish_reason,
             call: ModelCall {
                 model: completion.model.unwrap_or_else(|| self.model.clone()),
                 latency,
@@ -263,6 +268,8 @@ impl ToolCall {
 pub(crate) struct Reply {
     pub(crate) message: Message,
     pub(crate) call: ModelCall,
+    /// Why the model stopped, as the server wrote it.
+    pub(crate) finish_reason: Option<String>,
 }
 
 /// The record of one model call.
@@ -290,9 +297,10 @@ pub(crate) struct Usage {
 /// Why the model gave no reply. The text never holds the server's answer, the key or the conversation.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum ModelError {
-    /// The server could not be reached, or stayed busy or failing, through every retry.
+    /// The server could not be reached (`None`), or stayed busy or failing with this status,
+    /// through every retry.
     #[error("the model server is unavailable")]
-    Unavailable,
+    Unavailable(Option<StatusCode>),
     /// The server refused the request.
     #[error("the model server refused the request with status {0}")]
     Refused(StatusCode),
@@ -459,6 +467,7 @@ struct Completion {
 #[derive(Deserialize)]
 struct Choice {
     message: ChoiceMessage,
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]

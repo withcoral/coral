@@ -2,6 +2,8 @@
 //! summarizes its older messages, and later calls send the brief, the latest
 //! summary and the newest messages. The stored thread keeps every message.
 
+use tracing::Instrument as _;
+
 use crate::model::{Block, Message, Reply, Role};
 use crate::prompt::ToolText;
 
@@ -25,10 +27,24 @@ impl SubAgents {
         Ok(self.model.reply(system, &for_model(thread), tools).await?)
     }
 
+    /// Compacts the thread in a span that records its tokens before and after.
+    async fn compact(
+        &self,
+        turn: &RunningTurn,
+        thread: &mut Vec<Message>,
+        window: u32,
+    ) -> Result<(), TurnFailure> {
+        let (length, compaction) = (thread.len(), turn.trace.compaction(size(thread)));
+        let summarized = self.summarize_older(turn, thread, window);
+        let summarized = summarized.instrument(compaction.span()).await;
+        compaction.ended(thread.len() > length, size(thread));
+        summarized
+    }
+
     /// Adds the model's summary of the messages before the newest ones to the
     /// thread. With nothing to summarize, or a failed summary, the thread
     /// stays as it was.
-    async fn compact(
+    async fn summarize_older(
         &self,
         turn: &RunningTurn,
         thread: &mut Vec<Message>,
@@ -122,6 +138,11 @@ fn is_near(system: &str, tools: &[ToolText], messages: &[Message], window: u32) 
     let fixed = (system.len() + tools.sum::<usize>()).div_ceil(BYTES_PER_TOKEN);
     let tokens = fixed + messages.iter().map(tokens).sum::<usize>();
     tokens + RESERVE_TOKENS > window as usize
+}
+
+/// The thread's size in tokens as the model reads it, estimated.
+fn size(thread: &[Message]) -> usize {
+    for_model(thread).iter().map(tokens).sum()
 }
 
 /// A message's size in tokens, estimated from its bytes.
