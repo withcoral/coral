@@ -3579,7 +3579,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
         .set_enabled(
             &administrator,
             member.authenticated_user().unwrap().user_id(),
-            1,
+            &IfMatch::any(),
             false,
         )
         .await

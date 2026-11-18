@@ -592,11 +592,12 @@ impl WorkspaceModule {
         .await
     }
 
-    /// Applies an explicit Membership creation or role-change command.
-    /// Request identifiers and etags never select the operation's meaning.
+    /// Applies an explicit Membership creation or role-change command. A role
+    /// change carries the etag the caller read of the Membership.
     /// # Errors
     /// Requires active Owner authority before considering target eligibility;
-    /// rejects absent updates, duplicate creation, stale concurrency evidence, and
+    /// rejects absent updates, duplicate creation, a role change of a
+    /// Membership that changed since with [`Error::EtagMismatch`], and
     /// demotion of the last designated Owner.
     pub async fn manage_membership(
         &self,
@@ -648,7 +649,7 @@ impl WorkspaceModule {
     ) -> Result<WorkspaceMembership, Error> {
         let role = match change {
             MembershipChange::Create(role)
-            | MembershipChange::UpdateRole(role)
+            | MembershipChange::UpdateRole { role, .. }
             | MembershipChange::Assign(role) => role,
         };
         // Conceal target eligibility before target-dependent holds. The held
@@ -700,17 +701,21 @@ impl WorkspaceModule {
         if matches!(change, MembershipChange::Create(_)) && previous.is_some() {
             return Err(Error::MembershipAlreadyExists);
         }
-        if matches!(change, MembershipChange::UpdateRole(_)) && previous.is_none() {
-            return Err(Error::MembershipNotFound);
+        if let MembershipChange::UpdateRole { if_match, .. } = &change {
+            // A Membership that is absent has no etag to check: the check
+            // follows the refusal.
+            if previous.is_none() {
+                return Err(Error::MembershipNotFound);
+            }
+            management::check(
+                &mut transaction,
+                if_match,
+                workspace_id,
+                LifecycleTargetKind::WorkspaceMembership,
+                target.user_id().as_str(),
+            )
+            .await?;
         }
-        management::check_etag(
-            &mut transaction,
-            context,
-            workspace_id,
-            LifecycleTargetKind::WorkspaceMembership,
-            target.user_id().as_str(),
-        )
-        .await?;
         if previous == Some(role) {
             return Ok(target);
         }

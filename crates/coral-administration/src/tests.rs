@@ -24,6 +24,16 @@ use coral_workspace::{
 };
 use repository::{EventFault, fixture};
 
+/// The precondition of a change to an Organization Membership that no change
+/// has touched since the User's first sign-in.
+const AT_FIRST_VERSION: IfMatch = IfMatch::version(coral_db::Version::FIRST);
+
+/// The precondition that a resource's row is at its `count`th version, as a
+/// caller holds who read the resource then.
+pub(crate) fn at_version(count: i64) -> IfMatch {
+    IfMatch::version(coral_db::Version::new(count).expect("a positive version"))
+}
+
 /// One change context per injected lifecycle-event failure. Each fails the owning
 /// domain's real insert, so the whole removal must roll back on both databases.
 fn failure_contexts(actor: &AuthenticatedUser, events: &[EventFault]) -> Vec<ChangeContext> {
@@ -63,18 +73,18 @@ impl RemovalAttempt {
         let context = fault.map_or_else(|| change(actor), |event| event.context(actor));
         let result = if matches!(self, Self::StandaloneFailure(_)) {
             match target {
-                AccessRemovalTarget::WorkspaceMember(workspace, user) => {
+                AccessRemovalTarget::WorkspaceMember(workspace, user, if_match) => {
                     lifecycle
-                        .remove_workspace_member(&context, workspace, user)
+                        .remove_workspace_member(&context, workspace, user, if_match)
                         .await
                 }
                 AccessRemovalTarget::OrganizationMember {
                     user,
-                    revision,
+                    if_match,
                     transfer_to,
                 } => {
                     lifecycle
-                        .remove_organization_member(&context, user, revision, transfer_to)
+                        .remove_organization_member(&context, user, if_match, transfer_to)
                         .await
                 }
                 AccessRemovalTarget::Agent(workspace, agent, if_match) => {
@@ -204,7 +214,7 @@ async fn removing_a_user_who_is_no_member_answers_the_same_with_or_without_an_or
 
     for user in [outsider.user_id(), &stranger] {
         let absent = lifecycle
-            .remove_workspace_member(&change(&owner), workspace.id(), user)
+            .remove_workspace_member(&change(&owner), workspace.id(), user, &IfMatch::any())
             .await;
         assert!(
             matches!(
@@ -222,6 +232,10 @@ const BEARER_OPENAPI: &str = r#"{"openapi":"3.0.3","info":{"title":"Private","ve
 /// An Organization Owner keeps nothing when their Workspace Membership ends, and
 /// the sole designated Owner cannot leave until another Owner exists.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Owner is followed through a refused leave, a second Owner, and the leave"
+)]
 async fn organization_owner_leaving_loses_current_private_tools_once_another_owner_exists() {
     let db = fixture().await;
     let database = db.database();
@@ -252,7 +266,7 @@ async fn organization_owner_leaving_loses_current_private_tools_once_another_own
         .set_role(
             &change(&administrator),
             owner.user_id(),
-            1,
+            &at_version(1),
             OrganizationRole::Owner,
         )
         .await
@@ -285,7 +299,12 @@ async fn organization_owner_leaving_loses_current_private_tools_once_another_own
     let lifecycle = AccessLifecycleModule::new(database, workspaces.clone());
 
     let denied = lifecycle
-        .remove_workspace_member(&change(&owner), workspace.id(), owner.user_id())
+        .remove_workspace_member(
+            &change(&owner),
+            workspace.id(),
+            owner.user_id(),
+            &IfMatch::any(),
+        )
         .await;
     assert!(
         matches!(
@@ -298,7 +317,12 @@ async fn organization_owner_leaving_loses_current_private_tools_once_another_own
 
     join_as_owner(&workspaces, &administrator, workspace.id()).await;
     lifecycle
-        .remove_workspace_member(&change(&owner), workspace.id(), owner.user_id())
+        .remove_workspace_member(
+            &change(&owner),
+            workspace.id(),
+            owner.user_id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     // Organization Owner authority gives no way back into the Workspace.
@@ -402,6 +426,7 @@ impl MemberRemoval {
                 &change(&self.owner),
                 self.workspace.id(),
                 self.member.user_id(),
+                &IfMatch::any(),
             )
             .await
             .unwrap();
@@ -456,7 +481,11 @@ async fn failed_member_removal_changes_no_credentials_private_tools_or_events() 
                 &f.lifecycle,
                 &f.db.database(),
                 &f.owner,
-                AccessRemovalTarget::WorkspaceMember(f.workspace.id(), f.member.user_id()),
+                AccessRemovalTarget::WorkspaceMember(
+                    f.workspace.id(),
+                    f.member.user_id(),
+                    &IfMatch::any(),
+                ),
             )
             .await;
         assert_eq!(
@@ -779,11 +808,16 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
 
         match loss {
             AccessLoss::WorkspaceMembership(_) => lifecycle
-                .remove_workspace_member(&change(&owner), workspace.id(), member.user_id())
+                .remove_workspace_member(
+                    &change(&owner),
+                    workspace.id(),
+                    member.user_id(),
+                    &IfMatch::any(),
+                )
                 .await
                 .unwrap(),
             AccessLoss::OrganizationMembership => lifecycle
-                .remove_organization_member(&change(&owner), member.user_id(), 1, None)
+                .remove_organization_member(&change(&owner), member.user_id(), &at_version(1), None)
                 .await
                 .unwrap(),
             AccessLoss::AgentDeletion => lifecycle
@@ -983,16 +1017,21 @@ async fn a_shared_tool_survives_the_loss_of_its_author() {
 
         match loss {
             AuthorLoss::WorkspaceMembership => lifecycle
-                .remove_workspace_member(&change(&owner), workspace.id(), author.user_id())
+                .remove_workspace_member(
+                    &change(&owner),
+                    workspace.id(),
+                    author.user_id(),
+                    &IfMatch::any(),
+                )
                 .await
                 .unwrap(),
             AuthorLoss::OrganizationMembership => lifecycle
-                .remove_organization_member(&change(&owner), author.user_id(), 1, None)
+                .remove_organization_member(&change(&owner), author.user_id(), &at_version(1), None)
                 .await
                 .unwrap(),
             AuthorLoss::UserDisablement => {
                 coral_workspace::OrganizationModule::new(database.clone())
-                    .set_enabled(&change(&owner), author.user_id(), 1, false)
+                    .set_enabled(&change(&owner), author.user_id(), &at_version(1), false)
                     .await
                     .unwrap();
             }
@@ -1090,7 +1129,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
     let lifecycle = AccessLifecycleModule::new(database.clone(), workspaces.clone());
     assert!(matches!(
         lifecycle
-            .remove_organization_member(&change(&owner), owner.user_id(), 1, None)
+            .remove_organization_member(&change(&owner), owner.user_id(), &at_version(1), None)
             .await,
         Err(Error::Workspace(
             coral_workspace::Error::LastOrganizationOwner
@@ -1098,7 +1137,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
     ));
     assert!(matches!(
         lifecycle
-            .remove_organization_member(&change(&owner), member.user_id(), 2, None)
+            .remove_organization_member(&change(&owner), member.user_id(), &at_version(2), None)
             .await,
         Err(Error::Workspace(
             coral_workspace::Error::OrganizationAuthorityConflict
@@ -1146,7 +1185,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
                 &owner,
                 AccessRemovalTarget::OrganizationMember {
                     user: member.user_id(),
-                    revision: 1,
+                    if_match: &AT_FIRST_VERSION,
                     transfer_to: None,
                 },
             )
@@ -1221,7 +1260,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
     );
     assert!(matches!(
         lifecycle
-            .remove_organization_member(&fault, member.user_id(), 1, None)
+            .remove_organization_member(&fault, member.user_id(), &at_version(1), None)
             .await,
         Err(Error::Tools(_))
     ));
@@ -1250,7 +1289,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
         );
     }
     lifecycle
-        .remove_organization_member(&change(&owner), member.user_id(), 1, None)
+        .remove_organization_member(&change(&owner), member.user_id(), &at_version(1), None)
         .await
         .unwrap();
     organization
@@ -1611,7 +1650,7 @@ async fn prepared_removal_cannot_be_reattributed_or_reused_after_rollback() {
         .prepare_access_removal_in_transaction(
             &mut tx,
             &context,
-            AccessRemovalTarget::WorkspaceMember(workspace.id(), member.user_id()),
+            AccessRemovalTarget::WorkspaceMember(workspace.id(), member.user_id(), &IfMatch::any()),
         )
         .await
         .unwrap();
@@ -1679,20 +1718,25 @@ async fn unauthorized_removal_conceals_whether_the_target_user_exists() {
     let lifecycle = AccessLifecycleModule::new(database, workspaces);
     let absent = UserId::parse("user:absent").unwrap();
     let known = lifecycle
-        .remove_workspace_member(&change(&member), workspace.id(), owner.user_id())
+        .remove_workspace_member(
+            &change(&member),
+            workspace.id(),
+            owner.user_id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap_err();
     let unknown = lifecycle
-        .remove_workspace_member(&change(&member), workspace.id(), &absent)
+        .remove_workspace_member(&change(&member), workspace.id(), &absent, &IfMatch::any())
         .await
         .unwrap_err();
     assert_eq!(known.to_string(), unknown.to_string());
     let known = lifecycle
-        .remove_organization_member(&change(&member), owner.user_id(), 1, None)
+        .remove_organization_member(&change(&member), owner.user_id(), &at_version(1), None)
         .await
         .unwrap_err();
     let unknown = lifecycle
-        .remove_organization_member(&change(&member), &absent, 1, None)
+        .remove_organization_member(&change(&member), &absent, &at_version(1), None)
         .await
         .unwrap_err();
     assert_eq!(known.to_string(), unknown.to_string());

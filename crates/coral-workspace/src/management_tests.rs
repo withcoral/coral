@@ -1,4 +1,4 @@
-use super::{change, organization_user, test_module};
+use super::{at_version, change, organization_user, test_module};
 use crate::{
     Error, IfMatch, MembershipChange, OrganizationRole, RequestId, WorkspaceDisplayName,
     WorkspaceRole,
@@ -284,6 +284,88 @@ async fn management_metadata_preserves_creation_time_and_scopes_membership_etags
     }
 }
 
+// Catches: a role change that checks its precondition before it finds the
+// Membership. For a User who was never a Member that check finds no
+// concurrency metadata and reports corrupt data, and for a removed Member it
+// reports a stale etag. Either hides that the Membership is absent.
+#[tokio::test]
+async fn a_role_change_of_an_absent_membership_is_not_found_whatever_its_precondition() {
+    let (_database, module) = test_module().await;
+    let user =
+        |id: &'static str| organization_user(module.database.clone(), id, OrganizationRole::Member);
+    let owner = user("user:absent-owner").await;
+    let never = user("user:absent-never").await;
+    let removed = user("user:absent-removed").await;
+    let workspace = module
+        .create(
+            &change(owner.clone(), 10, '1'),
+            WorkspaceDisplayName::parse("Absent").unwrap(),
+        )
+        .await
+        .unwrap();
+    let workspace = workspace.id();
+    module
+        .set_membership(
+            &change(owner.clone(), 20, '2'),
+            workspace,
+            &removed,
+            WorkspaceRole::Member,
+        )
+        .await
+        .unwrap();
+    let (_, shown, _) = module
+        .inspect_membership(&owner, workspace, removed.user_id())
+        .await
+        .unwrap();
+    let shown = IfMatch::parse(&shown.etag).unwrap();
+    super::remove_membership_authority(
+        &module,
+        &change(owner.clone(), 30, '3'),
+        workspace,
+        removed.user_id(),
+    )
+    .await
+    .unwrap();
+    let kept = || async {
+        (
+            module.list_memberships(&owner, workspace).await.unwrap(),
+            module
+                .list_lifecycle_events(&owner, workspace)
+                .await
+                .unwrap(),
+        )
+    };
+    let before = kept().await;
+
+    for (case, target, if_match) in [
+        ("never a Member, a version", &never, at_version(1)),
+        (
+            "never a Member, a UUID",
+            &never,
+            IfMatch::token(uuid::Uuid::new_v4()),
+        ),
+        ("removed, the version it had", &removed, at_version(1)),
+        ("removed, the etag it showed", &removed, shown),
+    ] {
+        let refused = module
+            .manage_membership(
+                &change(owner.clone(), 40, '4'),
+                workspace,
+                target,
+                MembershipChange::UpdateRole {
+                    role: WorkspaceRole::Owner,
+                    if_match,
+                },
+            )
+            .await;
+        assert!(
+            matches!(refused, Err(Error::MembershipNotFound)),
+            "{case}: {refused:?}"
+        );
+        assert_eq!(kept().await, before, "{case}: a refusal changes nothing");
+    }
+}
+
 #[tokio::test]
 async fn management_request_claim_rolls_back_with_rejection_and_rejects_committed_replay() {
     let (_database, module) = test_module().await;
@@ -317,7 +399,10 @@ async fn management_request_claim_rolls_back_with_rejection_and_rejects_committe
                 &context,
                 workspace.id(),
                 &member,
-                MembershipChange::UpdateRole(WorkspaceRole::Owner),
+                MembershipChange::UpdateRole {
+                    role: WorkspaceRole::Owner,
+                    if_match: IfMatch::any(),
+                },
             )
             .await,
         Err(Error::MembershipNotFound)
@@ -538,7 +623,7 @@ async fn profiles_are_workspace_scoped_and_creator_attribution_survives_removal(
         .await
         .unwrap();
     crate::OrganizationModule::new(db)
-        .set_enabled(&context, alice.user_id(), 1, false)
+        .set_enabled(&context, alice.user_id(), &at_version(1), false)
         .await
         .unwrap();
     assert_eq!(

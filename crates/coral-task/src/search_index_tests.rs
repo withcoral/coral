@@ -572,7 +572,12 @@ async fn a_pass_removes_the_rows_of_the_private_tools_that_removing_access_delet
         fixture.tasks.workspaces.clone(),
     );
     lifecycle
-        .remove_workspace_member(&change, &fixture.workspace, member.user_id())
+        .remove_workspace_member(
+            &change,
+            &fixture.workspace,
+            member.user_id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     assert_eq!(

@@ -149,20 +149,6 @@ pub(super) async fn check(
     }
 }
 
-/// Checks the etag in the context, if it holds one, as [`check`] does.
-pub(super) async fn check_etag(
-    tx: &mut Transaction<'_>,
-    context: &ChangeContext,
-    workspace: &WorkspaceId,
-    kind: LifecycleTargetKind,
-    id: &str,
-) -> Result<(), Error> {
-    match context.if_match() {
-        Some(if_match) => check(tx, if_match, workspace, kind, id).await,
-        None => Ok(()),
-    }
-}
-
 /// The version on the row of one resource, or `None` when it has no row.
 async fn row_version(
     tx: &mut Transaction<'_>,

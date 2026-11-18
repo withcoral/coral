@@ -20,7 +20,7 @@ use crate::{
 use coral_catalog::{OAuthClientBootstrap, ProviderCredentialContract};
 use coral_credentials::Secret;
 use coral_workspace::WorkspaceAction;
-use coral_workspace::{OrganizationRole, RequestId};
+use coral_workspace::{IfMatch, OrganizationRole, RequestId};
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};

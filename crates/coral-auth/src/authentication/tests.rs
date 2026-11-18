@@ -26,7 +26,7 @@ async fn user_authentication_reloads_authority_without_provisioning_or_local_fal
         .set_role(
             &fixture.other,
             fixture.owner.actor().user_id(),
-            1,
+            &IfMatch::any(),
             OrganizationRole::Member,
         )
         .await
@@ -41,7 +41,7 @@ async fn user_authentication_reloads_authority_without_provisioning_or_local_fal
         .set_enabled(
             &fixture.other,
             fixture.owner.actor().user_id(),
-            changed.revision(),
+            &IfMatch::version(changed.version()),
             false,
         )
         .await
@@ -232,7 +232,12 @@ async fn agent_authentication_uses_workspace_registration_not_user_authority() {
     );
     fixture
         .organization
-        .set_enabled(&fixture.other, fixture.owner.actor().user_id(), 1, false)
+        .set_enabled(
+            &fixture.other,
+            fixture.owner.actor().user_id(),
+            &IfMatch::any(),
+            false,
+        )
         .await
         .unwrap();
     assert_eq!(fixture.authenticate(Some(token)).await.unwrap(), principal);

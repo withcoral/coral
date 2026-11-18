@@ -96,39 +96,43 @@ impl AccessLifecycleModule {
             pause_after_prepare: None,
         }
     }
-    /// Removes a Workspace Membership and the User's current private work there.
+    /// Removes the Workspace Membership that the caller read at `if_match`,
+    /// and the User's current private work there.
     /// # Errors
-    /// Rejects absent or stale authority and removal of the last designated Owner,
-    /// and rolls back failed cleanup.
+    /// Rejects absent authority, a Membership that changed since, and removal
+    /// of the last designated Owner, and rolls back failed cleanup.
     pub async fn remove_workspace_member(
         &self,
         context: &ChangeContext,
         workspace: &WorkspaceId,
         user: &UserId,
+        if_match: &IfMatch,
     ) -> Result<(), Error> {
         self.remove(
             context,
-            AccessRemovalTarget::WorkspaceMember(workspace, user),
+            AccessRemovalTarget::WorkspaceMember(workspace, user, if_match),
         )
         .await
     }
-    /// Removes Organization Membership and current private work across Workspaces.
+    /// Removes the Organization Membership that the caller read at `if_match`,
+    /// and current private work across Workspaces.
     /// `transfer_to` becomes the designated Owner of every Workspace the User solely owns.
     /// # Errors
-    /// Rejects stale revisions, missing authority, removal of the last enabled
-    /// Organization Owner, and a sole Workspace Owner without an enabled transfer target.
+    /// Rejects a Membership that changed since, missing authority, removal of the
+    /// last enabled Organization Owner, and a sole Workspace Owner without an
+    /// enabled transfer target.
     pub async fn remove_organization_member(
         &self,
         context: &ChangeContext,
         user: &UserId,
-        revision: u64,
+        if_match: &IfMatch,
         transfer_to: Option<&UserId>,
     ) -> Result<(), Error> {
         self.remove(
             context,
             AccessRemovalTarget::OrganizationMember {
                 user,
-                revision,
+                if_match,
                 transfer_to,
             },
         )

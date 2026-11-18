@@ -341,11 +341,21 @@ async fn management_profiles_follow_people_and_retained_creator_visibility() {
         .await
         .unwrap();
     coral_administration::AccessLifecycleModule::new(f.database.database(), f.workspaces.clone())
-        .remove_workspace_member(&change(&f.owner), f.workspace.id(), f.member.user_id())
+        .remove_workspace_member(
+            &change(&f.owner),
+            f.workspace.id(),
+            f.member.user_id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     organization
-        .set_enabled(&change(&f.owner), f.member.user_id(), 1, false)
+        .set_enabled(
+            &change(&f.owner),
+            f.member.user_id(),
+            &IfMatch::any(),
+            false,
+        )
         .await
         .unwrap();
     let name = format!("{parent}/agents/{}", issued.agent.principal().id());
@@ -451,7 +461,12 @@ async fn management_email_grant_conceals_disabled_and_absent_users() {
         tonic::Code::PermissionDenied
     );
     coral_administration::AccessLifecycleModule::new(f.database.database(), f.workspaces.clone())
-        .remove_workspace_member(&change(&f.owner), f.workspace.id(), f.member.user_id())
+        .remove_workspace_member(
+            &change(&f.owner),
+            f.workspace.id(),
+            f.member.user_id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     let added = client
@@ -464,7 +479,12 @@ async fn management_email_grant_conceals_disabled_and_absent_users() {
     assert_eq!(profile.display_name, "Member");
     assert_eq!(profile.email, "Member@Example.test");
     OrganizationModule::new(f.database.database())
-        .set_enabled(&change(&f.owner), f.member.user_id(), 1, false)
+        .set_enabled(
+            &change(&f.owner),
+            f.member.user_id(),
+            &IfMatch::any(),
+            false,
+        )
         .await
         .unwrap();
     let disabled = client

@@ -47,7 +47,12 @@ impl Departure {
         let co_owner = user("user:co-owner", OrganizationRole::Member).await;
         let disabled = user("user:disabled", OrganizationRole::Member).await;
         organization
-            .set_enabled(&change(&administrator), disabled.user_id(), 1, false)
+            .set_enabled(
+                &change(&administrator),
+                disabled.user_id(),
+                &at_version(1),
+                false,
+            )
             .await
             .unwrap();
         let private_tools = PrivateToolModule::new(
@@ -125,7 +130,7 @@ impl Departure {
     fn removal<'a>(&'a self, transfer_to: Option<&'a UserId>) -> AccessRemovalTarget<'a> {
         AccessRemovalTarget::OrganizationMember {
             user: self.departing.user_id(),
-            revision: 1,
+            if_match: &AT_FIRST_VERSION,
             transfer_to,
         }
     }
@@ -223,7 +228,7 @@ async fn organization_removal_of_a_sole_workspace_owner_transfers_ownership_or_c
             .remove_organization_member(
                 &change(&f.administrator),
                 f.departing.user_id(),
-                1,
+                &at_version(1),
                 transfer_to,
             )
             .await;
@@ -258,7 +263,7 @@ async fn organization_removal_of_a_sole_workspace_owner_transfers_ownership_or_c
         .remove_organization_member(
             &change(&f.administrator),
             f.departing.user_id(),
-            1,
+            &at_version(1),
             Some(f.target.user_id()),
         )
         .await

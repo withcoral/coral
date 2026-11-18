@@ -31,7 +31,12 @@ async fn activity_watch_is_reef_only_and_stops_when_current_user_authority_is_lo
         .into_inner();
     assert!(stream.message().await.unwrap().unwrap().changed);
     coral_workspace::OrganizationModule::new(f.database.database())
-        .set_enabled(&super::change(&f.owner), f.member.user_id(), 1, false)
+        .set_enabled(
+            &super::change(&f.owner),
+            f.member.user_id(),
+            &IfMatch::any(),
+            false,
+        )
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -455,6 +460,7 @@ async fn execution_transport_keeps_large_exact_output_out_of_roots_and_detail_in
             &super::change(&f.owner),
             f.workspace.id(),
             f.member.user_id(),
+            &IfMatch::any(),
         )
         .await
         .unwrap();

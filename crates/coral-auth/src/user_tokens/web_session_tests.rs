@@ -2,6 +2,7 @@
     clippy::indexing_slicing,
     reason = "fixtures index the claims of tokens they just minted"
 )]
+use coral_workspace::IfMatch;
 use std::time::Duration;
 
 use super::tests::{CLIENT, Fixture, NOW, REEF, SECOND, refresh_token};
@@ -325,7 +326,7 @@ async fn resolving_rechecks_membership_and_reports_outages() {
     let change = coral_test_support::change(owner, 5, '2');
     let user = fixture.user.user_id();
     organization
-        .set_enabled(&change, user, 1, false)
+        .set_enabled(&change, user, &IfMatch::any(), false)
         .await
         .unwrap();
     assert_eq!(
@@ -333,7 +334,7 @@ async fn resolving_rechecks_membership_and_reports_outages() {
         Some(TokenRefusal::InvalidGrant)
     );
     organization
-        .set_enabled(&change, user, 2, true)
+        .set_enabled(&change, user, &IfMatch::any(), true)
         .await
         .unwrap();
     fixture

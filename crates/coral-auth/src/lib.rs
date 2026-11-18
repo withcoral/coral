@@ -426,7 +426,7 @@ mod tests {
             coral_workspace::TraceId::parse(&"a".repeat(32)).unwrap(),
         );
         organization
-            .set_enabled(&change, &member_id, 1, false)
+            .set_enabled(&change, &member_id, &coral_workspace::IfMatch::any(), false)
             .await
             .unwrap();
         assert_eq!(

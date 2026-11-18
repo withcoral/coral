@@ -3,7 +3,7 @@ use super::status::invalid;
 use super::workspaces::{change, error, mask, page, role, timestamp, workspace_id};
 use super::{GrpcServices, management as wire};
 use coral_workspace::{
-    AuthenticatedUser, ResourceMetadata, UserId, WorkspaceMembership, WorkspaceRole,
+    AuthenticatedUser, IfMatch, ResourceMetadata, UserId, WorkspaceMembership, WorkspaceRole,
 };
 use tonic::{Request, Response, Status};
 
@@ -134,13 +134,16 @@ impl wire::workspace_membership_service_server::WorkspaceMembershipService for G
         mask(input.update_mask, &["role"])?;
         let m = input.membership.ok_or_else(invalid)?;
         let (w, user) = member(&m.name)?;
-        let context = change(actor.clone()).with_etag(&m.etag).map_err(error)?;
+        let if_match = IfMatch::parse(&m.etag).map_err(error)?;
         self.workspaces
             .manage_membership(
-                &context,
+                &change(actor.clone()),
                 &w,
                 &AuthenticatedUser::without_organization_membership(user.clone()),
-                coral_workspace::MembershipChange::UpdateRole(parse_role(m.role)?),
+                coral_workspace::MembershipChange::UpdateRole {
+                    role: parse_role(m.role)?,
+                    if_match,
+                },
             )
             .await
             .map_err(error)?;
@@ -158,9 +161,10 @@ impl wire::workspace_membership_service_server::WorkspaceMembershipService for G
         let (w, user) = member(&input.name)?;
         self.access_lifecycle
             .remove_workspace_member(
-                &change(actor).with_etag(&input.etag).map_err(error)?,
+                &change(actor),
                 &w,
                 &user,
+                &IfMatch::parse(&input.etag).map_err(error)?,
             )
             .await
             .map_err(super::workspaces::administration_error)?;

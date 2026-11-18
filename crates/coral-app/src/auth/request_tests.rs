@@ -79,7 +79,12 @@ async fn http_oauth_requests_use_current_user_authority_not_sessions_or_metadata
     );
     fixture
         .organization
-        .set_enabled(&fixture.other, fixture.owner.actor().user_id(), 1, false)
+        .set_enabled(
+            &fixture.other,
+            fixture.owner.actor().user_id(),
+            &IfMatch::any(),
+            false,
+        )
         .await
         .unwrap();
     let denied = fixture
@@ -212,7 +217,12 @@ async fn http_agent_credentials_fix_workspace_identity_and_recheck_every_lifecyc
     // Disabling the provisioning human does not disable the Workspace's Agent.
     fixture
         .organization
-        .set_enabled(&fixture.other, fixture.owner.actor().user_id(), 1, false)
+        .set_enabled(
+            &fixture.other,
+            fixture.owner.actor().user_id(),
+            &IfMatch::any(),
+            false,
+        )
         .await
         .unwrap();
     assert_eq!(

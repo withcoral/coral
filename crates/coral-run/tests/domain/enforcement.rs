@@ -59,7 +59,7 @@ async fn organization_ownership_neither_grants_nor_retains_workspace_authority()
         fixture.database.clone(),
         fixture.workspaces.clone(),
     )
-    .remove_workspace_member(&owner, &tool.workspace_id, user.user_id())
+    .remove_workspace_member(&owner, &tool.workspace_id, user.user_id(), &IfMatch::any())
     .await
     .unwrap();
     release.send(()).unwrap();
@@ -104,7 +104,12 @@ async fn workspace_membership_loss_at_the_enforcement_point_blocks_dispatch() {
         fixture.database.clone(),
         fixture.workspaces.clone(),
     )
-    .remove_workspace_member(&admin, &tool.workspace_id, tool.user.user_id())
+    .remove_workspace_member(
+        &admin,
+        &tool.workspace_id,
+        tool.user.user_id(),
+        &IfMatch::any(),
+    )
     .await
     .unwrap();
     release.send(()).unwrap();
@@ -164,7 +169,12 @@ async fn offboarding_ends_a_waiting_connection_and_rejoin_cannot_resume_it() {
         fixture.database.clone(),
         fixture.workspaces.clone(),
     )
-    .remove_workspace_member(&administrator, &tool.workspace_id, tool.user.user_id())
+    .remove_workspace_member(
+        &administrator,
+        &tool.workspace_id,
+        tool.user.user_id(),
+        &IfMatch::any(),
+    )
     .await
     .unwrap();
     fixture
@@ -248,7 +258,12 @@ async fn an_organization_downgrade_keeps_current_explicit_workspace_authority() 
     let organization = coral_workspace::OrganizationModule::new(fixture.database.clone());
     let administrator = organization_admin(&fixture).await;
     organization
-        .set_role(&administrator, owner.user_id(), 1, OrganizationRole::Owner)
+        .set_role(
+            &administrator,
+            owner.user_id(),
+            &IfMatch::any(),
+            OrganizationRole::Owner,
+        )
         .await
         .unwrap();
     let actor = AuthenticatedPrincipal::user(owner);
@@ -266,7 +281,7 @@ async fn an_organization_downgrade_keeps_current_explicit_workspace_authority() 
         .set_role(
             &administrator,
             tool.user.user_id(),
-            2,
+            &IfMatch::any(),
             OrganizationRole::Member,
         )
         .await
@@ -307,7 +322,7 @@ async fn user_disablement_cannot_be_undone_by_stale_login_or_administration() {
     let authority = coral_workspace::OrganizationModule::new(fixture.database.clone());
     let administrator = organization_admin(&fixture).await;
     authority
-        .set_enabled(&administrator, tool.user.user_id(), 1, false)
+        .set_enabled(&administrator, tool.user.user_id(), &IfMatch::any(), false)
         .await
         .unwrap();
     assert!(
@@ -317,10 +332,15 @@ async fn user_disablement_cannot_be_undone_by_stale_login_or_administration() {
             .unwrap()
             .enabled()
     );
-    for revision in [0, 1, u64::MAX] {
+    // The disablement left the Membership at its second version.
+    for stale in [
+        IfMatch::parse("1").unwrap(),
+        IfMatch::parse(&i64::MAX.to_string()).unwrap(),
+        IfMatch::token(uuid::Uuid::new_v4()),
+    ] {
         assert!(matches!(
             authority
-                .set_enabled(&administrator, tool.user.user_id(), revision, true)
+                .set_enabled(&administrator, tool.user.user_id(), &stale, true)
                 .await,
             Err(coral_workspace::Error::OrganizationAuthorityConflict)
         ));
@@ -328,7 +348,7 @@ async fn user_disablement_cannot_be_undone_by_stale_login_or_administration() {
     release.send(()).unwrap();
     wait_until(|| gate.failure_code.lock().unwrap().is_some()).await;
     authority
-        .set_enabled(&administrator, tool.user.user_id(), 2, true)
+        .set_enabled(&administrator, tool.user.user_id(), &IfMatch::any(), true)
         .await
         .unwrap();
     let terminal = wait_for_terminal(
@@ -397,7 +417,7 @@ async fn organization_loss_commits_while_permitted_upstream_work_is_blocked() {
     let administrator = organization_admin(&fixture).await;
     let changed = tokio::time::timeout(
         Duration::from_secs(2),
-        authority.set_enabled(&administrator, tool.user.user_id(), 1, false),
+        authority.set_enabled(&administrator, tool.user.user_id(), &IfMatch::any(), false),
     )
     .await;
     upstream.release();
@@ -406,7 +426,7 @@ async fn organization_loss_commits_while_permitted_upstream_work_is_blocked() {
         .unwrap();
     wait_until(|| gate.failure_code.lock().unwrap().is_some()).await;
     authority
-        .set_enabled(&administrator, tool.user.user_id(), 2, true)
+        .set_enabled(&administrator, tool.user.user_id(), &IfMatch::any(), true)
         .await
         .unwrap();
     let terminal = wait_for_terminal(

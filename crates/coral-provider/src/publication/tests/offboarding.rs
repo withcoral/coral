@@ -185,12 +185,17 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
         match removal {
             Removal::Workspace => {
                 lifecycle
-                    .remove_workspace_member(&cleanup, workspace.id(), member.user_id())
+                    .remove_workspace_member(
+                        &cleanup,
+                        workspace.id(),
+                        member.user_id(),
+                        &IfMatch::any(),
+                    )
                     .await
             }
             Removal::Organization => {
                 lifecycle
-                    .remove_organization_member(&cleanup, member.user_id(), 1, None)
+                    .remove_organization_member(&cleanup, member.user_id(), &IfMatch::any(), None)
                     .await
             }
         }

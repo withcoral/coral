@@ -9,18 +9,20 @@ use coral_db::{Transaction, TransactionToken};
 
 /// Exact authority mutation requested by Administration.
 pub enum AccessRemovalTarget<'a> {
-    /// Remove an explicit Membership, including self-service leave.
-    WorkspaceMember(&'a WorkspaceId, &'a UserId),
+    /// Remove the explicit Membership that the caller read at this
+    /// precondition, including self-service leave.
+    WorkspaceMember(&'a WorkspaceId, &'a UserId, &'a IfMatch),
     /// Remove the current authority of the Agent that the caller read at
     /// this precondition, retaining attribution.
     Agent(&'a WorkspaceId, &'a PrincipalId, &'a IfMatch),
-    /// Remove Organization Membership at this exact revision. The transfer target
-    /// becomes the designated Owner of every Workspace the User solely owns.
+    /// Remove the Organization Membership that the caller read at
+    /// `if_match`. The transfer target becomes the designated Owner of every
+    /// Workspace the User solely owns.
     OrganizationMember {
         /// Departing User.
         user: &'a UserId,
-        /// Exact current Organization Membership revision.
-        revision: u64,
+        /// The etag the caller read of the Organization Membership.
+        if_match: &'a IfMatch,
         /// New designated Owner, required when the User solely owns a Workspace.
         transfer_to: Option<&'a UserId>,
     },
@@ -99,7 +101,7 @@ impl PreparedAccessRemoval {
 impl WorkspaceModule {
     /// Authorizes, locks, and prepares exact access loss without removing authority.
     /// # Errors
-    /// Rejects absent authority, stale revisions, loss of the last enabled Organization
+    /// Rejects absent authority, a stale precondition, loss of the last enabled Organization
     /// Owner, and loss of a Workspace's last designated Owner without a transfer target.
     #[expect(
         clippy::too_many_lines,
@@ -117,7 +119,7 @@ impl WorkspaceModule {
         crate::organization::hold_administration(tx).await?;
         let mut lost = Vec::new();
         let (target, authority) = match target {
-            AccessRemovalTarget::WorkspaceMember(workspace, user) => {
+            AccessRemovalTarget::WorkspaceMember(workspace, user, if_match) => {
                 let action = crate::AuthorityAction::Public(if context.actor().user_id() == user {
                     WorkspaceAction::Author
                 } else {
@@ -143,9 +145,9 @@ impl WorkspaceModule {
                 let role = crate::repository::membership_role_in_transaction(tx, workspace, user)
                     .await?
                     .ok_or(Error::MembershipNotFound)?;
-                crate::management::check_etag(
+                crate::management::check(
                     tx,
-                    context,
+                    if_match,
                     workspace,
                     LifecycleTargetKind::WorkspaceMembership,
                     user.as_str(),
@@ -188,10 +190,10 @@ impl WorkspaceModule {
             }
             AccessRemovalTarget::OrganizationMember {
                 user,
-                revision,
+                if_match,
                 transfer_to,
             } => {
-                crate::organization::prepare_removal(tx, context, user, revision, transfer_to)
+                crate::organization::prepare_removal(tx, context, user, if_match, transfer_to)
                     .await?;
                 for workspace in crate::repository::all_workspace_ids(tx).await? {
                     crate::repository::hold_workspace(tx, &workspace).await?;

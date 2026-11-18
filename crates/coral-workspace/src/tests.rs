@@ -241,7 +241,7 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
         .set_enabled(
             &change(organization_owner.clone(), 12, '3'),
             disabled.user_id(),
-            1,
+            &at_version(1),
             false,
         )
         .await
@@ -599,7 +599,7 @@ async fn the_last_designated_owner_cannot_leave_be_removed_or_be_demoted() {
         .set_enabled(
             &change(organization_owner.clone(), 31, '5'),
             second.user_id(),
-            1,
+            &at_version(1),
             false,
         )
         .await
@@ -666,7 +666,7 @@ async fn the_last_designated_owner_cannot_leave_be_removed_or_be_demoted() {
         .set_enabled(
             &change(organization_owner.clone(), 34, '6'),
             second.user_id(),
-            2,
+            &at_version(2),
             true,
         )
         .await
@@ -779,7 +779,12 @@ async fn ordinary_workspace_roles_require_current_organization_membership() {
     )
     .await;
     crate::OrganizationModule::new(module.database.clone())
-        .set_enabled(&change(administrator, 120, '5'), member.user_id(), 1, false)
+        .set_enabled(
+            &change(administrator, 120, '5'),
+            member.user_id(),
+            &at_version(1),
+            false,
+        )
         .await
         .unwrap();
     assert!(matches!(
@@ -1482,13 +1487,19 @@ fn change(actor: crate::AuthenticatedUser, at: i64, trace_digit: char) -> Change
     )
 }
 
+/// The precondition that a resource's row is at its `count`th version, as a
+/// caller holds who read the resource then.
+pub(crate) fn at_version(count: i64) -> IfMatch {
+    IfMatch::version(coral_db::Version::new(count).expect("a positive version"))
+}
+
 async fn remove_membership_authority(
     module: &WorkspaceModule,
     context: &ChangeContext,
     workspace: &crate::WorkspaceId,
     user: &UserId,
 ) -> Result<(), Error> {
-    let target = crate::AccessRemovalTarget::WorkspaceMember(workspace, user);
+    let target = crate::AccessRemovalTarget::WorkspaceMember(workspace, user, &IfMatch::any());
     remove_access(module, context, target).await
 }
 
@@ -1537,7 +1548,7 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
         .set_enabled(
             &change(organization_owner.clone(), 2, '1'),
             disabled_owner.user_id(),
-            1,
+            &at_version(1),
             false,
         )
         .await
@@ -1670,13 +1681,11 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
         .inspect_membership(&organization_owner, none.id(), organization_owner.user_id())
         .await
         .expect("inspect the backfilled Membership");
-    remove_membership_authority(
+    let read = IfMatch::parse(&backfilled.etag).expect("a backfilled etag is a valid precondition");
+    remove_access(
         module,
-        &change(organization_owner.clone(), 30, '5')
-            .with_etag(&backfilled.etag)
-            .expect("a backfilled etag is a valid precondition"),
-        none.id(),
-        organization_owner.user_id(),
+        &change(organization_owner.clone(), 30, '5'),
+        crate::AccessRemovalTarget::WorkspaceMember(none.id(), organization_owner.user_id(), &read),
     )
     .await
     .expect("a backfilled Owner leaves a Workspace they do not want");

@@ -1,7 +1,7 @@
 //! Organization persistence mechanics. All operations join the caller's transaction;
 //! authority policy, sequencing, and commit/rollback belong to `OrganizationModule`.
 
-use coral_db::{Transaction, UnixNanos};
+use coral_db::{Transaction, UnixNanos, Version};
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 
 use super::{OrganizationLifecycleAction, OrganizationLifecycleEvent, OrganizationMembership};
@@ -65,10 +65,10 @@ pub(super) async fn insert_membership_if_absent(
     Ok(inserted == 1)
 }
 
-pub(super) async fn removed_revision(
+pub(super) async fn removed_version(
     tx: &mut Transaction<'_>,
     user_id: &UserId,
-) -> Result<Option<u64>, Error> {
+) -> Result<Option<Version>, Error> {
     let row: Option<(i64,)> = tx
         .fetch_optional(
             Query::select()
@@ -79,7 +79,7 @@ pub(super) async fn removed_revision(
                 .to_owned(),
         )
         .await?;
-    row.map(|(revision,)| decode_revision(revision)).transpose()
+    row.map(|(revision,)| decode_version(revision)).transpose()
 }
 
 /// Restores a removed Membership with the sign-in's role. The recorded
@@ -227,14 +227,13 @@ fn decode_membership(
         user_id: user_id.clone(),
         role,
         enabled: enabled == 1,
-        revision: decode_revision(revision)?,
+        version: decode_version(revision)?,
     })
 }
 
-fn decode_revision(revision: i64) -> Result<u64, Error> {
-    u64::try_from(revision)
-        .ok()
-        .filter(|revision| *revision > 0)
+/// The version an Organization Membership's row holds as its revision.
+fn decode_version(revision: i64) -> Result<Version, Error> {
+    Version::new(revision)
         .ok_or_else(|| Error::CorruptData("invalid Organization authority revision".into()))
 }
 

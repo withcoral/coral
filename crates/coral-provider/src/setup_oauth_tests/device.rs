@@ -1440,7 +1440,7 @@ async fn recovery_never_completes_for_an_initiator_who_lost_organization_access(
         .set_enabled(
             &change_context(administrator.clone(), 20, '2'),
             context.actor().user_id(),
-            1,
+            &IfMatch::any(),
             false,
         )
         .await
@@ -1464,7 +1464,7 @@ async fn recovery_never_completes_for_an_initiator_who_lost_organization_access(
         .set_enabled(
             &change_context(administrator, 30, '3'),
             context.actor().user_id(),
-            disabled.revision(),
+            &IfMatch::version(disabled.version()),
             true,
         )
         .await

@@ -36,9 +36,9 @@ use coral_grpc::coral::{internal::v1 as internal, management::v1 as management};
 use coral_outbound::DestinationPolicy;
 use coral_test_support::TestDatabase;
 use coral_workspace::{
-    AgentDisplayName, AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, OrganizationModule,
-    OrganizationRole, RequestId, TraceId, UserId, Workspace, WorkspaceDisplayName, WorkspaceModule,
-    WorkspaceRole,
+    AgentDisplayName, AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, IfMatch,
+    OrganizationModule, OrganizationRole, RequestId, TraceId, UserId, Workspace,
+    WorkspaceDisplayName, WorkspaceModule, WorkspaceRole,
 };
 use listener::TestServer;
 use std::sync::{Arc, OnceLock};
@@ -696,6 +696,10 @@ async fn workspace_management_requires_a_membership_even_for_an_organization_own
 /// coral-workspace owns who is listed. This checks the `enabled` projection of
 /// both listings and that a Member reads the Owner directory but not the Members.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture is read through both listings by an Owner and by a Member"
+)]
 async fn membership_listings_project_enabled_and_hide_members_from_members() {
     let f = Fixture::new().await;
     let mut client = f.memberships();
@@ -713,7 +717,12 @@ async fn membership_listings_project_enabled_and_hide_members_from_members() {
         .await
         .unwrap();
     OrganizationModule::new(f.database.database())
-        .set_enabled(&change(&f.owner), disabled.user_id(), 1, false)
+        .set_enabled(
+            &change(&f.owner),
+            disabled.user_id(),
+            &IfMatch::any(),
+            false,
+        )
         .await
         .unwrap();
     let listed = client
@@ -1139,7 +1148,12 @@ async fn audience_reachability_is_not_principal_authority() {
         .unwrap();
     // An Organization Owner who leaves the Workspace keeps no authority in it.
     coral_administration::AccessLifecycleModule::new(f.database.database(), f.workspaces.clone())
-        .remove_workspace_member(&change(&f.owner), f.workspace.id(), f.owner.user_id())
+        .remove_workspace_member(
+            &change(&f.owner),
+            f.workspace.id(),
+            f.owner.user_id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     let left = client
@@ -1319,7 +1333,12 @@ async fn task_concealment_and_live_membership_survive_both_audiences() {
         tonic::Code::Unauthenticated
     );
     coral_administration::AccessLifecycleModule::new(f.database.database(), f.workspaces.clone())
-        .remove_workspace_member(&change(&f.owner), f.workspace.id(), f.member.user_id())
+        .remove_workspace_member(
+            &change(&f.owner),
+            f.workspace.id(),
+            f.member.user_id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     assert_eq!(

@@ -293,7 +293,12 @@ async fn offboarding_and_rejoin_block_a_late_refresh_without_overwriting_the_new
         fixture.database.clone(),
         fixture.workspaces.clone(),
     )
-    .remove_workspace_member(&administrator, &tool.workspace_id, tool.user.user_id())
+    .remove_workspace_member(
+        &administrator,
+        &tool.workspace_id,
+        tool.user.user_id(),
+        &IfMatch::any(),
+    )
     .await
     .unwrap();
     fixture

@@ -797,6 +797,7 @@ async fn root_windows_reauthorize_rows_and_anchors_after_membership_loss() {
         &ChangeContext::new(owner, UnixNanos::new(40), coral_test_support::trace('1')),
         &f.workspace,
         f.actor.authenticated_user().unwrap().user_id(),
+        &IfMatch::any(),
     )
     .await
     .unwrap();

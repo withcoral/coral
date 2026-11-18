@@ -424,7 +424,7 @@ async fn provider_and_catalog_inspection_require_current_workspace_access() {
         .set_enabled(
             &change_context(administrator, 11, 'b'),
             member.user_id(),
-            1,
+            &IfMatch::any(),
             false,
         )
         .await

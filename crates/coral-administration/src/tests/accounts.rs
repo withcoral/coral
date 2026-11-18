@@ -355,7 +355,7 @@ async fn shared_account_survives_its_provisioner_but_pending_replacement_is_canc
         .await
         .unwrap();
     f.lifecycle
-        .remove_organization_member(&change(&f.owner), f.member.user_id(), 1, None)
+        .remove_organization_member(&change(&f.owner), f.member.user_id(), &IfMatch::any(), None)
         .await
         .unwrap();
     assert_eq!(
@@ -442,7 +442,12 @@ async fn initial_connection_without_credentials_is_canceled_and_cannot_fill_a_re
         .unwrap();
     assert_eq!(old.connected_at, None);
     f.lifecycle
-        .remove_workspace_member(&context, f.workspace.id(), f.member.user_id())
+        .remove_workspace_member(
+            &context,
+            f.workspace.id(),
+            f.member.user_id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     f.workspaces
@@ -518,7 +523,7 @@ async fn organization_offboarding_serializes_concurrent_save_grant_and_initial_c
         let user = f.member.user_id().clone();
         tokio::spawn(async move {
             lifecycle
-                .remove_organization_member(&context, &user, 1, None)
+                .remove_organization_member(&context, &user, &IfMatch::any(), None)
                 .await
         })
     };
@@ -598,7 +603,12 @@ async fn membership_removal_clears_an_organization_owners_account() {
         .await
         .unwrap();
     f.lifecycle
-        .remove_workspace_member(&change(&f.owner), f.workspace.id(), f.owner.user_id())
+        .remove_workspace_member(
+            &change(&f.owner),
+            f.workspace.id(),
+            f.owner.user_id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     // Organization Owner authority alone reaches nothing inside the Workspace.
@@ -647,7 +657,12 @@ async fn disablement_and_archive_preserve_current_accounts() {
     let f = AccountFixture::new().await;
     let member_account = f.connect(&f.member).await.account_id.unwrap();
     f.organization
-        .set_enabled(&change(&f.owner), f.member.user_id(), 1, false)
+        .set_enabled(
+            &change(&f.owner),
+            f.member.user_id(),
+            &IfMatch::any(),
+            false,
+        )
         .await
         .unwrap();
     f.accounts
@@ -660,7 +675,7 @@ async fn disablement_and_archive_preserve_current_accounts() {
         .await
         .unwrap_err();
     f.organization
-        .set_enabled(&change(&f.owner), f.member.user_id(), 2, true)
+        .set_enabled(&change(&f.owner), f.member.user_id(), &IfMatch::any(), true)
         .await
         .unwrap();
     assert_eq!(

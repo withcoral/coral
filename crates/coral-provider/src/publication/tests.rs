@@ -1914,7 +1914,7 @@ async fn provider_authority_ignores_a_disabled_users_retained_workspace_role() {
         .set_enabled(
             &change_context(administrator, 2, '2'),
             owner.user_id(),
-            1,
+            &IfMatch::any(),
             false,
         )
         .await
@@ -1948,6 +1948,10 @@ async fn provider_authority_ignores_a_disabled_users_retained_workspace_role() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Publication is followed through its publisher's disablement and restoration"
+)]
 async fn final_commit_refreshes_the_publishers_organization_membership() {
     let (fixture, database, workspaces) = test_foundation().await;
     let creator = organization_user(
@@ -2012,7 +2016,12 @@ async fn final_commit_refreshes_the_publishers_organization_membership() {
     };
     materializer.held().await;
     organization
-        .set_enabled(&administrator, organization_owner.user_id(), 1, false)
+        .set_enabled(
+            &administrator,
+            organization_owner.user_id(),
+            &IfMatch::any(),
+            false,
+        )
         .await
         .unwrap();
     materializer.release();
@@ -2026,7 +2035,12 @@ async fn final_commit_refreshes_the_publishers_organization_membership() {
         crate::Error::Workspace(coral_workspace::Error::WorkspaceNotFound)
     ));
     organization
-        .set_enabled(&administrator, organization_owner.user_id(), 2, true)
+        .set_enabled(
+            &administrator,
+            organization_owner.user_id(),
+            &IfMatch::any(),
+            true,
+        )
         .await
         .unwrap();
     assert_eq!(

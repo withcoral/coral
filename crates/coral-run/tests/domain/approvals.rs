@@ -451,7 +451,12 @@ async fn organization_ownership_does_not_restore_agent_approval_to_a_demoted_own
     let organization = coral_workspace::OrganizationModule::new(audience.fixture.database.clone());
     let administrator = organization_admin(&audience.fixture).await;
     organization
-        .set_role(&administrator, user.user_id(), 1, OrganizationRole::Owner)
+        .set_role(
+            &administrator,
+            user.user_id(),
+            &IfMatch::any(),
+            OrganizationRole::Owner,
+        )
         .await
         .unwrap();
     assert!(matches!(

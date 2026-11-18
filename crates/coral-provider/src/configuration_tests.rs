@@ -20,7 +20,7 @@ use crate::{
 };
 
 use coral_catalog::{OpenApiDocument, ProviderConfiguration, ServerSelection};
-use coral_workspace::{OrganizationModule, OrganizationRole, WorkspaceAction};
+use coral_workspace::{IfMatch, OrganizationModule, OrganizationRole, WorkspaceAction};
 use serde_json::json;
 
 use crate::setup_tests::{harness, workspace_owner};
@@ -2393,7 +2393,7 @@ async fn confirmation_conceals_other_workspaces_and_rechecks_expiry_and_authorit
     let admin_context = change_context(administrator.clone(), 20, '3');
     let organization = OrganizationModule::new(h.database.clone());
     organization
-        .set_enabled(&admin_context, actor.user_id(), 1, false)
+        .set_enabled(&admin_context, actor.user_id(), &IfMatch::any(), false)
         .await
         .unwrap();
     assert!(matches!(

@@ -190,10 +190,11 @@ enum Step {
     RotateCredential,
     DeleteAgent,
     RemoveMembership,
-    /// Removes the second Workspace's one Owner from the Organization at
-    /// this revision of their Organization Membership: the heir takes over.
+    /// Removes the second Workspace's one Owner from the Organization, with
+    /// this precondition on their Organization Membership: the heir takes
+    /// over.
     TransferOwnership {
-        revision: u64,
+        if_match: IfMatch,
     },
 }
 
@@ -252,6 +253,16 @@ impl EtagForm {
                 .expect("the resource has a row")
                 .version
                 .to_string(),
+        }
+    }
+
+    /// A precondition of this form that an Organization Membership at its
+    /// first version does not meet. Its etag is its version, so a UUID
+    /// never matches it.
+    fn stale_organization_membership(self) -> IfMatch {
+        match self {
+            Self::Metadata => IfMatch::token(uuid::Uuid::new_v4()),
+            Self::RowVersion => IfMatch::version(Version::new(2).expect("a positive version")),
         }
     }
 
@@ -442,7 +453,10 @@ impl Changes {
                     context,
                     workspace,
                     &self.member,
-                    MembershipChange::UpdateRole(role),
+                    MembershipChange::UpdateRole {
+                        role,
+                        if_match: *if_match,
+                    },
                 )
                 .await
                 .map(drop),
@@ -497,13 +511,17 @@ impl Changes {
                 remove_access(module, context, target).await
             }
             Step::RemoveMembership => {
-                let target = AccessRemovalTarget::WorkspaceMember(workspace, self.member.user_id());
+                let target = AccessRemovalTarget::WorkspaceMember(
+                    workspace,
+                    self.member.user_id(),
+                    if_match,
+                );
                 remove_access(module, context, target).await
             }
-            Step::TransferOwnership { revision } => {
+            Step::TransferOwnership { if_match } => {
                 let target = AccessRemovalTarget::OrganizationMember {
                     user: self.departing.user_id(),
-                    revision,
+                    if_match: &if_match,
                     transfer_to: Some(self.heir.user_id()),
                 };
                 remove_access(module, context, target).await
@@ -670,10 +688,15 @@ async fn every_change_moves_its_resources_and_no_other(form: EtagForm) {
             &[(MEMBERSHIP, Move::Removed)],
         ),
         (
-            Step::TransferOwnership { revision: 1 },
-            Refusal::As(Step::TransferOwnership { revision: 2 }, |error| {
-                matches!(error, Error::OrganizationAuthorityConflict)
-            }),
+            Step::TransferOwnership {
+                if_match: IfMatch::version(Version::FIRST),
+            },
+            Refusal::As(
+                Step::TransferOwnership {
+                    if_match: form.stale_organization_membership(),
+                },
+                |error| matches!(error, Error::OrganizationAuthorityConflict),
+            ),
             &[
                 (DEPARTING_MEMBERSHIP, Move::Removed),
                 (HEIR_MEMBERSHIP, Move::Created),
@@ -998,7 +1021,6 @@ fn an_etag_is_the_canonical_text_of_a_version_or_a_uuid() {
     ] {
         assert_eq!(IfMatch::parse(&etag).expect(&etag), expected);
         let read = context().with_etag(&etag).expect(&etag);
-        assert_eq!(read.if_match(), Some(&expected));
         assert_eq!(read.expected_etag(), Some(etag.as_str()));
     }
     for etag in ["", "0", "-1", "+1", "01", "stale"] {

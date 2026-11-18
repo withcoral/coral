@@ -3,7 +3,7 @@ use coral_db::UnixNanos;
 use std::time::Duration;
 
 use coral_credentials::{CredentialValues, CredentialVault, Secret};
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName, WorkspaceId};
+use coral_workspace::{IfMatch, OrganizationRole, WorkspaceDisplayName, WorkspaceId};
 
 use super::{
     AccountModule, AccountScope, AccountState, AuthorizationState, ConnectionRequestId,
@@ -378,7 +378,7 @@ async fn a_failed_connection_event_rolls_back_the_request_transition() {
     // this crate, so its Provider error is matched by variant name.
     let offboarding =
         coral_administration::AccessLifecycleModule::new(db.database(), workspaces.clone())
-            .remove_workspace_member(&administrator, &scope, user.user_id())
+            .remove_workspace_member(&administrator, &scope, user.user_id(), &IfMatch::any())
             .await;
     assert!(
         matches!(&offboarding, Err(coral_administration::Error::Provider(error)) if format!("{error:?}").starts_with("Database(")),

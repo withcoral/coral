@@ -18,12 +18,22 @@ async fn remove(f: &AccountFixture, removal: Removal) {
     match removal {
         Removal::Workspace => f
             .lifecycle
-            .remove_workspace_member(&change(&f.owner), f.workspace.id(), f.member.user_id())
+            .remove_workspace_member(
+                &change(&f.owner),
+                f.workspace.id(),
+                f.member.user_id(),
+                &IfMatch::any(),
+            )
             .await
             .unwrap(),
         Removal::Organization => f
             .lifecycle
-            .remove_organization_member(&change(&f.owner), f.member.user_id(), 1, None)
+            .remove_organization_member(
+                &change(&f.owner),
+                f.member.user_id(),
+                &IfMatch::any(),
+                None,
+            )
             .await
             .unwrap(),
     }

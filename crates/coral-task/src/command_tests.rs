@@ -1432,7 +1432,12 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
         fixture.tasks.database.clone(),
         fixture.tasks.workspaces.clone(),
     )
-    .remove_workspace_member(&change, &fixture.workspace, member.user_id())
+    .remove_workspace_member(
+        &change,
+        &fixture.workspace,
+        member.user_id(),
+        &IfMatch::any(),
+    )
     .await
     .unwrap();
     assert!(matches!(

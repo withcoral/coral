@@ -270,7 +270,12 @@ async fn owner_guards_reach_the_wire_as_distinct_preconditions() {
         .organization_user("disabled", OrganizationRole::Member)
         .await;
     OrganizationModule::new(f.database.database())
-        .set_enabled(&change(&f.owner), disabled.user_id(), 1, false)
+        .set_enabled(
+            &change(&f.owner),
+            disabled.user_id(),
+            &IfMatch::any(),
+            false,
+        )
         .await
         .unwrap();
     let sole_owner = f

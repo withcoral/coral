@@ -10,8 +10,8 @@ use coral_provider::{
 use coral_test_support::change;
 use coral_test_support::{TestDatabase, provision_user as organization_user};
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, RequestId, WorkspaceDisplayName,
-    WorkspaceModule,
+    AuthenticatedPrincipal, AuthenticatedUser, IfMatch, OrganizationRole, RequestId,
+    WorkspaceDisplayName, WorkspaceModule,
 };
 
 use crate::{
@@ -1550,7 +1550,7 @@ async fn organization_owner_needs_a_workspace_membership_to_change_policy() {
         .set_enabled(
             &change(administrator, 315, '1'),
             organization_owner.user_id(),
-            1,
+            &IfMatch::any(),
             false,
         )
         .await

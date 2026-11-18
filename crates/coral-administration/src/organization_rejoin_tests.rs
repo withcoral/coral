@@ -1,3 +1,4 @@
+use crate::tests::at_version;
 use crate::{AccessLifecycleModule, Error};
 use coral_test_support::{TestDatabase, provision_user};
 use coral_tools::{
@@ -5,8 +6,8 @@ use coral_tools::{
     PrivateToolPath, PrivateToolSave,
 };
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, OrganizationModule, OrganizationRole,
-    WorkspaceDisplayName, WorkspaceModule, WorkspaceRole,
+    AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, IfMatch, OrganizationModule,
+    OrganizationRole, WorkspaceDisplayName, WorkspaceModule, WorkspaceRole,
 };
 
 async fn fixture() -> TestDatabase {
@@ -52,7 +53,12 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
         .await
         .unwrap();
     administration
-        .remove_organization_member(&change(&owner), member.user_id(), original.revision(), None)
+        .remove_organization_member(
+            &change(&owner),
+            member.user_id(),
+            &IfMatch::version(original.version()),
+            None,
+        )
         .await
         .unwrap();
     assert!(
@@ -75,7 +81,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
             .remove_organization_member(
                 &change(&owner),
                 member.user_id(),
-                original.revision(),
+                &IfMatch::version(original.version()),
                 None
             )
             .await,
@@ -136,7 +142,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
                 .remove_organization_member(
                     &change(&owner),
                     member.user_id(),
-                    original.revision(),
+                    &IfMatch::version(original.version()),
                     None,
                 )
                 .await
@@ -145,7 +151,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
             .set_role(
                 &change(&owner),
                 member.user_id(),
-                original.revision(),
+                &IfMatch::version(original.version()),
                 OrganizationRole::Owner,
             )
             .await
@@ -155,7 +161,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
             .set_enabled(
                 &change(&owner),
                 member.user_id(),
-                original.revision(),
+                &IfMatch::version(original.version()),
                 false,
             )
             .await
@@ -171,7 +177,7 @@ async fn stale_command_preserves_rejoined_membership_and_work(command: StaleComm
         ),
         "old command must conflict after rejoin: {result:?}"
     );
-    assert!(rejoined.revision() > original.revision());
+    assert!(rejoined.version() > original.version());
     assert_eq!(
         organization
             .provision_login(&change(&member))
@@ -244,7 +250,7 @@ async fn removed_owner_is_absent_and_cannot_satisfy_last_owner_protection() {
         .unwrap();
     let administration = AccessLifecycleModule::new(database, workspaces.clone());
     administration
-        .remove_organization_member(&change(&owner), departed.user_id(), 1, None)
+        .remove_organization_member(&change(&owner), departed.user_id(), &at_version(1), None)
         .await
         .unwrap();
     assert!(organization.check_owner(&departed).await.is_err());
@@ -259,7 +265,7 @@ async fn removed_owner_is_absent_and_cannot_satisfy_last_owner_protection() {
             .set_role(
                 &change(&owner),
                 departed.user_id(),
-                1,
+                &at_version(1),
                 OrganizationRole::Member
             )
             .await,
@@ -267,7 +273,7 @@ async fn removed_owner_is_absent_and_cannot_satisfy_last_owner_protection() {
     ));
     assert!(matches!(
         organization
-            .set_enabled(&change(&owner), departed.user_id(), 1, true)
+            .set_enabled(&change(&owner), departed.user_id(), &at_version(1), true)
             .await,
         Err(coral_workspace::Error::OrganizationMembershipNotFound)
     ));
@@ -276,7 +282,7 @@ async fn removed_owner_is_absent_and_cannot_satisfy_last_owner_protection() {
             .set_role(
                 &change(&owner),
                 owner.user_id(),
-                1,
+                &at_version(1),
                 OrganizationRole::Member
             )
             .await,
@@ -284,13 +290,13 @@ async fn removed_owner_is_absent_and_cannot_satisfy_last_owner_protection() {
     ));
     assert!(matches!(
         organization
-            .set_enabled(&change(&owner), owner.user_id(), 1, false)
+            .set_enabled(&change(&owner), owner.user_id(), &at_version(1), false)
             .await,
         Err(coral_workspace::Error::LastOrganizationOwner)
     ));
     assert!(matches!(
         administration
-            .remove_organization_member(&change(&owner), owner.user_id(), 1, None)
+            .remove_organization_member(&change(&owner), owner.user_id(), &at_version(1), None)
             .await,
         Err(Error::Workspace(
             coral_workspace::Error::LastOrganizationOwner
@@ -303,7 +309,7 @@ async fn removed_owner_is_absent_and_cannot_satisfy_last_owner_protection() {
         )))
         .await
         .unwrap();
-    assert!(rejoined.revision() > 1);
+    assert!(rejoined.version() > coral_db::Version::FIRST);
     assert_eq!(rejoined.role(), OrganizationRole::Member);
     assert!(rejoined.enabled());
     assert!(organization.check_owner(&departed).await.is_err());

@@ -86,3 +86,61 @@ async fn organization_memberships_project_members_and_removal_needs_an_owner() {
             .all(|membership| membership.name != target.name)
     );
 }
+
+// Catches: a removal that answers the etag of the earlier form, a UUID, as a
+// malformed one, so that Reef blames the form's fields when the page only
+// needs a reload; and a refused removal that moves the Membership's etag.
+#[tokio::test]
+async fn removing_an_organization_membership_answers_a_stale_etag_as_a_mismatch() {
+    let f = Fixture::new().await;
+    let mut client = f.organization_memberships();
+    let owner = f.token(&f.owner, "reef");
+    let name = "organizationMemberships/member";
+    let mut reader = f.organization_memberships();
+    let mut etag = async || {
+        reader
+            .list_organization_memberships(request(
+                management::ListOrganizationMembershipsRequest::default(),
+                &owner,
+                "reef",
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .memberships
+            .into_iter()
+            .find(|membership| membership.name == name)
+            .map(|membership| membership.etag)
+    };
+    assert_eq!(etag().await.as_deref(), Some("1"));
+    let earlier_form = uuid::Uuid::new_v4().to_string();
+    for (sent, expected) in [
+        ("", (tonic::Code::InvalidArgument, "INVALID_ARGUMENT")),
+        ("0", (tonic::Code::InvalidArgument, "INVALID_ARGUMENT")),
+        ("stale", (tonic::Code::InvalidArgument, "INVALID_ARGUMENT")),
+        ("2", (tonic::Code::Aborted, "ETAG_MISMATCH")),
+        (
+            earlier_form.as_str(),
+            (tonic::Code::Aborted, "ETAG_MISMATCH"),
+        ),
+    ] {
+        let error = client
+            .delete_organization_membership(request(
+                management::DeleteOrganizationMembershipRequest {
+                    name: name.into(),
+                    etag: sent.into(),
+                    transfer_to: String::new(),
+                },
+                &owner,
+                "reef",
+            ))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (error.code(), error_reason(&error).as_str()),
+            expected,
+            "{sent:?}"
+        );
+        assert_eq!(etag().await.as_deref(), Some("1"), "{sent:?}");
+    }
+}

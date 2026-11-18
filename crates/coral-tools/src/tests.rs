@@ -2575,7 +2575,7 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
         .set_enabled(
             &change(administrator, 31, 'e'),
             member_user.user_id(),
-            membership.revision(),
+            &IfMatch::version(membership.version()),
             false,
         )
         .await
@@ -3001,6 +3001,7 @@ async fn private_tool_work_that_only_names_a_tool_decodes_no_definition() {
             coral_workspace::AccessRemovalTarget::WorkspaceMember(
                 &workspace_id,
                 member.authenticated_user().expect("member User").user_id(),
+                &IfMatch::any(),
             ),
         )
         .await

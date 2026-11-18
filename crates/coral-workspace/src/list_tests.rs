@@ -4,7 +4,7 @@ use std::fmt::Debug;
 use coral_db::UnixNanos;
 use coral_test_support::TestDatabase;
 
-use super::{change, organization_user, remove_access, test_module};
+use super::{at_version, change, organization_user, remove_access, test_module};
 use crate::{
     AccessRemovalTarget, AgentDisplayName, AgentState, AuthenticatedUser, IfMatch,
     OrganizationModule, OrganizationRole, PrincipalId, RequestId, UserId, VerifiedUserProfile,
@@ -72,7 +72,12 @@ async fn lists(rows: usize) -> Lists {
     for user in &lists.disabled {
         lists
             .organization
-            .set_enabled(&change(lists.owner.clone(), 20, 'a'), user, 1, false)
+            .set_enabled(
+                &change(lists.owner.clone(), 20, 'a'),
+                user,
+                &at_version(1),
+                false,
+            )
             .await
             .unwrap();
     }
