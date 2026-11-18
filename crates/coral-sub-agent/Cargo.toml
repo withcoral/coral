@@ -37,4 +37,10 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+coral-mcp = { workspace = true, features = ["test-fixtures"] }
+coral-provider = { workspace = true, features = ["test-fixtures"] }
+coral-run.workspace = true
+coral-search.workspace = true
+coral-test-support.workspace = true
+coral-workspace = { workspace = true, features = ["test-fixtures"] }
 wiremock.workspace = true

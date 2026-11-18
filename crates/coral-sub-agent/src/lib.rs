@@ -7,6 +7,9 @@ mod repository;
 mod sub_agents;
 mod tools;
 
+#[cfg(test)]
+mod tests;
+
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
