@@ -113,6 +113,8 @@ impl coral_app::RunErrorTelemetry for ProcessError {
     fn telemetry_error_code(&self) -> &'static str {
         if self.state_locked() {
             "state_locked"
+        } else if self.0.is::<coral_edition::LicenseRefusal>() {
+            "license_ended"
         } else {
             "internal"
         }
@@ -178,6 +180,12 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
     {
         eprintln!("{warning}");
     }
+    for notice in server.license_notices() {
+        match notice.level {
+            coral_edition::NoticeLevel::Info => println!("{}", notice.message),
+            coral_edition::NoticeLevel::Warning => eprintln!("Warning: {}", notice.message),
+        }
+    }
     if let Some(callback) = server.provider_oauth_callback_url() {
         println!("Coral Provider OAuth callback listening on {callback}");
     }
@@ -216,9 +224,15 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
         wait_for_shutdown_request(stop_on_stdin_close),
     )
     .await;
+    let license_lapse = server.license_lapse();
     let shutdown = server.shutdown().await;
     wait.map_err(anyhow::Error::from)?;
     shutdown.map_err(anyhow::Error::from)?;
+    // A License that ended while Coral ran stops it with an error, so that
+    // an orchestrator sees the exit (ADR 0038).
+    if let Some(refusal) = license_lapse {
+        return Err(ProcessError::from(anyhow::Error::from(refusal)));
+    }
     Ok(())
 }
 

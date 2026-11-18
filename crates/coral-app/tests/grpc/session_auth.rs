@@ -98,13 +98,16 @@ client_secret = 'test-secret'
 pub(crate) async fn session_authenticated_server(
     fixture: &SessionAuthFixture,
 ) -> Result<RunningServer, AppError> {
-    let builder = ServerBuilder::new()
-        .with_config_dir(fixture.config_dir())
-        .prepare()
-        .await?;
+    // Boxed so that the callers' futures stay under clippy's size limit.
+    let builder = Box::pin(
+        ServerBuilder::new()
+            .with_config_dir(fixture.config_dir())
+            .prepare(),
+    )
+    .await?;
     assert!(
         builder.serve_settings()?.take_session_auth().is_some(),
         "the fixture configures session authentication"
     );
-    builder.start().await
+    Box::pin(builder.start()).await
 }

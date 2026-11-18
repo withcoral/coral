@@ -82,6 +82,9 @@ ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "
 opentelemetry-appender-tracing = "0.33.1"
 opentelemetry-otlp = "0.33.1"
 opentelemetry_sdk = "0.33.1"
+# PASETO v4.public with PASERK key ids, for Licenses (ADR 0038). No `std`: it
+# would bring a claims validator that compares `exp` with the clock.
+pasetors = { version = "0.8.1", default-features = false, features = ["v4", "paserk"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "charset", "form", "http2", "json", "query", "rustls", "system-proxy"] }
 ring = "0.17.14"
 rmcp = { version = "3.10.0", features = ["client", "reqwest", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }

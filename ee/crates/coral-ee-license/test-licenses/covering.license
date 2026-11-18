@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: LicenseRef-Coral-Enterprise
+# Development and testing only: a test Commercial License that covers every development build. No published build accepts it.
+# To run with it, set the next line as [license] text in config.toml.
+v4.public.eyJjdXN0b21lciI6IkNvcmFsIGRldmVsb3BtZW50ICh0ZXN0IGtleSkiLCJleHBfZGF0ZSI6Ijk5OTktMTItMzEiLCJpYXQiOiIyMDI2LTExLTE4VDAwOjAwOjAwWiIsImtpbmQiOiJjb21tZXJjaWFsIiwibGlkIjoibGljX3Rlc3RfY292ZXJpbmciLCJ2IjoxfflEZrsafdS9BJkmESZ1K5vYGO6YXDe7ZWoDo25DkaEeihtow4Oax3mey2Jmqp4UuQugdEoqT8C3B1FaCzJZewQ.eyJraWQiOiJrNC5waWQuNlFCWlJLYmNiYWFEZ09wVTd1TjhGbW9hY1htM0dWNzRhTEdwM0tiUTVFMjcifQ

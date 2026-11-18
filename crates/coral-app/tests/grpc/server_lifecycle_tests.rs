@@ -466,3 +466,56 @@ async fn server_lifecycle_rejects_postgres_config_without_url_env_value() {
         "unexpected error: {error}"
     );
 }
+
+/// An Edition source whose License has ended: its recheck refuses, naming
+/// the date the pass read from the launcher's clock.
+struct EndedLicense;
+
+impl coral_edition::EditionSource for EndedLicense {
+    fn edition(&self) -> coral_edition::Edition {
+        coral_edition::Edition::Enterprise
+    }
+
+    fn recheck_license(
+        &self,
+        today: chrono::NaiveDate,
+    ) -> Result<(), coral_edition::LicenseRefusal> {
+        Err(coral_edition::LicenseRefusal::new(format!(
+            "ended before {today}"
+        )))
+    }
+}
+
+// Catches: a License that ends while Coral runs and leaves it serving, or a
+// recheck that reads another clock than the launcher's (ADR 0038).
+#[tokio::test]
+async fn a_license_that_ends_while_coral_runs_stops_the_server() {
+    let temp = TempDir::new().unwrap();
+    fs::write(
+        temp.path().join("config.toml"),
+        "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
+    )
+    .unwrap();
+    // 2026-11-18T12:00:00Z.
+    let clock = coral_test_support::ManualClock::starting_at(coral_db::UnixNanos::new(
+        1_795_003_200_000_000_000,
+    ));
+    let server = ServerBuilder::new()
+        .with_config_dir(temp.path())
+        .with_clock(std::sync::Arc::new(clock))
+        .with_extensions(coral_app::Extensions {
+            edition: coral_edition::EditionCheck::new(std::sync::Arc::new(EndedLicense)),
+            ..coral_app::Extensions::default()
+        })
+        .start()
+        .await
+        .expect("start server");
+    tokio::time::timeout(std::time::Duration::from_secs(60), server.wait_for_exit())
+        .await
+        .expect("the License recheck stops the server");
+    assert_eq!(
+        server.license_lapse().map(|refusal| refusal.to_string()),
+        Some("ended before 2026-11-18".to_owned())
+    );
+    server.shutdown().await.expect("shutdown server");
+}

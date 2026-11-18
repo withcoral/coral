@@ -1,11 +1,11 @@
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { reefRoot, type FixtureAddress, type Target } from './config.ts'
+import { reefRoot, repoRoot, type FixtureAddress, type Target } from './config.ts'
 import {
   prepareAuthenticatedTarget,
   reservePort,
@@ -215,6 +215,18 @@ export async function startStack(options: {
     // The address provider fixtures use, so `[outbound]` treats the store as it treats them.
     if (options.authenticated && options.fixtures)
       secretStore = await startSecretStoreFixture(options.fixtures)
+    // The covering test License sets the Enterprise Edition, so the KV v2 store reads. Only a
+    // build without a Release Date, such as Reel's, trusts its key (ADR 0038).
+    const license = secretStore
+      ? (
+          await readFile(
+            join(repoRoot, 'ee/crates/coral-ee-license/test-licenses/covering.license'),
+            'utf8',
+          )
+        )
+          .split('\n')
+          .find((line) => line.startsWith('v4.public.'))
+      : undefined
     // Instances share one credential key, or none could read what another sealed.
     const credentialKey = options.multiInstance ? randomBytes(32).toString('base64') : undefined
     const coralEnv = {
@@ -244,6 +256,7 @@ export async function startStack(options: {
             ? "[database]\nbackend = 'postgres'\nurl_env = 'E2E_STACK_POSTGRES_URL'\n"
             : '') +
           (credentialKey ? "[credentials]\nkey_env = 'E2E_CREDENTIAL_KEY'\n" : '') +
+          (license ? `[license]\ntext = '${license}'\n` : '') +
           (secretStore
             ? secretStore.config('E2E_SECRET_STORE_SECRET_ID') + envSecretStore.config
             : '') +

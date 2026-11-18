@@ -615,6 +615,7 @@ dependencies = [
  "clap",
  "coral-app",
  "coral-db",
+ "coral-edition",
  "coral-embed",
  "coral-grpc",
  "coral-mcp",
@@ -666,6 +667,7 @@ dependencies = [
  "async-trait",
  "axum",
  "base64 0.23.1",
+ "chrono",
  "coral-administration",
  "coral-auth",
  "coral-catalog",
@@ -810,6 +812,9 @@ dependencies = [
 [[package]]
 name = "coral-edition"
 version = "1.8.0"
+dependencies = [
+ "chrono",
+]
 
 [[package]]
 name = "coral-ee"
@@ -818,8 +823,20 @@ dependencies = [
  "coral",
  "coral-app",
  "coral-edition",
+ "coral-ee-license",
  "coral-ee-secret-stores",
  "coral-secret-store",
+]
+
+[[package]]
+name = "coral-ee-license"
+version = "1.8.0"
+dependencies = [
+ "chrono",
+ "coral-edition",
+ "pasetors",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1494,6 +1511,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ct-codecs"
+version = "1.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fd9f3db6f2cfef61c10613071955154ffdc9e515daebff26de4b54e35038fdd"
+
+[[package]]
 name = "ctutils"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1759,6 +1782,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
+name = "ed25519-compact"
+version = "2.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9547879431a90e352a35863a54416d92898a787b9af09e6ae2e09a96bd78be80"
+dependencies = [
+ "getrandom 0.4.3",
+]
+
+[[package]]
 name = "either"
 version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1860,6 +1892,12 @@ name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
+name = "fiat-crypto"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
 name = "find-msvc-tools"
@@ -3270,6 +3308,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "orion"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce166f9a98c32a49ccf0684ea3be1a99cdebc0694d96e487ee5df844591a3403"
+dependencies = [
+ "cmov",
+ "fiat-crypto",
+ "subtle",
+]
+
+[[package]]
 name = "ort"
 version = "2.0.0-rc.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3513,6 +3562,20 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "pasetors"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ec9d69d491936c29fa2684dcb50d4c7503a405f4e972066e344ff2a4f639195"
+dependencies = [
+ "ct-codecs",
+ "ed25519-compact",
+ "getrandom 0.4.3",
+ "orion",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]
