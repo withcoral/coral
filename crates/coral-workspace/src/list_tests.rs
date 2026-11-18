@@ -298,6 +298,15 @@ impl Lists {
                 .await,
         );
         sent.insert(
+            "Workspaces",
+            self.sent(async { module.list(owner).await.unwrap() }).await,
+        );
+        sent.insert(
+            "Sign-in choices",
+            self.sent(async { module.list_sign_in_choices(owner.user_id()).await.unwrap() })
+                .await,
+        );
+        sent.insert(
             "Organization Workspaces",
             self.sent(async { module.list_organization_workspaces(owner).await.unwrap() })
                 .await,
