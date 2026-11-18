@@ -195,13 +195,22 @@ pub(crate) async fn host(
 }
 
 /// Terminates the Program and wakes every stop-aware wait; a Run Executor
-/// learns why on the Run stream.
+/// learns why on the Run stream, once a termination written first has
+/// landed ([`spawn_stream_end`]).
 fn terminate_program(handle: &OwnerHandle, start: &OwnerStart, state: &OwnerState) {
     handle.stop().request();
-    if let OwnerStart::Stream(stream) = start {
-        stream
-            .link
-            .terminate(state.termination().map(|intent| intent.termination.kind));
+    if let Some(link) = stream_link(start)
+        && !state.ends_stream_first()
+    {
+        link.terminate(state.termination().map(|intent| intent.termination.kind));
+    }
+}
+
+/// The Run stream the owner's Program runs on, if it runs on one.
+fn stream_link(start: &OwnerStart) -> Option<std::sync::Arc<crate::run_stream::StreamLink>> {
+    match start {
+        OwnerStart::Stream(stream) => Some(stream.link.clone()),
+        OwnerStart::Program { .. } | OwnerStart::Recovery { .. } => None,
     }
 }
 
@@ -483,6 +492,9 @@ fn run_effect(
                 handle.send(Message::Completed(completed));
             }));
         }
+        Effect::EndStreamRun(termination) => {
+            spawn_stream_end(module, accepted, start, handle, termination);
+        }
         Effect::Commit { .. }
         | Effect::TerminateProgram
         | Effect::Settle { .. }
@@ -670,6 +682,7 @@ fn spawn_interruption(module: &RunModule, accepted: &AcceptedRun, handle: &Owner
                 &accepted.held_id(),
                 &accepted.claim_id,
                 None,
+                None,
             )
             .await
             .map_err(CommitRejection::from);
@@ -687,6 +700,50 @@ fn spawn_interruption(module: &RunModule, accepted: &AcceptedRun, handle: &Owner
             ),
         }
         handle.send(Message::Interrupted(recorded));
+    }));
+}
+
+/// A Run stream's termination, written in one chunk until the database
+/// answers; the Program hears of it on the stream only then, and the owner
+/// retires. A definite failure means another writer ended or took the Run
+/// first, and the stream's `Ended` tells the Program.
+fn spawn_stream_end(
+    module: &RunModule,
+    accepted: &AcceptedRun,
+    start: &OwnerStart,
+    handle: &OwnerHandle,
+    termination: crate::lifecycle::RequestedTermination,
+) {
+    let module = module.clone();
+    let accepted = accepted.clone();
+    let handle = handle.clone();
+    let link = stream_link(start);
+    let span = phase_span(
+        accepted.trace.as_ref(),
+        &accepted.held_id(),
+        Phase::Terminate,
+    );
+    tokio::spawn(span.instrument(async move {
+        let ended = module
+            .record_interruption(
+                &accepted.workspace_id,
+                &accepted.held_id(),
+                &accepted.claim_id,
+                None,
+                Some(&termination),
+            )
+            .await;
+        if let Err(error) = &ended {
+            tracing::warn!(
+                coral.run.id = safe::id(&accepted.held_id()),
+                error.type = safe::kind(error.code()),
+                "a Run stream's termination was not written: the Run is no longer its own"
+            );
+        }
+        if let (Some(link), Ok(())) = (link, ended) {
+            link.terminate(Some(termination.termination.kind));
+        }
+        handle.send(Message::Completed(Ok(None)));
     }));
 }
 
@@ -769,10 +826,7 @@ fn spawn_commit(
     let module = module.clone();
     let accepted = accepted.clone();
     let handle = handle.clone();
-    let link = match start {
-        OwnerStart::Stream(stream) => Some(stream.link.clone()),
-        OwnerStart::Program { .. } | OwnerStart::Recovery { .. } => None,
-    };
+    let link = stream_link(start);
     tokio::spawn(async move {
         let outcome = commit_until_answered(&module, &accepted, &handle, chunk, output_total).await;
         let message = match outcome {

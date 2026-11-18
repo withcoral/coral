@@ -252,8 +252,10 @@ impl RunModule {
     /// Owner that cannot commit, and of the supervisor that takes over a Run
     /// whose owner task ended without retiring; `takeover_claim_id` is the
     /// claim the supervisor mints so that nothing still in flight under
-    /// `claim_id` can land afterwards. The Run row is read without a hold:
-    /// the write's predicate on the claim and the head fences it.
+    /// `claim_id` can land afterwards. A Run stream's owner passes the
+    /// termination it `decided` (its deadline), which a recorded one still
+    /// precedes. The Run row is read without a hold: the write's predicate
+    /// on the claim and the head fences it.
     ///
     /// # Errors
     ///
@@ -267,6 +269,7 @@ impl RunModule {
         run_id: &RunId,
         claim_id: &str,
         takeover_claim_id: Option<&str>,
+        decided: Option<&RequestedTermination>,
     ) -> Result<(), Error> {
         let mut transaction = self.database.begin().await?;
         let run = run_repository::find_exact_in_transaction(&mut transaction, workspace_id, run_id)
@@ -291,7 +294,7 @@ impl RunModule {
         let kind = end_in_one_chunk(
             &mut transaction,
             &run,
-            None,
+            decided.cloned(),
             Vec::new(),
             takeover_claim_id.map(|claim_id| run_repository::Takeover {
                 claim_id,
@@ -323,12 +326,13 @@ impl RunModule {
         held: &crate::types::HeldRunId,
         claim_id: &str,
         takeover_claim_id: Option<&str>,
+        decided: Option<&RequestedTermination>,
     ) -> Result<(), Error> {
         let run_id = held.run_id();
         let mut backoff = crate::execution::Backoff::new(held, "interruption");
         loop {
             match self
-                .interrupt_owned_run(workspace_id, run_id, claim_id, takeover_claim_id)
+                .interrupt_owned_run(workspace_id, run_id, claim_id, takeover_claim_id, decided)
                 .await
             {
                 Err(fenced @ (Error::ClaimMismatch | Error::RunEnded)) => return Err(fenced),
@@ -342,7 +346,8 @@ impl RunModule {
 /// The one chunk that ends `run`, as read in `transaction`. `events`, from
 /// work the caller already ran in `transaction`, come first. The Run ends
 /// with the termination its row records, else the `cancellation` the
-/// writer applied, with its `cancellation.requested`, else timed out at
+/// writer applied (a Principal's, with its `cancellation.requested`, or a
+/// Run stream owner's decided end), else timed out at
 /// `now_unix_nanos` past its deadline (as every deadline path records), else
 /// interrupted then. Every nonterminal Invocation ends (`run_terminated`
 /// before its dispatch, `indeterminate` once dispatching, `run_terminated`

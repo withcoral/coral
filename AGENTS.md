@@ -140,7 +140,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   That owner has no worker lease, marks each chunk by its commit time,
   applies the stream's requests in number order, and rebuilds a chunk on a
   head that another writer moved under the claim, dropping the requests that
-  writer committed.
+  writer committed. At the Run's deadline, it commits what it applied, then
+  ends the Run and its open Invocations in one chunk, and only then sends
+  `Terminate`; no shutdown grace applies (#2904).
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of

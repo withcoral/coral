@@ -195,13 +195,20 @@ impl Reader {
             self.last = request.number;
             let number = request.number;
             if let Some(request::Kind::Finish(end)) = request.kind {
+                let deadline = end.completion
+                    == Some(finish::Completion::End(FinishEnd::DeadlineReached.into()));
                 let Some(completion) = completion(end, value_limits) else {
                     return self.violate();
                 };
                 self.link.finished.store(true, Ordering::SeqCst);
+                let message = if deadline {
+                    Message::DeadlineReached
+                } else {
+                    Message::ProgramEnded(completion)
+                };
                 self.owner.send(Message::Request {
                     number,
-                    message: Some(Box::new(Message::ProgramEnded(completion))),
+                    message: Some(Box::new(message)),
                 });
                 return Read::Finished;
             }

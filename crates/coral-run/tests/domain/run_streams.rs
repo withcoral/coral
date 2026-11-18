@@ -2,9 +2,10 @@
 //! `Loaded` rechecks authority and starts the Run, and the Program's
 //! requests commit in number order under the claim and the head.
 use super::*;
+use crate::approval::{ApprovalDecision, ApprovalState};
 use coral_run_executor::wire::v1::{
-    Emit, Finish, Loaded, Open, Request as WireRequest, RunEnd as WireEnd, RunRequest, RunResponse,
-    finish, request, run_request, run_response,
+    Emit, Finish, FinishEnd, Loaded, Open, Request as WireRequest, RunEnd as WireEnd, RunRequest,
+    RunResponse, TerminateReason, finish, request, run_request, run_response,
 };
 use coral_run_executor::{Closing, Credentials, Kind, LinkServer, PROTOCOL_LEVEL, ServedRunStream};
 use tokio::sync::mpsc;
@@ -408,4 +409,236 @@ async fn a_head_race_with_a_direct_write_lands_each_request_once() {
     );
     let run = fixture.run_record(&workspace_id, accepted.run_id()).await;
     assert_eq!(run.committed_request_number, Some(3));
+}
+
+fn invoke_forecast() -> request::Kind {
+    request::Kind::Invoke(coral_run_executor::wire::v1::Invoke {
+        call_path: "coral.providers.weather.getForecast".to_owned(),
+        arguments_json: "{}".to_owned(),
+        location: None,
+        parent: None,
+    })
+}
+
+/// Fires one of the stream Run owner's timers now, as its sleep would.
+fn fire(runs: &RunModule, run_id: &crate::RunId, timer: crate::owner::Timer) {
+    runs.owners
+        .get(run_id)
+        .expect("the stream's owner")
+        .send(crate::owner::Message::Timer(timer));
+}
+
+/// An accepted Run of `tool` taken and started on a scripted stream.
+async fn started(runs: &RunModule, tool: &ToolFixture) -> (crate::RunId, Scripted) {
+    let accepted = runs
+        .start(
+            &tool.principal,
+            &tool.workspace_id,
+            submission("await coral.providers.weather.getForecast({});"),
+        )
+        .await
+        .expect("accept a Run");
+    let claim = take(runs).await;
+    let mut stream = Scripted::open(runs, &accepted.run_id().to_string(), &claim);
+    stream.start().await;
+    (accepted.run_id().clone(), stream)
+}
+
+/// Catches: a deadline that terminates the Program before the end is
+/// written, leaves an Invocation open, or lets a dispatch result that lands
+/// afterwards record anything.
+#[tokio::test]
+async fn a_run_past_its_deadline_ends_timed_out_first_and_drops_a_late_dispatch_result() {
+    let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
+        200,
+        serde_json::json!({}),
+    )));
+    let fixture = TestModules::with_execution_adapters(
+        Arc::new(ImmediateEngine::default()),
+        upstream.clone(),
+        Arc::new(NoopInvocationObserver),
+        Arc::new(NoopExecutionObserver),
+    )
+    .await;
+    let runs = fixture
+        .runs
+        .clone()
+        .with_fan_out_limit(crate::FanOutLimit::new(1).expect("a limit"))
+        .with_run_streams();
+    let tool = fixture
+        .user_tool("user:deadline", "Past the deadline")
+        .await;
+    let (run_id, mut stream) = started(&runs, &tool).await;
+    // One Invocation dispatches and holds the one slot; the next waits.
+    stream.request(1, invoke_forecast());
+    wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
+    stream.request(2, invoke_forecast());
+    wait_until_async(async || {
+        fixture
+            .invocation_rows(&tool.workspace_id, &run_id)
+            .await
+            .len()
+            == 2
+    })
+    .await;
+
+    fire(&runs, &run_id, crate::owner::Timer::RunDeadline);
+    loop {
+        match stream.next().await {
+            run_response::Message::Terminate(terminate) => {
+                assert_eq!(terminate.reason(), TerminateReason::TimedOut);
+                let run = fixture.run_record(&tool.workspace_id, &run_id).await;
+                assert_eq!(run.state, RunState::TimedOut, "written before Terminate");
+                break;
+            }
+            run_response::Message::Ended(_) => panic!("Ended before Terminate"),
+            _ => {}
+        }
+    }
+    // The answer to the call refused at the deadline may still come.
+    let mut next = stream.next().await;
+    if let run_response::Message::InvocationResult(refused) = &next {
+        assert_eq!(refused.number, 2);
+        next = stream.next().await;
+    }
+    assert_eq!(next, ended(WireEnd::TimedOut));
+    let rows = fixture.invocation_rows(&tool.workspace_id, &run_id).await;
+    // The dispatching Invocation ends indeterminate, the waiting one
+    // run_terminated, in the terminal chunk itself.
+    assert_eq!(
+        rows.iter()
+            .map(|row| (
+                row.result_kind,
+                row.dispatch_started_at_unix_nanos.is_some()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (Some(crate::InvocationResultKind::Indeterminate), true),
+            (Some(crate::InvocationResultKind::RunTerminated), false),
+        ]
+    );
+    let events = fixture.events_after(&tool.workspace_id, &run_id, 0).await;
+
+    // Only the owner records a dispatch result: once it retired, the
+    // released dispatch's result has nowhere to land.
+    wait_until(|| runs.owners.get(&run_id).is_none()).await;
+    upstream.release();
+    wait_until(|| upstream.exited.load(Ordering::SeqCst)).await;
+    assert_eq!(
+        fixture.invocation_rows(&tool.workspace_id, &run_id).await,
+        rows,
+        "the late result is dropped"
+    );
+    assert_eq!(
+        fixture.events_after(&tool.workspace_id, &run_id, 0).await,
+        events
+    );
+}
+
+/// Catches: a `Finish` at the Run Executor's deadline recorded as anything
+/// but the owner's own deadline rule.
+#[tokio::test]
+async fn a_finish_at_the_deadline_times_out_once_corals_clock_passed_it() {
+    for (passed, end, state) in [
+        (true, WireEnd::TimedOut, RunState::TimedOut),
+        (false, WireEnd::Interrupted, RunState::Interrupted),
+    ] {
+        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let runs = fixture.runs.clone().with_run_streams();
+        let tool = fixture
+            .user_tool("user:finish", "Finish at the deadline")
+            .await;
+        let (run_id, mut stream) = started(&runs, &tool).await;
+        let run = fixture.run_record(&tool.workspace_id, &run_id).await;
+        let deadline = run
+            .deadline_at_unix_nanos
+            .expect("a started Run's deadline");
+        if passed {
+            fixture.clock.next.store(deadline, Ordering::SeqCst);
+        }
+
+        stream.request(
+            1,
+            request::Kind::Finish(Finish {
+                completion: Some(finish::Completion::End(FinishEnd::DeadlineReached.into())),
+            }),
+        );
+        assert_eq!(stream.next().await, ended(end), "{passed}");
+        let run = fixture.run_record(&tool.workspace_id, &run_id).await;
+        assert_eq!(run.state, state, "{passed}");
+        assert_eq!(
+            run.terminal_at_unix_nanos.expect("ended") >= deadline,
+            passed,
+            "dated at or after the deadline only when it passed"
+        );
+    }
+}
+
+/// Catches: an approval deadline the loop does not record, or one that
+/// overrides a decision committed before it.
+#[tokio::test]
+async fn an_approval_expires_in_the_loop_unless_a_decision_committed_first() {
+    for decided_first in [false, true] {
+        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let runs = fixture.runs.clone().with_run_streams();
+        let tool = fixture.user_tool("user:review", "Expire in the loop").await;
+        fixture.require_approval(&tool).await;
+        let approvals = fixture.approvals();
+        let (run_id, stream) = started(&runs, &tool).await;
+        stream.request(1, invoke_forecast());
+        let request =
+            wait_for_approval(&approvals, &tool.principal, &tool.workspace_id, &run_id).await;
+        if decided_first {
+            let decided = approvals
+                .decide(
+                    &tool.principal,
+                    &tool.workspace_id,
+                    &request.id,
+                    ApprovalDecision::Approve,
+                    None,
+                    &TraceId::parse(&"a".repeat(32)).unwrap(),
+                )
+                .await
+                .expect("decide first");
+            assert_eq!(decided.state, ApprovalState::Approved);
+        }
+
+        fire(
+            &runs,
+            &run_id,
+            crate::owner::Timer::Approval(request.id.clone()),
+        );
+        wait_until_async(async || {
+            fixture
+                .invocation_rows(&tool.workspace_id, &run_id)
+                .await
+                .iter()
+                .all(|row| row.ended_at_unix_nanos.is_some())
+        })
+        .await;
+        let settled = approvals
+            .get(&tool.principal, &tool.workspace_id, &request.id)
+            .await
+            .expect("read the request");
+        let rows = fixture.invocation_rows(&tool.workspace_id, &run_id).await;
+        if decided_first {
+            assert_eq!(settled.state, ApprovalState::Approved);
+            assert!(
+                matches!(rows.as_slice(), [row] if row.dispatch_started_at_unix_nanos.is_some()
+                    && row.failure_code.as_deref() != Some("approval_expired")),
+                "the approved call dispatched: {rows:?}"
+            );
+        } else {
+            assert_eq!(settled.state, ApprovalState::Expired);
+            assert_eq!(settled.approver, None);
+            assert_eq!(
+                settled.decided_at_unix_nanos,
+                Some(request.deadline_at_unix_nanos)
+            );
+            assert!(
+                matches!(rows.as_slice(), [row] if row.failure_code.as_deref() == Some("approval_expired")),
+                "{rows:?}"
+            );
+        }
+    }
 }
