@@ -1,4 +1,5 @@
 //! The Sub-agent's model, reached through an OpenAI-compatible Chat Completions endpoint.
+//! A conversation is kept in Coral's own block format and converted here on every call.
 
 use std::time::Duration;
 
@@ -6,7 +7,11 @@ use coral_credentials::Secret;
 use coral_outbound::{FetchError, OutboundUrlPolicyError};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tokio::time::Instant;
 use url::Url;
+
+use crate::prompt::ToolText;
 
 /// A model behind an OpenAI-compatible Chat Completions endpoint.
 pub(crate) struct ModelClient {
@@ -38,13 +43,19 @@ impl ModelClient {
         }
     }
 
-    /// Sends the conversation to the model and returns the text of its reply.
+    /// Sends `system`, the conversation and the tools the model may call, and returns its reply.
     /// # Errors
     /// Returns why the model gave no reply.
-    pub(crate) async fn reply(&self, conversation: &[Message]) -> Result<String, ModelError> {
+    pub(crate) async fn reply(
+        &self,
+        system: &str,
+        conversation: &[Message],
+        tools: &[ToolText],
+    ) -> Result<Reply, ModelError> {
         let request = CompletionRequest {
             model: &self.model,
-            messages: conversation,
+            messages: chat_messages(system, conversation),
+            tools: tools.iter().map(ChatTool::from).collect(),
         };
         let mut result = self.send(&request).await;
         for wait in self.retry_waits {
@@ -57,7 +68,8 @@ impl ModelClient {
         result
     }
 
-    async fn send(&self, request: &CompletionRequest<'_>) -> Result<String, ModelError> {
+    async fn send(&self, request: &CompletionRequest<'_>) -> Result<Reply, ModelError> {
+        let sent_at = Instant::now();
         let mut builder = self
             .http
             .post(&self.completions_url)
@@ -86,44 +98,131 @@ impl ModelClient {
                 OutboundUrlPolicyError::BodyTooLarge { .. } => ModelError::Misconfigured,
                 _ => ModelError::Unavailable,
             })?;
+        let latency = sent_at.elapsed();
         let completion: Completion =
             serde_json::from_slice(&body).map_err(|_error| ModelError::Misconfigured)?;
-        completion
-            .choices
-            .into_iter()
-            .next()
-            .map(|choice| choice.message.content.unwrap_or_default())
-            .ok_or(ModelError::Misconfigured)
+        let choice = completion.choices.into_iter().next();
+        let message = choice.ok_or(ModelError::Misconfigured)?.message;
+        Ok(Reply {
+            message: message.into(),
+            call: ModelCall {
+                model: completion.model.unwrap_or_else(|| self.model.clone()),
+                latency,
+                usage: completion.usage.map(Usage::from),
+            },
+        })
     }
 }
 
-/// Who wrote a message.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+/// One message of a conversation, in Coral's own block format.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Message {
+    pub(crate) role: Role,
+    pub(crate) content: Vec<Block>,
+}
+
+impl Message {
+    /// What the lead wrote.
+    pub(crate) fn user(text: String) -> Self {
+        Self {
+            role: Role::User,
+            content: vec![Block::Text { text }],
+        }
+    }
+
+    /// The results of the model's tool calls, in the order it made them.
+    pub(crate) fn tool_results(results: Vec<Block>) -> Self {
+        Self {
+            role: Role::User,
+            content: results,
+        }
+    }
+
+    /// The text of the message, without its tool calls.
+    pub(crate) fn text(&self) -> String {
+        let texts = self.content.iter().filter_map(|block| match block {
+            Block::Text { text } => Some(text.as_str()),
+            Block::ToolUse(_) | Block::ToolResult { .. } => None,
+        });
+        texts.collect()
+    }
+
+    /// The tool calls the model made in this message.
+    pub(crate) fn tool_calls(&self) -> impl Iterator<Item = &ToolCall> {
+        self.content.iter().filter_map(|block| match block {
+            Block::ToolUse(call) => Some(call),
+            Block::Text { .. } | Block::ToolResult { .. } => None,
+        })
+    }
+}
+
+/// Who wrote a message: the lead or a tool's result is the user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Role {
-    /// The instructions the model follows.
-    System,
-    /// The one the model answers.
     User,
-    /// The model.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "a Turn sends the model none of its own replies yet"
-        )
-    )]
     Assistant,
 }
 
-/// One message of a conversation with the model.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub(crate) struct Message {
-    /// Who wrote it.
-    pub(crate) role: Role,
-    /// What it says.
-    #[serde(rename = "content")]
-    pub(crate) text: String,
+/// One part of a message. It is stored as JSON under these names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum Block {
+    Text {
+        text: String,
+    },
+    ToolUse(ToolCall),
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+    },
+}
+
+/// A tool call that the model made.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ToolCall {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    /// The arguments as the model wrote them, which may not be JSON.
+    pub(crate) arguments: String,
+}
+
+impl ToolCall {
+    /// The block that answers this call with `content`.
+    pub(crate) fn result(&self, content: String) -> Block {
+        Block::ToolResult {
+            tool_use_id: self.id.clone(),
+            content,
+        }
+    }
+}
+
+/// The model's reply, and the record of the call that produced it.
+#[derive(Debug)]
+pub(crate) struct Reply {
+    pub(crate) message: Message,
+    pub(crate) call: ModelCall,
+}
+
+/// The record of one model call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModelCall {
+    /// The model that answered, as the server named it.
+    pub(crate) model: String,
+    pub(crate) latency: Duration,
+    /// `None` when the server reported no usage.
+    pub(crate) usage: Option<Usage>,
+}
+
+/// The tokens one model call used. Cached input is counted apart from `input_tokens`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "the names Coral's usage record keeps"
+)]
+pub(crate) struct Usage {
+    pub(crate) input_tokens: i64,
+    pub(crate) cache_read_input_tokens: i64,
+    pub(crate) output_tokens: i64,
 }
 
 /// Why the model gave no reply. The text never holds the server's answer, the key or the conversation.
@@ -153,12 +252,136 @@ const BODY_LIMIT: usize = 4 << 20;
 #[derive(Serialize)]
 struct CompletionRequest<'a> {
     model: &'a str,
-    messages: &'a [Message],
+    messages: Vec<ChatMessage<'a>>,
+    tools: Vec<ChatTool<'a>>,
+}
+
+/// The conversation as Chat Completions messages: a user's text as content parts, an assistant
+/// message with only tool calls as `null` content, and an empty assistant message left out.
+fn chat_messages<'a>(system: &'a str, conversation: &'a [Message]) -> Vec<ChatMessage<'a>> {
+    let mut messages = vec![ChatMessage::System { content: system }];
+    for message in conversation {
+        match message.role {
+            Role::User => {
+                let mut parts = Vec::new();
+                for block in &message.content {
+                    match block {
+                        Block::Text { text } => parts.push(TextPart { text }),
+                        Block::ToolResult {
+                            tool_use_id,
+                            content,
+                        } => messages.push(ChatMessage::Tool {
+                            tool_call_id: tool_use_id,
+                            content,
+                        }),
+                        Block::ToolUse(_) => {}
+                    }
+                }
+                if !parts.is_empty() {
+                    messages.push(ChatMessage::User { content: parts });
+                }
+            }
+            Role::Assistant => {
+                let text = message.text();
+                let tool_calls: Vec<_> = message.tool_calls().map(ChatToolCall::from).collect();
+                if !text.is_empty() || !tool_calls.is_empty() {
+                    let content = (!text.is_empty()).then_some(text);
+                    messages.push(ChatMessage::Assistant {
+                        content,
+                        tool_calls,
+                    });
+                }
+            }
+        }
+    }
+    messages
+}
+
+#[derive(Serialize)]
+#[serde(tag = "role", rename_all = "lowercase")]
+enum ChatMessage<'a> {
+    System {
+        content: &'a str,
+    },
+    User {
+        content: Vec<TextPart<'a>>,
+    },
+    Assistant {
+        content: Option<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        tool_calls: Vec<ChatToolCall<&'a str>>,
+    },
+    Tool {
+        tool_call_id: &'a str,
+        content: &'a str,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename = "text")]
+struct TextPart<'a> {
+    text: &'a str,
+}
+
+/// A tool call as Chat Completions writes it: borrowed in a request, owned in a reply.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename = "function")]
+struct ChatToolCall<S> {
+    id: S,
+    function: FunctionCall<S>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct FunctionCall<S> {
+    name: S,
+    arguments: S,
+}
+
+impl<'a> From<&'a ToolCall> for ChatToolCall<&'a str> {
+    fn from(call: &'a ToolCall) -> Self {
+        Self {
+            id: &call.id,
+            function: FunctionCall {
+                name: &call.name,
+                arguments: &call.arguments,
+            },
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type", rename = "function")]
+struct ChatTool<'a> {
+    function: FunctionDeclaration<'a>,
+}
+
+#[derive(Serialize)]
+struct FunctionDeclaration<'a> {
+    name: &'a str,
+    description: &'a str,
+    parameters: Value,
+    strict: bool,
+}
+
+impl<'a> From<&'a ToolText> for ChatTool<'a> {
+    fn from(tool: &'a ToolText) -> Self {
+        Self {
+            function: FunctionDeclaration {
+                name: tool.name,
+                description: tool.description,
+                parameters: serde_json::from_str(tool.parameters)
+                    .expect("a tool's parameters are JSON, as the prompt's tests check"),
+                strict: false,
+            },
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct Completion {
+    model: Option<String>,
     choices: Vec<Choice>,
+    usage: Option<CompletionUsage>,
 }
 
 #[derive(Deserialize)]
@@ -170,6 +393,56 @@ struct Choice {
 struct ChoiceMessage {
     /// `null` when the model wrote no text.
     content: Option<String>,
+    /// Absent or `null` when the model called no tool.
+    tool_calls: Option<Vec<ChatToolCall<String>>>,
+}
+
+impl From<ChoiceMessage> for Message {
+    fn from(reply: ChoiceMessage) -> Self {
+        let text = reply.content.filter(|text| !text.is_empty());
+        let calls = reply
+            .tool_calls
+            .unwrap_or_default()
+            .into_iter()
+            .map(|call| {
+                Block::ToolUse(ToolCall {
+                    id: call.id,
+                    name: call.function.name,
+                    arguments: call.function.arguments,
+                })
+            });
+        let text = text.map(|text| Block::Text { text });
+        Self {
+            role: Role::Assistant,
+            content: text.into_iter().chain(calls).collect(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CompletionUsage {
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct PromptTokensDetails {
+    cached_tokens: Option<i64>,
+}
+
+impl From<CompletionUsage> for Usage {
+    fn from(usage: CompletionUsage) -> Self {
+        let cached = usage
+            .prompt_tokens_details
+            .and_then(|details| details.cached_tokens)
+            .unwrap_or_default();
+        Self {
+            input_tokens: usage.prompt_tokens.saturating_sub(cached),
+            cache_read_input_tokens: cached,
+            output_tokens: usage.completion_tokens,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -2,13 +2,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coral_app::{McpInterfaceDependencies, McpInterfaceFactory as _};
-use coral_db::{Database, SystemClock, UnixNanos};
+use coral_db::{Clock, Database, UnixNanos};
 use coral_mcp::{HumanInterfaceUrl, McpCaller, McpInterface, McpModules, ToolCallError};
 use coral_outbound::{DestinationPolicy, NetworkAccess};
 use coral_provider::ProviderModule;
 use coral_run::{CoralInstanceId, RunInbox, RunModule, RuntimeLimits};
 use coral_search::UniversalSearchModule;
-use coral_task::{TaskCommands, TaskIntent, TaskModule};
+use coral_task::{AttemptKind, TaskCommands, TaskId, TaskIntent, TaskModule};
 use coral_test_support::{
     EVENTUALLY, TEST_COMPILATION_TIMEOUT, TestDatabase, change, provision_user,
 };
@@ -17,11 +17,12 @@ use coral_workspace::{
     WorkspaceModule,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResponse, Tool};
+use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
 use serde_json::{Value, json};
-use wiremock::matchers::{any, body_json, method, path};
+use wiremock::matchers::{any, body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use crate::model::ModelClient;
+use crate::model::{Block, Message, ModelClient, Role, ToolCall};
 use crate::sub_agents::{Error, SubAgents, TurnState};
 use crate::{MODEL_CALL_TIMEOUT, SubAgentFactory, repository};
 
@@ -29,6 +30,16 @@ const POLICY: DestinationPolicy =
     DestinationPolicy::new(NetworkAccess::HttpAndHttps, NetworkAccess::Deny);
 const MODEL: &str = "sailfish-1";
 const MESSAGE: &str = "How many invoices are open?";
+
+/// The clock of every Sub-agent here: noon on 18 November 2026, UTC.
+#[derive(Debug)]
+struct Noon;
+
+impl Clock for Noon {
+    fn now(&self) -> UnixNanos {
+        UnixNanos::new(1_795_003_200_000_000_000)
+    }
+}
 
 /// A lead in a Workspace of its own, over the real modules, and the HTTP
 /// stub that stands in for the model.
@@ -84,7 +95,7 @@ impl Lead {
             modules: self.modules.clone(),
             outbound_policy: POLICY,
             env: Arc::new(|name: &str| Ok((name == "MODEL_KEY").then(|| "key".to_owned()))),
-            clock: Arc::new(SystemClock),
+            clock: Arc::new(Noon),
             stopping: tokio::sync::watch::channel(false).1,
         }
     }
@@ -106,8 +117,56 @@ impl Lead {
         let http = coral_outbound::Client::new(POLICY, MODEL_CALL_TIMEOUT).unwrap();
         let base_url = self.base_url().parse().unwrap();
         let model = ModelClient::new(http, &base_url, MODEL.to_owned(), None);
-        let tasks = self.modules.tasks.clone();
-        SubAgents::new(self.database.clone(), tasks, model, Arc::new(SystemClock))
+        let modules = self.modules.clone();
+        let (tasks, commands, runs) = (modules.tasks, modules.commands, modules.runs);
+        SubAgents::new(
+            self.database.clone(),
+            tasks,
+            commands,
+            runs,
+            model,
+            Arc::new(Noon),
+        )
+    }
+
+    /// A new Task of the lead's.
+    async fn task(&self) -> TaskId {
+        let goal = TaskIntent::parse("Count the invoices").unwrap();
+        let tasks = &self.modules.tasks;
+        let started = tasks.start(&self.actor, &self.workspace_id, goal, UnixNanos::new(2));
+        started.await.unwrap().id().clone()
+    }
+
+    /// Starts a Sub-agent in `task_id` and returns its `sub_agent_id` and
+    /// how its Turn stands once it ends or 30 seconds pass.
+    async fn turn(&self, tools: &dyn McpInterface, task_id: &TaskId) -> (String, Value) {
+        let caller = self.caller();
+        let agent = json!({"task_id": task_id.as_str(), "message": MESSAGE});
+        let started = result(call(tools, &caller, "agent", agent).await);
+        let sub_agent_id = started
+            .get("sub_agent_id")
+            .and_then(Value::as_str)
+            .unwrap()
+            .to_owned();
+        let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
+        let waited = result(call(tools, &caller, "wait", wait).await);
+        (sub_agent_id, waited)
+    }
+
+    async fn thread(&self, sub_agent_id: &str) -> Vec<Message> {
+        let thread = repository::thread(&*self.database, &self.workspace_id, sub_agent_id);
+        thread.await.unwrap()
+    }
+
+    /// The model and output tokens recorded beside each message of the thread.
+    async fn model_calls(&self, sub_agent_id: &str) -> Vec<(Option<String>, Option<i64>)> {
+        let statement = Query::select()
+            .columns([Alias::new("model"), Alias::new("output_tokens")])
+            .from(Alias::new("sub_agent_thread_messages"))
+            .and_where(Expr::col(Alias::new("sub_agent_id")).eq(sub_agent_id))
+            .order_by(Alias::new("position"), Order::Asc)
+            .to_owned();
+        self.database.fetch_all(statement).await.unwrap()
     }
 
     fn caller(&self) -> McpCaller {
@@ -141,9 +200,35 @@ async fn workspace(
 
 /// The model server's answer whose reply is `text`.
 fn reply(text: &str) -> ResponseTemplate {
+    completion(&json!({"role": "assistant", "content": text}))
+}
+
+/// The model server's answer whose reply makes each tool call.
+fn tool_calls(calls: &[ToolCall]) -> ResponseTemplate {
+    let calls: Vec<Value> = calls
+        .iter()
+        .map(|call| {
+            let function = json!({"name": call.name, "arguments": call.arguments});
+            json!({"id": call.id, "type": "function", "function": function})
+        })
+        .collect();
+    completion(&json!({"role": "assistant", "content": null, "tool_calls": calls}))
+}
+
+fn completion(message: &Value) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(json!({
-        "choices": [{"message": {"role": "assistant", "content": text}}],
+        "model": MODEL,
+        "choices": [{"message": message}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2},
     }))
+}
+
+fn tool_call(id: &str, name: &str, arguments: &Value) -> ToolCall {
+    ToolCall {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        arguments: arguments.to_string(),
+    }
 }
 
 /// A reply that the stub holds back past the end of the test.
@@ -270,45 +355,133 @@ async fn a_lead_is_served_agent_beside_cores_tools() {
     }
 }
 
-// Catches: an answer that is not the model's reply to the system prompt and
-// the lead's message, and a Turn that hides why the model gave no reply.
+// Catches: a Turn that hides why the model gave no reply, one that completes
+// with an empty answer, and one that never stops calling the model.
 #[tokio::test]
-async fn a_turn_ends_with_the_models_reply_or_the_reason_it_gave_none() {
+async fn a_turn_without_an_answer_says_why() {
     let lead = Lead::new().await;
-    let (tools, caller) = (lead.tools(), lead.caller());
-    let conversation = json!({
-        "model": MODEL,
-        "messages": [
-            {"role": "system", "content": "You are a Sub-agent that Coral runs for another agent, your lead. The lead sent you one message. Answer it in one reply. You have no tools, so say what you cannot know instead of guessing."},
-            {"role": "user", "content": MESSAGE},
-        ],
-    });
+    let (tools, task_id) = (lead.tools(), lead.task().await);
     let refused = "the model server refused the request with status 400 Bad Request";
-    for (answer, state, text) in [
-        (reply("Twelve."), "completed", ("answer", "Twelve.")),
-        (
-            ResponseTemplate::new(400).set_body_string("the server's own detail"),
-            "failed",
-            ("failure", refused),
-        ),
+    let no_answer = "the model gave no answer: send the message again";
+    let too_many =
+        "the Sub-agent made 60 model calls without an answer: send it a narrower message";
+    let again = tool_calls(&[tool_call("call_1", "nothing", &json!({}))]);
+    for (answer, failure, model_calls) in [
+        (ResponseTemplate::new(400), refused, 1),
+        (reply(""), no_answer, 1),
+        (again, too_many, 60),
     ] {
-        Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(body_json(&conversation))
-            .respond_with(answer)
-            .mount(&lead.model)
-            .await;
-        let agent = json!({"goal": "Count the invoices", "message": MESSAGE});
-        let started = result(call(&*tools, &caller, "agent", agent).await);
+        lead.model_answers(answer).await;
 
-        let sub_agent_id = started.get("sub_agent_id").unwrap();
-        let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
-        let waited = result(call(&*tools, &caller, "wait", wait).await);
+        let (sub_agent_id, waited) = lead.turn(&*tools, &task_id).await;
 
-        let ended = json!({"sub_agent_id": sub_agent_id, "state": state, text.0: text.1});
-        assert_eq!(waited, ended);
+        let failed = json!({"sub_agent_id": sub_agent_id, "state": "failed", "failure": failure});
+        assert_eq!(waited, failed);
+        let requests = lead.model.received_requests().await.unwrap();
+        assert_eq!(requests.len(), model_calls);
         lead.model.reset().await;
     }
+}
+
+// Catches: a Run that the Sub-agent starts outside the lead's Task, an
+// answer read before the Run's result reached the model, and a thread that
+// loses, repeats or reorders a message or a model call's record.
+#[tokio::test]
+async fn a_turn_runs_a_program_in_the_leads_task_and_answers_from_it() {
+    let lead = Lead::new().await;
+    let (tools, task_id) = (lead.tools(), lead.task().await);
+    let program = "return ['pelican', 'heron'].join(' and ').toUpperCase();";
+    let arguments =
+        json!({"task_id": task_id.as_str(), "intent": "Read the birds", "program": program});
+    let exec = tool_call("call_1", "exec", &arguments);
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_string_contains("PELICAN AND HERON"))
+        .respond_with(reply("Pelican and heron."))
+        .mount(&lead.model)
+        .await;
+    lead.model_answers(tool_calls(std::slice::from_ref(&exec)))
+        .await;
+
+    let (sub_agent_id, waited) = lead.turn(&*tools, &task_id).await;
+
+    let answer = "Pelican and heron.";
+    let completed = json!({"sub_agent_id": sub_agent_id, "state": "completed", "answer": answer});
+    assert_eq!(waited, completed);
+    let tasks = &lead.modules.tasks;
+    let attempts = tasks.interactions(&lead.actor, &lead.workspace_id, &task_id, None, 10);
+    let attempts = attempts.await.unwrap();
+    let runs: Vec<_> = attempts
+        .iter()
+        .map(|attempt| (attempt.kind, attempt.run.is_some()))
+        .collect();
+    assert_eq!(runs, [(AttemptKind::Submit, true)]);
+    let thread = lead.thread(&sub_agent_id).await;
+    let result = match thread.get(2).map(|results| results.content.as_slice()) {
+        Some([Block::ToolResult { content, .. }]) => content.clone(),
+        _ => panic!("the third message is the result of exec: {thread:?}"),
+    };
+    let brief = format!(
+        "task_id: {}\ndate: 2026-11-18\n\n{MESSAGE}",
+        task_id.as_str()
+    );
+    let assistant = |content| Message {
+        role: Role::Assistant,
+        content,
+    };
+    let text = Block::Text {
+        text: answer.to_owned(),
+    };
+    assert_eq!(
+        thread,
+        [
+            Message::user(brief),
+            assistant(vec![Block::ToolUse(exec.clone())]),
+            Message::tool_results(vec![exec.result(result)]),
+            assistant(vec![text]),
+        ]
+    );
+    let model = Some(MODEL.to_owned());
+    let records = [
+        (None, None),
+        (model.clone(), Some(2)),
+        (None, None),
+        (model, Some(2)),
+    ];
+    assert_eq!(lead.model_calls(&sub_agent_id).await, records);
+}
+
+// Catches: tool calls of one reply that run one after another. If they did,
+// `wait` would hold the Turn for 30 seconds before `cancel` ended its Run.
+#[tokio::test]
+async fn the_tool_calls_of_one_reply_run_at_the_same_time() {
+    let lead = Lead::new().await;
+    let (tools, task_id) = (lead.tools(), lead.task().await);
+    let endless = json!({"task_id": task_id.as_str(), "intent": "Loop", "program": "while (true) {}", "wait_ms": 0});
+    let started = result(call(&*tools, &lead.caller(), "exec", endless).await);
+    let run_id = started.get("run_id").unwrap();
+    let wait = tool_call(
+        "call_1",
+        "wait",
+        &json!({"run_id": run_id, "wait_ms": 30_000}),
+    );
+    let cancel = tool_call("call_2", "cancel", &json!({"run_id": run_id}));
+    Mock::given(any())
+        .respond_with(tool_calls(&[wait, cancel]))
+        .up_to_n_times(1)
+        .mount(&lead.model)
+        .await;
+    lead.model_answers(reply("Stopped.")).await;
+
+    let (sub_agent_id, waited) = lead.turn(&*tools, &task_id).await;
+
+    assert_eq!(waited.get("state"), Some(&json!("completed")), "{waited}");
+    let thread = lead.thread(&sub_agent_id).await;
+    let waited = match thread.get(2).map(|results| results.content.as_slice()) {
+        Some([Block::ToolResult { content, .. }, _]) => content.clone(),
+        _ => panic!("the third message holds both results: {thread:?}"),
+    };
+    assert!(waited.contains("canceled"), "{waited}");
 }
 
 // Catches: a Sub-agent that works outside the lead's Task, and a call that

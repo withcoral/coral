@@ -3,7 +3,9 @@
 //! tool, `agent`, while the config file has a `[sub_agent]` section.
 
 mod model;
+mod prompt;
 mod repository;
+mod run_tools;
 mod sub_agents;
 mod tools;
 
@@ -41,10 +43,13 @@ impl McpInterfaceFactory for SubAgentFactory {
         let section: Section = StoreSettings::new(section.clone()).decode()?;
         let model = section.model_client(&dependencies)?;
         let core = dependencies.modules.core_interface();
-        let tasks = dependencies.modules.tasks;
+        let modules = dependencies.modules;
+        let tasks = modules.tasks;
         let sub_agents = SubAgents::new(
             dependencies.database,
             tasks.clone(),
+            modules.commands,
+            modules.runs,
             model,
             dependencies.clock,
         );

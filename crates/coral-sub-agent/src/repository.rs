@@ -1,13 +1,15 @@
-//! The rows of Sub-agents and their Turns. Every statement matches the
-//! Workspace, and a read by `sub_agent_id` matches the caller too.
+//! The rows of Sub-agents, their Turns and their threads. Every statement
+//! matches the Workspace, and a read that a caller asks for matches the
+//! caller too.
 
 use coral_db::{Database, QueryExecutor, Transaction, UnixNanos};
 use coral_task::TaskId;
 use coral_workspace::{Principal, WorkspaceId};
-use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
+use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Order, Query};
 use sqlx::FromRow;
 
-use crate::sub_agents::{Error, Turn, TurnState};
+use crate::model::{Message, ModelCall, Role};
+use crate::sub_agents::{Error, RunningTurn, Turn, TurnState};
 
 #[derive(Iden)]
 enum SubAgentRecords {
@@ -29,6 +31,22 @@ enum SubAgentTurns {
     Answer,
     Failure,
     LeaseExpiresAtUnixNanos,
+}
+
+#[derive(Iden)]
+enum SubAgentThreadMessages {
+    Table,
+    WorkspaceId,
+    SubAgentId,
+    Position,
+    TurnId,
+    Role,
+    ContentJson,
+    Model,
+    LatencyMs,
+    InputTokens,
+    CacheReadInputTokens,
+    OutputTokens,
 }
 
 const RUNNING: &str = "running";
@@ -173,6 +191,96 @@ pub(crate) async fn renew_lease(
         .and_where(Expr::col(SubAgentTurns::State).eq(RUNNING))
         .to_owned();
     Ok(database.execute(statement).await? == 1)
+}
+
+/// Adds `message` at `position` in the Sub-agent's thread, marked with its
+/// Turn and the record of the model call that produced it, if one did.
+pub(crate) async fn insert_message(
+    transaction: &mut Transaction<'_>,
+    turn: &RunningTurn,
+    position: i64,
+    message: &Message,
+    call: Option<&ModelCall>,
+) -> Result<(), coral_db::Error> {
+    let usage = call.and_then(|call| call.usage);
+    let latency_ms = call.map(|call| i64::try_from(call.latency.as_millis()).unwrap_or(i64::MAX));
+    let statement = Query::insert()
+        .into_table(SubAgentThreadMessages::Table)
+        .columns([
+            SubAgentThreadMessages::WorkspaceId,
+            SubAgentThreadMessages::SubAgentId,
+            SubAgentThreadMessages::Position,
+            SubAgentThreadMessages::TurnId,
+            SubAgentThreadMessages::Role,
+            SubAgentThreadMessages::ContentJson,
+            SubAgentThreadMessages::Model,
+            SubAgentThreadMessages::LatencyMs,
+            SubAgentThreadMessages::InputTokens,
+            SubAgentThreadMessages::CacheReadInputTokens,
+            SubAgentThreadMessages::OutputTokens,
+        ])
+        .values_panic([
+            Expr::val(turn.caller.workspace_id.to_string()),
+            Expr::val(turn.sub_agent_id.as_str()),
+            Expr::val(position),
+            Expr::val(turn.id.as_str()),
+            Expr::val(stored_role(message.role)),
+            Expr::val(serde_json::json!(message.content).to_string()),
+            Expr::val(call.map(|call| call.model.as_str())),
+            Expr::val(latency_ms),
+            Expr::val(usage.map(|usage| usage.input_tokens)),
+            Expr::val(usage.map(|usage| usage.cache_read_input_tokens)),
+            Expr::val(usage.map(|usage| usage.output_tokens)),
+        ])
+        .to_owned();
+    transaction.execute_change(statement).await?;
+    Ok(())
+}
+
+/// The Sub-agent's thread, in order.
+pub(crate) async fn thread(
+    executor: impl QueryExecutor,
+    workspace_id: &WorkspaceId,
+    sub_agent_id: &str,
+) -> Result<Vec<Message>, Error> {
+    let statement = Query::select()
+        .columns([
+            SubAgentThreadMessages::Role,
+            SubAgentThreadMessages::ContentJson,
+        ])
+        .from(SubAgentThreadMessages::Table)
+        .and_where(Expr::col(SubAgentThreadMessages::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SubAgentThreadMessages::SubAgentId).eq(sub_agent_id))
+        .order_by(SubAgentThreadMessages::Position, Order::Asc)
+        .to_owned();
+    let rows: Vec<MessageRow> = executor.fetch_all(statement).await?;
+    rows.into_iter().map(MessageRow::decode).collect()
+}
+
+#[derive(FromRow)]
+struct MessageRow {
+    role: String,
+    content_json: String,
+}
+
+impl MessageRow {
+    fn decode(self) -> Result<Message, Error> {
+        let role = match self.role.as_str() {
+            "user" => Role::User,
+            "assistant" => Role::Assistant,
+            _ => return Err(Error::CorruptData),
+        };
+        let content =
+            serde_json::from_str(&self.content_json).map_err(|_error| Error::CorruptData)?;
+        Ok(Message { role, content })
+    }
+}
+
+const fn stored_role(role: Role) -> &'static str {
+    match role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+    }
 }
 
 #[derive(FromRow)]
