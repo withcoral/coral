@@ -24,8 +24,10 @@ const state = JSON.parse(readFileSync(process.env.POSTGRES_FIXTURE_STATE, 'utf8'
 const args = process.argv.slice(2)
 state.commands.push({ engine: basename(process.argv[1]), args })
 const save = () => writeFileSync(process.env.POSTGRES_FIXTURE_STATE, JSON.stringify(state))
-const fail = () => { save(); console.error('private-command-canary'); process.exit(1) }
+const fail = () => { save(); console.error(state.stderr ?? 'private-command-canary'); process.exit(1) }
 const operation = args[0] === 'exec' ? args[2] : args[0] === 'container' ? args[1] : args[0]
+// Model an engine that something outside this script killed.
+if (state.killed?.includes(operation)) { save(); process.kill(process.pid, 'SIGKILL') }
 if (state.fail?.includes(operation)) fail()
 const name = args[0] === 'exec' ? args[1] : args.at(-1)
 switch (operation) {
