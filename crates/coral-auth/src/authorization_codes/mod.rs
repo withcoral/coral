@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use coral_db::{Database, UnixNanos};
+use coral_db::{Database, Transaction, UnixNanos};
 use sha2::{Digest as _, Sha256};
 
 use crate::oauth_clients::AuthenticatedClient;
@@ -165,20 +165,46 @@ impl AuthorizationCodes {
         redemption: CodeRedemption<'_>,
         now: UnixNanos,
     ) -> Result<Option<AuthorizationGrant>, AuthorizationCodeError> {
+        let Some((tx, grant)) = self.spend(code, redemption, now).await? else {
+            return Ok(None);
+        };
+        tx.commit().await.map_err(unavailable)?;
+        Ok(Some(grant))
+    }
+
+    /// Spends `code` at host time `now` in a write transaction, and returns
+    /// that transaction with the code's grant for the caller to finish.
+    ///
+    /// The code is spent when the caller commits and stays redeemable when
+    /// it rolls back, so a caller that issues tokens in the transaction
+    /// spends the code exactly when it issued them. Returns `None`, with no
+    /// transaction, for every code [`Self::redeem`] does not spend.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::redeem`]; either error leaves the code unspent.
+    pub(crate) async fn spend(
+        &self,
+        code: &str,
+        redemption: CodeRedemption<'_>,
+        now: UnixNanos,
+    ) -> Result<Option<(Transaction<'_>, AuthorizationGrant)>, AuthorizationCodeError> {
         let Ok(code_digest) = digest(code) else {
             return Ok(None);
         };
         // Anyone can present a code, and on SQLite every writer queues behind
         // `BEGIN`. Only a code that can be spent opens a write transaction, so
         // guessed codes never hold the writer that sign-ins need. The update
-        // below still decides single use if two redemptions pass this read.
+        // below still decides single use if two redemptions pass this read:
+        // the second waits for the first's transaction, and spends the code
+        // only if that one rolled back.
         if !repository::is_spendable(&self.database, &code_digest, redemption, now).await? {
             return Ok(None);
         }
         let mut tx = self.database.begin().await.map_err(unavailable)?;
-        let grant = repository::spend(&mut tx, &code_digest, redemption, now).await?;
-        tx.commit().await.map_err(unavailable)?;
-        Ok(grant)
+        Ok(repository::spend(&mut tx, &code_digest, redemption, now)
+            .await?
+            .map(|grant| (tx, grant)))
     }
 }
 
