@@ -4,7 +4,13 @@ import test from 'node:test'
 import { check } from './migration-compatibility.mjs'
 
 const file = '0010_runs.sql'
-const problems = (sql) => check(file, sql, [1, 2, 3]).join('\n')
+// Steps 1 and 2 came with v1.0.0, and step 3 with v1.1.0. v1.2.0 added none.
+const released = new Map([
+  [1, 'v1.0.0'],
+  [2, 'v1.0.0'],
+  [3, 'v1.1.0'],
+])
+const problems = (sql) => check(file, sql, released).join('\n')
 
 // What each statement does to a Coral release that runs while it is applied.
 const breaking = {
@@ -129,8 +135,8 @@ const compatible = {
   'a dropped index, function and type that it declares compatible':
     '-- rolling-upgrade: compatible. No query names the index in ON CONFLICT or calls the function.\n' +
     'DROP INDEX workspaces_name;\nDROP FUNCTION lexemes(tsvector);\nDROP TYPE workspace_kind;\n',
-  'a removal that names a released step, the one that stopped using it':
-    '-- rolling-upgrade: unused since step 0003. No query names the column.\nALTER TABLE workspaces DROP COLUMN name;\n',
+  'a removal that names a released step, the one that stopped using it, and its first release':
+    '-- rolling-upgrade: unused since step 0003, in v1.1.0. No query names the column.\nALTER TABLE workspaces DROP COLUMN name;\n',
 }
 
 for (const [name, sql] of Object.entries(compatible)) {
@@ -142,11 +148,33 @@ for (const [name, sql] of Object.entries(compatible)) {
 const drop = 'ALTER TABLE workspaces DROP COLUMN name;\n'
 const declarations = {
   'names a step that no release has': [
-    `-- rolling-upgrade: unused since step 0004. No query names the column.\n${drop}`,
+    `-- rolling-upgrade: unused since step 0004, in v1.2.0. No query names the column.\n${drop}`,
     /names step 0004, which no release has \(the newest release ends at step 0003\)/,
   ],
   // A release is a build, not a step: Coral orders Corals by their steps.
-  'names a release': [`-- rolling-upgrade: unused since v1.0.0. No query names the column.\n${drop}`, /must read/],
+  'names a release and no step': [`-- rolling-upgrade: unused since v1.0.0. No query names the column.\n${drop}`, /must read/],
+  // Coral tells the operator the release, so the check tells the author which one it is.
+  'names a step and no release': [
+    `-- rolling-upgrade: unused since step 0003. No query names the column.\n${drop}`,
+    /must name v1\.1\.0, the first release that has step 0003\. Write `unused since step 0003, in v1\.1\.0\. </,
+  ],
+  'names a later release that has the step': [
+    `-- rolling-upgrade: unused since step 0003, in v1.2.0. No query names the column.\n${drop}`,
+    /names v1\.2\.0 for step 0003, but v1\.1\.0 is the first release that has step 0003/,
+  ],
+  'names a release from before the step': [
+    `-- rolling-upgrade: unused since step 0003, in v1.0.0. No query names the column.\n${drop}`,
+    /names v1\.0\.0 for step 0003, but v1\.1\.0 is the first release/,
+  ],
+  'names the release and gives no reason': [
+    `-- rolling-upgrade: unused since step 0003, in v1.1.0.\n${drop}`,
+    /must say what stopped using it/,
+  ],
+  // Coral reads every line that starts with `--`, so it would act on this one.
+  'sits inside a block comment': [
+    '/*\n-- rolling-upgrade: unused since step 0003, in v9.9.9. A note.\n*/\nCREATE TABLE runs (id TEXT PRIMARY KEY);\n',
+    /names a step inside a block comment or a string/,
+  ],
   'gives no reason': [`-- rolling-upgrade: compatible.\n${drop}`, /must read/],
   'has an unknown form': [`-- rolling-upgrade: safe. Nobody reads it.\n${drop}`, /must read/],
   'is repeated': [`-- rolling-upgrade: compatible. One.\n-- rolling-upgrade: compatible. Two.\n${drop}`, /more than once/],
@@ -178,7 +206,10 @@ const declarations = {
     /cannot be `compatible`/,
   ],
   // Coral reads a declaration only from a comment that has its own line.
-  'trails a statement': [`${drop.trimEnd()} -- rolling-upgrade: unused since step 0003. No query names it.\n`, /can break an older Coral/],
+  'trails a statement': [
+    `${drop.trimEnd()} -- rolling-upgrade: unused since step 0003, in v1.1.0. No query names it.\n`,
+    /can break an older Coral/,
+  ],
   'has nothing to declare': [
     '-- rolling-upgrade: compatible. Adds a table.\nCREATE TABLE runs (id TEXT PRIMARY KEY);\n',
     /remove it/,
@@ -192,6 +223,7 @@ for (const [name, [sql, problem]] of Object.entries(declarations)) {
 }
 
 test('a removal waits when the checkout builds on no release', () => {
-  const found = check(file, `-- rolling-upgrade: unused since step 0003. No query names the column.\n${drop}`, []).join('\n')
+  const sql = `-- rolling-upgrade: unused since step 0003, in v1.1.0. No query names the column.\n${drop}`
+  const found = check(file, sql, new Map()).join('\n')
   assert.match(found, /names step 0003, which no release has \(this checkout builds on no release\)/)
 })

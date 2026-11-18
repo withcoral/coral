@@ -3,12 +3,12 @@
 // runs while a newer one migrates the database, during a rolling upgrade.
 // scripts/check-migrations.sh runs it on the migrations a checkout adds.
 //
-//   node scripts/migration-compatibility.mjs [--released "1 2 3"] <file>...
+//   node scripts/migration-compatibility.mjs [--released "1=v1.0.0 2=v1.1.0"] <file>...
 //
 // A migration whose statements are named declares, in a comment, why an older
 // Coral keeps working:
 //
-//   -- rolling-upgrade: unused since step 0081. <what stopped using it>
+//   -- rolling-upgrade: unused since step 0081, in v1.9.0. <what stopped using it>
 //   -- rolling-upgrade: compatible. <why no statement breaks an older Coral>
 //
 // The first form names an earlier step: the migration of the change that
@@ -19,7 +19,9 @@
 //
 // A release user upgrades from one release to the next. So the named step must
 // be in a release, which then has stopped using what is removed and does not
-// remove it yet. `--released` lists the steps of the newest release.
+// remove it yet. The form also names the first release that has the step:
+// Coral orders Corals by the step, and tells the operator the release.
+// `--released` lists each released step with that first release.
 //
 // One declaration covers the file. `compatible` does not cover a statement
 // that removes, renames or retypes a table or a column, or that drops a view
@@ -281,27 +283,39 @@ function breakingStatements(sql, quoted) {
   return found
 }
 
-// Why `declaration` does not stand for `breaking`, or nothing.
+const UNUSED = 'unused since step NNNN, in vX.Y.Z. <what stopped using it>'
+
+// Why `declaration` does not stand for `breaking`, or nothing. `released` maps
+// each step of the newest release to the first release that has it.
 function declarationProblem(declaration, released, breaking) {
-  const unused = /^unused since step (\d+)\.\s+\S/i.exec(declaration)
+  const unused = /^unused since step (\d+)/i.exec(declaration)
   if (unused) {
-    if (released.includes(Number(unused[1]))) return null
-    const newest =
-      released.length > 0
-        ? `the newest release ends at step ${String(Math.max(...released)).padStart(4, '0')}`
-        : 'this checkout builds on no release'
-    return (
-      `names step ${unused[1]}, which no release has (${newest}). A release user upgrades from one ` +
-      'release to the next, so this migration waits for a release that has the step'
-    )
+    const [, step] = unused
+    const first = released.get(Number(step))
+    if (first === undefined) {
+      const newest =
+        released.size > 0
+          ? `the newest release ends at step ${String(Math.max(...released.keys())).padStart(4, '0')}`
+          : 'this checkout builds on no release'
+      return (
+        `names step ${step}, which no release has (${newest}). A release user upgrades from one ` +
+        'release to the next, so this migration waits for a release that has the step'
+      )
+    }
+    // Coral reads this form, so the check accepts no other spelling of it.
+    const named = /^unused since step \d+, in (\S+)\.(\s+\S)?/i.exec(declaration)
+    const form = `Write \`unused since step ${step}, in ${first}. <what stopped using it>\``
+    if (named?.[1] === first) return named[2] ? null : `must say what stopped using it. ${form}`
+    const wrong = named ? `names ${named[1]} for step ${step}, but ${first} is` : `must name ${first},`
+    return `${wrong} the first release that has step ${step}. ${form}`
   }
   if (/^compatible\.\s+\S/i.test(declaration)) {
     return breaking.some(({ certain }) => certain)
       ? 'cannot be `compatible`: a statement below breaks every Coral that uses what it removes. ' +
-          'Declare `unused since step NNNN. <what stopped using it>` instead'
+          `Declare \`${UNUSED}\` instead`
       : null
   }
-  return 'must read `unused since step NNNN. <what stopped using it>` or `compatible. <why>`'
+  return `must read \`${UNUSED}\` or \`compatible. <why>\``
 }
 
 // The problems of one migration, as lines to print. Empty when it passes.
@@ -312,6 +326,15 @@ export function check(file, text, released) {
     const found = DECLARATION.exec(comment)
     return found ? [found[1].trim()] : []
   })
+  // Coral reads a named step from any line that starts with `--`, also where
+  // this check sees no comment: inside a block comment or a string.
+  const read = text.split('\n').filter((line) => /^\s*--\s*rolling-upgrade:\s*unused since\s/i.test(line))
+  if (read.length !== declarations.filter((declaration) => /^unused since\s/i.test(declaration)).length) {
+    return [
+      `${file} names a step inside a block comment or a string, where Coral reads it and this ` +
+        'check does not; move the rolling-upgrade line to a comment of its own',
+    ]
+  }
   if (declarations.length > 1) return [`${file} declares rolling-upgrade more than once; keep one declaration`]
   const [declaration] = declarations
   if (breaking.length === 0) {
@@ -336,9 +359,10 @@ const HELP = `an older Coral must keep working after a migration runs.
   To remove or tighten something, stagger it. First stop using it. Give that change a migration: if
   it has none, add a marker, a migration that holds only a comment. When a release has that step,
   add the removal, and declare in it:
-    -- rolling-upgrade: unused since step NNNN. <what stopped using it>
+    -- rolling-upgrade: ${UNUSED}
   Coral enforces that: on Postgres it applies the removal only where step NNNN is applied already,
   and no Coral whose plan lacks step NNNN starts afterwards. Name the first step for which it is true.
+  vX.Y.Z is the first release that has step NNNN. Coral tells the operator to start that release.
   If no statement named above breaks an older Coral, declare:
     -- rolling-upgrade: compatible. <why>
   That covers a constraint, a rewrite of rows, and a dropped index, function, trigger, type or
@@ -347,11 +371,22 @@ const HELP = `an older Coral must keep working after a migration runs.
   takes the dropped table's name, say that it keeps every column.
   A step with a postgres/ and a sqlite/ half declares in the postgres/ half.`
 
+// Reads `1=v1.0.0 2=v1.1.0`: each released step and the first release that has it.
+function releasedSteps(text) {
+  return new Map(
+    text
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((pair) => pair.split('='))
+      .map(([step, release]) => [Number(step), release]),
+  )
+}
+
 function main(args) {
-  let released = []
+  let released = new Map()
   let files = args
   if (args[0] === '--released') {
-    released = args[1].split(/\s+/).filter(Boolean).map(Number)
+    released = releasedSteps(args[1])
     files = args.slice(2)
   }
   const problems = files.flatMap((file) => check(file, readFileSync(file, 'utf8'), released))

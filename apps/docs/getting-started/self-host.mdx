@@ -98,7 +98,7 @@ To upgrade:
    - **Postgres.** Take a dump or a snapshot of the database. Keep the value of `CORAL_CREDENTIALS_KEY` with it.
 3. Start the new `coral` and `coral-web` images. Upgrade both to the same version.
 
-On Postgres, some upgrades cannot skip a version. If Coral does not start and says that the upgrade skips a version, start each version in between, in order. Then start the new one.
+On Postgres, some upgrades cannot skip a version. If Coral does not start and says that the upgrade skips a version, the message names the version to reach first. Upgrade one version at a time until that version has started. Then start the new one.
 
 To return to an earlier version, restore the backup and start that version. An earlier version can start on a database that a later version updated, or refuse to. Do not use it as a way back.
 

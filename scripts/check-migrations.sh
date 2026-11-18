@@ -114,21 +114,38 @@ fi
 # A release user upgrades from one release to the next, so that step must be
 # in a release: the release then no longer uses what is removed, and does not
 # remove it yet. A step that any release has, the newest release has.
-release="$(git tag --merged "$fork_point" --list 'v[1-9]*' --sort=-version:refname |
-  { grep -v -- '-' || true; } | head -1 || true)"
-released=""
-if [ -n "$release" ]; then
-  released="$(chain_versions "$release" | sort -un | tr '\n' ' ')"
-fi
+# The removal also names the first release that has the step, which Coral
+# tells the operator. So this lists each released step as `step=release`:
+# the first release whose shared chain has the step. A later release adds
+# steps above those of the release before it. Coral reads a release as
+# `vX.Y.Z`, so a tag of another shape, a pre-release among them, is none.
+released_steps() {
+  local highest=0 tag version
+  while IFS= read -r tag; do
+    for version in $(chain_versions "$tag" | sort -n); do
+      if [ "$version" -gt "$highest" ]; then
+        highest="$version"
+        printf '%s=%s ' "$version" "$tag"
+      fi
+    done
+  done < <(git tag --merged "$fork_point" --list 'v[1-9]*' --sort=version:refname |
+    { grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; })
+}
 compatibility=()
 while IFS= read -r file; do
   if [ -n "$file" ] && [[ "$file" != "$chain/sqlite/"* ]]; then
     compatibility+=("$file")
   fi
 done <<<"$added"
-if [ "${#compatibility[@]}" -gt 0 ] &&
-  ! node "$scripts/migration-compatibility.mjs" --released "$released" "${compatibility[@]}"; then
-  status=1
+if [ "${#compatibility[@]}" -gt 0 ]; then
+  # Only a removal's declaration reads the releases.
+  released=""
+  if grep -qiE 'rolling-upgrade:[[:space:]]*unused since' "${compatibility[@]}"; then
+    released="$(released_steps)"
+  fi
+  if ! node "$scripts/migration-compatibility.mjs" --released "$released" "${compatibility[@]}"; then
+    status=1
+  fi
 fi
 
 exit "$status"

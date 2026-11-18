@@ -483,11 +483,14 @@ const UPGRADE_STATE: &str = include_str!("../migrations/0076_coral_upgrade_state
 /// schema.
 const MARKER: &str = "-- Stops using fixture_first.\n";
 /// A step that removes what Corals without the marker use.
-const REMOVAL: &str = "-- rolling-upgrade: unused since step 0003. Nothing reads it.\n\
+const REMOVAL: &str = "-- rolling-upgrade: unused since step 0003, in v1.9.0. Nothing reads it.\n\
                        CREATE TABLE fixture_removal (id TEXT NOT NULL PRIMARY KEY);";
 /// A step that removes what no Coral here has used since the first step.
-const LATE_REMOVAL: &str = "-- rolling-upgrade: unused since step 1. Nothing reads it.\n\
+const LATE_REMOVAL: &str = "-- rolling-upgrade: unused since step 1, in v1.0.0. Nothing reads it.\n\
                             CREATE TABLE fixture_removal (id TEXT NOT NULL PRIMARY KEY);";
+/// A second removal of what no Coral here has used since the first step.
+const SECOND_REMOVAL: &str = "-- rolling-upgrade: unused since step 1, in v1.0.0. Nothing reads it.\n\
+                              CREATE TABLE fixture_second_removal (id TEXT NOT NULL PRIMARY KEY);";
 /// The steps of a Coral that still uses what the removal removes.
 const USING: &[FixtureStep] = &[
     (1, FIRST_STEP, FIRST_STEP),
@@ -505,6 +508,15 @@ const REMOVING: &[FixtureStep] = &[
     (2, UPGRADE_STATE, UPGRADE_STATE),
     (3, MARKER, MARKER),
     (4, REMOVAL, REMOVAL),
+];
+/// The steps of a Coral that holds both removals. The later one names the
+/// earlier step.
+const REMOVING_TWICE: &[FixtureStep] = &[
+    (1, FIRST_STEP, FIRST_STEP),
+    (2, UPGRADE_STATE, UPGRADE_STATE),
+    (3, MARKER, MARKER),
+    (4, REMOVAL, REMOVAL),
+    (5, SECOND_REMOVAL, SECOND_REMOVAL),
 ];
 /// The steps of a Coral that removes what stopped being used long ago.
 const REMOVING_LATE: &[FixtureStep] = &[
@@ -543,11 +555,16 @@ async fn applied_versions(database: &Database) -> Vec<(i64,)> {
 async fn start(database: &Database, steps: &[FixtureStep]) -> Start {
     match database.migrate(&fixture_plan(steps)).await {
         Ok(()) => Start::Started,
+        // Each refusal names the release that the removal names.
         Err(Error::SkippedStep {
             migration: 4,
             required: 3,
-        }) => Start::Skipped,
-        Err(Error::CoralTooOld { required: 3 }) => Start::TooOld,
+            release,
+        }) if release == "v1.9.0" => Start::Skipped,
+        Err(Error::CoralTooOld {
+            required: 3,
+            release,
+        }) if release == "v1.9.0" => Start::TooOld,
         Err(error) => panic!("{error:?}"),
     }
 }
@@ -565,7 +582,7 @@ async fn an_upgrade_that_skips_the_step_a_removal_names_is_refused_where_two_cor
     let skipped = if shared { Skipped } else { Started };
     let before_the_record = USING.split_at(1).0;
     // Each case is the Corals that start on one database, in order.
-    let cases: [(&str, Vec<CoralStart>); 5] = [
+    let cases: [(&str, Vec<CoralStart>); 6] = [
         (
             "an upgrade through the Coral that stopped using it",
             vec![
@@ -594,6 +611,15 @@ async fn an_upgrade_that_skips_the_step_a_removal_names_is_refused_where_two_cor
                 ("removing", REMOVING, Started),
                 // The run that created the record's table wrote the record.
                 ("using", USING, TooOld),
+            ],
+        ),
+        (
+            "two removals, where the later one names the earlier step",
+            vec![
+                ("removing twice", REMOVING_TWICE, Started),
+                // The record keeps the later step and its release.
+                ("using", USING, TooOld),
+                ("stopped", STOPPED, Started),
             ],
         ),
         (

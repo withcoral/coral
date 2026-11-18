@@ -138,7 +138,8 @@ test('a checkout whose migration can break an older release fails', async (t) =>
 test('a removal passes only when it names a step that a release has', async (t) => {
   const marker = 'crates/coral-db/migrations/0010_stop_using_workspace_names.sql'
   const removal = 'crates/coral-db/migrations/0011_runs.sql'
-  const declared = (step) => `-- rolling-upgrade: unused since step ${step}. No query names the column.\n${drop}`
+  const declared = (step, release = 'v1.1.0') =>
+    `-- rolling-upgrade: unused since step ${step}, in ${release}. No query names the column.\n${drop}`
   const repo = await repository(t, '1.0.0-beta.11')
   repo.git('switch', '--quiet', 'main')
   repo.git('tag', 'v1.0.0')
@@ -162,6 +163,20 @@ test('a removal passes only when it names a step that a release has', async (t) 
   repo.git('tag', 'v1.1.0', 'main')
   const accepted = repo.check()
   assert.equal(accepted.status, 0, accepted.stderr)
+
+  // Coral tells the operator the release that the removal names, so it is the
+  // first release that has the step: not a later one, and not one before it.
+  repo.git('tag', 'v1.2.0', 'main')
+  assert.equal(repo.check().status, 0)
+  for (const release of ['v1.2.0', 'v1.0.0']) {
+    await repo.write(removal, declared('0010', release))
+    const result = repo.check()
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, new RegExp(`names ${release} for step 0010, but v1\\.1\\.0 is the first release`))
+  }
+  // A step that the first release already had.
+  await repo.write(removal, declared('0009', 'v1.0.0'))
+  assert.equal(repo.check().status, 0)
 
   // The removal's own step, and a step that does not exist.
   for (const step of ['0011', '0099']) {

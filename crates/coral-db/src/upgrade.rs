@@ -3,8 +3,8 @@
 //!
 //! A rolling upgrade runs two Corals on one database. A migration that
 //! removes what older Corals use names, in its
-//! `-- rolling-upgrade: unused since step NNNN.` comment, an earlier step of
-//! the plan: the step of the change that stopped using it. Every Coral whose
+//! `-- rolling-upgrade: unused since step NNNN, in vX.Y.Z.` comment, an
+//! earlier step of the plan: the step of the change that stopped using it. Every Coral whose
 //! plan has that step has stopped, and a Coral applies its whole plan before
 //! it serves. So the ledger tells a migration run whether such a Coral has
 //! started on the database, and the run refuses an upgrade that skips it.
@@ -12,7 +12,9 @@
 //! so, and a Coral whose plan lacks that step refuses to start.
 //!
 //! Steps order every build of Coral, a release or not: two builds between
-//! two releases have one version and different plans.
+//! two releases have one version and different plans. The comment also names
+//! the first release that has the step. Coral decides nothing by it: a
+//! refusal names it, so that the operator knows which version to start.
 //!
 //! A Coral from before this guard reads no record. It needs none: it refuses
 //! every database that holds a step its plan lacks.
@@ -26,9 +28,20 @@ use sqlx::{PgConnection, SqliteConnection};
 
 use crate::Error;
 
-/// The step that `sql`'s `-- rolling-upgrade: unused since step NNNN.`
+/// The step of the change that stopped using what a migration removes, and
+/// the first release that has that step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RequiredStep {
+    /// The step's version.
+    pub step: i64,
+    /// The release, as its tag spells it: `v1.9.0`. A build of `main` between
+    /// two releases can have the step earlier.
+    pub release: String,
+}
+
+/// What `sql`'s `-- rolling-upgrade: unused since step NNNN, in vX.Y.Z.`
 /// comment names, if it has one.
-pub(crate) fn step_that_stopped_using(sql: &str) -> Option<i64> {
+pub(crate) fn step_that_stopped_using(sql: &str) -> Option<RequiredStep> {
     fn after<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
         let (head, tail) = text.split_at_checked(prefix.len())?;
         head.eq_ignore_ascii_case(prefix).then_some(tail)
@@ -40,11 +53,22 @@ pub(crate) fn step_that_stopped_using(sql: &str) -> Option<i64> {
         if !words.next()?.eq_ignore_ascii_case("step") {
             return None;
         }
-        let step = words.next()?.trim_end_matches('.');
-        // A sign is not part of a step's version.
-        step.bytes()
-            .all(|digit| digit.is_ascii_digit())
-            .then(|| step.parse().ok())?
+        let step = words.next()?.strip_suffix(',')?;
+        if !words.next()?.eq_ignore_ascii_case("in") {
+            return None;
+        }
+        let release = words.next()?.strip_suffix('.')?;
+        // A sign is not part of a step's version, or of a release's.
+        let number =
+            |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+        let numbers = release.strip_prefix('v')?;
+        if !number(step) || numbers.split('.').count() != 3 || !numbers.split('.').all(number) {
+            return None;
+        }
+        Some(RequiredStep {
+            step: step.parse().ok()?,
+            release: release.to_owned(),
+        })
     })
 }
 
@@ -54,10 +78,10 @@ pub(crate) struct UpgradeGuard<'plan> {
     pub plan: &'plan Migrator,
     /// The step that stopped using what a step removes, by the removing
     /// step's version.
-    pub requirements: &'plan [(i64, i64)],
+    pub requirements: &'plan [(i64, RequiredStep)],
     /// The step that the database requires of every Coral's plan, as it was
     /// before this run. `None` when no applied step names one.
-    pub required: Option<i64>,
+    pub required: Option<RequiredStep>,
     /// Whether another Coral can serve the database while this one migrates
     /// it. Coral runs one process on a `SQLite` database, and the state
     /// root's lock holds that for the database file each root keeps.
@@ -75,10 +99,13 @@ impl UpgradeGuard<'_> {
     /// Corals without the step it names use, and that step is not applied on
     /// a database that others may still be serving.
     pub(crate) fn admit(&self, applied: &[i64], pending: &[&Migration]) -> Result<(), Error> {
-        if let Some(required) = self.required
-            && !self.plan.version_exists(required)
+        if let Some(required) = &self.required
+            && !self.plan.version_exists(required.step)
         {
-            return Err(Error::CoralTooOld { required });
+            return Err(Error::CoralTooOld {
+                required: required.step,
+                release: required.release.clone(),
+            });
         }
         // Nothing older serves a new database, or one that only this Coral
         // can open.
@@ -87,11 +114,12 @@ impl UpgradeGuard<'_> {
         }
         for migration in pending {
             if let Some(required) = self.named_by(migration.version)
-                && !applied.contains(&required)
+                && !applied.contains(&required.step)
             {
                 return Err(Error::SkippedStep {
                     migration: migration.version,
-                    required,
+                    required: required.step,
+                    release: required.release.clone(),
                 });
             }
         }
@@ -99,29 +127,33 @@ impl UpgradeGuard<'_> {
     }
 
     /// The step that the removing step `version` names, if it names one.
-    fn named_by(&self, version: i64) -> Option<i64> {
+    fn named_by(&self, version: i64) -> Option<&RequiredStep> {
         self.requirements
             .iter()
             .find(|(removing, _)| *removing == version)
-            .map(|(_, step)| *step)
+            .map(|(_, required)| required)
     }
 
     /// The step to record before step `version` is applied: the one it
     /// names, unless the database already requires as much.
-    pub(crate) fn step_to_record(&self, version: i64) -> Option<i64> {
-        let step = self.named_by(version)?;
+    pub(crate) fn step_to_record(&self, version: i64) -> Option<&RequiredStep> {
+        let named = self.named_by(version)?;
         self.required
-            .is_none_or(|recorded| recorded < step)
-            .then_some(step)
+            .as_ref()
+            .is_none_or(|recorded| recorded.step < named.step)
+            .then_some(named)
     }
 }
 
-const READ: &str = "SELECT required_step FROM coral_upgrade_state WHERE id = 'current'";
+const READ: &str =
+    "SELECT required_step, required_release FROM coral_upgrade_state WHERE id = 'current'";
 
-/// Keeps the greater of the recorded step and the one given.
+/// Keeps the greater of the recorded step and the one given, with its release.
 const RECORD: &str = "\
-    INSERT INTO coral_upgrade_state (id, required_step) VALUES ('current', $1) \
-    ON CONFLICT (id) DO UPDATE SET required_step = excluded.required_step \
+    INSERT INTO coral_upgrade_state (id, required_step, required_release) \
+    VALUES ('current', $1, $2) \
+    ON CONFLICT (id) DO UPDATE SET required_step = excluded.required_step, \
+    required_release = excluded.required_release \
     WHERE coral_upgrade_state.required_step < excluded.required_step";
 
 /// The table comes from a migration, so a database that an earlier Coral
@@ -130,27 +162,34 @@ macro_rules! upgrade_state_queries {
     ($read:ident, $record:ident, $connection:ty, $table_exists:literal) => {
         /// Reads the step that the database requires. `None` when it has no
         /// table or no row yet.
-        pub(crate) async fn $read(connection: &mut $connection) -> Result<Option<i64>, Error> {
+        pub(crate) async fn $read(
+            connection: &mut $connection,
+        ) -> Result<Option<RequiredStep>, Error> {
             let table_exists: bool = sqlx::query_scalar($table_exists)
                 .fetch_one(&mut *connection)
                 .await?;
             if !table_exists {
                 return Ok(None);
             }
-            Ok(sqlx::query_scalar(READ)
+            let row: Option<(i64, String)> = sqlx::query_as(READ)
                 .fetch_optional(&mut *connection)
-                .await?)
+                .await?;
+            Ok(row.map(|(step, release)| RequiredStep { step, release }))
         }
 
-        /// Records that the database requires `step` of every Coral's plan.
-        /// Does nothing when the database has no table for it.
-        pub(crate) async fn $record(connection: &mut $connection, step: i64) -> Result<(), Error> {
+        /// Records that the database requires `required` of every Coral's
+        /// plan. Does nothing when the database has no table for it.
+        pub(crate) async fn $record(
+            connection: &mut $connection,
+            required: &RequiredStep,
+        ) -> Result<(), Error> {
             let table_exists: bool = sqlx::query_scalar($table_exists)
                 .fetch_one(&mut *connection)
                 .await?;
             if table_exists {
                 sqlx::query(RECORD)
-                    .bind(step)
+                    .bind(required.step)
+                    .bind(&required.release)
                     .execute(&mut *connection)
                     .await?;
             }
@@ -203,7 +242,7 @@ upgrade_state_queries!(
 mod tests {
     use sqlx::migrate::{Migration, MigrationType, Migrator};
 
-    use super::{UpgradeGuard, step_that_stopped_using};
+    use super::{RequiredStep, UpgradeGuard, step_that_stopped_using};
     use crate::Error;
 
     /// A ledger that holds the required step refuses a plan that lacks it
@@ -238,7 +277,10 @@ mod tests {
             let guard = UpgradeGuard {
                 plan: &plan,
                 requirements: &[],
-                required: Some(3),
+                required: Some(RequiredStep {
+                    step: 3,
+                    release: "v1.9.0".to_owned(),
+                }),
                 shared: true,
             };
 
@@ -248,7 +290,10 @@ mod tests {
                 admitted.unwrap_or_else(|error| panic!("{case}: {error}"));
             } else {
                 assert!(
-                    matches!(admitted, Err(Error::CoralTooOld { required: 3 })),
+                    matches!(
+                        &admitted,
+                        Err(Error::CoralTooOld { required: 3, release }) if release == "v1.9.0"
+                    ),
                     "{case}: {admitted:?}"
                 );
             }
@@ -257,14 +302,34 @@ mod tests {
 
     #[test]
     fn a_migration_names_the_step_that_stopped_using_what_it_removes() {
+        let named = |step, release: &str| {
+            Some(RequiredStep {
+                step,
+                release: release.to_owned(),
+            })
+        };
         for (sql, step) in [
             (
-                "-- Drops the column.\n-- rolling-upgrade: unused since step 0081. No query names it.\nALTER TABLE t DROP COLUMN c;",
-                Some(81),
+                "-- Drops the column.\n-- rolling-upgrade: unused since step 0081, in v1.9.0. No query names it.\nALTER TABLE t DROP COLUMN c;",
+                named(81, "v1.9.0"),
             ),
             (
-                "  --rolling-upgrade:   Unused Since Step 7. Gone.\nDROP TABLE t;",
-                Some(7),
+                "  --rolling-upgrade:   Unused Since Step 7, In v1.10.2. Gone.\nDROP TABLE t;",
+                named(7, "v1.10.2"),
+            ),
+            // The operator reads the release, so a step without one names
+            // nothing.
+            (
+                "-- rolling-upgrade: unused since step 0081. Gone.\nDROP TABLE t;",
+                None,
+            ),
+            (
+                "-- rolling-upgrade: unused since step 0081, in 1.9. Gone.\nDROP TABLE t;",
+                None,
+            ),
+            (
+                "-- rolling-upgrade: unused since step 0081, in v1.9.0-beta.1. Gone.\nDROP TABLE t;",
+                None,
             ),
             (
                 "-- rolling-upgrade: compatible. Widens the rule.\nALTER TABLE t DROP CONSTRAINT k;",
@@ -276,11 +341,11 @@ mod tests {
                 None,
             ),
             (
-                "-- rolling-upgrade: unused since step -3. Gone.\nDROP TABLE t;",
+                "-- rolling-upgrade: unused since step -3, in v1.9.0. Gone.\nDROP TABLE t;",
                 None,
             ),
             (
-                "-- rolling-upgrade: unused since step. Gone.\nDROP TABLE t;",
+                "-- rolling-upgrade: unused since step, in v1.9.0. Gone.\nDROP TABLE t;",
                 None,
             ),
             ("CREATE TABLE t (id TEXT);", None),

@@ -273,7 +273,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   already, so an upgrade cannot skip the build that stopped. On both
   databases, no Coral whose plan lacks the named step starts afterwards. The
   check accepts a named step only when a release has it, because a release
-  user upgrades from one release to the next.
+  user upgrades from one release to the next. The removal also names the
+  first release that has the step. Coral decides nothing by it: a refusal
+  tells the operator to start that release. The check prints the release to
+  write.
 - Keep schemas portable across SQLite and Postgres and fail on schema drift;
   do not use `IF NOT EXISTS` to hide unexpected state.
 - When a migration needs a database feature whose availability it cannot

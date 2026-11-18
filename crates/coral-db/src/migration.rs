@@ -5,7 +5,7 @@ use sqlx::migrate::{Migrate, MigrateError, Migration, Migrator};
 use sqlx::{Connection as _, SqliteConnection};
 
 use crate::backend::{DatabaseBackend, DatabaseSystem};
-use crate::upgrade::{self, UpgradeGuard};
+use crate::upgrade::{self, RequiredStep, UpgradeGuard};
 use crate::{Database, Error};
 
 /// Migrations both databases run.
@@ -41,9 +41,10 @@ pub fn migration_plan() -> &'static MigrationPlan {
 /// The migrations each database system runs.
 ///
 /// A step that removes what older Corals use names the step of the change
-/// that stopped using it, in a `-- rolling-upgrade: unused since step NNNN.`
-/// comment. A step with a half for each database names it in the Postgres
-/// half, which stands for both. A run of the plan refuses an upgrade that
+/// that stopped using it, and the first release that has that step, in a
+/// `-- rolling-upgrade: unused since step NNNN, in vX.Y.Z.` comment. A step
+/// with a half for each database names it in the Postgres half, which
+/// stands for both. A run of the plan refuses an upgrade that
 /// skips the named step, and records it so that no Coral whose plan lacks it
 /// starts afterwards.
 #[derive(Debug)]
@@ -52,7 +53,7 @@ pub struct MigrationPlan {
     sqlite: Migrator,
     /// The step that stopped using what a step removes, by the removing
     /// step's version.
-    requirements: Vec<(i64, i64)>,
+    requirements: Vec<(i64, RequiredStep)>,
 }
 
 impl MigrationPlan {
@@ -67,8 +68,8 @@ impl MigrationPlan {
         let requirements = postgres
             .iter()
             .filter_map(|migration| {
-                let step = upgrade::step_that_stopped_using(migration.sql.as_str())?;
-                Some((migration.version, step))
+                let required = upgrade::step_that_stopped_using(migration.sql.as_str())?;
+                Some((migration.version, required))
             })
             .collect();
         Self {
@@ -283,11 +284,11 @@ async fn apply_steps<C: Migrate>(
     pending: &[&Migration],
     report: MigrationReport<'_>,
     guard: &UpgradeGuard<'_>,
-    record: impl AsyncFn(&mut C, i64) -> Result<(), Error>,
+    record: impl AsyncFn(&mut C, &RequiredStep) -> Result<(), Error>,
 ) -> Result<(), Error> {
     for migration in pending {
-        if let Some(step) = guard.step_to_record(migration.version) {
-            record(connection, step).await?;
+        if let Some(required) = guard.step_to_record(migration.version) {
+            record(connection, required).await?;
         }
         report(MigrationProgress::Started {
             version: migration.version,
@@ -438,9 +439,8 @@ mod tests {
                 migration.version
             );
             assert!(
-                step.is_none_or(
-                    |step| step < migration.version && plan.postgres.version_exists(step)
-                ),
+                step.is_none_or(|named| named.step < migration.version
+                    && plan.postgres.version_exists(named.step)),
                 "migration {} names a step that is not an earlier step of the plan",
                 migration.version
             );

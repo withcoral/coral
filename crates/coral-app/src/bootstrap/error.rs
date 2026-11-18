@@ -290,6 +290,7 @@ mod tests {
                 Error::SkippedStep {
                     migration: 82,
                     required: 81,
+                    release: "v1.9.0".to_owned(),
                 },
                 |error| {
                     matches!(
@@ -297,20 +298,26 @@ mod tests {
                         AppError::UpgradeRefused(Error::SkippedStep {
                             migration: 82,
                             required: 81,
+                            ..
                         })
-                    ) && error
-                        .to_string()
-                        .contains("Start a Coral version that has migration 0081 first")
+                    ) && error.to_string().contains("Start Coral v1.9.0 first")
                 },
             ),
-            (Error::CoralTooOld { required: 81 }, |error| {
-                matches!(
-                    error,
-                    AppError::UpgradeRefused(Error::CoralTooOld { required: 81 })
-                ) && error
-                    .to_string()
-                    .contains("Start the newest Coral version that has run on this database")
-            }),
+            (
+                Error::CoralTooOld {
+                    required: 81,
+                    release: "v1.9.0".to_owned(),
+                },
+                |error| {
+                    matches!(
+                        error,
+                        AppError::UpgradeRefused(Error::CoralTooOld { required: 81, .. })
+                    ) && error.to_string().contains(
+                        "Start the newest Coral version that has run on this database. It is \
+                         v1.9.0 or later",
+                    )
+                },
+            ),
         ];
         for (cause, expected) in cases {
             let error = AppError::from(cause);
