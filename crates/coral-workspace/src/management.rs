@@ -1,31 +1,61 @@
 //! Safe management inspection and optimistic concurrency. All metadata changes
 //! join the owning mutation transaction; no retained Event is used as a version.
 //!
-//! The concurrency metadata is what an inspection shows and what a UUID etag is
-//! checked against. Each resource's row also keeps a version, which every
-//! accepted change raises by one, and an etag that is a version is checked
-//! against the row.
+//! Each resource's row keeps its version, which every accepted change raises
+//! by one, and its times. An inspection shows them, and a change is checked
+//! against the version on the row it changes. Every accepted change also
+//! gives the resource a new etag in the table that held the concurrency
+//! metadata before: a Coral that still reads that table shows and checks it.
 use std::collections::HashMap;
 
-use crate::list_repository::{Resources, Users};
-use crate::management_repository::{self as repository, listed_metadata, metadata};
+use crate::list_repository::Users;
+use crate::management_repository as repository;
 use coral_db::{Transaction, UnixNanos, Version};
 
-use crate::types::Precondition;
 use crate::{
     AuthenticatedUser, ChangeContext, Error, IfMatch, LifecycleTargetKind, RequestId, UserId,
     WorkspaceAction, WorkspaceEvidence, WorkspaceId, WorkspaceModule,
 };
 
-/// Non-secret configuration concurrency and timestamps.
-#[derive(Debug, Clone)]
+/// Non-secret configuration concurrency and timestamps, as the resource's own
+/// row holds them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResourceMetadata {
-    /// Opaque current version, bound to one resource.
-    pub etag: String,
-    /// Initial creation timestamp.
-    pub created_at: UnixNanos,
-    /// Latest accepted configuration timestamp.
-    pub updated_at: UnixNanos,
+    /// The count of accepted changes to the resource. Its text is the etag
+    /// an Adapter shows.
+    pub version: Version,
+    /// Initial creation timestamp. An Agent or an Agent Registration that a
+    /// Coral from before the row kept its times created has none.
+    pub created_at: Option<UnixNanos>,
+    /// Latest accepted configuration timestamp, absent as the creation
+    /// timestamp is until the resource next changes.
+    pub updated_at: Option<UnixNanos>,
+}
+
+impl ResourceMetadata {
+    /// The metadata of a resource that was created at `created_at` and has
+    /// not changed since.
+    pub(crate) const fn created(created_at: UnixNanos) -> Self {
+        Self {
+            version: Version::FIRST,
+            created_at: Some(created_at),
+            updated_at: Some(created_at),
+        }
+    }
+
+    /// The metadata that one accepted change at `changed_at` leaves: the
+    /// next version, and that time as the latest.
+    pub(crate) fn changed(self, changed_at: UnixNanos) -> Result<Self, Error> {
+        let version = self
+            .version
+            .next()
+            .ok_or_else(|| Error::CorruptData("resource version overflowed".to_string()))?;
+        Ok(Self {
+            version,
+            created_at: self.created_at,
+            updated_at: Some(changed_at),
+        })
+    }
 }
 
 pub(super) fn require_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
@@ -119,56 +149,17 @@ pub(super) async fn record_change(
     .await
 }
 
-/// Checks the etag the caller read against the resource as it is now. The
-/// caller holds the resource's Workspace.
+/// Checks the etag the caller read against the version that the resource's
+/// row holds now. The caller holds the resource's Workspace and has read the
+/// row under that hold.
 ///
-/// A UUID etag is one that an inspection showed: it is checked against the
-/// concurrency metadata. A version is checked against the resource's row,
-/// and a resource that has no row is at no version.
-pub(super) async fn check(
-    tx: &mut Transaction<'_>,
-    if_match: &IfMatch,
-    workspace: &WorkspaceId,
-    kind: LifecycleTargetKind,
-    id: &str,
-) -> Result<(), Error> {
-    let admitted = match if_match.precondition() {
-        Precondition::Token(_) => {
-            if_match.admits_token(&repository::metadata_etag(tx, workspace, kind, id).await?)
-        }
-        Precondition::Version(_) => row_version(tx, workspace, kind, id)
-            .await?
-            .is_some_and(|current| if_match.admits(current)),
-        #[cfg(any(test, feature = "test-fixtures"))]
-        Precondition::Any => true,
-    };
-    if admitted {
+/// A UUID etag is one that Coral showed before each row kept its version. No
+/// version meets it: the caller reads the resource again.
+pub(super) fn check(if_match: &IfMatch, current: Version) -> Result<(), Error> {
+    if if_match.admits(current) {
         Ok(())
     } else {
         Err(Error::EtagMismatch)
-    }
-}
-
-/// The version on the row of one resource, or `None` when it has no row.
-async fn row_version(
-    tx: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    kind: LifecycleTargetKind,
-    id: &str,
-) -> Result<Option<Version>, Error> {
-    match kind {
-        LifecycleTargetKind::Workspace => crate::repository::workspace_version(tx, workspace).await,
-        LifecycleTargetKind::WorkspaceMembership => {
-            crate::repository::membership_version(tx, workspace, id).await
-        }
-        LifecycleTargetKind::Agent => {
-            crate::agent_repository::agent_version(tx, workspace, id).await
-        }
-        LifecycleTargetKind::AgentRegistration => {
-            crate::agent_repository::registration_version(tx, workspace, id).await
-        }
-        // A Secret Store grant keeps no version, and no change checks one.
-        LifecycleTargetKind::SecretStore => Ok(None),
     }
 }
 
@@ -204,24 +195,20 @@ impl WorkspaceModule {
         let mut registrations = crate::agent_repository::list_registrations(&mut tx, workspace)
             .await?
             .into_iter()
-            .map(|registration| (registration.agent_id().clone(), registration))
+            .map(|registration| (registration.0.agent_id().clone(), registration))
             .collect::<HashMap<_, _>>();
-        let agent_metadata = listed_metadata(&mut tx, Resources::Agents(workspace)).await?;
-        let registration_metadata =
-            listed_metadata(&mut tx, Resources::AgentRegistrations(workspace)).await?;
         let creators =
             crate::profile::read_listed_profiles(&mut tx, Users::AgentCreators(workspace)).await?;
         tx.commit().await?;
         agents
             .into_iter()
-            .map(|agent| {
-                let registration = registrations
+            .map(|(agent, agent_metadata)| {
+                let (registration, registration_metadata) = registrations
                     .remove(agent.principal().id())
                     .ok_or(Error::AgentNotFound)?;
                 Ok(AgentInspection {
-                    agent_metadata: agent_metadata.of(agent.principal().id().as_str())?,
-                    registration_metadata: registration_metadata
-                        .of(&registration.id().to_string())?,
+                    agent_metadata,
+                    registration_metadata,
                     registration,
                     workspace_state: evidence.workspace().state(),
                     creator_profile: creators.of(agent.created_by()),
@@ -259,10 +246,9 @@ impl WorkspaceModule {
         let evidence = self
             .check_in_transaction(&mut tx, actor, workspace, WorkspaceAction::Inspect)
             .await?;
-        let agent = self
-            .agent_for_inspection_in_transaction(&mut tx, &evidence, agent)
-            .await?;
-        let view = agent_inspection(&mut tx, agent, evidence.workspace().state()).await?;
+        crate::agent::require_agent_inspector(&evidence)?;
+        let view =
+            agent_inspection(&mut tx, workspace, agent, evidence.workspace().state()).await?;
         tx.commit().await?;
         Ok(view)
     }
@@ -288,21 +274,19 @@ impl WorkspaceModule {
         self.check_owner_inspection_in_transaction(&mut tx, actor, workspace)
             .await?;
         let members = crate::repository::list_memberships(&mut tx, workspace).await?;
-        let member_metadata = listed_metadata(&mut tx, Resources::Memberships(workspace)).await?;
         let profiles =
             crate::profile::read_listed_profiles(&mut tx, Users::Members(workspace)).await?;
         let enabled =
             crate::organization::enabled_among(&mut tx, Users::Members(workspace)).await?;
         tx.commit().await?;
-        members
+        Ok(members
             .into_iter()
-            .map(|member| {
-                let meta = member_metadata.of(member.user_id().as_str())?;
+            .map(|(member, meta)| {
                 let profile = profiles.of(member.user_id());
                 let enabled = enabled.contains(member.user_id());
-                Ok((member, meta, profile, enabled))
+                (member, meta, profile, enabled)
             })
-            .collect()
+            .collect())
     }
 
     /// Inspects an exact Membership; ordinary Members see only themselves.
@@ -322,16 +306,9 @@ impl WorkspaceModule {
         if evidence.effective_role() != crate::WorkspaceRole::Owner && actor.user_id() != user {
             return Err(Error::MembershipNotFound);
         }
-        let role = crate::repository::membership_role_in_transaction(&mut tx, workspace, user)
+        let (role, meta) = crate::repository::membership_in_transaction(&mut tx, workspace, user)
             .await?
             .ok_or(Error::MembershipNotFound)?;
-        let meta = metadata(
-            &mut tx,
-            workspace,
-            LifecycleTargetKind::WorkspaceMembership,
-            user.as_str(),
-        )
-        .await?;
         let enabled = crate::organization::is_enabled(&mut tx, user).await?;
         tx.commit().await?;
         Ok((
@@ -370,14 +347,8 @@ impl WorkspaceModule {
         let evidence = self
             .check_in_transaction(&mut tx, actor, workspace, WorkspaceAction::Inspect)
             .await?;
-        let meta = metadata(
-            &mut tx,
-            workspace,
-            LifecycleTargetKind::Workspace,
-            &workspace.to_string(),
-        )
-        .await?;
         tx.commit().await?;
+        let meta = evidence.workspace().metadata();
         Ok((evidence, meta))
     }
 
@@ -393,14 +364,12 @@ impl WorkspaceModule {
         let mut tx = self.database.begin_read_snapshot().await?;
         let actor = crate::organization::enabled_user(&mut tx, actor.user_id()).await?;
         let listed = crate::repository::list_workspaces(&mut tx, actor.user_id()).await?;
-        let workspace_metadata =
-            listed_metadata(&mut tx, Resources::WorkspacesOf(actor.user_id())).await?;
         let profile = crate::profile::read_profile(&mut tx, actor.user_id()).await?;
         tx.commit().await?;
         let workspaces = listed
             .into_iter()
             .map(|(workspace, role)| {
-                let meta = workspace_metadata.of(&workspace.id().to_string())?;
+                let meta = workspace.metadata();
                 // The rule that decides each Workspace is the one that decides
                 // a single inspection: the User's Membership there.
                 let evidence = crate::authorize(
@@ -418,28 +387,23 @@ impl WorkspaceModule {
     }
 }
 
+/// One Agent of the Workspace that is not deleted, with its Registration and
+/// what each one's row holds, in the caller's snapshot.
 async fn agent_inspection(
     tx: &mut Transaction<'_>,
-    agent: crate::Agent,
+    workspace: &WorkspaceId,
+    agent: &crate::PrincipalId,
     workspace_state: crate::WorkspaceState,
 ) -> Result<AgentInspection, Error> {
-    let workspace = agent.workspace_id();
-    let registration =
-        crate::agent_repository::registration(&mut *tx, workspace, agent.principal().id()).await?;
-    let agent_metadata = metadata(
-        tx,
-        workspace,
-        LifecycleTargetKind::Agent,
-        agent.principal().id().as_str(),
-    )
-    .await?;
-    let registration_metadata = metadata(
-        tx,
-        workspace,
-        LifecycleTargetKind::AgentRegistration,
-        &registration.id().to_string(),
-    )
-    .await?;
+    let (agent, agent_metadata) =
+        crate::agent_repository::find_with_metadata(&mut *tx, workspace, agent).await?;
+    let (registration, registration_metadata) =
+        crate::agent_repository::registration_with_metadata(
+            &mut *tx,
+            workspace,
+            agent.principal().id(),
+        )
+        .await?;
     let creator_profile = crate::profile::read_profile(tx, agent.created_by()).await?;
     Ok(AgentInspection {
         agent,

@@ -1,13 +1,16 @@
 //! Persistence for management concurrency metadata and accepted request identities.
 //! Callers supply the owning domain transaction.
-use std::collections::HashMap;
-
-use coral_db::{Transaction, UnixNanos};
+//!
+//! A resource's own row holds its version and its times, and the repository
+//! of that row reads them. This Module only decodes them, and still writes
+//! the table that held them before, for a Coral that reads it.
+use coral_db::{Transaction, UnixNanos, Version};
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 
-use crate::list_repository::{ResourceScope, Resources};
 use crate::{Error, LifecycleTargetKind, ResourceMetadata, UserId, WorkspaceId};
 
+/// The table that held each resource's etag and times before its own row
+/// did. Coral writes it and does not read it.
 #[derive(Iden)]
 enum WorkspaceResourceMetadata {
     Table,
@@ -73,116 +76,36 @@ pub(super) async fn record_email_grant(
     Ok(())
 }
 
-pub(super) async fn metadata(
-    tx: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    kind: LifecycleTargetKind,
-    id: &str,
+/// The concurrency metadata that a resource's own row holds. A version that
+/// is not positive is corrupt. A time is absent on the row of an Agent or a
+/// Registration that a Coral from before the row kept its times created.
+pub(crate) fn row_metadata(
+    version: i64,
+    created_at: Option<UnixNanos>,
+    updated_at: Option<UnixNanos>,
 ) -> Result<ResourceMetadata, Error> {
-    let row: Option<(String, UnixNanos, UnixNanos)> = tx
-        .fetch_optional(
-            Query::select()
-                .columns([
-                    WorkspaceResourceMetadata::Etag,
-                    WorkspaceResourceMetadata::CreatedAt,
-                    WorkspaceResourceMetadata::UpdatedAt,
-                ])
-                .from(WorkspaceResourceMetadata::Table)
-                .and_where(
-                    Expr::col(WorkspaceResourceMetadata::WorkspaceId).eq(workspace.to_string()),
-                )
-                .and_where(Expr::col(WorkspaceResourceMetadata::Kind).eq(kind.as_storage_str()))
-                .and_where(Expr::col(WorkspaceResourceMetadata::TargetId).eq(id))
-                .to_owned(),
-        )
-        .await?;
-    let (etag, created_at, updated_at) = row.ok_or_else(missing_metadata)?;
+    let version = Version::new(version)
+        .ok_or_else(|| Error::CorruptData("resource row has nonpositive version".to_string()))?;
     Ok(ResourceMetadata {
-        etag,
+        version,
         created_at,
         updated_at,
     })
 }
 
-/// The etag that the metadata of one resource holds. Coral writes only UUIDs
-/// there, so other text is corrupt.
-pub(super) async fn metadata_etag(
-    tx: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    kind: LifecycleTargetKind,
-    id: &str,
-) -> Result<uuid::Uuid, Error> {
-    let stored = metadata(tx, workspace, kind, id).await?.etag;
-    uuid::Uuid::parse_str(&stored)
-        .map_err(|_error| Error::CorruptData("resource metadata has an invalid etag".into()))
-}
-
-fn missing_metadata() -> Error {
-    Error::CorruptData("resource metadata missing".into())
-}
-
-/// The metadata of the resources of one list, by resource id.
-pub(super) struct ListedMetadata(HashMap<String, ResourceMetadata>);
-
-impl ListedMetadata {
-    /// The metadata of one resource of the list, as [`metadata`] reads it.
-    pub(super) fn of(&self, id: &str) -> Result<ResourceMetadata, Error> {
-        self.0.get(id).cloned().ok_or_else(missing_metadata)
+/// The outcome of a write that names the version its caller read of the row:
+/// it changes that one row, or the row is no longer at that version.
+pub(crate) fn changed_at_version(rows: u64) -> Result<(), Error> {
+    if rows == 1 {
+        Ok(())
+    } else {
+        Err(Error::EtagMismatch)
     }
 }
 
-/// Reads the metadata of every resource of one list in one statement.
-pub(super) async fn listed_metadata(
-    tx: &mut Transaction<'_>,
-    resources: Resources<'_>,
-) -> Result<ListedMetadata, Error> {
-    let mut statement = Query::select();
-    statement
-        .columns([
-            WorkspaceResourceMetadata::TargetId,
-            WorkspaceResourceMetadata::Etag,
-            WorkspaceResourceMetadata::CreatedAt,
-            WorkspaceResourceMetadata::UpdatedAt,
-        ])
-        .from(WorkspaceResourceMetadata::Table)
-        .and_where(
-            Expr::col(WorkspaceResourceMetadata::Kind).eq(resources.kind().as_storage_str()),
-        );
-    match resources.scope() {
-        ResourceScope::Within(workspace, ids) => {
-            statement
-                .and_where(
-                    Expr::col(WorkspaceResourceMetadata::WorkspaceId).eq(workspace.to_string()),
-                )
-                .and_where(Expr::col(WorkspaceResourceMetadata::TargetId).in_subquery(ids));
-        }
-        // A Workspace's own metadata has the Workspace as its target.
-        ResourceScope::Workspaces(ids) => {
-            statement
-                .and_where(Expr::col(WorkspaceResourceMetadata::WorkspaceId).in_subquery(ids))
-                .and_where(
-                    Expr::col(WorkspaceResourceMetadata::TargetId)
-                        .equals(WorkspaceResourceMetadata::WorkspaceId),
-                );
-        }
-    }
-    let rows: Vec<(String, String, UnixNanos, UnixNanos)> = tx.fetch_all(statement).await?;
-    Ok(ListedMetadata(
-        rows.into_iter()
-            .map(|(id, etag, created_at, updated_at)| {
-                (
-                    id,
-                    ResourceMetadata {
-                        etag,
-                        created_at,
-                        updated_at,
-                    },
-                )
-            })
-            .collect(),
-    ))
-}
-
+/// Writes the row that a Coral which still reads this table shows and checks
+/// a resource by: a new etag and the time of the change. This Coral reads
+/// neither.
 pub(super) async fn upsert_metadata(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,

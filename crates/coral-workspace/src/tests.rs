@@ -1595,13 +1595,12 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
     )
     .await
     .expect("the Organization Owner leaves one Workspace");
-    let (_, member_etag_before, _, _) = module
-        .inspect_memberships(&creator, member.id())
-        .await
-        .expect("inspect Memberships")
-        .into_iter()
-        .find(|(membership, ..)| membership.user_id() == organization_owner.user_id())
-        .expect("Member row");
+    // The etag that a release from before the backfill showed: the one in
+    // the table of concurrency metadata.
+    let member_etag_before =
+        versions::membership_metadata_etag(module, member.id(), organization_owner.user_id())
+            .await
+            .expect("the Member's metadata row");
     let mut events_before = Vec::new();
     for workspace in &workspaces {
         events_before.push(
@@ -1672,15 +1671,12 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
         assert_eq!(event.authority_source(), AuthoritySource::OrganizationOwner);
         assert_eq!(event.target_id(), organization_owner.user_id().as_str());
     }
-    let (_, member_etag_after, _, _) = module
-        .inspect_memberships(&creator, member.id())
-        .await
-        .expect("inspect Memberships")
-        .into_iter()
-        .find(|(membership, ..)| membership.user_id() == organization_owner.user_id())
-        .expect("promoted row");
+    let member_etag_after =
+        versions::membership_metadata_etag(module, member.id(), organization_owner.user_id())
+            .await
+            .expect("the promoted Member's metadata row");
     assert_ne!(
-        member_etag_before.etag, member_etag_after.etag,
+        member_etag_before, member_etag_after,
         "a promotion invalidates the Membership's earlier etag"
     );
     // The backfilled Membership is ordinary: its holder can leave again, with
@@ -1689,7 +1685,8 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
         .inspect_membership(&organization_owner, none.id(), organization_owner.user_id())
         .await
         .expect("inspect the backfilled Membership");
-    let read = IfMatch::parse(&backfilled.etag).expect("a backfilled etag is a valid precondition");
+    let read = IfMatch::parse(&backfilled.version.to_string())
+        .expect("a backfilled etag is a valid precondition");
     remove_access(
         module,
         &change(organization_owner.clone(), 30, '5'),

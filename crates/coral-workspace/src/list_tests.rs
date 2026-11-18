@@ -534,3 +534,36 @@ async fn a_list_returns_each_row_as_its_own_inspection_does_in_the_order_of_the_
     }
     assert_ne!(lists.sole_owner_workspaces(owner.user_id()).await, []);
 }
+
+// Catches: a list or an inspection that reads a row's etag or times from the
+// table of concurrency metadata, with a statement of its own or inside
+// another. Coral only writes that table, for a Coral that still reads it, so
+// a read that names it fails here.
+#[tokio::test]
+async fn no_list_or_inspection_reads_the_metadata_table() {
+    let lists = lists(2).await;
+    let (module, owner, workspace) = (&lists.module, &lists.owner, lists.workspace.id());
+    lists
+        .fixture
+        .execute_fixture_sql("DROP TABLE workspace_resource_metadata")
+        .await
+        .expect("drop the metadata table");
+
+    for (list, (rows, _sent)) in lists.sent_by_list().await {
+        assert_ne!(rows, 0, "{list}");
+    }
+    module.inspect_workspace(owner, workspace).await.unwrap();
+    module
+        .inspect_organization_workspace(owner, workspace)
+        .await
+        .unwrap();
+    for user in &lists.members {
+        module
+            .inspect_membership(owner, workspace, user)
+            .await
+            .unwrap();
+    }
+    for agent in &lists.agents {
+        module.inspect_agent(owner, workspace, agent).await.unwrap();
+    }
+}

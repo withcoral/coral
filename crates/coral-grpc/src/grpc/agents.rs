@@ -33,9 +33,9 @@ fn agent(a: Agent, meta: ResourceMetadata) -> wire::Agent {
             AgentState::Disabled => wire::AgentState::Disabled,
         }
         .into(),
-        etag: meta.etag,
-        create_time: Some(timestamp(meta.created_at)),
-        update_time: Some(timestamp(meta.updated_at)),
+        etag: meta.version.to_string(),
+        create_time: meta.created_at.map(timestamp),
+        update_time: meta.updated_at.map(timestamp),
         creator_profile: None,
         access_blockers: Vec::new(),
     }
@@ -54,9 +54,9 @@ fn registration(r: AgentRegistration, meta: ResourceMetadata) -> wire::AgentRegi
         uid: r.id().to_string(),
         enabled: r.is_enabled(),
         expire_time: r.expires_at().map(timestamp),
-        etag: meta.etag,
-        create_time: Some(timestamp(meta.created_at)),
-        update_time: Some(timestamp(meta.updated_at)),
+        etag: meta.version.to_string(),
+        create_time: meta.created_at.map(timestamp),
+        update_time: meta.updated_at.map(timestamp),
     }
 }
 fn issued(view: IssuedAgentCredential, now: coral_db::UnixNanos) -> wire::IssuedAgentCredential {

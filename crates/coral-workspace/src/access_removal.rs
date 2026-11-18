@@ -5,7 +5,7 @@ use crate::{
     LifecycleTargetKind, Principal, PrincipalId, PrincipalKind, UserId, WorkspaceAction,
     WorkspaceId, WorkspaceModule,
 };
-use coral_db::{Transaction, TransactionToken};
+use coral_db::{Transaction, TransactionToken, Version};
 
 /// Exact authority mutation requested by Administration.
 pub enum AccessRemovalTarget<'a> {
@@ -29,8 +29,10 @@ pub enum AccessRemovalTarget<'a> {
 }
 
 enum PreparedTarget {
-    WorkspaceMember(WorkspaceId, UserId),
-    Agent(WorkspaceId, PrincipalId),
+    /// The Membership, at the version the removal was checked against.
+    WorkspaceMember(WorkspaceId, UserId, Version),
+    /// The Agent, at the version the removal was checked against.
+    Agent(WorkspaceId, PrincipalId, Version),
     OrganizationMember {
         user: UserId,
         transfer: Option<(UserId, Vec<WorkspaceId>)>,
@@ -142,17 +144,11 @@ impl WorkspaceModule {
                 if !target_held {
                     return Err(Error::MembershipNotFound);
                 }
-                let role = crate::repository::membership_role_in_transaction(tx, workspace, user)
-                    .await?
-                    .ok_or(Error::MembershipNotFound)?;
-                crate::management::check(
-                    tx,
-                    if_match,
-                    workspace,
-                    LifecycleTargetKind::WorkspaceMembership,
-                    user.as_str(),
-                )
-                .await?;
+                let (role, read) =
+                    crate::repository::membership_in_transaction(tx, workspace, user)
+                        .await?
+                        .ok_or(Error::MembershipNotFound)?;
+                crate::management::check(if_match, read.version)?;
                 crate::keep_an_owner(tx, workspace, Some(role)).await?;
                 lost.push(LostWorkspaceAccess {
                     workspace: workspace.clone(),
@@ -162,7 +158,7 @@ impl WorkspaceModule {
                     ),
                 });
                 (
-                    PreparedTarget::WorkspaceMember(workspace.clone(), user.clone()),
+                    PreparedTarget::WorkspaceMember(workspace.clone(), user.clone(), read.version),
                     evidence.authority_source(),
                 )
             }
@@ -170,21 +166,19 @@ impl WorkspaceModule {
                 let evidence = self
                     .check_configuration_in_transaction(tx, context.actor(), workspace)
                     .await?;
-                let agent = crate::agent_repository::find(&mut *tx, workspace, agent).await?;
-                crate::management::check(
-                    tx,
-                    if_match,
-                    workspace,
-                    LifecycleTargetKind::Agent,
-                    agent.principal().id().as_str(),
-                )
-                .await?;
+                let (agent, read) =
+                    crate::agent_repository::find_with_metadata(&mut *tx, workspace, agent).await?;
+                crate::management::check(if_match, read.version)?;
                 lost.push(LostWorkspaceAccess {
                     workspace: workspace.clone(),
                     principal: agent.principal().clone(),
                 });
                 (
-                    PreparedTarget::Agent(workspace.clone(), agent.principal().id().clone()),
+                    PreparedTarget::Agent(
+                        workspace.clone(),
+                        agent.principal().id().clone(),
+                        read.version,
+                    ),
                     evidence.authority_source(),
                 )
             }
@@ -247,10 +241,9 @@ impl WorkspaceModule {
     ) -> Result<(), Error> {
         prepared.verify_transaction(tx, context)?;
         let (workspace, action, kind, target, fields) = match prepared.target {
-            PreparedTarget::WorkspaceMember(workspace, user) => {
-                if !crate::repository::delete_membership(tx, &workspace, &user).await? {
-                    return Err(Error::MembershipNotFound);
-                }
+            PreparedTarget::WorkspaceMember(workspace, user, read) => {
+                crate::repository::delete_membership_at_version(tx, &workspace, &user, read)
+                    .await?;
                 (
                     workspace,
                     LifecycleAction::MembershipRemoved,
@@ -259,11 +252,12 @@ impl WorkspaceModule {
                     &["role"][..],
                 )
             }
-            PreparedTarget::Agent(workspace, agent) => {
+            PreparedTarget::Agent(workspace, agent, read) => {
                 crate::agent_repository::delete_current(
                     tx,
                     &workspace,
                     &agent,
+                    read,
                     context.occurred_at(),
                 )
                 .await?;

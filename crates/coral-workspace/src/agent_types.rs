@@ -217,9 +217,9 @@ pub struct IssuedAgentCredential {
     pub agent: Agent,
     /// Safe Registration metadata.
     pub registration: AgentRegistration,
-    /// Agent concurrency metadata from the issuance transaction.
+    /// Agent concurrency metadata as the issuance left it.
     pub agent_metadata: crate::ResourceMetadata,
-    /// Registration concurrency metadata from the issuance transaction.
+    /// Registration concurrency metadata as the issuance left it.
     pub registration_metadata: crate::ResourceMetadata,
     /// One-time credential; subsequent inspection cannot retrieve it.
     pub credential: AgentCredential,
@@ -234,8 +234,8 @@ impl IssuedAgentCredential {
         crate::AgentInspection {
             agent: self.agent.clone(),
             registration: self.registration.clone(),
-            agent_metadata: self.agent_metadata.clone(),
-            registration_metadata: self.registration_metadata.clone(),
+            agent_metadata: self.agent_metadata,
+            registration_metadata: self.registration_metadata,
             workspace_state: crate::WorkspaceState::Active,
             creator_profile: self.creator_profile.clone(),
         }

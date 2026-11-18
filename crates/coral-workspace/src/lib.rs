@@ -46,13 +46,14 @@
 //!   [`IfMatch`] argument, and checks it under the same mutation hold. A
 //!   Workspace, a Workspace Membership, an Agent and an Agent Registration each
 //!   keep a version on their own row, which every accepted change raises by one.
-//!   An etag that is a version is checked against the row. An etag that is a
-//!   UUID is checked against the concurrency metadata, which is still what the
-//!   inspections show. An action that must not run twice takes a [`RequestId`]
-//!   argument. A repeated committed request returns a safe failure, never
-//!   recovers a credential or silently rotates again. Neither value travels in
-//!   the [`ChangeContext`], so a call cannot leave one out. Metadata is
-//!   independent of retained lifecycle Events.
+//!   The inspections show that version with the row's times as
+//!   [`ResourceMetadata`], a change is checked against it, and the statement
+//!   that changes the row names it. An etag that is a UUID, which Coral showed
+//!   before, meets no version. An action that must not run twice takes a
+//!   [`RequestId`] argument. A repeated committed request returns a safe
+//!   failure, never recovers a credential or silently rotates again. Neither
+//!   value travels in the [`ChangeContext`], so a call cannot leave one out.
+//!   Metadata is independent of retained lifecycle Events.
 //! - [`WorkspaceModule::list_memberships`] and
 //!   [`WorkspaceModule::list_lifecycle_events`] expose safe administration
 //!   projections through the same authority rules.
@@ -223,9 +224,11 @@ impl WorkspaceModule {
             display_name,
             WorkspaceState::Active,
             coral_db::Version::FIRST,
+            context.occurred_at(),
+            context.occurred_at(),
         );
-        repository::insert_workspace(transaction, &workspace, context.occurred_at()).await?;
-        repository::upsert_membership(
+        repository::insert_workspace(transaction, &workspace).await?;
+        repository::insert_membership(
             transaction,
             workspace.id(),
             context.actor().user_id(),
@@ -495,24 +498,17 @@ impl WorkspaceModule {
             AuthorityAction::Public(WorkspaceAction::Configure),
         )
         .await?;
-        management::check(
-            &mut transaction,
-            if_match,
-            workspace_id,
-            LifecycleTargetKind::Workspace,
-            &workspace_id.to_string(),
-        )
-        .await?;
-        if evidence.workspace().display_name() == &display_name {
-            return Ok(evidence.workspace().clone());
+        let read = evidence.workspace();
+        management::check(if_match, read.version())?;
+        if read.display_name() == &display_name {
+            return Ok(read.clone());
         }
-        // The Workspace is held, so the row is at the version just read and
-        // the update leaves it at the next one.
-        let next_version = next_workspace_version(evidence.workspace())?;
+        let renamed = read.changed(display_name, read.state(), context.occurred_at())?;
         repository::update_display_name(
             &mut transaction,
             workspace_id,
-            &display_name,
+            renamed.display_name(),
+            read.version(),
             context.occurred_at(),
         )
         .await?;
@@ -530,12 +526,7 @@ impl WorkspaceModule {
         )
         .await?;
         transaction.commit().await?;
-        Ok(Workspace::new(
-            workspace_id.clone(),
-            display_name,
-            evidence.workspace().state(),
-            next_version,
-        ))
+        Ok(renamed)
     }
 
     /// Archives the active Workspace that the caller read at `if_match`.
@@ -693,12 +684,10 @@ impl WorkspaceModule {
         .await?;
         organization::require_enabled_target(&mut transaction, target_held, target.user_id())
             .await?;
-        let previous = repository::membership_role_in_transaction(
-            &mut transaction,
-            workspace_id,
-            target.user_id(),
-        )
-        .await?;
+        let stored =
+            repository::membership_in_transaction(&mut transaction, workspace_id, target.user_id())
+                .await?;
+        let previous = stored.map(|(role, _metadata)| role);
         if let Some((email, request)) = email_grant {
             management_repository::record_email_grant(
                 &mut transaction,
@@ -717,27 +706,21 @@ impl WorkspaceModule {
         if let MembershipChange::UpdateRole { if_match, .. } = &change {
             // A Membership that is absent has no etag to check: the check
             // follows the refusal.
-            if previous.is_none() {
+            let Some((_role, read)) = &stored else {
                 return Err(Error::MembershipNotFound);
-            }
-            management::check(
-                &mut transaction,
-                if_match,
-                workspace_id,
-                LifecycleTargetKind::WorkspaceMembership,
-                target.user_id().as_str(),
-            )
-            .await?;
+            };
+            management::check(if_match, read.version)?;
         }
         if previous == Some(role) {
             return Ok(target);
         }
         keep_an_owner(&mut transaction, workspace_id, previous).await?;
-        repository::upsert_membership(
+        repository::write_membership_role(
             &mut transaction,
             workspace_id,
             target.user_id(),
             role,
+            stored.map(|(_role, read)| read.version),
             context.occurred_at(),
         )
         .await?;
@@ -807,7 +790,10 @@ impl WorkspaceModule {
             .await?;
         let memberships = repository::list_memberships(&mut transaction, workspace_id).await?;
         transaction.commit().await?;
-        Ok(memberships)
+        Ok(memberships
+            .into_iter()
+            .map(|(membership, _metadata)| membership)
+            .collect())
     }
 
     /// Lists safe Workspace-domain Administrative Lifecycle Events.
@@ -865,20 +851,18 @@ impl WorkspaceModule {
             authority_action,
         )
         .await?;
-        management::check(
-            &mut transaction,
-            if_match,
-            workspace_id,
-            LifecycleTargetKind::Workspace,
-            &workspace_id.to_string(),
-        )
-        .await?;
-        let next_version = next_workspace_version(evidence.workspace())?;
+        let read = evidence.workspace();
+        management::check(if_match, read.version())?;
+        let changed = read.changed(
+            read.display_name().clone(),
+            next_state,
+            context.occurred_at(),
+        )?;
         repository::update_lifecycle(
             &mut transaction,
             workspace_id,
             next_state,
-            next_version,
+            read.version(),
             context.occurred_at(),
         )
         .await?;
@@ -896,12 +880,7 @@ impl WorkspaceModule {
         )
         .await?;
         transaction.commit().await?;
-        Ok(Workspace::new(
-            workspace_id.clone(),
-            evidence.workspace().display_name().clone(),
-            next_state,
-            next_version,
-        ))
+        Ok(changed)
     }
 }
 
@@ -980,14 +959,6 @@ fn authorize(
     }
 
     Ok(WorkspaceEvidence::new(workspace, effective_role, source))
-}
-
-/// The version an accepted change leaves the Workspace at.
-fn next_workspace_version(workspace: &Workspace) -> Result<coral_db::Version, Error> {
-    workspace
-        .version()
-        .next()
-        .ok_or_else(|| Error::CorruptData("Workspace lifecycle version overflowed".to_string()))
 }
 
 /// Denies a change that ends the Owner role of the last designated Owner. The
