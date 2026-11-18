@@ -1,9 +1,10 @@
+use std::slice;
 use std::time::Duration;
 
 use coral_credentials::Secret;
 use coral_outbound::{DestinationPolicy, NetworkAccess};
 use reqwest::StatusCode;
-use serde_json::json;
+use serde_json::{Value, json};
 use url::Url;
 use wiremock::matchers::{any, body_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -48,7 +49,7 @@ fn assistant(content: Vec<Block>) -> Message {
     }
 }
 
-/// A conversation with every kind of block, and an empty assistant message.
+/// A conversation with text, tool calls and their results, and an empty assistant message.
 fn conversation() -> Vec<Message> {
     vec![
         Message::user("Hello?".to_owned()),
@@ -77,6 +78,12 @@ async fn ask(client: &ModelClient) -> Result<Reply, ModelError> {
 
 async fn received(server: &MockServer) -> Vec<wiremock::Request> {
     server.received_requests().await.unwrap()
+}
+
+/// The assistant message of a system, user and assistant thread, as the last request sent it.
+async fn sent_reply(server: &MockServer) -> Option<Value> {
+    let body: Value = received(server).await.pop()?.body_json().ok()?;
+    body.pointer("/messages/2").cloned()
 }
 
 // Catches: a conversation or a tool that does not reach the server as Chat
@@ -145,6 +152,72 @@ async fn the_conversation_goes_as_chat_completions_and_the_reply_comes_back_as_b
             usage: Some(usage),
         }
     );
+}
+
+// Catches: reasoning in either field dropped or kept without its model, an empty field taken over
+// the next, reasoning not sent back to the model that wrote it, or reasoning in the lead's answer.
+#[tokio::test]
+async fn reasoning_is_kept_with_its_model_and_sent_back_to_it() {
+    for message in [
+        json!({"role": "assistant", "content": "Done.", "reasoning": "Plan."}),
+        json!({"role": "assistant", "content": "Done.", "reasoning_content": "Plan."}),
+        json!({"role": "assistant", "content": "Done.", "reasoning": "", "reasoning_content": "Plan."}),
+    ] {
+        let server = MockServer::start().await;
+        let completion = json!({"choices": [{"message": message}]});
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(completion))
+            .mount(&server)
+            .await;
+        let client = client(&server, None);
+        let hello = Message::user("Hello?".to_owned());
+
+        let reply = client
+            .reply("Be brief.", slice::from_ref(&hello), &TOOLS)
+            .await;
+        let reply = reply.unwrap().message;
+        let thread = [hello, reply.clone()];
+        client.reply("Be brief.", &thread, &TOOLS).await.unwrap();
+
+        let reasoning = Block::Reasoning {
+            text: "Plan.".to_owned(),
+            model: MODEL.to_owned(),
+        };
+        let done = Block::Text {
+            text: "Done.".to_owned(),
+        };
+        assert_eq!(reply, assistant(vec![reasoning, done]), "{message}");
+        assert_eq!(reply.text(), "Done.");
+        let replayed = json!({"role": "assistant", "content": "Done.", "reasoning": "Plan."});
+        assert_eq!(sent_reply(&server).await, Some(replayed), "{message}");
+    }
+}
+
+// Catches: reasoning that another model wrote sent to this one, or a stored reasoning block that
+// no longer reads.
+#[tokio::test]
+async fn reasoning_by_another_model_stays_in_the_thread_and_is_left_out_of_the_request() {
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(answer("Hi."))
+        .mount(&server)
+        .await;
+    let stored = json!([
+        {"type": "reasoning", "text": "Plan.", "model": "earlier-model"},
+        {"type": "text", "text": "Looking."},
+    ]);
+    let thread = [
+        Message::user("Hello?".to_owned()),
+        assistant(serde_json::from_value(stored).unwrap()),
+    ];
+
+    client(&server, None)
+        .reply("Be brief.", &thread, &TOOLS)
+        .await
+        .unwrap();
+
+    let left_out = json!({"role": "assistant", "content": "Looking."});
+    assert_eq!(sent_reply(&server).await, Some(left_out));
 }
 
 // Catches: a key not sent as a bearer token, or an Authorization header sent without one.
