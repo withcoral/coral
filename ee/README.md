@@ -20,8 +20,9 @@ which files.
 ## Running as the Enterprise Edition
 
 `config.toml` takes one License, in a `[license]` section with exactly one of
-`key`, the License itself, or `key_env`, the environment variable that holds
-it. Coral reads it at startup. Restart Coral to apply a new one.
+two settings: `key`, the License itself, or `key_env`, the name of the
+environment variable that holds it. Coral reads it at startup. Restart Coral
+to apply a new one.
 
 ```toml
 [license]

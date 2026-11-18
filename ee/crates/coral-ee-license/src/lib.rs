@@ -24,7 +24,7 @@ use pasetors::version4::{PublicToken, V4};
 use serde::Deserialize;
 
 /// The implicit assertion every License is signed under, so that no other
-/// token signed with the same key passes as one.
+/// token signed with the same signing key passes as one.
 const IMPLICIT_ASSERTION: &[u8] = b"coral-license";
 
 /// How long before a License's expiry startup starts to warn about it.
@@ -38,9 +38,9 @@ const FORMAT_VERSION: u64 = 1;
 ///
 /// There are none until Coral issues its first License. Until then, a
 /// published build runs as Community without a License, and refuses to start
-/// with one, since it trusts no key.
+/// with one, since it trusts no signing key.
 ///
-/// To revoke a leaked key, move its literal from here to [`REVOKED_KEYS`].
+/// To revoke a leaked signing key, move its literal from here to [`REVOKED_KEYS`].
 /// Builds released after that refuse its Licenses by name; builds released
 /// before still trust it (ADR 0038).
 const PRODUCTION_KEYS: &[&str] = &[];
@@ -411,8 +411,8 @@ impl Keys {
         })
     }
 
-    /// The keys `build` trusts: the production keys for a build with a
-    /// Release Date, the test key for any other.
+    /// The signing keys `build` trusts: the production signing keys for a
+    /// build with a Release Date, the test signing key for any other.
     ///
     /// # Panics
     ///
