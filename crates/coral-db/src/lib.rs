@@ -71,6 +71,7 @@ mod query;
 mod statements;
 mod time;
 mod transaction;
+mod upgrade;
 
 pub use backend::DatabaseSystem;
 pub use changes::ChangeSubscription;

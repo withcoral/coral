@@ -5,7 +5,7 @@
     reason = "fixture setup fails the restart test if it cannot complete"
 )]
 
-use std::{fs, sync::Arc};
+use std::sync::Arc;
 
 use coral_app::ServerBuilder;
 use coral_grpc::coral::management::v1::{
@@ -129,11 +129,10 @@ fn reef<T>(message: T) -> tonic::Request<T> {
 #[tokio::test]
 async fn recorded_locations_survive_a_restart_on_the_private_listener() {
     let temp = TempDir::new().unwrap();
-    fs::write(
-        temp.path().join("config.toml"),
+    coral_test_support::write_server_config(
+        temp.path(),
         "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
-    )
-    .unwrap();
+    );
 
     let first = ServerBuilder::new()
         .with_config_dir(temp.path())

@@ -242,6 +242,43 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   earlier `main` must keep booting.
   `scripts/check-migrations.sh` checks this.
   Keep the fence that rejects state written by Coral 0.x.
+- A rolling upgrade runs two Coral releases on one database: the newer one
+  migrates at boot while the older one still serves. Two rules follow.
+  - The previous release keeps working on the schema that a new migration
+    leaves. Keep a migration additive: a new table, a new index, a new column
+    that is nullable or has a default. A new column changes no query that
+    names its columns, so name them: no `SELECT *`, and no `INSERT` without a
+    column list. To drop, rename, retype or tighten what a release uses,
+    stagger the change across releases. One release adds the new shape and
+    still writes the old one, because the release before it reads the old
+    one. A later release, which follows one that no longer uses the old
+    shape, migrates it away. Stored values follow the same rule: a release
+    reads a new value, such as a new `kind`, before any release writes it,
+    and no migration rewrites rows into a form the previous release cannot
+    read.
+  - A newer release never runs on an older schema. Coral applies its whole
+    plan before it serves, and code relies on that schema: do not probe for a
+    table or a column, and do not keep a path for a database that lacks a
+    migration.
+
+  `scripts/check-migrations.sh` names each statement in a new migration that
+  can break an older release, and says how to declare one that does not. It
+  reads SQL text in the shared files and the Postgres halves, not stored
+  values: keep the values rule yourself.
+
+  A deployment may run any build of `main`, and two builds between two
+  releases have one version. So a removal names a step, not a release: the
+  migration of the change that stopped using what it removes. Give that
+  change a migration. If it needs none, add a marker, a migration that holds
+  only a comment. Coral acts on the name (`crates/coral-db/src/upgrade.rs`).
+  On Postgres it applies the removal only where the named step is applied
+  already, so an upgrade cannot skip the build that stopped. On both
+  databases, no Coral whose plan lacks the named step starts afterwards. The
+  check accepts a named step only when a release has it, because a release
+  user upgrades from one release to the next. The removal also names the
+  first release that has the step. Coral decides nothing by it: a refusal
+  tells the operator to reach that release, one version at a time. The check
+  prints the release to write.
 - Keep schemas portable across SQLite and Postgres and fail on schema drift;
   do not use `IF NOT EXISTS` to hide unexpected state.
 - When a migration needs a database feature whose availability it cannot
@@ -351,6 +388,11 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - A test that compiles TypeScript but is not about the compilation deadline
   uses `coral_test_support::TEST_COMPILATION_TIMEOUT`. The production deadline
   fails such tests on a starved runner.
+- A test server whose subject is not semantic search turns it off: write its
+  config with `coral_test_support::write_server_config`. With the default on,
+  a start whose state root holds no model, as a test's fresh one does,
+  downloads the model (133 MB) from GitHub and runs the Embedder.
+  Reel's stack and its Desktop profiles turn it off too.
 - In a unit or in-process test, drive time with fake timers or a test
   clock, not real waits. A test that starts Coral in its own process gives it
   a `coral_test_support::ManualClock` through `Launch::clock`. A Reel journey

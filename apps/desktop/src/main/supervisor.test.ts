@@ -90,6 +90,12 @@ async function failureOf(promise: Promise<unknown>) {
   return (error as SupervisorError).failure
 }
 
+/** The config.toml and the database URL variable that the stub runtime started with. */
+async function runtimeLaunch(mcp: string) {
+  const response = await fetch(`${mcp}/launch`)
+  return (await response.json()) as { config: string; env: Record<string, string> }
+}
+
 /** Makes a running stub exit, as a crash would. */
 async function crash(origin: string) {
   await fetch(`${origin}/exit`).catch(() => {})
@@ -442,11 +448,6 @@ it('regenerates the runtime configuration on every launch', async () => {
 describe('database', () => {
   const url = 'postgres://coral:db-password@127.0.0.1:5433/coral'
 
-  async function runtimeLaunch(mcp: string) {
-    const response = await fetch(`${mcp}/launch`)
-    return (await response.json()) as { config: string; env: Record<string, string> }
-  }
-
   it('starts the runtime on the Postgres database that desktop.json names', async () => {
     await writeFile(
       join(dataDir, 'desktop.json'),
@@ -484,4 +485,36 @@ describe('database', () => {
     expect(JSON.stringify(failure)).not.toContain('secret')
     expect(launched).toEqual([])
   })
+})
+
+describe('search', () => {
+  it('turns semantic search off in the runtime when desktop.json says so', async () => {
+    await writeFile(join(dataDir, 'desktop.json'), JSON.stringify({ search: { semantic: false } }))
+
+    const { config } = await runtimeLaunch((await supervise().start()).mcp)
+
+    expect(config).toContain('\n[search]\nsemantic_search_enabled = false\n')
+  })
+
+  it('leaves semantic search to the runtime default when desktop.json has no search section', async () => {
+    const { config } = await runtimeLaunch((await supervise().start()).mcp)
+
+    expect(config).not.toContain('[search]')
+  })
+
+  it.each([
+    { section: 'off', message: 'search must be an object' },
+    { section: { semantic: 'no' }, message: 'search.semantic must be true or false' },
+    { section: { semantic: false, model: 'x' }, message: 'search has an unknown key, model' },
+  ])(
+    'fails, and launches nothing, when the search section is $section',
+    async ({ section, message }) => {
+      await writeFile(join(dataDir, 'desktop.json'), JSON.stringify({ search: section }))
+
+      const failure = await failureOf(supervise().start())
+
+      expect(failure).toMatchObject({ kind: 'error', message: expect.stringContaining(message) })
+      expect(launched).toEqual([])
+    },
+  )
 })

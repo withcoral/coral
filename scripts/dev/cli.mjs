@@ -208,6 +208,7 @@ async function main(args) {
         join(root, 'scripts/dev/fs-security.test.mjs'),
         join(root, 'scripts/postgres.test.mjs'),
         join(root, 'scripts/check-migrations.test.mjs'),
+        join(root, 'scripts/migration-compatibility.test.mjs'),
         join(root, 'scripts/load.test.mjs'),
       ],
       { cwd: root, stdio: 'inherit' },

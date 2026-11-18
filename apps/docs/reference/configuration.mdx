@@ -6,7 +6,7 @@ sidebarTitle: "Configuration"
 Your configuration is in the `config.toml` file of Coral's configuration folder. The location of that folder depends on how you run Coral:
 
 - **Container image.** The `ghcr.io/withcoral/coral` image uses `/var/lib/coral/config`. Mount a volume at `/var/lib/coral` so the folder outlives the container. You can also pass the contents of `config.toml` in the `CORAL_CONFIG` variable. See [Container image](#container-image).
-- **Desktop app.** The desktop app uses the `runtime` folder of its data folder, for example `~/Library/Application Support/com.withcoral.app/runtime` on macOS. The desktop app writes this `config.toml` again at each launch, so you lose your edits to it.
+- **Desktop app.** The desktop app uses the `runtime` folder of its data folder, for example `~/Library/Application Support/com.withcoral.app/runtime` on macOS. The desktop app writes this `config.toml` again at each launch, so you lose your edits to it. To turn semantic search off in the desktop app, quit it and add `"search": { "semantic": false }` to `desktop.json` in its data folder.
 - **The `coral` binary.** When you start the binary yourself, it uses:
   - macOS: `~/Library/Application Support/com.withcoral.coral`
   - Linux: `~/.config/coral`
@@ -109,15 +109,19 @@ Write byte sizes as plain numbers. For example, write `134217728` for 128MiB.
 | Key                          | Description                                                                                                                 | Required | Default |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- | -------- | ------- |
 | `reconcile_interval_seconds` | Interval at which Coral indexes provider tools, private tools and shared tools for search. Must be greater than 0. | No       | `300`   |
-| `semantic_search_enabled`    | Turns on semantic search: search matches tools by what a query means, not only by its words. Coral reads the setting at startup. See [Semantic search requirements](#semantic-search-requirements). | No       | `false` |
+| `semantic_search_enabled`    | Turns on semantic search: search matches tools by what a query means, not only by its words. Coral reads the setting at startup. See [Semantic search requirements](#semantic-search-requirements). | No       | `true`  |
 
 #### Semantic search requirements
 
-`semantic_search_enabled = true` has these requirements:
+With `semantic_search_enabled = true`:
 
-- **Postgres.** `true` needs pgvector 0.7 or later, with its `halfvec` type on Coral's search path. When that is missing, Coral creates the `vector` extension if its database role may, and otherwise does not start.
-- **SQLite.** Coral's own build holds sqlite-vec, so `true` needs nothing more.
-- **Search model.** Coral looks for the search model in `/opt/coral/models` on Linux, then in `models` in its state directory. When neither folder holds it, Coral downloads it (133 MB) from GitHub into `models`, through the `[outbound]` policy, so the host must reach GitHub. Then Coral tries to delete the other model folders in `models`. When a model file is there but Coral cannot read it, Coral reports the file and does not download. When a downloaded file does not match, Coral tries again at its next start. On an x86-64 CPU without the x86-64-v3 features, Coral does not download the model.
+- **Postgres needs pgvector 0.7 or later, with its `halfvec` type on Coral's search path.** At startup, Coral creates the `vector` extension when pgvector is installed and Coral's database role may create it: a superuser, or the master user on Amazon RDS. If the extension is not available, Coral does not start, and the error names the `vector extension`.
+- **SQLite needs nothing more.** Coral's own build holds sqlite-vec.
+- **Coral needs the model files.** The `ghcr.io/withcoral/coral` image holds them. Without the image, Coral looks in `/opt/coral/models/bge-small-en-v1.5/` on Linux, then in `models/bge-small-en-v1.5/` in the configuration folder. If neither folder holds the files, Coral downloads them (133 MB) from GitHub into `models` in the configuration folder. The [`[outbound]`](#outbound) policy applies, so the host must reach GitHub. Then Coral tries to delete the other model folders in `models`. If Coral cannot read a model file, it reports the file and does not download. If a downloaded file is not correct, Coral tries again at its next start. On a host without network access, put the files in one of these folders, or set `semantic_search_enabled = false`.
+- **Semantic search has a cost.** Coral uses up to about 360 MiB more memory while it embeds tools, on one background thread at low priority. A new provider with about 20,000 tools matches by words only for about 12 minutes on one x86 vCPU.
+- **An x86-64 CPU needs the x86-64-v3 features, such as AVX2.** On an older CPU, Coral does not download the model, and search matches by words only.
+
+With `false`, Coral loads no model, downloads nothing and does not check for pgvector. See [Semantic search](/getting-started/self-host#semantic-search) for the details.
 
 ### `[updates]`
 

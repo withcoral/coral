@@ -91,7 +91,8 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # scripts/check-migrations.sh compares against the merge base with main.
+          # scripts/check-migrations.sh compares against the merge base with
+          # main and reads the release tags, which a full fetch brings.
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-rust

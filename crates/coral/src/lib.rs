@@ -247,8 +247,13 @@ impl MigrationLines {
     /// and each takes milliseconds.
     fn line(&self, progress: coral_app::MigrationProgress<'_>) -> Option<String> {
         use std::sync::atomic::Ordering::Relaxed;
-        if let coral_app::MigrationProgress::Pending { applied, .. } = progress {
-            self.upgrading.store(applied > 0, Relaxed);
+        match progress {
+            coral_app::MigrationProgress::Pending { applied, .. } => {
+                self.upgrading.store(applied > 0, Relaxed);
+            }
+            // No step follows, and the operator must know which release runs.
+            coral_app::MigrationProgress::Ahead { .. } => return Some(migration_line(progress)),
+            _ => {}
         }
         self.upgrading
             .load(Relaxed)
@@ -258,8 +263,19 @@ impl MigrationLines {
 
 /// The line for one piece of an upgrade's migration progress.
 fn migration_line(progress: coral_app::MigrationProgress<'_>) -> String {
-    use coral_app::MigrationProgress::{Finished, Pending, Started};
+    use coral_app::MigrationProgress::{Ahead, Finished, Pending, Started};
     match progress {
+        Ahead { steps } => {
+            let migrations = if steps == 1 {
+                "migration"
+            } else {
+                "migrations"
+            };
+            format!(
+                "The database has {steps} {migrations} from a newer Coral release. This Coral \
+                 is older than its database."
+            )
+        }
         Pending { pending, .. } => {
             let steps = if pending == 1 { "step" } else { "steps" };
             format!(
@@ -494,7 +510,7 @@ mod tests {
     /// bury the listener lines. An upgrade's steps are the ones to show.
     #[test]
     fn an_upgrade_prints_each_migration_step_and_a_new_database_prints_none() {
-        use coral_app::MigrationProgress::{Finished, Pending, Started};
+        use coral_app::MigrationProgress::{Ahead, Finished, Pending, Started};
 
         const WAIT: &str = "A step over a large table can take minutes, and Coral listens when \
                             the last one finishes.";
@@ -530,6 +546,15 @@ mod tests {
                 "a new database",
                 vec![pending(0, 66), started, finished],
                 vec![],
+            ),
+            (
+                "a database that a newer Coral migrated",
+                vec![Ahead { steps: 2 }],
+                vec![
+                    "The database has 2 migrations from a newer Coral release. This Coral is \
+                     older than its database."
+                        .to_owned(),
+                ],
             ),
         ] {
             let chooser = MigrationLines::default();

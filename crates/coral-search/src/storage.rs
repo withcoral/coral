@@ -268,6 +268,39 @@ pub async fn prepare_vector_table(
     database: &Database,
     vector_storage: VectorStorage,
 ) -> Result<(), StorageError> {
+    prepare_vector_table_as(database, vector_storage, OtherDimension::Replace).await
+}
+
+/// Does what [`prepare_vector_table`] does for a Coral that is older than its
+/// database, except that it keeps a table of another dimension.
+///
+/// A newer Coral made that table and still writes it, so dropping it would
+/// make every Coral Instance embed every Search Entity again, once for each
+/// restart of an older one. Until this Coral is upgraded, its vector writes
+/// fail and its searches rank by words alone.
+///
+/// # Errors
+///
+/// Returns what [`prepare_vector_table`] returns.
+pub async fn prepare_vector_table_beside_a_newer_coral(
+    database: &Database,
+    vector_storage: VectorStorage,
+) -> Result<(), StorageError> {
+    prepare_vector_table_as(database, vector_storage, OtherDimension::Keep).await
+}
+
+/// What boot does with a vector table whose vectors have another dimension.
+#[derive(Clone, Copy)]
+enum OtherDimension {
+    Replace,
+    Keep,
+}
+
+async fn prepare_vector_table_as(
+    database: &Database,
+    vector_storage: VectorStorage,
+    other_dimension: OtherDimension,
+) -> Result<(), StorageError> {
     let VectorStorage::On { dimension } = vector_storage else {
         return Ok(());
     };
@@ -280,12 +313,21 @@ pub async fn prepare_vector_table(
             transaction.rollback().await?;
             return Ok(());
         }
-        VectorTable::OtherDimension => {
-            tracing::info!(
-                "dropping the search vector table of another dimension; every Search Entity embeds again"
-            );
-            repository::drop_vector_table(&mut transaction).await?;
-        }
+        VectorTable::OtherDimension => match other_dimension {
+            OtherDimension::Replace => {
+                tracing::info!(
+                    "dropping the search vector table of another dimension; every Search Entity embeds again"
+                );
+                repository::drop_vector_table(&mut transaction).await?;
+            }
+            OtherDimension::Keep => {
+                tracing::warn!(
+                    "keeping the search vector table of another dimension, which a newer Coral made; this Coral's searches rank by words alone"
+                );
+                transaction.rollback().await?;
+                return Ok(());
+            }
+        },
         VectorTable::UnexpectedEmbedding { column_type } => {
             transaction.rollback().await?;
             return Err(StorageError::UnexpectedVectorTable {

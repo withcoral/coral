@@ -7,7 +7,7 @@ use coral_db::{DatabaseOptions, DatabaseSystem, ReadOnlyDatabase};
 use rusqlite::OpenFlags;
 use sea_query::{Alias, Expr, ExprTrait as _, JoinType, Order, Query, SelectStatement};
 
-use super::migrations::rows_match_known_migration_prefix;
+use super::migrations::rows_agree_with_migration_plan;
 use crate::bootstrap::{AppError, StateRefusal};
 
 const CURRENT_DATABASE_FORMAT: &str = "coral-state-v1";
@@ -237,7 +237,7 @@ fn validate_ledger_rows(
 ) -> Result<(), AppError> {
     if rows.is_empty() || rows.iter().any(|(_, _, success)| !success) {
         Err(malformed_database_marker_error())
-    } else if rows_match_known_migration_prefix(rows, system) {
+    } else if rows_agree_with_migration_plan(rows, system) {
         Ok(())
     } else {
         Err(unknown_migrations_error())
@@ -311,8 +311,8 @@ mod tests {
     #[tokio::test]
     async fn ledger_problems_are_rejected_without_changing_state() {
         let last = "(SELECT MAX(version) FROM _sqlx_migrations)";
-        // The prefix rule itself is tested in `migrations`; these cases pin
-        // which error each kind of ledger problem reports.
+        // The rule itself is tested in `migrations`; these cases pin which
+        // error each kind of ledger problem reports.
         let cases = [
             (
                 "edited migration",
@@ -324,13 +324,10 @@ mod tests {
                 StateRefusal::UnknownMigrations,
             ),
             (
-                "migration from a newer Coral",
-                format!(
-                    "INSERT INTO _sqlx_migrations \
-                     (version, description, success, checksum, execution_time) \
-                     SELECT version + 1, 'from a newer Coral', success, checksum, execution_time \
-                     FROM _sqlx_migrations WHERE version = {last}"
-                ),
+                "removed migration",
+                "DELETE FROM _sqlx_migrations \
+                 WHERE version = (SELECT MIN(version) FROM _sqlx_migrations)"
+                    .to_string(),
                 StateRefusal::UnknownMigrations,
             ),
             (
@@ -365,6 +362,35 @@ mod tests {
                 "{label}: ledger changed"
             );
         }
+    }
+
+    /// A rolling upgrade, or a rollback, starts an older Coral after a newer
+    /// one migrated the database.
+    #[tokio::test]
+    async fn a_coral_older_than_its_database_starts_on_it() {
+        use sqlx::SqlSafeStr as _;
+        // Above every version of the plan, as a later release numbers a step.
+        let newer = coral_test_support::migration_plan_with([sqlx::migrate::Migration::new(
+            9001,
+            "from a newer Coral".into(),
+            sqlx::migrate::MigrationType::Simple,
+            "CREATE TABLE newer_coral_fixture (id TEXT PRIMARY KEY)".into_sql_str(),
+            false,
+        )]);
+        let fixture = TestDatabase::new(&newer)
+            .await
+            .expect("apply a newer Coral's migrations");
+        let before = ledger_rows(&fixture).await;
+
+        validate_database_state(fixture.options())
+            .await
+            .expect("recognize a newer Coral's database");
+        // What the run reports is coral-db's rule, tested there.
+        super::super::migrations::migrate_current(&fixture.database(), &|_| {})
+            .await
+            .expect("start on a newer Coral's database");
+
+        assert_eq!(ledger_rows(&fixture).await, before);
     }
 
     /// A refusal names no row, so a refused database's data never reaches

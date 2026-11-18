@@ -810,11 +810,10 @@ mod tests {
         // 2100-01-01: no host's clock reads it.
         let launched_at = UnixNanos::new(4_102_444_800 * 1_000_000_000);
         let temp = TempDir::new().unwrap();
-        std::fs::write(
-            temp.path().join("config.toml"),
+        coral_test_support::write_server_config(
+            temp.path(),
             "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
-        )
-        .unwrap();
+        );
         // A first start leaves what the second one finds: a Workspace with
         // no Provider that Coral defines, and a device job that cannot be
         // resumed, since `corrupt` is no trace id. Its lease ends just before
@@ -889,11 +888,10 @@ mod tests {
     #[tokio::test]
     async fn the_search_reconcile_task_runs_beside_the_engine_until_it_stops() {
         let temp = TempDir::new().unwrap();
-        std::fs::write(
-            temp.path().join("config.toml"),
+        coral_test_support::write_server_config(
+            temp.path(),
             "[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n",
-        )
-        .unwrap();
+        );
         let server = ServerBuilder::new()
             .with_config_dir(temp.path())
             .start()

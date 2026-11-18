@@ -98,7 +98,10 @@ pub use discovery::{Discovery, DiscoveryRequest, ExactLookup, ExactPaths, Missin
 pub use error::{Error, UNKNOWN_NAMESPACE_REASON, searchable_namespaces};
 pub use index::SearchIndex;
 pub use model_load::ModelLoad;
-pub use storage::{StorageError, VectorStorage, prepare_storage, prepare_vector_table};
+pub use storage::{
+    StorageError, VectorStorage, prepare_storage, prepare_vector_table,
+    prepare_vector_table_beside_a_newer_coral,
+};
 pub use suggestion::SUGGESTIONS_MAX;
 pub use types::{
     ApprovalRequirement, AuthoredToolAuthoringDescription, AuthoringDescription, CallPath,
