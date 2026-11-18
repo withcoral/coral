@@ -263,12 +263,13 @@ it('saves a policy change while the usage loads, and still shows the usage after
 it.each([
   ['Coral cannot give the summary now', Code.Unavailable],
   ['the summary read fails', Code.Internal],
-])('keeps the catalog and shows usage as not available when %s', async (_, code) => {
+])('keeps the catalog and marks usage as unavailable when %s', async (_, code) => {
   const { reads } = await renderTools(`/workspaces/${id}/providers/${githubId}/tools/issues.list`)
   await reads[0]!.fail(code)
   expect(rowNames()).toEqual(['issues.create', 'issues.list', 'repos.get'])
   expect(loadingUsage()).toBeNull()
-  expect(usageOf('issues.list')).toBe('—Not available')
-  expect(drawerUsage()).toHaveTextContent('Usage is not available. Try again later.')
+  expect(usageOf('issues.list')).toBe('')
+  expect(within(table()).getByRole('columnheader', { name: /^Usage unavailable/ })).toBeVisible()
+  expect(within(screen.getByRole('dialog')).queryByRole('region', { name: 'Usage' })).toBeNull()
   expect(within(table()).queryByRole('button', { name: 'Sort by usage' })).toBeNull()
 })

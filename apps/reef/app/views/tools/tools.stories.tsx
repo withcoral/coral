@@ -319,7 +319,7 @@ export const TreeToolUsageLoading: Story = {
     />
   ),
 }
-// The usage once the summary could not load: a dash in each row, and a note in the drawer.
+// The usage once the summary could not load: empty cells, and no Usage section in the drawer.
 export const TreeToolUsageUnavailable: Story = {
   render: () => (
     <ToolsPage

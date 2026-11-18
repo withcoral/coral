@@ -1285,13 +1285,17 @@ function ToolsTableScreen({
                           >
                             Usage
                           </Table.SortButton>
+                        ) : 'state' in toolCalls && toolCalls.state === 'unavailable' ? (
+                          // The cells stay empty, so only this heading says why.
+                          <>
+                            <span aria-hidden>Usage</span>
+                            <span className={visuallyHidden}>Usage unavailable</span>
+                          </>
                         ) : (
                           'Usage'
                         )}
                         <InfoTip ariaLabel="About usage">
-                          {'state' in toolCalls && toolCalls.state === 'unavailable'
-                            ? USAGE_UNAVAILABLE
-                            : `Your calls and your agents' calls in the last ${toolCalls.days} days.`}
+                          {`Your calls and your agents' calls in the last ${toolCalls.days} days.`}
                         </InfoTip>
                         {'state' in toolCalls && toolCalls.state === 'loading' && (
                           <span role="status" className={visuallyHidden}>
@@ -1989,14 +1993,7 @@ const ToolRow = memo(function ToolRow({
           </span>
         </Table.Cell>
       ) : usage === 'unavailable' ? (
-        <Table.Cell className={styles.callsColumn}>
-          <span className={styles.callsBar}>
-            <span aria-hidden className={styles.usageAbsent}>
-              —
-            </span>
-            <span className={visuallyHidden}>Not available</span>
-          </span>
-        </Table.Cell>
+        <Table.Cell className={styles.callsColumn} />
       ) : (
         usage && (
           <Table.Cell className={styles.callsColumn}>
@@ -2263,8 +2260,6 @@ type ToolCalls = ToolCallCounts | ToolCallsAbsent | null
 /** One tool's usage, or why it has none yet; null while the table has no Usage column. */
 type Usage = ToolUsage | ToolCallsAbsent['state'] | null
 
-const USAGE_UNAVAILABLE = 'Usage is not available. Try again later.'
-
 /** A tool's usage over the window, or why it has none yet. */
 function usageOf(toolCalls: ToolCalls, provider: ProviderView, tool: ToolView): Usage {
   if (!toolCalls) return null
@@ -2316,27 +2311,18 @@ function ToolPolicySection(props: {
   )
 }
 
-/** The drawer's Usage section while the summary loads, or once it could not. */
-function ToolUsageAbsent({ state }: { state: ToolCallsAbsent['state'] }) {
+/** The drawer's Usage section while the summary loads. */
+function ToolUsageLoading() {
   const headingId = useId()
-  const loading = state === 'loading'
   return (
-    <section aria-labelledby={headingId} aria-busy={loading} className={styles.usage}>
+    <section aria-labelledby={headingId} aria-busy className={styles.usage}>
       <Typography.BodyStrong as="h3" id={headingId}>
         Usage
       </Typography.BodyStrong>
-      {loading ? (
-        <>
-          <span role="status" className={visuallyHidden}>
-            Loading usage…
-          </span>
-          <Skeleton width="100%" height={56} borderRadius="8px" />
-        </>
-      ) : (
-        <Typography.BodySmall as="p" variant="secondary">
-          {USAGE_UNAVAILABLE}
-        </Typography.BodySmall>
-      )}
+      <span role="status" className={visuallyHidden}>
+        Loading usage…
+      </span>
+      <Skeleton width="100%" height={56} borderRadius="8px" />
     </section>
   )
 }
@@ -2591,9 +2577,9 @@ function ToolDetailsDrawer({
                   tool={tool}
                 />
               </UnlessDocked>
-              {usage === 'loading' || usage === 'unavailable' ? (
-                <ToolUsageAbsent state={usage} />
-              ) : usage ? (
+              {usage === 'loading' ? (
+                <ToolUsageLoading />
+              ) : usage === 'unavailable' ? null : usage ? (
                 <ToolUsageSection usage={usage} />
               ) : (
                 toolCalls && (

@@ -151,20 +151,29 @@ test('the drawer shows the prose of the tool the route names', () => {
   expect(within(drawer).getByText('coral.providers.github.issues.list')).toBeInTheDocument()
 })
 
-// Catches: a drawer that reads a loading or unavailable summary as no calls.
-test.each([
-  ['loading', 'Loading usage…'],
-  ['unavailable', 'Usage is not available. Try again later.'],
-] as const)('the drawer shows usage as %s, never as no calls', (state, text) => {
+// Catches: a drawer that reads a loading summary as no calls.
+test('the drawer shows usage as loading, never as no calls', () => {
   renderPage({
     entry: `${github.path}/tools/issues.list`,
     selectedTool: github.tools[0]!,
-    toolCalls: { days: 30, state },
+    toolCalls: { days: 30, state: 'loading' },
   })
   const usage = within(screen.getByRole('dialog')).getByRole('region', { name: 'Usage' })
-  expect(usage).toHaveTextContent(text)
-  expect(usage).toHaveAttribute('aria-busy', String(state === 'loading'))
+  expect(usage).toHaveTextContent('Loading usage…')
+  expect(usage).toHaveAttribute('aria-busy', 'true')
   expect(usage.textContent).not.toMatch(/calls/i)
+})
+
+// Catches: a drawer that reads an unavailable summary as no calls, or keeps its section.
+test('the drawer leaves out usage that is unavailable', () => {
+  renderPage({
+    entry: `${github.path}/tools/issues.list`,
+    selectedTool: github.tools[0]!,
+    toolCalls: { days: 30, state: 'unavailable' },
+  })
+  const drawer = within(screen.getByRole('dialog'))
+  expect(drawer.queryByRole('region', { name: 'Usage' })).toBeNull()
+  expect(drawer.queryByText(/usage|\bcalls\b/i)).toBeNull()
 })
 
 // Catches: a drawer that shows another tool's usage, callers left out, or usage
@@ -369,11 +378,7 @@ test.each([
   // Catches: usage that reads as zero calls, or sorts, before the summary answers or
   // once it could not.
   ['a summary still loading', { days: 30, state: 'loading' as const }, ['', '', '']],
-  [
-    'an unavailable summary',
-    { days: 30, state: 'unavailable' as const },
-    ['—Not available', '—Not available', '—Not available'],
-  ],
+  ['an unavailable summary', { days: 30, state: 'unavailable' as const }, ['', '', '']],
 ])('shows the calls to each tool under the Usage column, given %s', (_, toolCalls, counts) => {
   renderPage({ toolCalls })
   const headers = within(table()).getAllByRole('columnheader')
@@ -391,6 +396,13 @@ test.each([
           return within(row as HTMLElement).getAllByRole('cell')[column]!.textContent
         })
   expect(cells).toEqual(counts)
+  // Only the heading says the usage is unavailable, and it says so once.
+  const unavailable =
+    toolCalls !== null && 'state' in toolCalls && toolCalls.state === 'unavailable'
+  expect(within(table()).queryAllByText('Usage unavailable')).toHaveLength(unavailable ? 1 : 0)
+  expect(
+    within(table()).queryAllByRole('columnheader', { name: /^Usage unavailable/ }),
+  ).toHaveLength(unavailable ? 1 : 0)
   // The busiest tool in the catalog fills its bar, whatever a removed tool called.
   if (counted) {
     const row = within(table()).getByRole('link', { name: 'repos.get' }).closest('[role="row"]')!
