@@ -1201,7 +1201,6 @@ dependencies = [
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
- "coral-tools",
  "coral-workspace",
  "futures-util",
  "reqwest",

@@ -21,11 +21,9 @@ coral-identifier.workspace = true
 coral-mcp.workspace = true
 coral-outbound = { workspace = true, features = ["transport"] }
 coral-run.workspace = true
-coral-search.workspace = true
 coral-secret-store.workspace = true
 coral-task.workspace = true
 coral-telemetry.workspace = true
-coral-tools.workspace = true
 coral-workspace.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true
@@ -45,6 +43,7 @@ uuid.workspace = true
 [dev-dependencies]
 coral-mcp = { workspace = true, features = ["test-fixtures"] }
 coral-provider = { workspace = true, features = ["test-fixtures"] }
+coral-search.workspace = true
 coral-test-support.workspace = true
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 wiremock.workspace = true

@@ -8,6 +8,7 @@ mod tests;
 
 use std::time::Duration;
 
+use coral_mcp::ToolFailure;
 use coral_run::{
     FinalValue, ProgramLogLevel, RUN_EVENT_PAGE_MAX, RequiredAction, RequiredActionRequest,
     RequiredActor, RunCursor, RunEvent, RunEventKind, RunFailure, RunFailureCode, RunId, RunModule,
@@ -15,7 +16,7 @@ use coral_run::{
 };
 use coral_task::{AttributedCommand, TASK_INTENT_MAX_CHARS, TaskCommands, TaskId, TaskIntent};
 use coral_telemetry::safe;
-use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
+use coral_workspace::{AuthenticatedPrincipal, AuthorityRefusal, WorkspaceId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -247,9 +248,9 @@ fn shortened(text: String) -> String {
     format!("{head}\n[... {cut} bytes cut from the middle of this result ...]\n{tail}")
 }
 
-/// Why a tool call failed, as the model reads it.
+/// Why a tool call failed, as the model and the lead read it.
 #[derive(Debug)]
-struct Failure {
+pub(crate) struct Failure {
     code: &'static str,
     message: String,
 }
@@ -288,189 +289,68 @@ impl Failure {
     }
 }
 
-fn task_failure(error: coral_task::Error) -> Failure {
+/// Core's safe text where core marks it safe, our own wording for the few
+/// failures a model can act on, and one general message for the rest.
+pub(crate) fn task_failure(error: coral_task::Error) -> Failure {
+    use coral_task::Error;
     match error {
-        coral_task::Error::InvalidInput(message) => Failure::shown("invalid_input", message),
-        coral_task::Error::TaskNotFound => Failure::shown("task_not_found", "Task was not found."),
-        coral_task::Error::WorkspaceNotFound => {
-            refusal_failure(coral_workspace::AuthorityRefusal::WorkspaceNotFound)
-        }
-        coral_task::Error::PermissionDenied(_) => {
-            refusal_failure(coral_workspace::AuthorityRefusal::PermissionDenied)
-        }
-        coral_task::Error::Workspace(error) => workspace_failure(error),
-        coral_task::Error::Search(error) => search_failure(error),
-        coral_task::Error::Tools(error) => tools_failure(error),
-        coral_task::Error::Run(error) => run_failure(error),
-        coral_task::Error::TaskClosed => Failure::shown(
+        Error::InvalidInput(message) => Failure::shown("invalid_input", message),
+        Error::TaskNotFound => Failure::shown("task_not_found", "Task was not found."),
+        Error::TaskClosed => Failure::shown(
             "task_closed",
             "The Task has ended and runs no more Programs.",
         ),
-        coral_task::Error::InteractionNotFound => {
-            Failure::shown("interaction_not_found", "Task Interaction was not found.")
-        }
-        coral_task::Error::SnapshotTooLarge => Failure::shown(
-            "snapshot_too_large",
-            "Complete discovery snapshot exceeds its limit.",
-        ),
-        coral_task::Error::IdentifierIssuance(_)
-        | coral_task::Error::CorruptData(_)
-        | coral_task::Error::Database(_) => Failure::internal(),
+        Error::WorkspaceNotFound => refusal_failure(AuthorityRefusal::WorkspaceNotFound),
+        Error::PermissionDenied(_) => refusal_failure(AuthorityRefusal::PermissionDenied),
+        Error::Workspace(error) => error
+            .refusal()
+            .map_or_else(Failure::internal, refusal_failure),
+        Error::Search(error) => safe_or_internal(error.safe_rejection()),
+        Error::Tools(error) => safe_or_internal(error.safe_rejection()),
+        Error::Run(error) => run_failure(error),
+        _ => Failure::internal(),
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "it is the `map_err` of every Run call"
+)]
 fn run_failure(error: coral_run::Error) -> Failure {
-    if let Some((code, message)) = error.safe_rejection() {
-        return Failure::shown(code, message);
+    use coral_run::Error;
+    if let Some(safe) = error.safe_rejection() {
+        return safe_or_internal(Some(safe));
     }
     match error {
-        coral_run::Error::RunNotFound => Failure::shown("run_not_found", "Run was not found."),
-        coral_run::Error::ApprovalNotFound => {
-            Failure::shown("approval_not_found", "Approval Request was not found.")
-        }
-        coral_run::Error::OwnerLost => Failure::shown(
+        Error::RunNotFound => Failure::shown("run_not_found", "Run was not found."),
+        Error::OwnerLost => Failure::shown(
             "run_owner_lost",
             "The Run's outcome is unknown. Call wait to read the Run again.",
         ),
-        coral_run::Error::RunRequestNotYetRecorded => Failure::shown(
+        Error::RunRequestNotYetRecorded => Failure::shown(
             "run_request_not_yet_recorded",
             "The request is not yet recorded. Call again.",
         ),
-        coral_run::Error::Tools(error) => tools_failure(error),
-        coral_run::Error::ProgramValueTooLarge => Failure::shown(
-            "program_value_too_large",
-            "The Program's Final Value is too large.",
-        ),
-        coral_run::Error::InvocationRejected(failure) => {
-            Failure::shown("invocation_rejected", failure.message())
-        }
-        coral_run::Error::Workspace(error) => workspace_failure(error),
-        // `safe_rejection` answers these before the match.
-        coral_run::Error::InvalidInput(_)
-        | coral_run::Error::ProgramAdmission(_)
-        | coral_run::Error::PermissionDenied(_)
-        | coral_run::Error::CompilationTimedOut
-        | coral_run::Error::CompilerBusy
-        | coral_run::Error::CompilerUnavailable
-        | coral_run::Error::PackageTooLarge { .. }
-        | coral_run::Error::ShuttingDown
-        // `safe_rejection` has no answer for the rest.
-        | coral_run::Error::ProgramRuntimeUnavailable(_)
-        | coral_run::Error::ProgramWorkerStopped
-        | coral_run::Error::Clock(_)
-        | coral_run::Error::IdentifierIssuance(_)
-        | coral_run::Error::InvalidProgramValue
-        | coral_run::Error::ProgramValueJson(_)
-        | coral_run::Error::InvocationPersistence(_)
-        | coral_run::Error::RunEventPersistence(_)
-        | coral_run::Error::ClaimMismatch
-        | coral_run::Error::HeadMismatch
-        | coral_run::Error::RunEnded
-        | coral_run::Error::ProgramHostTerminated
-        | coral_run::Error::Provider(_)
-        | coral_run::Error::Policy(_)
-        | coral_run::Error::Upstream(_)
-        | coral_run::Error::CorruptData(_)
-        | coral_run::Error::Database(_) => Failure::internal(),
+        _ => Failure::internal(),
     }
 }
 
-fn search_failure(error: coral_search::Error) -> Failure {
-    if let Some((code, message)) = error.safe_rejection() {
-        return Failure::shown(code, message);
-    }
-    match error {
-        coral_search::Error::PermissionDenied(_) => {
-            refusal_failure(coral_workspace::AuthorityRefusal::PermissionDenied)
-        }
-        coral_search::Error::Workspace(error) => workspace_failure(error),
-        coral_search::Error::Tools(error) => tools_failure(error),
-        // `safe_rejection` answers these before the match.
-        coral_search::Error::InvalidInput(_)
-        | coral_search::Error::UnknownProviderCallRoot { .. }
-        | coral_search::Error::ServiceUnavailable
-        | coral_search::Error::AuthoringDescriptionNotFound
-        | coral_search::Error::TypesLimit
-        | coral_search::Error::UndeclaredTypes { .. }
-        // `safe_rejection` has no answer for the rest.
-        | coral_search::Error::Provider(_)
-        | coral_search::Error::Policy(_)
-        | coral_search::Error::Database(_) => Failure::internal(),
+impl From<Failure> for ToolFailure {
+    fn from(failure: Failure) -> Self {
+        Self::safe(failure.code, failure.message)
     }
 }
 
-fn tools_failure(error: coral_tools::Error) -> Failure {
-    use coral_tools::Error;
-    if let Some((code, message)) = error.safe_rejection() {
-        return Failure::shown(code, message);
-    }
-    match error {
-        Error::Workspace(error) => workspace_failure(error),
-        // `safe_rejection` answers these before the match.
-        Error::InvalidInput(_)
-        | Error::NotFound(_)
-        | Error::PrivateToolExists
-        | Error::RevisionConflict { .. }
-        | Error::Admission(..)
-        | Error::SharedToolSourceUnreadable
-        | Error::SharedToolRestoreDiffers
-        | Error::SharedToolDeclarationChanged
-        | Error::SharedToolHasDependents { .. }
-        | Error::PathConflict(_)
-        | Error::NotData(..)
-        | Error::CompilationTimedOut(_)
-        | Error::CompilerBusy
-        | Error::NoCompiler
-        | Error::PermissionDenied(_)
-        // `safe_rejection` has no answer for the rest.
-        | Error::CompilerUnavailable(_)
-        | Error::CompilerWorkerStopped
-        | Error::Json(_)
-        | Error::CorruptData(_)
-        | Error::Database(_) => Failure::internal(),
-    }
+/// The text a core module marks safe to show, or the general message.
+fn safe_or_internal(safe: Option<(&'static str, String)>) -> Failure {
+    safe.map_or_else(Failure::internal, |(code, message)| {
+        Failure::shown(code, message)
+    })
 }
 
 /// A refusal reads the same whichever module's error wrapped it.
-fn refusal_failure(refusal: coral_workspace::AuthorityRefusal) -> Failure {
+fn refusal_failure(refusal: AuthorityRefusal) -> Failure {
     Failure::shown(refusal.code(), refusal.message())
-}
-
-fn workspace_failure(error: coral_workspace::Error) -> Failure {
-    if let Some(refusal) = error.refusal() {
-        return refusal_failure(refusal);
-    }
-    match error {
-        coral_workspace::Error::InvalidInput(message) => Failure::shown("invalid_input", message),
-        // `refusal` answers these before the match.
-        coral_workspace::Error::WorkspaceNotFound
-        | coral_workspace::Error::WorkspaceArchived
-        | coral_workspace::Error::PermissionDenied(_)
-        | coral_workspace::Error::AgentNotFound
-        | coral_workspace::Error::InvalidAgentCredential
-        | coral_workspace::Error::AgentDisabled
-        | coral_workspace::Error::AgentRegistrationExpired
-        // `refusal` has no answer for the rest.
-        | coral_workspace::Error::OrganizationAuthorityConflict
-        | coral_workspace::Error::EtagMismatch
-        | coral_workspace::Error::RequestAlreadyApplied
-        | coral_workspace::Error::CredentialGeneration
-        | coral_workspace::Error::WorkspaceAlreadyActive
-        | coral_workspace::Error::WorkspaceAlreadyArchived
-        | coral_workspace::Error::MembershipAlreadyExists
-        | coral_workspace::Error::MembershipNotFound
-        | coral_workspace::Error::LastWorkspaceOwner
-        | coral_workspace::Error::OwnerTransferRequired
-        | coral_workspace::Error::OwnerTargetNotEnabled
-        | coral_workspace::Error::OrganizationMembershipNotFound
-        | coral_workspace::Error::LastOrganizationOwner
-        | coral_workspace::Error::MemberTargetNotEnabled
-        | coral_workspace::Error::AccessRemovalMismatch
-        | coral_workspace::Error::CorruptData(_)
-        | coral_workspace::Error::Database(_)
-        | coral_workspace::Error::EventFields(_)
-        | coral_workspace::Error::AmbiguousEmail => Failure::internal(),
-    }
 }
 
 /// A Run as the model reads it, with the field names of Coral's MCP tools.
