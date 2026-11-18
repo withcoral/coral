@@ -943,15 +943,15 @@ pub(super) mod tests {
         for now_secs in [1_000_000_000_i64, 4_102_444_800] {
             // A token carries whole seconds: the last nanosecond of a second
             // is still that second.
-            let now_unix_nanos = now_secs * 1_000_000_000 + 999_999_999;
+            let now = UnixNanos::new(now_secs * 1_000_000_000 + 999_999_999);
             let access_token = session
-                .issue_access_token(MEMBER, CLIENT, RESOURCE, UnixNanos::new(now_unix_nanos))
+                .issue_access_token(MEMBER, CLIENT, RESOURCE, now)
                 .expect("issued token");
             let issued = IssuedTokens {
                 access_token,
                 refresh_token: None,
             };
-            let response = token_response(&issued, UnixNanos::new(now_unix_nanos));
+            let response = token_response(&issued, now);
             assert_eq!(response.status(), StatusCode::OK);
             let body = to_bytes(response.into_body(), 64 * 1024)
                 .await

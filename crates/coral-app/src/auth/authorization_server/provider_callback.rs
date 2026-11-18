@@ -110,12 +110,9 @@ mod tests {
             coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
             coral_catalog::SchemaGraphCache::with_default_budget(),
         );
-        let now = coral_test_support::now_unix_nanos();
-        let context = ChangeContext::new(
-            local_organization_owner(),
-            UnixNanos::new(now),
-            TraceId::current_or_new(),
-        );
+        let now = UnixNanos::new(coral_test_support::now_unix_nanos());
+        let context =
+            ChangeContext::new(local_organization_owner(), now, TraceId::current_or_new());
         let workspace = workspaces
             .create(&context, WorkspaceDisplayName::parse("Callback").unwrap())
             .await
@@ -240,7 +237,7 @@ mod tests {
             assert!(!response.text().await.unwrap().contains("canary"));
         }
         let progress = providers
-            .setup_authentication(context.actor(), &owner, setup.id(), UnixNanos::new(now))
+            .setup_authentication(context.actor(), &owner, setup.id(), now)
             .await
             .unwrap();
         assert!(progress.authorized);

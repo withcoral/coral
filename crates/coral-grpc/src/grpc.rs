@@ -300,12 +300,12 @@ impl GrpcServices {
         .map_err(authentication_error)
     }
 
-    /// Reads the server's clock again, in Unix nanoseconds. It is only for a
-    /// decision a handler makes after it waited on outside work, such as a
-    /// provider's answer: the request's time is stale by then. Every other
-    /// decision takes the request's time from its `ManagementUser`.
-    fn now_after_outside_work(&self) -> i64 {
-        self.clock.now().get()
+    /// Reads the server's clock again. It is only for a decision a handler
+    /// makes after it waited on outside work, such as a provider's answer:
+    /// the request's time is stale by then. Every other decision takes the
+    /// request's time from its `ManagementUser`.
+    fn now_after_outside_work(&self) -> UnixNanos {
+        self.clock.now()
     }
 }
 

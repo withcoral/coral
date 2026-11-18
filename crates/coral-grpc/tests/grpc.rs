@@ -392,7 +392,7 @@ impl Fixture {
     }
 
     fn token(&self, user: &AuthenticatedUser, audience: &str) -> String {
-        let now = self.clock.now().get();
+        let now = self.clock.now();
         if audience == "mcp" {
             self.issuer
                 .issue_workspace_access_token(
@@ -400,18 +400,13 @@ impl Fixture {
                     "test",
                     audience,
                     self.workspace.id(),
-                    coral_db::UnixNanos::new(now),
+                    now,
                 )
                 .unwrap()
                 .access_token
         } else {
             self.issuer
-                .issue_access_token(
-                    user.user_id().as_str(),
-                    "test",
-                    audience,
-                    coral_db::UnixNanos::new(now),
-                )
+                .issue_access_token(user.user_id().as_str(), "test", audience, now)
                 .unwrap()
                 .access_token
         }

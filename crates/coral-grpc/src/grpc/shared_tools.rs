@@ -40,7 +40,7 @@ fn summary(workspace: &WorkspaceId, summary: &SharedToolSummary) -> wire::Shared
         path: summary.path().as_str().to_owned(),
         description: summary.description().as_str().to_owned(),
         revision: summary.current_revision(),
-        update_time: Some(timestamp(summary.published_at().get())),
+        update_time: Some(timestamp(summary.published_at())),
         name: resource_name(workspace, summary.id()),
     }
 }
@@ -58,7 +58,7 @@ fn event(workspace: &WorkspaceId, event: &SharedToolLifecycleEvent) -> wire::Sha
         revision: event.revision(),
         content_hash: event.content_hash().to_owned(),
         actor: user_name(event.actor()),
-        event_time: Some(timestamp(event.occurred_at().get())),
+        event_time: Some(timestamp(event.occurred_at())),
     }
 }
 
@@ -82,7 +82,7 @@ fn revision(revision: &SharedToolRevision) -> wire::SharedToolRevision {
         content_hash: revision.content_hash().to_owned(),
         default_access_state: access_state(revision.default_access_state()).into(),
         publisher: user_name(revision.published_by()),
-        publish_time: Some(timestamp(revision.published_at().get())),
+        publish_time: Some(timestamp(revision.published_at())),
         restored_from_revision: restored_from(revision.origin()),
     }
 }
@@ -94,7 +94,7 @@ fn revision_summary(revision: &SharedToolRevisionSummary) -> wire::SharedToolRev
         content_hash: revision.content_hash().to_owned(),
         default_access_state: access_state(revision.default_access_state()).into(),
         publisher: user_name(revision.published_by()),
-        publish_time: Some(timestamp(revision.published_at().get())),
+        publish_time: Some(timestamp(revision.published_at())),
         restored_from_revision: restored_from(revision.origin()),
     }
 }
@@ -103,7 +103,7 @@ fn shared_tool(tool: &SharedTool) -> wire::SharedTool {
     wire::SharedTool {
         path: tool.path().as_str().to_owned(),
         creator: user_name(tool.created_by()),
-        create_time: Some(timestamp(tool.created_at().get())),
+        create_time: Some(timestamp(tool.created_at())),
         current_revision: Some(revision(tool.current())),
         name: resource_name(tool.workspace_id(), tool.id()),
     }
