@@ -650,42 +650,32 @@ async fn upgrade_gives_each_row_the_first_version_and_the_times_its_metadata_hol
         )
         .await
         .expect("a Coral from before the step still creates an Agent");
-    let times = "COALESCE(CAST(created_at_unix_nanos AS TEXT), 'none') || ':' || \
-                 COALESCE(CAST(updated_at_unix_nanos AS TEXT), 'none')";
-    let agent = |id: &str| {
-        format!("SELECT id, CAST(version AS TEXT), {times} FROM workspace_agents WHERE id = '{id}'")
-    };
-    let registration = |id: &str| {
-        format!(
-            "SELECT id, CAST(version AS TEXT), {times} FROM agent_registrations WHERE id = '{id}'"
-        )
-    };
     let mut transaction = database.begin_read_snapshot().await.unwrap();
     assert_each_row(
         &mut transaction,
         [
             (
-                agent("agent:current").as_str(),
+                agent_row("agent:current").as_str(),
                 ["agent:current", "1", "10:30"],
             ),
             (
-                agent("agent:deleted").as_str(),
+                agent_row("agent:deleted").as_str(),
                 ["agent:deleted", "1", "11:40"],
             ),
             (
-                agent("agent:bare").as_str(),
+                agent_row("agent:bare").as_str(),
                 ["agent:bare", "1", "none:none"],
             ),
             (
-                agent("agent:peer").as_str(),
+                agent_row("agent:peer").as_str(),
                 ["agent:peer", "1", "none:none"],
             ),
             (
-                registration("registration").as_str(),
+                registration_row("registration").as_str(),
                 ["registration", "1", "10:20"],
             ),
             (
-                registration("peer-registration").as_str(),
+                registration_row("peer-registration").as_str(),
                 ["peer-registration", "1", "none:none"],
             ),
             (
@@ -741,11 +731,11 @@ const RESOURCE_TIMES_REPAIR: i64 = 78;
 ///   resource version step copied, and the older Coral changed them since,
 ///   so the metadata holds a later time of change.
 /// - `agent:newer` and its Registration: the rows hold a later time of change
-///   than the metadata. The Coral with the step leaves a row so when its
-///   change commits while the repair waits for it: the repair then reads the
-///   changed row and the metadata from before the change. The Registration
-///   also holds another creation time than its metadata, which no Coral
-///   leaves, to show that the repair fills a creation time and replaces none.
+///   than the metadata. No Coral leaves a row so by its own writes. The rows
+///   stand for what the repair reads when a change commits while it waits
+///   for the row: the changed row, and the metadata from before the change.
+///   The Registration also holds another creation time than its metadata, to
+///   show that the repair fills a creation time and replaces none.
 /// - `agent:bare` and `agent:unrecorded` have no metadata. The second holds
 ///   times.
 ///
@@ -798,15 +788,21 @@ const ROWS_BEFORE_RESOURCE_TIMES_REPAIR: &str = r"
 /// beside one that had it: the upgrade gives each Agent and each Registration
 /// row the times that its own concurrency metadata holds, where the row holds
 /// none or an earlier time of change. That fills a row which the older Coral
-/// created, and corrects one which it changed last. It never sets a time
-/// back, and it leaves a row that has no metadata, each version, and the
-/// metadata.
+/// created, and corrects one which it changed last. It leaves a row that
+/// holds a later time of change than its metadata, a row that has no
+/// metadata, each version, and the metadata.
 // Catches: a release that reads the times from the row and shows none for an
 // Agent that the older Coral created, or an earlier time of change than the
 // one it showed before for a resource that the older Coral changed; a repair
-// that sets back the time of a change which commits while it runs; and one
-// that takes the times from another kind's or another Workspace's metadata,
-// sets the times of a row without metadata to NULL, or moves a version.
+// that replaces a row's later time of change with the metadata's earlier
+// one; and one that takes the times from another kind's or another
+// Workspace's metadata, sets the times of a row without metadata to NULL, or
+// moves a version.
+//
+// This runs the repair alone, on rows that are at rest. It pins the rule
+// that a time only moves forward, not the race that the rule is for: a
+// change that commits while the repair waits for its row. That race was
+// reproduced by hand on Postgres with two sessions.
 #[tokio::test]
 async fn upgrade_gives_each_row_the_times_its_metadata_holds_after_an_older_corals_writes() {
     let before = coral_test_support::migration_plan_before(RESOURCE_TIMES_REPAIR);
@@ -822,16 +818,6 @@ async fn upgrade_gives_each_row_the_times_its_metadata_holds_after_an_older_cora
         .await
         .expect("apply the upgrade");
 
-    let times = "COALESCE(CAST(created_at_unix_nanos AS TEXT), 'none') || ':' || \
-                 COALESCE(CAST(updated_at_unix_nanos AS TEXT), 'none')";
-    let agent = |id: &str| {
-        format!("SELECT id, CAST(version AS TEXT), {times} FROM workspace_agents WHERE id = '{id}'")
-    };
-    let registration = |id: &str| {
-        format!(
-            "SELECT id, CAST(version AS TEXT), {times} FROM agent_registrations WHERE id = '{id}'"
-        )
-    };
     let agents = [
         ["agent:current", "3", "10:30"],
         ["agent:older", "1", "50:55"],
@@ -851,12 +837,16 @@ async fn upgrade_gives_each_row_the_times_its_metadata_holds_after_an_older_cora
     ];
     let mut transaction = database.begin_read_snapshot().await.unwrap();
     for expected in agents {
-        assert_each_row(&mut transaction, [(agent(expected[0]).as_str(), expected)]).await;
+        assert_each_row(
+            &mut transaction,
+            [(agent_row(expected[0]).as_str(), expected)],
+        )
+        .await;
     }
     for expected in registrations {
         assert_each_row(
             &mut transaction,
-            [(registration(expected[0]).as_str(), expected)],
+            [(registration_row(expected[0]).as_str(), expected)],
         )
         .await;
     }
@@ -872,6 +862,25 @@ async fn upgrade_gives_each_row_the_times_its_metadata_holds_after_an_older_cora
     )
     .await;
     transaction.commit().await.unwrap();
+}
+
+/// The two times of a row as one text column, `created:updated`, with `none`
+/// for a time that the row does not hold.
+const ROW_TIMES: &str = "COALESCE(CAST(created_at_unix_nanos AS TEXT), 'none') || ':' || \
+                         COALESCE(CAST(updated_at_unix_nanos AS TEXT), 'none')";
+
+/// The query that reads one Agent's id, version and times for
+/// [`assert_each_row`].
+fn agent_row(id: &str) -> String {
+    format!("SELECT id, CAST(version AS TEXT), {ROW_TIMES} FROM workspace_agents WHERE id = '{id}'")
+}
+
+/// The query that reads one Agent Registration's id, version and times for
+/// [`assert_each_row`].
+fn registration_row(id: &str) -> String {
+    format!(
+        "SELECT id, CAST(version AS TEXT), {ROW_TIMES} FROM agent_registrations WHERE id = '{id}'"
+    )
 }
 
 /// Asserts that each query reads back exactly one row of three text columns.
