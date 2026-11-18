@@ -169,6 +169,7 @@ impl Launch {
             }),
             // The launching binary supplies these, never the environment.
             extensions: super::runtime::Extensions::default(),
+            mcp_interface_factory: None,
             compile_in_process: false,
             migration_report: None,
             // The host's clock: only a test supplies another.

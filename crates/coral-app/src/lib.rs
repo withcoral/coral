@@ -24,9 +24,10 @@ pub use auth::{
 };
 pub use bootstrap::{
     AppError, Extensions, LOCAL_OUTBOUND_DEFAULTS, Launch, ListenerReadiness, McpHttpServeConfig,
-    McpStartError, MigrationProgress, MigrationReport, PreparedServerBuilder, RunningRuntime,
-    RunningServer, RuntimeError, SearchModel, SearchModelState, SearchModelStop, ServeSettings,
-    ServerBuilder, ServerMode, SessionAuthSettings, ShutdownFailures, StateRefusal, start_runtime,
+    McpInterfaceDependencies, McpInterfaceFactory, McpStartError, MigrationProgress,
+    MigrationReport, PreparedServerBuilder, RunningRuntime, RunningServer, RuntimeError,
+    SearchModel, SearchModelState, SearchModelStop, ServeSettings, ServerBuilder, ServerMode,
+    SessionAuthSettings, ShutdownFailures, StateRefusal, start_runtime,
 };
 pub use config_toml::ConfigDecodeError;
 pub use oauth_resource::{CanonicalOauthUrl, OauthUrlError};

@@ -8,12 +8,14 @@ use serde::de::IgnoredAny;
 use zeroize::Zeroizing;
 
 use super::env::AppEnvironment;
+use super::mcp_interface::ConfiguredMcpInterface;
 use super::secret_store_config::SecretStoreDefinitions;
 use super::{AppError, is_loopback_ip};
 use crate::auth::{
     AuthListenerSettings, AuthSection, AuthServerError, AuthSettings, CoralAuthorizationServer,
     ResolvedAuthSettings, WebSettings,
 };
+use crate::config_toml::Document;
 use crate::oauth_resource::CanonicalOauthUrl;
 use crate::state::AppStateLayout;
 use crate::telemetry::TelemetryConfig;
@@ -42,10 +44,10 @@ struct ServerConfigFile {
 }
 
 impl ServerConfigFile {
-    /// Decodes the whole document. A failure names the key path and never
-    /// the value.
-    fn decode(raw: &str) -> Result<Self, AppError> {
-        crate::config_toml::decode(raw).map_err(AppError::ConfigDecode)
+    /// Decodes what is left of the document. A failure names the key path
+    /// and never the value.
+    fn decode(document: Document<'_>) -> Result<Self, AppError> {
+        document.decode().map_err(AppError::ConfigDecode)
     }
 
     /// Validates the auth settings: the `[auth]` table, and the auth and web
@@ -88,6 +90,8 @@ pub(crate) struct Launcher {
     pub(crate) usage_environment: Option<coral_usage::SendEnvironment>,
     /// What the launching binary adds to Coral, such as its Edition check.
     pub(crate) extensions: super::runtime::Extensions,
+    /// Builds the tool surface MCP serves in place of core's.
+    pub(crate) mcp_interface_factory: Option<std::sync::Arc<dyn super::McpInterfaceFactory>>,
     /// Compile in this process: a test that starts Coral in its own process.
     pub(crate) compile_in_process: bool,
     /// Where startup reports each database migration step it applies.
@@ -158,7 +162,14 @@ impl LoadedServerConfig {
         launcher: &Launcher,
         grpc_bind: Option<SocketAddr>,
     ) -> Result<DeploymentConfig, AppError> {
-        let mut file = ServerConfigFile::decode(&self.raw)?;
+        let mut document = Document::parse(&self.raw).map_err(AppError::ConfigDecode)?;
+        let mcp_interface = match &launcher.mcp_interface_factory {
+            Some(factory) => ConfiguredMcpInterface::take(factory, &mut document)
+                .map_err(AppError::ConfigDecode)?,
+            None => None,
+        };
+        // A section that no factory took is an unknown field here.
+        let mut file = ServerConfigFile::decode(document)?;
         let auth = file.auth_settings()?;
         let ServerConfigFile {
             listeners,
@@ -243,6 +254,7 @@ impl LoadedServerConfig {
             credential_key_env,
             license,
             secret_stores,
+            mcp_interface,
             session_auth,
             telemetry: TelemetryConfig { otel },
         })
@@ -276,6 +288,7 @@ pub(crate) struct DeploymentConfig {
     license: Option<LicenseSource>,
     /// None when the deployment turned Secret Stores off.
     secret_stores: Option<SecretStoreDefinitions>,
+    mcp_interface: Option<ConfiguredMcpInterface>,
     session_auth: Option<SessionAuthConfig>,
     telemetry: TelemetryConfig,
 }
@@ -491,6 +504,7 @@ impl DeploymentConfig {
             outbound_policy: self.outbound_policy(defaults),
             mcp_oauth_client_bootstrap: self.mcp_oauth_client_bootstrap(),
             mcp_http: self.mcp_http.clone(),
+            mcp_interface: self.mcp_interface.clone(),
             auth_bind_addr: self.auth_bind_addr,
             session_auth: self.resolve_session_auth()?,
             human_interface: self.human_interface.clone(),
@@ -1140,6 +1154,7 @@ pub struct ServeSettings {
     outbound_policy: coral_outbound::DestinationPolicy,
     mcp_oauth_client_bootstrap: coral_provider::account::ClientBootstrapPolicy,
     pub(super) mcp_http: McpHttpServeConfig,
+    pub(super) mcp_interface: Option<ConfiguredMcpInterface>,
     auth_bind_addr: SocketAddr,
     pub(super) session_auth: Option<SessionAuthSettings>,
     human_interface: coral_mcp::HumanInterfaceUrl,
@@ -1442,7 +1457,9 @@ pub(super) mod tests {
     /// Decodes `raw` and validates its auth settings as startup does, for
     /// the auth module's tests. A refusal is the message alone.
     pub(crate) fn auth_settings(raw: &str) -> Result<Option<crate::auth::AuthSettings>, String> {
-        super::ServerConfigFile::decode(raw)
+        super::Document::parse(raw)
+            .map_err(AppError::ConfigDecode)
+            .and_then(super::ServerConfigFile::decode)
             .and_then(|mut file| file.auth_settings())
             .map_err(|error| match error {
                 AppError::Auth(error) => error.to_string(),
