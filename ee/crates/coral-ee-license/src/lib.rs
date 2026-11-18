@@ -11,6 +11,7 @@
 //! on or before `exp_date`: Coral refuses to start after that, and a running
 //! Coral stops when the periodic recheck finds it passed.
 
+use std::fmt;
 use std::sync::{PoisonError, RwLock};
 
 use chrono::NaiveDate;
@@ -109,7 +110,7 @@ impl LicensedEdition {
         &self,
         license: &str,
         today: NaiveDate,
-    ) -> Result<(Grant, Vec<LicenseNotice>), LicenseRefusal> {
+    ) -> Result<(Grant, Vec<LicenseNotice>), Refusal> {
         let license = self.keys.verify(license)?;
         match license.kind {
             Kind::Commercial => self.decide_commercial(&license, today),
@@ -124,17 +125,16 @@ impl LicensedEdition {
         &self,
         license: &License,
         today: NaiveDate,
-    ) -> Result<(Grant, Vec<LicenseNotice>), LicenseRefusal> {
+    ) -> Result<(Grant, Vec<LicenseNotice>), Refusal> {
         let release_date = self.build.release_date();
         let expiry = license.exp_date;
         let customer = &license.customer;
         if release_date > expiry {
-            return Err(LicenseRefusal::new(format!(
-                "The License for {customer} expired on {expiry}, and this build was released on \
-                 {release_date}, so Coral does not start. Run a build released on or before \
-                 {expiry}, or renew the License. To run as the Community Edition, remove the \
-                 License from config.toml."
-            )));
+            return Err(Refusal::Expired {
+                customer: customer.clone(),
+                expiry,
+                release_date,
+            });
         }
         let mut notices = vec![LicenseNotice::info(format!(
             "The License for {customer} sets the Enterprise Edition. It expires on {expiry}: \
@@ -156,11 +156,11 @@ impl LicensedEdition {
         &self,
         license: License,
         today: NaiveDate,
-    ) -> Result<(Grant, Vec<LicenseNotice>), LicenseRefusal> {
+    ) -> Result<(Grant, Vec<LicenseNotice>), Refusal> {
         let expiry = license.exp_date;
         let customer = license.customer;
         if today > expiry || self.build.release_date() > expiry {
-            return Err(evaluation_ended(&customer, expiry, "does not start"));
+            return Err(Refusal::EvaluationEnded { customer, expiry });
         }
         let notices = vec![
             LicenseNotice::info(format!(
@@ -174,16 +174,145 @@ impl LicensedEdition {
         ];
         Ok((Grant::Evaluation { customer, expiry }, notices))
     }
+
+    /// Takes the License the deployment configures. See
+    /// [`EditionSource::apply_license`].
+    fn apply(
+        &self,
+        license: Option<&str>,
+        today: NaiveDate,
+    ) -> Result<Vec<LicenseNotice>, Refusal> {
+        let (grant, notices) = match license {
+            None => (Grant::Community, Vec::new()),
+            Some(license) => self.decide(license, today)?,
+        };
+        *self.grant.write().unwrap_or_else(PoisonError::into_inner) = grant;
+        Ok(notices)
+    }
+
+    /// Whether Coral may keep running on `today`. See
+    /// [`EditionSource::recheck_license`].
+    fn recheck(&self, today: NaiveDate) -> Result<(), Refusal> {
+        match &*self.grant.read().unwrap_or_else(PoisonError::into_inner) {
+            Grant::Evaluation { customer, expiry } if today > *expiry => {
+                Err(Refusal::EvaluationStopped {
+                    customer: customer.clone(),
+                    expiry: *expiry,
+                })
+            }
+            Grant::Community | Grant::Commercial | Grant::Evaluation { .. } => Ok(()),
+        }
+    }
 }
 
-/// Why Coral stops, or does not start, with an Evaluation License for
-/// `customer` that ended on `expiry`.
-fn evaluation_ended(customer: &str, expiry: NaiveDate, outcome: &str) -> LicenseRefusal {
-    LicenseRefusal::new(format!(
-        "The Evaluation License for {customer} ended on {expiry}, so Coral {outcome}. Add a \
-         Commercial License to config.toml. To run as the Community Edition, remove the License \
-         from config.toml."
-    ))
+/// Why Coral does not start, or stops, with the configured License. Its
+/// text says what is wrong and what the operator can do about it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Refusal {
+    /// The text is not a Coral License.
+    Malformed(Malformed),
+    /// The signing key was revoked.
+    Revoked { kid: String },
+    /// This build does not trust the signing key.
+    Untrusted { kid: String },
+    /// The signature, or the implicit assertion, does not check out.
+    BadSignature,
+    /// The License has a format version this build does not read.
+    UnknownVersion(u64),
+    /// The License has a kind this build does not read.
+    UnknownKind(String),
+    /// A Commercial License that expired before this build was released.
+    Expired {
+        customer: String,
+        expiry: NaiveDate,
+        release_date: NaiveDate,
+    },
+    /// An Evaluation License that ended before Coral started.
+    EvaluationEnded { customer: String, expiry: NaiveDate },
+    /// An Evaluation License that ended while Coral ran.
+    EvaluationStopped { customer: String, expiry: NaiveDate },
+}
+
+/// What makes a text not a Coral License.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Malformed {
+    NotAToken,
+    NoSigningKey,
+    PayloadNotJson,
+    NoFormatVersion,
+    NoKind,
+    NotALicense,
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let remove = "To run as the Community Edition, remove the License from config.toml.";
+        match self {
+            Self::Malformed(problem) => {
+                let problem = match problem {
+                    Malformed::NotAToken => "it is not a PASETO v4.public token",
+                    Malformed::NoSigningKey => "its footer does not name a signing key",
+                    Malformed::PayloadNotJson => "its payload is not JSON",
+                    Malformed::NoFormatVersion => "its payload has no format version",
+                    Malformed::NoKind => "its payload has no kind",
+                    Malformed::NotALicense => "its payload is not a License",
+                };
+                write!(
+                    f,
+                    "The configured License is not a Coral License: {problem}."
+                )
+            }
+            Self::Revoked { kid } => write!(
+                f,
+                "The configured License is signed with key {kid}, which Coral has revoked. Ask \
+                 Coral for a new License."
+            ),
+            Self::Untrusted { kid } => write!(
+                f,
+                "The configured License is signed with key {kid}, which this build does not \
+                 trust."
+            ),
+            Self::BadSignature => {
+                f.write_str("The configured License's signature does not check out.")
+            }
+            Self::UnknownVersion(version) => write!(
+                f,
+                "The configured License has format version {version}, which this build does not \
+                 read. Run a newer build, or ask Coral for a License this build reads."
+            ),
+            Self::UnknownKind(kind) => write!(
+                f,
+                "The configured License is of kind `{kind}`, which this build does not read. Run \
+                 a newer build, or ask Coral for a License this build reads."
+            ),
+            Self::Expired {
+                customer,
+                expiry,
+                release_date,
+            } => write!(
+                f,
+                "The License for {customer} expired on {expiry}, and this build was released on \
+                 {release_date}, so Coral does not start. Run a build released on or before \
+                 {expiry}, or renew the License. {remove}"
+            ),
+            Self::EvaluationEnded { customer, expiry } => write!(
+                f,
+                "The Evaluation License for {customer} ended on {expiry}, so Coral does not \
+                 start. Add a Commercial License to config.toml. {remove}"
+            ),
+            Self::EvaluationStopped { customer, expiry } => write!(
+                f,
+                "The Evaluation License for {customer} ended on {expiry}, so Coral stops. Add a \
+                 Commercial License to config.toml. {remove}"
+            ),
+        }
+    }
+}
+
+impl From<Refusal> for LicenseRefusal {
+    fn from(refusal: Refusal) -> Self {
+        Self::new(refusal.to_string())
+    }
 }
 
 impl EditionSource for LicensedEdition {
@@ -199,21 +328,11 @@ impl EditionSource for LicensedEdition {
         license: Option<&str>,
         today: NaiveDate,
     ) -> Result<Vec<LicenseNotice>, LicenseRefusal> {
-        let (grant, notices) = match license {
-            None => (Grant::Community, Vec::new()),
-            Some(license) => self.decide(license, today)?,
-        };
-        *self.grant.write().unwrap_or_else(PoisonError::into_inner) = grant;
-        Ok(notices)
+        Ok(self.apply(license, today)?)
     }
 
     fn recheck_license(&self, today: NaiveDate) -> Result<(), LicenseRefusal> {
-        match &*self.grant.read().unwrap_or_else(PoisonError::into_inner) {
-            Grant::Evaluation { customer, expiry } if today > *expiry => {
-                Err(evaluation_ended(customer, *expiry, "stops"))
-            }
-            Grant::Community | Grant::Commercial | Grant::Evaluation { .. } => Ok(()),
-        }
+        Ok(self.recheck(today)?)
     }
 }
 
@@ -288,58 +407,34 @@ impl Keys {
     }
 
     /// Checks `license`'s signature and reads its payload.
-    fn verify(&self, license: &str) -> Result<License, LicenseRefusal> {
+    fn verify(&self, license: &str) -> Result<License, Refusal> {
         let token = UntrustedToken::<pasetors::token::Public, V4>::try_from(license.trim())
-            .map_err(|_not_a_token| not_a_license("it is not a PASETO v4.public token"))?;
+            .map_err(|_not_a_token| Refusal::Malformed(Malformed::NotAToken))?;
         let footer: Footer = serde_json::from_slice(token.untrusted_footer())
-            .map_err(|_no_kid| not_a_license("its footer does not name a signing key"))?;
+            .map_err(|_no_kid| Refusal::Malformed(Malformed::NoSigningKey))?;
         if self.revoked.contains(&footer.kid) {
-            return Err(LicenseRefusal::new(format!(
-                "The configured License is signed with key {}, which Coral has revoked. \
-                 Ask Coral for a new License.",
-                footer.kid
-            )));
+            return Err(Refusal::Revoked { kid: footer.kid });
         }
         let Some((_, key)) = self.trusted.iter().find(|(id, _)| *id == footer.kid) else {
-            return Err(LicenseRefusal::new(format!(
-                "The configured License is signed with key {}, which this build does not trust.",
-                footer.kid
-            )));
+            return Err(Refusal::Untrusted { kid: footer.kid });
         };
-        let trusted = PublicToken::verify(key, &token, None, Some(IMPLICIT_ASSERTION)).map_err(
-            |_forged| LicenseRefusal::new("The configured License's signature does not check out."),
-        )?;
+        let trusted = PublicToken::verify(key, &token, None, Some(IMPLICIT_ASSERTION))
+            .map_err(|_forged| Refusal::BadSignature)?;
         let payload: serde_json::Value = serde_json::from_str(trusted.payload())
-            .map_err(|_not_json| not_a_license("its payload is not JSON"))?;
+            .map_err(|_not_json| Refusal::Malformed(Malformed::PayloadNotJson))?;
         match payload.get("v").and_then(serde_json::Value::as_u64) {
             Some(FORMAT_VERSION) => {}
-            Some(version) => {
-                return Err(LicenseRefusal::new(format!(
-                    "The configured License has format version {version}, which this build \
-                     does not read. Run a newer build, or ask Coral for a License this build reads."
-                )));
-            }
-            None => return Err(not_a_license("its payload has no format version")),
+            Some(version) => return Err(Refusal::UnknownVersion(version)),
+            None => return Err(Refusal::Malformed(Malformed::NoFormatVersion)),
         }
         match payload.get("kind").and_then(serde_json::Value::as_str) {
             Some("commercial" | "evaluation") => {}
-            Some(kind) => {
-                return Err(LicenseRefusal::new(format!(
-                    "The configured License is of kind `{kind}`, which this build does not \
-                     read. Run a newer build, or ask Coral for a License this build reads."
-                )));
-            }
-            None => return Err(not_a_license("its payload has no kind")),
+            Some(kind) => return Err(Refusal::UnknownKind(kind.to_owned())),
+            None => return Err(Refusal::Malformed(Malformed::NoKind)),
         }
         serde_json::from_value(payload)
-            .map_err(|_not_a_license| not_a_license("its payload is not a License"))
+            .map_err(|_not_a_license| Refusal::Malformed(Malformed::NotALicense))
     }
-}
-
-fn not_a_license(problem: &str) -> LicenseRefusal {
-    LicenseRefusal::new(format!(
-        "The configured License is not a Coral License: {problem}."
-    ))
 }
 
 /// A key's PASERK id, `k4.pid.…`.

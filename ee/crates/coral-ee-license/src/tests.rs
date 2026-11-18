@@ -7,7 +7,7 @@ use pasetors::paserk::{FormatAsPaserk, Id};
 use pasetors::version4::{PublicToken, V4};
 use serde_json::{Value, json};
 
-use super::{Build, Keys, LicensedEdition};
+use super::{Build, Keys, LicensedEdition, Malformed, Refusal};
 
 /// A throwaway signing key, as a test generates it.
 struct Signer {
@@ -78,6 +78,9 @@ fn payload_of(kind: &str, exp_date: &str) -> Value {
         "exp_date": exp_date,
     })
 }
+
+/// The customer every test License names.
+const CUSTOMER: &str = "Acme Corp";
 
 fn date(text: &str) -> NaiveDate {
     NaiveDate::parse_from_str(text, "%Y-%m-%d").expect(text)
@@ -202,19 +205,16 @@ fn a_build_released_after_a_commercial_license_expires_refuses_to_start() {
     let key = Signer::new();
     let edition = build(&[&key], &[], "2027-07-01");
     let refusal = edition
-        .apply_license(Some(&key.sign(&payload("2027-06-30"))), date("2026-11-18"))
-        .expect_err("a build released the day after the expiry")
-        .to_string();
-    for text in [
-        "Acme Corp",
-        "expired on 2027-06-30",
-        "released on 2027-07-01",
-        "released on or before 2027-06-30",
-        "renew",
-        "remove the License",
-    ] {
-        assert!(refusal.contains(text), "no {text:?} in {refusal}");
-    }
+        .apply(Some(&key.sign(&payload("2027-06-30"))), date("2026-11-18"))
+        .expect_err("a build released the day after the expiry");
+    assert_eq!(
+        refusal,
+        Refusal::Expired {
+            customer: CUSTOMER.to_owned(),
+            expiry: date("2027-06-30"),
+            release_date: date("2027-07-01"),
+        }
+    );
     assert_eq!(edition.edition(), Edition::Community);
 }
 
@@ -253,17 +253,15 @@ fn an_evaluation_license_starts_only_until_its_expiry_on_the_clock() {
         ),
     ] {
         let edition = build(&[&key], &[], release_date);
-        let refusal = edition
-            .apply_license(Some(&license), date(today))
-            .expect_err(case)
-            .to_string();
-        for text in [
-            "ended on 2026-12-18",
-            "does not start",
-            "remove the License",
-        ] {
-            assert!(refusal.contains(text), "{case}: no {text:?} in {refusal}");
-        }
+        let refusal = edition.apply(Some(&license), date(today)).expect_err(case);
+        assert_eq!(
+            refusal,
+            Refusal::EvaluationEnded {
+                customer: CUSTOMER.to_owned(),
+                expiry: date("2026-12-18"),
+            },
+            "{case}"
+        );
         assert_eq!(edition.edition(), Edition::Community, "{case}");
     }
 }
@@ -282,23 +280,21 @@ fn only_an_evaluation_license_stops_coral_once_it_expires() {
                 date("2026-11-18"),
             )
             .expect(kind);
-        edition
-            .recheck_license(date("2026-12-18"))
-            .expect("the last day");
-        let recheck = edition.recheck_license(date("2026-12-19"));
-        assert_eq!(recheck.is_err(), stops, "{kind}: {recheck:?}");
-        if let Err(refusal) = recheck {
-            let refusal = refusal.to_string();
-            assert!(
-                refusal.contains("ended on 2026-12-18") && refusal.contains("Coral stops"),
-                "{refusal}"
-            );
-        }
+        edition.recheck(date("2026-12-18")).expect("the last day");
+        let expected = if stops {
+            Err(Refusal::EvaluationStopped {
+                customer: CUSTOMER.to_owned(),
+                expiry: date("2026-12-18"),
+            })
+        } else {
+            Ok(())
+        };
+        assert_eq!(edition.recheck(date("2026-12-19")), expected, "{kind}");
         assert_eq!(edition.edition(), Edition::Enterprise, "{kind}");
     }
     let edition = build(&[&key], &[], "2026-11-01");
     edition
-        .recheck_license(date("2099-01-01"))
+        .recheck(date("2099-01-01"))
         .expect("no License never stops Coral");
 }
 
@@ -318,12 +314,16 @@ fn coral_refuses_to_start_with_a_license_it_cannot_trust() {
         "iat": "2026-01-02T03:04:05Z",
         "exp_date": "2028-01-01",
     });
-    for (case, license, says) in [
-        ("malformed", "not a license".to_owned(), "not a Coral License"),
+    for (case, license, expected) in [
+        (
+            "malformed",
+            "not a license".to_owned(),
+            Refusal::Malformed(Malformed::NotAToken),
+        ),
         (
             "a JWT",
             "eyJhbGciOiJFZERTQSJ9.e30.c2ln".to_owned(),
-            "not a Coral License",
+            Refusal::Malformed(Malformed::NotAToken),
         ),
         (
             "no footer",
@@ -334,66 +334,84 @@ fn coral_refuses_to_start_with_a_license_it_cannot_trust() {
                 Some(b"coral-license"),
             )
             .expect("sign"),
-            "not a Coral License",
+            Refusal::Malformed(Malformed::NoSigningKey),
         ),
         (
             "unknown kid",
             stranger.sign(&payload("2028-01-01")),
-            "does not trust",
+            Refusal::Untrusted {
+                kid: stranger.kid(),
+            },
         ),
         (
             "bad signature",
             stranger.sign_as(&payload("2028-01-01"), &key.kid(), b"coral-license"),
-            "signature does not check out",
+            Refusal::BadSignature,
         ),
         (
             "wrong implicit assertion",
             key.sign_as(&payload("2028-01-01"), &key.kid(), b"another-token"),
-            "signature does not check out",
+            Refusal::BadSignature,
         ),
         (
             "unknown format version",
             key.sign(&unknown_version),
-            "format version 2",
+            Refusal::UnknownVersion(2),
         ),
         (
             "missing exp_date",
             key.sign(&json!({ "v": 1, "kind": "commercial", "lid": "lic_01", "customer": "Acme Corp", "iat": "2026-01-02T03:04:05Z" })),
-            "not a Coral License",
+            Refusal::Malformed(Malformed::NotALicense),
         ),
         (
             "missing kind",
             key.sign(&json!({ "v": 1, "lid": "lic_01", "customer": "Acme Corp", "iat": "2026-01-02T03:04:05Z", "exp_date": "2028-01-01" })),
-            "has no kind",
+            Refusal::Malformed(Malformed::NoKind),
         ),
         (
             "unknown kind",
             key.sign(&payload_of("perpetual", "2028-01-01")),
-            "kind `perpetual`",
+            Refusal::UnknownKind("perpetual".to_owned()),
         ),
         (
             "revoked key",
             leaked.sign(&payload("2028-01-01")),
-            "revoked",
+            Refusal::Revoked { kid: leaked.kid() },
         ),
     ] {
         let refusal = edition
-            .apply_license(Some(&license), date("2026-11-18"))
+            .apply(Some(&license), date("2026-11-18"))
             .expect_err(case);
-        assert!(refusal.to_string().contains(says), "{case}: {refusal}");
+        assert_eq!(refusal, expected, "{case}");
         assert_eq!(edition.edition(), Edition::Community, "{case}");
     }
-    let revoked = edition
-        .apply_license(
-            Some(&leaked.sign(&payload("2028-01-01"))),
-            date("2026-11-18"),
-        )
-        .expect_err("revoked")
-        .to_string();
-    assert!(
-        revoked.contains(&leaked.kid()) && revoked.contains("new License"),
-        "{revoked}"
-    );
+}
+
+// Catches: a refusal that does not tell the operator what to do (ADR 0038).
+#[test]
+fn a_refusal_says_what_to_do() {
+    for (refusal, says) in [
+        (
+            Refusal::Revoked {
+                kid: "k4.pid.leaked".to_owned(),
+            },
+            "The configured License is signed with key k4.pid.leaked, which Coral has revoked. \
+             Ask Coral for a new License.",
+        ),
+        (
+            Refusal::Expired {
+                customer: CUSTOMER.to_owned(),
+                expiry: date("2027-06-30"),
+                release_date: date("2027-07-01"),
+            },
+            "The License for Acme Corp expired on 2027-06-30, and this build was released on \
+             2027-07-01, so Coral does not start. Run a build released on or before 2027-06-30, \
+             or renew the License. To run as the Community Edition, remove the License from \
+             config.toml.",
+        ),
+    ] {
+        assert_eq!(refusal.to_string(), says);
+    }
 }
 
 // Catches: a published binary that accepts a test License, or a development
@@ -422,23 +440,29 @@ fn a_build_trusts_the_test_key_only_when_it_has_no_release_date() {
         assert_eq!(edition.edition(), Edition::Enterprise, "{case}");
         assert_notices(&notices, warns, says, case);
     }
-    let refusal = edition
-        .apply_license(Some(lapsed), date("2026-11-18"))
-        .expect_err("lapsed")
-        .to_string();
-    assert!(refusal.contains("expired on 2000-01-01"), "{refusal}");
+    assert_eq!(
+        edition.apply(Some(lapsed), date("2026-11-18")),
+        Err(Refusal::Expired {
+            customer: "Coral development (test key)".to_owned(),
+            expiry: date("2000-01-01"),
+            release_date: date("2026-11-18"),
+        })
+    );
 
+    let test_kid = "k4.pid.6QBZRKbcbaaDgOpU7uN8FmoacXm3GV74aLGp3KbQ5E27";
     let edition = LicensedEdition::new(Keys::for_build(released), released);
     for license in [covering, lapsed, evaluation] {
-        let refusal = edition
-            .apply_license(Some(license), date("2026-11-18"))
-            .expect_err("a released build refuses the test key");
-        assert!(refusal.to_string().contains("does not trust"), "{refusal}");
+        assert_eq!(
+            edition.apply(Some(license), date("2026-11-18")),
+            Err(Refusal::Untrusted {
+                kid: test_kid.to_owned(),
+            }),
+            "a released build refuses the test key"
+        );
     }
 
     // A development build trusts the test key alone, so it refuses every
     // production-signed License.
-    let test_kid = "k4.pid.6QBZRKbcbaaDgOpU7uN8FmoacXm3GV74aLGp3KbQ5E27";
     assert_eq!(Keys::for_build(development).trusted_ids(), [test_kid]);
     assert!(
         !Keys::for_build(released)
