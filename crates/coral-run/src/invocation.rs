@@ -236,6 +236,8 @@ pub(crate) enum InvocationHostError {
     /// A complete, durably retained upstream outcome that is not a declared success.
     Upstream {
         rejection: crate::error::UpstreamRejection,
+        /// The status of an HTTP outcome, which the rejection's message names.
+        http_status: Option<u16>,
         outcome_json: String,
     },
     Fatal(Error),
@@ -957,6 +959,7 @@ impl ToolInvoker {
             None => Ok(result_json),
             Some(rejection) => Err(InvocationHostError::Upstream {
                 rejection,
+                http_status: outcome.http_status(),
                 outcome_json: result_json,
             }),
         }

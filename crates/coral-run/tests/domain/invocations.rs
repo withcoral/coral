@@ -1031,6 +1031,7 @@ async fn a_caught_error_response_carries_status_data_and_metadata() {
           return {
             isToolError: error instanceof coral.ToolError,
             code: error.code,
+            message: error.message,
             status: error.status,
             data: error.data,
             kind: error.metadata.kind,
@@ -1052,6 +1053,8 @@ async fn a_caught_error_response_carries_status_data_and_metadata() {
         &serde_json::json!({
             "isToolError": true,
             "code": "error_response",
+            // A Program that keeps only the message still learns the status.
+            "message": "The upstream service returned an error (HTTP 422)",
             "status": 422,
             "data": {"temperature": 18},
             "kind": "http",

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use coral_catalog::AuthenticationConfiguration;
 use coral_catalog::{
     ExecutionBinding, HttpContentBinding, HttpEncodingBinding, HttpExecutionBinding, HttpMethod,
-    HttpParameterBinding, HttpParameterLocation, HttpParameterStyle, MaterializedTool, SchemaGraph,
-    ToolAvailability,
+    HttpParameterBinding, HttpParameterLocation, HttpParameterStyle, HttpRequestBodyBinding,
+    MaterializedTool, SchemaGraph, ToolAvailability,
 };
 use serde_json::{Map, Value};
 use url::Url;
@@ -71,7 +71,7 @@ impl ReadyHttpDispatch {
         } = serialize_parameters(
             binding.path_template(),
             binding.parameters(),
-            binding.request_body().is_some(),
+            binding.request_body(),
             arguments,
         )?;
         let base_path = url.path().trim_end_matches('/');
@@ -110,7 +110,7 @@ impl ReadyHttpDispatch {
         );
         let caller_header_names = headers.iter().map(|(name, _)| name.clone()).collect();
         let (body, request_media_type) =
-            serialize_request_body(binding.request_body(), arguments, schema_graph, limits)?;
+            serialize_request_body(binding, arguments, schema_graph, limits)?;
         if let Some(media_type) = &request_media_type {
             headers.push(("content-type".to_string(), media_type.clone()));
         }
@@ -389,9 +389,10 @@ struct SerializedParameters {
 fn serialize_parameters(
     path_template: &str,
     parameters: &[HttpParameterBinding],
-    declares_body: bool,
+    request_body: Option<&HttpRequestBodyBinding>,
     arguments: &Map<String, Value>,
 ) -> Result<SerializedParameters, PlanError> {
+    let declares_body = request_body.is_some();
     let mut path = path_template.to_string();
     let mut query = Vec::new();
     let mut headers = Vec::new();
@@ -400,9 +401,10 @@ fn serialize_parameters(
         let value = arguments.get(parameter.logical_name());
         let Some(value) = value else {
             if parameter.required() {
-                return Err(PlanError::InvalidArguments(format!(
-                    "required Tool argument `{}` is missing",
-                    parameter.logical_name()
+                return Err(PlanError::InvalidArguments(missing_argument(
+                    parameter.logical_name(),
+                    parameters,
+                    request_body,
                 )));
             }
             continue;
@@ -448,7 +450,7 @@ fn serialize_parameters(
             return Err(PlanError::InvalidArguments(undeclared_argument(
                 name,
                 parameters,
-                declares_body,
+                request_body,
             )));
         }
     }
@@ -480,37 +482,71 @@ fn serialize_parameters(
 const DECLARED_NAMES_BYTES: usize = 512;
 
 /// Rejects `name`, listing what the Tool declares so the Program can correct
-/// the call without another read. The list holds catalog facts only, never a
-/// submitted value. `body` comes first so the cap cannot hide it.
+/// the call without another read.
 fn undeclared_argument(
     name: &str,
     parameters: &[HttpParameterBinding],
-    declares_body: bool,
+    request_body: Option<&HttpRequestBodyBinding>,
 ) -> String {
-    let declared = declares_body
-        .then_some("body")
+    let declared = declared_arguments(parameters, request_body, false);
+    format!("Tool argument `{name}` is not declared. {declared}")
+}
+
+/// Rejects a call that leaves out the required argument `name`, listing what
+/// the Tool declares, with each argument it requires marked, so the Program
+/// can correct the whole call without another read.
+fn missing_argument(
+    name: &str,
+    parameters: &[HttpParameterBinding],
+    request_body: Option<&HttpRequestBodyBinding>,
+) -> String {
+    let declared = declared_arguments(parameters, request_body, true);
+    format!("required Tool argument `{name}` is missing. {declared}")
+}
+
+/// Says what the Tool declares, for a rejection to tell the Program. The list
+/// holds catalog facts only, never a submitted value. `body` comes first so
+/// the cap cannot hide it. `mark_required` marks each argument the Tool
+/// requires.
+fn declared_arguments(
+    parameters: &[HttpParameterBinding],
+    request_body: Option<&HttpRequestBodyBinding>,
+    mark_required: bool,
+) -> String {
+    let entry = |name: &str, required: bool| {
+        let mark = if mark_required && required {
+            " (required)"
+        } else {
+            ""
+        };
+        format!("`{name}`{mark}")
+    };
+    let declared = request_body
+        .map(|body| entry("body", body.required()))
         .into_iter()
-        .chain(parameters.iter().map(HttpParameterBinding::logical_name))
+        .chain(
+            parameters
+                .iter()
+                .map(|parameter| entry(parameter.logical_name(), parameter.required())),
+        )
         .collect::<Vec<_>>();
     let mut shown = Vec::new();
     let mut bytes = 0;
-    for declared_name in &declared {
-        let quoted = format!("`{declared_name}`");
-        bytes += quoted.len() + if shown.is_empty() { 0 } else { ", ".len() };
+    for entry in &declared {
+        bytes += entry.len() + if shown.is_empty() { 0 } else { ", ".len() };
         if bytes > DECLARED_NAMES_BYTES {
             break;
         }
-        shown.push(quoted);
+        shown.push(entry.as_str());
     }
     let more = declared.len() - shown.len();
     let shown = shown.join(", ");
-    let correction = match more {
+    match more {
         _ if declared.is_empty() => "This Tool declares no arguments.".to_string(),
         0 => format!("It declares: {shown}."),
         _ if shown.is_empty() => "Its declared argument names are too long to list.".to_string(),
         more => format!("It declares: {shown}, and {more} more."),
-    };
-    format!("Tool argument `{name}` is not declared. {correction}")
+    }
 }
 
 fn serialize_path_parameter(
@@ -712,19 +748,21 @@ fn validate_request_headers(headers: &[(String, String)]) -> Result<(), PlanErro
 }
 
 fn serialize_request_body(
-    request_body: Option<&coral_catalog::HttpRequestBodyBinding>,
+    execution: &HttpExecutionBinding,
     arguments: &Map<String, Value>,
     schemas: &SchemaGraph,
     limits: coral_value::ValueLimits,
 ) -> Result<(Option<Vec<u8>>, Option<String>), PlanError> {
-    let Some(binding) = request_body else {
+    let Some(binding) = execution.request_body() else {
         return Ok((None, None));
     };
     let Some(body) = arguments.get("body") else {
         if binding.required() {
-            return Err(PlanError::InvalidArguments(
-                "required Tool argument `body` is missing".to_string(),
-            ));
+            return Err(PlanError::InvalidArguments(missing_argument(
+                "body",
+                execution.parameters(),
+                Some(binding),
+            )));
         }
         return Ok((None, None));
     };
