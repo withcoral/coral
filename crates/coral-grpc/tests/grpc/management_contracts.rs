@@ -856,6 +856,111 @@ async fn management_registration_masks_preserve_unmasked_fields_and_reject_stale
     );
 }
 
+/// What [`assert_shows_its_version_and_no_time_its_row_lacks`] reads of an
+/// Agent or an Agent Registration on the wire.
+trait Versioned: Clone + PartialEq + std::fmt::Debug {
+    fn etag(&self) -> &str;
+    /// The creation time and the time of the last change.
+    fn times(&self) -> [Option<prost_types::Timestamp>; 2];
+    fn with_etag(self, etag: &str) -> Self;
+    fn without_times(self) -> Self;
+}
+
+impl Versioned for management::Agent {
+    fn etag(&self) -> &str {
+        &self.etag
+    }
+    fn times(&self) -> [Option<prost_types::Timestamp>; 2] {
+        [self.create_time, self.update_time]
+    }
+    fn with_etag(self, etag: &str) -> Self {
+        Self {
+            etag: etag.into(),
+            ..self
+        }
+    }
+    fn without_times(self) -> Self {
+        Self {
+            create_time: None,
+            update_time: None,
+            ..self
+        }
+    }
+}
+
+impl Versioned for management::AgentRegistration {
+    fn etag(&self) -> &str {
+        &self.etag
+    }
+    fn times(&self) -> [Option<prost_types::Timestamp>; 2] {
+        [self.create_time, self.update_time]
+    }
+    fn with_etag(self, etag: &str) -> Self {
+        Self {
+            etag: etag.into(),
+            ..self
+        }
+    }
+    fn without_times(self) -> Self {
+        Self {
+            create_time: None,
+            update_time: None,
+            ..self
+        }
+    }
+}
+
+/// Follows one resource that was just created, whose row is the one row of
+/// `table`. `shown` reads it, and `disable` sends the update that disables
+/// it with the resource it is given, etag and all.
+///
+/// The resource shows the first version as its etag, with both times. Once
+/// its row holds no times, as a Coral from before the row kept them left it,
+/// it shows none. A stale version and the etag of the earlier form, a UUID,
+/// are both an etag mismatch and change nothing. The current version is
+/// accepted. Returns the resource as that update shows it: at the next
+/// version, with the time of the change and still no creation time.
+async fn assert_shows_its_version_and_no_time_its_row_lacks<T: Versioned>(
+    f: &Fixture,
+    table: &str,
+    mut shown: impl AsyncFnMut() -> T,
+    mut disable: impl AsyncFnMut(T) -> Result<T, tonic::Status>,
+) -> T {
+    let first = shown().await;
+    assert_eq!(first.etag(), "1");
+    let [created, updated] = first.times();
+    assert!(created.is_some());
+    assert_eq!(updated, created);
+
+    f.database
+        .execute_fixture_sql(&format!(
+            "UPDATE {table} SET created_at_unix_nanos = NULL, updated_at_unix_nanos = NULL"
+        ))
+        .await
+        .unwrap();
+    let without_times = shown().await;
+    assert_eq!(without_times, first.without_times());
+
+    let earlier_form = uuid::Uuid::new_v4().to_string();
+    for sent in ["2", earlier_form.as_str()] {
+        let error = disable(without_times.clone().with_etag(sent))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            (error.code(), error_reason(&error).as_str()),
+            (tonic::Code::Aborted, "ETAG_MISMATCH"),
+            "{sent:?}"
+        );
+        assert_eq!(shown().await, without_times, "{sent:?}");
+    }
+    let disabled = disable(without_times.with_etag("1")).await.unwrap();
+    assert_eq!(disabled.etag(), "2");
+    let [created, updated] = disabled.times();
+    assert_eq!(created, None);
+    assert!(updated.is_some());
+    disabled
+}
+
 // Catches: an Adapter that shows another etag than the text of the version,
 // sends a time that the row does not hold, or answers the etag of the earlier
 // form, a UUID, as malformed, so that Reef blames the form's fields when the
@@ -880,8 +985,8 @@ async fn a_registration_shows_its_version_as_its_etag_and_no_time_that_its_row_l
         created.agent.principal().id()
     );
     let token = f.token(&f.owner, "reef");
-    let mut reader = f.registrations();
-    let mut shown = async || {
+    let (mut reader, mut client) = (f.registrations(), f.registrations());
+    let shown = async || {
         reader
             .get_agent_registration(request(
                 management::GetAgentRegistrationRequest { name: name.clone() },
@@ -892,38 +997,13 @@ async fn a_registration_shows_its_version_as_its_etag_and_no_time_that_its_row_l
             .unwrap()
             .into_inner()
     };
-    let first = shown().await;
-    assert_eq!(first.etag, "1");
-    assert!(first.create_time.is_some());
-    assert_eq!(first.update_time, first.create_time);
-
-    // A Coral from before the row kept its times created this Registration.
-    f.database
-        .execute_fixture_sql(
-            "UPDATE agent_registrations \
-             SET created_at_unix_nanos = NULL, updated_at_unix_nanos = NULL",
-        )
-        .await
-        .unwrap();
-    let without_times = shown().await;
-    assert_eq!(
-        without_times,
-        management::AgentRegistration {
-            create_time: None,
-            update_time: None,
-            ..first
-        }
-    );
-
-    let mut client = f.registrations();
-    let mut disable = async |etag: &str| {
+    let disable = async |registration: management::AgentRegistration| {
         client
             .update_agent_registration(request(
                 management::UpdateAgentRegistrationRequest {
                     registration: Some(management::AgentRegistration {
                         enabled: false,
-                        etag: etag.into(),
-                        ..without_times.clone()
+                        ..registration
                     }),
                     update_mask: Some(prost_types::FieldMask {
                         paths: vec!["enabled".into()],
@@ -933,32 +1013,26 @@ async fn a_registration_shows_its_version_as_its_etag_and_no_time_that_its_row_l
                 "reef",
             ))
             .await
+            .map(tonic::Response::into_inner)
     };
-    let earlier_form = uuid::Uuid::new_v4().to_string();
-    for sent in ["2", earlier_form.as_str()] {
-        let error = disable(sent).await.unwrap_err();
-        assert_eq!(
-            (error.code(), error_reason(&error).as_str()),
-            (tonic::Code::Aborted, "ETAG_MISMATCH"),
-            "{sent:?}"
-        );
-        assert_eq!(shown().await, without_times, "{sent:?}");
-    }
-    let disabled = disable("1").await.unwrap().into_inner();
-    assert_eq!(disabled.etag, "2");
-    assert_eq!(disabled.create_time, None);
-    assert!(disabled.update_time.is_some());
+    let disabled = assert_shows_its_version_and_no_time_its_row_lacks(
+        &f,
+        "agent_registrations",
+        shown,
+        disable,
+    )
+    .await;
     assert!(!disabled.enabled);
 }
 
 // Catches, for the Agent's own projection, what the test above catches for
-// its Registration's: another etag than the text of the version, a time that
-// the row does not hold, and a UUID etag answered as malformed.
+// its Registration's, and a creation that shows another etag or other times
+// than the Agent and the Registration then have.
 #[tokio::test]
 async fn an_agent_shows_its_version_as_its_etag_and_no_time_that_its_row_lacks() {
     let f = Fixture::new().await;
     let token = f.token(&f.owner, "reef");
-    let mut client = f.agents();
+    let (mut reader, mut client) = (f.agents(), f.agents());
     let issued = client
         .create_agent(request(
             management::CreateAgentRequest {
@@ -975,19 +1049,11 @@ async fn an_agent_shows_its_version_as_its_etag_and_no_time_that_its_row_lacks()
         .into_inner();
     // The creation shows the etag and the times of both rows.
     let (created, registration) = (issued.agent.unwrap(), issued.registration.unwrap());
-    for (etag, create_time, update_time) in [
-        (&created.etag, created.create_time, created.update_time),
-        (
-            &registration.etag,
-            registration.create_time,
-            registration.update_time,
-        ),
-    ] {
-        assert_eq!(etag, "1");
+    for [create_time, update_time] in [created.times(), registration.times()] {
         assert!(create_time.is_some());
         assert_eq!(update_time, create_time);
     }
-    let mut reader = f.agents();
+    assert_eq!((created.etag(), registration.etag()), ("1", "1"));
     let name = created.name.clone();
     let mut shown = async || {
         reader
@@ -1002,32 +1068,13 @@ async fn an_agent_shows_its_version_as_its_etag_and_no_time_that_its_row_lacks()
     };
     assert_eq!(shown().await, created);
 
-    // A Coral from before the row kept its times created this Agent.
-    f.database
-        .execute_fixture_sql(
-            "UPDATE workspace_agents \
-             SET created_at_unix_nanos = NULL, updated_at_unix_nanos = NULL",
-        )
-        .await
-        .unwrap();
-    let without_times = shown().await;
-    assert_eq!(
-        without_times,
-        management::Agent {
-            create_time: None,
-            update_time: None,
-            ..created
-        }
-    );
-
-    let mut disable = async |etag: &str| {
+    let disable = async |agent: management::Agent| {
         client
             .update_agent(request(
                 management::UpdateAgentRequest {
                     agent: Some(management::Agent {
                         state: management::AgentState::Disabled.into(),
-                        etag: etag.into(),
-                        ..without_times.clone()
+                        ..agent
                     }),
                     update_mask: Some(prost_types::FieldMask {
                         paths: vec!["state".into()],
@@ -1037,21 +1084,11 @@ async fn an_agent_shows_its_version_as_its_etag_and_no_time_that_its_row_lacks()
                 "reef",
             ))
             .await
+            .map(tonic::Response::into_inner)
     };
-    let earlier_form = uuid::Uuid::new_v4().to_string();
-    for sent in ["2", earlier_form.as_str()] {
-        let error = disable(sent).await.unwrap_err();
-        assert_eq!(
-            (error.code(), error_reason(&error).as_str()),
-            (tonic::Code::Aborted, "ETAG_MISMATCH"),
-            "{sent:?}"
-        );
-        assert_eq!(shown().await, without_times, "{sent:?}");
-    }
-    let disabled = disable("1").await.unwrap().into_inner();
-    assert_eq!(disabled.etag, "2");
-    assert_eq!(disabled.create_time, None);
-    assert!(disabled.update_time.is_some());
+    let disabled =
+        assert_shows_its_version_and_no_time_its_row_lacks(&f, "workspace_agents", shown, disable)
+            .await;
     assert_eq!(disabled.state, management::AgentState::Disabled as i32);
 }
 
