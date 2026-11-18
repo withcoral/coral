@@ -1031,6 +1031,115 @@ async fn inspections_and_lists_show_each_row_without_its_metadata_table_row() {
     assert_eq!(names("Agent inspections"), [AGENT, REGISTRATION]);
 }
 
+// Catches: a creation or a rotation that returns other metadata than it left
+// on the rows, such as the Registration's from before the rotation. The
+// Adapter shows what the issuance returns, so the client's next change would
+// send a stale etag and be refused.
+#[tokio::test]
+async fn a_creation_and_a_rotation_return_the_version_and_the_times_they_leave() {
+    let changes = Changes::new().await;
+    let (module, owner, workspace) = (&changes.module, &changes.owner, &changes.workspace);
+    let at = |version, updated_at| ResourceMetadata {
+        version: Version::new(version).unwrap(),
+        created_at: Some(UnixNanos::new(20)),
+        updated_at: Some(UnixNanos::new(updated_at)),
+    };
+
+    let created = module
+        .create_agent(
+            &change(owner.clone(), 20, '2'),
+            &RequestId::generate(),
+            workspace,
+            AgentDisplayName::parse("Issued").unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let agent = created.agent.principal().id().clone();
+    let registration = created.registration.id().clone();
+    // What the inspection of the Agent shows: the rows as they are.
+    let shown = || async {
+        let inspection = module
+            .inspect_agent(owner, workspace, &agent)
+            .await
+            .unwrap();
+        (inspection.agent_metadata, inspection.registration_metadata)
+    };
+    assert_eq!(
+        (created.agent_metadata, created.registration_metadata),
+        (at(1, 20), at(1, 20))
+    );
+    assert_eq!(shown().await, (at(1, 20), at(1, 20)));
+
+    // The versions the creation returned are the next changes' preconditions.
+    module
+        .set_agent_state(
+            &change(owner.clone(), 30, '3'),
+            workspace,
+            &agent,
+            &IfMatch::version(created.agent_metadata.version),
+            AgentState::Disabled,
+        )
+        .await
+        .expect("change the Agent at the version its creation returned");
+    let set_enabled = |at, if_match: IfMatch, enabled| {
+        let context = change(owner.clone(), at, '4');
+        let registration = &registration;
+        async move {
+            module
+                .update_agent_registration(
+                    &context,
+                    workspace,
+                    registration,
+                    &if_match,
+                    enabled,
+                    None,
+                )
+                .await
+        }
+    };
+    set_enabled(
+        40,
+        IfMatch::version(created.registration_metadata.version),
+        false,
+    )
+    .await
+    .expect("change the Registration at the version its creation returned");
+    assert_eq!(shown().await, (at(2, 30), at(2, 40)));
+
+    // The rotation reads the Registration at its second version.
+    let read = at(2, 40);
+    let rotated = module
+        .rotate_agent_credential(
+            &change(owner.clone(), 50, '5'),
+            &RequestId::generate(),
+            workspace,
+            &registration,
+            &IfMatch::version(read.version),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (rotated.agent_metadata, rotated.registration_metadata),
+        (at(2, 30), at(3, 50))
+    );
+    assert_eq!(shown().await, (at(2, 30), at(3, 50)));
+
+    // The version from before the rotation is stale, and the one the
+    // rotation returned is current.
+    let refused = set_enabled(60, IfMatch::version(read.version), true).await;
+    assert!(matches!(refused, Err(Error::EtagMismatch)), "{refused:?}");
+    assert_eq!(shown().await, (at(2, 30), at(3, 50)));
+    set_enabled(
+        70,
+        IfMatch::version(rotated.registration_metadata.version),
+        true,
+    )
+    .await
+    .expect("change the Registration at the version its rotation returned");
+    assert_eq!(shown().await, (at(2, 30), at(4, 70)));
+}
+
 // Catches: a write that changes a row at another version than the one its
 // caller read. The check before the write and the write are then two reads
 // of the version, and a change between them is lost.
