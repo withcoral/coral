@@ -127,7 +127,9 @@ fn is_near(system: &str, tools: &[ToolText], messages: &[Message], window: u32) 
 /// A message's size in tokens, estimated from its bytes.
 fn tokens(message: &Message) -> usize {
     let bytes = message.content.iter().map(|block| match block {
-        Block::Text { text } | Block::Summary { text, .. } => text.len(),
+        Block::Text { text } | Block::Reasoning { text, .. } | Block::Summary { text, .. } => {
+            text.len()
+        }
         Block::ToolUse(call) => call.name.len() + call.arguments.len(),
         Block::ToolResult { content, .. } => content.len(),
     });
@@ -182,7 +184,8 @@ fn summary_request(previous: Option<&str>, older: &[Message], window: u32) -> Me
     ))
 }
 
-/// One message as transcript lines, each call and result cut short.
+/// One message as transcript lines, each call and result cut short and its
+/// reasoning left out.
 fn transcript(message: &Message) -> Vec<String> {
     let lines = message.content.iter().filter_map(|block| match block {
         Block::Text { text } if message.role == Role::User => Some(format!("[Lead]: {text}")),
@@ -193,7 +196,7 @@ fn transcript(message: &Message) -> Vec<String> {
             clip(&call.arguments)
         )),
         Block::ToolResult { content, .. } => Some(format!("[Tool result]: {}", clip(content))),
-        Block::Summary { .. } => None,
+        Block::Reasoning { .. } | Block::Summary { .. } => None,
     });
     lines.collect()
 }
@@ -254,9 +257,29 @@ mod tests {
                     assert!(open.contains(&tool_use_id.as_str()), "{tool_use_id}");
                     open.retain(|id| id != tool_use_id);
                 }
-                Block::Text { .. } | Block::Summary { .. } => {}
+                Block::Text { .. } | Block::Reasoning { .. } | Block::Summary { .. } => {}
             }
         }
         assert_eq!(open, Vec::<&str>::new());
+    }
+
+    // Catches: reasoning shown to the summarizer as the agent's words, and
+    // reasoning left out of the size that decides when to compact.
+    #[test]
+    fn reasoning_counts_toward_the_size_and_is_not_summarized() {
+        let reasoning = Block::Reasoning {
+            text: "x".repeat(295),
+            model: "sailfish-1".to_owned(),
+        };
+        let text = Block::Text {
+            text: "Done.".to_owned(),
+        };
+        let message = Message {
+            role: Role::Assistant,
+            content: vec![reasoning, text],
+        };
+
+        assert_eq!(tokens(&message), 100);
+        assert_eq!(transcript(&message), ["[Agent]: Done."]);
     }
 }
