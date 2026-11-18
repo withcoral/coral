@@ -1105,28 +1105,37 @@ test('the Tools page streams its usage after the catalog and saves a policy whil
     )
 
     await browserTest.test(
-      'announces unavailable usage while the modal drawer is open',
+      'keeps the table hidden behind the modal drawer when the usage fails',
       async (caseTest) => {
-        const { page, row, read } = await open(caseTest)
+        const { page, table, row, read } = await open(caseTest)
         await page.setViewportSize({ width: 600, height: 800 })
         await hydrated(page)
-        const tool = row('issues.list').getByRole('link', { name: 'issues.list' })
-        await tool.click({ timeout: ARRIVES_MS })
+        await row('issues.list')
+          .getByRole('link', { name: 'issues.list' })
+          .click({ timeout: ARRIVES_MS })
         const drawer = page.getByRole('dialog')
         const usage = drawer.getByRole('region', { name: 'Usage' })
         await usage.waitFor({ timeout: ARRIVES_MS })
         await read.fail(13)
         await usage.waitFor({ state: 'detached', timeout: ARRIVES_MS })
+        // The failure has reached the heading, so what follows cannot pass too early.
+        await page
+          .locator('[role="status"]')
+          .filter({ hasText: 'Usage unavailable' })
+          .waitFor({ state: 'attached', timeout: ARRIVES_MS })
         assert.equal(await drawer.isVisible(), true)
-        // getByRole skips what the modal hides from assistive technology: the rows, but
-        // not the heading's status.
-        assert.equal(await tool.count(), 0)
-        const status = page.getByRole('status').filter({ hasText: 'Usage unavailable' })
-        await status.waitFor({ state: 'attached', timeout: ARRIVES_MS })
-        assert.equal(await status.count(), 1)
-        assert.equal(await status.getAttribute('aria-live'), 'polite')
-        const shown = await status.boundingBox()
-        assert.ok(shown.width <= 1 && shown.height <= 1, `status is ${shown.width}x${shown.height}`)
+        // getByRole skips what the modal hides from assistive technology.
+        assert.equal(await table.count(), 0)
+        assert.equal(await page.getByRole('columnheader').count(), 0)
+        assert.equal(await page.getByRole('status').count(), 0)
+
+        await page.keyboard.press('Escape')
+        await drawer.waitFor({ state: 'detached', timeout: ARRIVES_MS })
+        await table
+          .getByRole('columnheader', { name: /^Usage\b/ })
+          .getByRole('status')
+          .filter({ hasText: 'Usage unavailable' })
+          .waitFor({ state: 'attached', timeout: ARRIVES_MS })
       },
     )
 
@@ -1150,6 +1159,8 @@ test('the Tools page streams its usage after the catalog and saves a policy whil
           'Usage unavailable',
         )
         assert.equal(await table.getByRole('status').count(), 1)
+        const shown = await status.boundingBox()
+        assert.ok(shown.width <= 1 && shown.height <= 1, `status is ${shown.width}x${shown.height}`)
         assert.equal(await table.getByText(/\bcalls?\b/).count(), 0)
       },
     )
