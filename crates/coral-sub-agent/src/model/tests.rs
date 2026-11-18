@@ -59,9 +59,9 @@ fn conversation() -> Vec<Message> {
             },
             Block::ToolUse(call("call_1")),
         ]),
-        Message::tool_results(vec![call("call_1").result("1".to_owned())]),
+        Message::tool_results(vec![call("call_1").result("1".to_owned(), None)]),
         assistant(vec![Block::ToolUse(call("call_2"))]),
-        Message::tool_results(vec![call("call_2").result("2".to_owned())]),
+        Message::tool_results(vec![call("call_2").result("2".to_owned(), None)]),
         assistant(Vec::new()),
     ]
 }

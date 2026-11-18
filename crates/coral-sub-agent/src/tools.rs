@@ -4,7 +4,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use coral_mcp::{MAX_WAIT_MS, McpCaller, McpInterface, Progress, ToolCallError, ToolFailure};
+use coral_mcp::{
+    HumanInterfaceUrl, MAX_WAIT_MS, McpCaller, McpInterface, Progress, ToolCallError, ToolFailure,
+};
 use coral_task::{TaskId, TaskIntent, TaskModule};
 use rmcp::ErrorData;
 use rmcp::handler::server::tool::schema_for_type;
@@ -12,11 +14,13 @@ use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, JsonO
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::lead_text::{self, AGENT_DESCRIPTION};
-use crate::run_tools::task_failure;
-use crate::sub_agents::{Error, SubAgents, TurnState};
+use crate::run_tools::{run_failure, task_failure};
+use crate::sub_agents::{Error, SubAgents, TurnPage};
+
+mod page;
 
 /// Core's tool surface with one more tool, `agent`, and a `wait` and a
 /// `cancel` that also take a `sub_agent_id`.
@@ -24,6 +28,8 @@ pub(crate) struct CoreWithAgent {
     core: Arc<dyn McpInterface>,
     tasks: TaskModule,
     sub_agents: SubAgents,
+    /// Where a required action's page is.
+    human_interface: HumanInterfaceUrl,
 }
 
 impl CoreWithAgent {
@@ -31,11 +37,13 @@ impl CoreWithAgent {
         core: Arc<dyn McpInterface>,
         tasks: TaskModule,
         sub_agents: SubAgents,
+        human_interface: HumanInterfaceUrl,
     ) -> Self {
         Self {
             core,
             tasks,
             sub_agents,
+            human_interface,
         }
     }
 }
@@ -98,26 +106,50 @@ impl CoreWithAgent {
             return Err(invalid("`message` must not be blank"));
         }
         let (actor, workspace_id) = (caller.principal(), caller.workspace_id());
-        // As in core's `exec`, a `task_id` wins over a `goal`.
-        let task_id = match (&arguments.task_id, &arguments.goal) {
-            (Some(task_id), _) => TaskId::parse(task_id).map_err(invalid)?,
+        let (sub_agent_id, task_id) = match (arguments.sub_agent_id, arguments.task_id) {
+            (Some(sub_agent_id), None) if arguments.goal.is_none() => {
+                let messaged =
+                    self.sub_agents
+                        .message(actor, workspace_id, &sub_agent_id, &arguments.message);
+                messaged.await?;
+                (sub_agent_id, None)
+            }
+            (Some(_), _) => return Err(invalid(AGENT_TAKES)),
+            (None, task_id) => {
+                let task_id = self.task(caller, task_id, arguments.goal).await?;
+                let started =
+                    self.sub_agents
+                        .start(actor, workspace_id, &task_id, arguments.message);
+                (started.await?, Some(task_id))
+            }
+        };
+        let page = self.sub_agents.page(actor, workspace_id, &sub_agent_id);
+        let mut fields = self.page_fields(&sub_agent_id, &page.await?);
+        if let Some(task_id) = task_id {
+            fields.insert("task_id".to_owned(), json!(task_id.as_str()));
+        }
+        Ok(result(Value::Object(fields)))
+    }
+
+    /// The Task that a new Sub-agent works in. As in core's `exec`, a
+    /// `task_id` wins over a `goal`, which starts a new Task.
+    async fn task(
+        &self,
+        caller: &McpCaller,
+        task_id: Option<String>,
+        goal: Option<String>,
+    ) -> Result<TaskId, ToolCallError> {
+        let (actor, workspace_id) = (caller.principal(), caller.workspace_id());
+        match (task_id, goal) {
+            (Some(task_id), _) => TaskId::parse(&task_id).map_err(invalid),
             (None, Some(goal)) => {
-                let goal = TaskIntent::parse(goal).map_err(invalid)?;
+                let goal = TaskIntent::parse(&goal).map_err(invalid)?;
                 let started = self.tasks.start(actor, workspace_id, goal, caller.now());
                 let task = started.await.map_err(Error::from)?;
-                task.id().clone()
+                Ok(task.id().clone())
             }
-            (None, None) => return Err(invalid(AGENT_TAKES)),
-        };
-        let message = arguments.message;
-        let started = self
-            .sub_agents
-            .start(actor, workspace_id, &task_id, message);
-        let sub_agent_id = started.await?;
-        Ok(result(json!({
-            "sub_agent_id": sub_agent_id,
-            "task_id": task_id.as_str(),
-        })))
+            (None, None) => Err(invalid(AGENT_TAKES)),
+        }
     }
 
     async fn wait(
@@ -134,9 +166,11 @@ impl CoreWithAgent {
             caller.principal(),
             caller.workspace_id(),
             sub_agent_id,
+            arguments.cursor.as_deref(),
             Duration::from_millis(wait_ms),
         );
-        Ok(turn_result(sub_agent_id, waited.await?))
+        let fields = self.page_fields(sub_agent_id, &waited.await?);
+        Ok(result(Value::Object(fields)))
     }
 
     async fn cancel(
@@ -148,15 +182,28 @@ impl CoreWithAgent {
         let canceled =
             self.sub_agents
                 .cancel(caller.principal(), caller.workspace_id(), sub_agent_id);
-        Ok(turn_result(sub_agent_id, canceled.await?))
+        let fields = self.page_fields(sub_agent_id, &canceled.await?);
+        Ok(result(Value::Object(fields)))
+    }
+
+    /// What `agent`, `wait` and `cancel` return for a Sub-agent.
+    fn page_fields(&self, sub_agent_id: &str, page: &TurnPage) -> Map<String, Value> {
+        let mut fields = Map::new();
+        fields.insert("sub_agent_id".to_owned(), json!(sub_agent_id));
+        fields.extend(page::turn_fields(page, &self.human_interface));
+        fields
     }
 }
 
-const AGENT_TAKES: &str = "agent takes `message`, and `task_id` or `goal`: pass `task_id` to work in a Task you started, or `goal` to start a new one";
+const AGENT_TAKES: &str = "agent takes `message`, and one of `sub_agent_id`, `task_id` or `goal`: pass `sub_agent_id` to reply to a Sub-agent, `task_id` to start one in a Task you started, or `goal` to start one in a new Task";
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct AgentArguments {
+    /// The `sub_agent_id` of a Sub-agent you started, to reply to it. It
+    /// reads `message` before its next step, or in a new turn once its turn
+    /// has ended.
+    sub_agent_id: Option<String>,
     /// What the user asked for, in one short phrase. Starts a new Task for
     /// this unit of user work, unless `task_id` is given.
     goal: Option<String>,
@@ -167,20 +214,19 @@ struct AgentArguments {
     message: String,
 }
 
-const SUB_AGENT_ID_DESCRIPTION: &str =
-    "The sub_agent_id from agent. Pass it in place of run_id, without a cursor.";
-const WAIT_BY_SUB_AGENT_ID: &str = "With `sub_agent_id` in place of `run_id`, observe that Sub-agent: the call returns its `state` when it stops running or `wait_ms` runs out, with its `answer` once `completed` or its `failure` once `failed`. `interrupted` means that Coral stopped before the Sub-agent answered: call `agent` again.";
-const WAIT_TAKES: &str = "with `sub_agent_id`, wait takes only `wait_ms` beside it";
+const SUB_AGENT_ID_DESCRIPTION: &str = "The sub_agent_id from agent, in place of run_id.";
+const WAIT_BY_SUB_AGENT_ID: &str = "With `sub_agent_id` in place of `run_id`, observe that Sub-agent; pass the latest `next_cursor` from `agent` or `wait` on it as `cursor`. The call returns when its turn ends, it newly needs a person, or `wait_ms` runs out. It returns its `state`, its `steps`, its `answer` once `completed` and its `failure` once `failed`. `needs_action` means that the run of a step waits for a person: handle its `required_actions` as a run's. `interrupted` means that Coral stopped before the Sub-agent answered: call `agent` again with its `sub_agent_id`.";
+const WAIT_TAKES: &str = "with `sub_agent_id`, wait takes only `cursor` and `wait_ms` beside it";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WaitArguments {
     sub_agent_id: String,
+    cursor: Option<String>,
     wait_ms: Option<u64>,
 }
 
-const CANCEL_BY_SUB_AGENT_ID: &str =
-    "With `sub_agent_id` in place of `run_id`, stop that Sub-agent and return its `state`.";
+const CANCEL_BY_SUB_AGENT_ID: &str = "With `sub_agent_id` in place of `run_id`, stop that Sub-agent and return its `state` and `steps`.";
 const CANCEL_TAKES: &str = "with `sub_agent_id`, cancel takes nothing beside it";
 
 #[derive(Deserialize)]
@@ -222,10 +268,11 @@ fn invalid(problem: impl std::fmt::Display) -> ToolCallError {
 }
 
 /// The failure that the lead reads when a Sub-agent call did nothing: a Task's
-/// as the model reads it.
+/// or a Run's as the model reads it.
 impl From<Error> for ToolCallError {
     fn from(error: Error) -> Self {
         Self::Tool(match error {
+            Error::CursorOfAnotherTurn => return invalid(error),
             Error::SubAgentNotFound => {
                 ToolFailure::stable("sub_agent_not_found", "Sub-agent was not found")
             }
@@ -235,26 +282,12 @@ impl From<Error> for ToolCallError {
                 "Task is closed. Call `agent` with `goal` to start a new Task.",
             ),
             Error::Task(error) => task_failure(error).into(),
+            Error::Run(error) => run_failure(error).into(),
             Error::IdentifierIssuance | Error::CorruptData | Error::Database(_) => {
                 ToolFailure::internal()
             }
         })
     }
-}
-
-/// What `wait` and `cancel` return for a Sub-agent: its Turn as it stands.
-fn turn_result(sub_agent_id: &str, turn: TurnState) -> CallToolResponse {
-    result(match turn {
-        TurnState::Running => json!({"sub_agent_id": sub_agent_id, "state": "running"}),
-        TurnState::Completed { answer } => {
-            json!({"sub_agent_id": sub_agent_id, "state": "completed", "answer": answer})
-        }
-        TurnState::Failed { failure } => {
-            json!({"sub_agent_id": sub_agent_id, "state": "failed", "failure": failure})
-        }
-        TurnState::Canceled => json!({"sub_agent_id": sub_agent_id, "state": "canceled"}),
-        TurnState::Interrupted => json!({"sub_agent_id": sub_agent_id, "state": "interrupted"}),
-    })
 }
 
 fn result(structured: Value) -> CallToolResponse {

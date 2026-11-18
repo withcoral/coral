@@ -250,7 +250,9 @@ mod tests {
                 })
                 .collect();
             let uses = calls.iter().cloned().map(Block::ToolUse).collect();
-            let results = calls.iter().map(|call| call.result("x".repeat(12_000)));
+            let results = calls
+                .iter()
+                .map(|call| call.result("x".repeat(12_000), None));
             thread.push(Message {
                 role: Role::Assistant,
                 content: uses,

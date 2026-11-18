@@ -46,6 +46,7 @@ impl McpInterfaceFactory for SubAgentFactory {
         let section: Section = StoreSettings::new(section.clone()).decode()?;
         let model = section.model_client(&dependencies)?;
         let core = dependencies.modules.core_interface();
+        let human_interface = dependencies.modules.human_interface().clone();
         let modules = dependencies.modules;
         let tasks = modules.tasks;
         let sub_agents = SubAgents::new(
@@ -58,7 +59,12 @@ impl McpInterfaceFactory for SubAgentFactory {
             dependencies.clock,
             dependencies.stopping,
         );
-        Ok(Arc::new(CoreWithAgent::new(core, tasks, sub_agents)))
+        Ok(Arc::new(CoreWithAgent::new(
+            core,
+            tasks,
+            sub_agents,
+            human_interface,
+        )))
     }
 }
 

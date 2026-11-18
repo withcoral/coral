@@ -269,6 +269,25 @@ fn result(called: Result<Value, ToolCallError>) -> Value {
     }
 }
 
+/// The field `name` of a result, or null.
+fn field<'a>(result: &'a Value, name: &str) -> &'a Value {
+    result.get(name).unwrap_or(&Value::Null)
+}
+
+/// A Sub-agent's page without its `next_cursor`, which names its Turn.
+fn without_cursor(mut page: Value) -> Value {
+    page.as_object_mut().unwrap().remove("next_cursor");
+    page
+}
+
+/// The message of a call that the protocol refused.
+fn refusal(called: Result<Value, ToolCallError>) -> String {
+    match called {
+        Err(ToolCallError::Protocol(error)) => error.message.into_owned(),
+        _ => panic!("the call is refused"),
+    }
+}
+
 /// The names of the arguments that a tool takes, and of those it requires.
 fn arguments(tools: &[Tool], name: &str) -> (Vec<String>, Vec<Value>) {
     let tool = tools.iter().find(|tool| tool.name == name).unwrap();
@@ -388,8 +407,8 @@ async fn a_turn_without_an_answer_says_why() {
 
         let (sub_agent_id, waited) = lead.turn(&*tools, &task_id).await;
 
-        let failed = json!({"sub_agent_id": sub_agent_id, "state": "failed", "failure": failure});
-        assert_eq!(waited, failed);
+        let failed = json!({"sub_agent_id": sub_agent_id, "state": "failed", "failure": failure, "steps": []});
+        assert_eq!(without_cursor(waited), failed);
         let requests = lead.model.received_requests().await.unwrap();
         assert_eq!(requests.len(), model_calls);
         lead.model.reset().await;
@@ -397,8 +416,9 @@ async fn a_turn_without_an_answer_says_why() {
 }
 
 // Catches: a Run that the Sub-agent starts outside the lead's Task, an
-// answer read before the Run's result reached the model, and a thread that
-// loses, repeats or reorders a message or a model call's record.
+// answer read before the Run's result reached the model, a result stored
+// without its Run, and a thread that loses, repeats or reorders a message or
+// a model call's record.
 #[tokio::test]
 async fn a_turn_runs_a_program_in_the_leads_task_and_answers_from_it() {
     let lead = Lead::new().await;
@@ -419,16 +439,18 @@ async fn a_turn_runs_a_program_in_the_leads_task_and_answers_from_it() {
     let (sub_agent_id, waited) = lead.turn(&*tools, &task_id).await;
 
     let answer = "Pelican and heron.";
-    let completed = json!({"sub_agent_id": sub_agent_id, "state": "completed", "answer": answer});
-    assert_eq!(waited, completed);
+    let completed = (&json!("completed"), &json!(answer));
+    assert_eq!(
+        (field(&waited, "state"), field(&waited, "answer")),
+        completed
+    );
     let tasks = &lead.modules.tasks;
     let attempts = tasks.interactions(&lead.actor, &lead.workspace_id, &task_id, None, 10);
     let attempts = attempts.await.unwrap();
-    let runs: Vec<_> = attempts
-        .iter()
-        .map(|attempt| (attempt.kind, attempt.run.is_some()))
-        .collect();
-    assert_eq!(runs, [(AttemptKind::Submit, true)]);
+    let [attempt] = attempts.as_slice() else {
+        panic!("one attempt: {attempts:?}");
+    };
+    assert_eq!(attempt.kind, AttemptKind::Submit);
     let thread = lead.thread(&sub_agent_id).await;
     let result = match thread.get(2).map(|results| results.content.as_slice()) {
         Some([Block::ToolResult { content, .. }]) => content.clone(),
@@ -450,7 +472,7 @@ async fn a_turn_runs_a_program_in_the_leads_task_and_answers_from_it() {
         [
             Message::user(brief),
             assistant(vec![Block::ToolUse(exec.clone())]),
-            Message::tool_results(vec![exec.result(result)]),
+            Message::tool_results(vec![exec.result(result, attempt.run.clone())]),
             assistant(vec![text]),
         ]
     );
@@ -539,7 +561,7 @@ async fn another_callers_sub_agent_reads_as_not_found() {
     let other_actor = AuthenticatedPrincipal::user(other_user);
 
     for (actor, workspace_id) in [(&other_actor, workspace_id), (actor, &other_workspace_id)] {
-        let waited = sub_agents.wait(actor, workspace_id, &sub_agent_id, Duration::ZERO);
+        let waited = sub_agents.wait(actor, workspace_id, &sub_agent_id, None, Duration::ZERO);
         let waited = waited.await;
         assert!(matches!(waited, Err(Error::SubAgentNotFound)), "{waited:?}");
         let canceled = sub_agents.cancel(actor, workspace_id, &sub_agent_id).await;
@@ -549,8 +571,8 @@ async fn another_callers_sub_agent_reads_as_not_found() {
         );
     }
 
-    let unchanged = sub_agents.wait(actor, workspace_id, &sub_agent_id, Duration::ZERO);
-    assert_eq!(unchanged.await.unwrap(), TurnState::Running);
+    let unchanged = sub_agents.wait(actor, workspace_id, &sub_agent_id, None, Duration::ZERO);
+    assert_eq!(unchanged.await.unwrap().state, TurnState::Running);
 }
 
 // Catches: a canceled Turn that keeps its lease, takes a late reply as its
@@ -579,14 +601,14 @@ async fn cancel_ends_a_running_turn_for_good() {
     drop(transaction);
     let running = result(call(&*tools, &caller, "wait", by_id.clone()).await);
     assert_eq!(
-        running,
-        json!({"sub_agent_id": sub_agent_id, "state": "running"})
+        without_cursor(running),
+        json!({"sub_agent_id": sub_agent_id, "state": "running", "steps": []})
     );
 
     let canceled = result(call(&*tools, &caller, "cancel", by_id.clone()).await);
 
-    let stopped = json!({"sub_agent_id": sub_agent_id, "state": "canceled"});
-    assert_eq!(canceled, stopped);
+    let stopped = json!({"sub_agent_id": sub_agent_id, "state": "canceled", "steps": []});
+    assert_eq!(without_cursor(canceled), stopped);
     let renewed = repository::renew_lease(database, workspace_id, &turn_id, lease_end).await;
     assert!(!renewed.unwrap(), "the next renewal stops the model call");
     let late = TurnState::Completed {
@@ -594,7 +616,10 @@ async fn cancel_ends_a_running_turn_for_good() {
     };
     let ended = sub_agents.end_turn(workspace_id, sub_agent_id, &turn_id, &late);
     assert!(!ended.await.unwrap(), "the first ending stands");
-    assert_eq!(result(call(&*tools, &caller, "wait", by_id).await), stopped);
+    assert_eq!(
+        without_cursor(result(call(&*tools, &caller, "wait", by_id).await)),
+        stopped
+    );
 }
 
 // Catches: a Turn that runs on, or reads as running, once its Coral Instance
@@ -612,8 +637,8 @@ async fn shutdown_interrupts_a_running_turn() {
 
     let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
     let waited = result(call(&*tools, &caller, "wait", wait).await);
-    let interrupted = json!({"sub_agent_id": sub_agent_id, "state": "interrupted"});
-    assert_eq!(waited, interrupted);
+    let interrupted = json!({"sub_agent_id": sub_agent_id, "state": "interrupted", "steps": []});
+    assert_eq!(without_cursor(waited), interrupted);
 }
 
 // Catches: a Turn that reads as running for ever once its Coral Instance
@@ -638,8 +663,8 @@ async fn the_next_read_interrupts_a_turn_whose_lease_lapsed() {
     lead.clock.set(UnixNanos::new(i64::MAX));
     let lapsed = result(call(&*tools, &caller, "cancel", by_id).await);
 
-    let interrupted = json!({"sub_agent_id": sub_agent_id, "state": "interrupted"});
-    assert_eq!(lapsed, interrupted);
+    let interrupted = json!({"sub_agent_id": sub_agent_id, "state": "interrupted", "steps": []});
+    assert_eq!(without_cursor(lapsed), interrupted);
 }
 
 /// A clock that reads one nanosecond later each time.
@@ -666,14 +691,14 @@ async fn a_wait_returns_once_the_lease_of_its_turn_lapses() {
     let section = format!("base_url = '{}'\nmodel = '{MODEL}'", lead.base_url());
     let other = SubAgentFactory.build(&toml::from_str(&section).unwrap(), dependencies);
 
-    let wait = json!({"sub_agent_id": started.get("sub_agent_id"), "wait_ms": 30_000});
+    let wait = json!({"sub_agent_id": field(&started, "sub_agent_id"), "wait_ms": 30_000});
     let asked_at = tokio::time::Instant::now();
     let waited = result(call(&*other.unwrap(), &lead.caller(), "wait", wait).await);
     assert!(
         asked_at.elapsed() < Duration::from_secs(30),
         "the wait ran out"
     );
-    assert_eq!(waited.get("state"), Some(&json!("interrupted")), "{waited}");
+    assert_eq!(field(&waited, "state"), "interrupted", "{waited}");
 }
 
 // Catches: an interrupted Turn that leaves tool calls without results, which
@@ -718,14 +743,17 @@ async fn an_interrupted_turn_closes_the_calls_it_left_without_results() {
     transaction.commit().await.unwrap();
 
     lead.clock.set(UnixNanos::new(i64::MAX));
-    let read = sub_agents.wait(actor, workspace_id, &sub_agent_id, Duration::ZERO);
-    assert_eq!(read.await.unwrap(), TurnState::Interrupted);
+    let read = sub_agents.wait(actor, workspace_id, &sub_agent_id, None, Duration::ZERO);
+    assert_eq!(read.await.unwrap().state, TurnState::Interrupted);
 
     let no_result = "No result: the Turn stopped before this call returned. A Run that the call started may still be running.";
-    let closed = calls.iter().map(|call| call.result(no_result.to_owned()));
+    let closed = calls
+        .iter()
+        .map(|call| call.result(no_result.to_owned(), None));
     let thread = lead.thread(&sub_agent_id).await;
     let after_the_brief = [asked, Message::tool_results(closed.collect())];
     assert_eq!(thread.get(1..), Some(&after_the_brief[..]));
 }
 
 mod search;
+mod steps_and_steering;

@@ -11,6 +11,13 @@ use sqlx::FromRow;
 use crate::model::{Message, ModelCall, Role};
 use crate::sub_agents::{Error, RunningTurn, Turn, TurnState};
 
+mod lead_messages;
+
+pub(crate) use lead_messages::{
+    add_unread_message, complete_unless_unread, next_position, take_unread_messages, task_id,
+    turn_messages,
+};
+
 #[derive(Iden)]
 enum SubAgentRecords {
     Table,
@@ -31,6 +38,7 @@ enum SubAgentTurns {
     Answer,
     Failure,
     LeaseExpiresAtUnixNanos,
+    UnreadMessages,
 }
 
 #[derive(Iden)]
@@ -115,7 +123,8 @@ pub(crate) async fn insert_turn(
     Ok(())
 }
 
-/// The Turn of the Sub-agent that `principal` started in the Workspace.
+/// The latest Turn of the Sub-agent that `principal` started in the
+/// Workspace: the Turn of the last message in its thread.
 pub(crate) async fn find_turn(
     executor: impl QueryExecutor,
     workspace_id: &WorkspaceId,
@@ -128,6 +137,14 @@ pub(crate) async fn find_turn(
             Expr::col((SubAgentTurns::Table, SubAgentTurns::WorkspaceId))
                 .equals((SubAgentRecords::Table, SubAgentRecords::WorkspaceId)),
         );
+    let latest = Query::select()
+        .column(SubAgentThreadMessages::TurnId)
+        .from(SubAgentThreadMessages::Table)
+        .and_where(Expr::col(SubAgentThreadMessages::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SubAgentThreadMessages::SubAgentId).eq(sub_agent_id))
+        .order_by(SubAgentThreadMessages::Position, Order::Desc)
+        .limit(1)
+        .to_owned();
     let statement = Query::select()
         .column((SubAgentTurns::Table, SubAgentTurns::Id))
         .column((SubAgentTurns::Table, SubAgentTurns::State))
@@ -149,13 +166,15 @@ pub(crate) async fn find_turn(
             Expr::col((SubAgentRecords::Table, SubAgentRecords::PrincipalKind))
                 .eq(principal.kind().as_storage_str()),
         )
+        .and_where(Expr::col((SubAgentTurns::Table, SubAgentTurns::Id)).in_subquery(latest))
         .to_owned();
     let row: Option<TurnRow> = executor.fetch_optional(statement).await?;
     row.map(TurnRow::decode).transpose()
 }
 
-/// Ends the Turn as `ending` says. `false` means that it had ended already
-/// and nothing was written.
+/// Ends the Turn as `ending` says. `false` means that it had ended otherwise
+/// and nothing was written: a Turn that recorded this answer as it read the
+/// lead's last message has ended so.
 pub(crate) async fn end_turn(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -172,7 +191,13 @@ pub(crate) async fn end_turn(
         ])
         .and_where(Expr::col(SubAgentTurns::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(SubAgentTurns::Id).eq(turn_id))
-        .and_where(Expr::col(SubAgentTurns::State).eq(RUNNING))
+        .and_where(
+            Expr::col(SubAgentTurns::State)
+                .eq(RUNNING)
+                .or(Expr::col(SubAgentTurns::State)
+                    .eq(state)
+                    .and(Expr::col(SubAgentTurns::Answer).eq(answer))),
+        )
         .to_owned();
     Ok(transaction.execute_change(statement).await? == 1)
 }
