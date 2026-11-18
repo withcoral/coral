@@ -1285,22 +1285,20 @@ function ToolsTableScreen({
                           >
                             Usage
                           </Table.SortButton>
-                        ) : 'state' in toolCalls && toolCalls.state === 'unavailable' ? (
-                          // The cells stay empty, so only the status below says why.
-                          <span aria-hidden>Usage</span>
                         ) : (
                           'Usage'
-                        )}
-                        {'state' in toolCalls && (
-                          // One element for both states: a screen reader announces its
-                          // text changing, not a status put in its place.
-                          <span role="status" className={visuallyHidden}>
-                            {toolCalls.state === 'loading' ? 'Loading usage…' : 'Usage unavailable'}
-                          </span>
                         )}
                         <InfoTip ariaLabel="About usage">
                           {`Your calls and your agents' calls in the last ${toolCalls.days} days.`}
                         </InfoTip>
+                        {'state' in toolCalls && (
+                          // One element for both states: a screen reader announces its
+                          // text changing, not a status put in its place. Unavailable
+                          // cells stay empty, so this is the one place that says why.
+                          <span role="status" className={visuallyHidden}>
+                            {toolCalls.state === 'loading' ? 'Loading usage…' : 'Usage unavailable'}
+                          </span>
+                        )}
                       </span>
                     </Table.Heading>
                   )}

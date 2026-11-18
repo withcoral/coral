@@ -273,7 +273,6 @@ it.each([
   expect(within(table()).getByRole('status')).toBe(status)
   expect(status).toHaveTextContent('Usage unavailable')
   expect(usageOf('issues.list')).toBe('')
-  expect(within(table()).getByRole('columnheader', { name: /^Usage unavailable/ })).toBeVisible()
   expect(within(screen.getByRole('dialog')).queryByRole('region', { name: 'Usage' })).toBeNull()
   expect(within(table()).queryByRole('button', { name: 'Sort by usage' })).toBeNull()
 })

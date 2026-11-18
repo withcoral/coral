@@ -403,15 +403,16 @@ test.each([
           return rowCells[column]!.textContent
         })
   expect(cells).toEqual(counts)
-  // The hidden status does not stand in for the label people see.
-  if (column >= 0) within(headers[column]!).getByText('Usage')
-  // Only the heading says the usage is unavailable, and it says so once.
+  // Only the heading's status says the usage is unavailable, and it says so once.
   const unavailable =
     toolCalls !== null && 'state' in toolCalls && toolCalls.state === 'unavailable'
   expect(within(table()).queryAllByText('Usage unavailable')).toHaveLength(unavailable ? 1 : 0)
-  expect(
-    within(table()).queryAllByRole('columnheader', { name: /^Usage unavailable/ }),
-  ).toHaveLength(unavailable ? 1 : 0)
+  if (column >= 0) {
+    const heading = within(headers[column]!)
+    // Browsers leave a status out of the heading's name, so the label must stay exposed.
+    expect(heading.getByText('Usage').closest('[aria-hidden]')).toBeNull()
+    if (unavailable) expect(heading.getByRole('status')).toHaveTextContent('Usage unavailable')
+  }
   // The busiest tool in the catalog fills its bar, whatever a removed tool called.
   if (counted) {
     const row = within(table()).getByRole('link', { name: 'repos.get' }).closest('[role="row"]')!
