@@ -1107,14 +1107,21 @@ test('the Tools page streams its usage after the catalog and saves a policy whil
     await browserTest.test(
       'marks usage as unavailable after a failed summary',
       async (caseTest) => {
-        const { table, read } = await open(caseTest)
+        const { page, table, read } = await open(caseTest)
+        await hydrated(page)
+        const status = await table.getByRole('status').elementHandle()
         // The server rendered the loading state, so only the hydrated page can show the
         // document's failed summary.
         await read.fail(13)
-        await table
-          .getByRole('columnheader', { name: /^Usage unavailable/ })
-          .waitFor({ timeout: ARRIVES_MS })
-        assert.equal(await table.getByRole('status').count(), 0)
+        const heading = table.getByRole('columnheader', { name: /^Usage unavailable/ })
+        await heading.waitFor({ timeout: ARRIVES_MS })
+        // A screen reader announces a status whose text changes, not one put in its place.
+        assert.equal(
+          await status.evaluate((element) => element.isConnected && element.textContent),
+          'Usage unavailable',
+        )
+        assert.equal(await table.getByRole('status').count(), 1)
+        assert.equal(await heading.getByText('Usage', { exact: true }).isVisible(), true)
         assert.equal(await table.getByText(/\bcalls?\b/).count(), 0)
       },
     )

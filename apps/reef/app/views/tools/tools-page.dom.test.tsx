@@ -386,7 +386,11 @@ test.each([
   const counted = toolCalls !== null && 'tools' in toolCalls
   expect(within(table()).queryByRole('button', { name: 'Sort by usage' }) !== null).toBe(counted)
   expect(within(table()).queryByRole('status')?.textContent ?? null).toBe(
-    toolCalls && 'state' in toolCalls && toolCalls.state === 'loading' ? 'Loading usage…' : null,
+    toolCalls && 'state' in toolCalls
+      ? toolCalls.state === 'loading'
+        ? 'Loading usage…'
+        : 'Usage unavailable'
+      : null,
   )
   const cells =
     column < 0

@@ -265,9 +265,13 @@ it.each([
   ['the summary read fails', Code.Internal],
 ])('keeps the catalog and marks usage as unavailable when %s', async (_, code) => {
   const { reads } = await renderTools(`/workspaces/${id}/providers/${githubId}/tools/issues.list`)
+  const status = within(table()).getByRole('status')
+  expect(status).toHaveTextContent('Loading usage…')
   await reads[0]!.fail(code)
   expect(rowNames()).toEqual(['issues.create', 'issues.list', 'repos.get'])
-  expect(loadingUsage()).toBeNull()
+  // A screen reader announces a status whose text changes, not one put in its place.
+  expect(within(table()).getByRole('status')).toBe(status)
+  expect(status).toHaveTextContent('Usage unavailable')
   expect(usageOf('issues.list')).toBe('')
   expect(within(table()).getByRole('columnheader', { name: /^Usage unavailable/ })).toBeVisible()
   expect(within(screen.getByRole('dialog')).queryByRole('region', { name: 'Usage' })).toBeNull()
