@@ -1030,8 +1030,6 @@ mod tests {
         assert_eq!(std::fs::read(&damaged).unwrap(), [7_u8; 8]);
     }
 
-    /// Catches: a start that says only that the local authority failed, with
-    /// the database's answer dropped.
     // Catches: the login dated by a fixed zero, which records the local
     // Organization Owner as created on 1 January 1970.
     #[tokio::test]
@@ -1056,6 +1054,8 @@ mod tests {
         }
     }
 
+    /// Catches: a start that says only that the local authority failed, with
+    /// the database's answer dropped.
     #[tokio::test]
     async fn a_refused_local_authority_write_reports_the_database_error() {
         let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
