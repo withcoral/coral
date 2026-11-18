@@ -11,7 +11,7 @@ use crate::{
     AccessRemovalTarget, AgentDisplayName, AgentRegistrationId, AgentState, AuthenticatedUser,
     ChangeContext, Denial, Error, IfMatch, LifecycleTargetKind, MembershipChange, OrganizationRole,
     PrincipalId, RequestId, UserId, WorkspaceDisplayName, WorkspaceId, WorkspaceModule,
-    WorkspaceRole, local_organization_owner,
+    WorkspaceRole,
 };
 
 /// One resource that a management change can conflict on.
@@ -190,10 +190,11 @@ enum Step {
     RotateCredential,
     DeleteAgent,
     RemoveMembership,
-    /// Removes the second Workspace's one Owner from the Organization at
-    /// this revision of their Organization Membership: the heir takes over.
+    /// Removes the second Workspace's one Owner from the Organization, with
+    /// this precondition on their Organization Membership: the heir takes
+    /// over.
     TransferOwnership {
-        revision: u64,
+        if_match: IfMatch,
     },
 }
 
@@ -252,6 +253,16 @@ impl EtagForm {
                 .expect("the resource has a row")
                 .version
                 .to_string(),
+        }
+    }
+
+    /// A precondition of this form that an Organization Membership at its
+    /// first version does not meet. Its etag is its version, so a UUID
+    /// never matches it.
+    fn stale_organization_membership(self) -> IfMatch {
+        match self {
+            Self::Metadata => IfMatch::token(uuid::Uuid::new_v4()),
+            Self::RowVersion => IfMatch::version(Version::new(2).expect("a positive version")),
         }
     }
 
@@ -391,9 +402,18 @@ impl Changes {
         }
     }
 
-    /// Takes one step through the Interface, with the actor, the instant and
-    /// the etag that `context` holds.
-    async fn take(&mut self, step: Step, context: &ChangeContext) -> Result<(), Error> {
+    /// Takes one step through the Interface, with the actor and the instant
+    /// that `context` holds. A step that checks an etag checks `if_match`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match names the call of every change"
+    )]
+    async fn take(
+        &mut self,
+        step: Step,
+        context: &ChangeContext,
+        if_match: &IfMatch,
+    ) -> Result<(), Error> {
         let module = &self.module;
         let workspace = &self.workspace;
         let agent = self.agent.as_ref();
@@ -401,17 +421,22 @@ impl Changes {
         let registration_id = || &agent.expect("the Agent is created").1;
         match step {
             Step::Rename(name) => module
-                .update_display_name(context, workspace, WorkspaceDisplayName::parse(name)?)
+                .update_display_name(
+                    context,
+                    workspace,
+                    if_match,
+                    WorkspaceDisplayName::parse(name)?,
+                )
                 .await
                 .map(drop),
-            Step::Archive => module.archive(context, workspace).await.map(drop),
-            Step::Restore => module.restore(context, workspace).await.map(drop),
+            Step::Archive => module.archive(context, workspace, if_match).await.map(drop),
+            Step::Restore => module.restore(context, workspace, if_match).await.map(drop),
             Step::GovernArchive => module
-                .archive_as_organization_owner(context, workspace)
+                .archive_as_organization_owner(context, workspace, if_match)
                 .await
                 .map(drop),
             Step::GovernRestore => module
-                .restore_as_organization_owner(context, workspace)
+                .restore_as_organization_owner(context, workspace, if_match)
                 .await
                 .map(drop),
             Step::CreateMembership => module
@@ -428,18 +453,32 @@ impl Changes {
                     context,
                     workspace,
                     &self.member,
-                    MembershipChange::UpdateRole(role),
+                    MembershipChange::UpdateRole {
+                        role,
+                        if_match: *if_match,
+                    },
                 )
                 .await
                 .map(drop),
             Step::AssignOwner => {
                 module
-                    .assign_owner(context, workspace, self.member.user_id())
+                    .assign_owner(
+                        context,
+                        &RequestId::generate(),
+                        workspace,
+                        self.member.user_id(),
+                    )
                     .await
             }
             Step::CreateAgent => {
                 let issued = module
-                    .create_agent(context, workspace, AgentDisplayName::parse("Worker")?, None)
+                    .create_agent(
+                        context,
+                        &RequestId::generate(),
+                        workspace,
+                        AgentDisplayName::parse("Worker")?,
+                        None,
+                    )
                     .await?;
                 self.agent = Some((
                     issued.agent.principal().id().clone(),
@@ -448,7 +487,7 @@ impl Changes {
                 Ok(())
             }
             Step::SetAgentState(state) => module
-                .set_agent_state(context, workspace, agent_id(), state)
+                .set_agent_state(context, workspace, agent_id(), if_match, state)
                 .await
                 .map(drop),
             Step::UpdateRegistration => module
@@ -456,27 +495,38 @@ impl Changes {
                     context,
                     workspace,
                     registration_id(),
+                    if_match,
                     false,
                     Some(UnixNanos::new(9_000)),
                 )
                 .await
                 .map(drop),
             Step::RotateCredential => module
-                .rotate_agent_credential(context, workspace, registration_id())
+                .rotate_agent_credential(
+                    context,
+                    &RequestId::generate(),
+                    workspace,
+                    registration_id(),
+                    if_match,
+                )
                 .await
                 .map(drop),
             Step::DeleteAgent => {
-                let target = AccessRemovalTarget::Agent(workspace, agent_id());
+                let target = AccessRemovalTarget::Agent(workspace, agent_id(), if_match);
                 remove_access(module, context, target).await
             }
             Step::RemoveMembership => {
-                let target = AccessRemovalTarget::WorkspaceMember(workspace, self.member.user_id());
+                let target = AccessRemovalTarget::WorkspaceMember(
+                    workspace,
+                    self.member.user_id(),
+                    if_match,
+                );
                 remove_access(module, context, target).await
             }
-            Step::TransferOwnership { revision } => {
+            Step::TransferOwnership { if_match } => {
                 let target = AccessRemovalTarget::OrganizationMember {
                     user: self.departing.user_id(),
-                    revision,
+                    if_match: &if_match,
                     transfer_to: Some(self.heir.user_id()),
                 };
                 remove_access(module, context, target).await
@@ -643,10 +693,15 @@ async fn every_change_moves_its_resources_and_no_other(form: EtagForm) {
             &[(MEMBERSHIP, Move::Removed)],
         ),
         (
-            Step::TransferOwnership { revision: 1 },
-            Refusal::As(Step::TransferOwnership { revision: 2 }, |error| {
-                matches!(error, Error::OrganizationAuthorityConflict)
-            }),
+            Step::TransferOwnership {
+                if_match: IfMatch::version(Version::FIRST),
+            },
+            Refusal::As(
+                Step::TransferOwnership {
+                    if_match: form.stale_organization_membership(),
+                },
+                |error| matches!(error, Error::OrganizationAuthorityConflict),
+            ),
             &[
                 (DEPARTING_MEMBERSHIP, Move::Removed),
                 (HEIR_MEMBERSHIP, Move::Created),
@@ -664,21 +719,30 @@ async fn every_change_moves_its_resources_and_no_other(form: EtagForm) {
         let owner = changes.owner.clone();
         at += 10;
 
-        let (refused_step, refused_context, is_refusal) = match refusal {
+        // A step that checks no etag takes none.
+        let current = checked.map_or_else(IfMatch::any, |kept| {
+            IfMatch::parse(&form.current(kept)).expect("the current etag is well formed")
+        });
+        let (refused_step, refused_context, refused_if_match, is_refusal) = match refusal {
             Refusal::StaleEtag => (
                 step,
-                change(owner.clone(), at, 'a')
-                    .with_etag(&form.stale(checked.expect("the step checks an etag")))
+                change(owner.clone(), at, 'a'),
+                IfMatch::parse(&form.stale(checked.expect("the step checks an etag")))
                     .expect("a stale etag is well formed"),
                 etag_mismatch,
             ),
-            Refusal::By(who, is_refusal) => {
-                (step, change(changes.who(who).clone(), at, 'a'), is_refusal)
+            Refusal::By(who, is_refusal) => (
+                step,
+                change(changes.who(who).clone(), at, 'a'),
+                current,
+                is_refusal,
+            ),
+            Refusal::As(other, is_refusal) => {
+                (other, change(owner.clone(), at, 'a'), current, is_refusal)
             }
-            Refusal::As(other, is_refusal) => (other, change(owner.clone(), at, 'a'), is_refusal),
         };
         let error = changes
-            .take(refused_step, &refused_context)
+            .take(refused_step, &refused_context, &refused_if_match)
             .await
             .expect_err(&case);
         assert!(is_refusal(&error), "{case}: {error:?}");
@@ -689,14 +753,8 @@ async fn every_change_moves_its_resources_and_no_other(form: EtagForm) {
         );
 
         at += 10;
-        let mut context = change(owner, at, 'b');
-        if let Some(checked) = checked {
-            context = context
-                .with_etag(&form.current(checked))
-                .expect("the current etag is well formed");
-        }
         changes
-            .take(step, &context)
+            .take(step, &change(owner, at, 'b'), &current)
             .await
             .unwrap_or_else(|error| panic!("{case}: {error:?}"));
         let after = changes.kept().await;
@@ -876,20 +934,29 @@ async fn a_change_by_an_older_coral_shows_in_the_etag_and_refuses_the_one_read_b
     assert_eq!(rows().await, [first_without_times; 2]);
 
     // The etag a client read before the older Coral's change is stale.
-    let stale = |etag: uuid::Uuid| {
-        change(owner.clone(), 70, '2')
-            .with_etag(&etag.to_string())
-            .unwrap()
-    };
+    let stale = change(owner.clone(), 70, '2');
     assert!(matches!(
         module
-            .set_agent_state(&stale(created[0]), workspace, &agent, AgentState::Enabled)
+            .set_agent_state(
+                &stale,
+                workspace,
+                &agent,
+                &IfMatch::token(created[0]),
+                AgentState::Enabled,
+            )
             .await,
         Err(Error::EtagMismatch)
     ));
     assert!(matches!(
         module
-            .update_agent_registration(&stale(created[1]), workspace, &registration, true, None)
+            .update_agent_registration(
+                &stale,
+                workspace,
+                &registration,
+                &IfMatch::token(created[1]),
+                true,
+                None,
+            )
             .await,
         Err(Error::EtagMismatch)
     ));
@@ -899,17 +966,26 @@ async fn a_change_by_an_older_coral_shows_in_the_etag_and_refuses_the_one_read_b
     // The etag it shows now is current. This Coral's change raises each
     // version and dates the change on the row, which still has no creation
     // time: only the metadata holds that.
-    let current = |etag: uuid::Uuid| {
-        change(owner.clone(), 80, '3')
-            .with_etag(&etag.to_string())
-            .unwrap()
-    };
+    let current = change(owner.clone(), 80, '3');
     module
-        .set_agent_state(&current(changed[0]), workspace, &agent, AgentState::Enabled)
+        .set_agent_state(
+            &current,
+            workspace,
+            &agent,
+            &IfMatch::token(changed[0]),
+            AgentState::Enabled,
+        )
         .await
         .expect("enable the Agent of an older Coral");
     module
-        .update_agent_registration(&current(changed[1]), workspace, &registration, true, None)
+        .update_agent_registration(
+            &current,
+            workspace,
+            &registration,
+            &IfMatch::token(changed[1]),
+            true,
+            None,
+        )
         .await
         .expect("enable the Registration of an older Coral");
     let raised = Some(StoredRow {
@@ -932,27 +1008,19 @@ async fn a_change_by_an_older_coral_shows_in_the_etag_and_refuses_the_one_read_b
 fn an_etag_is_the_canonical_text_of_a_version_or_a_uuid() {
     let uuid = uuid::Uuid::new_v4();
     let version = |count| Version::new(count).unwrap();
-    let context = || change(local_organization_owner(), 1, '1');
     for (etag, expected) in [
         ("1".to_owned(), IfMatch::version(Version::FIRST)),
         ("42".to_owned(), IfMatch::version(version(42))),
         (uuid.to_string(), IfMatch::token(uuid)),
     ] {
         assert_eq!(IfMatch::parse(&etag).expect(&etag), expected);
-        let read = context().with_etag(&etag).expect(&etag);
-        assert_eq!(read.if_match(), Some(&expected));
-        assert_eq!(read.expected_etag(), Some(etag.as_str()));
     }
     for etag in ["", "0", "-1", "+1", "01", "stale"] {
-        for refused in [
-            IfMatch::parse(etag).map(drop),
-            context().with_etag(etag).map(drop),
-        ] {
-            assert!(
-                matches!(&refused, Err(Error::InvalidInput(message)) if message == "etag is required"),
-                "{etag:?}: {refused:?}"
-            );
-        }
+        let refused = IfMatch::parse(etag);
+        assert!(
+            matches!(&refused, Err(Error::InvalidInput(message)) if message == "etag is required"),
+            "{etag:?}: {refused:?}"
+        );
     }
 
     let at_version = IfMatch::version(version(2));

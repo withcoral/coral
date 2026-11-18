@@ -10,8 +10,8 @@ use coral_provider::{
 use coral_test_support::change;
 use coral_test_support::{TestDatabase, provision_user as organization_user};
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, WorkspaceDisplayName,
-    WorkspaceModule,
+    AuthenticatedPrincipal, AuthenticatedUser, IfMatch, OrganizationRole, RequestId,
+    WorkspaceDisplayName, WorkspaceModule,
 };
 
 use crate::{
@@ -996,6 +996,7 @@ async fn disabled_provider_remains_an_administrative_policy_target() {
             &change(owner.clone(), 53, '6'),
             &workspace.id().clone(),
             provider_access.id(),
+            &IfMatch::any(),
         )
         .await
         .expect("disable Provider");
@@ -1437,6 +1438,7 @@ async fn provider_removal_discards_current_policy_but_retains_its_event() {
             &change(owner.clone(), 253, 'f'),
             workspace.id(),
             target.provider_id(),
+            &IfMatch::any(),
         )
         .await
         .expect("remove Provider and current policy")
@@ -1515,6 +1517,7 @@ async fn organization_owner_needs_a_workspace_membership_to_change_policy() {
     workspaces
         .assign_owner(
             &change(organization_owner.clone(), 308, 'f'),
+            &RequestId::generate(),
             workspace.id(),
             organization_owner.user_id(),
         )
@@ -1550,7 +1553,7 @@ async fn organization_owner_needs_a_workspace_membership_to_change_policy() {
         .set_enabled(
             &change(administrator, 315, '1'),
             organization_owner.user_id(),
-            1,
+            &IfMatch::any(),
             false,
         )
         .await
@@ -1738,6 +1741,7 @@ async fn rules_hold_the_exact_rules_of_current_provider_tools_by_call_path() {
     let issued = workspaces
         .create_agent(
             &change(owner.clone(), 302, '1'),
+            &RequestId::generate(),
             workspace.id(),
             coral_workspace::AgentDisplayName::parse("Reader").expect("Agent name"),
             None,
@@ -1841,6 +1845,7 @@ async fn rules_hold_the_exact_rules_of_current_provider_tools_by_call_path() {
                 providers
                     .regenerate_provider(
                         &context,
+                        &IfMatch::any(),
                         coral_provider::ProviderRegenerationRequest::new(
                             ManagementRequestId::parse(&coral_test_support::fixture_request_id())
                                 .expect("request id"),
@@ -1856,7 +1861,7 @@ async fn rules_hold_the_exact_rules_of_current_provider_tools_by_call_path() {
             }
             ThenProvider::Disabled => {
                 providers
-                    .disable_provider(&context, workspace.id(), provider.id())
+                    .disable_provider(&context, workspace.id(), provider.id(), &IfMatch::any())
                     .await
                     .expect("disable Provider");
             }
@@ -1968,7 +1973,7 @@ async fn access_states_by_call_path_set_each_sent_path_and_keep_the_rest() {
             .expect("set a rule the call does not name");
         if matches!(then, ThenProvider::Disabled) {
             providers
-                .disable_provider(&context, workspace.id(), provider.id())
+                .disable_provider(&context, workspace.id(), provider.id(), &IfMatch::any())
                 .await
                 .expect("disable Provider");
         }
@@ -2340,6 +2345,7 @@ impl PrivateTools {
         let issued = workspaces
             .create_agent(
                 &change(owner.clone(), 13, '4'),
+                &RequestId::generate(),
                 &workspace,
                 coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
                 None,

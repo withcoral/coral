@@ -46,6 +46,7 @@ pub(crate) async fn registered_agent(
                 10,
                 '1',
             ),
+            &RequestId::generate(),
             workspace_id,
             coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
             None,
@@ -978,7 +979,12 @@ pub(crate) async fn configure_authored_provider(
     let (dir, accounts) = fixture.accounts();
     fixture
         .providers
-        .delete_provider(&context, &tool.workspace_id, &tool.provider_id)
+        .delete_provider(
+            &context,
+            &tool.workspace_id,
+            &tool.provider_id,
+            &IfMatch::any(),
+        )
         .await
         .unwrap()
         .skip_search();
@@ -1070,7 +1076,12 @@ pub(crate) async fn configure_shared_provider(
     let (dir, accounts) = fixture.accounts();
     fixture
         .providers
-        .delete_provider(&context, &tool.workspace_id, &tool.provider_id)
+        .delete_provider(
+            &context,
+            &tool.workspace_id,
+            &tool.provider_id,
+            &IfMatch::any(),
+        )
         .await
         .unwrap()
         .skip_search();
@@ -1146,6 +1157,7 @@ pub(crate) async fn configure_user_caller_paths(
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 tool.workspace_id.clone(),

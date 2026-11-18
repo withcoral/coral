@@ -8,7 +8,7 @@ use crate::account::{AccountModule, AuthorizationState, OAuthClient};
 use coral_credentials::Secret;
 use coral_db::UnixNanos;
 use coral_workspace::WorkspaceId;
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName};
+use coral_workspace::{IfMatch, OrganizationRole, WorkspaceDisplayName};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path},
@@ -990,6 +990,7 @@ async fn contract_change_keeps_account_identity_but_only_new_authorization_resto
     providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             crate::ProviderRegenerationRequest::new(
                 authorization_request(),
                 workspace.id().clone(),

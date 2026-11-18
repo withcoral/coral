@@ -19,8 +19,8 @@ use crate::{
 };
 use coral_catalog::{OAuthClientBootstrap, ProviderCredentialContract};
 use coral_credentials::Secret;
-use coral_workspace::OrganizationRole;
 use coral_workspace::WorkspaceAction;
+use coral_workspace::{IfMatch, OrganizationRole, RequestId};
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -3172,6 +3172,7 @@ async fn a_ready_openapi_oauth_setup_signs_in_with_an_explicit_client_that_publi
         .providers
         .regenerate_provider(
             &change_context(owner.clone(), 61, '5'),
+            &IfMatch::any(),
             crate::ProviderRegenerationRequest::new(
                 ManagementRequestId::parse("e0000000-0000-4000-8000-000000000011").unwrap(),
                 scope.clone(),
@@ -4497,6 +4498,7 @@ async fn confidential_application_lifecycle(organization: bool) {
             &context,
             workspace.id(),
             provider_access.id(),
+            &IfMatch::any(),
             CredentialRoute::Caller,
         )
         .await
@@ -4505,6 +4507,7 @@ async fn confidential_application_lifecycle(organization: bool) {
         .workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -5052,6 +5055,7 @@ async fn rotation_preserves_consent_but_contract_edits_cancel_pending_and_dispat
             .providers
             .regenerate_provider(
                 &context,
+                &IfMatch::any(),
                 crate::ProviderRegenerationRequest::new(
                     super::account_tests::authorization_request(),
                     owner.clone(),
@@ -5526,6 +5530,7 @@ async fn regeneration_to_a_public_application_drops_the_old_secret_and_its_failu
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             crate::ProviderRegenerationRequest::new(
                 super::account_tests::authorization_request(),
                 owner.clone(),
@@ -5595,7 +5600,7 @@ async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_appli
         let now_context = change_context(actor.clone(), now, '3');
         let result = harness
             .providers
-            .regenerate_provider(&now_context, request.clone())
+            .regenerate_provider(&now_context, &IfMatch::any(), request.clone())
             .await
             .unwrap()
             .skip_search();
@@ -5612,7 +5617,7 @@ async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_appli
         }
         let replay = harness
             .providers
-            .regenerate_provider(&now_context, request)
+            .regenerate_provider(&now_context, &IfMatch::any(), request)
             .await
             .unwrap()
             .skip_search();

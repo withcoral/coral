@@ -243,12 +243,12 @@ impl AccountModule {
         let mut tx = self.providers.database.begin().await?;
         let held = self
             .providers
-            .hold_for_change(
+            .hold_for_unguarded_change(
                 &mut tx,
                 context,
                 owner,
                 provider,
-                crate::change::ProviderChange::RotateOAuthClientSecret,
+                crate::change::UnguardedChange::RotateOAuthClientSecret,
             )
             .await?;
         let contract =

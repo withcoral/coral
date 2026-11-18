@@ -11,6 +11,7 @@ pub(super) async fn registered_agent(
     let issued = workspaces
         .create_agent(
             &change(owner),
+            &RequestId::generate(),
             workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -79,7 +80,12 @@ async fn deleting_an_agent_keeps_authorization_history_and_sibling_accounts() {
     };
     let lifecycle = AccessLifecycleModule::new(database.clone(), workspaces.clone());
     lifecycle
-        .delete_agent(&change(&owner), &scope, agent.principal().id())
+        .delete_agent(
+            &change(&owner),
+            &scope,
+            agent.principal().id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
 
@@ -126,6 +132,10 @@ async fn deleting_an_agent_keeps_authorization_history_and_sibling_accounts() {
 /// Only a current Owner of the Agent's own active Workspace deletes it, and
 /// deletion leaves every other Agent in place.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Agent is followed through every refused deletion, then the accepted one"
+)]
 async fn agent_deletion_requires_current_owner_and_exact_workspace_without_affecting_other_agents()
 {
     let db = fixture().await;
@@ -163,7 +173,7 @@ async fn agent_deletion_requires_current_owner_and_exact_workspace_without_affec
     );
 
     let wrong_workspace = lifecycle
-        .delete_agent(&context, right, agent.principal().id())
+        .delete_agent(&context, right, agent.principal().id(), &IfMatch::any())
         .await;
     assert!(
         matches!(
@@ -173,7 +183,12 @@ async fn agent_deletion_requires_current_owner_and_exact_workspace_without_affec
         "{wrong_workspace:?}"
     );
     let other_owner = lifecycle
-        .delete_agent(&change(&right_owner), left, agent.principal().id())
+        .delete_agent(
+            &change(&right_owner),
+            left,
+            agent.principal().id(),
+            &IfMatch::any(),
+        )
         .await;
     assert!(
         matches!(
@@ -182,9 +197,12 @@ async fn agent_deletion_requires_current_owner_and_exact_workspace_without_affec
         ),
         "{other_owner:?}"
     );
-    workspaces.archive(&context, left).await.unwrap();
+    workspaces
+        .archive(&context, left, &IfMatch::any())
+        .await
+        .unwrap();
     let archived = lifecycle
-        .delete_agent(&context, left, agent.principal().id())
+        .delete_agent(&context, left, agent.principal().id(), &IfMatch::any())
         .await;
     assert!(
         matches!(
@@ -193,7 +211,10 @@ async fn agent_deletion_requires_current_owner_and_exact_workspace_without_affec
         ),
         "{archived:?}"
     );
-    workspaces.restore(&context, left).await.unwrap();
+    workspaces
+        .restore(&context, left, &IfMatch::any())
+        .await
+        .unwrap();
     assert_eq!(
         (
             workspaces.list_agents(&administrator, left).await.unwrap(),
@@ -204,7 +225,7 @@ async fn agent_deletion_requires_current_owner_and_exact_workspace_without_affec
     );
 
     lifecycle
-        .delete_agent(&context, left, agent.principal().id())
+        .delete_agent(&context, left, agent.principal().id(), &IfMatch::any())
         .await
         .unwrap();
     let current = workspaces.list_agents(&administrator, left).await.unwrap();

@@ -284,7 +284,11 @@ impl GateLoss {
             }
             Self::Route => move_to_shared_account(waiting).await,
             Self::Authority => {
-                fixture.workspaces.archive(context, scope).await.unwrap();
+                fixture
+                    .workspaces
+                    .archive(context, scope, &IfMatch::any())
+                    .await
+                    .unwrap();
             }
             Self::Disconnect => {
                 let account = accounts
@@ -360,6 +364,7 @@ async fn move_to_shared_account(waiting: &WaitingConnection) {
     providers
         .regenerate_provider(
             context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 scope.clone(),
@@ -917,6 +922,7 @@ async fn caller_connection_cannot_complete_an_obsolete_contract_after_regenerati
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 scope.clone(),

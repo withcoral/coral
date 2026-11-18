@@ -28,9 +28,11 @@ enum WorkspaceManagementRequests {
     GrantResult,
 }
 
+/// Records what the claimed `request` of `user` granted, on the claim's row.
 pub(super) async fn record_email_grant(
     tx: &mut Transaction<'_>,
-    context: &crate::ChangeContext,
+    user: &UserId,
+    request: &crate::RequestId,
     workspace: &WorkspaceId,
     email: &str,
     target: &UserId,
@@ -63,16 +65,8 @@ pub(super) async fn record_email_grant(
                 ),
                 (WorkspaceManagementRequests::GrantResult, result.into()),
             ])
-            .and_where(
-                Expr::col(WorkspaceManagementRequests::UserId)
-                    .eq(context.actor().user_id().as_str()),
-            )
-            .and_where(
-                Expr::col(WorkspaceManagementRequests::RequestId).eq(context
-                    .request_id()
-                    .ok_or_else(|| Error::InvalidInput("request identity required".into()))?
-                    .to_string()),
-            )
+            .and_where(Expr::col(WorkspaceManagementRequests::UserId).eq(user.as_str()))
+            .and_where(Expr::col(WorkspaceManagementRequests::RequestId).eq(request.to_string()))
             .to_owned(),
     )
     .await?;

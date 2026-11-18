@@ -20,8 +20,8 @@ use coral_tools::{
     SharedToolOrigin, SharedToolPath, SharedToolPublish,
 };
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, WorkspaceId, WorkspaceModule,
-    WorkspaceRole,
+    AuthenticatedPrincipal, AuthenticatedUser, IfMatch, OrganizationRole, WorkspaceId,
+    WorkspaceModule, WorkspaceRole,
 };
 
 const SOURCE: &str = "export default async function tide() { return 'high at noon'; }";
@@ -227,7 +227,12 @@ impl Fixture {
                     |fault| fault.context(&self.owner),
                 );
                 self.access
-                    .delete_agent(&context, &self.workspace, self.leaver.principal().id())
+                    .delete_agent(
+                        &context,
+                        &self.workspace,
+                        self.leaver.principal().id(),
+                        &IfMatch::any(),
+                    )
                     .await
             }
             Removal::Member => {
@@ -236,6 +241,7 @@ impl Fixture {
                         &change(self.owner.clone(), 50, '5'),
                         &self.workspace,
                         self.co_owner.user_id(),
+                        &IfMatch::any(),
                     )
                     .await
             }

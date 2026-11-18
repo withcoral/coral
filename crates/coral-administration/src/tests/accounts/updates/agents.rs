@@ -20,6 +20,7 @@ async fn agent_update(shared: bool, removal_first: bool) {
         .workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             f.workspace.id(),
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -100,25 +101,35 @@ async fn agent_update(shared: bool, removal_first: bool) {
             let context = context.clone();
             let workspace = f.workspace.id().clone();
             let id = agent.principal().id().clone();
-            tokio::spawn(async move { lifecycle.delete_agent(&context, &workspace, &id).await })
+            tokio::spawn(async move {
+                lifecycle
+                    .delete_agent(&context, &workspace, &id, &IfMatch::any())
+                    .await
+            })
         };
         tokio::time::timeout(std::time::Duration::from_secs(5), gate.prepared.notified())
             .await
             .unwrap();
+        let any = IfMatch::any();
         let (result, ()) = tokio::join!(biased;
-            providers.regenerate_provider(&context, update.clone()),
+            providers.regenerate_provider(&context, &any, update.clone()),
             async { gate.proceed.notify_one(); },
         );
         removal.await.unwrap().unwrap();
         result.unwrap().skip_search()
     } else {
         let result = providers
-            .regenerate_provider(&context, update.clone())
+            .regenerate_provider(&context, &IfMatch::any(), update.clone())
             .await
             .unwrap()
             .skip_search();
         f.lifecycle
-            .delete_agent(&context, f.workspace.id(), agent.principal().id())
+            .delete_agent(
+                &context,
+                f.workspace.id(),
+                agent.principal().id(),
+                &IfMatch::any(),
+            )
             .await
             .unwrap();
         result
@@ -180,7 +191,7 @@ async fn agent_update(shared: bool, removal_first: bool) {
     );
     assert_eq!(
         providers
-            .regenerate_provider(&context, update)
+            .regenerate_provider(&context, &IfMatch::any(), update)
             .await
             .unwrap()
             .skip_search(),

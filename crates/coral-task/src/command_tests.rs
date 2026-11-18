@@ -3,7 +3,8 @@ use configured_provider_fixtures::ConfiguredProviderFixtures as _;
 use coral_db::UnixNanos;
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
-    AuthenticatedPrincipal, ChangeContext, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
+    AuthenticatedPrincipal, ChangeContext, IfMatch, OrganizationRole, RequestId,
+    WorkspaceDisplayName, WorkspaceModule,
 };
 
 #[path = "activity_tests.rs"]
@@ -354,7 +355,7 @@ async fn archived_workspace_description_rejection_remains_in_authorized_task_his
     fixture
         .tasks
         .workspaces
-        .archive(&change, &fixture.workspace)
+        .archive(&change, &fixture.workspace, &IfMatch::any())
         .await
         .unwrap();
 
@@ -489,7 +490,7 @@ async fn archived_workspace_absent_and_concealed_description_probes_create_no_at
     fixture
         .tasks
         .workspaces
-        .archive(&change, &fixture.workspace)
+        .archive(&change, &fixture.workspace, &IfMatch::any())
         .await
         .unwrap();
 
@@ -774,6 +775,7 @@ async fn completion_requires_exact_workspace_principal_and_current_authority() {
         .workspaces
         .create_agent(
             &change,
+            &RequestId::generate(),
             &f.workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -827,6 +829,7 @@ async fn completion_requires_exact_workspace_principal_and_current_authority() {
             &change,
             &f.workspace,
             agent.principal().id(),
+            &IfMatch::any(),
             coral_workspace::AgentState::Disabled,
         )
         .await
@@ -1429,7 +1432,12 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
         fixture.tasks.database.clone(),
         fixture.tasks.workspaces.clone(),
     )
-    .remove_workspace_member(&change, &fixture.workspace, member.user_id())
+    .remove_workspace_member(
+        &change,
+        &fixture.workspace,
+        member.user_id(),
+        &IfMatch::any(),
+    )
     .await
     .unwrap();
     assert!(matches!(
@@ -1457,6 +1465,7 @@ async fn exact_history_preserves_user_privacy_agent_oversight_scope_and_current_
         .workspaces
         .create_agent(
             &change,
+            &RequestId::generate(),
             &fixture.workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -1692,6 +1701,7 @@ async fn the_task_modules_clock_dates_its_rechecks_and_its_commands_attempts() {
         .workspaces
         .create_agent(
             &ChangeContext::new(fixture.user.clone(), start, coral_test_support::trace('1')),
+            &RequestId::generate(),
             &fixture.workspace,
             coral_workspace::AgentDisplayName::parse("Expiring worker").unwrap(),
             Some(expiry),
@@ -1804,6 +1814,7 @@ async fn registration_expiry_during_lock_waits_prevents_attempt_and_run_acceptan
             .workspaces
             .create_agent(
                 &change,
+                &RequestId::generate(),
                 &fixture.workspace,
                 coral_workspace::AgentDisplayName::parse("Expiring worker").unwrap(),
                 Some(UnixNanos::new(expiry)),

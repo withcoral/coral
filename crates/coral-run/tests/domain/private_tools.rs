@@ -1393,11 +1393,10 @@ async fn disable_private_provider(scope: &AdminScope) {
         .fixture
         .providers
         .disable_provider(
-            &change(scope.owner_user(), 17, '8')
-                .with_etag(&private.etag())
-                .unwrap(),
+            &change(scope.owner_user(), 17, '8'),
             &scope.workspace_id,
             private.id(),
+            &private.if_match(),
         )
         .await
         .expect("disable the Private Provider");

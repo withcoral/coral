@@ -13,7 +13,7 @@ use std::sync::Arc;
 use coral_db::{Clock as _, DatabaseSystem};
 use coral_provider::{ActiveGeneration, GenerationEntries};
 use coral_telemetry::testing::{SpanCapture, attribute};
-use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
+use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, IfMatch, WorkspaceId};
 use opentelemetry::trace::SpanId;
 use opentelemetry_sdk::trace::SpanData;
 use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
@@ -138,6 +138,7 @@ async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() 
                     &change(world.user.clone(), 70, '7'),
                     &world.workspace,
                     &world.tracer,
+                    &IfMatch::any(),
                     coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
                 )
                 .await
@@ -1157,6 +1158,7 @@ async fn a_pass_reindexes_a_renamed_provider_under_its_new_name() {
             &change(world.user.clone(), 70, '7'),
             &world.workspace,
             &world.tracer,
+            &IfMatch::any(),
             coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
         )
         .await
@@ -2017,6 +2019,7 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
                     &change(world.user.clone(), 70, '7'),
                     &world.workspace,
                     &world.tracer,
+                    &IfMatch::any(),
                     coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
                 )
                 .await
@@ -2192,6 +2195,7 @@ async fn a_renamed_provider_rewrites_its_generation_under_the_new_name() {
             &change(world.user.clone(), 70, '7'),
             &world.workspace,
             &world.tracer,
+            &IfMatch::any(),
             coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
         )
         .await

@@ -9,7 +9,7 @@ use crate::setup_tests::{credential_for, user_principal, workspace_owner};
 use coral_administration::AccessLifecycleModule;
 use coral_credentials::Secret;
 use coral_db::UnixNanos;
-use coral_workspace::{ChangeContext, OrganizationModule, WorkspaceRole};
+use coral_workspace::{ChangeContext, OrganizationModule, RequestId, WorkspaceRole};
 use fixture::{assert_cleanup_events, candidate, evidence, harness, pause_update};
 
 #[derive(Clone, Copy)]
@@ -185,12 +185,17 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
         match removal {
             Removal::Workspace => {
                 lifecycle
-                    .remove_workspace_member(&cleanup, workspace.id(), member.user_id())
+                    .remove_workspace_member(
+                        &cleanup,
+                        workspace.id(),
+                        member.user_id(),
+                        &IfMatch::any(),
+                    )
                     .await
             }
             Removal::Organization => {
                 lifecycle
-                    .remove_organization_member(&cleanup, member.user_id(), 1, None)
+                    .remove_organization_member(&cleanup, member.user_id(), &IfMatch::any(), None)
                     .await
             }
         }
@@ -392,7 +397,7 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
         .await
         .unwrap_err();
     h.providers
-        .regenerate_provider(&context, update)
+        .regenerate_provider(&context, &IfMatch::any(), update)
         .await
         .unwrap_err();
     assert_eq!(

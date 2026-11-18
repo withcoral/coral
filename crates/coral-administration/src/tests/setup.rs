@@ -7,7 +7,9 @@ use coral_provider::{
     ProviderSetupState,
 };
 use coral_test_support::provision_user;
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName, WorkspaceModule, WorkspaceRole};
+use coral_workspace::{
+    IfMatch, OrganizationRole, WorkspaceDisplayName, WorkspaceModule, WorkspaceRole,
+};
 
 use super::configured_provider_fixtures::ConfiguredProviderFixtures as _;
 
@@ -121,7 +123,12 @@ async fn removal_scrubs_configuration_only_setup_secrets_and_prevents_reuse_afte
     for context in faults {
         assert!(
             lifecycle
-                .remove_workspace_member(&context, workspace.id(), member.user_id())
+                .remove_workspace_member(
+                    &context,
+                    workspace.id(),
+                    member.user_id(),
+                    &IfMatch::any()
+                )
                 .await
                 .is_err()
         );
@@ -142,7 +149,12 @@ async fn removal_scrubs_configuration_only_setup_secrets_and_prevents_reuse_afte
         );
     }
     lifecycle
-        .remove_workspace_member(&change(&owner), workspace.id(), member.user_id())
+        .remove_workspace_member(
+            &change(&owner),
+            workspace.id(),
+            member.user_id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     workspaces

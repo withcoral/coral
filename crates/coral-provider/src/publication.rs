@@ -32,8 +32,8 @@ mod types;
 /// implements it, so a Built-in Tool renames exactly as Reef does.
 #[async_trait::async_trait]
 pub trait ProviderRenamer: Send + Sync {
-    /// Renames the Provider `provider` and keeps its Generation. The
-    /// context's etag is the rename's precondition.
+    /// Renames the Provider `provider` that the caller read at `if_match`,
+    /// and keeps its Generation.
     ///
     /// # Errors
     ///
@@ -44,6 +44,7 @@ pub trait ProviderRenamer: Send + Sync {
         context: &coral_workspace::ChangeContext,
         workspace: &WorkspaceId,
         provider: &crate::ProviderId,
+        if_match: &coral_workspace::IfMatch,
         display_name: crate::ProviderDisplayName,
     ) -> Result<crate::Provider, crate::Error>;
 }
@@ -57,12 +58,13 @@ pub(crate) use types::{PublicationEvidence, Published};
 
 use coral_catalog::{AuthenticationConfiguration, MaterializationOutcome, ProviderSetupInput};
 use coral_db::{Transaction, UnixNanos};
-use coral_workspace::{AuthenticatedUser, AuthoritySource, ChangeContext, WorkspaceAction};
+use coral_workspace::{
+    AuthenticatedUser, AuthoritySource, ChangeContext, IfMatch, WorkspaceAction,
+};
 
 use crate::account::setup as setup_credentials;
 use crate::change::{Committed, SearchChange};
 use crate::repository as provider_repository;
-use crate::types::check_etag;
 use crate::{
     Error, LifecycleAction, LifecycleActor, LifecycleOutcome, ManagementRequestId, Provider,
     ProviderDisplayName, ProviderId, ProviderModule, ProviderSetupId, ProviderState,
@@ -147,8 +149,11 @@ fn mismatched_command_result() -> Error {
     Error::CorruptData("Publication returned another command's result".to_string())
 }
 
+/// The etag the caller read of the Provider that a regeneration replaces.
+/// It is checked in the terminal transaction and is no part of the stored
+/// request, so a replay carries none.
 struct RegenerationPrecondition {
-    expected_etag: Option<String>,
+    if_match: IfMatch,
 }
 
 struct RegenerationBaseline {
@@ -544,10 +549,9 @@ impl ProviderModule {
                     }
                     Err(error) => return Err(error),
                     Ok(()) => {
-                        check_etag(
-                            baseline.precondition.expected_etag.as_deref(),
-                            &current_provider.provider.etag(),
-                        )?;
+                        current_provider
+                            .provider
+                            .admit(&baseline.precondition.if_match)?;
                         if current_provider.generation_id != baseline.generation_id
                             || current_provider.provider.display_name_metadata()
                                 != &baseline.display_name
@@ -855,8 +859,9 @@ impl ProviderModule {
     /// Prepares one replacement Provider Generation outside any transaction.
     ///
     /// The active Generation stays available while the exact pinned Setup is
-    /// materialized. The context's etag is the regeneration's precondition.
-    /// An exact replay returns the committed result.
+    /// materialized. `if_match` is the etag the caller read of the Provider,
+    /// which the terminal transaction checks. An exact replay returns the
+    /// committed result, whatever the etag.
     ///
     /// # Errors
     ///
@@ -865,6 +870,7 @@ impl ProviderModule {
     pub(crate) async fn prepare_regeneration(
         &self,
         context: &ChangeContext,
+        if_match: &IfMatch,
         request: ProviderRegenerationRequest,
     ) -> Result<PreparedPublication<'_, ProviderRegenerationPublication>, Error> {
         self.prepare_command(
@@ -872,7 +878,7 @@ impl ProviderModule {
             Command::Regenerate {
                 request,
                 regeneration: RegenerationPrecondition {
-                    expected_etag: context.expected_etag().map(str::to_owned),
+                    if_match: *if_match,
                 },
             },
             Terminal::into_regeneration,
@@ -935,7 +941,9 @@ impl ProviderModule {
         Box::pin(self.commit_publication(context, prepared)).await
     }
 
-    /// Prepares, writes, and commits one Provider regeneration.
+    /// Prepares, writes, and commits one regeneration of the Provider that
+    /// the caller read at `if_match`. The etag is an argument and no part of
+    /// the request, which Coral stores and rebuilds for a replay.
     ///
     /// # Errors
     ///
@@ -943,13 +951,14 @@ impl ProviderModule {
     /// [`Error::ProviderNotFound`] for an absent or disabled Provider;
     /// [`Error::ProviderSetupNotApplicable`] for a Setup that does not update
     /// this Provider; and [`Error::EtagMismatch`] when the Provider changed
-    /// since the request's etag.
+    /// since the caller read it.
     pub async fn regenerate_provider(
         &self,
         context: &ChangeContext,
+        if_match: &IfMatch,
         request: ProviderRegenerationRequest,
     ) -> Result<Committed<ProviderRegenerationPublication>, Error> {
-        let prepared = Box::pin(self.prepare_regeneration(context, request)).await?;
+        let prepared = Box::pin(self.prepare_regeneration(context, if_match, request)).await?;
         Box::pin(self.commit_publication(context, prepared)).await
     }
 

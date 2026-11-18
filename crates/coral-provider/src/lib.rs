@@ -72,8 +72,8 @@ use std::sync::Arc;
 
 use coral_db::{Database, UnixNanos};
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, AuthoritySource, ChangeContext, WorkspaceAction,
-    WorkspaceEvidence, WorkspaceModule, WorkspaceRole,
+    AuthenticatedPrincipal, AuthenticatedUser, AuthoritySource, ChangeContext, IfMatch,
+    WorkspaceAction, WorkspaceEvidence, WorkspaceModule, WorkspaceRole,
 };
 
 pub use account::{
@@ -477,7 +477,8 @@ impl ProviderModule {
         Ok(tool)
     }
 
-    /// Disables one exact Workspace-owned Provider.
+    /// Disables the exact Workspace-owned Provider that the caller read at
+    /// `if_match`.
     ///
     /// Disabling preserves the Provider, its Generation, Provider Accounts,
     /// and historical attribution while blocking new Invocation admission and
@@ -486,30 +487,41 @@ impl ProviderModule {
     /// # Errors
     ///
     /// Requires the Provider owner's current authority and an active Provider.
+    /// Returns [`Error::EtagMismatch`] for a Provider that changed since.
     pub async fn disable_provider(
         &self,
         context: &ChangeContext,
         owner: &WorkspaceId,
         provider_id: &ProviderId,
+        if_match: &IfMatch,
     ) -> Result<Provider, Error> {
-        self.change_provider_state(context, owner, provider_id, ProviderState::Disabled)
-            .await
+        self.change_provider_state(
+            context,
+            owner,
+            provider_id,
+            if_match,
+            ProviderState::Disabled,
+        )
+        .await
     }
 
-    /// Restores one exact disabled Workspace-owned Provider.
+    /// Restores the exact disabled Workspace-owned Provider that the caller
+    /// read at `if_match`.
     ///
     /// Restoration reuses the same Provider and makes otherwise-ready Tools usable again.
     ///
     /// # Errors
     ///
     /// Requires the Provider owner's current authority and a disabled Provider.
+    /// Returns [`Error::EtagMismatch`] for a Provider that changed since.
     pub async fn restore_provider(
         &self,
         context: &ChangeContext,
         owner: &WorkspaceId,
         provider_id: &ProviderId,
+        if_match: &IfMatch,
     ) -> Result<Provider, Error> {
-        self.change_provider_state(context, owner, provider_id, ProviderState::Active)
+        self.change_provider_state(context, owner, provider_id, if_match, ProviderState::Active)
             .await
     }
 
@@ -532,6 +544,7 @@ impl ProviderModule {
         context: &ChangeContext,
         owner: &WorkspaceId,
         provider_id: &ProviderId,
+        if_match: &IfMatch,
         next_state: ProviderState,
     ) -> Result<Provider, Error> {
         let mut transaction = self.database.begin().await?;
@@ -541,7 +554,8 @@ impl ProviderModule {
                 context,
                 owner,
                 provider_id,
-                change::ProviderChange::SetState,
+                change::GuardedChange::SetState,
+                if_match,
             )
             .await?;
         match (held.current.provider.state(), next_state) {

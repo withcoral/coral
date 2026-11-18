@@ -1167,7 +1167,11 @@ async fn compilation_holds_no_write_transaction_and_final_recheck_is_atomic() {
 
     fixture
         .workspaces
-        .archive(&change(owner_user, 30, '6'), workspace.id())
+        .archive(
+            &change(owner_user, 30, '6'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .expect("archive while compilation is blocked");
     release.send(()).expect("release compilation");

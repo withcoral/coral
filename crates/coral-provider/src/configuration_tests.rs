@@ -20,7 +20,7 @@ use crate::{
 };
 
 use coral_catalog::{OpenApiDocument, ProviderConfiguration, ServerSelection};
-use coral_workspace::{OrganizationModule, OrganizationRole, WorkspaceAction};
+use coral_workspace::{IfMatch, OrganizationModule, OrganizationRole, WorkspaceAction};
 use serde_json::json;
 
 use crate::setup_tests::{harness, workspace_owner};
@@ -349,7 +349,9 @@ async fn update_acceptance_is_bound_to_the_reviewed_configuration_revision() {
         .await
         .unwrap();
     assert!(matches!(
-        h.providers.regenerate_provider(&context, stale).await,
+        h.providers
+            .regenerate_provider(&context, &IfMatch::any(), stale)
+            .await,
         Err(Error::EtagMismatch)
     ));
     assert_eq!(
@@ -370,7 +372,7 @@ async fn update_acceptance_is_bound_to_the_reviewed_configuration_revision() {
     .with_incompatible_configuration_confirmation();
     assert_eq!(
         h.providers
-            .regenerate_provider(&context, fresh)
+            .regenerate_provider(&context, &IfMatch::any(), fresh)
             .await
             .unwrap()
             .skip_search()
@@ -556,7 +558,7 @@ async fn reviewed_public_application_changes_cancel_consent_and_persist_for_call
     .with_incompatible_configuration_confirmation();
     assert_eq!(
         h.providers
-            .regenerate_provider(&context, request)
+            .regenerate_provider(&context, &IfMatch::any(), request)
             .await
             .unwrap()
             .skip_search()
@@ -1130,7 +1132,7 @@ async fn incompatible_update_preserves_route_and_reconnect_repairs_only_the_exac
     );
     assert!(matches!(
         h.providers
-            .regenerate_provider(&context, request.clone())
+            .regenerate_provider(&context, &IfMatch::any(), request.clone())
             .await,
         Err(Error::IncompatibleConfigurationConfirmationRequired)
     ));
@@ -1173,6 +1175,7 @@ async fn incompatible_update_preserves_route_and_reconnect_repairs_only_the_exac
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             request
                 .with_incompatible_configuration_confirmation()
                 .with_account_grant(grant),
@@ -1733,14 +1736,14 @@ async fn anonymous_and_normalized_destination_updates_do_not_warn_but_new_creden
         if interrupts {
             assert!(matches!(
                 h.providers
-                    .regenerate_provider(&context, request.clone())
+                    .regenerate_provider(&context, &IfMatch::any(), request.clone())
                     .await,
                 Err(Error::IncompatibleConfigurationConfirmationRequired)
             ));
         } else {
             assert_eq!(
                 h.providers
-                    .regenerate_provider(&context, request)
+                    .regenerate_provider(&context, &IfMatch::any(), request)
                     .await
                     .unwrap()
                     .skip_search()
@@ -1939,7 +1942,7 @@ async fn scope_header_and_method_differences_require_confirmation_only_when_owne
         );
         assert!(matches!(
             h.providers
-                .regenerate_provider(&context, request.clone())
+                .regenerate_provider(&context, &IfMatch::any(), request.clone())
                 .await,
             Err(Error::IncompatibleConfigurationConfirmationRequired)
         ));
@@ -1947,6 +1950,7 @@ async fn scope_header_and_method_differences_require_confirmation_only_when_owne
             .providers
             .regenerate_provider(
                 &context,
+                &IfMatch::any(),
                 request.with_incompatible_configuration_confirmation(),
             )
             .await
@@ -2393,7 +2397,7 @@ async fn confirmation_conceals_other_workspaces_and_rechecks_expiry_and_authorit
     let admin_context = change_context(administrator.clone(), 20, '3');
     let organization = OrganizationModule::new(h.database.clone());
     organization
-        .set_enabled(&admin_context, actor.user_id(), 1, false)
+        .set_enabled(&admin_context, actor.user_id(), &IfMatch::any(), false)
         .await
         .unwrap();
     assert!(matches!(

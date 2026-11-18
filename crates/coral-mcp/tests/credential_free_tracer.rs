@@ -23,8 +23,8 @@ use coral_telemetry::testing::{ExportCapture, SpanCapture};
 use coral_test_support::TestDatabase;
 use coral_tools::PrivateToolModule;
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, TraceId, WorkspaceDisplayName, WorkspaceId, WorkspaceModule,
-    local_organization_owner,
+    AuthenticatedUser, ChangeContext, RequestId, TraceId, WorkspaceDisplayName, WorkspaceId,
+    WorkspaceModule, local_organization_owner,
 };
 use reqwest::header::{HeaderMap, HeaderValue};
 use rmcp::model::{
@@ -355,6 +355,7 @@ impl Tracer {
         let agent = workspaces
             .create_agent(
                 &change(local_user.clone(), 12, '3'),
+                &RequestId::generate(),
                 &workspace_a,
                 coral_workspace::AgentDisplayName::parse("Tracer Agent").expect("Agent name"),
                 None,
@@ -683,6 +684,7 @@ async fn the_servers_clock_dates_a_request() {
         .workspaces
         .create_agent(
             &change(tracer.local_user.clone(), 70, 'c'),
+            &RequestId::generate(),
             &tracer.workspace_a,
             coral_workspace::AgentDisplayName::parse("Expiring Agent").expect("Agent name"),
             Some(start.checked_add(lifetime).expect("expiry")),

@@ -13,8 +13,8 @@ use coral_db::{Transaction, UnixNanos, Version};
 
 use crate::types::Precondition;
 use crate::{
-    AuthenticatedUser, ChangeContext, Error, LifecycleTargetKind, WorkspaceAction,
-    WorkspaceEvidence, WorkspaceId, WorkspaceModule,
+    AuthenticatedUser, ChangeContext, Error, IfMatch, LifecycleTargetKind, RequestId, UserId,
+    WorkspaceAction, WorkspaceEvidence, WorkspaceId, WorkspaceModule,
 };
 
 /// Non-secret configuration concurrency and timestamps.
@@ -119,22 +119,19 @@ pub(super) async fn record_change(
     .await
 }
 
-/// Checks the etag the caller read, if the context holds one, against the
-/// resource as it is now. The caller holds the resource's Workspace.
+/// Checks the etag the caller read against the resource as it is now. The
+/// caller holds the resource's Workspace.
 ///
 /// A UUID etag is one that an inspection showed: it is checked against the
 /// concurrency metadata. A version is checked against the resource's row,
 /// and a resource that has no row is at no version.
-pub(super) async fn check_etag(
+pub(super) async fn check(
     tx: &mut Transaction<'_>,
-    context: &ChangeContext,
+    if_match: &IfMatch,
     workspace: &WorkspaceId,
     kind: LifecycleTargetKind,
     id: &str,
 ) -> Result<(), Error> {
-    let Some(if_match) = context.if_match() else {
-        return Ok(());
-    };
     let admitted = match if_match.precondition() {
         Precondition::Token(_) => {
             if_match.admits_token(&repository::metadata_etag(tx, workspace, kind, id).await?)
@@ -175,16 +172,19 @@ async fn row_version(
     }
 }
 
+/// Claims `request` for `user`, so that the action it names runs once: the
+/// claim commits with the action, and a second claim of the same identity by
+/// the same User is refused.
 pub(super) async fn claim_request(
     tx: &mut Transaction<'_>,
-    context: &ChangeContext,
+    user: &UserId,
+    request: &RequestId,
 ) -> Result<(), Error> {
-    if let Some(id) = context.request_id()
-        && !repository::insert_request(tx, context.actor().user_id(), id).await?
-    {
-        return Err(Error::RequestAlreadyApplied);
+    if repository::insert_request(tx, user, request).await? {
+        Ok(())
+    } else {
+        Err(Error::RequestAlreadyApplied)
     }
-    Ok(())
 }
 
 impl WorkspaceModule {

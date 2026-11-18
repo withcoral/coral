@@ -1,8 +1,8 @@
 use super::*;
 use coral_test_support::{ManualClock, TestDatabase};
 use coral_workspace::{
-    AgentDisplayName, AuthenticatedUser, ChangeContext, IssuedAgentCredential, OrganizationRole,
-    Principal, TraceId, UserId, WorkspaceDisplayName, WorkspaceRole,
+    AgentDisplayName, AuthenticatedUser, ChangeContext, IfMatch, IssuedAgentCredential,
+    OrganizationRole, Principal, RequestId, TraceId, UserId, WorkspaceDisplayName, WorkspaceRole,
 };
 use std::time::Duration;
 
@@ -26,7 +26,7 @@ async fn user_authentication_reloads_authority_without_provisioning_or_local_fal
         .set_role(
             &fixture.other,
             fixture.owner.actor().user_id(),
-            1,
+            &IfMatch::any(),
             OrganizationRole::Member,
         )
         .await
@@ -41,7 +41,7 @@ async fn user_authentication_reloads_authority_without_provisioning_or_local_fal
         .set_enabled(
             &fixture.other,
             fixture.owner.actor().user_id(),
-            changed.revision(),
+            &IfMatch::version(changed.version()),
             false,
         )
         .await
@@ -232,13 +232,24 @@ async fn agent_authentication_uses_workspace_registration_not_user_authority() {
     );
     fixture
         .organization
-        .set_enabled(&fixture.other, fixture.owner.actor().user_id(), 1, false)
+        .set_enabled(
+            &fixture.other,
+            fixture.owner.actor().user_id(),
+            &IfMatch::any(),
+            false,
+        )
         .await
         .unwrap();
     assert_eq!(fixture.authenticate(Some(token)).await.unwrap(), principal);
     let rotated = fixture
         .workspaces
-        .rotate_agent_credential(&fixture.other, &fixture.workspace, issued.registration.id())
+        .rotate_agent_credential(
+            &fixture.other,
+            &RequestId::generate(),
+            &fixture.workspace,
+            issued.registration.id(),
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -257,6 +268,7 @@ async fn agent_authentication_uses_workspace_registration_not_user_authority() {
                 &fixture.other,
                 &fixture.workspace,
                 issued.registration.id(),
+                &IfMatch::any(),
                 enabled,
                 expiry.map(UnixNanos::new),
             )
@@ -285,6 +297,7 @@ async fn a_credential_expires_when_the_clock_passes_its_expiry() {
             &fixture.other,
             &fixture.workspace,
             agent.registration.id(),
+            &IfMatch::any(),
             true,
             Some(UnixNanos::new(fixture.clock.now().get() + 30 * SECOND)),
         )
@@ -533,6 +546,7 @@ impl Fixture {
         self.workspaces
             .create_agent(
                 &self.owner,
+                &RequestId::generate(),
                 workspace,
                 AgentDisplayName::parse("Worker").unwrap(),
                 None,

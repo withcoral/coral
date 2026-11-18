@@ -3,7 +3,7 @@ use coral_credentials::Secret;
 coral_test_support::provider_setup_fixtures!(crate);
 use crate::account_tests::{authorization_request, publish_provider};
 use crate::tests::{change_context, organization_user, test_modules};
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName};
+use coral_workspace::{IfMatch, OrganizationRole, RequestId, WorkspaceDisplayName};
 
 #[tokio::test]
 #[expect(
@@ -51,7 +51,7 @@ async fn account_inspection_disconnect_and_reconnect_preserve_private_ownership(
         .await
         .unwrap();
     providers
-        .disable_provider(&context, scope, provider.id())
+        .disable_provider(&context, scope, provider.id(), &IfMatch::any())
         .await
         .unwrap();
     assert_eq!(
@@ -63,7 +63,7 @@ async fn account_inspection_disconnect_and_reconnect_preserve_private_ownership(
         "exact replay does not reinterpret today's Provider configuration"
     );
     providers
-        .restore_provider(&context, scope, provider.id())
+        .restore_provider(&context, scope, provider.id(), &IfMatch::any())
         .await
         .unwrap();
     let completed = accounts
@@ -163,7 +163,10 @@ async fn account_inspection_disconnect_and_reconnect_preserve_private_ownership(
         .unwrap();
     assert_eq!(reconnected.id, id);
     assert_eq!(reconnected.state, AccountState::Ready);
-    workspaces.archive(&context, scope).await.unwrap();
+    workspaces
+        .archive(&context, scope, &IfMatch::any())
+        .await
+        .unwrap();
     let archived = accounts
         .get_account(&context, scope, provider.id(), &AccountScope::User)
         .await
@@ -307,6 +310,7 @@ async fn pending_authorization_cap_counts_agent_reconnects_with_new_accounts() {
     let agent = workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,

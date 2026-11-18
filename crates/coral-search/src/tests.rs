@@ -31,8 +31,8 @@ use coral_tools::{
 };
 use coral_workspace::AuthenticatedPrincipal;
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, OrganizationRole, UserId, WorkspaceDisplayName, WorkspaceId,
-    WorkspaceModule,
+    AuthenticatedUser, ChangeContext, IfMatch, OrganizationRole, RequestId, UserId,
+    WorkspaceDisplayName, WorkspaceId, WorkspaceModule,
 };
 use wiremock::MockServer;
 
@@ -397,11 +397,10 @@ async fn search_and_describe_read_a_private_tools_rule_and_its_providers_state()
     fixture
         .providers
         .disable_provider(
-            &change(scope.user.clone(), 50, 'd')
-                .with_etag(&provider.etag())
-                .unwrap(),
+            &change(scope.user.clone(), 50, 'd'),
             &scope.workspace_id,
             provider.id(),
+            &provider.if_match(),
         )
         .await
         .expect("disable the Private Provider");
@@ -429,11 +428,10 @@ async fn the_private_provider_is_not_blocked_for_tools_its_generation_never_hold
     fixture
         .providers
         .disable_provider(
-            &change(scope.user.clone(), 50, 'd')
-                .with_etag(&provider.etag())
-                .unwrap(),
+            &change(scope.user.clone(), 50, 'd'),
             &scope.workspace_id,
             provider.id(),
+            &provider.if_match(),
         )
         .await
         .expect("disable the Private Provider");
@@ -1472,6 +1470,7 @@ async fn regeneration_atomically_replaces_the_active_search_generation() {
         .providers
         .regenerate_provider(
             &change(user, 60, '6'),
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse("61000000-0000-4000-8000-000000000002")
                     .expect("request id"),
@@ -2260,6 +2259,7 @@ impl AgentRoute {
             .workspaces
             .create_agent(
                 &context,
+                &RequestId::generate(),
                 &workspace,
                 coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
                 None,
@@ -2580,6 +2580,7 @@ async fn agent_discovery_hides_an_incompatible_account_and_rejects_a_disabled_ag
             context,
             workspace,
             agent.principal().id(),
+            &IfMatch::any(),
             coral_workspace::AgentState::Disabled,
         )
         .await
@@ -2922,6 +2923,7 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
         .workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             &workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -3004,7 +3006,13 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
     }
     fixture
         .providers
-        .change_account_setting_fixture(&context, &workspace, second.id(), CredentialRoute::Caller)
+        .change_account_setting_fixture(
+            &context,
+            &workspace,
+            second.id(),
+            &IfMatch::any(),
+            CredentialRoute::Caller,
+        )
         .await
         .unwrap();
     // The User connects its own Account during Invocation; the Agent needs one now.
@@ -3074,6 +3082,7 @@ async fn fixed_route_discovery_rechecks_routes_policy_and_exact_account() {
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&setup.id().to_string()).unwrap(),
                 workspace.clone(),
@@ -3231,6 +3240,7 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
         .workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             &workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -3266,7 +3276,7 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
     }
     fixture
         .providers
-        .disable_provider(&context, &workspace, provider)
+        .disable_provider(&context, &workspace, provider, &IfMatch::any())
         .await
         .unwrap();
     fixture
@@ -3274,7 +3284,7 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
         .await;
     fixture
         .providers
-        .restore_provider(&context, &workspace, provider)
+        .restore_provider(&context, &workspace, provider, &IfMatch::any())
         .await
         .unwrap();
     fixture
@@ -3294,6 +3304,7 @@ async fn none_route_discovery_requires_a_credential_free_current_contract() {
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&setup.id().to_string()).unwrap(),
                 workspace.clone(),
@@ -3344,6 +3355,7 @@ async fn an_agents_discovery_is_checked_on_the_modules_clock() {
         .workspaces
         .create_agent(
             &change(user.clone(), 20, '2'),
+            &RequestId::generate(),
             &workspace,
             coral_workspace::AgentDisplayName::parse("Expiring worker").unwrap(),
             Some(expiry),
@@ -3435,6 +3447,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
         .workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             &workspace,
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -3476,7 +3489,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
     }
     fixture
         .workspaces
-        .archive(&context, &workspace)
+        .archive(&context, &workspace, &IfMatch::any())
         .await
         .unwrap();
     let path = CallPath::parse("coral.providers.weatherAgain.getForecast").unwrap();
@@ -3508,7 +3521,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
     }
     fixture
         .workspaces
-        .restore(&context, &workspace)
+        .restore(&context, &workspace, &IfMatch::any())
         .await
         .unwrap();
     for actor in [&principal, &agent, &member] {
@@ -3530,6 +3543,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
             &context,
             &workspace,
             issued.registration.id(),
+            &IfMatch::any(),
             true,
             Some(coral_db::UnixNanos::new(1)),
         )
@@ -3572,7 +3586,7 @@ async fn discovery_rechecks_workspace_authority_on_every_page() {
         .set_enabled(
             &administrator,
             member.authenticated_user().unwrap().user_id(),
-            1,
+            &IfMatch::any(),
             false,
         )
         .await
@@ -3674,6 +3688,7 @@ async fn readiness_inspection_does_not_require_private_tool_persistence() {
         .workspaces
         .create_agent(
             &change(user.clone(), 50, '5'),
+            &RequestId::generate(),
             &workspace,
             coral_workspace::AgentDisplayName::parse("No function reads").unwrap(),
             None,
@@ -3807,6 +3822,7 @@ async fn provider_inspection_reports_policy_and_lifecycle_blockers() {
             &change(user.clone(), 60, '6'),
             &workspace.clone(),
             &published.provider_id,
+            &IfMatch::any(),
         )
         .await
         .unwrap();
@@ -4083,6 +4099,7 @@ impl TestModules {
             .providers
             .regenerate_provider(
                 context,
+                &IfMatch::any(),
                 ProviderRegenerationRequest::new(
                     ManagementRequestId::parse(&setup.id().to_string()).unwrap(),
                     workspace.clone(),

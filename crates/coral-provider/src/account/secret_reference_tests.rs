@@ -10,7 +10,9 @@ use crate::tests::{
 };
 use coral_credentials::{CredentialValues, Secret};
 use coral_db::UnixNanos;
-use coral_workspace::{ChangeContext, OrganizationRole, WorkspaceDisplayName, WorkspaceId};
+use coral_workspace::{
+    ChangeContext, IfMatch, OrganizationRole, WorkspaceDisplayName, WorkspaceId,
+};
 
 const REFERENCE: &str = r#"{"app_key":{"store":"team","path":"kv/app","key":"value"}}"#;
 
@@ -241,7 +243,12 @@ async fn scrubbing_an_account_removes_its_references() {
                     account.db.database(),
                     account.workspaces.clone(),
                 )
-                .remove_organization_member(&account.administrator, account.user.user_id(), 1, None)
+                .remove_organization_member(
+                    &account.administrator,
+                    account.user.user_id(),
+                    &IfMatch::any(),
+                    None,
+                )
                 .await
                 .unwrap();
                 let scrubbed = account

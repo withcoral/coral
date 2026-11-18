@@ -7,7 +7,8 @@ use coral_search::SearchIndex;
 use coral_search::test_fixtures::indexed_tools;
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
-    AuthenticatedUser, AuthoritySource, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
+    AuthenticatedUser, AuthoritySource, OrganizationRole, RequestId, WorkspaceDisplayName,
+    WorkspaceModule,
 };
 
 struct Fixture {
@@ -54,7 +55,11 @@ async fn creating_a_workspace_creates_its_coral_defined_providers_with_the_creat
     let context = change(&f.creator);
     let workspace = f
         .workflow
-        .create_workspace(&context, WorkspaceDisplayName::parse("Ops").unwrap())
+        .create_workspace(
+            &context,
+            &RequestId::generate(),
+            WorkspaceDisplayName::parse("Ops").unwrap(),
+        )
         .await
         .unwrap();
     f.index.settled().await;
@@ -151,6 +156,7 @@ async fn a_failure_in_either_part_creates_neither_workspace_nor_provider() {
             .workflow
             .create_workspace(
                 &fault.context(&f.creator),
+                &RequestId::generate(),
                 WorkspaceDisplayName::parse("Rolled back").unwrap(),
             )
             .await

@@ -13,9 +13,9 @@ use coral_db::UnixNanos;
 use coral_test_support::TestDatabase;
 
 use crate::{
-    AuthoritySource, ChangeContext, Denial, Error, LifecycleAction, LifecycleOutcome,
-    OrganizationRole, TraceId, UserId, WorkspaceAction, WorkspaceDisplayName, WorkspaceModule,
-    WorkspaceRole, WorkspaceState, local_organization_owner,
+    AuthoritySource, ChangeContext, Denial, Error, IfMatch, LifecycleAction, LifecycleOutcome,
+    OrganizationRole, RequestId, TraceId, UserId, WorkspaceAction, WorkspaceDisplayName,
+    WorkspaceModule, WorkspaceRole, WorkspaceState, local_organization_owner,
 };
 
 #[tokio::test]
@@ -157,6 +157,7 @@ async fn organization_owner_without_a_membership_has_no_authority_inside_a_works
             .update_display_name(
                 &change(organization_owner.clone(), 20, '2'),
                 workspace.id(),
+                &IfMatch::any(),
                 WorkspaceDisplayName::parse("Renamed").expect("display name"),
             )
             .await,
@@ -240,7 +241,7 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
         .set_enabled(
             &change(organization_owner.clone(), 12, '3'),
             disabled.user_id(),
-            1,
+            &at_version(1),
             false,
         )
         .await
@@ -293,7 +294,12 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
     ];
     for (actor, target, case) in rejected {
         let result = module
-            .assign_owner(&change(actor, 20, '4'), workspace.id(), target)
+            .assign_owner(
+                &change(actor, 20, '4'),
+                &RequestId::generate(),
+                workspace.id(),
+                target,
+            )
             .await;
         assert!(
             matches!(
@@ -338,6 +344,7 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
         module
             .assign_owner(
                 &change(organization_owner.clone(), 30, '5'),
+                &RequestId::generate(),
                 workspace.id(),
                 target,
             )
@@ -380,14 +387,22 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
     // The Member-only `archive` conceals the Workspace from a non-Member governor.
     assert!(matches!(
         module
-            .archive(&change(governor.clone(), 39, '6'), workspace.id())
+            .archive(
+                &change(governor.clone(), 39, '6'),
+                workspace.id(),
+                &IfMatch::any()
+            )
             .await,
         Err(Error::WorkspaceNotFound)
     ));
     // Governance is the Organization Owner's: a Workspace Owner uses `archive`.
     assert!(matches!(
         module
-            .archive_as_organization_owner(&change(creator.clone(), 39, '6'), workspace.id())
+            .archive_as_organization_owner(
+                &change(creator.clone(), 39, '6'),
+                workspace.id(),
+                &IfMatch::any()
+            )
             .await,
         Err(Error::PermissionDenied(Denial::OrganizationOwnerRequired))
     ));
@@ -406,13 +421,18 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
         WorkspaceState::Active
     );
     module
-        .archive_as_organization_owner(&change(governor.clone(), 40, '6'), workspace.id())
+        .archive_as_organization_owner(
+            &change(governor.clone(), 40, '6'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .expect("Organization Owner archives without a Membership");
     assert!(matches!(
         module
             .assign_owner(
                 &change(governor.clone(), 41, '7'),
+                &RequestId::generate(),
                 workspace.id(),
                 governor.user_id(),
             )
@@ -420,7 +440,11 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
         Err(Error::WorkspaceArchived)
     ));
     module
-        .restore_as_organization_owner(&change(governor.clone(), 42, '8'), workspace.id())
+        .restore_as_organization_owner(
+            &change(governor.clone(), 42, '8'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .expect("Organization Owner restores without a Membership");
     let after = events().await;
@@ -490,7 +514,8 @@ async fn organization_owner_lists_workspaces_assigns_owners_archives_and_restore
         module
             .archive(
                 &change(outsider_member(module, &suffix).await, 43, '9'),
-                workspace.id()
+                workspace.id(),
+                &IfMatch::any(),
             )
             .await,
         Err(Error::WorkspaceNotFound)
@@ -581,7 +606,7 @@ async fn the_last_designated_owner_cannot_leave_be_removed_or_be_demoted() {
         .set_enabled(
             &change(organization_owner.clone(), 31, '5'),
             second.user_id(),
-            1,
+            &at_version(1),
             false,
         )
         .await
@@ -639,6 +664,7 @@ async fn the_last_designated_owner_cannot_leave_be_removed_or_be_demoted() {
     module
         .assign_owner(
             &change(organization_owner.clone(), 33, '6'),
+            &RequestId::generate(),
             workspace.id(),
             owner.user_id(),
         )
@@ -648,7 +674,7 @@ async fn the_last_designated_owner_cannot_leave_be_removed_or_be_demoted() {
         .set_enabled(
             &change(organization_owner.clone(), 34, '6'),
             second.user_id(),
-            2,
+            &at_version(2),
             true,
         )
         .await
@@ -761,7 +787,12 @@ async fn ordinary_workspace_roles_require_current_organization_membership() {
     )
     .await;
     crate::OrganizationModule::new(module.database.clone())
-        .set_enabled(&change(administrator, 120, '5'), member.user_id(), 1, false)
+        .set_enabled(
+            &change(administrator, 120, '5'),
+            member.user_id(),
+            &at_version(1),
+            false,
+        )
         .await
         .unwrap();
     assert!(matches!(
@@ -829,6 +860,10 @@ async fn ordinary_workspace_roles_require_current_organization_membership() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Workspace is followed through archive, every refused action, and restoration"
+)]
 async fn archive_blocks_configuration_runs_and_dispatch_until_restoration() {
     let (_database, module) = test_module().await;
     let module = &module;
@@ -863,7 +898,11 @@ async fn archive_blocks_configuration_runs_and_dispatch_until_restoration() {
         .expect("grant Member");
 
     let archived = module
-        .archive(&change(owner.clone(), 220, '8'), workspace.id())
+        .archive(
+            &change(owner.clone(), 220, '8'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .expect("archive Workspace");
     assert_eq!(archived.state(), WorkspaceState::Archived);
@@ -893,7 +932,11 @@ async fn archive_blocks_configuration_runs_and_dispatch_until_restoration() {
     assert_archived_mutations_rejected(module, &owner, &member, workspace.id()).await;
 
     let restored = module
-        .restore(&change(owner.clone(), 270, 'd'), workspace.id())
+        .restore(
+            &change(owner.clone(), 270, 'd'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .expect("restore Workspace");
     assert_eq!(restored.state(), WorkspaceState::Active);
@@ -980,6 +1023,7 @@ async fn assert_archived_mutations_rejected(
             .update_display_name(
                 &change(owner.clone(), 230, '9'),
                 workspace_id,
+                &IfMatch::any(),
                 WorkspaceDisplayName::parse("Blocked rename").expect("display name"),
             )
             .await,
@@ -998,13 +1042,21 @@ async fn assert_archived_mutations_rejected(
     ));
     assert!(matches!(
         module
-            .archive(&change(owner.clone(), 250, 'b'), workspace_id)
+            .archive(
+                &change(owner.clone(), 250, 'b'),
+                workspace_id,
+                &IfMatch::any()
+            )
             .await,
         Err(Error::WorkspaceAlreadyArchived)
     ));
     assert!(matches!(
         module
-            .restore(&change(member.clone(), 260, 'c'), workspace_id)
+            .restore(
+                &change(member.clone(), 260, 'c'),
+                workspace_id,
+                &IfMatch::any()
+            )
             .await,
         Err(Error::PermissionDenied(Denial::WorkspaceOwnerRequired))
     ));
@@ -1040,6 +1092,7 @@ async fn agent_creation_returns_one_credential_and_safe_durable_attribution() {
     let issued = module
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             crate::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -1127,7 +1180,10 @@ async fn sign_in_choices_are_active_memberships_with_their_role_and_only_they_ca
     let alpha = create("Alpha").await;
     create("alpha two").await;
     let archived = create("Archived").await;
-    module.archive(&context, archived.id()).await.unwrap();
+    module
+        .archive(&context, archived.id(), &IfMatch::any())
+        .await
+        .unwrap();
     module
         .set_membership(&context, beta.id(), &member, WorkspaceRole::Member)
         .await
@@ -1227,6 +1283,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
     let issued = module
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             crate::AgentDisplayName::parse("Worker").unwrap(),
             Some(UnixNanos::new(100)),
@@ -1239,8 +1296,10 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
     let rotated = module
         .rotate_agent_credential(
             &change(owner.clone(), 20, '2'),
+            &RequestId::generate(),
             workspace.id(),
             issued.registration.id(),
+            &IfMatch::any(),
         )
         .await
         .unwrap();
@@ -1275,6 +1334,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
             &context,
             workspace.id(),
             issued.registration.id(),
+            &IfMatch::any(),
             true,
             None,
         )
@@ -1289,6 +1349,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
             &context,
             workspace.id(),
             actor.principal().id(),
+            &IfMatch::any(),
             crate::AgentState::Disabled,
         )
         .await
@@ -1304,6 +1365,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
             &context,
             workspace.id(),
             actor.principal().id(),
+            &IfMatch::any(),
             crate::AgentState::Enabled,
         )
         .await
@@ -1313,6 +1375,7 @@ async fn rotation_preserves_identity_and_lifecycle_loss_blocks_stale_authority()
             &context,
             workspace.id(),
             issued.registration.id(),
+            &IfMatch::any(),
             false,
             None,
         )
@@ -1432,13 +1495,19 @@ fn change(actor: crate::AuthenticatedUser, at: i64, trace_digit: char) -> Change
     )
 }
 
+/// The precondition that a resource's row is at its `count`th version, as a
+/// caller holds who read the resource then.
+pub(crate) fn at_version(count: i64) -> IfMatch {
+    IfMatch::version(coral_db::Version::new(count).expect("a positive version"))
+}
+
 async fn remove_membership_authority(
     module: &WorkspaceModule,
     context: &ChangeContext,
     workspace: &crate::WorkspaceId,
     user: &UserId,
 ) -> Result<(), Error> {
-    let target = crate::AccessRemovalTarget::WorkspaceMember(workspace, user);
+    let target = crate::AccessRemovalTarget::WorkspaceMember(workspace, user, &IfMatch::any());
     remove_access(module, context, target).await
 }
 
@@ -1487,7 +1556,7 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
         .set_enabled(
             &change(organization_owner.clone(), 2, '1'),
             disabled_owner.user_id(),
-            1,
+            &at_version(1),
             false,
         )
         .await
@@ -1620,13 +1689,11 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
         .inspect_membership(&organization_owner, none.id(), organization_owner.user_id())
         .await
         .expect("inspect the backfilled Membership");
-    remove_membership_authority(
+    let read = IfMatch::parse(&backfilled.etag).expect("a backfilled etag is a valid precondition");
+    remove_access(
         module,
-        &change(organization_owner.clone(), 30, '5')
-            .with_etag(&backfilled.etag)
-            .expect("a backfilled etag is a valid precondition"),
-        none.id(),
-        organization_owner.user_id(),
+        &change(organization_owner.clone(), 30, '5'),
+        crate::AccessRemovalTarget::WorkspaceMember(none.id(), organization_owner.user_id(), &read),
     )
     .await
     .expect("a backfilled Owner leaves a Workspace they do not want");

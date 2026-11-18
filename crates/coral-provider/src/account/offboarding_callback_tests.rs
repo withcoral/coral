@@ -2,7 +2,9 @@
 use std::sync::Arc;
 
 use coral_credentials::{CredentialVault, Secret};
-use coral_workspace::{OrganizationModule, OrganizationRole, WorkspaceDisplayName, WorkspaceRole};
+use coral_workspace::{
+    IfMatch, OrganizationModule, OrganizationRole, WorkspaceDisplayName, WorkspaceRole,
+};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -180,7 +182,7 @@ async fn offboarding_cancels_in_flight_initial_and_reconnect_callbacks_across_re
             .await
             .unwrap();
         coral_administration::AccessLifecycleModule::new(db.database(), workspaces.clone())
-            .remove_organization_member(&administrator, user.user_id(), 1, None)
+            .remove_organization_member(&administrator, user.user_id(), &IfMatch::any(), None)
             .await
             .unwrap();
         OrganizationModule::new(db.database())

@@ -8,7 +8,9 @@
 use coral_catalog::ToolKey;
 use coral_policy::{ToolAccessState, ToolPolicyTarget};
 use coral_run::{ProgramSource, RunObservation, RunState, RunSubmission, RunTimeout};
-use coral_workspace::{AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceRole};
+use coral_workspace::{
+    AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, RequestId, WorkspaceRole,
+};
 use serde_json::{Value, json};
 
 use super::{RawSession, Tracer, change, untraced};
@@ -165,6 +167,7 @@ async fn agents_observe_and_cancel_only_their_own_runs() {
         .workspaces
         .create_agent(
             &change(tracer.local_user.clone(), 61, 'c'),
+            &RequestId::generate(),
             &tracer.workspace_a,
             AgentDisplayName::parse("Other Agent").expect("Agent name"),
             None,

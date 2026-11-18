@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, OrganizationModule, OrganizationRole, WorkspaceId,
-    WorkspaceModule,
+    AuthenticatedPrincipal, AuthenticatedUser, IfMatch, OrganizationModule, OrganizationRole,
+    WorkspaceId, WorkspaceModule,
 };
 
 use super::{AccessTarget, IssuedTokens, RefreshRequest, TokenRefusal, UserTokens};
@@ -582,13 +582,13 @@ async fn refresh_rechecks_current_organization_membership() {
     )
     .await;
     let organization = OrganizationModule::new(fixture.database.database());
-    let set_enabled = |enabled: bool, revision: u64| {
+    let set_enabled = |enabled: bool| {
         let organization = organization.clone();
         let change = coral_test_support::change(owner.clone(), 5, '2');
         let user = fixture.user.user_id().clone();
         async move {
             organization
-                .set_enabled(&change, &user, revision, enabled)
+                .set_enabled(&change, &user, &IfMatch::any(), enabled)
                 .await
                 .unwrap();
         }
@@ -602,7 +602,7 @@ async fn refresh_rechecks_current_organization_membership() {
             .authenticates(&issued.access_token.access_token)
             .await
     );
-    set_enabled(false, 1).await;
+    set_enabled(false).await;
     assert!(
         !fixture
             .authenticates(&issued.access_token.access_token)
@@ -632,7 +632,7 @@ async fn refresh_rechecks_current_organization_membership() {
         Some(TokenRefusal::InvalidGrant),
         "the sign-in that started no grant spent its code"
     );
-    set_enabled(true, 2).await;
+    set_enabled(true).await;
     fixture.refresh(&token, now + 3 * SECOND).await.unwrap();
 }
 

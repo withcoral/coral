@@ -1,7 +1,7 @@
 use super::status::invalid;
 use super::workspaces::{change, error, page, profile};
 use super::{GrpcServices, management as wire};
-use coral_workspace::{OrganizationRole, UserId};
+use coral_workspace::{IfMatch, OrganizationRole, UserId};
 use tonic::{Request, Response, Status};
 
 pub(super) fn member_id(name: &str) -> Result<UserId, Status> {
@@ -27,7 +27,7 @@ fn membership(
         }
         .into(),
         enabled: membership.enabled(),
-        etag: membership.revision().to_string(),
+        etag: membership.version().to_string(),
     }
 }
 
@@ -88,14 +88,9 @@ impl wire::organization_membership_service_server::OrganizationMembershipService
         } else {
             Some(member_id(&input.transfer_to)?)
         };
-        let revision = input
-            .etag
-            .parse::<u64>()
-            .ok()
-            .filter(|revision| *revision > 0)
-            .ok_or_else(invalid)?;
+        let if_match = IfMatch::parse(&input.etag).map_err(error)?;
         self.access_lifecycle
-            .remove_organization_member(&change(actor), &user, revision, transfer_to.as_ref())
+            .remove_organization_member(&change(actor), &user, &if_match, transfer_to.as_ref())
             .await
             .map_err(super::workspaces::administration_error)?;
         Ok(Response::new(()))

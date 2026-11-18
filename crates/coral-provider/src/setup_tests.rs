@@ -17,7 +17,7 @@ use coral_catalog::ProviderCredentialContract;
 use coral_credentials::{CredentialValues, Secret};
 use coral_db::UnixNanos;
 use coral_outbound::DestinationPolicy;
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName};
+use coral_workspace::{IfMatch, OrganizationRole, RequestId, WorkspaceDisplayName};
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -510,7 +510,7 @@ async fn update_reviews_saved_configuration_instead_of_new_document_defaults() {
     assert!(matches!(
         harness
             .providers
-            .regenerate_provider(&context, request.clone())
+            .regenerate_provider(&context, &IfMatch::any(), request.clone())
             .await,
         Err(Error::IncompatibleConfigurationConfirmationRequired)
     ));
@@ -518,6 +518,7 @@ async fn update_reviews_saved_configuration_instead_of_new_document_defaults() {
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             request
                 .with_incompatible_configuration_confirmation()
                 .with_account_setting(CredentialRoute::None),
@@ -730,6 +731,7 @@ async fn protected_update(borrow: bool, route: CredentialRoute) {
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse("a0000000-0000-4000-8000-000000000095").unwrap(),
                 owner.clone(),
@@ -3570,6 +3572,7 @@ async fn compatible_regeneration_discards_temporary_credentials_without_reconnec
         .providers
         .regenerate_provider(
             &change_context(owner.clone(), 40, '5'),
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse("a0000000-0000-4000-8000-000000000009").unwrap(),
                 scope.clone(),
@@ -3758,7 +3761,7 @@ async fn store_backed_discovery(scenario: StoreBackedDiscovery) {
     );
     harness
         .workspaces
-        .grant_secret_store(&governor, &owner, "team")
+        .grant_secret_store(&governor, &RequestId::generate(), &owner, "team")
         .await
         .unwrap();
     let store = std::sync::Arc::new(InterferingStore::default());
@@ -3878,7 +3881,7 @@ async fn store_backed_discovery(scenario: StoreBackedDiscovery) {
             let (governor, owner) = (governor.clone(), owner.clone());
             *store.change.lock().unwrap() = Some(Box::pin(async move {
                 workspaces
-                    .revoke_secret_store(&governor, &owner, "team")
+                    .revoke_secret_store(&governor, &RequestId::generate(), &owner, "team")
                     .await
                     .unwrap();
             }));
@@ -3981,7 +3984,7 @@ async fn a_grant_revoked_after_a_setups_read_saves_nothing() {
     );
     harness
         .workspaces
-        .grant_secret_store(&governor, &owner, "team")
+        .grant_secret_store(&governor, &RequestId::generate(), &owner, "team")
         .await
         .unwrap();
     let store = std::sync::Arc::new(InterferingStore::default());
@@ -4012,7 +4015,7 @@ async fn a_grant_revoked_after_a_setups_read_saves_nothing() {
     let revoker = (governor.clone(), owner.clone());
     *store.change.lock().unwrap() = Some(Box::pin(async move {
         workspaces
-            .revoke_secret_store(&revoker.0, &revoker.1, "team")
+            .revoke_secret_store(&revoker.0, &RequestId::generate(), &revoker.1, "team")
             .await
             .unwrap();
     }));

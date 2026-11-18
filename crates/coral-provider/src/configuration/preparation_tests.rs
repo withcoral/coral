@@ -1,5 +1,6 @@
 //! Preparation reuse through the same Module interface used by management adapters.
 use coral_db::UnixNanos;
+use coral_workspace::IfMatch;
 use std::time::Duration;
 
 use coral_catalog::{AuthenticationConfiguration, OpenApiDocument};
@@ -362,7 +363,8 @@ async fn preparation_race(archive: bool) {
     if archive {
         let archived = tokio::time::timeout(
             Duration::from_secs(5),
-            h.workspaces.archive(&context, workspace.id()),
+            h.workspaces
+                .archive(&context, workspace.id(), &IfMatch::any()),
         )
         .await;
         gate.release();

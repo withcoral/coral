@@ -31,7 +31,12 @@ async fn activity_watch_is_reef_only_and_stops_when_current_user_authority_is_lo
         .into_inner();
     assert!(stream.message().await.unwrap().unwrap().changed);
     coral_workspace::OrganizationModule::new(f.database.database())
-        .set_enabled(&super::change(&f.owner), f.member.user_id(), 1, false)
+        .set_enabled(
+            &super::change(&f.owner),
+            f.member.user_id(),
+            &IfMatch::any(),
+            false,
+        )
         .await
         .unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -114,6 +119,7 @@ async fn a_removed_agent_keeps_owner_only_attribution_without_a_registration() {
         .workspaces
         .create_agent(
             &super::change(&f.owner),
+            &RequestId::generate(),
             f.workspace.id(),
             coral_workspace::AgentDisplayName::parse("Retained worker").unwrap(),
             None,
@@ -122,7 +128,12 @@ async fn a_removed_agent_keeps_owner_only_attribution_without_a_registration() {
         .unwrap();
     let agent = issued.agent.principal().id();
     coral_administration::AccessLifecycleModule::new(f.database.database(), f.workspaces.clone())
-        .delete_agent(&super::change(&f.owner), f.workspace.id(), agent)
+        .delete_agent(
+            &super::change(&f.owner),
+            f.workspace.id(),
+            agent,
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
     let mut client = f.activity();
@@ -153,7 +164,7 @@ async fn a_removed_agent_keeps_owner_only_attribution_without_a_registration() {
     );
 }
 
-use coral_workspace::AuthenticatedPrincipal;
+use coral_workspace::{AuthenticatedPrincipal, IfMatch, RequestId};
 
 #[tokio::test]
 #[expect(
@@ -307,6 +318,7 @@ async fn execution_transport_keeps_large_exact_output_out_of_roots_and_detail_in
         .workspaces
         .create_agent(
             &super::change(&f.owner),
+            &RequestId::generate(),
             f.workspace.id(),
             coral_workspace::AgentDisplayName::parse("history agent").unwrap(),
             None,
@@ -448,6 +460,7 @@ async fn execution_transport_keeps_large_exact_output_out_of_roots_and_detail_in
             &super::change(&f.owner),
             f.workspace.id(),
             f.member.user_id(),
+            &IfMatch::any(),
         )
         .await
         .unwrap();

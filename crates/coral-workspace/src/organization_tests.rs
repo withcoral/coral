@@ -1,5 +1,7 @@
+use crate::tests::at_version;
 use crate::{
-    AuthenticatedUser, ChangeContext, OrganizationModule, OrganizationRole, TraceId, UserId,
+    AuthenticatedUser, ChangeContext, IfMatch, OrganizationModule, OrganizationRole, TraceId,
+    UserId,
 };
 use coral_db::UnixNanos;
 use coral_test_support::TestDatabase;
@@ -32,7 +34,7 @@ async fn only_current_organization_owners_can_inspect_members_for_removal() {
     assert_eq!(&profile.user_id, member.actor().user_id());
     assert_eq!(own.role(), OrganizationRole::Member);
     let disabled = organization
-        .set_enabled(&owner, member.actor().user_id(), 1, false)
+        .set_enabled(&owner, member.actor().user_id(), &at_version(1), false)
         .await
         .unwrap();
     let members = organization.list_memberships(owner.actor()).await.unwrap();
@@ -51,7 +53,7 @@ async fn only_current_organization_owners_can_inspect_members_for_removal() {
         .set_role(
             &owner,
             member.actor().user_id(),
-            disabled.revision(),
+            &IfMatch::version(disabled.version()),
             OrganizationRole::Owner,
         )
         .await
@@ -71,20 +73,26 @@ async fn concurrent_administration_cannot_remove_the_last_enabled_owner() {
     organization.provision_login(&first).await.unwrap();
     assert!(matches!(
         organization
-            .set_role(&first, first.actor().user_id(), 1, OrganizationRole::Member)
+            .set_role(
+                &first,
+                first.actor().user_id(),
+                &at_version(1),
+                OrganizationRole::Member
+            )
             .await,
         Err(crate::Error::LastOrganizationOwner)
     ));
     assert!(matches!(
         organization
-            .set_enabled(&first, first.actor().user_id(), 1, false)
+            .set_enabled(&first, first.actor().user_id(), &at_version(1), false)
             .await,
         Err(crate::Error::LastOrganizationOwner)
     ));
     organization.provision_login(&second).await.unwrap();
+    let read = at_version(1);
     let (a, b) = tokio::join!(
-        organization.set_enabled(&first, first.actor().user_id(), 1, false),
-        organization.set_enabled(&second, second.actor().user_id(), 1, false),
+        organization.set_enabled(&first, first.actor().user_id(), &read, false),
+        organization.set_enabled(&second, second.actor().user_id(), &read, false),
     );
     assert_ne!(a.is_ok(), b.is_ok());
     let refused = if a.is_ok() { b } else { a };
@@ -122,13 +130,13 @@ async fn a_user_with_no_membership_is_absent_to_an_owner_and_concealed_from_a_me
 
     assert!(matches!(
         organization
-            .set_role(&owner, unknown, 1, OrganizationRole::Owner)
+            .set_role(&owner, unknown, &at_version(1), OrganizationRole::Owner)
             .await,
         Err(crate::Error::OrganizationMembershipNotFound)
     ));
     assert!(matches!(
         organization
-            .set_role(&member, unknown, 1, OrganizationRole::Owner)
+            .set_role(&member, unknown, &at_version(1), OrganizationRole::Owner)
             .await,
         Err(crate::Error::PermissionDenied(
             crate::Denial::OrganizationOwnerRequired
@@ -165,7 +173,7 @@ async fn disabled_user_cannot_use_retained_owner_context_or_dispatch() {
         .set_enabled(
             &administrator,
             owner.actor().user_id(),
-            membership.revision(),
+            &IfMatch::version(membership.version()),
             false,
         )
         .await
@@ -214,7 +222,12 @@ async fn login_preserves_coral_role_and_disablement() {
     organization.provision_login(&owner).await.unwrap();
     let initial = organization.provision_login(&member).await.unwrap();
     let disabled = organization
-        .set_enabled(&owner, member.actor().user_id(), initial.revision(), false)
+        .set_enabled(
+            &owner,
+            member.actor().user_id(),
+            &IfMatch::version(initial.version()),
+            false,
+        )
         .await
         .unwrap();
     let replay = organization
@@ -253,13 +266,18 @@ async fn rejoin_after_removal_keeps_the_recorded_disablement() {
         let mut current = organization.provision_login(&member).await.unwrap();
         if !enabled_when_removed {
             current = organization
-                .set_enabled(&owner, member_id, current.revision(), false)
+                .set_enabled(
+                    &owner,
+                    member_id,
+                    &IfMatch::version(current.version()),
+                    false,
+                )
                 .await
                 .unwrap();
         }
         let removal = crate::AccessRemovalTarget::OrganizationMember {
             user: member_id,
-            revision: current.revision(),
+            if_match: &IfMatch::version(current.version()),
             transfer_to: None,
         };
         crate::tests::remove_access(&workspaces, &owner, removal)
@@ -304,4 +322,78 @@ async fn rejoin_after_removal_keeps_the_recorded_disablement() {
             );
         }
     }
+}
+
+// Catches: a role change or a disablement that passes a precondition the
+// Membership no longer meets, or one in a form its etag never has, and a
+// refused change that writes the Membership or an Event.
+#[tokio::test]
+async fn a_change_of_an_organization_membership_refuses_a_precondition_it_does_not_meet() {
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let organization = OrganizationModule::new(fixture.database());
+    let owner = context("owner", OrganizationRole::Owner);
+    let member = context("member", OrganizationRole::Member);
+    organization.provision_login(&owner).await.unwrap();
+    let read = organization.provision_login(&member).await.unwrap();
+    let member_id = member.actor().user_id();
+    // Every Membership as it stands, and every Event as its debug text.
+    let kept = || async {
+        let memberships: Vec<_> = organization
+            .list_memberships(owner.actor())
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(membership, _profile)| membership)
+            .collect();
+        let events = organization
+            .list_lifecycle_events(owner.actor())
+            .await
+            .unwrap();
+        (memberships, format!("{events:?}"))
+    };
+
+    // The disablement leaves the Membership at its second version.
+    let disabled = organization
+        .set_enabled(&owner, member_id, &IfMatch::version(read.version()), false)
+        .await
+        .unwrap();
+    assert_eq!(disabled.version(), read.version().next().unwrap());
+    let before = kept().await;
+    for (case, stale) in [
+        ("the version before", IfMatch::version(read.version())),
+        ("a later version", at_version(3)),
+        ("a UUID", IfMatch::token(uuid::Uuid::new_v4())),
+    ] {
+        let enabled = organization
+            .set_enabled(&owner, member_id, &stale, true)
+            .await;
+        assert!(
+            matches!(enabled, Err(crate::Error::OrganizationAuthorityConflict)),
+            "{case}: {enabled:?}"
+        );
+        let promoted = organization
+            .set_role(&owner, member_id, &stale, OrganizationRole::Owner)
+            .await;
+        assert!(
+            matches!(promoted, Err(crate::Error::OrganizationAuthorityConflict)),
+            "{case}: {promoted:?}"
+        );
+        assert_eq!(kept().await, before, "{case}: a refusal changes nothing");
+    }
+
+    let current = IfMatch::version(disabled.version());
+    let promoted = organization
+        .set_role(&owner, member_id, &current, OrganizationRole::Owner)
+        .await
+        .unwrap();
+    assert_eq!(promoted.role(), OrganizationRole::Owner);
+    organization
+        .set_enabled(
+            &owner,
+            member_id,
+            &IfMatch::version(promoted.version()),
+            true,
+        )
+        .await
+        .unwrap();
 }

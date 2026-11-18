@@ -42,15 +42,16 @@
 //!   verified email under the profile and authority holds and commits one stable
 //!   target. Committed requests are rejected before any new email resolution. Profile projections never
 //!   expose authentication records or a generic Organization directory.
-//! - [`ChangeContext::with_etag`] reads the etag a caller read as an [`IfMatch`],
-//!   and the change checks it under the same mutation hold. A Workspace, a
-//!   Workspace Membership, an Agent and an Agent Registration each keep a version
-//!   on their own row, which every accepted change raises by one. An etag that is
-//!   a version is checked against the row. An etag that is a UUID is checked
-//!   against the concurrency metadata, which is still what the inspections show.
-//!   [`ChangeContext::with_request_id`] reads a [`RequestId`] and prevents
-//!   duplicate non-idempotent actions. A repeated committed request returns a safe
-//!   failure, never recovers a credential or silently rotates again. Metadata is
+//! - A change that can conflict takes the etag its caller read as an
+//!   [`IfMatch`] argument, and checks it under the same mutation hold. A
+//!   Workspace, a Workspace Membership, an Agent and an Agent Registration each
+//!   keep a version on their own row, which every accepted change raises by one.
+//!   An etag that is a version is checked against the row. An etag that is a
+//!   UUID is checked against the concurrency metadata, which is still what the
+//!   inspections show. An action that must not run twice takes a [`RequestId`]
+//!   argument. A repeated committed request returns a safe failure, never
+//!   recovers a credential or silently rotates again. Neither value travels in
+//!   the [`ChangeContext`], so a call cannot leave one out. Metadata is
 //!   independent of retained lifecycle Events.
 //! - [`WorkspaceModule::list_memberships`] and
 //!   [`WorkspaceModule::list_lifecycle_events`] expose safe administration
@@ -151,7 +152,11 @@ pub struct WorkspaceModule {
 
 enum MembershipTarget<'a> {
     User(&'a UserId),
-    Email(&'a str),
+    /// The one User whose verified email this is, granted once for `request`.
+    Email {
+        email: &'a str,
+        request: &'a RequestId,
+    },
 }
 
 impl WorkspaceModule {
@@ -178,23 +183,32 @@ impl WorkspaceModule {
     ) -> Result<Workspace, Error> {
         let mut transaction = self.database.begin().await?;
         let workspace = self
-            .create_in_transaction(&mut transaction, context, display_name)
+            .create_in_transaction(
+                &mut transaction,
+                context,
+                &RequestId::generate(),
+                display_name,
+            )
             .await?;
         transaction.commit().await?;
         Ok(workspace)
     }
 
     /// Creates an active Workspace and the creator's explicit Owner Membership
-    /// in the caller's transaction, without committing it.
+    /// in the caller's transaction, without committing it. `request` names
+    /// the creation, so that a repeat of it creates no second Workspace.
     ///
     /// # Errors
     ///
-    /// Returns an authority or persistence error. An error may follow writes;
-    /// do not commit the transaction after one.
+    /// Returns an authority or persistence error, and
+    /// [`Error::RequestAlreadyApplied`] for a request that already created a
+    /// Workspace. An error may follow writes; do not commit the transaction
+    /// after one.
     pub async fn create_in_transaction(
         &self,
         transaction: &mut Transaction<'_>,
         context: &ChangeContext,
+        request: &RequestId,
         display_name: WorkspaceDisplayName,
     ) -> Result<Workspace, Error> {
         let actor = organization::hold_user(transaction, context.actor().user_id()).await?;
@@ -203,7 +217,7 @@ impl WorkspaceModule {
                 Denial::OrganizationMembershipRequired,
             ));
         }
-        management::claim_request(transaction, context).await?;
+        management::claim_request(transaction, context.actor().user_id(), request).await?;
         let workspace = Workspace::new(
             WorkspaceId::generate(),
             display_name,
@@ -458,16 +472,19 @@ impl WorkspaceModule {
         .await
     }
 
-    /// Updates the mutable Workspace display name.
+    /// Updates the display name of the Workspace that the caller read at
+    /// `if_match`.
     ///
     /// # Errors
     ///
-    /// Returns an authority, archived-state, or persistence failure. A rejected
+    /// Returns an authority, archived-state, or persistence failure, and
+    /// [`Error::EtagMismatch`] for a Workspace that changed since. A rejected
     /// update changes neither the Workspace nor its lifecycle Events.
     pub async fn update_display_name(
         &self,
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
+        if_match: &IfMatch,
         display_name: WorkspaceDisplayName,
     ) -> Result<Workspace, Error> {
         let mut transaction = self.database.begin().await?;
@@ -478,9 +495,9 @@ impl WorkspaceModule {
             AuthorityAction::Public(WorkspaceAction::Configure),
         )
         .await?;
-        management::check_etag(
+        management::check(
             &mut transaction,
-            context,
+            if_match,
             workspace_id,
             LifecycleTargetKind::Workspace,
             &workspace_id.to_string(),
@@ -521,19 +538,22 @@ impl WorkspaceModule {
         ))
     }
 
-    /// Archives an active Workspace.
+    /// Archives the active Workspace that the caller read at `if_match`.
     ///
     /// # Errors
     ///
-    /// Requires a designated Owner and an active Workspace.
+    /// Requires a designated Owner and an active Workspace. Returns
+    /// [`Error::EtagMismatch`] for a Workspace that changed since.
     pub async fn archive(
         &self,
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
+        if_match: &IfMatch,
     ) -> Result<Workspace, Error> {
         self.change_lifecycle(
             context,
             workspace_id,
+            if_match,
             AuthorityAction::Archive,
             WorkspaceState::Archived,
             LifecycleAction::WorkspaceArchived,
@@ -541,19 +561,22 @@ impl WorkspaceModule {
         .await
     }
 
-    /// Restores an archived Workspace.
+    /// Restores the archived Workspace that the caller read at `if_match`.
     ///
     /// # Errors
     ///
-    /// Requires a designated Owner and an archived Workspace.
+    /// Requires a designated Owner and an archived Workspace. Returns
+    /// [`Error::EtagMismatch`] for a Workspace that changed since.
     pub async fn restore(
         &self,
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
+        if_match: &IfMatch,
     ) -> Result<Workspace, Error> {
         self.change_lifecycle(
             context,
             workspace_id,
+            if_match,
             AuthorityAction::Restore,
             WorkspaceState::Active,
             LifecycleAction::WorkspaceRestored,
@@ -583,11 +606,12 @@ impl WorkspaceModule {
         .await
     }
 
-    /// Applies an explicit Membership creation or role-change command.
-    /// Request identifiers and etags never select the operation's meaning.
+    /// Applies an explicit Membership creation or role-change command. A role
+    /// change carries the etag the caller read of the Membership.
     /// # Errors
     /// Requires active Owner authority before considering target eligibility;
-    /// rejects absent updates, duplicate creation, stale concurrency evidence, and
+    /// rejects absent updates, duplicate creation, a role change of a
+    /// Membership that changed since with [`Error::EtagMismatch`], and
     /// demotion of the last designated Owner.
     pub async fn manage_membership(
         &self,
@@ -607,24 +631,24 @@ impl WorkspaceModule {
 
     /// Grants to one eligible User by exact verified email, under profile and authority holds.
     /// Comparison trims whitespace and ignores ASCII case, without alias rewriting.
+    /// `request` names the grant, so that a repeat of it never resolves the email again.
     /// # Errors
-    /// Requires a request identity and current Owner authority in an active Workspace.
+    /// Requires current Owner authority in an active Workspace.
     /// Conceals missing, disabled, and unverified Users; rejects ambiguous or duplicate grants.
-    /// Committed requests are rejected before resolving the email again.
+    /// Committed requests are rejected with [`Error::RequestAlreadyApplied`] before
+    /// resolving the email again.
     pub async fn grant_membership_by_email(
         &self,
         context: &ChangeContext,
+        request: &RequestId,
         workspace: &WorkspaceId,
         email: &str,
         role: WorkspaceRole,
     ) -> Result<WorkspaceMembership, Error> {
-        if context.request_id().is_none() {
-            return Err(Error::InvalidInput("request identity required".into()));
-        }
         self.change_membership(
             context,
             workspace,
-            MembershipTarget::Email(email),
+            MembershipTarget::Email { email, request },
             MembershipChange::Create(role),
         )
         .await
@@ -639,7 +663,7 @@ impl WorkspaceModule {
     ) -> Result<WorkspaceMembership, Error> {
         let role = match change {
             MembershipChange::Create(role)
-            | MembershipChange::UpdateRole(role)
+            | MembershipChange::UpdateRole { role, .. }
             | MembershipChange::Assign(role) => role,
         };
         // Conceal target eligibility before target-dependent holds. The held
@@ -647,7 +671,7 @@ impl WorkspaceModule {
         self.check(context.actor(), workspace_id, WorkspaceAction::Configure)
             .await?;
         let mut transaction = self.database.begin().await?;
-        let (target_id, submitted_email) = self
+        let (target_id, email_grant) = self
             .resolve_membership_target(&mut transaction, context, workspace_id, target)
             .await?;
         let target = WorkspaceMembership::new(workspace_id.clone(), target_id, role);
@@ -675,33 +699,36 @@ impl WorkspaceModule {
             target.user_id(),
         )
         .await?;
-        if let Some(email) = submitted_email {
+        if let Some((email, request)) = email_grant {
             management_repository::record_email_grant(
                 &mut transaction,
-                context,
+                context.actor().user_id(),
+                request,
                 workspace_id,
                 email,
                 target.user_id(),
                 role,
             )
             .await?;
-        } else {
-            management::claim_request(&mut transaction, context).await?;
         }
         if matches!(change, MembershipChange::Create(_)) && previous.is_some() {
             return Err(Error::MembershipAlreadyExists);
         }
-        if matches!(change, MembershipChange::UpdateRole(_)) && previous.is_none() {
-            return Err(Error::MembershipNotFound);
+        if let MembershipChange::UpdateRole { if_match, .. } = &change {
+            // A Membership that is absent has no etag to check: the check
+            // follows the refusal.
+            if previous.is_none() {
+                return Err(Error::MembershipNotFound);
+            }
+            management::check(
+                &mut transaction,
+                if_match,
+                workspace_id,
+                LifecycleTargetKind::WorkspaceMembership,
+                target.user_id().as_str(),
+            )
+            .await?;
         }
-        management::check_etag(
-            &mut transaction,
-            context,
-            workspace_id,
-            LifecycleTargetKind::WorkspaceMembership,
-            target.user_id().as_str(),
-        )
-        .await?;
         if previous == Some(role) {
             return Ok(target);
         }
@@ -743,12 +770,12 @@ impl WorkspaceModule {
         context: &ChangeContext,
         workspace: &WorkspaceId,
         target: MembershipTarget<'a>,
-    ) -> Result<(UserId, Option<&'a str>), Error> {
+    ) -> Result<(UserId, Option<(&'a str, &'a RequestId)>), Error> {
         match target {
-            MembershipTarget::Email(email) => {
+            MembershipTarget::Email { email, request } => {
                 organization::hold_administration(tx).await?;
                 // Replays must fail before resolving a possibly reassigned address.
-                management::claim_request(tx, context).await?;
+                management::claim_request(tx, context.actor().user_id(), request).await?;
                 let authority = self
                     .check_in_transaction(tx, context.actor(), workspace, WorkspaceAction::Inspect)
                     .await?;
@@ -756,7 +783,10 @@ impl WorkspaceModule {
                 if authority.workspace().state() == WorkspaceState::Archived {
                     return Err(Error::WorkspaceArchived);
                 }
-                Ok((profile::resolve_email(tx, email).await?, Some(email)))
+                Ok((
+                    profile::resolve_email(tx, email).await?,
+                    Some((email, request)),
+                ))
             }
             MembershipTarget::User(user) => Ok((user.clone(), None)),
         }
@@ -815,6 +845,7 @@ impl WorkspaceModule {
         &self,
         context: &ChangeContext,
         workspace_id: &WorkspaceId,
+        if_match: &IfMatch,
         authority_action: AuthorityAction,
         next_state: WorkspaceState,
         event_action: LifecycleAction,
@@ -834,9 +865,9 @@ impl WorkspaceModule {
             authority_action,
         )
         .await?;
-        management::check_etag(
+        management::check(
             &mut transaction,
-            context,
+            if_match,
             workspace_id,
             LifecycleTargetKind::Workspace,
             &workspace_id.to_string(),

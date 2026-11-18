@@ -319,12 +319,10 @@ impl AdminScope {
             .await
             .unwrap()
             .revision;
-        let context = change(self.owner_user(), 21, '5')
-            .with_etag(&provider.etag())
-            .unwrap();
         let publication = workflow(&self.fixture)
             .regenerate_provider(
-                &context,
+                &change(self.owner_user(), 21, '5'),
+                &provider.if_match(),
                 ProviderRegenerationRequest::new(
                     ManagementRequestId::parse(&setup.to_string()).unwrap(),
                     self.workspace_id.clone(),
@@ -1541,11 +1539,10 @@ async fn list_providers_lists_every_provider_without_approval() {
         .fixture
         .providers
         .disable_provider(
-            &change(scope.owner_user(), 21, '6')
-                .with_etag(&weather.etag())
-                .unwrap(),
+            &change(scope.owner_user(), 21, '6'),
             &scope.workspace_id,
             weather.id(),
+            &weather.if_match(),
         )
         .await
         .unwrap();

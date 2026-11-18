@@ -313,14 +313,22 @@ impl WorkspaceRole {
     }
 }
 
-/// Explicit intent for a designated Membership write, separate from correlation
-/// and optimistic concurrency evidence.
+/// Explicit intent for a designated Membership write, separate from
+/// correlation. Only [`Self::UpdateRole`] carries the etag the caller read.
+/// [`Self::Assign`] writes whatever is there, on purpose and with no
+/// precondition.
 #[derive(Debug, Clone, Copy)]
 pub enum MembershipChange {
     /// Add a previously absent designated Membership.
     Create(WorkspaceRole),
-    /// Change the role of an existing designated Membership.
-    UpdateRole(WorkspaceRole),
+    /// Change the role of the existing designated Membership that the caller
+    /// read at `if_match`.
+    UpdateRole {
+        /// The role the Membership takes.
+        role: WorkspaceRole,
+        /// The etag the caller read of the Membership.
+        if_match: IfMatch,
+    },
     /// Assign a role regardless of prior Membership, for host/domain callers.
     Assign(WorkspaceRole),
 }
@@ -483,7 +491,9 @@ impl WorkspaceEvidence {
     }
 }
 
-/// The etag a caller read, as the precondition of one change.
+/// The etag a caller read, as the precondition of one change. A method whose
+/// change can conflict takes one as an argument, so that no call leaves the
+/// check out.
 ///
 /// An etag is the text of a resource's version, or a UUID. A Workspace, a
 /// Workspace Membership, an Agent and an Agent Registration each keep a
@@ -603,13 +613,14 @@ impl fmt::Display for RequestId {
     }
 }
 
-/// Authenticated and correlated context for one administrative change.
+/// Authenticated and correlated context for one administrative change: who
+/// makes it, when, and under which trace.
+///
+/// It carries no precondition and no request identity. A change that can
+/// conflict takes an [`IfMatch`] argument, and one that must not run twice
+/// takes a [`RequestId`] argument, so a call cannot leave either out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeContext {
-    /// The etag as the Adapter sent it. A Provider's own check reads it.
-    expected_etag: Option<String>,
-    if_match: Option<IfMatch>,
-    request_id: Option<RequestId>,
     actor: AuthenticatedUser,
     occurred_at: UnixNanos,
     trace_id: TraceId,
@@ -620,47 +631,10 @@ impl ChangeContext {
     #[must_use]
     pub const fn new(actor: AuthenticatedUser, occurred_at: UnixNanos, trace_id: TraceId) -> Self {
         Self {
-            expected_etag: None,
-            if_match: None,
-            request_id: None,
             actor,
             occurred_at,
             trace_id,
         }
-    }
-
-    /// Adds an exact concurrency precondition for the mutation's target resource.
-    /// # Errors
-    /// Rejects missing or malformed etags, as [`IfMatch::parse`] does.
-    pub fn with_etag(mut self, etag: &str) -> Result<Self, Error> {
-        self.if_match = Some(IfMatch::parse(etag)?);
-        self.expected_etag = Some(etag.to_owned());
-        Ok(self)
-    }
-
-    /// Adds a first-party request identity for a non-idempotent action.
-    /// A committed receipt is never replayed with another credential or resource.
-    /// # Errors
-    /// Rejects missing or malformed request identifiers, as
-    /// [`RequestId::parse`] does.
-    pub fn with_request_id(mut self, id: &str) -> Result<Self, Error> {
-        self.request_id = Some(RequestId::parse(id)?);
-        Ok(self)
-    }
-
-    /// Returns the exact concurrency precondition supplied by the Adapter, if any.
-    #[must_use]
-    pub fn expected_etag(&self) -> Option<&str> {
-        self.expected_etag.as_deref()
-    }
-
-    /// Returns the precondition that [`Self::with_etag`] read, if any.
-    pub(crate) const fn if_match(&self) -> Option<&IfMatch> {
-        self.if_match.as_ref()
-    }
-
-    pub(crate) const fn request_id(&self) -> Option<&RequestId> {
-        self.request_id.as_ref()
     }
 
     /// Returns the accountable authenticated User.

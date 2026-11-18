@@ -1,5 +1,5 @@
 use super::{Fixture, change, management as wire, request};
-use coral_workspace::AuthenticatedPrincipal;
+use coral_workspace::{AuthenticatedPrincipal, RequestId};
 
 #[tokio::test]
 #[expect(
@@ -12,6 +12,7 @@ async fn completion_feedback_is_exact_task_detail_with_no_owner_exception_for_us
         .workspaces
         .create_agent(
             &change(&f.owner),
+            &RequestId::generate(),
             f.workspace.id(),
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,

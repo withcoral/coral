@@ -9,8 +9,8 @@ use coral_catalog::ToolAccessState;
 use coral_test_support::{TestDatabase, provision_user as organization_user};
 use coral_v8::CompileFailure;
 use coral_workspace::{
-    AuthenticatedPrincipal, OrganizationRole, TraceId, WorkspaceDisplayName, WorkspaceModule,
-    WorkspaceRole,
+    AuthenticatedPrincipal, IfMatch, OrganizationRole, RequestId, TraceId, WorkspaceDisplayName,
+    WorkspaceModule, WorkspaceRole,
 };
 
 use crate::authoring::{AuthoredToolCompiler, PreparedAuthoredTool};
@@ -1321,7 +1321,7 @@ async fn private_tool_compilation_holds_no_write_transaction_and_rechecks_active
         Duration::from_secs(2),
         fixture
             .workspaces
-            .archive(&change(user, 40, 'b'), &workspace_id),
+            .archive(&change(user, 40, 'b'), &workspace_id, &IfMatch::any()),
     )
     .await
     .expect("archive must not wait for authoring compilation")
@@ -2118,6 +2118,7 @@ async fn agent_registered_until(
                 10,
                 '1',
             ),
+            &RequestId::generate(),
             workspace_id,
             coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
             expires_at,
@@ -2294,6 +2295,7 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
                     &context,
                     &workspace_id,
                     agent.principal().id(),
+                    &IfMatch::any(),
                     coral_workspace::AgentState::Disabled,
                 )
                 .await
@@ -2310,6 +2312,7 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
                     &context,
                     &workspace_id,
                     registration.id(),
+                    &IfMatch::any(),
                     true,
                     Some(coral_db::UnixNanos::new(0)),
                 )
@@ -2531,6 +2534,7 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
             &change(owner_user.clone(), 25, 'f'),
             &workspace_id,
             agent.principal().id(),
+            &IfMatch::any(),
             coral_workspace::AgentState::Disabled,
         )
         .await
@@ -2571,7 +2575,7 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
         .set_enabled(
             &change(administrator, 31, 'e'),
             member_user.user_id(),
-            membership.revision(),
+            &IfMatch::version(membership.version()),
             false,
         )
         .await
@@ -2997,6 +3001,7 @@ async fn private_tool_work_that_only_names_a_tool_decodes_no_definition() {
             coral_workspace::AccessRemovalTarget::WorkspaceMember(
                 &workspace_id,
                 member.authenticated_user().expect("member User").user_id(),
+                &IfMatch::any(),
             ),
         )
         .await

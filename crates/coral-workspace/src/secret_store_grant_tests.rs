@@ -1,7 +1,7 @@
 use super::{change, organization_user, test_module};
 use crate::{
-    AuthenticatedUser, AuthoritySource, Error, LifecycleAction, LifecycleTargetKind,
-    OrganizationRole, Workspace, WorkspaceAction, WorkspaceDisplayName, WorkspaceModule,
+    AuthenticatedUser, AuthoritySource, Error, IfMatch, LifecycleAction, LifecycleTargetKind,
+    OrganizationRole, RequestId, Workspace, WorkspaceAction, WorkspaceDisplayName, WorkspaceModule,
     WorkspaceRole,
 };
 use coral_test_support::TestDatabase;
@@ -56,13 +56,23 @@ async fn an_organization_owner_grants_and_revokes_with_an_event_for_each() {
     let events_before = f.module.list_lifecycle_events(&f.owner, id).await.unwrap();
 
     f.module
-        .grant_secret_store(&change(f.governor.clone(), 10, '2'), id, "platform")
+        .grant_secret_store(
+            &change(f.governor.clone(), 10, '2'),
+            &RequestId::generate(),
+            id,
+            "platform",
+        )
         .await
         .unwrap();
     assert_eq!(f.granted().await, ["platform"]);
 
     f.module
-        .revoke_secret_store(&change(f.governor.clone(), 11, '3'), id, "platform")
+        .revoke_secret_store(
+            &change(f.governor.clone(), 11, '3'),
+            &RequestId::generate(),
+            id,
+            "platform",
+        )
         .await
         .unwrap();
     assert_eq!(f.granted().await, [] as [std::string::String; 0]);
@@ -108,12 +118,21 @@ async fn a_refused_change_changes_nothing() {
         let f = fixture().await;
         let id = f.workspace.id();
         f.module
-            .grant_secret_store(&change(f.governor.clone(), 10, '2'), id, "granted")
+            .grant_secret_store(
+                &change(f.governor.clone(), 10, '2'),
+                &RequestId::generate(),
+                id,
+                "granted",
+            )
             .await
             .unwrap();
         if archived {
             f.module
-                .archive_as_organization_owner(&change(f.governor.clone(), 11, '3'), id)
+                .archive_as_organization_owner(
+                    &change(f.governor.clone(), 11, '3'),
+                    id,
+                    &IfMatch::any(),
+                )
                 .await
                 .unwrap();
         }
@@ -132,8 +151,12 @@ async fn a_refused_change_changes_nothing() {
 
         let context = change(user.clone(), 20, '4');
         for result in [
-            f.module.grant_secret_store(&context, id, "other").await,
-            f.module.revoke_secret_store(&context, id, "granted").await,
+            f.module
+                .grant_secret_store(&context, &RequestId::generate(), id, "other")
+                .await,
+            f.module
+                .revoke_secret_store(&context, &RequestId::generate(), id, "granted")
+                .await,
         ] {
             let refused = if archived {
                 matches!(result, Err(Error::WorkspaceArchived))
@@ -163,7 +186,12 @@ async fn a_grant_shows_the_organization_owner_nothing_inside_the_workspace() {
     let f = fixture().await;
     let id = f.workspace.id();
     f.module
-        .grant_secret_store(&change(f.governor.clone(), 10, '2'), id, "platform")
+        .grant_secret_store(
+            &change(f.governor.clone(), 10, '2'),
+            &RequestId::generate(),
+            id,
+            "platform",
+        )
         .await
         .unwrap();
 
@@ -225,17 +253,17 @@ async fn a_change_that_changes_nothing_records_no_event() {
     let id = f.workspace.id();
     let context = change(f.governor.clone(), 10, '2');
     f.module
-        .grant_secret_store(&context, id, "platform")
+        .grant_secret_store(&context, &RequestId::generate(), id, "platform")
         .await
         .unwrap();
     let events = f.module.list_lifecycle_events(&f.owner, id).await.unwrap();
 
     f.module
-        .grant_secret_store(&context, id, "platform")
+        .grant_secret_store(&context, &RequestId::generate(), id, "platform")
         .await
         .unwrap();
     f.module
-        .revoke_secret_store(&context, id, "never-granted")
+        .revoke_secret_store(&context, &RequestId::generate(), id, "never-granted")
         .await
         .unwrap();
 
@@ -251,22 +279,27 @@ async fn a_change_that_changes_nothing_records_no_event() {
 async fn a_replayed_grant_does_not_undo_a_revocation() {
     let f = fixture().await;
     let id = f.workspace.id();
-    let request = "00000000-0000-4000-8000-000000000001";
-    let grant = change(f.governor.clone(), 10, '2')
-        .with_request_id(request)
-        .unwrap();
+    let request = RequestId::parse("00000000-0000-4000-8000-000000000001").unwrap();
+    let grant = change(f.governor.clone(), 10, '2');
     f.module
-        .grant_secret_store(&grant, id, "platform")
+        .grant_secret_store(&grant, &request, id, "platform")
         .await
         .unwrap();
     f.module
-        .revoke_secret_store(&change(f.governor.clone(), 11, '3'), id, "platform")
+        .revoke_secret_store(
+            &change(f.governor.clone(), 11, '3'),
+            &RequestId::generate(),
+            id,
+            "platform",
+        )
         .await
         .unwrap();
     let events = f.module.list_lifecycle_events(&f.owner, id).await.unwrap();
 
     assert!(matches!(
-        f.module.grant_secret_store(&grant, id, "platform").await,
+        f.module
+            .grant_secret_store(&grant, &request, id, "platform")
+            .await,
         Err(Error::RequestAlreadyApplied)
     ));
     assert_eq!(f.granted().await, [] as [std::string::String; 0]);
@@ -285,7 +318,12 @@ async fn an_organization_owner_lists_every_workspace_grant() {
     let id = f.workspace.id();
     for store in ["zeta", "alpha"] {
         f.module
-            .grant_secret_store(&change(f.governor.clone(), 10, '2'), id, store)
+            .grant_secret_store(
+                &change(f.governor.clone(), 10, '2'),
+                &RequestId::generate(),
+                id,
+                store,
+            )
             .await
             .unwrap();
     }

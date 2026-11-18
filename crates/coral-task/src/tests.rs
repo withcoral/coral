@@ -3,7 +3,9 @@ use coral_db::UnixNanos;
 use coral_test_support::change;
 use coral_test_support::{TestDatabase, provision_user as organization_user};
 use coral_workspace::AuthenticatedPrincipal;
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName, WorkspaceModule, WorkspaceRole};
+use coral_workspace::{
+    OrganizationRole, RequestId, WorkspaceDisplayName, WorkspaceModule, WorkspaceRole,
+};
 
 #[tokio::test]
 async fn coral_generates_task_identity_and_persists_start_evidence() {
@@ -318,6 +320,7 @@ async fn task_visibility_preserves_user_privacy_and_owner_agent_oversight() {
     let issued = workspaces
         .create_agent(
             &change(owner.authenticated_user().unwrap().clone(), 20, '4'),
+            &RequestId::generate(),
             workspace.id(),
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,

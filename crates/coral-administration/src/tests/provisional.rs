@@ -74,7 +74,12 @@ async fn provisional_credentials_roll_back_with_authority_and_cannot_be_promoted
             &[EventFault::SetupCanceled, EventFault::MembershipRemoved],
         ) {
             lifecycle
-                .remove_workspace_member(&context, workspace.id(), member.user_id())
+                .remove_workspace_member(
+                    &context,
+                    workspace.id(),
+                    member.user_id(),
+                    &IfMatch::any(),
+                )
                 .await
                 .unwrap_err();
             assert_eq!(
@@ -107,7 +112,12 @@ async fn provisional_credentials_roll_back_with_authority_and_cannot_be_promoted
         }
         if remove {
             lifecycle
-                .remove_workspace_member(&change(&owner), workspace.id(), member.user_id())
+                .remove_workspace_member(
+                    &change(&owner),
+                    workspace.id(),
+                    member.user_id(),
+                    &IfMatch::any(),
+                )
                 .await
                 .unwrap();
             workspaces
