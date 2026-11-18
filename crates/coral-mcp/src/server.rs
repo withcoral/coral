@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::time::Duration;
 
 use coral_run::{RUN_EVENT_PAGE_MAX, RunCursor, RunId, RunObservation};
@@ -8,18 +9,19 @@ use coral_workspace::WorkspaceId;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-    ProgressNotificationParam, ProgressToken, ProtocolVersion, ReadResourceRequestParams,
-    ReadResourceResponse, ServerCapabilities, ServerConfig, Tool,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
+    ServerConfig, Tool,
 };
-use rmcp::service::{MaybeSendFuture, Peer, RequestContext, RoleServer};
+use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler};
 
-use crate::McpRuntime;
 use crate::arguments::{
     self, CancelArguments, EndTaskArguments, ExecArguments, TaskOutcomeArgument, ToolArguments,
     WaitArguments,
 };
+use crate::interface::{McpCaller, McpInterface, Progress, ToolCallError};
 use crate::projection::{self, Reporter, ToolFailure};
+use crate::{McpModules, McpRuntime};
 
 #[cfg(test)]
 mod tests;
@@ -48,18 +50,20 @@ fn fallback_protocol_version() -> ProtocolVersion {
         .clone()
 }
 
+/// The MCP server of one request: the protocol, and the span for each tool
+/// call. It asks `interface` for the instructions, the tools and each call.
 #[derive(Clone)]
 pub(crate) struct McpServer {
-    runtime: McpRuntime,
-    workspace_id: WorkspaceId,
+    interface: Arc<dyn McpInterface>,
+    caller: McpCaller,
     title: Option<String>,
 }
 
 impl McpServer {
-    pub(crate) const fn new(runtime: McpRuntime, workspace_id: WorkspaceId) -> Self {
+    pub(crate) const fn new(interface: Arc<dyn McpInterface>, caller: McpCaller) -> Self {
         Self {
-            runtime,
-            workspace_id,
+            interface,
+            caller,
             title: None,
         }
     }
@@ -94,7 +98,7 @@ impl ServerHandler for McpServer {
                 None => implementation,
             }
         })
-        .with_instructions(crate::instructions::INSTRUCTIONS)
+        .with_instructions(self.interface.instructions())
     }
 
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
@@ -119,15 +123,15 @@ impl ServerHandler for McpServer {
         let call = ToolCall::open(
             request.name.as_ref(),
             carrier,
-            &self.workspace_id,
-            &self.runtime.principal,
+            self.caller.workspace_id(),
+            self.caller.principal(),
         );
         let progress = context.meta.get_progress_token().map(|token| Progress {
             token,
             peer: context.peer.clone(),
         });
-        let dispatched = Box::pin(self.dispatch(request, progress));
-        call.run(dispatched).await
+        let called = self.interface.call(&self.caller, request, progress);
+        call.run(called).await
     }
 
     async fn list_tools(
@@ -135,7 +139,7 @@ impl ServerHandler for McpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let tools = self.listed_tools().await?;
+        let tools = self.interface.tools(&self.caller).await?;
         // Protocol 2026-07-28 (SEP-2549) requires cache hints on list results
         // and Claude Code rejects a tools/list result that omits them. Older
         // versions ignore the extra fields, so the hints are not version-gated.
@@ -182,7 +186,63 @@ impl ServerHandler for McpServer {
     }
 }
 
-impl McpServer {
+/// Core's tool surface: `exec`, `wait`, `cancel` and `end_task`.
+pub(crate) struct CoreInterface {
+    modules: McpModules,
+}
+
+#[async_trait::async_trait]
+impl McpInterface for CoreInterface {
+    fn instructions(&self) -> &str {
+        crate::instructions::INSTRUCTIONS
+    }
+
+    async fn tools(&self, caller: &McpCaller) -> Result<Vec<Tool>, ErrorData> {
+        self.for_caller(caller).listed_tools().await
+    }
+
+    async fn call(
+        &self,
+        caller: &McpCaller,
+        request: CallToolRequestParams,
+        progress: Option<Progress>,
+    ) -> Result<CallToolResponse, ToolCallError> {
+        self.for_caller(caller).dispatch(request, progress).await
+    }
+}
+
+impl CoreInterface {
+    pub(crate) const fn new(modules: McpModules) -> Self {
+        Self { modules }
+    }
+
+    /// Core's tools as `caller` is served them.
+    fn for_caller(&self, caller: &McpCaller) -> CoreTools {
+        CoreTools::new(
+            McpRuntime {
+                modules: self.modules.clone(),
+                principal: caller.principal().clone(),
+                now: caller.now(),
+            },
+            caller.workspace_id().clone(),
+        )
+    }
+}
+
+/// Core's tools for one caller.
+struct CoreTools {
+    runtime: McpRuntime,
+    workspace_id: WorkspaceId,
+}
+
+impl CoreTools {
+    const fn new(runtime: McpRuntime, workspace_id: WorkspaceId) -> Self {
+        Self {
+            runtime,
+            workspace_id,
+        }
+    }
+
     /// The tools this caller is served. `exec` names the namespaces the
     /// caller can search, so an agent passes `provider` from its first
     /// Program on. A caller that lost the Workspace meets that on every call,
@@ -768,39 +828,4 @@ fn workspace_tool_failure(error: coral_workspace::Error) -> ToolFailure {
 enum ExecTarget {
     Task(coral_task::AttributedCommand),
     Goal(coral_task::NewTaskCommand),
-}
-
-/// The progress the client asked for with this request, if it sent a token.
-struct Progress {
-    token: ProgressToken,
-    peer: Peer<RoleServer>,
-}
-
-impl Progress {
-    /// Sends one progress message on this call's own response stream. A
-    /// client that cannot take it loses nothing the Run Update does not carry.
-    async fn report(self, message: String) {
-        let sent = self
-            .peer
-            .notify_progress(ProgressNotificationParam::new(self.token, 1.0).with_message(message))
-            .await;
-        if sent.is_err() {
-            tracing::debug!("progress notification not delivered");
-        }
-    }
-}
-
-/// Why a tool call has no result.
-enum ToolCallError {
-    /// The request was wrong. The client gets a JSON-RPC error.
-    Protocol(ErrorData),
-    /// Coral could not complete the call. The client gets the failure as the
-    /// tool's result.
-    Tool(ToolFailure),
-}
-
-impl From<ErrorData> for ToolCallError {
-    fn from(error: ErrorData) -> Self {
-        Self::Protocol(error)
-    }
 }

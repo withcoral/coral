@@ -21,7 +21,7 @@ use tower::ServiceExt as _;
 use crate::authentication::LocalAuthentication;
 use crate::server::McpServer;
 use crate::{
-    AuthenticationError, McpEndpoint, McpModules, McpRuntime, ORGANIZATION_MCP_ROUTE,
+    AuthenticationError, McpCaller, McpEndpoint, McpInterface, McpModules, ORGANIZATION_MCP_ROUTE,
     WORKSPACE_MCP_ROUTE, WorkspaceAuthenticator,
 };
 
@@ -212,7 +212,8 @@ async fn start_server(
         .with_allowed_hosts(allowed_hosts)
         .with_max_request_body_bytes(MAX_MCP_REQUEST_BODY_SIZE);
     let state = Arc::new(HttpState {
-        modules,
+        interface: modules.served_interface(),
+        workspaces: modules.workspaces,
         authentication,
         config: streamable_config,
     });
@@ -271,7 +272,9 @@ async fn start_server(
 }
 
 struct HttpState {
-    modules: McpModules,
+    /// The tool surface every request is served.
+    interface: Arc<dyn McpInterface>,
+    workspaces: coral_workspace::WorkspaceModule,
     authentication: Arc<dyn WorkspaceAuthenticator>,
     config: StreamableHttpServerConfig,
 }
@@ -327,7 +330,6 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
         ),
     };
     let evidence = match state
-        .modules
         .workspaces
         .check_principal_inspection(&principal, &workspace_id, now)
         .await
@@ -348,12 +350,8 @@ async fn mcp(State(state): State<Arc<HttpState>>, mut request: Request<Body>) ->
     };
     let workspace = evidence.workspace();
     let mut handler = McpServer::new(
-        McpRuntime {
-            modules: state.modules.clone(),
-            principal: principal.clone(),
-            now,
-        },
-        workspace_id.clone(),
+        Arc::clone(&state.interface),
+        McpCaller::new(principal.clone(), workspace_id.clone(), now),
     );
     // A client at `/mcp` cannot read its Workspace from the URL, and has no
     // URL that keeps an archived one reachable.

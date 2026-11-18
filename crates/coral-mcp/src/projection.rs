@@ -38,7 +38,7 @@ pub(crate) fn failure(error: &ToolFailure, trace: &TraceId) -> CallToolResult {
 
 /// Why Coral could not complete a tool call. Its result names the call's
 /// trace beside it, never inside caller-influenced text.
-pub(crate) struct ToolFailure {
+pub struct ToolFailure {
     code: &'static str,
     message: String,
 }

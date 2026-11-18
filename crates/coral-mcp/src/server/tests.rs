@@ -39,11 +39,11 @@ fn server_on(
     runs: RunModule,
     principal: AuthenticatedPrincipal,
     workspace: WorkspaceId,
-) -> McpServer {
+) -> CoreTools {
     let tasks = TaskModule::new(database.clone(), workspaces.clone());
     let search = UniversalSearchModule::new(database.clone(), workspaces.clone());
     let commands = TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
-    McpServer::new(
+    CoreTools::new(
         McpRuntime {
             modules: crate::McpModules::new(
                 workspaces,
@@ -61,7 +61,7 @@ fn server_on(
 }
 
 /// The local owner's MCP server on a new Workspace.
-async fn workspace_server() -> (TestDatabase, McpServer) {
+async fn workspace_server() -> (TestDatabase, CoreTools) {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let user = local_organization_owner();
@@ -85,7 +85,7 @@ async fn workspace_server() -> (TestDatabase, McpServer) {
     (fixture, server)
 }
 
-async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
+async fn accepted_unlaunched_run() -> (TestDatabase, CoreTools, RunId) {
     let (fixture, server) = workspace_server().await;
     let runs = &server.runtime.modules.runs;
     // Commit acceptance without launching execution. There can be no authored output,
@@ -147,7 +147,7 @@ async fn a_caller_that_lost_the_workspace_is_refused_the_tool_list() {
 }
 
 /// Calls `wait` on `run_id` and returns its structured update.
-async fn wait(server: &McpServer, run_id: &RunId, wait_ms: Option<Value>) -> Value {
+async fn wait(server: &CoreTools, run_id: &RunId, wait_ms: Option<Value>) -> Value {
     let mut arguments = json!({"run_id": run_id.to_string()});
     if let Some(wait_ms) = wait_ms {
         arguments
@@ -208,7 +208,7 @@ async fn omitted_null_and_zero_wait_observe_immediately_but_positive_wait_waits(
 
 /// Calls `tool` and returns its structured result, or its failure's code.
 async fn call(
-    server: &McpServer,
+    server: &CoreTools,
     tool: &'static str,
     arguments: &Value,
 ) -> Result<Value, &'static str> {
