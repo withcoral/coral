@@ -107,8 +107,9 @@ impl TurnPage {
     }
 }
 
-/// One `exec` call of a Turn: the intent the model gave, and the Run that it
-/// started once its result names one.
+/// One `exec` or `search` call of a Turn: the intent the model gave or the
+/// search's query, and the Run that an `exec` started once its result names
+/// one.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Step {
     pub(crate) intent: String,
@@ -122,8 +123,8 @@ pub(crate) struct WaitingAction {
     pub(crate) action: RequiredAction,
 }
 
-/// The steps of a Turn: each `exec` call in its messages, with the Run that
-/// its result names.
+/// The steps of a Turn: each `exec` and `search` call in its messages, an
+/// `exec` with the Run that its result names.
 fn steps(messages: &[Message]) -> Vec<Step> {
     let blocks = messages.iter().flat_map(|message| &message.content);
     let started: HashMap<&str, &str> = blocks
@@ -148,6 +149,14 @@ fn steps(messages: &[Message]) -> Vec<Step> {
                 let run_id = run_id.and_then(|run_id| RunId::parse(run_id).ok());
                 Some(Step { intent, run_id })
             }
+            "search" => {
+                let search: SearchArguments = serde_json::from_str(&call.arguments).ok()?;
+                let intent = search.intent();
+                Some(Step {
+                    intent,
+                    run_id: None,
+                })
+            }
             _ => None,
         })
         .collect()
@@ -156,4 +165,21 @@ fn steps(messages: &[Message]) -> Vec<Step> {
 #[derive(Deserialize)]
 struct ExecArguments {
     intent: String,
+}
+
+#[derive(Deserialize)]
+struct SearchArguments {
+    query: Option<String>,
+    paths: Option<Vec<String>>,
+}
+
+impl SearchArguments {
+    /// The query, or a phrase that names what the search reads.
+    fn intent(self) -> String {
+        match (self.query, self.paths) {
+            (Some(query), _) => query,
+            (None, Some(paths)) => format!("Read the declarations of {}", paths.join(", ")),
+            (None, None) => "List the tools you can call".to_owned(),
+        }
+    }
 }

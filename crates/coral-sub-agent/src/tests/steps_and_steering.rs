@@ -199,6 +199,34 @@ async fn the_steps_show_while_a_turn_runs_and_after_it_ends() {
     );
 }
 
+// Catches: a search that the steps leave out, or show without what it looked
+// for or with a run_id.
+#[tokio::test]
+async fn a_search_is_a_step_with_its_query_and_no_run_id() {
+    let lead = Lead::new().await;
+    lead.model_answers(no_reply()).await;
+    let tools = lead.tools();
+    let started = lead.agent(&*tools).await;
+    let sub_agent_id = field(&started, "sub_agent_id");
+    let paths = [
+        "coral.providers.billing.listInvoices",
+        "coral.providers.billing.getInvoice",
+    ];
+    let searches = [json!({"query": "list invoices"}), json!({"paths": paths})];
+    for (id, arguments) in ["call_1", "call_2"].into_iter().zip(searches) {
+        let search = tool_call(id, "search", &arguments);
+        lead.step(sub_agent_id, search, json!({"hits": []}).to_string(), None)
+            .await;
+    }
+
+    let by_id = json!({"sub_agent_id": sub_agent_id});
+    let waited = result(call(&*tools, &lead.caller(), "wait", by_id).await);
+
+    let read = "Read the declarations of coral.providers.billing.listInvoices, coral.providers.billing.getInvoice";
+    let steps = json!([{"intent": "list invoices"}, {"intent": read}]);
+    assert_eq!(field(&waited, "steps"), &steps);
+}
+
 // Catches: a Run that waits for a person hidden from the lead, a request
 // without the page where the person acts, and a wait that holds on past a
 // request its cursor has not seen.
