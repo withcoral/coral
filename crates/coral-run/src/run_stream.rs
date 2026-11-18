@@ -15,7 +15,7 @@ use coral_run_executor::wire::v1::{
     RunResponse, Terminate, TerminateReason, run_request, run_response,
 };
 use coral_run_executor::{Closing, PROTOCOL_LEVEL, RunStreamServer, ServedRunStream};
-use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
+use coral_workspace::AuthenticatedPrincipal;
 use tokio::sync::{mpsc, watch};
 use tokio_stream::StreamExt as _;
 
@@ -399,8 +399,15 @@ impl RunModule {
             return Ok(Start::Ended(WireEnd::TimedOut));
         }
         let checked = self
-            .recheck_actor(&mut transaction, &run, checked_at)
-            .await?;
+            .workspaces
+            .check_run_start_in_transaction(
+                &mut transaction,
+                &run.principal,
+                &run.workspace_id,
+                coral_db::UnixNanos::new(checked_at),
+            )
+            .await
+            .map_err(Error::from);
         // The start mark is dated after the recheck's holds, and authority
         // must still hold at that instant.
         let now = self.now()?.max(checked_at);
@@ -419,7 +426,6 @@ impl RunModule {
                     .await;
             }
         };
-        let package = package.clone();
         // The attempt this one repeats landed: the Program starts once.
         if resumed {
             transaction.commit().await?;
@@ -429,7 +435,7 @@ impl RunModule {
             return Ok(Start::Started(Box::new((
                 actor,
                 StartedExecution {
-                    package,
+                    package: package.clone(),
                     head: run.chunk_sequence,
                     deadline_at_unix_nanos,
                 },
@@ -453,7 +459,7 @@ impl RunModule {
         Ok(Start::Started(Box::new((
             actor,
             StartedExecution {
-                package,
+                package: package.clone(),
                 head: run.chunk_sequence + 1,
                 deadline_at_unix_nanos,
             },
@@ -484,27 +490,6 @@ impl RunModule {
         transaction.commit().await?;
         crate::trace::record_run_end(run, &RunEnd::Unstarted(&outcome), now);
         Ok(Start::Ended(WireEnd::Failed))
-    }
-
-    /// The actor `run` names, rebuilt from current facts, with the evidence
-    /// of its Run authority at `now`. The inner error is a lost authority,
-    /// or a database that gave no answer.
-    async fn recheck_actor(
-        &self,
-        transaction: &mut coral_db::Transaction<'_>,
-        run: &RunRecord,
-        now: i64,
-    ) -> Result<Result<(AuthenticatedPrincipal, PrincipalWorkspaceEvidence), Error>, Error> {
-        Ok(self
-            .workspaces
-            .check_run_start_in_transaction(
-                transaction,
-                &run.principal,
-                &run.workspace_id,
-                coral_db::UnixNanos::new(now),
-            )
-            .await
-            .map_err(Error::from))
     }
 
     /// [`Self::end_unstarted`], written until the database answers.
