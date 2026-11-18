@@ -3,6 +3,8 @@
 //! tool, `agent`, while the config file has a `[sub_agent]` section.
 
 pub mod model;
+mod repository;
+mod sub_agents;
 
 use std::error::Error;
 use std::sync::Arc;

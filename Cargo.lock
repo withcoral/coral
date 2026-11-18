@@ -1185,10 +1185,15 @@ name = "coral-sub-agent"
 version = "1.10.0"
 dependencies = [
  "coral-app",
+ "coral-db",
  "coral-mcp",
  "coral-outbound",
  "coral-secret-store",
+ "coral-task",
+ "coral-workspace",
+ "sea-query",
  "serde",
+ "sqlx",
  "thiserror",
  "toml",
  "url",
