@@ -79,7 +79,12 @@ async fn provisional_credentials_roll_back_with_authority_and_cannot_be_promoted
                 .unwrap_err();
             assert_eq!(
                 providers
-                    .setup_authentication(&member, workspace.id(), setup.id(), 100)
+                    .setup_authentication(
+                        &member,
+                        workspace.id(),
+                        setup.id(),
+                        coral_db::UnixNanos::new(100)
+                    )
                     .await
                     .unwrap(),
                 authentication
@@ -115,7 +120,12 @@ async fn provisional_credentials_roll_back_with_authority_and_cannot_be_promoted
                 .await
                 .unwrap();
             let retired = providers
-                .setup_authentication(&member, workspace.id(), setup.id(), 100)
+                .setup_authentication(
+                    &member,
+                    workspace.id(),
+                    setup.id(),
+                    coral_db::UnixNanos::new(100),
+                )
                 .await
                 .unwrap();
             assert!(!retired.authorized);
@@ -158,7 +168,12 @@ async fn provisional_credentials_roll_back_with_authority_and_cannot_be_promoted
             let evidence = accounts::credential_evidence(&database, workspace.id(), &member).await;
             assert_eq!(
                 accounts
-                    .credentials(workspace.id(), provider, &evidence, 100)
+                    .credentials(
+                        workspace.id(),
+                        provider,
+                        &evidence,
+                        coral_db::UnixNanos::new(100)
+                    )
                     .await
                     .unwrap()
                     .get(coral_credentials::CredentialValues::TOKEN)

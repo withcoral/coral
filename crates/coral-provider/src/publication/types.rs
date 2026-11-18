@@ -2,6 +2,7 @@ use crate::access::{CredentialRoute, ProviderCallRoot, ProviderNamespace};
 use crate::{
     Error, ManagementRequestId, Provider, ProviderId, ProviderSetupId, PublicationDiagnostic,
 };
+use coral_db::UnixNanos;
 use coral_workspace::WorkspaceId;
 
 use std::fmt;
@@ -241,7 +242,7 @@ pub struct ProviderRegenerationPublication {
     id: ProviderPublicationId,
     request: ProviderRegenerationRequest,
     result: Recorded<()>,
-    completed_at_unix_nanos: i64,
+    completed_at: UnixNanos,
 }
 
 impl ProviderRegenerationPublication {
@@ -250,13 +251,13 @@ impl ProviderRegenerationPublication {
     pub(crate) const fn succeeded(
         id: ProviderPublicationId,
         request: ProviderRegenerationRequest,
-        completed_at_unix_nanos: i64,
+        completed_at: UnixNanos,
     ) -> Self {
         Self {
             id,
             request,
             result: Recorded::Succeeded(()),
-            completed_at_unix_nanos,
+            completed_at,
         }
     }
 
@@ -265,13 +266,13 @@ impl ProviderRegenerationPublication {
         id: ProviderPublicationId,
         request: ProviderRegenerationRequest,
         diagnostic: PublicationDiagnostic,
-        completed_at_unix_nanos: i64,
+        completed_at: UnixNanos,
     ) -> Self {
         Self {
             id,
             request,
             result: Recorded::Failed(diagnostic),
-            completed_at_unix_nanos,
+            completed_at,
         }
     }
 
@@ -301,8 +302,8 @@ impl ProviderRegenerationPublication {
 
     /// Returns the terminal commit timestamp.
     #[must_use]
-    pub const fn completed_at_unix_nanos(&self) -> i64 {
-        self.completed_at_unix_nanos
+    pub const fn completed_at(&self) -> UnixNanos {
+        self.completed_at
     }
 }
 
@@ -321,7 +322,7 @@ pub struct ProviderPublication {
     id: ProviderPublicationId,
     request: WorkspaceProviderPublicationRequest,
     result: Recorded<Provider>,
-    completed_at_unix_nanos: i64,
+    completed_at: UnixNanos,
 }
 
 impl ProviderPublication {
@@ -330,13 +331,13 @@ impl ProviderPublication {
         id: ProviderPublicationId,
         request: WorkspaceProviderPublicationRequest,
         provider: Provider,
-        completed_at_unix_nanos: i64,
+        completed_at: UnixNanos,
     ) -> Self {
         Self {
             id,
             request,
             result: Recorded::Succeeded(provider),
-            completed_at_unix_nanos,
+            completed_at,
         }
     }
 
@@ -345,13 +346,13 @@ impl ProviderPublication {
         id: ProviderPublicationId,
         request: WorkspaceProviderPublicationRequest,
         diagnostic: PublicationDiagnostic,
-        completed_at_unix_nanos: i64,
+        completed_at: UnixNanos,
     ) -> Self {
         Self {
             id,
             request,
             result: Recorded::Failed(diagnostic),
-            completed_at_unix_nanos,
+            completed_at,
         }
     }
 
@@ -393,8 +394,8 @@ impl ProviderPublication {
 
     /// Returns the terminal commit timestamp.
     #[must_use]
-    pub const fn completed_at_unix_nanos(&self) -> i64 {
-        self.completed_at_unix_nanos
+    pub const fn completed_at(&self) -> UnixNanos {
+        self.completed_at
     }
 }
 

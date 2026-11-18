@@ -10,7 +10,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use coral_catalog::AuthenticationConfiguration;
 use coral_catalog::{OAuthClientBootstrap, ProviderSetupInputDigest};
 use coral_credentials::Secret;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::{AuthoritySource, ChangeContext};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
@@ -85,10 +85,10 @@ impl AccountModule {
         client: SetupOAuthClient,
     ) -> Result<SetupAuthentication, Error> {
         let started = self.started();
-        let authorization_expires_at = coral_db::UnixNanos::new(context.occurred_at_unix_nanos())
+        let authorization_expires_at = context
+            .occurred_at()
             .checked_add(SETUP_AUTHORIZATION_LIFETIME)
-            .ok_or(Error::Internal(crate::InternalFault::Overflow))?
-            .get();
+            .ok_or(Error::Internal(crate::InternalFault::Overflow))?;
         // Read the requirement and any retained registration, then bootstrap
         // outside the transaction: registration is a network call.
         let mut tx = self.providers.database.begin().await?;
@@ -108,10 +108,7 @@ impl AccountModule {
         let reviewed = previous
             .as_ref()
             .map(|row| (row.grant_id, row.credential_generation.clone()));
-        if loaded
-            .setup
-            .is_past_deadline(context.occurred_at_unix_nanos())
-        {
+        if loaded.setup.is_past_deadline(context.occurred_at()) {
             return Err(Error::ProviderSetupNotApplicable);
         }
         let retained = previous
@@ -172,10 +169,8 @@ impl AccountModule {
         let (authority, loaded) = self.lock_pre_ready(&mut tx, context, owner, id).await?;
         if flow_of(self.providers.outbound_policy, &loaded)?.kind != flow.kind
             || loaded.configuration_revision != configuration_revision
-            || loaded
-                .setup
-                .is_past_deadline(context.occurred_at_unix_nanos())
-            || context.occurred_at_unix_nanos() >= authorization_expires_at
+            || loaded.setup.is_past_deadline(context.occurred_at())
+            || context.occurred_at() >= authorization_expires_at
         {
             return Err(Error::ProviderSetupNotApplicable);
         }
@@ -214,7 +209,7 @@ impl AccountModule {
                 provisional_grant_id: ProviderAccountId(Uuid::new_v4()),
                 contract: &contract,
                 generation: &generation,
-                credential_expires_at: loaded.setup.expires_at_unix_nanos(),
+                credential_expires_at: loaded.setup.expires_at(),
                 client: &stored_client,
                 private_flow: &private,
                 navigation: &navigation,
@@ -243,7 +238,7 @@ impl AccountModule {
             self.spawn_setup_device(context, owner, id, generation, flow.requirement);
         }
         self.providers
-            .setup_authentication(context.actor(), owner, id, context.occurred_at_unix_nanos())
+            .setup_authentication(context.actor(), owner, id, context.occurred_at())
             .await
     }
 
@@ -516,7 +511,7 @@ impl AccountModule {
             tx.commit().await?;
             return self
                 .providers
-                .setup_authentication(context.actor(), owner, id, context.occurred_at_unix_nanos())
+                .setup_authentication(context.actor(), owner, id, context.occurred_at())
                 .await;
         }
         let flow = flow?;
@@ -553,12 +548,7 @@ impl AccountModule {
                 tx.commit().await?;
                 return self
                     .providers
-                    .setup_authentication(
-                        context.actor(),
-                        owner,
-                        id,
-                        context.occurred_at_unix_nanos(),
-                    )
+                    .setup_authentication(context.actor(), owner, id, context.occurred_at())
                     .await;
             }
         };
@@ -594,7 +584,7 @@ impl AccountModule {
             &private_flow,
             &code,
             &flow.requirement.scopes,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
             flow.requirement.resource.as_deref(),
             &oauth::TokenAuthentication {
                 policy: row.contract.oauth_client(),
@@ -623,7 +613,7 @@ impl AccountModule {
             tx.rollback().await?;
             return self
                 .providers
-                .setup_authentication(context.actor(), owner, id, context.occurred_at_unix_nanos())
+                .setup_authentication(context.actor(), owner, id, context.occurred_at())
                 .await;
         }
         match result {
@@ -693,7 +683,7 @@ impl AccountModule {
             }
         }
         self.providers
-            .setup_authentication(context.actor(), owner, id, context.occurred_at_unix_nanos())
+            .setup_authentication(context.actor(), owner, id, context.occurred_at())
             .await
     }
 
@@ -756,7 +746,7 @@ impl AccountModule {
         // Runtime material is renewed through the existing Account foundation,
         // never copied into the provisional store or treated as a reconnect.
         let mut access = credential
-            .resolve(self, owner, context.occurred_at_unix_nanos())
+            .resolve(self, owner, context.occurred_at())
             .await?;
         if borrow {
             let now = advanced(context, started);
@@ -779,13 +769,7 @@ impl AccountModule {
                 return Err(Error::AccountRequired);
             }
             access = current
-                .current_account_credentials(
-                    self,
-                    &mut tx,
-                    owner,
-                    now.occurred_at_unix_nanos(),
-                    access,
-                )
+                .current_account_credentials(self, &mut tx, owner, now.occurred_at(), access)
                 .await?;
             tx.commit().await?;
         }
@@ -961,7 +945,7 @@ fn check_replacement(
     client: &SetupOAuthClient,
     context: &ChangeContext,
 ) -> Result<(), Error> {
-    let live = current.filter(|row| row.is_live(context.occurred_at_unix_nanos()));
+    let live = current.filter(|row| row.is_live(context.occurred_at()));
     match (client.replacement_grant, live) {
         (Some(expected), Some(row)) if flow.kind == FlowKind::Ready && expected == row.grant_id => {
             Ok(())
@@ -1125,7 +1109,7 @@ pub(super) async fn settle_deadlines(
     };
     if row.authorization_state.is_open()
         && row
-            .authorization_expires_at_unix_nanos
+            .authorization_expires_at
             .is_some_and(|deadline| now >= deadline)
     {
         end_open_authorization(tx, owner, &id, SetupAuthorizationState::Expired, None).await?;
@@ -1223,14 +1207,14 @@ pub(crate) enum SetupActor<'a> {
         authority: AuthoritySource,
     },
     Coral {
-        now: i64,
+        now: UnixNanos,
     },
 }
 
 impl SetupActor<'_> {
-    const fn now(&self) -> i64 {
+    const fn now(&self) -> UnixNanos {
         match self {
-            Self::User { context, .. } => context.occurred_at_unix_nanos(),
+            Self::User { context, .. } => context.occurred_at(),
             Self::Coral { now } => *now,
         }
     }
@@ -1260,7 +1244,7 @@ impl SetupActor<'_> {
                         target_id: target,
                         outcome,
                         changed_field_paths: &["state"],
-                        occurred_at_unix_nanos: *now,
+                        occurred_at: *now,
                         trace_id: &coral_telemetry::TraceId::current_or_new(),
                     },
                     None,

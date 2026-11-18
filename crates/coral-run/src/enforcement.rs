@@ -363,7 +363,7 @@ pub(crate) fn decide(
     }
     if checked
         .account
-        .is_some_and(|account| account.needs_refresh_at(now_unix_nanos))
+        .is_some_and(|account| account.needs_refresh_at(coral_db::UnixNanos::new(now_unix_nanos)))
     {
         return Decision::RefreshRequired;
     }

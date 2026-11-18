@@ -223,7 +223,12 @@ async fn removal_wins(removal: Removal, initially_shared: bool, shared: bool) {
     );
     assert!(
         !providers
-            .setup_authentication(&f.member, f.workspace.id(), update.setup_id(), 100)
+            .setup_authentication(
+                &f.member,
+                f.workspace.id(),
+                update.setup_id(),
+                coral_db::UnixNanos::new(100)
+            )
             .await
             .unwrap()
             .authorized
@@ -263,7 +268,12 @@ async fn removal_wins(removal: Removal, initially_shared: bool, shared: bool) {
         let evidence = credential_evidence(&f.db.database(), f.workspace.id(), &f.owner).await;
         assert_eq!(
             f.accounts
-                .credentials(f.workspace.id(), &f.provider, &evidence, 100)
+                .credentials(
+                    f.workspace.id(),
+                    &f.provider,
+                    &evidence,
+                    coral_db::UnixNanos::new(100)
+                )
                 .await
                 .unwrap()
                 .get(coral_credentials::CredentialValues::TOKEN)
@@ -336,7 +346,12 @@ async fn publication_before_offboarding_preserves_shared_accounts_but_retires_ca
                     credential_evidence(&f.db.database(), f.workspace.id(), &f.owner).await;
                 assert_eq!(
                     f.accounts
-                        .credentials(f.workspace.id(), &f.provider, &evidence, 100)
+                        .credentials(
+                            f.workspace.id(),
+                            &f.provider,
+                            &evidence,
+                            coral_db::UnixNanos::new(100)
+                        )
                         .await
                         .unwrap()
                         .get(coral_credentials::CredentialValues::TOKEN)

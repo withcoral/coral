@@ -3,6 +3,7 @@
 //! Accounts. Their Tools are the Private and Shared Tools that coral-tools
 //! keeps.
 use coral_catalog::AuthoredToolKind;
+use coral_db::UnixNanos;
 use coral_workspace::{OrganizationRole, WorkspaceDisplayName};
 
 use super::tests::{change_context, organization_user, test_modules};
@@ -124,7 +125,7 @@ async fn no_provider_tool_resolves_under_the_private_or_shared_call_root() {
         "coral.shared.crm.lookup",
     ] {
         let mut transaction = database.begin().await.unwrap();
-        let caller = || crate::InvocationCaller::new(&workspaces, &principal, 11);
+        let caller = || crate::InvocationCaller::new(&workspaces, &principal, UnixNanos::new(11));
         assert!(
             providers
                 .resolve_invocation_tool_in_transaction(

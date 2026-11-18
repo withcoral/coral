@@ -1,6 +1,7 @@
 //! The Built-in Provider: one per Workspace at `coral`. Each of its
 //! Tools is discoverable and callable by the Principals whose authority
 //! permits the Workspace action it declares.
+use coral_db::UnixNanos;
 use coral_workspace::{
     AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceAction,
     WorkspaceDisplayName, WorkspaceId, WorkspaceRole,
@@ -92,7 +93,11 @@ async fn each_builtin_tool_reaches_the_principals_its_workspace_action_permits()
                 .resolve_invocation_tool_in_transaction(
                     &mut transaction,
                     workspace,
-                    crate::InvocationCaller::new(&arranged.workspaces, &principal, 13),
+                    crate::InvocationCaller::new(
+                        &arranged.workspaces,
+                        &principal,
+                        UnixNanos::new(13),
+                    ),
                     &format!("coral.{key}"),
                 )
                 .await
@@ -612,7 +617,7 @@ impl BuiltinWorkspace {
         let mut updated = Vec::new();
         for outdated in process.outdated_builtin_generations().await.unwrap() {
             if process
-                .update_builtin_catalog(&outdated, at)
+                .update_builtin_catalog(&outdated, UnixNanos::new(at))
                 .await
                 .unwrap()
                 .skip_search()
@@ -633,7 +638,7 @@ impl BuiltinWorkspace {
             .resolve_invocation_tool_in_transaction(
                 &mut transaction,
                 self.workspace.id(),
-                crate::InvocationCaller::new(&self.workspaces, &owner, at),
+                crate::InvocationCaller::new(&self.workspaces, &owner, UnixNanos::new(at)),
                 call_path,
             )
             .await
@@ -822,7 +827,10 @@ async fn two_processes_that_boot_together_activate_one_generation() {
         async move { process.update_builtin_catalog(&outdated, at).await.unwrap() }
     };
 
-    let (left, right) = tokio::join!(update(&first, 20), update(&second, 21),);
+    let (left, right) = tokio::join!(
+        update(&first, UnixNanos::new(20)),
+        update(&second, UnixNanos::new(21)),
+    );
 
     // The winner tells search to read its Generation and drop the outdated
     // one; the process that found it replaced tells search nothing.
@@ -1103,8 +1111,10 @@ type BootInstall = (
 /// What `process`'s boot at `at` installed. An install that lost a race
 /// reports no Provider, and it is left out.
 async fn boot_installs(process: &ProviderModule, at: i64) -> Vec<BootInstall> {
-    let installs: Vec<MissingCoralDefinedProvider> =
-        process.install_missing_coral_defined(at).await.unwrap();
+    let installs: Vec<MissingCoralDefinedProvider> = process
+        .install_missing_coral_defined(UnixNanos::new(at))
+        .await
+        .unwrap();
     installs
         .into_iter()
         .filter_map(|missing| {

@@ -139,7 +139,11 @@ impl AdminScope {
             .resolve_invocation_tool_in_transaction(
                 &mut transaction,
                 &self.workspace_id,
-                coral_provider::InvocationCaller::new(&self.fixture.workspaces, &self.owner, 12),
+                coral_provider::InvocationCaller::new(
+                    &self.fixture.workspaces,
+                    &self.owner,
+                    coral_db::UnixNanos::new(12),
+                ),
                 call_path,
             )
             .await
@@ -810,7 +814,7 @@ async fn a_tool_this_version_does_not_perform_fails_before_approval() {
         .expect("the Workspace's Built-in Provider pins the older catalog");
     assert!(
         newer
-            .update_builtin_catalog(&outdated, 20)
+            .update_builtin_catalog(&outdated, coral_db::UnixNanos::new(20))
             .await
             .unwrap()
             .skip_search(),

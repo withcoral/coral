@@ -6,6 +6,7 @@ use crate::ProviderId;
 use crate::account::oauth::{Flow, TokenResponse};
 use crate::account::{AuthorizationRequest, AuthorizationTarget, OAuthClient, ProviderAccountId};
 use coral_credentials::{CredentialValues, Secret, SecretReference};
+use coral_db::UnixNanos;
 use coral_workspace::PrincipalId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -156,7 +157,7 @@ pub(in crate::account) fn encode_token(token: &TokenResponse) -> Result<Zeroizin
         refresh_token: token.refresh_token.as_ref(),
         expires_in: token.expires_in,
         client_id: &token.client_id,
-        expires_at: token.expires_at,
+        expires_at: token.expires_at.map(UnixNanos::get),
     })
     .map(Zeroizing::new)
     .map_err(|_invalid| Error::Internal(crate::InternalFault::Encoding))
@@ -171,7 +172,7 @@ pub(in crate::account) fn decode_token(value: &str) -> Result<TokenResponse, Err
         refresh_token: stored.refresh_token,
         expires_in: stored.expires_in,
         client_id: stored.client_id,
-        expires_at: stored.expires_at,
+        expires_at: stored.expires_at.map(UnixNanos::new),
     })
 }
 

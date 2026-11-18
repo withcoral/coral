@@ -226,16 +226,11 @@ impl ProviderModule {
         tx: &mut coral_db::Transaction<'_>,
         actor: &coral_workspace::AuthenticatedPrincipal,
         workspace: &WorkspaceId,
-        now: i64,
+        now: coral_db::UnixNanos,
     ) -> Result<Vec<crate::PublishedProvider>, Error> {
         let role = self
             .workspaces
-            .check_principal_inspection_in_snapshot(
-                tx,
-                actor,
-                workspace,
-                coral_db::UnixNanos::new(now),
-            )
+            .check_principal_inspection_in_snapshot(tx, actor, workspace, now)
             .await?
             .effective_user_role();
         let providers = crate::listed_providers(tx, workspace, None).await?;

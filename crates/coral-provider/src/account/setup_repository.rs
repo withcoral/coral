@@ -8,7 +8,7 @@ use super::setup::{
 };
 use crate::{Error, ProviderSetupId};
 use coral_catalog::ProviderCredentialContract;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::UserId;
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 
@@ -47,15 +47,15 @@ struct ProvisionalRow {
     credential_generation: String,
     encrypted_credentials: Option<String>,
     secret_references: Option<String>,
-    token_expires_at_unix_nanos: Option<i64>,
+    token_expires_at_unix_nanos: Option<UnixNanos>,
     granted_scope: String,
-    expires_at_unix_nanos: i64,
+    expires_at_unix_nanos: UnixNanos,
     oauth_client: Option<String>,
     private_flow: Option<String>,
     authorization_url: Option<String>,
     user_code: Option<String>,
     authorization_state: String,
-    authorization_expires_at_unix_nanos: Option<i64>,
+    authorization_expires_at_unix_nanos: Option<UnixNanos>,
     callback_fingerprint: Option<String>,
     failure_code: Option<String>,
 }
@@ -164,7 +164,7 @@ pub(crate) async fn insert(
                 Some(sealed.ciphertext.clone()).into(),
                 sealed.secret_references.clone().into(),
                 sealed.granted_scope.clone().into(),
-                sealed.expires_at_unix_nanos.into(),
+                sealed.expires_at.into(),
             ])
             .to_owned(),
     )
@@ -206,7 +206,7 @@ pub(crate) async fn scrub(
             )
             .value(
                 ProviderSetupCredentials::TokenExpiresAtUnixNanos,
-                Option::<i64>::None,
+                Option::<UnixNanos>::None,
             )
             .value(
                 ProviderSetupCredentials::PrivateFlow,
@@ -236,9 +236,9 @@ impl ProvisionalRow {
             credential_generation: self.credential_generation,
             encrypted_credentials: self.encrypted_credentials,
             secret_references: self.secret_references,
-            token_expires_at_unix_nanos: self.token_expires_at_unix_nanos,
+            token_expires_at: self.token_expires_at_unix_nanos,
             granted_scope: self.granted_scope,
-            expires_at_unix_nanos: self.expires_at_unix_nanos,
+            expires_at: self.expires_at_unix_nanos,
             oauth_client: self
                 .oauth_client
                 .as_deref()
@@ -249,7 +249,7 @@ impl ProvisionalRow {
             authorization_url: self.authorization_url,
             user_code: self.user_code,
             authorization_state: SetupAuthorizationState::parse(&self.authorization_state)?,
-            authorization_expires_at_unix_nanos: self.authorization_expires_at_unix_nanos,
+            authorization_expires_at: self.authorization_expires_at_unix_nanos,
             callback_fingerprint: self.callback_fingerprint,
             failure_code: self.failure_code,
         })
@@ -261,11 +261,11 @@ pub(super) struct NewAuthorization<'a> {
     pub(super) provisional_grant_id: ProviderAccountId,
     pub(super) contract: &'a ProviderCredentialContract,
     pub(super) generation: &'a str,
-    pub(super) credential_expires_at: i64,
+    pub(super) credential_expires_at: UnixNanos,
     pub(super) client: &'a StoredClient,
     pub(super) private_flow: &'a str,
     pub(super) navigation: &'a str,
-    pub(super) authorization_expires_at: i64,
+    pub(super) authorization_expires_at: UnixNanos,
     pub(super) state_digest: &'a str,
 }
 
@@ -347,17 +347,14 @@ pub(super) async fn seal_authorization(
     ciphertext: &str,
     granted_scope: &str,
     automatic_refresh: bool,
-    token_expires_at_unix_nanos: Option<i64>,
+    token_expires_at: Option<UnixNanos>,
 ) -> Result<(), Error> {
     use ProviderSetupCredentials as Columns;
     tx.execute(
         Query::update()
             .table(Columns::Table)
             .value(Columns::EncryptedCredentials, Some(ciphertext))
-            .value(
-                Columns::TokenExpiresAtUnixNanos,
-                token_expires_at_unix_nanos,
-            )
+            .value(Columns::TokenExpiresAtUnixNanos, token_expires_at)
             .value(Columns::AutomaticRefresh, i64::from(automatic_refresh))
             .value(Columns::GrantedScope, granted_scope)
             .value(
@@ -499,7 +496,7 @@ pub(super) async fn set_device(
     generation: &str,
     device: &super::device::DeviceResponse,
     private: &str,
-    expires: i64,
+    expires: UnixNanos,
 ) -> Result<(), Error> {
     use ProviderSetupCredentials as C;
     tx.execute(

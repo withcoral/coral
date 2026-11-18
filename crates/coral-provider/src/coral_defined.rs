@@ -11,7 +11,7 @@
 //! Workspace created before Coral had it, and updates every Workspace's
 //! Built-in Provider to the catalog it serves.
 use coral_catalog::{AuthoredToolKind, ProviderGenerationId};
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::{ChangeContext, TraceId, WorkspaceId};
 
 use crate::change::{Committed, SearchChange};
@@ -167,7 +167,7 @@ impl ProviderModule {
                 user_id: context.actor().user_id().clone(),
                 authority_source: authority,
             },
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
             context.trace_id(),
         )
         .await
@@ -187,12 +187,12 @@ impl ProviderModule {
     /// which Workspaces lack a Provider. Nothing is installed then.
     pub async fn install_missing_coral_defined(
         &self,
-        occurred_at_unix_nanos: i64,
+        occurred_at: UnixNanos,
     ) -> Result<Vec<MissingCoralDefinedProvider>, Error> {
         let mut installs = Vec::new();
         for (workspace_id, provider) in self.workspaces_without_coral_defined().await? {
             let installed = self
-                .install_missing(&workspace_id, occurred_at_unix_nanos, provider)
+                .install_missing(&workspace_id, occurred_at, provider)
                 .await;
             installs.push(MissingCoralDefinedProvider {
                 workspace_id,
@@ -241,7 +241,7 @@ impl ProviderModule {
     async fn install_missing(
         &self,
         workspace_id: &WorkspaceId,
-        occurred_at_unix_nanos: i64,
+        occurred_at: UnixNanos,
         provider: CoralDefinedProvider,
     ) -> Result<Committed<Option<Provider>>, Error> {
         let mut transaction = self.database.begin().await?;
@@ -265,7 +265,7 @@ impl ProviderModule {
                 access,
                 provider,
                 LifecycleActor::Coral,
-                occurred_at_unix_nanos,
+                occurred_at,
                 &TraceId::current_or_new(),
             )
             .await?;
@@ -285,7 +285,7 @@ impl ProviderModule {
         access: ProviderAccess,
         kind: CoralDefinedProvider,
         actor: LifecycleActor,
-        occurred_at_unix_nanos: i64,
+        occurred_at: UnixNanos,
         trace_id: &TraceId,
     ) -> Result<Committed<Provider>, Error> {
         let workspace_id = access.workspace_id().clone();
@@ -294,26 +294,16 @@ impl ProviderModule {
                 coral_catalog::publish_builtin_generation_in_transaction(
                     transaction,
                     &self.builtin_catalog,
-                    coral_db::UnixNanos::new(occurred_at_unix_nanos),
+                    occurred_at,
                 )
                 .await?,
                 coral_catalog::BUILTIN_PROVIDER_DISPLAY_NAME,
             ),
             CoralDefinedProvider::Private => {
-                authored_generation(
-                    transaction,
-                    AuthoredToolKind::Private,
-                    occurred_at_unix_nanos,
-                )
-                .await?
+                authored_generation(transaction, AuthoredToolKind::Private, occurred_at).await?
             }
             CoralDefinedProvider::Shared => {
-                authored_generation(
-                    transaction,
-                    AuthoredToolKind::Shared,
-                    occurred_at_unix_nanos,
-                )
-                .await?
+                authored_generation(transaction, AuthoredToolKind::Shared, occurred_at).await?
             }
         };
         let provider = Provider::new(
@@ -321,13 +311,8 @@ impl ProviderModule {
             ProviderDisplayName::parse(display_name)?,
             ProviderState::Active,
         );
-        provider_repository::insert_provider(
-            transaction,
-            &provider,
-            &generation,
-            occurred_at_unix_nanos,
-        )
-        .await?;
+        provider_repository::insert_provider(transaction, &provider, &generation, occurred_at)
+            .await?;
         provider_repository::insert_lifecycle_event(
             transaction,
             provider_repository::NewLifecycleEvent {
@@ -344,7 +329,7 @@ impl ProviderModule {
                     "provider.active_generation",
                     "catalog",
                 ],
-                occurred_at_unix_nanos,
+                occurred_at,
                 trace_id,
             },
         )
@@ -367,14 +352,11 @@ impl ProviderModule {
 async fn authored_generation(
     transaction: &mut Transaction<'_>,
     kind: AuthoredToolKind,
-    occurred_at_unix_nanos: i64,
+    occurred_at: UnixNanos,
 ) -> Result<(ProviderGenerationId, &'static str), Error> {
-    let generation = coral_catalog::publish_authored_generation_in_transaction(
-        transaction,
-        kind,
-        coral_db::UnixNanos::new(occurred_at_unix_nanos),
-    )
-    .await?;
+    let generation =
+        coral_catalog::publish_authored_generation_in_transaction(transaction, kind, occurred_at)
+            .await?;
     Ok((generation, kind.provider_display_name()))
 }
 
@@ -439,11 +421,11 @@ impl ProviderModule {
     pub async fn update_builtin_catalog(
         &self,
         outdated: &ActiveGeneration,
-        occurred_at_unix_nanos: i64,
+        occurred_at: UnixNanos,
     ) -> Result<Committed<bool>, Error> {
         let mut transaction = self.database.begin().await?;
         let Some(generation) = self
-            .replace_builtin_generation(&mut transaction, outdated, occurred_at_unix_nanos)
+            .replace_builtin_generation(&mut transaction, outdated, occurred_at)
             .await?
         else {
             transaction.rollback().await?;
@@ -467,7 +449,7 @@ impl ProviderModule {
         &self,
         transaction: &mut Transaction<'_>,
         outdated: &ActiveGeneration,
-        occurred_at_unix_nanos: i64,
+        occurred_at: UnixNanos,
     ) -> Result<Option<ProviderGenerationId>, Error> {
         let workspace_id = outdated.workspace_id();
         let provider_id = outdated.provider_id();
@@ -489,7 +471,7 @@ impl ProviderModule {
         let generation = coral_catalog::publish_builtin_generation_in_transaction(
             transaction,
             &self.builtin_catalog,
-            coral_db::UnixNanos::new(occurred_at_unix_nanos),
+            occurred_at,
         )
         .await?;
         if !provider_repository::activate_builtin_generation(
@@ -512,7 +494,7 @@ impl ProviderModule {
                 target_id: &provider_id.to_string(),
                 outcome: LifecycleOutcome::Accepted,
                 changed_field_paths: &["provider.active_generation", "catalog"],
-                occurred_at_unix_nanos,
+                occurred_at,
                 trace_id: &coral_telemetry::TraceId::current_or_new(),
             },
         )

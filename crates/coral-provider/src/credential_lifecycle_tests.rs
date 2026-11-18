@@ -6,6 +6,7 @@ use super::tests::{change_context, organization_user, test_modules};
 use crate::access::CredentialRoute;
 use crate::account::{AccountModule, AuthorizationState, OAuthClient};
 use coral_credentials::Secret;
+use coral_db::UnixNanos;
 use coral_workspace::WorkspaceId;
 use coral_workspace::{OrganizationRole, WorkspaceDisplayName};
 use wiremock::{
@@ -236,7 +237,7 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
     .unwrap();
     assert_eq!(
         accounts
-            .credentials(workspace.id(), provider.id(), &original, 10)
+            .credentials(workspace.id(), provider.id(), &original, UnixNanos::new(10))
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -256,7 +257,12 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
         .await;
     assert!(matches!(
         accounts
-            .credentials(workspace.id(), provider.id(), &original, 2_000_000_000)
+            .credentials(
+                workspace.id(),
+                provider.id(),
+                &original,
+                UnixNanos::new(2_000_000_000)
+            )
             .await,
         Err(crate::Error::CredentialRefreshFailed)
     ));
@@ -295,14 +301,19 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
                 &refresh_workspace,
                 &refresh_provider,
                 &refresh_evidence,
-                2_000_000_000,
+                UnixNanos::new(2_000_000_000),
             )
             .await
     });
     tokio::time::timeout(coral_test_support::EVENTUALLY, gate.entered.notified())
         .await
         .unwrap();
-    let waiting = accounts.credentials(workspace.id(), provider.id(), &original, 2_000_000_000);
+    let waiting = accounts.credentials(
+        workspace.id(),
+        provider.id(),
+        &original,
+        UnixNanos::new(2_000_000_000),
+    );
     tokio::pin!(waiting);
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(100), &mut waiting)
@@ -347,10 +358,7 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
         .unwrap()
         .account
         .unwrap();
-    assert_eq!(
-        renewed.connected_at_unix_nanos,
-        metadata.connected_at_unix_nanos
-    );
+    assert_eq!(renewed.connected_at, metadata.connected_at);
     assert_eq!(
         renewed.configured_by_user_id,
         metadata.configured_by_user_id
@@ -364,7 +372,12 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
     assert_eq!(replacement.account_id, original.account_id);
     assert_eq!(
         accounts
-            .credentials(workspace.id(), provider.id(), &replacement, 2_000_000_000)
+            .credentials(
+                workspace.id(),
+                provider.id(),
+                &replacement,
+                UnixNanos::new(2_000_000_000)
+            )
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -374,7 +387,12 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
     );
     assert_eq!(
         accounts
-            .credentials(workspace.id(), provider.id(), &original, 2_000_000_000)
+            .credentials(
+                workspace.id(),
+                provider.id(),
+                &original,
+                UnixNanos::new(2_000_000_000)
+            )
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -400,7 +418,7 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
                 workspace.id(),
                 provider.id(),
                 &replacement,
-                1_000_000_000_000
+                UnixNanos::new(1_000_000_000_000)
             )
             .await
             .unwrap()
@@ -426,7 +444,7 @@ async fn refresh_distinguishes_temporary_failure_renewal_and_reconnection() {
                 workspace.id(),
                 provider.id(),
                 &replacement,
-                2_000_000_000_000
+                UnixNanos::new(2_000_000_000_000)
             )
             .await,
         Err(crate::Error::AccountRequired)
@@ -578,7 +596,12 @@ async fn a_renewed_token_survives_an_application_status_write_failure() {
         .await;
     assert!(matches!(
         accounts
-            .credentials(workspace.id(), provider.id(), &evidence, 2_000_000_000)
+            .credentials(
+                workspace.id(),
+                provider.id(),
+                &evidence,
+                UnixNanos::new(2_000_000_000)
+            )
             .await,
         Err(crate::Error::OAuthClientConfiguration)
     ));
@@ -593,7 +616,12 @@ async fn a_renewed_token_survives_an_application_status_write_failure() {
     // Fail only the diagnostic status write that follows the exchange.
     crate::tests::fail_application_status_writes(&db, true).await;
     let renewed = accounts
-        .credentials(workspace.id(), provider.id(), &evidence, 2_000_000_000)
+        .credentials(
+            workspace.id(),
+            provider.id(),
+            &evidence,
+            UnixNanos::new(2_000_000_000),
+        )
         .await;
     crate::tests::fail_application_status_writes(&db, false).await;
     assert_eq!(
@@ -618,7 +646,12 @@ async fn a_renewed_token_survives_an_application_status_write_failure() {
         .await;
     assert_eq!(
         accounts
-            .credentials(workspace.id(), provider.id(), &evidence, 63_000_000_000)
+            .credentials(
+                workspace.id(),
+                provider.id(),
+                &evidence,
+                UnixNanos::new(63_000_000_000)
+            )
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -684,7 +717,11 @@ async fn a_permanently_rejected_refresh_opens_a_connection_request_that_reconnec
         .unwrap()
         .unwrap();
         let resolution = crate::account::resolve_connection_in_transaction(
-            &mut tx, &target, &principal, request, now,
+            &mut tx,
+            &target,
+            &principal,
+            request,
+            UnixNanos::new(now),
         )
         .await;
         tx.commit().await.unwrap();
@@ -748,7 +785,12 @@ async fn a_permanently_rejected_refresh_opens_a_connection_request_that_reconnec
     reject_refresh("refresh-canary").await;
     assert!(matches!(
         accounts
-            .credentials(&owner, provider.id(), &original, 2_000_000_000)
+            .credentials(
+                &owner,
+                provider.id(),
+                &original,
+                UnixNanos::new(2_000_000_000)
+            )
             .await,
         Err(crate::Error::AccountRequired)
     ));
@@ -812,7 +854,12 @@ async fn a_permanently_rejected_refresh_opens_a_connection_request_that_reconnec
     );
     assert_eq!(
         accounts
-            .credentials(&owner, provider.id(), &reconnected, 3_000_000_002)
+            .credentials(
+                &owner,
+                provider.id(),
+                &reconnected,
+                UnixNanos::new(3_000_000_002)
+            )
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -826,7 +873,12 @@ async fn a_permanently_rejected_refresh_opens_a_connection_request_that_reconnec
     reject_refresh("second-refresh-canary").await;
     assert!(matches!(
         accounts
-            .credentials(&owner, provider.id(), &reconnected, 5_000_000_000)
+            .credentials(
+                &owner,
+                provider.id(),
+                &reconnected,
+                UnixNanos::new(5_000_000_000)
+            )
             .await,
         Err(crate::Error::AccountRequired)
     ));
@@ -977,7 +1029,7 @@ async fn contract_change_keeps_account_identity_but_only_new_authorization_resto
     // Regeneration alone does not stop a retained, still-compatible Invocation.
     assert_eq!(
         accounts
-            .credentials(workspace.id(), provider.id(), &original, 10)
+            .credentials(workspace.id(), provider.id(), &original, UnixNanos::new(10))
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -999,7 +1051,12 @@ async fn contract_change_keeps_account_identity_but_only_new_authorization_resto
         .await;
     assert_eq!(
         accounts
-            .credentials(workspace.id(), provider.id(), &original, 2_000_000_000)
+            .credentials(
+                workspace.id(),
+                provider.id(),
+                &original,
+                UnixNanos::new(2_000_000_000)
+            )
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -1061,7 +1118,12 @@ async fn contract_change_keeps_account_identity_but_only_new_authorization_resto
     );
     assert_eq!(
         accounts
-            .credentials(workspace.id(), provider.id(), &current, 2_000_000_000)
+            .credentials(
+                workspace.id(),
+                provider.id(),
+                &current,
+                UnixNanos::new(2_000_000_000)
+            )
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -1071,7 +1133,12 @@ async fn contract_change_keeps_account_identity_but_only_new_authorization_resto
     );
     assert!(matches!(
         accounts
-            .credentials(workspace.id(), provider.id(), &original, 2_000_000_000)
+            .credentials(
+                workspace.id(),
+                provider.id(),
+                &original,
+                UnixNanos::new(2_000_000_000)
+            )
             .await,
         Err(crate::Error::AccountRequired)
     ));
@@ -1091,7 +1158,12 @@ async fn contract_change_keeps_account_identity_but_only_new_authorization_resto
         let refresh_provider = provider.id().clone();
         let request = tokio::spawn(async move {
             refreshing
-                .credentials(&refresh_workspace, &refresh_provider, &retained, now)
+                .credentials(
+                    &refresh_workspace,
+                    &refresh_provider,
+                    &retained,
+                    UnixNanos::new(now),
+                )
                 .await
         });
         tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
@@ -1142,7 +1214,7 @@ async fn contract_change_keeps_account_identity_but_only_new_authorization_resto
         .unwrap();
         assert_eq!(
             accounts
-                .credentials(workspace.id(), provider.id(), &winner, now)
+                .credentials(workspace.id(), provider.id(), &winner, UnixNanos::new(now))
                 .await
                 .unwrap()
                 .get(coral_credentials::CredentialValues::TOKEN)
@@ -1193,7 +1265,12 @@ async fn contract_change_keeps_account_identity_but_only_new_authorization_resto
     .unwrap();
     assert_eq!(
         accounts
-            .credentials(workspace.id(), provider.id(), &retained, 8_000_000_000)
+            .credentials(
+                workspace.id(),
+                provider.id(),
+                &retained,
+                UnixNanos::new(8_000_000_000)
+            )
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -1231,14 +1308,11 @@ async fn contract_change_keeps_account_identity_but_only_new_authorization_resto
         .account
         .unwrap();
     assert!(
-        after_reconnect
-            .connected_at_unix_nanos
-            .is_some_and(|time| time >= 8_000_000_000 && time < reconnect.expires_at_unix_nanos)
+        after_reconnect.connected_at.is_some_and(
+            |time| time >= UnixNanos::new(8_000_000_000) && time < reconnect.expires_at
+        )
     );
-    assert_ne!(
-        before_refresh.connected_at_unix_nanos,
-        after_reconnect.connected_at_unix_nanos
-    );
+    assert_ne!(before_refresh.connected_at, after_reconnect.connected_at);
     let events = accounts
         .list_user_lifecycle_events(&context, workspace.id())
         .await
@@ -1344,7 +1418,12 @@ async fn disconnect_and_expired_claim_fence_late_refresh_success_and_rejection()
             let retained = evidence.clone();
             let pending = tokio::spawn(async move {
                 refreshing
-                    .credentials(&scope, &provider_id, &retained, 2_000_000_000)
+                    .credentials(
+                        &scope,
+                        &provider_id,
+                        &retained,
+                        UnixNanos::new(2_000_000_000),
+                    )
                     .await
             });
             tokio::time::timeout(std::time::Duration::from_secs(5), gate.entered.notified())
@@ -1363,7 +1442,12 @@ async fn disconnect_and_expired_claim_fence_late_refresh_success_and_rejection()
             } else {
                 assert!(matches!(
                     accounts
-                        .credentials(workspace.id(), provider.id(), &evidence, 62_000_000_000)
+                        .credentials(
+                            workspace.id(),
+                            provider.id(),
+                            &evidence,
+                            UnixNanos::new(62_000_000_000)
+                        )
                         .await,
                     Err(crate::Error::AccountRequired)
                 ));
@@ -1386,10 +1470,7 @@ async fn disconnect_and_expired_claim_fence_late_refresh_success_and_rejection()
                     AccountState::ReconnectRequired
                 }
             );
-            assert_eq!(
-                fenced.connected_at_unix_nanos,
-                before.connected_at_unix_nanos
-            );
+            assert_eq!(fenced.connected_at, before.connected_at);
             assert_eq!(fenced.configured_by_user_id, before.configured_by_user_id);
             gate.release.notify_one();
             assert!(matches!(
@@ -1407,7 +1488,12 @@ async fn disconnect_and_expired_claim_fence_late_refresh_success_and_rejection()
             );
             assert!(matches!(
                 accounts
-                    .credentials(workspace.id(), provider.id(), &evidence, 62_000_000_001)
+                    .credentials(
+                        workspace.id(),
+                        provider.id(),
+                        &evidence,
+                        UnixNanos::new(62_000_000_001)
+                    )
                     .await,
                 Err(crate::Error::AccountRequired)
             ));
@@ -1498,7 +1584,13 @@ async fn dispatch_reads_current_material_and_defers_an_expired_token() {
         let mut tx = h.database.begin().await.unwrap();
         let values = h
             .accounts
-            .dispatch_credentials_in_transaction(&mut tx, owner, provider.id(), evidence, now)
+            .dispatch_credentials_in_transaction(
+                &mut tx,
+                owner,
+                provider.id(),
+                evidence,
+                UnixNanos::new(now),
+            )
             .await;
         tx.rollback().await.unwrap();
         values.map(|values| {
@@ -1602,7 +1694,7 @@ async fn invocation_connection_requests_wait_for_the_user_and_resolve_once_conne
             &target,
             &crate::setup_tests::user_principal(user),
             request,
-            now,
+            UnixNanos::new(now),
         )
         .await;
         tx.commit().await.unwrap();

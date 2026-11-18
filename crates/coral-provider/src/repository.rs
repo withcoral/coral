@@ -6,7 +6,7 @@ use coral_catalog::{
     McpDiscoverySnapshot, OpenApiDocument, ProviderGenerationId, ProviderSetupInput,
     ProviderSetupInputDigest, ProviderSetupInputKind,
 };
-use coral_db::{Database, QueryExecutor, Transaction};
+use coral_db::{Database, QueryExecutor, Transaction, UnixNanos};
 use coral_telemetry::TraceId;
 use coral_workspace::{AuthoritySource, UserId};
 
@@ -159,12 +159,12 @@ struct SetupRow {
     state: String,
     input_url: Option<String>,
     actor_user_id: Option<String>,
-    expires_at_unix_nanos: Option<i64>,
+    expires_at_unix_nanos: Option<UnixNanos>,
     authorization_requirement: Option<String>,
     initial_request_headers: String,
     discovery_failure_code: Option<String>,
     consumed_by_publication_id: Option<String>,
-    created_at_unix_nanos: i64,
+    created_at_unix_nanos: UnixNanos,
     requested_namespace: Option<String>,
     requested_route: Option<String>,
 }
@@ -463,7 +463,7 @@ struct LifecycleEventRow {
     target_id: String,
     outcome: String,
     changed_field_paths: String,
-    occurred_at_unix_nanos: i64,
+    occurred_at_unix_nanos: UnixNanos,
     trace_id: String,
 }
 
@@ -576,12 +576,12 @@ pub(super) async fn insert_setup(
             Expr::val(setup.state().as_storage_str()),
             Expr::val(setup.input_url().map(str::to_owned)),
             Expr::val(new.actor_user_id.map(UserId::as_str)),
-            Expr::val(setup.expires_at_unix_nanos()),
+            Expr::val(setup.expires_at()),
             Expr::val(new.authorization_requirement.map(str::to_owned)),
             Expr::val(serde_json::to_string(new.initial_request_headers)?),
             Expr::val(Option::<String>::None),
             Expr::val(Option::<String>::None),
-            Expr::val(setup.created_at_unix_nanos()),
+            Expr::val(setup.created_at()),
             Expr::val(
                 setup
                     .request()
@@ -904,7 +904,7 @@ pub(super) async fn requested_setups(
     executor: impl QueryExecutor,
     owner: &WorkspaceId,
     actor: &UserId,
-    deadline_after: i64,
+    deadline_after: UnixNanos,
     states: &[ProviderSetupState],
 ) -> Result<Vec<LoadedSetup>, Error> {
     let rows: Vec<SetupRow> = executor
@@ -1314,7 +1314,7 @@ pub(super) async fn insert_provider(
     transaction: &mut Transaction<'_>,
     provider: &Provider,
     generation_id: &ProviderGenerationId,
-    created_at_unix_nanos: i64,
+    created_at: UnixNanos,
 ) -> Result<(), Error> {
     let statement = Query::insert()
         .into_table(ProviderRecords::Table)
@@ -1338,7 +1338,7 @@ pub(super) async fn insert_provider(
             Expr::val(provider.account_setting_version()),
             Expr::val(generation_id.to_string()),
             Expr::val(ProviderState::Active.as_storage_str()),
-            Expr::val(created_at_unix_nanos),
+            Expr::val(created_at),
         ])
         .to_owned();
     transaction.execute(statement).await?;
@@ -1352,7 +1352,7 @@ pub(super) struct NewLifecycleEvent<'a> {
     pub(super) target_id: &'a str,
     pub(super) outcome: LifecycleOutcome,
     pub(super) changed_field_paths: &'a [&'a str],
-    pub(super) occurred_at_unix_nanos: i64,
+    pub(super) occurred_at: UnixNanos,
     pub(super) trace_id: &'a TraceId,
 }
 
@@ -1404,7 +1404,7 @@ pub(super) async fn insert_scoped_lifecycle_event(
             Expr::val(event.target_id),
             Expr::val(event.outcome.as_storage_str()),
             Expr::val(changed_field_paths),
-            Expr::val(event.occurred_at_unix_nanos),
+            Expr::val(event.occurred_at),
             Expr::val(event.trace_id.as_str()),
         ])
         .to_owned();

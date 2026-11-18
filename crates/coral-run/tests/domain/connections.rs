@@ -270,7 +270,7 @@ impl GateLoss {
             Self::Expiry => {
                 let at_deadline = change(
                     waiting.tool.user.clone(),
-                    waiting.request.expires_at_unix_nanos,
+                    waiting.request.expires_at.get(),
                     '6',
                 );
                 assert_eq!(
@@ -523,9 +523,9 @@ async fn the_owner_arms_a_timer_at_a_connection_requests_deadline() {
     let after_nanos = probe.armed(&timer).unwrap();
     let now = fixture.clock.next.load(Ordering::SeqCst);
     assert!(
-        (request.expires_at_unix_nanos - now - after_nanos).abs() < 1_000_000,
+        (request.expires_at.get() - now - after_nanos).abs() < 1_000_000,
         "the timer fires at the request's deadline: {after_nanos} vs {}",
-        request.expires_at_unix_nanos - now
+        request.expires_at.get() - now
     );
     assert!(
         probe.armed(&crate::owner::Timer::RunDeadline).is_some(),
@@ -961,7 +961,7 @@ async fn caller_connection_cannot_complete_an_obsolete_contract_after_regenerati
         account.state,
         coral_provider::account::AccountState::Disconnected
     );
-    assert_eq!(account.connected_at_unix_nanos, None);
+    assert_eq!(account.connected_at, None);
     assert_eq!(account.configured_by_user_id, None);
     let terminal = wait_for_terminal(&runs, &tool.principal, &scope, accepted.run_id()).await;
     assert_eq!(terminal.state(), RunState::Failed);

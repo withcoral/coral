@@ -1,3 +1,4 @@
+use coral_db::UnixNanos;
 use coral_outbound::DestinationPolicy;
 use std::sync::Arc;
 
@@ -269,7 +270,7 @@ pub(crate) async fn published_providers(
 ) -> Result<Vec<crate::PublishedProvider>, crate::Error> {
     let mut tx = providers.database.begin_read_snapshot().await?;
     let published = providers
-        .published_providers_in_snapshot(&mut tx, actor, workspace, 20)
+        .published_providers_in_snapshot(&mut tx, actor, workspace, UnixNanos::new(20))
         .await;
     tx.rollback().await?;
     published

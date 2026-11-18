@@ -105,7 +105,7 @@ async fn removal_scrubs_configuration_only_setup_secrets_and_prevents_reuse_afte
     );
     assert!(
         providers
-            .setup_authentication(&member, &scope, setup.id(), 100)
+            .setup_authentication(&member, &scope, setup.id(), coral_db::UnixNanos::new(100))
             .await
             .unwrap()
             .client_secret_configured
@@ -127,7 +127,7 @@ async fn removal_scrubs_configuration_only_setup_secrets_and_prevents_reuse_afte
         );
         assert!(
             providers
-                .setup_authentication(&member, &scope, setup.id(), 100)
+                .setup_authentication(&member, &scope, setup.id(), coral_db::UnixNanos::new(100))
                 .await
                 .unwrap()
                 .client_secret_configured
@@ -164,7 +164,7 @@ async fn removal_scrubs_configuration_only_setup_secrets_and_prevents_reuse_afte
     );
     assert!(
         !providers
-            .setup_authentication(&member, &scope, setup.id(), 100)
+            .setup_authentication(&member, &scope, setup.id(), coral_db::UnixNanos::new(100))
             .await
             .unwrap()
             .client_secret_configured

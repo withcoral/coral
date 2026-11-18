@@ -118,7 +118,7 @@ impl ProviderWorkflow {
     ) -> Result<(), Error> {
         for missing in self
             .providers
-            .install_missing_coral_defined(occurred_at.get())
+            .install_missing_coral_defined(occurred_at)
             .await?
         {
             let workspace_id = missing.workspace_id().clone();
@@ -146,7 +146,7 @@ impl ProviderWorkflow {
         for outdated in self.providers.outdated_builtin_generations().await? {
             match self
                 .providers
-                .update_builtin_catalog(&outdated, occurred_at.get())
+                .update_builtin_catalog(&outdated, occurred_at)
                 .await
             {
                 Ok(committed) => {

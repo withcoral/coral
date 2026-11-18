@@ -725,7 +725,7 @@ fn start_passes(
     let recovery_clock = Arc::clone(clock);
     passes.start("device_authorization_recovery", schedule, move || {
         let accounts = accounts.clone();
-        let now = recovery_clock.now().get();
+        let now = recovery_clock.now();
         async move {
             accounts
                 .recover_device_authorizations(now)
@@ -908,9 +908,9 @@ mod tests {
         assert_eq!(
             installs
                 .iter()
-                .map(coral_provider::AdministrativeLifecycleEvent::occurred_at_unix_nanos)
+                .map(coral_provider::AdministrativeLifecycleEvent::occurred_at)
                 .collect::<std::collections::BTreeSet<_>>(),
-            [launched_at.get()].into(),
+            [launched_at].into(),
             "every install is dated by the one reading of the launch's clock"
         );
         // The pass found the lease ended and moved it one lease on from its

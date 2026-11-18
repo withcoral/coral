@@ -2,6 +2,7 @@ use crate::account::{AccountScope, AccountState};
 use crate::account_tests::CREDENTIAL_REQUIRED_OPENAPI;
 use crate::tests::{change_context, organization_user, test_modules};
 use coral_credentials::Secret;
+use coral_db::UnixNanos;
 use coral_workspace::{OrganizationRole, WorkspaceDisplayName, WorkspaceRole};
 coral_test_support::provider_setup_fixtures!(crate);
 
@@ -55,7 +56,7 @@ async fn workspace_owner_inspects_one_shared_account_with_management_authority()
         .unwrap();
     assert_eq!(account.state, AccountState::Ready);
     assert!(account.can_manage);
-    assert_eq!(account.connected_at_unix_nanos, Some(10));
+    assert_eq!(account.connected_at, Some(UnixNanos::new(10)));
     assert_eq!(
         account.configured_by_user_id.as_ref(),
         Some(admin.actor().user_id())

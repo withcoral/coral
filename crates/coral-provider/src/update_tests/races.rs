@@ -135,7 +135,7 @@ async fn rejected_commit(setting: bool) {
         .unwrap();
     assert!(
         !h.providers
-            .setup_authentication(&actor, workspace.id(), candidate.id(), 11)
+            .setup_authentication(&actor, workspace.id(), candidate.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -205,7 +205,7 @@ async fn first_shared_publication_wins_over_a_competing_prepared_replacement() {
     );
     assert!(
         !h.providers
-            .setup_authentication(&actor, workspace.id(), loser.setup_id(), 11)
+            .setup_authentication(&actor, workspace.id(), loser.setup_id(), UnixNanos::new(11))
             .await
             .unwrap()
             .authorized

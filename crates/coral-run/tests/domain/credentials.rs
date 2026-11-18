@@ -681,7 +681,12 @@ async fn a_token_renewed_during_the_enforcement_check_is_the_one_dispatched() {
     assert_eq!(
         account
             .accounts
-            .credentials(owner, &account.tool.provider_id, &evidence, far_future)
+            .credentials(
+                owner,
+                &account.tool.provider_id,
+                &evidence,
+                coral_db::UnixNanos::new(far_future)
+            )
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)

@@ -546,15 +546,6 @@ impl ChangeContext {
         self.occurred_at
     }
 
-    /// Returns [`Self::occurred_at`] as its count of nanoseconds, for the
-    /// crates that still carry an instant as an `i64`. A crate drops its
-    /// calls when it moves to [`UnixNanos`], and the accessor goes with the
-    /// last of them.
-    #[must_use]
-    pub const fn occurred_at_unix_nanos(&self) -> i64 {
-        self.occurred_at.get()
-    }
-
     /// Returns the safe trace correlation identifier.
     #[must_use]
     pub const fn trace_id(&self) -> &TraceId {

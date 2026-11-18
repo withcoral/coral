@@ -736,7 +736,11 @@ impl RunModule {
             if coral_provider::resolves_invocation_tool_in_snapshot(
                 &mut transaction,
                 workspace_id,
-                coral_provider::InvocationCaller::new(&self.workspaces, actor, now),
+                coral_provider::InvocationCaller::new(
+                    &self.workspaces,
+                    actor,
+                    coral_db::UnixNanos::new(now),
+                ),
                 call_path,
             )
             .await?

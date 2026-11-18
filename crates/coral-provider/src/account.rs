@@ -36,7 +36,7 @@ use crate::{
 };
 use coral_catalog::ProviderCredentialContract;
 use coral_credentials::{CredentialValues, CredentialVault};
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::{AuthoritySource, ChangeContext, WorkspaceAction};
 use uuid::Uuid;
 
@@ -151,8 +151,8 @@ pub struct Authorization {
     pub authorization_url: Option<ConsentNavigation>,
     /// This read refused consent issuance. Not a durable OAuth failure; the User can retry or edit.
     pub consent_rejected: bool,
-    /// Host deadline, in Unix nanoseconds.
-    pub expires_at_unix_nanos: i64,
+    /// Host deadline.
+    pub expires_at: UnixNanos,
     /// The Reported Grant, verbatim from the token endpoint; empty for secret entry.
     pub granted_scope: String,
     /// The Credential Fields a person enters for secret entry, by name; empty for OAuth.
@@ -256,7 +256,7 @@ enum CredentialMaterial {
 impl CredentialMaterial {
     /// When the material's access token expires, recorded beside the sealed
     /// material; typed-in values do not expire.
-    const fn token_expires_at_unix_nanos(&self) -> Option<i64> {
+    const fn token_expires_at(&self) -> Option<UnixNanos> {
         match self {
             Self::Values(_) | Self::Fields { .. } => None,
             Self::OAuth(token) => token.expires_at,
@@ -357,7 +357,7 @@ struct LoadedAuthorization {
     authorization_url: Option<String>,
     user_code: Option<String>,
     private_flow: Option<String>,
-    expires_at_unix_nanos: i64,
+    expires_at: UnixNanos,
     intent: intent::AuthorizationIntent,
     failure_code: Option<String>,
     granted_scope: Option<String>,
@@ -389,7 +389,7 @@ impl LoadedAuthorization {
             // issuance path may populate this field after releasing persistence.
             authorization_url: None,
             consent_rejected: false,
-            expires_at_unix_nanos: self.expires_at_unix_nanos,
+            expires_at: self.expires_at,
             failure_code: self.failure_code.clone(),
             granted_scope: self.granted_scope.clone().unwrap_or_default(),
             credential_fields: self
@@ -419,11 +419,11 @@ struct LoadedAccount {
     disconnected: bool,
     granted_scope: String,
     refresh_attempt_id: Option<String>,
-    refresh_deadline: Option<i64>,
+    refresh_deadline: Option<UnixNanos>,
     /// When the sealed OAuth access token expires, beside the material, so a
     /// decision reads it without opening the material. `None` for material
     /// that does not expire, or that was sealed before the column existed.
-    token_expires_at_unix_nanos: Option<i64>,
+    token_expires_at: Option<UnixNanos>,
 }
 
 impl LoadedAccount {
@@ -676,10 +676,10 @@ impl AccountModule {
         }
         let id = AuthorizationId(Uuid::new_v4());
         let (authorization_url, private_flow) = self.prepare_oauth(id, owner, &contract, oauth)?;
-        let expires_at = coral_db::UnixNanos::new(context.occurred_at_unix_nanos())
+        let expires_at = context
+            .occurred_at()
             .checked_add(AUTHORIZATION_LIFETIME)
-            .ok_or(Error::Internal(crate::InternalFault::Overflow))?
-            .get();
+            .ok_or(Error::Internal(crate::InternalFault::Overflow))?;
         let row = LoadedAuthorization {
             automatic_refresh: None,
             id,
@@ -691,7 +691,7 @@ impl AccountModule {
             authorization_url,
             user_code: None,
             private_flow,
-            expires_at_unix_nanos: expires_at,
+            expires_at,
             intent,
             failure_code: None,
             granted_scope: None,
@@ -981,20 +981,20 @@ pub(crate) async fn select_route(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetainedAccountFact {
     refresh_claimed: bool,
-    token_expires_at_unix_nanos: Option<i64>,
+    token_expires_at: Option<UnixNanos>,
 }
 
 impl RetainedAccountFact {
     /// Whether the material must be renewed before a dispatch at
-    /// `now_unix_nanos`: a refresh is claimed, or the access token has
+    /// `now`: a refresh is claimed, or the access token has
     /// expired. Material with no recorded expiry is renewed by the dispatch's
     /// own decryption when it finds the token expired.
     #[must_use]
-    pub fn needs_refresh_at(self, now_unix_nanos: i64) -> bool {
+    pub fn needs_refresh_at(self, now: UnixNanos) -> bool {
         self.refresh_claimed
             || self
-                .token_expires_at_unix_nanos
-                .is_some_and(|expires_at| now_unix_nanos >= expires_at)
+                .token_expires_at
+                .is_some_and(|expires_at| now >= expires_at)
     }
 }
 
@@ -1040,7 +1040,7 @@ pub async fn retained_account_fact_in_transaction(
         .ok_or(Error::AccountRequired)?;
     Ok(RetainedAccountFact {
         refresh_claimed: row.refresh_attempt_id.is_some(),
-        token_expires_at_unix_nanos: row.token_expires_at_unix_nanos,
+        token_expires_at: row.token_expires_at,
     })
 }
 
@@ -1121,7 +1121,7 @@ async fn event_visible_to(
                 LifecycleAction::AccountDeleted => &["account", "material_revision", "credentials"],
                 _ => &["state"],
             },
-            occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+            occurred_at: context.occurred_at(),
             trace_id: context.trace_id(),
         },
         private,
@@ -1166,7 +1166,7 @@ async fn expire(
     authority: AuthoritySource,
     row: &mut LoadedAuthorization,
 ) -> Result<(), Error> {
-    if row.state.is_open() && context.occurred_at_unix_nanos() >= row.expires_at_unix_nanos {
+    if row.state.is_open() && context.occurred_at() >= row.expires_at {
         finish_authorization(
             tx,
             context,

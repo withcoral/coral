@@ -2,6 +2,7 @@
 use super::*;
 use crate::account_tests::{CREDENTIAL_REQUIRED_OPENAPI, authorization_request};
 use coral_credentials::Secret;
+use coral_db::UnixNanos;
 
 /// How long before its grant's deadline the held Publication's request is
 /// dated.
@@ -74,7 +75,7 @@ async fn publish_across(span: Duration) -> Published {
         )
         .await
         .unwrap();
-    let deadline = grant.expires_at_unix_nanos.unwrap();
+    let deadline = grant.expires_at.unwrap().get();
     let request = WorkspaceProviderPublicationRequest::new(
         authorization_request(),
         workspace.id().clone(),
@@ -152,7 +153,7 @@ async fn account_grant_expiring_during_materialization_is_not_promoted() {
     );
     assert!(
         !providers
-            .setup_authentication(&actor, &workspace, &setup, deadline + 1)
+            .setup_authentication(&actor, &workspace, &setup, UnixNanos::new(deadline + 1))
             .await
             .unwrap()
             .authorized

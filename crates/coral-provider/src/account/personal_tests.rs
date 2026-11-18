@@ -1,4 +1,5 @@
 //! Personal Accounts and the connection requests that waiting Invocations open.
+use coral_db::UnixNanos;
 use std::time::Duration;
 
 use coral_credentials::{CredentialValues, CredentialVault, Secret};
@@ -32,11 +33,15 @@ async fn open_connection_request(
     .unwrap()
     .expect("callable Tool");
     let principal = coral_workspace::AuthenticatedPrincipal::user(user.clone());
-    let ConnectionResolution::Waiting { request: id, .. } =
-        resolve_connection_in_transaction(&mut tx, &target, principal.principal(), None, now)
-            .await
-            .unwrap()
-    else {
+    let ConnectionResolution::Waiting { request: id, .. } = resolve_connection_in_transaction(
+        &mut tx,
+        &target,
+        principal.principal(),
+        None,
+        UnixNanos::new(now),
+    )
+    .await
+    .unwrap() else {
         panic!("a User without an Account waits on a connection request")
     };
     tx.commit().await.unwrap();
@@ -105,9 +110,15 @@ async fn concurrent_creators_of_one_users_connection_request_share_its_row() {
         .expect("callable Tool");
     let ConnectionResolution::Waiting {
         request: created, ..
-    } = resolve_connection_in_transaction(&mut first, &target, principal.principal(), None, 20)
-        .await
-        .unwrap()
+    } = resolve_connection_in_transaction(
+        &mut first,
+        &target,
+        principal.principal(),
+        None,
+        UnixNanos::new(20),
+    )
+    .await
+    .unwrap()
     else {
         panic!("a User without an Account waits on a connection request")
     };
@@ -126,7 +137,7 @@ async fn concurrent_creators_of_one_users_connection_request_share_its_row() {
                 &target,
                 principal.principal(),
                 None,
-                21,
+                UnixNanos::new(21),
             )
             .await;
             tx.commit().await.unwrap();
@@ -329,7 +340,7 @@ async fn a_failed_connection_event_rolls_back_the_request_transition() {
     assert!(matches!(
         accounts
             .get_connection_request(
-                &change_context(user.clone(), pending.expires_at_unix_nanos, '5'),
+                &change_context(user.clone(), pending.expires_at.get(), '5'),
                 &scope,
                 request
             )
@@ -387,7 +398,7 @@ async fn a_failed_connection_event_rolls_back_the_request_transition() {
         .account
         .unwrap();
     assert_eq!(account.state, AccountState::Disconnected);
-    assert_eq!(account.connected_at_unix_nanos, None);
+    assert_eq!(account.connected_at, None);
     assert_eq!(account.configured_by_user_id, None);
     assert_eq!(
         accounts

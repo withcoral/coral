@@ -2,6 +2,7 @@
 use super::*;
 use crate::account::{AccountScope, AccountState, ProviderAccountId};
 use crate::tests::authorized_bearer_setup;
+use coral_db::UnixNanos;
 
 #[tokio::test]
 async fn caller_publication_discards_discovery_grant_and_preserves_application() {
@@ -66,7 +67,7 @@ async fn caller_publication_discards_discovery_grant_and_preserves_application()
     assert!(
         !harness
             .providers
-            .setup_authentication(&actor, owner, setup.id(), 11)
+            .setup_authentication(&actor, owner, setup.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -277,7 +278,7 @@ async fn publication_preserves_exact_reviewed_grant_on_failure_and_replay() {
     assert!(
         !harness
             .providers
-            .setup_authentication(&actor, owner, &setup.id, 11)
+            .setup_authentication(&actor, owner, &setup.id, UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -356,7 +357,7 @@ async fn publication_cannot_retain_another_setups_grant_and_scrubs_only_its_own(
     assert!(
         !harness
             .providers
-            .setup_authentication(&actor, owner, &first.id, 11)
+            .setup_authentication(&actor, owner, &first.id, UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -364,7 +365,7 @@ async fn publication_cannot_retain_another_setups_grant_and_scrubs_only_its_own(
     assert!(
         harness
             .providers
-            .setup_authentication(&actor, owner, &other.id, 11)
+            .setup_authentication(&actor, owner, &other.id, UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -398,7 +399,7 @@ async fn publication_cannot_retain_another_setups_grant_and_scrubs_only_its_own(
         .unwrap();
     assert_eq!(account.id, other.grant);
     assert_eq!(account.state, AccountState::Ready);
-    assert_eq!(account.connected_at_unix_nanos, Some(10));
+    assert_eq!(account.connected_at, Some(UnixNanos::new(10)));
     assert_eq!(
         account.configured_by_user_id.as_ref(),
         Some(actor.user_id())
@@ -457,7 +458,7 @@ async fn shared_publication_requires_both_compatible_credentials_and_explicit_re
         assert!(
             !harness
                 .providers
-                .setup_authentication(&actor, owner, &setup, 11)
+                .setup_authentication(&actor, owner, &setup, UnixNanos::new(11))
                 .await
                 .unwrap()
                 .authorized
@@ -644,7 +645,7 @@ async fn discovery_replacement_requires_exact_grant_and_obsolete_callbacks_canno
         .unwrap();
     assert_eq!(account.id, replacement_grant);
     assert_eq!(account.state, AccountState::Ready);
-    assert_eq!(account.connected_at_unix_nanos, Some(10));
+    assert_eq!(account.connected_at, Some(UnixNanos::new(10)));
     assert_eq!(
         account.configured_by_user_id.as_ref(),
         Some(actor.user_id())
@@ -668,7 +669,7 @@ async fn discovery_replacement_requires_exact_grant_and_obsolete_callbacks_canno
     assert!(
         !harness
             .providers
-            .setup_authentication(&actor, owner, setup.id(), 11)
+            .setup_authentication(&actor, owner, setup.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -771,7 +772,7 @@ async fn bootstrap_cannot_overwrite(complete_newer: bool) {
     ));
     let current = harness
         .providers
-        .setup_authentication(&actor, owner, setup.id(), 11)
+        .setup_authentication(&actor, owner, setup.id(), UnixNanos::new(11))
         .await
         .unwrap();
     assert_eq!(current.provisional_grant_id, newer.provisional_grant_id);
@@ -834,7 +835,7 @@ async fn replacement_rechecks_the_grant_deadline_after_client_bootstrap() {
         .await
         .unwrap();
     let grant = completed.authentication.provisional_grant_id.unwrap();
-    let deadline = completed.authentication.expires_at_unix_nanos.unwrap();
+    let deadline = completed.authentication.expires_at.unwrap();
     let revision = harness
         .providers
         .review_setup_configuration(&actor, owner, setup.id())
@@ -843,7 +844,7 @@ async fn replacement_rechecks_the_grant_deadline_after_client_bootstrap() {
         .revision;
     // The grant is live at request start, but even local application bootstrap
     // crosses the final nanosecond. No sleeping or injected domain clock is needed.
-    let expiring = change_context(actor.clone(), deadline - 1, '2');
+    let expiring = change_context(actor.clone(), deadline.get() - 1, '2');
     assert!(matches!(
         harness
             .accounts

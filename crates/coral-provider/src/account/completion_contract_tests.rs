@@ -140,7 +140,7 @@ async fn rejects_changed_contract(before: Value, after: Value, destination_chang
         .account
         .expect("initial Account remains unconnected");
     assert_eq!(account.state, crate::account::AccountState::Disconnected);
-    assert_eq!(account.connected_at_unix_nanos, None);
+    assert_eq!(account.connected_at, None);
     assert_eq!(account.configured_by_user_id, None);
     let events = accounts
         .list_user_lifecycle_events(&context, scope)

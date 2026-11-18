@@ -240,7 +240,7 @@ mod tests {
             assert!(!response.text().await.unwrap().contains("canary"));
         }
         let progress = providers
-            .setup_authentication(context.actor(), &owner, setup.id(), now)
+            .setup_authentication(context.actor(), &owner, setup.id(), UnixNanos::new(now))
             .await
             .unwrap();
         assert!(progress.authorized);

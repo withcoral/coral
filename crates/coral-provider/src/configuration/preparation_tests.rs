@@ -1,4 +1,5 @@
 //! Preparation reuse through the same Module interface used by management adapters.
+use coral_db::UnixNanos;
 use std::time::Duration;
 
 use coral_catalog::{AuthenticationConfiguration, OpenApiDocument};
@@ -47,7 +48,7 @@ async fn preparation_is_reused_by_reads_replays_invalid_edits_and_restarts() {
     let values = original.document.unwrap().suggested;
     for _ in 0..3 {
         providers
-            .inspect_setup(&actor, &owner, setup.id(), 11)
+            .inspect_setup(&actor, &owner, setup.id(), UnixNanos::new(11))
             .await
             .unwrap();
     }
@@ -104,7 +105,7 @@ async fn preparation_is_reused_by_reads_replays_invalid_edits_and_restarts() {
     let accounts = crate::tests::accounts_for(&restarted, vault.path());
     for _ in 0..3 {
         let inspected = restarted
-            .inspect_setup(&actor, &owner, setup.id(), 12)
+            .inspect_setup(&actor, &owner, setup.id(), UnixNanos::new(12))
             .await
             .unwrap();
         assert_eq!(inspected.configuration, confirmed);
@@ -190,7 +191,7 @@ async fn update_compatibility_is_unknown_until_prepared_and_survives_restart() {
         .await
         .unwrap();
     let initial = providers
-        .inspect_setup(&actor, &owner, replacement.id(), 11)
+        .inspect_setup(&actor, &owner, replacement.id(), UnixNanos::new(11))
         .await
         .unwrap();
     assert!(!initial.configuration.configuration_confirmed);
@@ -374,7 +375,7 @@ async fn preparation_race(archive: bool) {
         ));
         let inspected = h
             .providers
-            .inspect_setup(&actor, &owner, setup.id(), 12)
+            .inspect_setup(&actor, &owner, setup.id(), UnixNanos::new(12))
             .await
             .unwrap();
         assert!(!inspected.configuration.configuration_confirmed);
@@ -404,7 +405,7 @@ async fn preparation_race(archive: bool) {
     ));
     let inspected = h
         .providers
-        .inspect_setup(&actor, &owner, setup.id(), 12)
+        .inspect_setup(&actor, &owner, setup.id(), UnixNanos::new(12))
         .await
         .unwrap();
     assert_eq!(inspected.configuration, completed);
@@ -454,7 +455,7 @@ async fn a_different_host_policy_cannot_reuse_prepared_authority() {
     let count = TestMaterializer::counting();
     hosted.preparation = hosted.preparation.with_materializer(count.clone());
     let inspected = hosted
-        .inspect_setup(&actor, &owner, setup.id(), 12)
+        .inspect_setup(&actor, &owner, setup.id(), UnixNanos::new(12))
         .await
         .unwrap();
     assert_eq!(

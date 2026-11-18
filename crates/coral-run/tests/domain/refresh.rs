@@ -426,10 +426,7 @@ async fn failed_refresh_settles_waiting_invocations_without_retrying_the_exchang
                 after.state,
                 coral_provider::account::AccountState::ReconnectRequired
             );
-            assert_eq!(
-                after.connected_at_unix_nanos,
-                before.connected_at_unix_nanos
-            );
+            assert_eq!(after.connected_at, before.connected_at);
         }
     }
 }

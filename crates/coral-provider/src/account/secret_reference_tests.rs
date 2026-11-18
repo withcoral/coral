@@ -9,6 +9,7 @@ use crate::tests::{
     accounts_for, change_context, organization_user, publish_provider, test_modules,
 };
 use coral_credentials::{CredentialValues, Secret};
+use coral_db::UnixNanos;
 use coral_workspace::{ChangeContext, OrganizationRole, WorkspaceDisplayName, WorkspaceId};
 
 const REFERENCE: &str = r#"{"app_key":{"store":"team","path":"kv/app","key":"value"}}"#;
@@ -119,7 +120,12 @@ impl AccountFixture {
         };
         let outside = self
             .accounts
-            .credentials(&self.workspace, &self.provider, &evidence, 20)
+            .credentials(
+                &self.workspace,
+                &self.provider,
+                &evidence,
+                UnixNanos::new(20),
+            )
             .await
             .map(exposed);
         let database = self.db.database();
@@ -131,7 +137,7 @@ impl AccountFixture {
                 &self.workspace,
                 &self.provider,
                 &evidence,
-                20,
+                UnixNanos::new(20),
             )
             .await
             .map(|values| exposed(values.expect("static material needs no refresh")));

@@ -947,7 +947,12 @@ pub(crate) async fn configure_shared_account(
     tx.commit().await.unwrap();
     assert_eq!(
         accounts
-            .credentials(&tool.workspace_id, &tool.provider_id, &evidence, 40)
+            .credentials(
+                &tool.workspace_id,
+                &tool.provider_id,
+                &evidence,
+                coral_db::UnixNanos::new(40)
+            )
             .await
             .expect("published shared Account credentials")
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -1564,7 +1569,11 @@ pub(crate) async fn admitted_invocation(
         .resolve_invocation_tool_in_transaction(
             &mut transaction,
             &tool.workspace_id,
-            coral_provider::InvocationCaller::new(&fixture.workspaces, &tool.principal, now),
+            coral_provider::InvocationCaller::new(
+                &fixture.workspaces,
+                &tool.principal,
+                coral_db::UnixNanos::new(now),
+            ),
             &tool.call_path,
         )
         .await

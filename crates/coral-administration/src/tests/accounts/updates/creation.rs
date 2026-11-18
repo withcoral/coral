@@ -95,7 +95,12 @@ async fn create_and_remove(removal: Removal, shared: bool, removal_first: bool) 
         .unwrap();
     assert!(
         !providers
-            .setup_authentication(&f.member, f.workspace.id(), setup.id(), 100)
+            .setup_authentication(
+                &f.member,
+                f.workspace.id(),
+                setup.id(),
+                coral_db::UnixNanos::new(100)
+            )
             .await
             .unwrap()
             .authorized

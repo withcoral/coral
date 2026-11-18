@@ -130,7 +130,12 @@ impl ConnectedScope {
     pub(super) async fn assert_unchanged(&self, user: &AuthenticatedUser) {
         assert_eq!(
             self.accounts
-                .credentials(&self.workspace, &self.provider, &self.evidence, 100)
+                .credentials(
+                    &self.workspace,
+                    &self.provider,
+                    &self.evidence,
+                    coral_db::UnixNanos::new(100)
+                )
                 .await
                 .unwrap()
                 .get(coral_credentials::CredentialValues::TOKEN)
@@ -156,7 +161,12 @@ impl ConnectedScope {
     }
     pub(super) async fn assert_retired(&self, user: &AuthenticatedUser) {
         self.accounts
-            .credentials(&self.workspace, &self.provider, &self.evidence, 100)
+            .credentials(
+                &self.workspace,
+                &self.provider,
+                &self.evidence,
+                coral_db::UnixNanos::new(100),
+            )
             .await
             .unwrap_err();
         assert!(
@@ -430,7 +440,7 @@ async fn initial_connection_without_credentials_is_canceled_and_cannot_fill_a_re
         .unwrap()
         .account
         .unwrap();
-    assert_eq!(old.connected_at_unix_nanos, None);
+    assert_eq!(old.connected_at, None);
     f.lifecycle
         .remove_workspace_member(&context, f.workspace.id(), f.member.user_id())
         .await
@@ -579,7 +589,12 @@ async fn membership_removal_clears_an_organization_owners_account() {
     f.connect(&f.owner).await.account_id.unwrap();
     let evidence = credential_evidence(&f.db.database(), f.workspace.id(), &f.owner).await;
     f.accounts
-        .credentials(f.workspace.id(), &f.provider, &evidence, 100)
+        .credentials(
+            f.workspace.id(),
+            &f.provider,
+            &evidence,
+            coral_db::UnixNanos::new(100),
+        )
         .await
         .unwrap();
     f.lifecycle
@@ -601,7 +616,12 @@ async fn membership_removal_clears_an_organization_owners_account() {
         ))
     ));
     f.accounts
-        .credentials(f.workspace.id(), &f.provider, &evidence, 100)
+        .credentials(
+            f.workspace.id(),
+            &f.provider,
+            &evidence,
+            coral_db::UnixNanos::new(100),
+        )
         .await
         .unwrap_err();
     // A new Membership starts with no Account.

@@ -48,7 +48,7 @@ async fn account_metadata_changes_only_on_successful_connection() {
         .account
         .unwrap();
     assert_eq!(unconnected.state, AccountState::Disconnected);
-    assert_eq!(unconnected.connected_at_unix_nanos, None);
+    assert_eq!(unconnected.connected_at, None);
     assert_eq!(unconnected.configured_by_user_id, None);
     accounts.cancel(&context, scope, initial.id).await.unwrap();
     assert_eq!(
@@ -90,7 +90,7 @@ async fn account_metadata_changes_only_on_successful_connection() {
         .unwrap();
     assert_eq!(connected.id, unconnected.id);
     assert_eq!(connected.state, AccountState::Ready);
-    assert_eq!(connected.connected_at_unix_nanos, Some(20));
+    assert_eq!(connected.connected_at, Some(UnixNanos::new(20)));
     assert_eq!(
         connected.configured_by_user_id.as_ref(),
         Some(user.user_id())
@@ -127,7 +127,7 @@ async fn account_metadata_changes_only_on_successful_connection() {
             "metadata",
             "getPrivateForecast",
             &principal,
-            context.occurred_at_unix_nanos()
+            context.occurred_at().get()
         )
         .await
         .unwrap()
@@ -147,11 +147,7 @@ async fn account_metadata_changes_only_on_successful_connection() {
         )
         .await
         .unwrap();
-    let expired_context = change_context(
-        user.clone(),
-        pending_reconnect.expires_at_unix_nanos + 1,
-        'c',
-    );
+    let expired_context = change_context(user.clone(), pending_reconnect.expires_at.get() + 1, 'c');
     let expired = accounts
         .submit_secret(
             &expired_context,
@@ -181,7 +177,7 @@ async fn account_metadata_changes_only_on_successful_connection() {
             "metadata",
             "getPrivateForecast",
             &principal,
-            context.occurred_at_unix_nanos()
+            context.occurred_at().get()
         )
         .await
         .unwrap()
@@ -231,7 +227,7 @@ async fn account_metadata_changes_only_on_successful_connection() {
         .account
         .unwrap();
     assert_eq!(replaced.id, connected.id);
-    assert_eq!(replaced.connected_at_unix_nanos, Some(30));
+    assert_eq!(replaced.connected_at, Some(UnixNanos::new(30)));
     assert_eq!(
         replaced.configured_by_user_id.as_ref(),
         Some(user.user_id())
@@ -265,7 +261,7 @@ async fn account_metadata_changes_only_on_successful_connection() {
             "metadata",
             "getPrivateForecast",
             &principal,
-            context.occurred_at_unix_nanos()
+            context.occurred_at().get()
         )
         .await
         .unwrap()
@@ -286,10 +282,7 @@ async fn account_metadata_changes_only_on_successful_connection() {
         .unwrap();
     assert_eq!(disconnected.id, connected.id);
     assert_eq!(disconnected.state, AccountState::Disconnected);
-    assert_eq!(
-        disconnected.connected_at_unix_nanos,
-        replaced.connected_at_unix_nanos
-    );
+    assert_eq!(disconnected.connected_at, replaced.connected_at);
     assert_eq!(
         disconnected.configured_by_user_id,
         replaced.configured_by_user_id
@@ -303,7 +296,7 @@ async fn account_metadata_changes_only_on_successful_connection() {
             "metadata",
             "getPrivateForecast",
             &principal,
-            context.occurred_at_unix_nanos()
+            context.occurred_at().get()
         )
         .await,
         Err(Error::AccountRequired)

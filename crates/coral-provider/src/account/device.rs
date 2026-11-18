@@ -35,7 +35,13 @@ const fn default_interval() -> u64 {
 }
 
 impl DeviceResponse {
-    fn validate(&self, now: i64) -> Result<i64, Error> {
+    /// How long the service asks a client to wait between polls. The
+    /// response and the sealed flow hold it in whole seconds.
+    const fn poll_interval(&self) -> Duration {
+        Duration::from_secs(self.interval)
+    }
+
+    fn validate(&self, now: UnixNanos) -> Result<UnixNanos, Error> {
         let bounded = |value: &str, limit| {
             !value.is_empty() && value.len() <= limit && !value.chars().any(char::is_control)
         };
@@ -64,9 +70,7 @@ impl DeviceResponse {
                 TokenExchangeFailure::ResponseInvalid,
             ));
         }
-        UnixNanos::new(now)
-            .checked_add(Duration::from_secs(self.expires_in))
-            .map(UnixNanos::get)
+        now.checked_add(Duration::from_secs(self.expires_in))
             .ok_or(Error::OAuthTokenExchange(
                 TokenExchangeFailure::ResponseInvalid,
             ))
@@ -129,7 +133,7 @@ impl AccountModule {
                 return log_worker_stop(&owner, WorkerStop::Poll, error);
             }
             let context = advanced(&context, started);
-            if let Err(error) = lease.renew(context.occurred_at_unix_nanos()).await {
+            if let Err(error) = lease.renew(context.occurred_at()).await {
                 return log_worker_stop(&owner, WorkerStop::Renew, &error);
             }
             // A failed fence must not affect a replacement flow. Settlement checks it again.
@@ -191,30 +195,26 @@ impl AccountModule {
         // Read before any request leaves Coral, so that a missing deadline is
         // never masked by what the service answers.
         let deadline = row
-            .authorization_expires_at_unix_nanos
+            .authorization_expires_at
             .ok_or_else(no_stored_deadline)?;
         let (device, schedule) = if row.user_code.is_some() {
             let private = row.private_flow.as_deref().ok_or_else(no_stored_flow)?;
             let device =
                 repository::decode_device(&self.vault.open_sealed(&id.to_string(), private)?)?;
-            let schedule = PollSchedule::resumed(lease.timing(), UnixNanos::new(deadline));
+            let schedule = PollSchedule::resumed(lease.timing(), deadline);
             (device, schedule)
         } else {
             let device =
                 request_device(self.providers.outbound_policy, requirement, &authentication)
                     .await?;
             let now = advanced(context, started);
-            let expires = device.validate(now.occurred_at_unix_nanos())?.min(deadline);
+            let expires = device.validate(now.occurred_at())?.min(deadline);
             let private = self
                 .vault
                 .seal(&id.to_string(), &repository::encode_device(&device)?)?;
-            let schedule = PollSchedule::issued(
-                UnixNanos::new(now.occurred_at_unix_nanos()),
-                Duration::from_secs(device.interval),
-                UnixNanos::new(expires),
-            );
+            let schedule = PollSchedule::issued(now.occurred_at(), device.poll_interval(), expires);
             let mut tx = self.providers.database.begin().await?;
-            lease.hold(&mut tx, now.occurred_at_unix_nanos()).await?;
+            lease.hold(&mut tx, now.occurred_at()).await?;
             self.lock_pre_ready(&mut tx, &now, owner, id).await?;
             let current = setup_repository::load(&mut tx, owner, id)
                 .await?
@@ -260,9 +260,7 @@ impl AccountModule {
         lease: &Lease,
     ) -> Result<bool, Error> {
         let mut tx = self.providers.database.begin().await?;
-        lease
-            .hold(&mut tx, context.occurred_at_unix_nanos())
-            .await?;
+        lease.hold(&mut tx, context.occurred_at()).await?;
         let (authority, loaded) = self.lock_pre_ready(&mut tx, context, owner, id).await?;
         let row = setup_repository::load(&mut tx, owner, id)
             .await?
@@ -379,7 +377,7 @@ impl AccountModule {
                 return log_worker_stop(&owner, WorkerStop::Poll, error);
             }
             let context = advanced(&context, started);
-            if let Err(error) = lease.renew(context.occurred_at_unix_nanos()).await {
+            if let Err(error) = lease.renew(context.occurred_at()).await {
                 return log_worker_stop(&owner, WorkerStop::Renew, &error);
             }
             let settled = match result {
@@ -436,7 +434,7 @@ impl AccountModule {
         self.check_authorization_actor(tx, context.actor(), owner, &row)
             .await?;
         if !row.state.is_open()
-            || context.occurred_at_unix_nanos() >= row.expires_at_unix_nanos
+            || context.occurred_at() >= row.expires_at
             || super::provider_contract(tx, owner, &row.provider_id).await? != row.contract
         {
             return Err(Error::AccountInput);
@@ -481,27 +479,20 @@ impl AccountModule {
             let private = row.private_flow.as_deref().ok_or_else(no_stored_flow)?;
             let device =
                 repository::decode_device(&self.vault.open_sealed(&id.to_string(), private)?)?;
-            let schedule =
-                PollSchedule::resumed(lease.timing(), UnixNanos::new(row.expires_at_unix_nanos));
+            let schedule = PollSchedule::resumed(lease.timing(), row.expires_at);
             (device, schedule)
         } else {
             let device =
                 request_device(self.providers.outbound_policy, requirement, &authentication)
                     .await?;
             let now = advanced(context, started);
-            let expires = device
-                .validate(now.occurred_at_unix_nanos())?
-                .min(row.expires_at_unix_nanos);
+            let expires = device.validate(now.occurred_at())?.min(row.expires_at);
             let private = self
                 .vault
                 .seal(&id.to_string(), &repository::encode_device(&device)?)?;
-            let schedule = PollSchedule::issued(
-                UnixNanos::new(now.occurred_at_unix_nanos()),
-                Duration::from_secs(device.interval),
-                UnixNanos::new(expires),
-            );
+            let schedule = PollSchedule::issued(now.occurred_at(), device.poll_interval(), expires);
             let mut tx = self.providers.database.begin().await?;
-            lease.hold(&mut tx, now.occurred_at_unix_nanos()).await?;
+            lease.hold(&mut tx, now.occurred_at()).await?;
             self.device_account(&mut tx, &now, owner, id).await?;
             repository::set_device(&mut tx, owner, id, &device, &private, expires).await?;
             lease.store(&mut tx, schedule.timing()).await?;
@@ -528,7 +519,7 @@ impl AccountModule {
         let mut tx = self.providers.database.begin().await?;
         let current = self.device_account(&mut tx, &now, owner, id).await?;
         let authority = self.scope_authority(&mut tx, now.actor(), owner).await?;
-        lease.hold(&mut tx, now.occurred_at_unix_nanos()).await?;
+        lease.hold(&mut tx, now.occurred_at()).await?;
         let private = self
             .vault
             .seal(&id.to_string(), &repository::encode_token(&token)?)?;
@@ -573,14 +564,14 @@ impl Polling<'_> {
             .client_id;
         loop {
             let now = advanced(self.context, self.started);
-            let at = UnixNanos::new(now.occurred_at_unix_nanos());
+            let at = now.occurred_at();
             let step = self.schedule.step(at);
             if step == Step::Expired {
                 return Err(Error::OAuthTokenExchange(
                     TokenExchangeFailure::DeviceExpired,
                 ));
             }
-            self.lease.renew(at.get()).await?;
+            self.lease.renew(at).await?;
             if let Step::Wait(wait) = step {
                 tokio::time::sleep(wait).await;
                 continue;
@@ -589,7 +580,7 @@ impl Polling<'_> {
             // A lost response may have requested slow_down or consumed the whole
             // request timeout. Persist conservative timing before the request leaves Coral.
             let mut tx = self.lease.module.providers.database.begin().await?;
-            self.lease.hold(&mut tx, at.get()).await?;
+            self.lease.hold(&mut tx, at).await?;
             self.lease
                 .store(&mut tx, self.schedule.before_request(at))
                 .await?;
@@ -611,21 +602,19 @@ impl Polling<'_> {
                 &self.authentication,
             )
             .await;
-            let at = self
-                .started
-                .now_from(UnixNanos::new(self.context.occurred_at_unix_nanos()));
+            let at = self.started.now_from(self.context.occurred_at());
             let outcome = match result {
                 Err(Error::OAuthTokenExchange(TokenExchangeFailure::AuthorizationPending)) => {
                     Outcome::Pending
                 }
                 Err(Error::OAuthTokenExchange(TokenExchangeFailure::SlowDown)) => Outcome::SlowDown,
                 Err(Error::OAuthTokenExchange(TokenExchangeFailure::Timeout)) => Outcome::NoAnswer,
-                Ok(token) => return token.usable(&self.requirement.scopes, client_id, at.get()),
+                Ok(token) => return token.usable(&self.requirement.scopes, client_id, at),
                 Err(error) => return Err(error),
             };
             let next = self.schedule.after_poll(at, outcome);
             let mut tx = self.lease.module.providers.database.begin().await?;
-            self.lease.hold(&mut tx, at.get()).await?;
+            self.lease.hold(&mut tx, at).await?;
             self.lease.store(&mut tx, next).await?;
             tx.commit().await?;
         }
@@ -706,8 +695,8 @@ fn log_worker_stop(owner: &WorkspaceId, stop: WorkerStop, error: &Error) {
 pub(crate) const LEASE: Duration = Duration::from_secs(45);
 
 /// The instant a lease that is claimed or renewed at `now` ends.
-fn lease_end(now: i64) -> i64 {
-    UnixNanos::new(now).saturating_add(LEASE).get()
+fn lease_end(now: UnixNanos) -> UnixNanos {
+    now.saturating_add(LEASE)
 }
 
 struct Lease {
@@ -720,11 +709,11 @@ impl Lease {
     /// The timing the job stored when this worker claimed it.
     const fn timing(&self) -> Timing {
         Timing {
-            interval: Duration::from_secs(self.job.interval_seconds),
-            next_poll_at: UnixNanos::new(self.job.next_poll_at),
+            interval: self.job.interval,
+            next_poll_at: self.job.next_poll_at,
         }
     }
-    async fn hold(&self, tx: &mut coral_db::Transaction<'_>, now: i64) -> Result<(), Error> {
+    async fn hold(&self, tx: &mut coral_db::Transaction<'_>, now: UnixNanos) -> Result<(), Error> {
         device_repository::renew(
             tx,
             &self.owner,
@@ -735,7 +724,7 @@ impl Lease {
         )
         .await
     }
-    async fn renew(&self, now: i64) -> Result<(), Error> {
+    async fn renew(&self, now: UnixNanos) -> Result<(), Error> {
         let mut tx = self.module.providers.database.begin().await?;
         self.hold(&mut tx, now).await?;
         tx.commit().await?;
@@ -748,8 +737,8 @@ impl Lease {
             &self.owner,
             &self.job.id,
             &self.token,
-            timing.interval.as_secs(),
-            timing.next_poll_at.get(),
+            timing.interval,
+            timing.next_poll_at,
         )
         .await
     }
@@ -791,8 +780,8 @@ impl AccountModule {
             id,
             &self.device_worker_id,
             &token,
-            context.occurred_at_unix_nanos(),
-            lease_end(context.occurred_at_unix_nanos()),
+            context.occurred_at(),
+            lease_end(context.occurred_at()),
         )
         .await?;
         tx.commit().await?;
@@ -814,18 +803,15 @@ impl AccountModule {
     /// # Errors
     /// Returns a failure to read the jobs, and any failure in which the
     /// database gave no answer: every later job would fail the same way.
-    pub async fn recover_device_authorizations(&self, now_unix_nanos: i64) -> Result<(), Error> {
+    pub async fn recover_device_authorizations(&self, now: UnixNanos) -> Result<(), Error> {
         let mut tx = self.providers.database.begin_read_snapshot().await?;
-        let recoverable = device_repository::recoverable(&mut tx, now_unix_nanos).await?;
+        let recoverable = device_repository::recoverable(&mut tx, now).await?;
         tx.commit().await?;
         let organization =
             coral_workspace::OrganizationModule::new(self.providers.database.clone());
         for device_repository::Recoverable { key, job } in recoverable {
             let recovered = match job {
-                Ok(job) => {
-                    self.recover_device_job(&organization, job, now_unix_nanos)
-                        .await
-                }
+                Ok(job) => self.recover_device_job(&organization, job, now).await,
                 Err(error) => Err(error),
             };
             let Err(error) = recovered else {
@@ -841,7 +827,7 @@ impl AccountModule {
                 error.type = safe::kind(error.code()),
                 "failed to recover a device sign-in job; recovery tries it again later"
             );
-            let Err(error) = self.defer_device_job(&key, now_unix_nanos).await else {
+            let Err(error) = self.defer_device_job(&key, now).await else {
                 continue;
             };
             if error.is_operational() {
@@ -862,10 +848,10 @@ impl AccountModule {
     async fn defer_device_job(
         &self,
         key: &device_repository::StoredKey,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<(), Error> {
         let mut tx = self.providers.database.begin().await?;
-        device_repository::defer(&mut tx, key, now_unix_nanos, lease_end(now_unix_nanos)).await?;
+        device_repository::defer(&mut tx, key, now, lease_end(now)).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -876,7 +862,7 @@ impl AccountModule {
         &self,
         organization: &coral_workspace::OrganizationModule,
         job: device_repository::Job,
-        now_unix_nanos: i64,
+        now: UnixNanos,
     ) -> Result<(), Error> {
         let owner = job.workspace_id.clone();
         let user = job.actor_user_id.clone();
@@ -890,7 +876,7 @@ impl AccountModule {
             Err(error) => return Err(error.into()),
         };
         let trace = job.trace_id;
-        let context = ChangeContext::new(actor, UnixNanos::new(now_unix_nanos), trace);
+        let context = ChangeContext::new(actor, now, trace);
         let mut tx = self.providers.database.begin().await?;
         if let device_repository::Target::Setup(id) = &job.target {
             if let Some(row) = setup_repository::load(&mut tx, &owner, id).await?
