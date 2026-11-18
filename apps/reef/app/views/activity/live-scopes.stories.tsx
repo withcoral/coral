@@ -1123,6 +1123,10 @@ export const FollowsNewWorkFromWhatItShows: Story = {
     await press('Add search to newest task')
     await press('Add describe to newest task')
     await press('Add run to newest task')
+    // Live mode expands the Run before it waits to select it. Let that step land, so the
+    // wait starts on the clock that the old record was shown on.
+    const run = runRow('r4', taskRow('t1').name).name
+    await waitFor(() => expect(address().getAll('expand')).toContain(run))
     await idle()
     outstay()
     await press('Add call')
