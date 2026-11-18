@@ -725,10 +725,7 @@ impl LicenseSettings {
                 "license",
                 "takes one License: set key or key_env, not both",
             )),
-            (None, None) => Err(refused(
-                "license",
-                "must set key or key_env, or be removed",
-            )),
+            (None, None) => Err(refused("license", "must set key or key_env, or be removed")),
         }
     }
 }
