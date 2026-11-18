@@ -1193,6 +1193,7 @@ dependencies = [
  "coral-outbound",
  "coral-secret-store",
  "coral-task",
+ "coral-telemetry",
  "coral-workspace",
  "rmcp",
  "schemars",
@@ -1203,6 +1204,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "tracing",
  "url",
  "uuid",
 ]

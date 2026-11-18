@@ -102,17 +102,16 @@ impl CoreWithAgent {
             (None, Some(goal)) => {
                 let goal = TaskIntent::parse(goal).map_err(invalid)?;
                 let started = self.tasks.start(actor, workspace_id, goal, caller.now());
-                started
-                    .await
-                    .map_err(Error::from)
-                    .map_err(failure)?
-                    .id()
-                    .clone()
+                let task = started.await.map_err(Error::from)?;
+                task.id().clone()
             }
             (None, None) => return Err(invalid(AGENT_TAKES)),
         };
-        let started = self.sub_agents.start(actor, workspace_id, &task_id);
-        let sub_agent_id = started.await.map_err(failure)?;
+        let message = arguments.message;
+        let started = self
+            .sub_agents
+            .start(actor, workspace_id, &task_id, message);
+        let sub_agent_id = started.await?;
         Ok(result(json!({
             "sub_agent_id": sub_agent_id,
             "task_id": task_id.as_str(),
@@ -135,7 +134,7 @@ impl CoreWithAgent {
             sub_agent_id,
             Duration::from_millis(wait_ms),
         );
-        Ok(turn_result(sub_agent_id, waited.await.map_err(failure)?))
+        Ok(turn_result(sub_agent_id, waited.await?))
     }
 
     async fn cancel(
@@ -147,7 +146,7 @@ impl CoreWithAgent {
         let canceled =
             self.sub_agents
                 .cancel(caller.principal(), caller.workspace_id(), sub_agent_id);
-        Ok(turn_result(sub_agent_id, canceled.await.map_err(failure)?))
+        Ok(turn_result(sub_agent_id, canceled.await?))
     }
 }
 
@@ -158,9 +157,9 @@ const AGENT_TAKES: &str = "agent takes `message`, and `task_id` or `goal`: pass 
 #[serde(deny_unknown_fields)]
 struct AgentArguments {
     /// What the user asked for, in one short phrase. Starts a new Task for
-    /// this unit of user work, unless task_id is given.
+    /// this unit of user work, unless `task_id` is given.
     goal: Option<String>,
-    /// The task_id of the Task that the Sub-agent works in. Given with
+    /// The `task_id` of the Task that the Sub-agent works in. Given with
     /// `goal`, it wins and `goal` is ignored.
     task_id: Option<String>,
     /// Everything the Sub-agent is to do. It reads nothing else.
@@ -222,22 +221,25 @@ fn invalid(problem: impl std::fmt::Display) -> ToolCallError {
 }
 
 /// The failure that the lead reads when a Sub-agent call did nothing.
-fn failure(error: Error) -> ToolCallError {
-    ToolCallError::Tool(match error {
-        Error::SubAgentNotFound => {
-            ToolFailure::stable("sub_agent_not_found", "Sub-agent was not found")
-        }
-        Error::Task(coral_task::Error::TaskNotFound) => {
-            ToolFailure::stable("task_not_found", "Task was not found")
-        }
-        Error::Task(coral_task::Error::TaskClosed) => ToolFailure::stable(
-            "task_closed",
-            "Task is closed. Call `agent` with `goal` to start a new Task.",
-        ),
-        Error::Task(_) | Error::IdentifierIssuance | Error::CorruptData | Error::Database(_) => {
-            ToolFailure::internal()
-        }
-    })
+impl From<Error> for ToolCallError {
+    fn from(error: Error) -> Self {
+        Self::Tool(match error {
+            Error::SubAgentNotFound => {
+                ToolFailure::stable("sub_agent_not_found", "Sub-agent was not found")
+            }
+            Error::Task(coral_task::Error::TaskNotFound) => {
+                ToolFailure::stable("task_not_found", "Task was not found")
+            }
+            Error::Task(coral_task::Error::TaskClosed) => ToolFailure::stable(
+                "task_closed",
+                "Task is closed. Call `agent` with `goal` to start a new Task.",
+            ),
+            Error::Task(_)
+            | Error::IdentifierIssuance
+            | Error::CorruptData
+            | Error::Database(_) => ToolFailure::internal(),
+        })
+    }
 }
 
 /// What `wait` and `cancel` return for a Sub-agent: its Turn as it stands.

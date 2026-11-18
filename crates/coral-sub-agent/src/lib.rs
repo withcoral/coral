@@ -35,10 +35,15 @@ impl McpInterfaceFactory for SubAgentFactory {
         dependencies: McpInterfaceDependencies,
     ) -> Result<Arc<dyn McpInterface>, Box<dyn Error + Send + Sync>> {
         let section: Section = StoreSettings::new(section.clone()).decode()?;
-        section.model_client(&dependencies)?;
+        let model = section.model_client(&dependencies)?;
         let core = dependencies.modules.core_interface();
         let tasks = dependencies.modules.tasks;
-        let sub_agents = SubAgents::new(dependencies.database, tasks.clone(), dependencies.clock);
+        let sub_agents = SubAgents::new(
+            dependencies.database,
+            tasks.clone(),
+            model,
+            dependencies.clock,
+        );
         Ok(Arc::new(CoreWithAgent::new(core, tasks, sub_agents)))
     }
 }

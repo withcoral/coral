@@ -1,14 +1,19 @@
 //! Sub-agents and their Turns. A Sub-agent belongs to its caller's Task. A
-//! Turn is its work from one message to its response.
+//! Turn is its work from one message to its response: one model call.
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use coral_db::{Clock, Database, Transaction};
 use coral_task::{TaskId, TaskModule};
+use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
+use crate::model::{Message, ModelClient, Role};
 use crate::repository;
+
+/// What the model reads before the caller's message.
+const SYSTEM_PROMPT: &str = "You are a Sub-agent that Coral runs for another agent, your lead. The lead sent you one message. Answer it in one reply. You have no tools, so say what you cannot know instead of guessing.";
 
 /// How long a running Turn stays held after its Coral Instance last renewed
 /// the lease.
@@ -19,29 +24,33 @@ const TURN_LEASE: Duration = Duration::from_secs(30);
 pub(crate) struct SubAgents {
     database: Arc<Database>,
     tasks: TaskModule,
+    model: Arc<ModelClient>,
     clock: Arc<dyn Clock>,
 }
 
 impl SubAgents {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         database: Arc<Database>,
         tasks: TaskModule,
+        model: ModelClient,
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
             database,
             tasks,
+            model: Arc::new(model),
             clock,
         }
     }
 
-    /// Starts a Sub-agent in the caller's open Task, with its Turn. Returns
-    /// the `sub_agent_id`.
+    /// Starts a Sub-agent in the caller's open Task, and its Turn, which
+    /// answers `message` in the background. Returns the `sub_agent_id`.
     pub(crate) async fn start(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         task_id: &TaskId,
+        message: String,
     ) -> Result<String, Error> {
         let mut transaction = self.database.begin().await?;
         let (_task, authority) = self
@@ -64,6 +73,10 @@ impl SubAgents {
         )
         .await?;
         transaction.commit().await?;
+        tokio::spawn(
+            self.clone()
+                .run_turn(workspace_id.clone(), turn_id, message),
+        );
         Ok(sub_agent_id)
     }
 
@@ -111,6 +124,56 @@ impl SubAgents {
         repository::find_turn(&*self.database, workspace_id, sub_agent_id, principal)
             .await?
             .ok_or(Error::SubAgentNotFound)
+    }
+
+    /// Runs the Turn to its end, under its lease: one model call, whose
+    /// reply is the answer.
+    async fn run_turn(self, workspace_id: WorkspaceId, turn_id: String, message: String) {
+        let conversation = [
+            Message {
+                role: Role::System,
+                text: SYSTEM_PROMPT.to_owned(),
+            },
+            Message {
+                role: Role::User,
+                text: message,
+            },
+        ];
+        let reply = tokio::select! {
+            reply = self.model.reply(&conversation) => reply,
+            () = self.hold_lease(&workspace_id, &turn_id) => return,
+        };
+        let ending = match reply {
+            Ok(answer) => TurnState::Completed { answer },
+            Err(error) => TurnState::Failed {
+                failure: error.to_string(),
+            },
+        };
+        if let Err(error) = self.end_turn(&workspace_id, &turn_id, &ending).await {
+            tracing::warn!(
+                error.type = safe::kind(error.code()),
+                "the end of a Sub-agent Turn was not recorded"
+            );
+        }
+    }
+
+    /// Renews the Turn's lease until a renewal finds that the Turn has ended,
+    /// as a cancellation ends it.
+    async fn hold_lease(&self, workspace_id: &WorkspaceId, turn_id: &str) {
+        loop {
+            tokio::time::sleep(TURN_LEASE / 3).await;
+            let lease_end = self.clock.now().saturating_add(TURN_LEASE);
+            let renewed =
+                repository::renew_lease(&self.database, workspace_id, turn_id, lease_end).await;
+            match renewed {
+                Ok(true) => {}
+                Ok(false) => return,
+                Err(error) => tracing::warn!(
+                    error.type = safe::kind(error.code()),
+                    "the lease of a Sub-agent Turn was not renewed"
+                ),
+            }
+        }
     }
 
     /// Ends the Turn unless it has ended already: the first ending stands.
