@@ -13,6 +13,11 @@
 //!   refused Program starts none.
 //! - [`TaskModule::end`] records the first terminal outcome and returns the
 //!   durable winner of a concurrent terminal race.
+//! - [`TaskModule::hold_open_in_transaction`] holds the caller's open Task in
+//!   the caller's transaction, as a command that begins in a Task holds it,
+//!   so that the Task cannot end before that transaction commits.
+//! - [`TaskModule::check_open`] checks the same on a read snapshot, holding
+//!   nothing.
 //! - [`TaskModule::get`] and [`TaskModule::list`] apply Principal-specific
 //!   confidentiality through the same Interface used by callers.
 //! - [`TaskCommands`] begins an attempt before work and commits owning mutations,
@@ -82,8 +87,10 @@ pub use retention::HISTORY_RETENTION;
 use std::sync::Arc;
 
 use coral_db::{Database, UnixNanos};
+use coral_telemetry::safe;
 use coral_workspace::{
-    AuthenticatedPrincipal, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
+    AuthenticatedPrincipal, PrincipalWorkspaceEvidence, WorkspaceAction, WorkspaceId,
+    WorkspaceModule, WorkspaceRole,
 };
 
 pub use error::Error;
@@ -190,6 +197,107 @@ impl TaskModule {
                 )));
             }
         }
+    }
+
+    /// Holds the open Task that `actor` started for the rest of the caller's
+    /// transaction: an end of the Task waits for that transaction, so work
+    /// the caller commits there joins a Task that is still open. A command
+    /// of [`TaskCommands`] begins in its Task through the same hold. The
+    /// transaction must be a write transaction, and the hold marks no change.
+    ///
+    /// Returns the Task and the authority that lets `actor` work in its
+    /// Workspace. The hold reads the clock once, after it holds the Task, to
+    /// check that authority. The caller checks it again
+    /// (`require_current_at`) at its own final time, before it commits, as a
+    /// command does. Call this before the transaction holds anything else:
+    /// it holds the Task and then the caller's Workspace authority, in the
+    /// order [`Self::end`] holds them.
+    ///
+    /// # Errors
+    ///
+    /// An absent Task, an inaccessible Workspace and another Principal's Task
+    /// all return [`Error::TaskNotFound`], as [`Self::end`] conceals them. An
+    /// ended Task returns [`Error::TaskClosed`]. Any other Workspace refusal,
+    /// such as an expired Agent Registration, returns the Workspace error.
+    pub async fn hold_open_in_transaction(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        task_id: &TaskId,
+    ) -> Result<(Task, PrincipalWorkspaceEvidence), Error> {
+        self.hold_open(transaction, actor, workspace_id, task_id, concealed)
+            .await
+    }
+
+    /// Checks that `actor` can still use the open Task it started, as
+    /// [`Self::hold_open_in_transaction`] does, on a read snapshot that holds
+    /// nothing.
+    ///
+    /// # Errors
+    ///
+    /// The refusals of [`Self::hold_open_in_transaction`].
+    pub async fn check_open(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        task_id: &TaskId,
+    ) -> Result<(), Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        self.workspaces
+            .check_principal_inspection_in_snapshot(
+                &mut transaction,
+                actor,
+                workspace_id,
+                self.now(),
+            )
+            .await
+            .map_err(concealed)?;
+        let task =
+            repository::find_attributed(&mut transaction, workspace_id, task_id, actor.principal())
+                .await?
+                .ok_or(Error::TaskNotFound)?;
+        transaction.commit().await?;
+        if task.outcome().is_some() {
+            return Err(Error::TaskClosed);
+        }
+        Ok(())
+    }
+
+    /// [`Self::hold_open_in_transaction`]; `refused` says what a Workspace
+    /// refusal means to the caller. A command that already checked the
+    /// caller's Workspace authority, before its transaction, keeps the
+    /// refusal as it is.
+    pub(crate) async fn hold_open(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        task_id: &TaskId,
+        refused: fn(coral_workspace::Error) -> Error,
+    ) -> Result<(Task, PrincipalWorkspaceEvidence), Error> {
+        if !repository::hold(transaction, workspace_id, task_id).await? {
+            return Err(Error::TaskNotFound);
+        }
+        let authority = self
+            .workspaces
+            .check_principal_inspection_in_transaction(transaction, actor, workspace_id, self.now())
+            .await
+            .map_err(refused)?;
+        let task = repository::find_attributed(
+            &mut *transaction,
+            workspace_id,
+            task_id,
+            actor.principal(),
+        )
+        .await?
+        .ok_or(Error::TaskNotFound)?;
+        // The caller runs in its own caller's span, such as an MCP tool call's.
+        tracing::Span::current().record("coral.task.id", safe::id(&task.telemetry_id()));
+        if task.outcome().is_some() {
+            return Err(Error::TaskClosed);
+        }
+        Ok((task, authority))
     }
 
     /// Returns one Task when it is visible to the current Principal.
@@ -385,6 +493,16 @@ impl TaskModule {
         let detail = interaction_repository::detail(&mut transaction, workspace, task, id).await?;
         transaction.commit().await?;
         Ok(detail)
+    }
+}
+
+/// A Workspace refusal as a caller of a Task reads it: one that denies access
+/// does not say that the Task exists.
+fn concealed(refusal: coral_workspace::Error) -> Error {
+    if refusal.denies_access() {
+        Error::TaskNotFound
+    } else {
+        refusal.into()
     }
 }
 

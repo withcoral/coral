@@ -8,7 +8,7 @@
 use std::sync::LazyLock;
 
 use coral_db::{
-    Database, DatabaseOptions, DatabaseSystem, Error, MigrationPlan, MigrationProgress,
+    ChangeWait, Database, DatabaseOptions, DatabaseSystem, Error, MigrationPlan, MigrationProgress,
     QueryExecutor, ReadOnlyDatabase, RowLock, UnixNanos,
 };
 use coral_test_support::TestDatabase;
@@ -1694,6 +1694,95 @@ async fn postgres_notification_reconnect_requires_a_resnapshot_after_the_gap() {
             .unwrap()
             .value,
         "resnapshot"
+    );
+}
+
+// Catches: a reader that sleeps to its deadline through a commit, or that
+// rereads at once on every commit of a busy writer.
+#[tokio::test]
+async fn a_committed_change_ends_a_pause_no_sooner_than_the_reread_gap() {
+    use std::time::Duration;
+    use tokio::time::Instant;
+    let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
+    let database = fixture.database();
+    // The deadline is far past the test, so only a change ends the pause.
+    let mut wait = database.wait_for_changes(Instant::now() + Duration::from_secs(300));
+    // The change commits before the pause, as one does during a reader's read.
+    let mut tx = database.begin().await.unwrap();
+    tx.execute_change(insert_record("observed", "committed"))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let read_at = Instant::now();
+    let reads_again = tokio::time::timeout(coral_test_support::EVENTUALLY, wait.pause(read_at))
+        .await
+        .expect("a committed change ends the pause");
+    assert!(reads_again, "the reader reads again after a change");
+    assert!(
+        read_at.elapsed() >= ChangeWait::MIN_REREAD_GAP,
+        "the pause keeps the gap between two reads"
+    );
+}
+
+// Catches: a wait that outlives its deadline, that ends without the read its
+// deadline owes the reader, that pauses for a reader whose deadline has
+// passed, or that sends a statement: a write of its own would wake every
+// activity observer and Run wait.
+#[tokio::test]
+async fn a_change_wait_ends_at_its_deadline_after_one_more_read() {
+    use tokio::time::Instant;
+    let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
+    let database = fixture.database();
+    let statements = fixture.statements_sent();
+    let begun = Instant::now();
+    // A pause keeps the reread gap, so one that begins a gap before the
+    // deadline ends at the deadline whatever the change signal does.
+    let deadline = begun + ChangeWait::MIN_REREAD_GAP;
+    let mut wait = database.wait_for_changes(deadline);
+    assert!(
+        wait.pause(begun).await,
+        "the reader reads once more at the deadline"
+    );
+    let read_at = Instant::now();
+    assert!(read_at >= deadline, "the pause lasted to its deadline");
+    assert!(!wait.pause(read_at).await, "the wait ended at its deadline");
+
+    let mut passed = database.wait_for_changes(read_at);
+    assert!(
+        !passed.pause(read_at).await,
+        "the reader returns its first read"
+    );
+    assert_eq!(
+        fixture.statements_sent(),
+        statements,
+        "a wait reads the change signal alone"
+    );
+}
+
+// Catches: a wait that fails, or that sleeps to its deadline, once the
+// notification connection is lost.
+#[tokio::test]
+async fn a_change_wait_rereads_on_the_fallback_poll_through_a_notification_outage() {
+    use std::time::Duration;
+    use tokio::time::Instant;
+    coral_test_support::database_only!(Postgres);
+    let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
+    let database = fixture.database();
+    // The deadline is far past the test, and nothing commits a change.
+    let mut wait = database.wait_for_changes(Instant::now() + Duration::from_secs(300));
+    database.interrupt_change_notifications().await.unwrap();
+    let outage = tokio::time::timeout(coral_test_support::EVENTUALLY, wait.pause(Instant::now()))
+        .await
+        .expect("the outage ends the pause");
+    assert!(outage, "the reader reads again when the signal is lost");
+    let read_at = Instant::now();
+    let polled = tokio::time::timeout(coral_test_support::EVENTUALLY, wait.pause(read_at))
+        .await
+        .expect("the fallback poll ends the pause");
+    assert!(polled, "the reader reads again without the signal");
+    assert!(
+        read_at.elapsed() >= ChangeWait::FALLBACK_POLL,
+        "the reader rereads no sooner than the fallback poll"
     );
 }
 
