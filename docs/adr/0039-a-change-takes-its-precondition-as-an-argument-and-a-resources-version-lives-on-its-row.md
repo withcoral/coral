@@ -38,6 +38,8 @@ same request, and the second is refused.
 
 ## Consequences
 
+- This record states where the changes end. They arrive in steps: until the change that types every call site lands,
+  the etag and the request id still reach a method through the change context, built on the same typed values.
 - A Provider's etag keeps its text, the token derived from its identity and its version. Only its argument is typed.
 - A Workspace Membership that is removed and added again starts at the first version, so an etag from before the
   removal can match it. The rule that keeps one designated Owner still holds, and the role is the only other field a
@@ -53,8 +55,9 @@ same request, and the second is refused.
 
 ### The risk we accept
 
-A self-hoster who does a rolling upgrade from the release before the first one, straight to it, runs both on one
-database for a while. In that window:
+A self-hoster on Postgres who does a rolling upgrade from the release before the first one, straight to it, runs both
+on one database for a while. On SQLite one process holds the state root, so two releases never serve one database. In
+that window:
 
 - **A stale save can pass.** The older release checks only the table of concurrency metadata and never raises a
   row's version. The newer release checks only the row's version and never writes the table. Each side misses the
