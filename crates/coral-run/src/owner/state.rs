@@ -203,6 +203,10 @@ pub(crate) enum Effect {
         completion: ExecutionCompletion,
         intent: Option<RequestedTermination>,
     },
+    /// Write a Run stream's termination in one chunk until the database
+    /// answers, then terminate the Program on the stream; the answer
+    /// reaches the owner as [`Message::Completed`].
+    EndStreamRun(RequestedTermination),
     /// One attempt to settle the recorded termination: end every nonterminal
     /// Invocation and the Run once no dispatch is in flight, or once the
     /// shutdown grace is out. `again` means the previous attempt found a
@@ -309,7 +313,8 @@ pub(crate) enum Phase {
     Starting,
     /// The Program is executing.
     Running,
-    /// The Program ended; the pending chunks drain before the terminal write.
+    /// The Program ended, or a Run stream's termination waits: the pending
+    /// chunks drain before the terminal write.
     Ending,
     /// The terminal write is running.
     Completing,
@@ -362,6 +367,10 @@ pub(crate) struct OwnerState {
     /// deadline. It rides a chunk's head update; the terminal write finds it
     /// recorded, or records what it finds itself when no chunk landed.
     termination: Option<RequestedTermination>,
+    /// A Run stream's termination the owner decided (ADR 0027): written in
+    /// one chunk once the pending chunks commit, before the Program hears
+    /// of it.
+    stream_end: Option<RequestedTermination>,
     /// The Run Ledger head: set by the start mark, moved by every chunk the
     /// owner commits and by its own terminal write, asserted by every chunk.
     head: u64,
@@ -428,6 +437,7 @@ impl OwnerState {
             shutdown: None,
             completion: None,
             termination: None,
+            stream_end: None,
             head: 0,
             recorded_requests: HashSet::new(),
             parked: Vec::new(),
@@ -494,6 +504,12 @@ impl OwnerState {
     /// The termination intent the owner applied.
     pub(crate) const fn termination(&self) -> Option<&RequestedTermination> {
         self.termination.as_ref()
+    }
+
+    /// Whether a Run stream's termination is being written: the stream hears
+    /// of it only once it is.
+    pub(crate) const fn ends_stream_first(&self) -> bool {
+        self.stream_end.is_some()
     }
 
     /// Cancellations waiting for the terminal write.
@@ -1013,6 +1029,15 @@ impl OwnerState {
                 after_nanos: self.limits.shutdown_grace_nanos,
             });
         }
+        effects.extend(self.refuse_unsent_dispatches());
+        effects.push(Effect::TerminateProgram);
+        effects
+    }
+
+    /// Answers every enforcement request not yet committed, and every one
+    /// waiting for a slot, as terminated, so no dispatch starts after it.
+    fn refuse_unsent_dispatches(&mut self) -> Vec<Effect> {
+        let mut effects = Vec::new();
         for chunk in self
             .closed
             .iter_mut()
@@ -1024,7 +1049,6 @@ impl OwnerState {
         }
         self.closed.retain(|chunk| !chunk.is_empty());
         effects.extend(self.release_waiting(|| Error::ProgramHostTerminated));
-        effects.push(Effect::TerminateProgram);
         effects
     }
 
@@ -1154,10 +1178,13 @@ impl OwnerState {
                 }
                 effects = self.stop();
             }
-            Phase::Running | Phase::Ending if self.termination.is_none() => {
+            Phase::Running | Phase::Ending
+                if self.termination.is_none() && self.stream_end.is_none() =>
+            {
                 effects = self.apply_cancel(requester, row, now_unix_nanos);
             }
-            // A termination is applied, or recorded and settling: a repeat.
+            // A termination is applied (a Run stream's written first), or
+            // recorded and settling: a repeat.
             Phase::Running | Phase::Ending | Phase::Settling => {
                 self.acknowledge(row);
             }
@@ -1176,10 +1203,14 @@ impl OwnerState {
         now_unix_nanos: i64,
     ) -> Vec<Effect> {
         let mut effects = Vec::new();
-        if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
+        let past_deadline = now_unix_nanos >= self.limits.deadline_at_unix_nanos;
+        if past_deadline {
             effects = self.deadline(now_unix_nanos);
         }
-        if self.termination.is_none() {
+        // A Run stream's deadline ends its Run on its own, written first or
+        // by its terminal write: the cancellation is then a repeat.
+        let deadline_decides = past_deadline && self.requests.is_some();
+        if self.termination.is_none() && !deadline_decides {
             effects.extend(self.terminate(
                 RunTerminationKind::Canceled,
                 Some(requester),
@@ -1203,16 +1234,61 @@ impl OwnerState {
     /// the Program is terminated at once), dated when the owner applies it
     /// and never before the deadline, so the shutdown grace runs from then.
     /// Nothing more once a termination is applied (a cancel applied first
-    /// decides the kind), or past the point where the terminal write decides
-    /// on its own.
+    /// decides the kind, a Run stream's is being written), or past the point
+    /// where the terminal write decides on its own. A Run stream's Run takes
+    /// no intent and no grace: while its Program runs, it ends with its
+    /// termination written first; once the Program ended, its terminal write
+    /// times it out.
     fn deadline(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
         if self.termination.is_some()
+            || self.stream_end.is_some()
             || !matches!(self.phase, Phase::Starting | Phase::Running | Phase::Ending)
         {
             return Vec::new();
         }
         let at = now_unix_nanos.max(self.limits.deadline_at_unix_nanos);
+        if self.requests.is_some() {
+            return self.end_stream_run(RunTerminationKind::TimedOut, at);
+        }
         self.terminate(RunTerminationKind::TimedOut, None, None, at)
+    }
+
+    /// The Run Executor ended the Program at the deadline it counts from
+    /// `Started`: the Run times out once the deadline passed on the owner's
+    /// clock, as the owner's timer decides, and is interrupted before then.
+    /// After another end was applied, it is the Program's end as any other.
+    fn deadline_reached(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
+        if self.phase != Phase::Running || self.termination.is_some() {
+            return self.program_ended(ExecutionCompletion::ProgramHostTerminated);
+        }
+        if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
+            return self.deadline(now_unix_nanos);
+        }
+        self.end_stream_run(RunTerminationKind::Interrupted, now_unix_nanos)
+    }
+
+    /// Ends a Run stream's Run, writing the termination first (ADR 0027): no
+    /// Program request is taken and no dispatch starts any more, the chunks
+    /// already applied commit, then one chunk ends the Run and its open
+    /// Invocations, and only then is the Program told on the stream. The
+    /// stop is requested at once, so no permitted dispatch is sent during
+    /// the drain. No shutdown grace: a dispatch result that lands after the
+    /// write is dropped.
+    fn end_stream_run(&mut self, kind: RunTerminationKind, at_unix_nanos: i64) -> Vec<Effect> {
+        // Once the Program ended, its terminal write decides.
+        if self.phase != Phase::Running {
+            return Vec::new();
+        }
+        let Ok(termination) = RequestedTermination::new(kind, None, at_unix_nanos, 0) else {
+            return self.stop();
+        };
+        self.stream_end = Some(termination);
+        self.stop_requested = true;
+        self.phase = Phase::Ending;
+        let mut effects = self.refuse_unsent_dispatches();
+        effects.push(Effect::TerminateProgram);
+        effects.extend(self.advance_ending());
+        effects
     }
 
     /// The shutdown grace since the Program was stopped is out and the
@@ -1429,15 +1505,24 @@ impl OwnerState {
         if self.pending_chunks() > 0 {
             return self.commit_when_free();
         }
-        if let Some(completion) = &self.completion {
-            self.phase = Phase::Completing;
-            vec![Effect::CompleteExecution {
-                completion: completion.clone(),
-                intent: self.unrecorded_termination(),
-            }]
-        } else {
-            self.retire()
+        match self.terminal_write() {
+            Some(write) => vec![write],
+            None => self.retire(),
         }
+    }
+
+    /// The terminal write once nothing is pending: a Run stream's end
+    /// written first, else the Program's completion; `None` with neither.
+    fn terminal_write(&mut self) -> Option<Effect> {
+        let write = match &self.stream_end {
+            Some(end) => Effect::EndStreamRun(end.clone()),
+            None => Effect::CompleteExecution {
+                completion: self.completion.clone()?,
+                intent: self.unrecorded_termination(),
+            },
+        };
+        self.phase = Phase::Completing;
+        Some(write)
     }
 
     /// The termination intent the owner applied and no chunk recorded, for
@@ -1552,16 +1637,14 @@ impl OwnerState {
         match self.phase {
             Phase::Running => self.phase = Phase::Stopped(cause),
             Phase::Ending => {
-                if let (CommitRejection::Refused | CommitRejection::Failed, Some(completion)) =
-                    (cause, &self.completion)
-                {
-                    self.phase = Phase::Completing;
-                    effects.push(Effect::CompleteExecution {
-                        completion: completion.clone(),
-                        intent: self.unrecorded_termination(),
-                    });
+                let write = if matches!(cause, CommitRejection::Refused | CommitRejection::Failed) {
+                    self.terminal_write()
                 } else {
-                    effects.extend(self.retire());
+                    None
+                };
+                match write {
+                    Some(write) => effects.push(write),
+                    None => effects.extend(self.retire()),
                 }
             }
             // The recorded termination still has to be settled; the owner
@@ -1658,7 +1741,10 @@ impl OwnerState {
             let pushed = self.pushed;
             // `Finish` is recorded by the terminal write, not by a chunk: a
             // reopen before that write lands resends it.
-            let finishes = matches!(message.as_deref(), Some(Message::ProgramEnded(_)));
+            let finishes = matches!(
+                message.as_deref(),
+                Some(Message::ProgramEnded(_) | Message::DeadlineReached)
+            );
             if let Some(message) = message {
                 effects.extend(apply_message(self, *message, now_unix_nanos));
             }
@@ -1819,6 +1905,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         Message::Changed => state.changed(),
         Message::Prechecked { check, found } => state.prechecked(check, found),
         Message::ProgramEnded(completion) => state.program_ended(completion),
+        Message::DeadlineReached => state.deadline_reached(now_unix_nanos),
         Message::Committed => state.committed(now_unix_nanos),
         Message::CommitRejected(rejection) => state.rejected(rejection),
         Message::Stop => state.stop(),
