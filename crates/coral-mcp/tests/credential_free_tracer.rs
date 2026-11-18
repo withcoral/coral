@@ -242,7 +242,9 @@ impl Tracer {
         Self::start_at(Arc::new(coral_db::SystemClock)).await
     }
 
-    /// The tracer over a server that reads `clock`, for a test that moves time.
+    /// The tracer over a server that reads `clock`, for a test that moves
+    /// time. The Task, search and Private Tool modules read it too; the Run
+    /// Module reads the host's clock.
     #[expect(
         clippy::too_many_lines,
         reason = "composes the real domain graph and the tracer's Workspace and Agent once"
@@ -263,7 +265,7 @@ impl Tracer {
             ))
             .await
             .expect("provision the local User");
-        let tasks = TaskModule::new(db.clone(), workspaces.clone());
+        let tasks = TaskModule::new(db.clone(), workspaces.clone()).with_clock(clock.clone());
         let providers = ProviderModule::with_running_catalog(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             db.clone(),
@@ -276,7 +278,8 @@ impl Tracer {
             coral_run::IsolateLimits::default(),
             coral_test_support::TEST_COMPILATION_TIMEOUT,
         )
-        .expect("start Private Tool compiler");
+        .expect("start Private Tool compiler")
+        .with_clock(clock.clone());
         let runs = RunModule::new(
             DestinationPolicy::default().with_loopback(coral_outbound::NetworkAccess::HttpAndHttps),
             db.clone(),
@@ -294,7 +297,8 @@ impl Tracer {
             coral_run::HumanInterfaceUrl::parse("https://reef.example.test")
                 .expect("human interface URL"),
         );
-        let search = UniversalSearchModule::new(db.clone(), workspaces.clone());
+        let search =
+            UniversalSearchModule::new(db.clone(), workspaces.clone()).with_clock(clock.clone());
         // Reef decides through the Run Module that owns the Runs.
         let approvals = runs.approvals();
         let workspace_a = create_workspace(&workspaces, &local_user, "Tracer A", 10, '1').await;
@@ -338,7 +342,8 @@ impl Tracer {
             &upstream.url(),
         )
         .await;
-        let index = coral_search::SearchIndex::new(db.clone(), std::time::Duration::from_mins(5));
+        let index = coral_search::SearchIndex::new(db.clone(), std::time::Duration::from_mins(5))
+            .with_clock(clock.clone());
         // The test helper publishes without the workflow, so nothing notified.
         index.reconcile().await;
         // Programs save through the one module the Task commands use, and
@@ -663,7 +668,9 @@ async fn the_organization_endpoint_needs_an_agent_credential_in_local_mode() {
 ///
 /// Catches: the Adapter reading the host's clock, a quarter of a century
 /// after this one. Such an Adapter would refuse the Agent while its
-/// Registration still lasts, and would date the Task's end by the host.
+/// Registration still lasts, and would date the Task's end by the host. A
+/// Task Module on the host's clock would refuse the Agent the same way,
+/// after the Adapter admitted it.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_servers_clock_dates_a_request() {
     // 2001-01-01.
@@ -695,12 +702,17 @@ async fn the_servers_clock_dates_a_request() {
 
     assert_eq!(initialize().await.status(), reqwest::StatusCode::OK);
 
-    // The local Owner ends a Task a minute later.
-    let owner = coral_workspace::AuthenticatedPrincipal::user(tracer.local_user.clone());
-    let tasks = TaskModule::new(tracer.database.database(), tracer.workspaces.clone());
+    // The Agent ends its Task a minute later.
+    let agent = tracer
+        .workspaces
+        .authenticate_agent(&tracer.workspace_a, expiring.credential.expose(), start)
+        .await
+        .expect("authenticate the expiring Agent");
+    let tasks = TaskModule::new(tracer.database.database(), tracer.workspaces.clone())
+        .with_clock(Arc::new(clock.clone()));
     let task = tasks
         .start(
-            &owner,
+            &agent,
             &tracer.workspace_a,
             coral_task::TaskIntent::parse("Dated by the clock").expect("Task intent"),
             start,
@@ -708,7 +720,12 @@ async fn the_servers_clock_dates_a_request() {
         .await
         .expect("start the Task");
     clock.advance(Duration::from_mins(1));
-    let session = RawSession::open(&endpoint, protocol_window_ends().1).await;
+    let session = RawSession::open_as(
+        &endpoint,
+        protocol_window_ends().1,
+        Some(expiring.credential.expose()),
+    )
+    .await;
     let ended = session
         .tool(
             "end_task",
@@ -720,6 +737,8 @@ async fn the_servers_clock_dates_a_request() {
         Some(&json!("success")),
         "{ended}"
     );
+    // The local Owner reads the Agent's Task.
+    let owner = coral_workspace::AuthenticatedPrincipal::user(tracer.local_user.clone());
     let recorded = tasks
         .get(&owner, &tracer.workspace_a, task.id())
         .await
