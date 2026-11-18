@@ -2,6 +2,7 @@
 //! agent that calls it, the lead. The lead reaches it through one more MCP
 //! tool, `agent`, while the config file has a `[sub_agent]` section.
 
+mod lead_text;
 mod model;
 mod prompt;
 mod repository;

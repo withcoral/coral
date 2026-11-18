@@ -9,18 +9,23 @@
 //! learn discovery from `exec`'s example, the types and the errors; the rest
 //! of the text is kept as it was before discovery moved into Programs.
 
-/// Instructions sent in `InitializeResult` and `DiscoverResult`.
-pub(crate) const INSTRUCTIONS: &str = "\
+/// Writes the instructions sent in `InitializeResult` and `DiscoverResult`
+/// around the steps of their Workflow section. A tool surface that changes how
+/// an agent works gives its own steps, as a string literal, and keeps the rest.
+///
+/// Clients add instructions to every turn, and Claude Code before 2.1.296 drops
+/// what follows 2048, so longer instructions do not compile.
+#[macro_export]
+macro_rules! instructions {
+    ($steps:literal) => {{
+        const INSTRUCTIONS: &str = concat!(
+            "\
 Coral runs TypeScript programs that call the user's connected providers.
 
 ## Workflow
-1. Pass `goal` to the first `exec` of a unit of work, then its `task_id` to later calls.
-2. Find provider and custom tools with `coral.search` in a program; `exec` shows how.
-3. Call `exec` with one TypeScript async-function body. Each `exec` starts a new run and can repeat external effects.
-4. While `state` is `running` or `has_more` is true, call `wait` with the same `run_id` and the latest `next_cursor`. The last page carries the final value or failure.
-5. If other values can reuse the work (many calls, paging, joins, filters), write a function, call it, then pass it as `source` to `coral.addCustomTool` in that run (`coral.updateCustomTool` replaces one). Skip one call, one-off writes and exploration. Tell the user its path.
-6. When the work is done or cannot continue, call `end_task` once with the outcome.
-
+",
+            $steps,
+            "
 ## Program rules
 - Write each call as the complete literal call path that search returns, such as `coral.providers.github.getRepo(...)`. Keep `coral` and its sub-paths out of variables.
 - Only provider tools reach the network; `fetch`, `setTimeout` and other ambient APIs are absent.
@@ -36,8 +41,21 @@ Coral runs TypeScript programs that call the user's connected providers.
 A non-empty `required_actions` means the run waits for a person.
 - For `invoking_user`, write the full `url` as reply text, then keep calling `wait`: it can report the link as progress while it holds, and the decision resumes the run.
 - Never ask for a token, password or account in the chat: a connection happens on that page.
-";
+"
+        );
+        const _: () = assert!(INSTRUCTIONS.len() <= 2048);
+        INSTRUCTIONS
+    }};
+}
 
-// Clients add instructions to every turn; Claude Code before 2.1.296 drops
-// what follows 2048.
-const _: () = assert!(INSTRUCTIONS.len() <= 2048);
+/// The instructions of an agent that works with core's own tools.
+pub(crate) const INSTRUCTIONS: &str = instructions!(
+    "\
+1. Pass `goal` to the first `exec` of a unit of work, then its `task_id` to later calls.
+2. Find provider and custom tools with `coral.search` in a program; `exec` shows how.
+3. Call `exec` with one TypeScript async-function body. Each `exec` starts a new run and can repeat external effects.
+4. While `state` is `running` or `has_more` is true, call `wait` with the same `run_id` and the latest `next_cursor`. The last page carries the final value or failure.
+5. If other values can reuse the work (many calls, paging, joins, filters), write a function, call it, then pass it as `source` to `coral.addCustomTool` in that run (`coral.updateCustomTool` replaces one). Skip one call, one-off writes and exploration. Tell the user its path.
+6. When the work is done or cannot continue, call `end_task` once with the outcome.
+"
+);

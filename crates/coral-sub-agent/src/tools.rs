@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use crate::lead_text::{self, AGENT_DESCRIPTION};
 use crate::run_tools::task_failure;
 use crate::sub_agents::{Error, SubAgents, TurnState};
 
@@ -26,7 +27,7 @@ pub(crate) struct CoreWithAgent {
 }
 
 impl CoreWithAgent {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         core: Arc<dyn McpInterface>,
         tasks: TaskModule,
         sub_agents: SubAgents,
@@ -42,7 +43,7 @@ impl CoreWithAgent {
 #[async_trait::async_trait]
 impl McpInterface for CoreWithAgent {
     fn instructions(&self) -> &str {
-        self.core.instructions()
+        lead_text::INSTRUCTIONS
     }
 
     async fn tools(&self, caller: &McpCaller) -> Result<Vec<Tool>, ErrorData> {
@@ -151,7 +152,6 @@ impl CoreWithAgent {
     }
 }
 
-const AGENT_DESCRIPTION: &str = "Give one message to a Sub-agent: a model that Coral runs for you, inside your Task. The call starts the Sub-agent and returns its `sub_agent_id` at once. Read the answer with `wait`, and stop the Sub-agent with `cancel`: pass each the `sub_agent_id` in place of `run_id`. A Sub-agent reads only `message`. It runs Programs in your Task, as you, and answers from what they return.";
 const AGENT_TAKES: &str = "agent takes `message`, and `task_id` or `goal`: pass `task_id` to work in a Task you started, or `goal` to start a new one";
 
 #[derive(Deserialize, JsonSchema)]

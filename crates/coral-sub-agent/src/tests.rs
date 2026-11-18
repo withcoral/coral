@@ -27,7 +27,7 @@ use crate::model::{Block, Message, ModelClient, Role, ToolCall};
 use crate::run_tools::Caller;
 use crate::sub_agents::{Error, RunningTurn, SubAgents, TURN_LEASE, TurnState};
 use crate::telemetry::TurnTrace;
-use crate::{MODEL_CALL_TIMEOUT, SubAgentFactory, repository};
+use crate::{MODEL_CALL_TIMEOUT, SubAgentFactory, lead_text, repository};
 
 mod compaction;
 mod telemetry;
@@ -339,14 +339,15 @@ async fn startup_checks_the_section_and_sends_the_model_nothing() {
     assert!(lead.model.received_requests().await.unwrap().is_empty());
 }
 
-// Catches: a lead served without `agent`, or a `wait` or `cancel` that refuses
-// a `sub_agent_id`.
+// Catches: a lead served without `agent` or the text about it, or a `wait` or
+// `cancel` that refuses a `sub_agent_id`.
 #[tokio::test]
 async fn a_lead_is_served_agent_beside_cores_tools() {
     let lead = Lead::new().await;
     let tools = lead.tools();
     let caller = lead.caller();
-    let core_tools = lead.modules.core_interface().tools(&caller).await.unwrap();
+    let core = lead.modules.core_interface();
+    let core_tools = core.tools(&caller).await.unwrap();
 
     let served = tools.tools(&caller).await.unwrap();
     let names = |tools: &[Tool]| -> Vec<String> {
@@ -354,6 +355,10 @@ async fn a_lead_is_served_agent_beside_cores_tools() {
     };
     let with_agent = [names(&core_tools), vec!["agent".to_owned()]].concat();
     assert_eq!(names(&served), with_agent);
+    let agent = served.iter().find(|tool| tool.name == "agent");
+    let description = agent.and_then(|tool| tool.description.as_deref());
+    assert_eq!(description, Some(lead_text::AGENT_DESCRIPTION));
+    assert_eq!(tools.instructions(), lead_text::INSTRUCTIONS);
     for name in ["wait", "cancel"] {
         let (core_taken, _) = arguments(&core_tools, name);
         let (taken, required) = arguments(&served, name);
