@@ -367,8 +367,9 @@ async fn a_role_change_of_an_absent_membership_is_not_found_whatever_its_precond
     }
 }
 
-/// One action that takes a request identity. Each takes one of two targets,
-/// so that a repeat that ran again would show.
+/// One action that takes a request identity. Most take one of two targets,
+/// so that a repeat that ran again would show; a rotation always rotates the
+/// same Registration.
 #[derive(Debug, Clone, Copy)]
 enum Once {
     CreateWorkspace,

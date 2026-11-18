@@ -35,13 +35,15 @@
   outcomes of the call it made, and an Adapter reports a wrapped error as
   that error's own mapper does.
 - A method whose change can conflict takes the etag its caller read as a
-  `coral_workspace::IfMatch` argument, and a method that must not run twice
-  takes a `coral_workspace::RequestId` argument
+  `coral_workspace::IfMatch` argument, and a Workspace administration method
+  that must not run twice takes a `coral_workspace::RequestId` argument
   ([ADR 0039](docs/adr/0039-a-change-takes-its-precondition-as-an-argument-and-a-resources-version-lives-on-its-row.md)).
   Do not carry either in `ChangeContext`, and do not make either optional. An
-  Adapter reads them with `IfMatch::parse` and `RequestId::parse`.
-  `IfMatch::any()` exists only in test builds: a test whose subject is not the
-  conflict check passes it.
+  Adapter reads them with `IfMatch::parse` and `RequestId::parse`. A Provider
+  Publication keeps its own `coral_provider::ManagementRequestId`, which
+  replays the stored result. `IfMatch::any()` is compiled only under
+  `cfg(test)` and the `test-fixtures` feature, which only dev-dependencies
+  enable: a test whose subject is not the conflict check passes it.
 - Read process environment only at process bootstrap. Pass explicit values to
   domain code. The `env` Secret Store is the one exception: bootstrap hands it
   a reader, and it reads only under its guarded prefix (ADR 0036).

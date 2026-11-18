@@ -155,10 +155,11 @@ impl WorkspaceModule {
     /// # Errors
     ///
     /// Requires an active Workspace, effective Owner, and exact Registration.
-    /// Returns [`Error::EtagMismatch`] for a Registration that changed since,
-    /// and [`Error::RequestAlreadyApplied`] for a request that already
-    /// rotated. Rotation does not enable a disabled Agent or extend its
-    /// expiration.
+    /// Returns [`Error::EtagMismatch`] for a Registration that changed since.
+    /// A rotation changes its Registration, so a repeat that sends the etag
+    /// it first read gets that error too. A repeat that read the Registration
+    /// again gets [`Error::RequestAlreadyApplied`]. Rotation does not enable
+    /// a disabled Agent or extend its expiration.
     pub async fn rotate_agent_credential(
         &self,
         context: &ChangeContext,

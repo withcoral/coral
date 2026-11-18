@@ -314,8 +314,9 @@ impl WorkspaceRole {
 }
 
 /// Explicit intent for a designated Membership write, separate from
-/// correlation. Only a role change of an existing Membership can conflict
-/// with another change, so only it carries the etag the caller read.
+/// correlation. Only [`Self::UpdateRole`] carries the etag the caller read.
+/// [`Self::Assign`] writes whatever is there, on purpose and with no
+/// precondition.
 #[derive(Debug, Clone, Copy)]
 pub enum MembershipChange {
     /// Add a previously absent designated Membership.
