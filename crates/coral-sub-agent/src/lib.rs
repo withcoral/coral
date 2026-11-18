@@ -2,13 +2,14 @@
 //! agent that calls it, the lead. The lead reaches it through one more MCP
 //! tool, `agent`, while the config file has a `[sub_agent]` section.
 
-pub mod model;
+mod model;
 mod repository;
 mod sub_agents;
 mod tools;
 
 use std::error::Error;
 use std::sync::Arc;
+use std::time::Duration;
 
 use coral_app::{McpInterfaceDependencies, McpInterfaceFactory};
 use coral_mcp::McpInterface;
@@ -50,6 +51,8 @@ impl McpInterfaceFactory for SubAgentFactory {
 
 /// The fewest tokens a model's context window may hold.
 const CONTEXT_WINDOW_MIN: u32 = 48_000;
+/// How long the model may take over one attempt at a reply.
+const MODEL_CALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The `[sub_agent]` section, as the operator wrote it.
 #[derive(Deserialize)]
@@ -97,6 +100,8 @@ impl Section {
             }
             None => None,
         };
-        Ok(ModelClient::new(policy, base_url, self.model, api_key))
+        let http = coral_outbound::Client::new(policy, MODEL_CALL_TIMEOUT)
+            .map_err(|_error| SettingError::new("", "model client initialization failed"))?;
+        Ok(ModelClient::new(http, &base_url, self.model, api_key))
     }
 }

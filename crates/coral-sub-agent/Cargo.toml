@@ -13,14 +13,16 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 coral-app.workspace = true
+coral-credentials.workspace = true
 coral-db.workspace = true
 coral-identifier.workspace = true
 coral-mcp.workspace = true
-coral-outbound.workspace = true
+coral-outbound = { workspace = true, features = ["transport"] }
 coral-secret-store.workspace = true
 coral-task.workspace = true
 coral-telemetry.workspace = true
 coral-workspace.workspace = true
+reqwest.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
 sea-query.workspace = true
@@ -33,3 +35,6 @@ toml.workspace = true
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
