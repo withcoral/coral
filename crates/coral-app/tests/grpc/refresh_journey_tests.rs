@@ -51,9 +51,9 @@ impl Journey {
             coral_test_support::p256_pkcs8(),
         )
         .unwrap();
-        std::fs::write(
-            temp.path().join("config.toml"),
-            format!(
+        coral_test_support::write_server_config(
+            temp.path(),
+            &format!(
                 "[outbound]\nloopback = 'http-and-https'\n\
                  [listeners.grpc]\nbind = '127.0.0.1:0'\n\
                  [listeners.mcp]\nbind = '127.0.0.1:0'\npublic_url = 'https://{MCP_HOST}'\n\
@@ -65,8 +65,7 @@ impl Journey {
                  client_secret = 'test-secret'\n",
                 provider.uri()
             ),
-        )
-        .unwrap();
+        );
         let clock = ManualClock::starting_now();
         let runtime = coral_app::start_runtime(coral_app::Launch {
             config_dir: Some(temp.path().to_owned()),

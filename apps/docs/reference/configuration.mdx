@@ -6,7 +6,7 @@ sidebarTitle: "Configuration"
 Your configuration is in the `config.toml` file of Coral's configuration folder. The location of that folder depends on how you run Coral:
 
 - **Container image.** The `ghcr.io/withcoral/coral` image uses `/var/lib/coral/config`. Mount a volume at `/var/lib/coral` so the folder outlives the container. You can also pass the contents of `config.toml` in the `CORAL_CONFIG` variable. See [Container image](#container-image).
-- **Desktop app.** The desktop app uses the `runtime` folder of its data folder, for example `~/Library/Application Support/com.withcoral.app/runtime` on macOS. The desktop app writes this `config.toml` again at each launch, so you lose your edits to it.
+- **Desktop app.** The desktop app uses the `runtime` folder of its data folder, for example `~/Library/Application Support/com.withcoral.app/runtime` on macOS. The desktop app writes this `config.toml` again at each launch, so you lose your edits to it. To turn semantic search off in the desktop app, quit it and add `"search": { "semantic": false }` to `desktop.json` in its data folder.
 - **The `coral` binary.** When you start the binary yourself, it uses:
   - macOS: `~/Library/Application Support/com.withcoral.coral`
   - Linux: `~/.config/coral`
@@ -109,7 +109,7 @@ Write byte sizes as plain numbers. For example, write `134217728` for 128MiB.
 | Key                          | Description                                                                                                                 | Required | Default |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- | -------- | ------- |
 | `reconcile_interval_seconds` | Interval at which Coral indexes provider tools, private tools and shared tools for search. Must be greater than 0. | No       | `300`   |
-| `semantic_search_enabled`    | Turns on semantic search: search matches tools by what a query means, not only by its words. Coral reads the setting at startup. See [Semantic search requirements](#semantic-search-requirements). | No       | `false` |
+| `semantic_search_enabled`    | Turns on semantic search: search matches tools by what a query means, not only by its words. Coral reads the setting at startup. See [Semantic search requirements](#semantic-search-requirements). | No       | `true`  |
 
 #### Semantic search requirements
 
