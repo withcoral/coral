@@ -6,6 +6,23 @@ import { promisify } from 'node:util'
 const exec = promisify(execFile)
 
 /**
+ * Say what ended an engine command: no answer within its wait, a signal, a
+ * spawn error, or its exit code, then the last lines of its stderr.
+ */
+function failure(step: string, error: unknown, timeout: number) {
+  const { code, killed, signal, stderr } = error as ExecFileException & { stderr?: string }
+  const reason = killed
+    ? `gave no answer within ${timeout / 1000} seconds`
+    : signal
+      ? `was ended by ${signal}`
+      : typeof code === 'number'
+        ? `exited with code ${code}`
+        : `did not run (${code ?? 'unknown error'})`
+  const output = (stderr ?? '').trim().split('\n').slice(-5).join('\n')
+  return `${step} ${reason}${output ? `: ${output}` : ''}`
+}
+
+/**
  * Own the reusable local test container and its disposable databases. Bootstrap
  * supplies the environment; no process environment or Make recipes are read here.
  */
@@ -26,6 +43,7 @@ export class LocalPostgres {
   private selectedEngine() {
     this.engine ??= (async () => {
       if (this.env.POSTGRES_CONTAINER_ENGINE) return this.env.POSTGRES_CONTAINER_ENGINE
+      const failures: string[] = []
       for (const candidate of ['docker', 'podman']) {
         try {
           await exec(candidate, ['--version'], {
@@ -34,11 +52,12 @@ export class LocalPostgres {
             killSignal: 'SIGKILL',
           })
           return candidate
-        } catch {
-          /* Prefer Docker, then try Podman if it is unavailable. */
+        } catch (error) {
+          // Prefer Docker, then try Podman if it is unavailable.
+          failures.push(failure(`${candidate} --version`, error, 5000))
         }
       }
-      throw new Error('Docker or Podman is required for local Postgres')
+      throw new Error(`Docker or Podman is required for local Postgres\n${failures.join('\n')}`)
     })()
     return this.engine
   }
@@ -51,17 +70,8 @@ export class LocalPostgres {
       // Name the subcommand and what ended it, never the whole command line.
       // The message carries the engine's stderr: a caller shows it only when
       // its commands print nothing private, and replaces it otherwise.
-      const { code, killed, signal, stderr } = error as ExecFileException & { stderr?: string }
       const step = `${engine} ${args.slice(0, args[0] === 'container' ? 2 : 1).join(' ')}`
-      const reason = killed
-        ? `gave no answer within ${timeout / 1000} seconds`
-        : signal
-          ? `was ended by ${signal}`
-          : typeof code === 'number'
-            ? `exited with code ${code}`
-            : `did not run (${code ?? 'unknown error'})`
-      const output = (stderr ?? '').trim().split('\n').slice(-5).join('\n')
-      throw new Error(`${step} ${reason}${output ? `: ${output}` : ''}`)
+      throw new Error(failure(step, error, timeout))
     }
   }
 

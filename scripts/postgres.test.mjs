@@ -286,11 +286,17 @@ test('a failed startup names the engine command and what ended it', async (conte
     })
     assert.deepEqual((await fixture.state()).containers, {})
   }
-  await assert.rejects(new LocalPostgres({ PATH: '' }).start(), {
-    message: `${startup}\nDocker or Podman is required for local Postgres`,
+  const none = await postgresFixture(context, {}, [])
+  await assert.rejects(new LocalPostgres(none.env).start(), {
+    message: `${startup}\nDocker or Podman is required for local Postgres\ndocker --version did not run (ENOENT)\npodman --version did not run (ENOENT)`,
+  })
+  // An engine that is installed but does not run is not reported as missing.
+  const broken = await postgresFixture(context, { fail: ['--version'], stderr: 'broken install' })
+  await assert.rejects(new LocalPostgres(broken.env).start(), {
+    message: `${startup}\nDocker or Podman is required for local Postgres\ndocker --version did not run (ENOENT)\npodman --version exited with code 1: broken install`,
   })
   await assert.rejects(
-    new LocalPostgres({ PATH: '', POSTGRES_CONTAINER_ENGINE: 'absent-engine' }).start(),
+    new LocalPostgres({ ...none.env, POSTGRES_CONTAINER_ENGINE: 'absent-engine' }).start(),
     { message: `${startup}\nabsent-engine container ls did not run (ENOENT)` },
   )
 })
