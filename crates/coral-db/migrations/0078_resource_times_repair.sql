@@ -18,9 +18,20 @@
 -- was before the change. The row then holds the later time, and keeps it:
 -- this is why the step never sets a time back.
 --
--- The Registrations go first. That Coral deletes an Agent by deleting the
--- Registration and then marking the Agent, and this step runs in one
--- transaction, so it takes the two rows in the same order.
+-- The Registrations go first, to match the only Agent deletion this step can
+-- meet. This step runs in one transaction, and so takes every Registration
+-- row and then every Agent row. A Coral whose plan ends before this step,
+-- such as the one with step 0077, deletes an Agent by deleting the
+-- Registration and then marking the Agent. With the Agents first here, the
+-- two would wait for each other.
+--
+-- The Coral that brings this step deletes in the other order: it marks the
+-- Agent and then deletes the Registration. Do not reverse this step for it.
+-- No instance of that Coral, or of a later one, serves while this step runs:
+-- an instance applies its whole plan before it serves, and a second one that
+-- starts meanwhile waits for the advisory lock of the run that applies the
+-- plan. Its deletion and an earlier Coral's do not wait for each other
+-- either, because each holds the Workspace row before it takes these rows.
 --
 -- A row that has no metadata row is left as it is, so no time is set to NULL:
 -- Coral reads a missing time as absent. No version changes.
@@ -28,7 +39,7 @@
 -- Coral still writes `workspace_resource_metadata` with every change, for a
 -- Coral that reads it.
 --
--- rolling-upgrade: compatible. This step rewrites only the time columns that step 0077 added to agent_registrations and workspace_agents: it fills a time that is NULL, and moves the time of the last change forward to the one that workspace_resource_metadata holds for the same row. No release reads these columns, and the build that added them reads the times from workspace_resource_metadata.
+-- rolling-upgrade: compatible. This step rewrites only the time columns that step 0077 added to agent_registrations and workspace_agents: it fills a time that is NULL, and moves the time of the last change forward to the one that workspace_resource_metadata holds for the same row. No release before the one that brings this step reads these columns: the build that added them writes them, and reads the times from workspace_resource_metadata.
 UPDATE agent_registrations
 SET created_at_unix_nanos = COALESCE(
         created_at_unix_nanos,
