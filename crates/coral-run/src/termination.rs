@@ -291,7 +291,7 @@ impl RunModule {
             return Err(Error::ClaimMismatch);
         }
         let now = self.now()?.max(run.accepted_at_unix_nanos);
-        let kind = end_in_one_chunk(
+        let (kind, ended_at) = end_in_one_chunk(
             &mut transaction,
             &run,
             decided.cloned(),
@@ -310,7 +310,7 @@ impl RunModule {
                 outcome: &kind.outcome(),
                 reason: kind,
             },
-            now,
+            ended_at,
         );
         Ok(())
     }
@@ -356,7 +356,8 @@ impl RunModule {
 /// `approval_expired`), then `run.ended`, never before the termination. The
 /// worker claim is released and, for a started Run, the execution claim
 /// taken over by `takeover`. One head move, predicated on the claim and the
-/// head `run` shows. Returns the termination it wrote.
+/// head `run` shows. Returns the termination it wrote and the Run's end
+/// time, never before that termination started.
 pub(crate) async fn end_in_one_chunk(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
@@ -364,7 +365,7 @@ pub(crate) async fn end_in_one_chunk(
     mut events: Vec<OwnedEvent>,
     takeover: Option<run_repository::Takeover<'_>>,
     now_unix_nanos: i64,
-) -> Result<RunTerminationKind, Error> {
+) -> Result<(RunTerminationKind, i64), Error> {
     let termination = match (run.termination, cancellation) {
         (Some(recorded), _) => RequestedTermination::recorded(recorded),
         (None, Some(cancellation)) => {
@@ -400,7 +401,7 @@ pub(crate) async fn end_in_one_chunk(
         ended_at_unix_nanos,
     )
     .await?;
-    Ok(termination.termination.kind)
+    Ok((termination.termination.kind, ended_at_unix_nanos))
 }
 
 /// A recorded termination to settle: which Run, and until when its

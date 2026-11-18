@@ -624,7 +624,12 @@ async fn an_approval_expires_in_the_loop_unless_a_decision_committed_first() {
                 completion: Some(finish::Completion::ValueJson("1".to_owned())),
             }),
         );
-        while !matches!(stream.next().await, run_response::Message::Ended(_)) {}
+        let end = loop {
+            if let message @ run_response::Message::Ended(_) = stream.next().await {
+                break message;
+            }
+        };
+        assert_eq!(end, ended(WireEnd::Succeeded));
         let settled = approvals
             .get(&tool.principal, &tool.workspace_id, &request.id)
             .await
