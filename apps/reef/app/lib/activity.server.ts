@@ -315,6 +315,10 @@ function executionFacts(
 function runView(value: ActivityRun): ExecutionRow {
   return {
     ...executionFacts(value),
+    executionStartedAt:
+      value.executionStartedAtUnixNanos === undefined
+        ? undefined
+        : timestamp(value.executionStartedAtUnixNanos),
     state: enumLabel(runStates, value.state),
     intent: value.intent,
     actorLabel: value.actorLabel,

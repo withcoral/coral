@@ -253,6 +253,47 @@ async fn an_open_with_another_claim_is_told_the_run_is_not_held() {
     );
 }
 
+/// Catches: a Run summary that reads the acceptance as the start, so a Run
+/// waiting for a Run Executor reads as executing.
+#[tokio::test]
+async fn a_run_summary_reads_no_start_mark_until_its_run_stream_starts_it() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let runs = fixture.runs.clone().with_run_streams();
+    let (workspace_id, principal) = fixture.user_scope("user:start", "Start mark").await;
+    let accepted = runs
+        .start(&principal, &workspace_id, submission("return 1;"))
+        .await
+        .expect("accept a Run");
+    let started_at = || async {
+        runs.inspect_run(
+            &principal,
+            &workspace_id,
+            accepted.run_id(),
+            &crate::RunInspection {
+                event_limit: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("inspect the Run")
+        .summary
+        .execution_started_at
+    };
+    assert_eq!(started_at().await, None, "a waiting Run has not started");
+    let claim = take(&runs).await;
+    assert_eq!(started_at().await, None, "a taken Run has not started");
+
+    let mut stream = Scripted::open(&runs, &accepted.run_id().to_string(), &claim);
+    stream.start().await;
+    let run = fixture.run_record(&workspace_id, accepted.run_id()).await;
+    assert_eq!(
+        started_at().await,
+        run.execution_started_at_unix_nanos
+            .map(coral_db::UnixNanos::new)
+    );
+    assert!(run.execution_started());
+}
+
 #[tokio::test]
 async fn a_broken_message_before_started_interrupts_the_run_and_closes_the_stream() {
     // A request where Loaded belongs, and a message with nothing in it.

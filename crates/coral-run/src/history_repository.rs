@@ -251,6 +251,10 @@ fn run_select(now: i64) -> SelectStatement {
         )
         .expr_as(measured_context(), Alias::new("context_impact_bytes"))
         .expr_as(col("r", "accepted_at_unix_nanos"), Alias::new("started_at"))
+        .expr_as(
+            col("r", "execution_started_at_unix_nanos"),
+            Alias::new("execution_started_at"),
+        )
         .expr_as(col("r", "terminal_at_unix_nanos"), Alias::new("ended_at"))
         .expr_as(
             duration("r", "accepted_at_unix_nanos", "terminal_at_unix_nanos", now),
@@ -274,6 +278,7 @@ struct RunRow {
     workspace_id: String,
     state: String,
     started_at: i64,
+    execution_started_at: Option<coral_db::UnixNanos>,
     ended_at: Option<i64>,
     duration: i64,
     requires_action: bool,
@@ -293,6 +298,7 @@ impl RunRow {
             id: crate::RunId::parse(&self.id)?,
             state: crate::RunState::from_storage_str(&self.state)?,
             started_at: self.started_at,
+            execution_started_at: self.execution_started_at,
             ended_at: self.ended_at,
             duration: self.duration,
             requires_action: self.requires_action,

@@ -146,6 +146,7 @@ const execution: ActivityRow & { kind: 'run' } = {
   task,
   state: 'running',
   startedAt: at,
+  executionStartedAt: at,
   endedAt: null,
   durationNanos: '242000000000',
   requiresAction: true,

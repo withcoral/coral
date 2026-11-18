@@ -38,6 +38,7 @@ const run: Extract<ActivityRow, { kind: 'run' }> = {
   task: '',
   state: 'running',
   startedAt: '2026-09-22T09:00:00Z',
+  executionStartedAt: '2026-09-22T09:00:01Z',
   endedAt: null,
   durationNanos: '3000000000',
   requiresAction: true,

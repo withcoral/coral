@@ -877,6 +877,22 @@ it.each<[string, Detail, string]>([
 
 it.each<[string, RunDetail, string | null]>([
   ['running', runPanel({ requiresAction: false }), null],
+  // Catches: a waiting Run that reads its acceptance as its start.
+  ['waiting', runPanel({ requiresAction: false, executionStartedAt: undefined }), null],
+  // Catches: a Run canceled while it waited that still reads "Waiting to start".
+  [
+    'canceled',
+    {
+      ...runPanel({
+        state: 'canceled',
+        endedAt: '2026-09-22T09:05:00Z',
+        requiresAction: false,
+        executionStartedAt: undefined,
+      }),
+      terminal: { kind: 'canceled' },
+    },
+    null,
+  ],
   [
     'succeeded',
     {
@@ -920,14 +936,24 @@ it.each<[string, RunDetail, string | null]>([
     // The timing list comes straight after the header.
     expect(container.querySelector('header')!.nextElementSibling).toBe(timing.closest('section'))
     const ended = detail.run.endedAt
+    const started = detail.run.executionStartedAt
+    // A Run with no start mark shows that it waits only while it runs.
+    const running = detail.run.state === 'running'
     expect(
       within(timing)
         .getAllByRole('term')
         .map((term) => term.textContent),
-    ).toEqual(['Duration', 'Started', ...(ended ? ['Ended'] : [])])
+    ).toEqual([
+      'Duration',
+      'Accepted',
+      ...(started || running ? ['Started'] : []),
+      ...(ended ? ['Ended'] : []),
+    ])
     const fact = (term: string) =>
       within(timing).getByText(term, { selector: 'dt' }).nextElementSibling
-    expectInstant(fact('Started'), detail.run.startedAt, '22 Sep 2026, 09:00:00 UTC')
+    expectInstant(fact('Accepted'), detail.run.startedAt, '22 Sep 2026, 09:00:00 UTC')
+    if (started) expectInstant(fact('Started'), started, '22 Sep 2026, 09:00:01 UTC')
+    else if (running) expect(fact('Started')).toHaveTextContent('Waiting to start')
     if (ended) expectInstant(fact('Ended'), ended, '22 Sep 2026, 09:05:00 UTC')
     for (const gone of [
       'Context',
@@ -950,9 +976,7 @@ it.each<[string, RunDetail, string | null]>([
     if (returned)
       expect(within(returned as HTMLElement).getByRole('group', { name: 'Structure' })).toBeTruthy()
     expect(within(container).queryByText('Return value', { selector: 'summary' })).toBeNull()
-    expect(Boolean(within(container).queryByRole('button', { name: 'Cancel run' }))).toBe(
-      state === 'running',
-    )
+    expect(Boolean(within(container).queryByRole('button', { name: 'Cancel run' }))).toBe(running)
   },
 )
 
@@ -2330,10 +2354,21 @@ describe('an account connection the Run waits on', () => {
       // The Run follows as context, below the header, its times labelled as the Run's.
       const list = document.querySelector('dl')!
       expect(header.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-      expect(terms(list)).toEqual(['Run intent', 'Requested by', 'Run duration', 'Run started'])
+      expect(terms(list)).toEqual([
+        'Run intent',
+        'Requested by',
+        'Run duration',
+        'Run accepted',
+        'Run started',
+      ])
       expect(factIn(list, 'Run intent')).toHaveTextContent(run.intent!)
       expect(factIn(list, 'Requested by')).toHaveTextContent('Collections agent · Finance')
-      expectInstant(factIn(list, 'Run started'), run.startedAt, '22 Sep 2026, 09:00:00 UTC')
+      expectInstant(factIn(list, 'Run accepted'), run.startedAt, '22 Sep 2026, 09:00:00 UTC')
+      expectInstant(
+        factIn(list, 'Run started'),
+        run.executionStartedAt!,
+        '22 Sep 2026, 09:00:01 UTC',
+      )
       // No Run cancel and no extra sentence about several calls.
       expect(screen.queryByRole('button', { name: 'Cancel run' })).not.toBeInTheDocument()
       expect(document.body).not.toHaveTextContent('One connection can unblock')
@@ -2782,7 +2817,7 @@ describe('each record states only what helps, once', () => {
     const lists = container.querySelectorAll('dl')
     expect(lists).toHaveLength(1)
     // Its times close the list.
-    expect(terms(lists[0])).toEqual(['Duration', 'Started', 'Ended'])
+    expect(terms(lists[0])).toEqual(['Duration', 'Accepted', 'Started', 'Ended'])
     expectNoScaffolding(container)
     for (const text of gone) expect(container.textContent).not.toContain(text)
     // A failure is never folded away.
