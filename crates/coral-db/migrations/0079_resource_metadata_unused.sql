@@ -1,7 +1,9 @@
 -- Coral no longer reads or writes `workspace_resource_metadata`. A Workspace,
 -- a Workspace Membership, an Agent and an Agent Registration each keep their
 -- version and their times on their own row, and nothing ever read what a
--- Secret Store grant wrote there.
+-- Secret Store grant wrote there. An Agent or an Agent Registration row that
+-- an earlier Coral wrote may still lack a time: Coral reads it as absent, and
+-- the table still holds it.
 --
 -- This step changes no schema and no row, so the table keeps what it holds.
 -- It marks the change that stopped using the table: a later step drops the
