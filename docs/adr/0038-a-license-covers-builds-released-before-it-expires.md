@@ -29,7 +29,7 @@ older release line by cherry-picks keeps that line's Release Date, so it stays c
 the line.
 
 A License is one line of text: a PASETO `v4.public` token (Ed25519) signed with the implicit assertion
-`coral-license`, so no other token signed with the same key passes as a License. Its payload holds a format version
+`coral-license`, so no other token signed with the same signing key passes as a License. Its payload holds a format version
 `v`, its `kind` (`commercial` or `evaluation`), a license id `lid`, a `customer` name for people to read, its issue
 time `iat` and its expiry `exp_date`, a calendar date. The expiry is not PASETO's registered `exp` claim, because generic validators compare `exp` with the
 clock. A License covers a build when the UTC date of the build's Release Date is on or before `exp_date`. The footer
@@ -39,12 +39,12 @@ or seat count: the Edition is all it sets. A binary refuses a format version or 
 
 A build with a Release Date trusts only the production public keys. A build without one, any source or development
 build, trusts only a test public key, and counts as released on its own commit's date, or on the current date when git
-is unavailable. The test key's private half stays in the Coral team's password vault, outside this repository and CI. The
+is unavailable. The test signing key's private half stays in the Coral team's password vault, outside this repository and CI. The
 repository keeps three Licenses signed with it: a Commercial License that covers every development build, which Reel and
 developers load to run as Enterprise, one that has lapsed, and an Evaluation License that never expires, to show the
-trial path. Tests that need other Licenses sign them with keys they generate, which they pass to the check directly. So
+trial path. Tests that need other Licenses sign them with signing keys they generate, which they pass to the check directly. So
 no published binary ever accepts a test License, and CI holds no long-lived signing key. ADR 0033 protects `ee/` code
-with its licence, not with access to it: anyone with the source can already change the check, so the test key grants
+with its licence, not with access to it: anyone with the source can already change the check, so the test signing key grants
 nothing the licence does not already govern.
 
 ## Considered options

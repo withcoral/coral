@@ -61,11 +61,13 @@ does not know that it exists. _Avoid_: capability (a Program term), entitlement,
 **License**: A grant signed by Coral that sets a self-hosted deployment's Edition to Enterprise on every build whose
 Release Date is on or before the License's expiry. A License is a Commercial License or an Evaluation License. An
 Evaluation License also needs the clock to be on or before its expiry. A License names its customer for people to read,
-and binds to no deployment. _Avoid_: licence, license key, token, entitlement, license file
+and binds to no deployment. `config.toml` takes it as `[license] key`, the name operators know; say "signing key",
+never bare "key", for the key that signs it. _Avoid_: licence, license key (outside that setting), token, entitlement,
+license file
 
 **Commercial License**: A License that a customer paid for. After its expiry passes, it still covers the builds released
 before that date. A build released later refuses to start with it. _Avoid_: paid license, production license (a
-production key signs both kinds)
+production signing key signs both kinds)
 
 **Evaluation License**: A License for a trial. It sets Enterprise only until its expiry passes on the clock. Then Coral
 stops, and does not start again with it. _Avoid_: trial license

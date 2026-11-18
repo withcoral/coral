@@ -452,7 +452,7 @@ fn a_refusal_says_what_to_do() {
 }
 
 // Catches: a published binary that accepts a test License, or a development
-// build that trusts a production key.
+// build that trusts a production signing key.
 #[test]
 fn a_build_trusts_the_test_key_only_when_it_has_no_release_date() {
     let covering = license_line(include_str!(
@@ -500,11 +500,11 @@ fn a_build_trusts_the_test_key_only_when_it_has_no_release_date() {
             Err(Refusal::Untrusted {
                 kid: test_kid.to_owned(),
             }),
-            "a released build refuses the test key"
+            "a released build refuses the test signing key"
         );
     }
 
-    // A development build trusts the test key alone, so it refuses every
+    // A development build trusts the test signing key alone, so it refuses every
     // production-signed License.
     assert_eq!(Keys::for_build(development).trusted_ids(), [test_kid]);
     assert!(

@@ -394,7 +394,7 @@ impl DeploymentConfig {
     }
 
     /// The License the deployment configures, trimmed, or None without
-    /// `[license]`. `read_env` reads a `text_env` variable, which startup
+    /// `[license]`. `read_env` reads a `key_env` variable, which startup
     /// reads once: a new License applies at the next restart.
     ///
     /// # Errors
@@ -409,16 +409,16 @@ impl DeploymentConfig {
             return Ok(None);
         };
         match source {
-            LicenseSource::Text(text) => license_secret(text.expose())
+            LicenseSource::Inline(text) => license_secret(text.expose())
                 .map(Some)
-                .map_err(|message| refused("license.text", message)),
+                .map_err(|message| refused("license.key", message)),
             LicenseSource::Env(name) => {
-                let value = read_env(LICENSE_TEXT_ENV, name)?;
+                let value = read_env(LICENSE_KEY_ENV, name)?;
                 license_secret(&value).map(Some).map_err(|message| {
                     AppError::invalid_secret(
-                        LICENSE_TEXT_ENV,
+                        LICENSE_KEY_ENV,
                         name,
-                        format!("{LICENSE_TEXT_ENV} names `{name}`, which {message}"),
+                        format!("{LICENSE_KEY_ENV} names `{name}`, which {message}"),
                     )
                 })
             }
@@ -687,15 +687,15 @@ impl CredentialSettings {
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct LicenseSettings {
-    text: Option<String>,
-    text_env: Option<String>,
+    key: Option<String>,
+    key_env: Option<String>,
 }
 
-const LICENSE_TEXT_ENV: &str = "license.text_env";
+const LICENSE_KEY_ENV: &str = "license.key_env";
 
 /// Where the configured License is.
 enum LicenseSource {
-    Text(coral_credentials::Secret),
+    Inline(coral_credentials::Secret),
     /// The environment variable that holds it.
     Env(String),
 }
@@ -714,21 +714,18 @@ fn license_secret(text: &str) -> Result<coral_credentials::Secret, &'static str>
 
 impl LicenseSettings {
     fn validate(self) -> Result<LicenseSource, AppError> {
-        match (self.text, self.text_env) {
-            (Some(text), None) => license_secret(&text)
-                .map(LicenseSource::Text)
-                .map_err(|message| refused("license.text", message)),
-            (None, Some(name)) => super::env_var_name(LICENSE_TEXT_ENV, &name)
+        match (self.key, self.key_env) {
+            (Some(key), None) => license_secret(&key)
+                .map(LicenseSource::Inline)
+                .map_err(|message| refused("license.key", message)),
+            (None, Some(name)) => super::env_var_name(LICENSE_KEY_ENV, &name)
                 .map(LicenseSource::Env)
-                .map_err(|message| AppError::config(LICENSE_TEXT_ENV, message)),
+                .map_err(|message| AppError::config(LICENSE_KEY_ENV, message)),
             (Some(_), Some(_)) => Err(refused(
                 "license",
-                "takes one License: set text or text_env, not both",
+                "takes one License: set key or key_env, not both",
             )),
-            (None, None) => Err(refused(
-                "license",
-                "must set text or text_env, or be removed",
-            )),
+            (None, None) => Err(refused("license", "must set key or key_env, or be removed")),
         }
     }
 }
@@ -2032,7 +2029,7 @@ client_secret = 'test-secret'
     // Catches: a License read from the wrong place, or a `[license]` that
     // names two Licenses or none, which startup must refuse.
     #[test]
-    fn the_license_is_the_one_text_or_variable_the_section_names() {
+    fn the_license_is_the_one_key_or_variable_the_section_names() {
         let read_env = |setting: &str, name: &str| -> Result<String, AppError> {
             match name {
                 "CORAL_TEST_LICENSE" => Ok(" v4.public.from-env\n".to_owned()),
@@ -2045,11 +2042,11 @@ client_secret = 'test-secret'
         for (raw, expected) in [
             ("", None),
             (
-                "[license]\ntext = \" v4.public.inline\\n\"",
+                "[license]\nkey = \" v4.public.inline\\n\"",
                 Some("v4.public.inline"),
             ),
             (
-                "[license]\ntext_env = 'CORAL_TEST_LICENSE'",
+                "[license]\nkey_env = 'CORAL_TEST_LICENSE'",
                 Some("v4.public.from-env"),
             ),
         ] {
@@ -2063,17 +2060,17 @@ client_secret = 'test-secret'
         for (raw, expected) in [
             ("[license]", Refused::Setting("license")),
             (
-                "[license]\ntext = 'v4.public.a'\ntext_env = 'CORAL_TEST_LICENSE'",
+                "[license]\nkey = 'v4.public.a'\nkey_env = 'CORAL_TEST_LICENSE'",
                 Refused::Setting("license"),
             ),
-            ("[license]\ntext = ' '", Refused::Setting("license.text")),
+            ("[license]\nkey = ' '", Refused::Setting("license.key")),
             (
-                "[license]\ntext = \"v4.public.a\\nv4.public.b\"",
-                Refused::Setting("license.text"),
+                "[license]\nkey = \"v4.public.a\\nv4.public.b\"",
+                Refused::Setting("license.key"),
             ),
             (
-                "[license]\ntext_env = ''",
-                Refused::Setting("license.text_env"),
+                "[license]\nkey_env = ''",
+                Refused::Setting("license.key_env"),
             ),
             (
                 "[license]\npath = 'license.txt'",
@@ -2082,7 +2079,7 @@ client_secret = 'test-secret'
         ] {
             assert_refused(&section(raw).expect_err(raw), expected, raw);
         }
-        let unset = section("[license]\ntext_env = 'CORAL_UNSET_LICENSE'")
+        let unset = section("[license]\nkey_env = 'CORAL_UNSET_LICENSE'")
             .expect("valid")
             .license(&read_env)
             .expect_err("unset variable");
