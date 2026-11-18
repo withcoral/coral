@@ -9,10 +9,12 @@
 //! are data. A save and a publish type a source the same way, except that
 //! `coral.private` is untyped inside a Shared Tool: it is each caller's own.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
-use coral_db::Database;
+use coral_db::Clock as _;
+use coral_db::{Database, UnixNanos};
 use coral_run_executor::{CompilerClient, time_left};
 use coral_telemetry::safe;
 use coral_v8::{
@@ -32,12 +34,8 @@ use crate::types::{
 };
 use crate::{Error, repository, shared_tool_repository};
 
-pub(crate) fn now_unix_nanos() -> Result<i64, Error> {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| Error::Clock(error.to_string()))?;
-    i64::try_from(elapsed.as_nanos())
-        .map_err(|_error| Error::Clock("current time exceeds durable nanosecond range".to_string()))
+pub(crate) fn now() -> UnixNanos {
+    coral_db::SystemClock.now()
 }
 
 /// What the compiler made of one authored source.
@@ -365,24 +363,19 @@ impl Authoring {
     ) -> Option<Vec<CallableDeclaration>> {
         let read = async {
             let mut transaction = self.database.begin_read_snapshot().await?;
-            let mut declarations = Vec::new();
-            for path in paths {
-                if let Some(tool) = repository::find_current_in_transaction(
-                    &mut transaction,
-                    workspace_id,
-                    owner,
-                    path,
-                )
-                .await?
-                {
-                    declarations.push(CallableDeclaration::new(
-                        path.segments(),
-                        tool.declaration().as_str().to_string(),
-                    ));
-                }
-            }
+            let current = repository::current_declarations_in_transaction(
+                &mut transaction,
+                workspace_id,
+                owner,
+                paths,
+            )
+            .await?;
             transaction.commit().await?;
-            Ok::<_, Error>(declarations)
+            Ok::<_, Error>(callable_declarations(
+                paths,
+                &current,
+                PrivateToolPath::segments,
+            ))
         };
         untyped_on_failure(read.await)
     }
@@ -397,20 +390,15 @@ impl Authoring {
     ) -> Option<Vec<CallableDeclaration>> {
         let read = async {
             let mut transaction = self.database.begin_read_snapshot().await?;
-            let mut declarations = Vec::new();
-            for path in paths {
-                if let Some(tool) =
-                    shared_tool_repository::find_live_tool(&mut transaction, workspace_id, path)
-                        .await?
-                {
-                    declarations.push(CallableDeclaration::new(
-                        path.segments(),
-                        tool.current.declaration.as_str().to_string(),
-                    ));
-                }
-            }
+            let current =
+                shared_tool_repository::live_declarations(&mut transaction, workspace_id, paths)
+                    .await?;
             transaction.commit().await?;
-            Ok::<_, Error>(declarations)
+            Ok::<_, Error>(callable_declarations(
+                paths,
+                &current,
+                SharedToolPath::segments,
+            ))
         };
         untyped_on_failure(read.await)
     }
@@ -454,6 +442,24 @@ impl Authoring {
         }
         Ok(prepared)
     }
+}
+
+/// The declaration `current` holds for each of `paths`, in the order of
+/// `paths`, which is the order the source names them in. A path without one
+/// names no Tool and is left out.
+fn callable_declarations<P: Ord>(
+    paths: &[&P],
+    current: &BTreeMap<P, AuthoredToolDeclaration>,
+    segments: impl Fn(&P) -> Vec<String>,
+) -> Vec<CallableDeclaration> {
+    paths
+        .iter()
+        .filter_map(|path| {
+            current.get(*path).map(|declaration| {
+                CallableDeclaration::new(segments(path), declaration.as_str().to_string())
+            })
+        })
+        .collect()
 }
 
 /// The declarations read, or `None` with a warning when the read failed:

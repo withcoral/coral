@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::to_bytes;
 use axum::extract::{Request, State};
@@ -18,6 +17,7 @@ use coral_auth::PrivateAudience;
 use coral_auth::authorization_codes::CodeRedemption;
 use coral_auth::oauth_clients::AuthenticatedClient;
 use coral_auth::user_tokens::{AccessTarget, IssuedTokens, RefreshRequest, TokenRefusal};
+use coral_db::UnixNanos;
 use coral_mcp::McpEndpoint;
 use coral_telemetry::safe;
 
@@ -59,27 +59,28 @@ pub(super) async fn oauth_token(
         Ok(client) => client,
         Err(response) => return *response,
     };
-    let Some(now_unix_nanos) = now_unix_nanos() else {
-        return token_error(TokenError::ServerError);
-    };
+    // The request's one reading of the clock: it dates the grant's spending,
+    // the tokens issued and the lifetime the response reports.
+    let now = state.clock.now();
     let issued = match form.grant_type.as_ref().map(|value| value.as_str()) {
-        Some("authorization_code") => redeem_code(&state, &form, &client, now_unix_nanos).await,
-        Some("refresh_token") => refresh(&state, &form, &client, now_unix_nanos).await,
+        Some("authorization_code") => redeem_code(&state, &form, &client, now).await,
+        Some("refresh_token") => refresh(&state, &form, &client, now).await,
         None => Err(TokenError::InvalidRequest),
         Some(_) => Err(TokenError::UnsupportedGrantType),
     };
     match issued {
-        Ok(issued) => token_response(&issued, now_unix_nanos),
+        Ok(issued) => token_response(&issued, now),
         Err(error) => token_error(error),
     }
 }
 
-/// Spends the authorization code `form` presents for the target it names.
+/// Spends the authorization code `form` presents for the target it names,
+/// at `now`.
 async fn redeem_code(
     state: &AuthorizationServerHttpState,
     form: &TokenForm,
     client: &AuthenticatedClient,
-    now_unix_nanos: i64,
+    now: UnixNanos,
 ) -> Result<IssuedTokens, TokenError> {
     let (Some(code), Some(redirect_uri), Some(verifier)) = (
         form.code.as_deref(),
@@ -119,18 +120,18 @@ async fn redeem_code(
     // credential elsewhere, and whatever mints one declares it there.
     state
         .tokens
-        .redeem_code(code, redemption, target, now_unix_nanos)
+        .redeem_code(code, redemption, target, now)
         .await
         .map_err(refused)
 }
 
-/// Exchanges the refresh token `form` presents. An omitted resource or
-/// audience keeps the grant's own; a supplied one must match it.
+/// Exchanges the refresh token `form` presents, at `now`. An omitted resource
+/// or audience keeps the grant's own; a supplied one must match it.
 async fn refresh(
     state: &AuthorizationServerHttpState,
     form: &TokenForm,
     client: &AuthenticatedClient,
-    now_unix_nanos: i64,
+    now: UnixNanos,
 ) -> Result<IssuedTokens, TokenError> {
     let Some(refresh_token) = form
         .refresh_token
@@ -157,7 +158,7 @@ async fn refresh(
     };
     state
         .tokens
-        .refresh(refresh_token, request, now_unix_nanos)
+        .refresh(refresh_token, request, now)
         .await
         .map_err(refused)
 }
@@ -173,39 +174,36 @@ fn refused(refusal: TokenRefusal) -> TokenError {
     TokenError::ServerError
 }
 
-/// The response for tokens issued at `now_unix_nanos`.
-fn token_response(issued: &IssuedTokens, now_unix_nanos: i64) -> Response {
-    // The token expires after `now_unix_nanos` by construction, so its
-    // lifetime needs no second clock reading, and nothing here can fail once
-    // the code or refresh token is spent.
-    let now_secs = u64::try_from(now_unix_nanos / 1_000_000_000).unwrap_or(0);
-    let expires_in = issued
-        .access_token
-        .expires_at
-        .saturating_sub(now_secs)
-        .max(1);
+/// The response for tokens issued at `now`.
+fn token_response(issued: &IssuedTokens, now: UnixNanos) -> Response {
     let mut body = serde_json::Map::new();
     body.insert(
         "access_token".into(),
         issued.access_token.access_token.as_str().into(),
     );
     body.insert("token_type".into(), "Bearer".into());
-    body.insert("expires_in".into(), expires_in.into());
+    body.insert(
+        "expires_in".into(),
+        expires_in(&issued.access_token, now).into(),
+    );
     if let Some(refresh_token) = &issued.refresh_token {
         body.insert("refresh_token".into(), refresh_token.expose().into());
     }
     json_response(StatusCode::OK, &serde_json::Value::Object(body))
 }
 
-pub(super) fn now_unix_nanos() -> Option<i64> {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok());
-    if nanos.is_none() {
-        tracing::warn!("token endpoint could not read the system clock");
-    }
-    nanos
+/// The whole seconds an access token issued at `now` lasts, as a token
+/// response reports them.
+///
+/// The token expires after `now` by construction, so its lifetime needs no
+/// second clock reading, and nothing here can fail once the code or refresh
+/// token is spent. One second is the least a client can schedule its next
+/// request against.
+pub(super) fn expires_in(access_token: &coral_auth::IssuedAccessToken, now: UnixNanos) -> u64 {
+    access_token
+        .expires_at
+        .saturating_sub(now.whole_seconds())
+        .max(1)
 }
 
 /// What the token for `resource` is for. First-party selection narrows the
@@ -450,11 +448,6 @@ pub(super) mod tests {
         (state, codes, session_tokens, database)
     }
 
-    fn now_unix_nanos() -> i64 {
-        let elapsed = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock");
-        i64::try_from(elapsed.as_nanos()).expect("clock")
-    }
-
     #[tokio::test]
     #[expect(
         clippy::too_many_lines,
@@ -518,7 +511,7 @@ pub(super) mod tests {
                         workspace_id: chosen.clone(),
                         refresh_eligible: false,
                     },
-                    now_unix_nanos(),
+                    UnixNanos::new(coral_test_support::now_unix_nanos()),
                 )
                 .await
                 .unwrap();
@@ -593,7 +586,7 @@ pub(super) mod tests {
                     workspace_id: None,
                     refresh_eligible: false,
                 },
-                now_unix_nanos(),
+                UnixNanos::new(coral_test_support::now_unix_nanos()),
             )
             .await
             .expect("seed code");
@@ -895,7 +888,7 @@ pub(super) mod tests {
         organization
             .provision_login(&coral_workspace::ChangeContext::new(
                 user.clone(),
-                1,
+                UnixNanos::new(1),
                 coral_workspace::TraceId::current_or_new(),
             ))
             .await
@@ -904,11 +897,12 @@ pub(super) mod tests {
             &session,
             organization,
             coral_workspace::WorkspaceModule::new(fixture.database()),
+            state.clock.clone(),
         );
         let token = get("access_token").as_str().expect("access token");
         let workspace =
             coral_workspace::WorkspaceId::parse("01234567-89ab-4cde-8fab-0123456789ab").unwrap();
-        let (principal, _workspace) = authentication
+        let (principal, _workspace, _now) = authentication
             .authenticate(
                 coral_auth::WorkspaceFixedBy::Url(&workspace),
                 Some(token),
@@ -938,11 +932,11 @@ pub(super) mod tests {
     /// A User who can refresh: an enabled Organization Member.
     const MEMBER: &str = "0199f7a2-6a6e-7c3d-9a51-2f4e8b7d1c05";
 
-    /// `expires_in` is the access token's lifetime from the host time that
-    /// issued it. The response reads no clock, so the real date cannot fail a
-    /// request whose code is already spent.
+    /// `expires_in` is the access token's lifetime from the instant that
+    /// issued it: the handler's one reading of the clock. The response reads
+    /// no clock, so nothing can fail a request whose code is already spent.
     #[tokio::test]
-    async fn expires_in_counts_from_the_host_time_that_issued_the_token() {
+    async fn expires_in_counts_from_the_instant_that_issued_the_token() {
         let (_settings, session) =
             crate::auth::test_config::resolved_settings("https://accounts.example.test", "");
         // 2001 and 2100: one long past, one far ahead of any real clock.
@@ -951,13 +945,13 @@ pub(super) mod tests {
             // is still that second.
             let now_unix_nanos = now_secs * 1_000_000_000 + 999_999_999;
             let access_token = session
-                .issue_access_token(MEMBER, CLIENT, RESOURCE, now_unix_nanos)
+                .issue_access_token(MEMBER, CLIENT, RESOURCE, UnixNanos::new(now_unix_nanos))
                 .expect("issued token");
             let issued = IssuedTokens {
                 access_token,
                 refresh_token: None,
             };
-            let response = token_response(&issued, now_unix_nanos);
+            let response = token_response(&issued, UnixNanos::new(now_unix_nanos));
             assert_eq!(response.status(), StatusCode::OK);
             let body = to_bytes(response.into_body(), 64 * 1024)
                 .await
@@ -998,7 +992,7 @@ pub(super) mod tests {
                     workspace_id: None,
                     refresh_eligible: true,
                 },
-                now_unix_nanos(),
+                UnixNanos::new(coral_test_support::now_unix_nanos()),
             )
             .await
             .unwrap();
@@ -1124,9 +1118,14 @@ pub(super) mod tests {
             "token_endpoint_auth_method": "client_secret_post",
         }))
         .unwrap();
-        let registered =
-            serde_json::to_value(state.clients.register(registration, 1000).await.unwrap())
-                .unwrap();
+        let registered = serde_json::to_value(
+            state
+                .clients
+                .register(registration, UnixNanos::new(1000 * 1_000_000_000))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         let client = registered["client_id"].as_str().unwrap().to_owned();
         let secret = registered["client_secret"].as_str().unwrap().to_owned();
         coral_test_support::provision_user(
@@ -1147,7 +1146,12 @@ pub(super) mod tests {
         let code = format!("confidential-{client}");
         state
             .codes
-            .issue(&code, &code, &grant, now_unix_nanos())
+            .issue(
+                &code,
+                &code,
+                &grant,
+                UnixNanos::new(coral_test_support::now_unix_nanos()),
+            )
             .await
             .unwrap();
         let redeem = form(&code, &client, REDIRECT, VERIFIER);

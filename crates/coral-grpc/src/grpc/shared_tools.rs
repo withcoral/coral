@@ -1,18 +1,17 @@
 use super::authored_tools::{correctable, diagnostic, error, private_tool_agent};
 use super::policies::{access, access_state};
-use super::workspaces::{
-    annotate, invalid, page_start, page_token, resource, timestamp, workspace_id,
-};
-use super::{GrpcServices, management as wire, now};
+use super::resource;
+use super::status::invalid;
+use super::workspaces::{change, next_after, page_request, timestamp, workspace_id};
+use super::{GrpcServices, management as wire};
 use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, PrivateToolPath, SharedTool, SharedToolId,
-    SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolLifecycleEventId,
+    SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolLifecycleEventKey,
     SharedToolOrigin, SharedToolPath, SharedToolPublish, SharedToolReview, SharedToolRevision,
-    SharedToolRevisionOrigin, SharedToolSummary,
+    SharedToolRevisionOrigin, SharedToolRevisionSummary, SharedToolSummary,
 };
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, Principal, PrincipalKind, TraceId,
-    WorkspaceId,
+    AuthenticatedPrincipal, AuthenticatedUser, Principal, PrincipalKind, WorkspaceId,
 };
 use tonic::{Request, Response, Status};
 
@@ -41,7 +40,7 @@ fn summary(workspace: &WorkspaceId, summary: &SharedToolSummary) -> wire::Shared
         path: summary.path().as_str().to_owned(),
         description: summary.description().as_str().to_owned(),
         revision: summary.current_revision(),
-        update_time: Some(timestamp(summary.published_at_unix_nanos())),
+        update_time: Some(timestamp(summary.published_at().get())),
         name: resource_name(workspace, summary.id()),
     }
 }
@@ -59,14 +58,14 @@ fn event(workspace: &WorkspaceId, event: &SharedToolLifecycleEvent) -> wire::Sha
         revision: event.revision(),
         content_hash: event.content_hash().to_owned(),
         actor: user_name(event.actor()),
-        event_time: Some(timestamp(event.occurred_at_unix_nanos())),
+        event_time: Some(timestamp(event.occurred_at().get())),
     }
 }
 
-/// The earlier revision `revision` restored, or zero when it copied a
-/// Private Tool.
-const fn restored_from(revision: &SharedToolRevision) -> u64 {
-    match revision.origin() {
+/// The earlier revision that a revision of `origin` restored, or zero when
+/// it copied a Private Tool.
+const fn restored_from(origin: &SharedToolRevisionOrigin) -> u64 {
+    match origin {
         SharedToolRevisionOrigin::Revision(restored) => *restored,
         SharedToolRevisionOrigin::PrivateTool(_) => 0,
     }
@@ -83,20 +82,20 @@ fn revision(revision: &SharedToolRevision) -> wire::SharedToolRevision {
         content_hash: revision.content_hash().to_owned(),
         default_access_state: access_state(revision.default_access_state()).into(),
         publisher: user_name(revision.published_by()),
-        publish_time: Some(timestamp(revision.published_at_unix_nanos())),
-        restored_from_revision: restored_from(revision),
+        publish_time: Some(timestamp(revision.published_at().get())),
+        restored_from_revision: restored_from(revision.origin()),
     }
 }
 
-fn revision_summary(revision: &SharedToolRevision) -> wire::SharedToolRevisionSummary {
+fn revision_summary(revision: &SharedToolRevisionSummary) -> wire::SharedToolRevisionSummary {
     wire::SharedToolRevisionSummary {
         revision: revision.revision(),
         description: revision.description().as_str().to_owned(),
         content_hash: revision.content_hash().to_owned(),
         default_access_state: access_state(revision.default_access_state()).into(),
         publisher: user_name(revision.published_by()),
-        publish_time: Some(timestamp(revision.published_at_unix_nanos())),
-        restored_from_revision: restored_from(revision),
+        publish_time: Some(timestamp(revision.published_at().get())),
+        restored_from_revision: restored_from(revision.origin()),
     }
 }
 
@@ -104,7 +103,7 @@ fn shared_tool(tool: &SharedTool) -> wire::SharedTool {
     wire::SharedTool {
         path: tool.path().as_str().to_owned(),
         creator: user_name(tool.created_by()),
-        create_time: Some(timestamp(tool.created_at_unix_nanos())),
+        create_time: Some(timestamp(tool.created_at().get())),
         current_revision: Some(revision(tool.current())),
         name: resource_name(tool.workspace_id(), tool.id()),
     }
@@ -165,13 +164,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
-        let scope = format!("{}:{w}:sharedTools", user.user_id());
-        let (page_size, after) = page_start(input.page_size, &input.page_token, &scope)?;
-        let after = if after.is_empty() {
-            None
-        } else {
-            Some(SharedToolPath::parse(&after).map_err(|_error| invalid())?)
-        };
+        let asked = page_request::<SharedToolPath>(input.page_size, &input.after)?;
         let shared_provider = self
             .providers
             .inspect_authored_tool_provider(&user, &w, coral_catalog::AuthoredToolKind::Shared)
@@ -179,26 +172,16 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
             .map_err(super::providers::error)?;
         let page = self
             .shared_tools
-            .list(
-                &AuthenticatedPrincipal::user(user),
-                &w,
-                after.as_ref(),
-                page_size,
-            )
+            .list(&AuthenticatedPrincipal::user(user.into_user()), &w, &asked)
             .await
             .map_err(error)?;
-        let next_page_token = page
-            .next_after()
-            .map(|after| page_token(&scope, after.as_str()))
-            .transpose()?
-            .unwrap_or_default();
         Ok(Response::new(wire::ListSharedToolsResponse {
             shared_tools: page
-                .summaries()
+                .items
                 .iter()
                 .map(|listed| summary(&w, listed))
                 .collect(),
-            next_page_token,
+            next_after: next_after(page.next_after.as_ref()),
             shared_provider: super::providers::provider_name(&shared_provider),
         }))
     }
@@ -214,7 +197,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let path = path(&input.path)?;
         let tool = self
             .shared_tools
-            .get(&AuthenticatedPrincipal::user(user), &w, &path)
+            .get(&AuthenticatedPrincipal::user(user.into_user()), &w, &path)
             .await
             .map_err(error)?;
         Ok(Response::new(shared_tool(&tool)))
@@ -230,7 +213,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let (w, id) = parse_resource_name(&input.shared_tool)?;
         let revisions = self
             .shared_tools
-            .list_revisions(&AuthenticatedPrincipal::user(user), &w, &id)
+            .list_revision_summaries(&AuthenticatedPrincipal::user(user.into_user()), &w, &id)
             .await
             .map_err(error)?;
         Ok(Response::new(wire::ListSharedToolRevisionsResponse {
@@ -248,7 +231,12 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let (w, id) = parse_resource_name(&input.shared_tool)?;
         let found = self
             .shared_tools
-            .get_revision(&AuthenticatedPrincipal::user(user), &w, &id, input.revision)
+            .get_revision(
+                &AuthenticatedPrincipal::user(user.into_user()),
+                &w,
+                &id,
+                input.revision,
+            )
             .await
             .map_err(error)?;
         Ok(Response::new(revision(&found)))
@@ -277,7 +265,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         if !input.validate_only {
             publish = publish.approve(input.reviewed_declaration);
         }
-        let context = ChangeContext::new(user, now().map_err(annotate)?, TraceId::current_or_new());
+        let context = change(user);
         let published = self
             .shared_tool_workflow
             .publish(&context, &w, publish)
@@ -298,7 +286,7 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
         let path = path(&input.path)?;
-        let context = ChangeContext::new(user, now().map_err(annotate)?, TraceId::current_or_new());
+        let context = change(user);
         let removed = self
             .shared_tool_workflow
             .remove(&context, &w, &path, input.expected_revision)
@@ -326,41 +314,20 @@ impl wire::shared_tool_service_server::SharedToolService for GrpcServices {
             }
             Some(id)
         };
-        // A page continues only the listing that began it.
-        let scope = format!(
-            "{}:{w}:sharedToolEvents:{}",
-            user.user_id(),
-            input.shared_tool
-        );
-        let (page_size, after) = page_start(input.page_size, &input.page_token, &scope)?;
-        let after = if after.is_empty() {
-            None
-        } else {
-            Some(SharedToolLifecycleEventId::parse(&after).map_err(|_error| invalid())?)
-        };
+        let asked = page_request::<SharedToolLifecycleEventKey>(input.page_size, &input.after)?;
         let page = self
             .shared_tools
             .list_lifecycle_events(
-                &AuthenticatedPrincipal::user(user),
+                &AuthenticatedPrincipal::user(user.into_user()),
                 &w,
                 shared_tool.as_ref(),
-                after.as_ref(),
-                page_size,
+                &asked,
             )
             .await
             .map_err(error)?;
-        let next_page_token = page
-            .next_after()
-            .map(|after| page_token(&scope, &after.to_string()))
-            .transpose()?
-            .unwrap_or_default();
         Ok(Response::new(wire::ListSharedToolEventsResponse {
-            events: page
-                .events()
-                .iter()
-                .map(|listed| event(&w, listed))
-                .collect(),
-            next_page_token,
+            events: page.items.iter().map(|listed| event(&w, listed)).collect(),
+            next_after: next_after(page.next_after.as_ref()),
         }))
     }
 }

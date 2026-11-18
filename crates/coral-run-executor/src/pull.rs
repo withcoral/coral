@@ -927,7 +927,7 @@ impl PullService {
     }
 
     async fn renew(&self, run_executor_id: &str, kind: Kind) -> Result<(), coral_db::Error> {
-        let lease_until = time::unix_now().saturating_add(time::nanos(self.link.timing.lease));
+        let lease_until = time::unix_now().saturating_add(self.link.timing.lease);
         lease_repository::renew(&self.link.database, run_executor_id, kind, lease_until).await
     }
 }

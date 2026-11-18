@@ -76,7 +76,8 @@ pub use error::Error;
 pub use inspection::PrivateToolInspection;
 pub use linking::{
     InvalidLinkedToolReference, LinkedToolReference, LinkedToolSelection,
-    hold_linked_tools_in_transaction, select_linked_tool_in_transaction,
+    authored_tool_key_in_transaction, hold_linked_tools_in_transaction,
+    select_linked_tool_in_transaction,
 };
 pub use private_tool::{
     PreparedSave, PrivateToolModule, delete_current_for_access_removal_in_transaction,
@@ -84,9 +85,9 @@ pub use private_tool::{
 pub use shared_tool::{
     SHARED_TOOL_PAGE_MAX_SIZE, SharedTool, SharedToolDefault, SharedToolDependency, SharedToolId,
     SharedToolLifecycleAction, SharedToolLifecycleEvent, SharedToolLifecycleEventId,
-    SharedToolLifecycleEventPage, SharedToolModule, SharedToolOrigin, SharedToolPage,
-    SharedToolPath, SharedToolPublication, SharedToolPublish, SharedToolReview, SharedToolRevision,
-    SharedToolRevisionOrigin, SharedToolSummary,
+    SharedToolLifecycleEventKey, SharedToolModule, SharedToolOrigin, SharedToolPath,
+    SharedToolPublication, SharedToolPublish, SharedToolReview, SharedToolRevision,
+    SharedToolRevisionOrigin, SharedToolRevisionSummary, SharedToolSummary,
 };
 pub use tool_typing::{ToolDeclaration, ToolDeclarationReader};
 pub use types::{
@@ -97,8 +98,8 @@ pub use types::{
     AuthoredToolDeclarationFieldProjection, AuthoredToolDescription, AuthoredToolDiagnostic,
     AuthoredToolDiagnosticCategory, AuthoredToolId, AuthoredToolPath, AuthoredToolSource,
     COMPILATION_TIMEOUT, LifecycleAction, LifecycleOutcome, PRIVATE_TOOL_PAGE_MAX_SIZE,
-    PrivateTool, PrivateToolChangeContext, PrivateToolId, PrivateToolPage, PrivateToolPath,
-    PrivateToolSave, PrivateToolSummary,
+    PrivateTool, PrivateToolChangeContext, PrivateToolId, PrivateToolPath, PrivateToolSave,
+    PrivateToolSummary,
 };
 pub use types::{PrivateToolScope, ReadablePrivateTool};
 

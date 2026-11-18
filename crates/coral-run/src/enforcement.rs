@@ -180,7 +180,7 @@ impl SharedFacts {
                 transaction,
                 scope.actor,
                 scope.workspace_id,
-                now_unix_nanos,
+                coral_db::UnixNanos::new(now_unix_nanos),
                 lock,
             )
             .await
@@ -254,7 +254,10 @@ impl SharedFacts {
             Ok(authority) => authority,
             Err(failure) => return Err(Refusal::Deny(*failure)),
         };
-        if authority.require_current_at(now_unix_nanos).is_err() {
+        if authority
+            .require_current_at(coral_db::UnixNanos::new(now_unix_nanos))
+            .is_err()
+        {
             return Err(Refusal::Deny(CoralFailure::AuthorityLost));
         }
         let policy = match self.tools.get(&verdict_key(&target.admitted.target)) {
@@ -277,7 +280,8 @@ impl SharedFacts {
             policy,
             account,
             until_unix_nanos: authority
-                .expires_at_unix_nanos()
+                .expires_at()
+                .map(coral_db::UnixNanos::get)
                 .map_or(run.deadline_at_unix_nanos, |expiry| {
                     expiry.min(run.deadline_at_unix_nanos)
                 }),
@@ -515,16 +519,18 @@ pub(crate) fn authority_failure(error: coral_workspace::Error) -> Result<CoralFa
     }
 }
 
+/// Whether the refusal a module error wraps, if any, means the Principal
+/// lost authority. A caller passes its error's `workspace_refusal()`, so a
+/// refusal counts whichever module's error holds it.
+pub(crate) const fn ended_authority(refusal: Option<coral_workspace::AuthorityRefusal>) -> bool {
+    match refusal {
+        Some(refusal) => refusal.ends_authority(),
+        None => false,
+    }
+}
+
 /// Whether a Workspace error means the Principal lost authority, rather than
 /// a host defect.
 pub(crate) const fn loses_authority(error: &coral_workspace::Error) -> bool {
-    matches!(
-        error,
-        coral_workspace::Error::WorkspaceNotFound
-            | coral_workspace::Error::PermissionDenied(_)
-            | coral_workspace::Error::WorkspaceArchived
-            | coral_workspace::Error::AgentNotFound
-            | coral_workspace::Error::AgentDisabled
-            | coral_workspace::Error::AgentRegistrationExpired
-    )
+    ended_authority(error.refusal())
 }

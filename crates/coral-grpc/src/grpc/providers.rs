@@ -1,8 +1,7 @@
 //! Resource-specific Reef projection of Provider Setup and Publication. Domain
 //! Modules own authority, sealing, promotion, and the terminal transaction.
-use super::workspaces::{
-    annotate, change, invalid, page, page_start, safe_status, timestamp, workspace_id,
-};
+use super::status::{self, invalid, safe_status};
+use super::workspaces::{change, page, page_start, timestamp, workspace_id};
 use super::{GrpcServices, management as wire};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use coral_catalog::AuthenticationKind;
@@ -318,9 +317,12 @@ pub(super) fn error(value: domain::Error) -> Status {
         E::AccountConnectionDeclined => (Code::FailedPrecondition, "ACCOUNT_CONNECTION_DECLINED"),
         E::AccountConnectionExpired => (Code::FailedPrecondition, "ACCOUNT_CONNECTION_EXPIRED"),
         E::AccountAuthorizationChanged => (Code::Aborted, "ACCOUNT_CHANGED"),
+        // A fault inside Coral, which no change to the request corrects.
+        E::Internal(_) => (Code::Internal, "INTERNAL"),
         // Retrying can succeed: an upstream, worker, or storage dependency failed.
         // Name every variant so a new domain error needs an explicit wire decision.
         E::SetupPreparationUnavailable
+        | E::DeviceLeaseLost
         | E::CredentialRefreshFailed
         | E::OAuthTokenExchange(_)
         | E::Credentials(_)
@@ -377,9 +379,7 @@ impl GrpcServices {
     }
 
     pub(super) fn accounts(&self) -> Result<&domain::account::AccountModule, Status> {
-        self.accounts
-            .as_ref()
-            .ok_or_else(|| annotate(Status::unavailable("credential storage unavailable")))
+        self.accounts.as_ref().ok_or_else(status::unavailable)
     }
 
     /// Resolves one Provider through the scope's visibility; concealed ones are absent.
@@ -497,15 +497,17 @@ impl GrpcServices {
         }))
     }
 
+    /// The Setup as `user` sees it at `now`, which settles its expiry.
     async fn setup_response(
         &self,
         user: &AuthenticatedUser,
         owner: &WorkspaceId,
         id: &ProviderSetupId,
+        now: i64,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
         let inspected = self
             .providers
-            .inspect_setup(user, owner, id, super::now()?)
+            .inspect_setup(user, owner, id, now)
             .await
             .map_err(error)?;
         self.setup_view(user, inspected).await
@@ -519,7 +521,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         &self,
         request: Request<wire::ConfirmProviderSetupConfigurationRequest>,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let (owner, id) = resource(&req.name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
@@ -566,7 +568,11 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
                 .await
         }
         .map_err(error)?;
-        let mut response = self.setup_response(context.actor(), &owner, &id).await?;
+        // Confirmation may have waited on the provider.
+        let now = self.now_after_outside_work();
+        let mut response = self
+            .setup_response(context.actor(), &owner, &id, now)
+            .await?;
         // Keep the state/authentication/configuration snapshot coherent if another
         // edit wins after confirmation. Only field diagnostics belong to this action.
         if let Some(current) = response.get_mut().configuration.as_mut() {
@@ -579,7 +585,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         &self,
         request: Request<wire::CreateProviderSetupRequest>,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let owner = scope(&req.parent)?;
         let input = req.input.ok_or_else(invalid)?;
@@ -621,7 +627,9 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
             .prepare_setup(&context, &owner, source, update_target.as_ref())
             .await
             .map_err(error)?;
-        self.setup_response(context.actor(), &owner, setup.id())
+        // Preparation may have waited on the provider for its document.
+        let now = self.now_after_outside_work();
+        self.setup_response(context.actor(), &owner, setup.id(), now)
             .await
     }
 
@@ -630,7 +638,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         &self,
         request: Request<wire::StartProviderSetupAuthorizationRequest>,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let (owner, id) = resource(&req.name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
@@ -646,7 +654,9 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
             .start_setup_authorization(&context, &owner, &id, req.configuration_revision, client)
             .await
             .map_err(error)?;
-        self.setup_response(context.actor(), &owner, &id).await
+        // Starting it may have waited on the provider's authorization server.
+        let now = self.now_after_outside_work();
+        self.setup_response(context.actor(), &owner, &id, now).await
     }
 
     #[tracing::instrument(skip_all, name = "coral.private.retry_provider_setup_discovery")]
@@ -654,7 +664,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         &self,
         request: Request<wire::RetryProviderSetupDiscoveryRequest>,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let (owner, id) = resource(&request.get_ref().name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
         if request.get_ref().use_existing_account {
@@ -673,7 +683,9 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
                 .await
                 .map_err(error)?;
         }
-        self.setup_response(context.actor(), &owner, &id).await
+        // Discovery waited on the provider.
+        let now = self.now_after_outside_work();
+        self.setup_response(context.actor(), &owner, &id, now).await
     }
 
     #[tracing::instrument(skip_all, name = "coral.private.cancel_provider_setup")]
@@ -681,14 +693,15 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         &self,
         request: Request<wire::CancelProviderSetupRequest>,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let (owner, id) = resource(&request.get_ref().name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
         self.accounts()?
             .cancel_setup(&context, &owner, &id)
             .await
             .map_err(error)?;
-        self.setup_response(context.actor(), &owner, &id).await
+        let now = context.occurred_at_unix_nanos();
+        self.setup_response(context.actor(), &owner, &id, now).await
     }
 
     #[tracing::instrument(skip_all, name = "coral.private.get_provider_setup")]
@@ -699,7 +712,8 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         let user = self.management_user(&request).await?;
         let (owner, id) = resource(&request.get_ref().name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
-        self.setup_response(&user, &owner, &id).await
+        self.setup_response(&user, &owner, &id, user.now().get())
+            .await
     }
 
     #[tracing::instrument(skip_all, name = "coral.private.authorize_provider_setup")]
@@ -707,7 +721,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         &self,
         request: Request<wire::AuthorizeProviderSetupRequest>,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let (owner, id) = resource(&req.name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
@@ -722,9 +736,11 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
             )
             .await
             .map_err(error)?;
+        // Authorization may have waited on a Secret Store or the provider.
+        let now = self.now_after_outside_work();
         let mut inspected = self
             .providers
-            .inspect_setup(context.actor(), &owner, &id, super::now()?)
+            .inspect_setup(context.actor(), &owner, &id, now)
             .await
             .map_err(error)?;
         // Grant selection must use this mutation's receipt, never another command's
@@ -741,7 +757,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::GetProviderOAuthClientRequest>,
     ) -> Result<Response<wire::ProviderOAuthClient>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let (owner, id) = resource(&request.get_ref().name, "providers")?;
         let id = domain::ProviderId::parse(id).map_err(error)?;
         let status = self
@@ -761,7 +777,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::RotateProviderOAuthClientSecretRequest>,
     ) -> Result<Response<()>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let request = request.into_inner();
         let (owner, id) = resource(&request.name, "providers")?;
         let id = domain::ProviderId::parse(id).map_err(error)?;
@@ -779,7 +795,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::PublishProviderRequest>,
     ) -> Result<Response<wire::ProviderPublication>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let owner = scope(&req.parent)?;
         let (setup_owner, setup_id) = resource(&req.setup, "providerSetups")?;
@@ -882,12 +898,12 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
             .provider_readiness
             .inspect_provider_readiness(&user, &workspace)
             .await
-            .map_err(readiness_error)?;
+            .map_err(search_error)?;
         let search_index = self
             .provider_readiness
             .inspect_search_index_states(&user, &workspace, None)
             .await
-            .map_err(readiness_error)?;
+            .map_err(search_error)?;
         let (inspections, next_page_token) = page(
             inspections,
             req.page_size,
@@ -951,7 +967,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::UpdateProviderRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)?
+        let context = change(self.management_user(&request).await?)
             .with_etag(&request.get_ref().etag)
             .map_err(super::workspaces::error)?;
         let req = request.into_inner();
@@ -1000,7 +1016,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::SetProviderIconRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)?
+        let context = change(self.management_user(&request).await?)
             .with_etag(&request.get_ref().etag)
             .map_err(super::workspaces::error)?;
         let req = request.into_inner();
@@ -1022,7 +1038,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::DeleteProviderIconRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)?
+        let context = change(self.management_user(&request).await?)
             .with_etag(&request.get_ref().etag)
             .map_err(super::workspaces::error)?;
         let (workspace, id) = resource(&request.get_ref().name, "providers")?;
@@ -1042,7 +1058,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::DisableProviderRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)?
+        let context = change(self.management_user(&request).await?)
             .with_etag(&request.get_ref().etag)
             .map_err(super::workspaces::error)?;
         let (owner, id) = resource(&request.get_ref().name, "providers")?;
@@ -1065,7 +1081,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::RestoreProviderRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)?
+        let context = change(self.management_user(&request).await?)
             .with_etag(&request.get_ref().etag)
             .map_err(super::workspaces::error)?;
         let (owner, id) = resource(&request.get_ref().name, "providers")?;
@@ -1088,7 +1104,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::DeleteProviderRequest>,
     ) -> Result<Response<()>, Status> {
-        let context = change(self.management_user(&request).await?)?
+        let context = change(self.management_user(&request).await?)
             .with_etag(&request.get_ref().etag)
             .map_err(super::workspaces::error)?;
         let (owner, id) = resource(&request.get_ref().name, "providers")?;
@@ -1167,12 +1183,12 @@ impl GrpcServices {
             .provider_readiness
             .inspect_provider_readiness_for(actor, workspace, id)
             .await
-            .map_err(readiness_error)?;
+            .map_err(search_error)?;
         let search_index = self
             .provider_readiness
             .inspect_search_index_states(actor, workspace, Some(id))
             .await
-            .map_err(readiness_error)?;
+            .map_err(search_error)?;
         Ok(provider_view(
             &inspection.provider,
             &inspection.blockers,
@@ -1181,11 +1197,12 @@ impl GrpcServices {
     }
 }
 
-pub(super) fn readiness_error(failure: coral_search::Error) -> Status {
+pub(super) fn search_error(failure: coral_search::Error) -> Status {
     match failure {
         coral_search::Error::Workspace(inner) => super::workspaces::error(inner),
         coral_search::Error::Provider(inner) => error(inner),
         coral_search::Error::Policy(inner) => super::policies::error(inner),
+        coral_search::Error::Tools(inner) => super::authored_tools::error(inner),
         coral_search::Error::InvalidInput(_)
         | coral_search::Error::UnknownProviderCallRoot { .. }
         | coral_search::Error::TypesLimit
@@ -1199,9 +1216,9 @@ pub(super) fn readiness_error(failure: coral_search::Error) -> Status {
             safe_status(tonic::Code::NotFound, "NOT_FOUND")
         }
         // Retrying can succeed. Name every variant so a new one needs a wire decision.
-        coral_search::Error::ServiceUnavailable
-        | coral_search::Error::Tools(_)
-        | coral_search::Error::Database(_) => safe_status(tonic::Code::Unavailable, "UNAVAILABLE"),
+        coral_search::Error::ServiceUnavailable | coral_search::Error::Database(_) => {
+            safe_status(tonic::Code::Unavailable, "UNAVAILABLE")
+        }
     }
 }
 
@@ -1240,6 +1257,24 @@ mod tests {
                 Code::FailedPrecondition,
                 "ACCOUNT_REQUIRED",
             ),
+            (
+                E::AccountInput,
+                Code::InvalidArgument,
+                "INVALID_PROVIDER_INPUT",
+            ),
+            // Stored data that does not decode and a fault inside Coral are
+            // not the caller's input.
+            (
+                E::CorruptData("stored token does not decode".into()),
+                Code::Unavailable,
+                "UNAVAILABLE",
+            ),
+            (
+                E::Internal(coral_provider::InternalFault::Random),
+                Code::Internal,
+                "INTERNAL",
+            ),
+            (E::DeviceLeaseLost, Code::Unavailable, "UNAVAILABLE"),
             (
                 E::Workspace(coral_workspace::Error::WorkspaceArchived),
                 Code::FailedPrecondition,
@@ -1324,7 +1359,9 @@ mod tests {
             ),
             (E::ProviderNotFound, Code::NotFound, "NOT_FOUND"),
             (
-                E::Workspace(coral_workspace::Error::PermissionDenied("private detail")),
+                E::Workspace(coral_workspace::Error::PermissionDenied(
+                    coral_workspace::Denial::WorkspaceOwnerRequired,
+                )),
                 Code::PermissionDenied,
                 "PERMISSION_DENIED",
             ),
@@ -1416,7 +1453,7 @@ mod tests {
 
     /// Only failures that a retry can fix are reported as retryable.
     #[test]
-    fn readiness_errors_report_retryable_only_for_dependencies() {
+    fn search_errors_report_retryable_only_for_dependencies() {
         let cases = [
             (
                 coral_search::Error::InvalidInput("private detail".into()),
@@ -1446,6 +1483,20 @@ mod tests {
                 Code::NotFound,
                 "NOT_FOUND",
             ),
+            // A wrapped authored Tool error reports its own status, and is
+            // retryable only when that error is.
+            (
+                coral_search::Error::Tools(coral_tools::Error::PrivateToolExists),
+                Code::AlreadyExists,
+                "ALREADY_EXISTS",
+            ),
+            (
+                coral_search::Error::Tools(coral_tools::Error::Database(
+                    coral_db::Error::WriterBusy,
+                )),
+                Code::Unavailable,
+                "UNAVAILABLE",
+            ),
             (
                 coral_search::Error::ServiceUnavailable,
                 Code::Unavailable,
@@ -1454,7 +1505,7 @@ mod tests {
         ];
         for (failure, code, reason) in cases {
             let label = format!("{failure:?}");
-            let status = super::readiness_error(failure);
+            let status = super::search_error(failure);
             assert_eq!((status.code(), status.message()), (code, reason), "{label}");
         }
     }

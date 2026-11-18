@@ -6,16 +6,27 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use std::sync::Arc;
+
+use coral_db::{Clock, UnixNanos};
 use coral_provider::account::AccountModule;
 
-pub(super) fn router(accounts: AccountModule) -> Router {
+/// What the callback reads: the Account module, and the clock that dates the
+/// request.
+type CallbackState = (AccountModule, Arc<dyn Clock>);
+
+pub(super) fn router(accounts: AccountModule, clock: Arc<dyn Clock>) -> Router {
     Router::new()
         .route("/provider-oauth/callback", get(callback))
-        .with_state(accounts)
+        .with_state((accounts, clock))
 }
 
-async fn callback(State(accounts): State<AccountModule>, RawQuery(query): RawQuery) -> Response {
-    let result = complete(&accounts, query.as_deref().unwrap_or_default()).await;
+async fn callback(
+    State((accounts, clock)): State<CallbackState>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    let now = clock.now();
+    let result = complete(&accounts, query.as_deref().unwrap_or_default(), now).await;
     let (status, text) = if result.is_ok() {
         (
             StatusCode::OK,
@@ -39,13 +50,11 @@ async fn callback(State(accounts): State<AccountModule>, RawQuery(query): RawQue
         .into_response()
 }
 
-async fn complete(accounts: &AccountModule, query: &str) -> Result<(), coral_provider::Error> {
-    use coral_provider::Error;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok())
-        .ok_or(Error::AccountInput)?;
+async fn complete(
+    accounts: &AccountModule,
+    query: &str,
+    now: UnixNanos,
+) -> Result<(), coral_provider::Error> {
     let context = coral_workspace::ChangeContext::new(
         coral_workspace::local_organization_owner(),
         now,
@@ -93,7 +102,7 @@ mod tests {
             .start()
             .await
             .unwrap();
-        let accounts = host.provider_accounts().unwrap();
+        let accounts = host.engine().accounts();
         let workspaces = WorkspaceModule::new(host.database());
         let providers = ProviderModule::new(
             policy,
@@ -102,15 +111,12 @@ mod tests {
             coral_catalog::BuiltinCatalog::running().expect("the built-in catalog prepares"),
             coral_catalog::SchemaGraphCache::with_default_budget(),
         );
-        let now = i64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        )
-        .unwrap();
-        let context =
-            ChangeContext::new(local_organization_owner(), now, TraceId::current_or_new());
+        let now = coral_test_support::now_unix_nanos();
+        let context = ChangeContext::new(
+            local_organization_owner(),
+            UnixNanos::new(now),
+            TraceId::current_or_new(),
+        );
         let workspace = workspaces
             .create(&context, WorkspaceDisplayName::parse("Callback").unwrap())
             .await
@@ -127,14 +133,16 @@ mod tests {
             .create_openapi_setup(&context, workspace.id(), document)
             .await
             .unwrap();
-        let callback =
-            super::super::start_listener("127.0.0.1:0".parse().unwrap(), router(accounts.clone()))
-                .await
-                .unwrap();
+        let callback = super::super::start_listener(
+            "127.0.0.1:0".parse().unwrap(),
+            router(accounts.clone(), Arc::new(coral_db::SystemClock)),
+        )
+        .await
+        .unwrap();
         let address = callback.local_addr();
         assert!(
             matches!(
-                super::super::start_listener(address, router(accounts.clone())).await,
+                super::super::start_listener(address, router(accounts.clone(), Arc::new(coral_db::SystemClock))).await,
                 Err(crate::auth::AuthServerError::Bind { address: attempted, source })
                     if attempted == address && source.kind() == std::io::ErrorKind::AddrInUse
             ),
@@ -196,9 +204,12 @@ mod tests {
             .1
             .into_owned();
         callback.shutdown().await.unwrap();
-        let callback = super::super::start_listener(address, router(accounts))
-            .await
-            .unwrap();
+        let callback = super::super::start_listener(
+            address,
+            router(accounts, Arc::new(coral_db::SystemClock)),
+        )
+        .await
+        .unwrap();
         let client = reqwest::Client::new();
         let forged = client
             .get(&redirect)

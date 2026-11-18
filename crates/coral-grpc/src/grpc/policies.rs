@@ -1,5 +1,6 @@
 //! Exact transport-safe Tool addresses, with atomic writes in the policy domain.
-use super::workspaces::{change, invalid, page_of, page_start_within};
+use super::status::{self, invalid};
+use super::workspaces::{change, page_of, page_start_within};
 use super::{GrpcServices, management as wire};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use coral_policy::{ToolAccessState, ToolPolicyTarget};
@@ -14,13 +15,11 @@ pub(super) fn error(value: coral_policy::Error) -> Status {
         // Only a Program sets policy by Tool Call Path, so the service never
         // meets a refused path; it reads as a Tool not found.
         coral_policy::Error::ToolNotFound | coral_policy::Error::RefusedToolPaths { .. } => {
-            super::workspaces::safe_status(tonic::Code::NotFound, "NOT_FOUND")
+            status::not_found()
         }
         coral_policy::Error::CorruptData(_)
         | coral_policy::Error::Database(_)
-        | coral_policy::Error::EventFields(_) => {
-            super::workspaces::safe_status(tonic::Code::Unavailable, "UNAVAILABLE")
-        }
+        | coral_policy::Error::EventFields(_) => status::unavailable(),
     }
 }
 pub(super) fn access(state: i32) -> Result<ToolAccessState, Status> {
@@ -155,7 +154,7 @@ impl wire::tool_policy_service_server::ToolPolicyService for GrpcServices {
         &self,
         request: Request<wire::UpdateToolPoliciesRequest>,
     ) -> Result<Response<wire::UpdateToolPoliciesResponse>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let names = req
             .policies
@@ -206,7 +205,9 @@ mod tests {
                 "NOT_FOUND",
             ),
             (
-                E::Workspace(coral_workspace::Error::PermissionDenied("private detail")),
+                E::Workspace(coral_workspace::Error::PermissionDenied(
+                    coral_workspace::Denial::WorkspaceOwnerRequired,
+                )),
                 Code::PermissionDenied,
                 "PERMISSION_DENIED",
             ),

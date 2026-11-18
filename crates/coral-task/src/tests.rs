@@ -1,4 +1,5 @@
 use crate::{Error, TASK_INTENT_MAX_CHARS, TaskIntent, TaskModule, TaskOutcome};
+use coral_db::UnixNanos;
 use coral_test_support::change;
 use coral_test_support::{TestDatabase, provision_user as organization_user};
 use coral_workspace::AuthenticatedPrincipal;
@@ -28,7 +29,7 @@ async fn coral_generates_task_identity_and_persists_start_evidence() {
             &principal,
             workspace.id(),
             TaskIntent::parse("Prepare the provider rollout").expect("Task intent"),
-            20,
+            UnixNanos::new(20),
         )
         .await
         .expect("start Task");
@@ -41,9 +42,9 @@ async fn coral_generates_task_identity_and_persists_start_evidence() {
     assert_eq!(found.workspace_id(), workspace.id());
     assert_eq!(found.principal(), principal.principal());
     assert_eq!(found.intent().as_str(), "Prepare the provider rollout");
-    assert_eq!(found.started_at_unix_nanos(), 20);
+    assert_eq!(found.started_at().get(), 20);
     assert_eq!(found.outcome(), None);
-    assert_eq!(found.ended_at_unix_nanos(), None);
+    assert_eq!(found.ended_at(), None);
 
     let maximum_intent = "é".repeat(TASK_INTENT_MAX_CHARS);
     tasks
@@ -51,7 +52,7 @@ async fn coral_generates_task_identity_and_persists_start_evidence() {
             &principal,
             workspace.id(),
             TaskIntent::parse(&maximum_intent).expect("maximum Task intent"),
-            21,
+            UnixNanos::new(21),
         )
         .await
         .expect("persist maximum Task intent");
@@ -99,7 +100,7 @@ async fn first_terminal_task_outcome_wins_without_changing_attribution() {
             &principal,
             workspace.id(),
             TaskIntent::parse("Resolve one terminal race").expect("Task intent"),
-            20,
+            UnixNanos::new(20),
         )
         .await
         .expect("start Task");
@@ -111,7 +112,7 @@ async fn first_terminal_task_outcome_wins_without_changing_attribution() {
             started.id(),
             TaskOutcome::Success,
             Some("Succeeded"),
-            30,
+            UnixNanos::new(30),
         ),
         tasks.end(
             &principal,
@@ -119,7 +120,7 @@ async fn first_terminal_task_outcome_wins_without_changing_attribution() {
             started.id(),
             TaskOutcome::Failure,
             Some("Failed"),
-            40,
+            UnixNanos::new(40),
         ),
     );
     let success = success.expect("observe terminal winner");
@@ -127,7 +128,7 @@ async fn first_terminal_task_outcome_wins_without_changing_attribution() {
 
     assert_eq!(success, failure);
     assert_eq!(
-        (success.feedback(), success.ended_at_unix_nanos()),
+        (success.feedback(), success.ended_at().map(UnixNanos::get)),
         match success.outcome().unwrap() {
             TaskOutcome::Success => (Some("Succeeded"), Some(30)),
             TaskOutcome::Failure => (Some("Failed"), Some(40)),
@@ -136,7 +137,7 @@ async fn first_terminal_task_outcome_wins_without_changing_attribution() {
     assert_eq!(success.workspace_id(), started.workspace_id());
     assert_eq!(success.principal(), started.principal());
     assert_eq!(success.intent(), started.intent());
-    assert_eq!(success.started_at_unix_nanos(), 20);
+    assert_eq!(success.started_at().get(), 20);
     assert_eq!(
         tasks
             .get(&principal, workspace.id(), started.id())
@@ -174,7 +175,7 @@ async fn completion_feedback_is_validated_and_the_first_completion_wins() {
                         task.id(),
                         outcome,
                         Some(&invalid),
-                        30
+                        UnixNanos::new(30)
                     )
                     .await,
                 Err(Error::InvalidInput(_))
@@ -196,7 +197,7 @@ async fn completion_feedback_is_validated_and_the_first_completion_wins() {
                 task.id(),
                 outcome,
                 Some(&feedback),
-                30,
+                UnixNanos::new(30),
             )
             .await
             .unwrap();
@@ -213,7 +214,7 @@ async fn completion_feedback_is_validated_and_the_first_completion_wins() {
                     task.id(),
                     TaskOutcome::Failure,
                     Some("Changed"),
-                    40
+                    UnixNanos::new(40)
                 )
                 .await
                 .unwrap(),
@@ -228,7 +229,7 @@ async fn completion_feedback_is_validated_and_the_first_completion_wins() {
             task.id(),
             TaskOutcome::Success,
             None,
-            30,
+            UnixNanos::new(30),
         )
         .await
         .unwrap();
@@ -241,7 +242,7 @@ async fn completion_feedback_is_validated_and_the_first_completion_wins() {
                 task.id(),
                 TaskOutcome::Failure,
                 Some("Late feedback"),
-                40
+                UnixNanos::new(40)
             )
             .await
             .unwrap(),
@@ -324,7 +325,11 @@ async fn task_visibility_preserves_user_privacy_and_owner_agent_oversight() {
         .await
         .unwrap();
     let agent = workspaces
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 21)
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            UnixNanos::new(21),
+        )
         .await
         .unwrap();
     let owner_task = start(tasks, &owner, workspace.id(), "Owner work", 30).await;
@@ -345,7 +350,7 @@ async fn task_visibility_preserves_user_privacy_and_owner_agent_oversight() {
             agent_task.id(),
             TaskOutcome::Success,
             Some("Agent completion"),
-            60,
+            UnixNanos::new(60),
         )
         .await
         .expect("Agent ends its Task");
@@ -395,7 +400,7 @@ async fn task_visibility_preserves_user_privacy_and_owner_agent_oversight() {
                     non_member,
                     workspace.id(),
                     TaskIntent::parse("Non-Member work").expect("Task intent"),
-                    70,
+                    UnixNanos::new(70),
                 )
                 .await,
             Err(Error::Workspace(coral_workspace::Error::WorkspaceNotFound))
@@ -480,7 +485,7 @@ async fn start(
             principal,
             workspace_id,
             TaskIntent::parse(intent).expect("Task intent"),
-            at,
+            UnixNanos::new(at),
         )
         .await
         .expect("start Task")
@@ -527,7 +532,7 @@ async fn a_taken_task_identifier_is_reported_and_writes_nothing() {
             TaskIntent::parse(intent).expect("Task intent"),
             None,
             None,
-            started_at_unix_nanos,
+            UnixNanos::new(started_at_unix_nanos),
             None,
         )
     };
@@ -572,5 +577,5 @@ async fn a_taken_task_identifier_is_reported_and_writes_nothing() {
         first.intent(),
         "the conflict changed nothing"
     );
-    assert_eq!(found.started_at_unix_nanos(), 10);
+    assert_eq!(found.started_at().get(), 10);
 }

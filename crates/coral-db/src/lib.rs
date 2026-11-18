@@ -30,11 +30,17 @@
 //!   a shared hold, another exclusive hold and a write of that row wait; on
 //!   SQLite a hold adds nothing, since the write transaction already excludes
 //!   writers.
+//! - [`PageRequest`] and [`Page`] are one forward page of a list that its
+//!   owner reads by key; [`PageKey`] is the key's text form on the wire, and
+//!   [`text_key_order`] orders a text key alike on both databases.
 //! - [`Transaction::execute_sql`] and [`Transaction::execute_script`] run SQL a
 //!   domain repository wrote for the selected backend, for features the
 //!   portable statements cannot express.
 //! - [`ReadOnlyDatabase`] permits pre-migration inspection without write
 //!   authority or access to a concrete connection.
+//! - [`UnixNanos`] is an instant as the tables store it: a statement binds
+//!   one and a row decodes one as the integer its column holds.
+//!   [`SystemClock`] is the one reader of the host's clock, behind [`Clock`].
 //!
 //! # Invariants
 //!
@@ -60,7 +66,10 @@ mod error;
 mod executor;
 mod migration;
 mod options;
+mod page;
 mod query;
+mod statements;
+mod time;
 mod transaction;
 
 pub use backend::DatabaseSystem;
@@ -70,5 +79,7 @@ pub use error::{Error, sqlx_error_is_serialization_conflict, sqlx_error_is_uniqu
 pub use executor::QueryExecutor;
 pub use migration::{MigrationPlan, MigrationProgress, MigrationReport, migration_plan};
 pub use options::DatabaseOptions;
+pub use page::{Page, PageKey, PageRequest, PageSize, text_key_order};
 pub use query::{col, column};
+pub use time::{Clock, SystemClock, UnixNanos};
 pub use transaction::{RowLock, Transaction, TransactionToken};

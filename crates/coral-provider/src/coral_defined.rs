@@ -294,7 +294,7 @@ impl ProviderModule {
                 coral_catalog::publish_builtin_generation_in_transaction(
                     transaction,
                     &self.builtin_catalog,
-                    occurred_at_unix_nanos,
+                    coral_db::UnixNanos::new(occurred_at_unix_nanos),
                 )
                 .await?,
                 coral_catalog::BUILTIN_PROVIDER_DISPLAY_NAME,
@@ -372,7 +372,7 @@ async fn authored_generation(
     let generation = coral_catalog::publish_authored_generation_in_transaction(
         transaction,
         kind,
-        occurred_at_unix_nanos,
+        coral_db::UnixNanos::new(occurred_at_unix_nanos),
     )
     .await?;
     Ok((generation, kind.provider_display_name()))
@@ -489,7 +489,7 @@ impl ProviderModule {
         let generation = coral_catalog::publish_builtin_generation_in_transaction(
             transaction,
             &self.builtin_catalog,
-            occurred_at_unix_nanos,
+            coral_db::UnixNanos::new(occurred_at_unix_nanos),
         )
         .await?;
         if !provider_repository::activate_builtin_generation(

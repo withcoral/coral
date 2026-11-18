@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use coral_catalog::AuthoredToolKind;
-use coral_db::{Database, Transaction};
+use coral_db::{Database, Page, PageRequest, Transaction};
 use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, Principal, PrincipalId, PrincipalKind,
     WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
@@ -9,7 +9,7 @@ use coral_workspace::{
 
 use crate::Error;
 use crate::repository;
-use crate::types::{PRIVATE_TOOL_PAGE_MAX_SIZE, PrivateTool, PrivateToolPage, PrivateToolPath};
+use crate::types::{PRIVATE_TOOL_PAGE_MAX_SIZE, PrivateTool, PrivateToolPath, PrivateToolSummary};
 
 /// Read-only inspection of current Private Tools: the authenticated
 /// Principal's own, and for a Workspace Owner a Workspace-owned Agent's.
@@ -63,7 +63,9 @@ impl PrivateToolInspection {
     }
 
     /// Lists one page of the authenticated Principal's own current Private
-    /// Tools in one Workspace, in path order after `after`.
+    /// Tools in one Workspace, in path order after the path `request` names.
+    /// That path only positions the page: it need not name a Private Tool,
+    /// and every page lists the caller's own.
     ///
     /// Summaries carry no source, declaration, or diagnostics. Another
     /// Principal's Private Tools, including a Workspace-owned Agent's for a
@@ -71,17 +73,16 @@ impl PrivateToolInspection {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidInput`] unless `page_size` is between one and
+    /// Returns [`Error::InvalidInput`] when the page size is over
     /// [`PRIVATE_TOOL_PAGE_MAX_SIZE`], the Workspace authority failure when
     /// the caller cannot inspect the Workspace, or a persistence failure.
     pub async fn list(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        after: Option<&PrivateToolPath>,
-        page_size: u32,
-    ) -> Result<PrivateToolPage, Error> {
-        if !(1..=PRIVATE_TOOL_PAGE_MAX_SIZE).contains(&page_size) {
+        request: &PageRequest<PrivateToolPath>,
+    ) -> Result<Page<PrivateToolSummary, PrivateToolPath>, Error> {
+        if request.size.get() > PRIVATE_TOOL_PAGE_MAX_SIZE {
             return Err(Error::InvalidInput(
                 "Private Tool page size is out of range".to_string(),
             ));
@@ -93,8 +94,7 @@ impl PrivateToolInspection {
             &mut transaction,
             workspace_id,
             actor.principal(),
-            after,
-            page_size,
+            request,
         )
         .await?;
         transaction.commit().await?;
@@ -174,7 +174,7 @@ impl PrivateToolInspection {
                 transaction,
                 actor,
                 workspace_id,
-                crate::authoring::now_unix_nanos()?,
+                crate::authoring::now(),
             )
             .await?;
         Ok(())
@@ -201,10 +201,10 @@ impl PrivateToolInspection {
 
 fn conceal_inspection_error(error: Error) -> Error {
     match error {
-        Error::PermissionDenied(_)
-        | Error::Workspace(
-            coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_),
-        ) => Error::NotFound(AuthoredToolKind::Private),
+        Error::PermissionDenied(_) => Error::NotFound(AuthoredToolKind::Private),
+        Error::Workspace(error) if error.denies_access() => {
+            Error::NotFound(AuthoredToolKind::Private)
+        }
         other => other,
     }
 }

@@ -405,7 +405,7 @@ impl RunModule {
         // must still hold at that instant.
         let now = self.now()?.max(checked_at);
         let authority = checked.and_then(|(actor, evidence)| {
-            evidence.require_current_at(now).map_err(Error::from)?;
+            evidence.require_current_at(coral_db::UnixNanos::new(now)).map_err(Error::from)?;
             Ok(actor)
         });
         let actor = match authority {
@@ -508,7 +508,7 @@ impl RunModule {
                 &run.principal,
                 registration.as_ref(),
                 &run.workspace_id,
-                now,
+                coral_db::UnixNanos::new(now),
             )
             .await
             .map_err(Error::from))

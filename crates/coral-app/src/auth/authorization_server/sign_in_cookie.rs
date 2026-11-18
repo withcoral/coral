@@ -13,7 +13,6 @@
 //! sign-ins; the start time lets a new sign-in expire the oldest ones.
 
 use std::fmt::Write as _;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::http::{HeaderMap, HeaderValue};
 use sha2::{Digest as _, Sha256};
@@ -65,14 +64,6 @@ pub(super) fn sealed_fits(sealed_len: usize, secure: bool) -> bool {
         secure,
     )
     .is_some()
-}
-
-/// Host time in Unix seconds, or `None` before the epoch.
-pub(super) fn now_unix_secs() -> Option<u64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|elapsed| elapsed.as_secs())
 }
 
 /// The cookie name for the sign-in named by `oidc_state`, started at `started_at`.

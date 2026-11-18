@@ -18,7 +18,11 @@ pub async fn provision_user(
     let user_id = UserId::parse(id).expect("valid fixture User id");
     let initial = AuthenticatedUser::organization_member(user_id.clone(), initial_role);
     let membership = OrganizationModule::new(database)
-        .provision_login(&ChangeContext::new(initial, 1, TraceId::current_or_new()))
+        .provision_login(&ChangeContext::new(
+            initial,
+            coral_db::UnixNanos::new(1),
+            TraceId::current_or_new(),
+        ))
         .await
         .expect("provision test Organization Membership");
     if membership.enabled() {

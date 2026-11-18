@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use coral_catalog::{AuthoredToolKind, ToolAccessState};
-use coral_db::{Database, Transaction};
+use coral_db::{Database, Page, PageRequest, Transaction, UnixNanos};
 use coral_run_executor::CompilerClient;
 use coral_workspace::{
     AuthenticatedPrincipal, AuthoritySource, ChangeContext, Principal, PrincipalKind, UserId,
@@ -29,8 +29,8 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use crate::authoring::{
-    Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, now_unix_nanos,
-    tool_paths_overlap, v8_compiler,
+    Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, now, tool_paths_overlap,
+    v8_compiler,
 };
 use crate::tool_typing::ToolDeclarationReader;
 use crate::types::AuthoredToolPath;
@@ -119,6 +119,18 @@ impl SharedToolPath {
     #[must_use]
     pub fn segments(&self) -> Vec<String> {
         self.0.split('.').map(ToString::to_string).collect()
+    }
+}
+
+/// The list of live Shared Tools pages by path: a page's cursor is the path
+/// of its last Shared Tool.
+impl coral_db::PageKey for SharedToolPath {
+    fn to_cursor(&self) -> String {
+        self.0.clone()
+    }
+
+    fn from_cursor(text: &str) -> Option<Self> {
+        Self::parse(text).ok()
     }
 }
 
@@ -231,7 +243,7 @@ pub struct SharedToolRevision {
     pub(crate) default_access_state: ToolAccessState,
     pub(crate) published_by: UserId,
     pub(crate) origin: SharedToolRevisionOrigin,
-    pub(crate) published_at_unix_nanos: i64,
+    pub(crate) published_at: UnixNanos,
 }
 
 impl SharedToolRevision {
@@ -309,8 +321,65 @@ impl SharedToolRevision {
 
     /// Returns when it was published.
     #[must_use]
-    pub const fn published_at_unix_nanos(&self) -> i64 {
-        self.published_at_unix_nanos
+    pub const fn published_at(&self) -> UnixNanos {
+        self.published_at
+    }
+}
+
+/// One revision of a Shared Tool as its history lists it: without its
+/// source, declaration or diagnostics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedToolRevisionSummary {
+    pub(crate) revision: u64,
+    pub(crate) description: AuthoredToolDescription,
+    pub(crate) content_hash: String,
+    pub(crate) default_access_state: ToolAccessState,
+    pub(crate) published_by: UserId,
+    pub(crate) origin: SharedToolRevisionOrigin,
+    pub(crate) published_at: UnixNanos,
+}
+
+impl SharedToolRevisionSummary {
+    /// Returns the revision number, from 1.
+    #[must_use]
+    pub const fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Returns the exact published description.
+    #[must_use]
+    pub const fn description(&self) -> &AuthoredToolDescription {
+        &self.description
+    }
+
+    /// Returns the lowercase hex SHA-256 of the description and source.
+    #[must_use]
+    pub fn content_hash(&self) -> &str {
+        &self.content_hash
+    }
+
+    /// Returns the default Tool Access State the Owner chose at publish.
+    #[must_use]
+    pub const fn default_access_state(&self) -> ToolAccessState {
+        self.default_access_state
+    }
+
+    /// Returns the Workspace Owner who published it: attribution only.
+    #[must_use]
+    pub const fn published_by(&self) -> &UserId {
+        &self.published_by
+    }
+
+    /// Returns what it copied.
+    #[must_use]
+    pub const fn origin(&self) -> &SharedToolRevisionOrigin {
+        &self.origin
+    }
+
+    /// Returns when it was published.
+    #[must_use]
+    pub const fn published_at(&self) -> UnixNanos {
+        self.published_at
     }
 }
 
@@ -321,7 +390,7 @@ pub struct SharedTool {
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) path: SharedToolPath,
     pub(crate) created_by: UserId,
-    pub(crate) created_at_unix_nanos: i64,
+    pub(crate) created_at: UnixNanos,
     pub(crate) current: SharedToolRevision,
 }
 
@@ -352,8 +421,8 @@ impl SharedTool {
 
     /// Returns when it was first published.
     #[must_use]
-    pub const fn created_at_unix_nanos(&self) -> i64 {
-        self.created_at_unix_nanos
+    pub const fn created_at(&self) -> UnixNanos {
+        self.created_at
     }
 
     /// Returns its current revision.
@@ -486,7 +555,7 @@ pub struct SharedToolSummary {
     pub(crate) path: SharedToolPath,
     pub(crate) description: AuthoredToolDescription,
     pub(crate) current_revision: u64,
-    pub(crate) published_at_unix_nanos: i64,
+    pub(crate) published_at: UnixNanos,
 }
 
 impl SharedToolSummary {
@@ -516,29 +585,8 @@ impl SharedToolSummary {
 
     /// Returns when its current revision was published.
     #[must_use]
-    pub const fn published_at_unix_nanos(&self) -> i64 {
-        self.published_at_unix_nanos
-    }
-}
-
-/// One page of live Shared Tools in path order.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SharedToolPage {
-    pub(crate) summaries: Vec<SharedToolSummary>,
-    pub(crate) next_after: Option<SharedToolPath>,
-}
-
-impl SharedToolPage {
-    /// Returns the Shared Tools on this page.
-    #[must_use]
-    pub fn summaries(&self) -> &[SharedToolSummary] {
-        &self.summaries
-    }
-
-    /// Returns the path the next page follows, when there is one.
-    #[must_use]
-    pub const fn next_after(&self) -> Option<&SharedToolPath> {
-        self.next_after.as_ref()
+    pub const fn published_at(&self) -> UnixNanos {
+        self.published_at
     }
 }
 
@@ -600,8 +648,7 @@ impl SharedToolLifecycleAction {
     }
 }
 
-/// Stable identity of one lifecycle Event of a Shared Tool. A page of
-/// Events continues after the Event it names.
+/// Stable identity of one lifecycle Event of a Shared Tool.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SharedToolLifecycleEventId(Uuid);
 
@@ -642,7 +689,7 @@ pub struct SharedToolLifecycleEvent {
     pub(crate) path: SharedToolPath,
     pub(crate) revision: u64,
     pub(crate) content_hash: String,
-    pub(crate) occurred_at_unix_nanos: i64,
+    pub(crate) occurred_at: UnixNanos,
 }
 
 impl SharedToolLifecycleEvent {
@@ -692,29 +739,48 @@ impl SharedToolLifecycleEvent {
 
     /// Returns when it happened.
     #[must_use]
-    pub const fn occurred_at_unix_nanos(&self) -> i64 {
-        self.occurred_at_unix_nanos
+    pub const fn occurred_at(&self) -> UnixNanos {
+        self.occurred_at
+    }
+
+    /// Returns its position in the Workspace's history, which a page of
+    /// Events continues after.
+    #[must_use]
+    pub fn key(&self) -> SharedToolLifecycleEventKey {
+        SharedToolLifecycleEventKey {
+            occurred_at: self.occurred_at,
+            id: self.id.clone(),
+        }
     }
 }
 
-/// One page of lifecycle Events, newest first.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SharedToolLifecycleEventPage {
-    pub(crate) events: Vec<SharedToolLifecycleEvent>,
-    pub(crate) next_after: Option<SharedToolLifecycleEventId>,
+/// The position of one lifecycle Event in a Workspace's history, newest
+/// first: when it occurred, then its identity, which orders the Events that
+/// occurred together. A page's cursor spells both parts as
+/// `{occurred_at}/{id}`, so a page continues without reading the Event the
+/// cursor came from.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SharedToolLifecycleEventKey {
+    pub(crate) occurred_at: UnixNanos,
+    pub(crate) id: SharedToolLifecycleEventId,
 }
 
-impl SharedToolLifecycleEventPage {
-    /// Returns the Events on this page.
-    #[must_use]
-    pub fn events(&self) -> &[SharedToolLifecycleEvent] {
-        &self.events
+impl coral_db::PageKey for SharedToolLifecycleEventKey {
+    fn to_cursor(&self) -> String {
+        format!("{}/{}", self.occurred_at.get(), self.id)
     }
 
-    /// Returns the Event the next page follows, when there is one.
-    #[must_use]
-    pub const fn next_after(&self) -> Option<&SharedToolLifecycleEventId> {
-        self.next_after.as_ref()
+    fn from_cursor(text: &str) -> Option<Self> {
+        let (occurred_at, id) = text.split_once('/')?;
+        let unix_nanos = occurred_at.parse::<i64>().ok()?;
+        // One time has one spelling, as one identity has.
+        if unix_nanos.to_string() != occurred_at {
+            return None;
+        }
+        Some(Self {
+            occurred_at: UnixNanos::new(unix_nanos),
+            id: SharedToolLifecycleEventId::parse(id).ok()?,
+        })
     }
 }
 
@@ -941,21 +1007,21 @@ impl SharedToolModule {
     }
 
     /// Lists one page of the Workspace's live Shared Tools in path order
-    /// after `after`, to any Principal in the Workspace.
+    /// after the path `request` names, to any Principal in the Workspace.
+    /// That path only positions the page: it need not name a Shared Tool.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::InvalidInput`] unless `page_size` is between one and
+    /// Returns [`Error::InvalidInput`] when the page size is over
     /// [`SHARED_TOOL_PAGE_MAX_SIZE`], and [`Error::NotFound`] when
     /// the caller cannot inspect the Workspace.
     pub async fn list(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
-        after: Option<&SharedToolPath>,
-        page_size: u32,
-    ) -> Result<SharedToolPage, Error> {
-        if !(1..=SHARED_TOOL_PAGE_MAX_SIZE).contains(&page_size) {
+        request: &PageRequest<SharedToolPath>,
+    ) -> Result<Page<SharedToolSummary, SharedToolPath>, Error> {
+        if request.size.get() > SHARED_TOOL_PAGE_MAX_SIZE {
             return Err(Error::InvalidInput(
                 "Shared Tool page size is out of range".to_string(),
             ));
@@ -963,37 +1029,34 @@ impl SharedToolModule {
         let mut transaction = self.database.begin_read_snapshot().await?;
         self.authorize_inspection(&mut transaction, actor, workspace_id)
             .await?;
-        let page = shared_tool_repository::list_live_page(
-            &mut transaction,
-            workspace_id,
-            after,
-            page_size,
-        )
-        .await?;
+        let page =
+            shared_tool_repository::list_live_page(&mut transaction, workspace_id, request).await?;
         transaction.commit().await?;
         Ok(page)
     }
 
     /// Lists every revision of the Shared Tool `id`, newest first, to a
-    /// Member User. Its identity names it whether it is live or removed: a
-    /// removal keeps its revisions.
+    /// Member User, without the source, declaration or diagnostics of any:
+    /// [`Self::get_revision`] reads those of one. Its identity names it
+    /// whether it is live or removed: a removal keeps its revisions.
     ///
     /// # Errors
     ///
     /// Returns [`Error::PermissionDenied`] to an Agent, and
     /// [`Error::NotFound`] when the Workspace has no such Shared Tool or the
     /// caller cannot inspect the Workspace.
-    pub async fn list_revisions(
+    pub async fn list_revision_summaries(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         id: &SharedToolId,
-    ) -> Result<Vec<SharedToolRevision>, Error> {
+    ) -> Result<Vec<SharedToolRevisionSummary>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
         self.authorize_history(&mut transaction, actor, workspace_id)
             .await?;
         let revisions =
-            shared_tool_repository::list_revisions(&mut transaction, workspace_id, id).await?;
+            shared_tool_repository::list_revision_summaries(&mut transaction, workspace_id, id)
+                .await?;
         transaction.commit().await?;
         // Every Shared Tool has its first revision.
         if revisions.is_empty() {
@@ -1028,26 +1091,26 @@ impl SharedToolModule {
     }
 
     /// Lists one page of the lifecycle Events of the Workspace's Shared
-    /// Tools, newest first after the Event `after`, to a Member User: every
-    /// publish and removal, of removed Shared Tools too. With `shared_tool`,
-    /// lists the Events of that Shared Tool alone.
+    /// Tools, newest first after the position `request` names, to a Member
+    /// User: every publish and removal, of removed Shared Tools too. With
+    /// `shared_tool`, lists the Events of that Shared Tool alone. The
+    /// position need not be an Event's, and it selects no Workspace or
+    /// Shared Tool: each page lists what its own request names.
     ///
     /// # Errors
     ///
     /// Returns [`Error::PermissionDenied`] to an Agent,
-    /// [`Error::InvalidInput`] unless `page_size` is between one and
-    /// [`SHARED_TOOL_PAGE_MAX_SIZE`] and `after` names an Event of the
-    /// Workspace, and [`Error::NotFound`] when the caller cannot inspect the
-    /// Workspace.
+    /// [`Error::InvalidInput`] when the page size is over
+    /// [`SHARED_TOOL_PAGE_MAX_SIZE`], and [`Error::NotFound`] when the
+    /// caller cannot inspect the Workspace.
     pub async fn list_lifecycle_events(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         shared_tool: Option<&SharedToolId>,
-        after: Option<&SharedToolLifecycleEventId>,
-        page_size: u32,
-    ) -> Result<SharedToolLifecycleEventPage, Error> {
-        if !(1..=SHARED_TOOL_PAGE_MAX_SIZE).contains(&page_size) {
+        request: &PageRequest<SharedToolLifecycleEventKey>,
+    ) -> Result<Page<SharedToolLifecycleEvent, SharedToolLifecycleEventKey>, Error> {
+        if request.size.get() > SHARED_TOOL_PAGE_MAX_SIZE {
             return Err(Error::InvalidInput(
                 "Shared Tool Event page size is out of range".to_string(),
             ));
@@ -1059,14 +1122,11 @@ impl SharedToolModule {
             &mut transaction,
             workspace_id,
             shared_tool,
-            after,
-            page_size,
+            request,
         )
         .await?;
         transaction.commit().await?;
-        page.ok_or_else(|| {
-            Error::InvalidInput("no Shared Tool Event is at this page position".to_string())
-        })
+        Ok(page)
     }
 
     /// The publish's review and compiled source, from read snapshots: the
@@ -1241,7 +1301,7 @@ impl SharedToolModule {
                 target_path: &tool.path,
                 revision,
                 content_hash: tool.current.content_hash(),
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                occurred_at: context.occurred_at(),
                 trace_id: context.trace_id(),
             },
         )
@@ -1287,7 +1347,8 @@ impl SharedToolModule {
         {
             return Err(Error::SharedToolHasDependents { dependent });
         }
-        let current = shared_tool_repository::find_revision(
+        // The Event names the content removed, and nothing else of it.
+        let content_hash = shared_tool_repository::find_revision_content_hash(
             transaction,
             workspace_id,
             &record.id,
@@ -1300,7 +1361,7 @@ impl SharedToolModule {
             workspace_id,
             &record.id,
             record.current_revision,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
         )
         .await?;
         shared_tool_repository::insert_lifecycle_event(
@@ -1312,8 +1373,8 @@ impl SharedToolModule {
                 target_id: &record.id,
                 target_path: &record.path,
                 revision: record.current_revision,
-                content_hash: current.content_hash(),
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                content_hash: &content_hash,
+                occurred_at: context.occurred_at(),
                 trace_id: context.trace_id(),
             },
         )
@@ -1337,9 +1398,12 @@ impl SharedToolModule {
             .workspaces
             .check_configuration_in_transaction(transaction, context.actor(), workspace_id)
             .await
-            .map_err(|error| match error {
-                coral_workspace::Error::PermissionDenied(_) => Error::PermissionDenied(denial),
-                other => other.into(),
+            .map_err(|error| {
+                if error.refusal() == Some(coral_workspace::AuthorityRefusal::PermissionDenied) {
+                    Error::PermissionDenied(denial)
+                } else {
+                    error.into()
+                }
             })?;
         require_owner(&evidence, denial)
     }
@@ -1373,20 +1437,15 @@ impl SharedToolModule {
         workspace_id: &WorkspaceId,
     ) -> Result<(), Error> {
         self.workspaces
-            .check_principal_inspection_in_snapshot(
-                transaction,
-                actor,
-                workspace_id,
-                now_unix_nanos()?,
-            )
+            .check_principal_inspection_in_snapshot(transaction, actor, workspace_id, now())
             .await
             .map(drop)
-            .map_err(|error| match error {
-                coral_workspace::Error::WorkspaceNotFound
-                | coral_workspace::Error::PermissionDenied(_) => {
+            .map_err(|error| {
+                if error.denies_access() {
                     Error::NotFound(AuthoredToolKind::Shared)
+                } else {
+                    error.into()
                 }
-                other => other.into(),
             })
     }
 }
@@ -1402,7 +1461,7 @@ fn next_revision(
     compiled: PreparedAuthoredTool,
     origin: SharedToolRevisionOrigin,
 ) -> Result<SharedTool, Error> {
-    let occurred_at = context.occurred_at_unix_nanos();
+    let occurred_at = context.occurred_at();
     let (id, revision, created_by, created_at) = match record {
         None => (
             SharedToolId::generate(),
@@ -1417,14 +1476,14 @@ fn next_revision(
                 .checked_add(1)
                 .ok_or_else(|| Error::CorruptData("Shared Tool revision overflowed".to_string()))?,
             record.created_by.clone(),
-            record.created_at_unix_nanos,
+            record.created_at,
         ),
     };
     Ok(SharedTool {
         workspace_id: workspace_id.clone(),
         path: publish.path.clone(),
         created_by,
-        created_at_unix_nanos: created_at,
+        created_at,
         current: SharedToolRevision {
             shared_tool_id: id.clone(),
             revision,
@@ -1438,7 +1497,7 @@ fn next_revision(
             default_access_state: publish.default_access_state,
             published_by: context.actor().user_id().clone(),
             origin,
-            published_at_unix_nanos: occurred_at,
+            published_at: occurred_at,
         },
         id,
     })
@@ -1483,13 +1542,17 @@ async fn read_origin(
             if !readable {
                 return Err(Error::SharedToolSourceUnreadable);
             }
-            let private_tool =
-                repository::find_current_in_transaction(transaction, workspace_id, owner, path)
-                    .await?
-                    .ok_or(Error::SharedToolSourceUnreadable)?;
-            Ok(SharedToolRevisionOrigin::PrivateTool(
-                private_tool.id().clone(),
-            ))
+            // The revision records which Private Tool it copied, and the
+            // publish carries the content.
+            let private_tool = repository::find_current_record_in_transaction(
+                transaction,
+                workspace_id,
+                owner,
+                path,
+            )
+            .await?
+            .ok_or(Error::SharedToolSourceUnreadable)?;
+            Ok(SharedToolRevisionOrigin::PrivateTool(private_tool.id))
         }
         SharedToolOrigin::Revision(revision) => {
             let record =

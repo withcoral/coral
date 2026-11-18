@@ -1,6 +1,7 @@
 //! Internal bootstrap seam for assembling the local server runtime.
 
 mod consts;
+mod engine;
 mod env;
 mod error;
 mod health;
@@ -11,11 +12,11 @@ mod secret_store_config;
 mod server;
 mod server_config;
 
-pub use error::AppError;
+pub use error::{AppError, StateRefusal};
 pub use health::EngineReadiness as ListenerReadiness;
 pub use runtime::{
-    Extensions, Launch, MigrationProgress, MigrationReport, RunningRuntime, RuntimeError,
-    start_runtime,
+    Extensions, Launch, McpStartError, MigrationProgress, MigrationReport, RunningRuntime,
+    RuntimeError, ShutdownFailures, start_runtime,
 };
 pub use search_model::{SearchModel, SearchModelState, SearchModelStop};
 pub use server::{PreparedServerBuilder, RunningServer, ServerBuilder, ServerMode};

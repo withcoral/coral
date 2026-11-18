@@ -37,7 +37,11 @@ async fn agent_removal(shared: bool) {
         .unwrap();
     let agent = h
         .workspaces
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 11)
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(11),
+        )
         .await
         .unwrap();
     let initial = h
@@ -135,7 +139,7 @@ async fn agent_removal(shared: bool) {
     assert_eq!(removed.len(), 1);
     for event in removed {
         assert_eq!(event.trace_id(), cleanup.trace_id());
-        assert_eq!(event.occurred_at_unix_nanos(), 30);
+        assert_eq!(event.occurred_at(), coral_db::UnixNanos::new(30));
     }
     gate.release();
     let result = tokio::time::timeout(Duration::from_secs(5), publishing)
@@ -201,11 +205,15 @@ async fn agent_removal(shared: bool) {
         [] as [coral_workspace::Agent; 0]
     );
     h.workspaces
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 31)
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(31),
+        )
         .await
         .unwrap_err();
     h.workspaces
-        .check_run_admission(&agent, workspace.id(), 31)
+        .check_run_admission(&agent, workspace.id(), coral_db::UnixNanos::new(31))
         .await
         .unwrap_err();
     h.accounts

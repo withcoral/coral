@@ -1,7 +1,7 @@
 //! Builds one day's report from stored data.
 
 use chrono::NaiveDate;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 
 use crate::Error;
 use crate::day::{day_of, day_string};
@@ -30,7 +30,8 @@ pub(crate) async fn compose(
     day: NaiveDate,
     window: Window,
 ) -> Result<Composed, Error> {
-    let runs = coral_run::usage_repository::run_endings(tx, window.start, window.end).await?;
+    let runs =
+        coral_run::usage_repository::run_endings(tx, window.start.get(), window.end.get()).await?;
     let compile: u64 =
         coral_task::usage_repository::rejected_submissions(tx, window.start, window.end)
             .await?
@@ -39,11 +40,14 @@ pub(crate) async fn compose(
             .map(|(_, submissions)| submissions)
             .sum();
     let tools =
-        coral_run::usage_repository::invocation_endings(tx, window.start, window.end).await?;
+        coral_run::usage_repository::invocation_endings(tx, window.start.get(), window.end.get())
+            .await?;
     let approval_required =
-        coral_run::usage_repository::approval_requests(tx, window.start, window.end).await?;
+        coral_run::usage_repository::approval_requests(tx, window.start.get(), window.end.get())
+            .await?;
     let approvals =
-        coral_run::usage_repository::approval_outcomes(tx, window.start, window.end).await?;
+        coral_run::usage_repository::approval_outcomes(tx, window.start.get(), window.end.get())
+            .await?;
     let tasks = coral_task::usage_repository::tasks_started(tx, window.start, window.end).await?;
     let private_tool_counts = private_tool_counts(tx, window).await?;
     let shared_tool_counts = shared_tool_counts(tx, window).await?;
@@ -130,7 +134,8 @@ async fn private_tool_counts(
     let saved =
         coral_tools::usage_repository::private_tools_created(tx, window.start, window.end).await?;
     let called =
-        coral_run::usage_repository::private_tool_calls(tx, window.start, window.end).await?;
+        coral_run::usage_repository::private_tool_calls(tx, window.start.get(), window.end.get())
+            .await?;
     let reuse = activity::reuse(tx, window).await?;
     Ok(PrivateToolCounts {
         saved: count(saved),
@@ -149,7 +154,8 @@ async fn shared_tool_counts(
     let removed =
         coral_tools::usage_repository::shared_tools_removed(tx, window.start, window.end).await?;
     let called =
-        coral_run::usage_repository::shared_tool_calls(tx, window.start, window.end).await?;
+        coral_run::usage_repository::shared_tool_calls(tx, window.start.get(), window.end.get())
+            .await?;
     Ok(SharedToolCounts {
         published: count(published),
         removed: count(removed),
@@ -163,12 +169,12 @@ async fn milestones(
     tx: &mut Transaction<'_>,
     kept: MilestoneDays,
     day: NaiveDate,
-    end: i64,
+    end: UnixNanos,
 ) -> Result<MilestoneDays, Error> {
     let reuse = activity::reuse(
         tx,
         Window {
-            start: i64::MIN,
+            start: UnixNanos::new(i64::MIN),
             end,
         },
     )
@@ -177,7 +183,9 @@ async fn milestones(
         first_successful_run: earliest(
             day,
             kept.first_successful_run,
-            coral_run::usage_repository::first_success_before(tx, end).await?,
+            coral_run::usage_repository::first_success_before(tx, end.get())
+                .await?
+                .map(UnixNanos::new),
         ),
         first_private_tool: earliest(
             day,
@@ -190,7 +198,11 @@ async fn milestones(
 
 /// The earlier of a kept day no later than `day` and the day of a found
 /// time.
-fn earliest(day: NaiveDate, kept: Option<NaiveDate>, found: Option<i64>) -> Option<NaiveDate> {
+fn earliest(
+    day: NaiveDate,
+    kept: Option<NaiveDate>,
+    found: Option<UnixNanos>,
+) -> Option<NaiveDate> {
     kept.filter(|kept| *kept <= day)
         .into_iter()
         .chain(found.map(day_of))

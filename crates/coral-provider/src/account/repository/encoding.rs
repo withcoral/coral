@@ -63,24 +63,33 @@ pub(super) fn encode_authorization_request(
         } => StoredRequest::Caller((oauth, target_provider.to_string(), Some(agent.to_string()))),
         AuthorizationTarget::Shared => StoredRequest::Fixed(oauth),
     };
-    serde_json::to_string(&stored).map_err(|_invalid| Error::AccountInput)
+    serde_json::to_string(&stored)
+        .map_err(|_invalid| Error::Internal(crate::InternalFault::Encoding))
 }
 
 pub(super) fn decode_authorization_request(value: &str) -> Result<AuthorizationRequest, Error> {
-    let stored: StoredRequest =
-        serde_json::from_str(value).map_err(|_invalid| Error::AccountInput)?;
+    let stored: StoredRequest = serde_json::from_str(value).map_err(|_invalid| {
+        Error::CorruptData("stored authorization request does not decode".into())
+    })?;
+    // Each value was valid when Coral stored it, so one that no longer
+    // parses is corrupt data, not the caller's input.
+    let corrupt =
+        || Error::CorruptData("stored authorization request holds an invalid value".into());
     let (oauth, target) = match stored {
         StoredRequest::Reconnect((ReconnectMarker::Reconnect, id, oauth)) => (
             oauth,
-            AuthorizationTarget::Reconnect(ProviderAccountId::parse(&id)?),
+            AuthorizationTarget::Reconnect(
+                ProviderAccountId::parse(&id).map_err(|_invalid| corrupt())?,
+            ),
         ),
         StoredRequest::Caller((oauth, target_provider, agent)) => {
-            let target_provider = ProviderId::parse(&target_provider)?;
+            let target_provider =
+                ProviderId::parse(&target_provider).map_err(|_invalid| corrupt())?;
             let target = match agent {
                 None => AuthorizationTarget::User(target_provider),
                 Some(id) => AuthorizationTarget::Agent {
                     target_provider,
-                    agent: PrincipalId::parse(&id)?,
+                    agent: PrincipalId::parse(&id).map_err(|_invalid| corrupt())?,
                 },
             };
             (oauth, target)
@@ -88,7 +97,10 @@ pub(super) fn decode_authorization_request(value: &str) -> Result<AuthorizationR
         StoredRequest::Fixed(oauth) => (oauth, AuthorizationTarget::Shared),
     };
     Ok(AuthorizationRequest {
-        oauth: oauth.map(StoredClient::into_domain).transpose()?,
+        oauth: oauth
+            .map(StoredClient::into_domain)
+            .transpose()
+            .map_err(|_invalid| corrupt())?,
         target,
     })
 }
@@ -111,11 +123,12 @@ pub(in crate::account) fn encode_flow(flow: &Flow) -> Result<Zeroizing<String>, 
         redirect_uri: &flow.redirect_uri,
     })
     .map(Zeroizing::new)
-    .map_err(|_invalid| Error::AccountInput)
+    .map_err(|_invalid| Error::Internal(crate::InternalFault::Encoding))
 }
 pub(in crate::account) fn decode_flow(value: &str) -> Result<Flow, Error> {
-    let stored: StoredFlow<String> =
-        serde_json::from_str(value).map_err(|_invalid| Error::AccountInput)?;
+    let stored: StoredFlow<String> = serde_json::from_str(value).map_err(|_invalid| {
+        Error::CorruptData("stored authorization flow does not decode".into())
+    })?;
     Ok(Flow {
         state: stored.state,
         verifier: stored.verifier,
@@ -146,11 +159,11 @@ pub(in crate::account) fn encode_token(token: &TokenResponse) -> Result<Zeroizin
         expires_at: token.expires_at,
     })
     .map(Zeroizing::new)
-    .map_err(|_invalid| Error::AccountInput)
+    .map_err(|_invalid| Error::Internal(crate::InternalFault::Encoding))
 }
 pub(in crate::account) fn decode_token(value: &str) -> Result<TokenResponse, Error> {
-    let stored: StoredToken<String> =
-        serde_json::from_str(value).map_err(|_invalid| Error::AccountInput)?;
+    let stored: StoredToken<String> = serde_json::from_str(value)
+        .map_err(|_invalid| Error::CorruptData("stored token does not decode".into()))?;
     Ok(TokenResponse {
         access_token: stored.access_token,
         token_type: stored.token_type,
@@ -172,7 +185,7 @@ pub(in crate::account) fn encode_values(
         .collect();
     serde_json::to_string(&exposed)
         .map(Zeroizing::new)
-        .map_err(|_invalid| Error::AccountInput)
+        .map_err(|_invalid| Error::Internal(crate::InternalFault::Encoding))
 }
 /// A record of typed values, which may be empty when a Secret Store holds every field.
 pub(in crate::account) fn encode_sealed_fields(
@@ -184,23 +197,26 @@ pub(in crate::account) fn encode_sealed_fields(
         .collect();
     serde_json::to_string(&exposed)
         .map(Zeroizing::new)
-        .map_err(|_invalid| Error::AccountInput)
+        .map_err(|_invalid| Error::Internal(crate::InternalFault::Encoding))
 }
 pub(in crate::account) fn decode_values(value: &str) -> Result<CredentialValues, Error> {
-    CredentialValues::new(decode_sealed_fields(value)?).map_err(|_invalid| Error::AccountInput)
+    CredentialValues::new(decode_sealed_fields(value)?)
+        .map_err(|_invalid| Error::CorruptData("stored credential values are not valid".into()))
 }
 pub(in crate::account) fn decode_sealed_fields(
     value: &str,
 ) -> Result<BTreeMap<String, Secret>, Error> {
-    let stored: BTreeMap<String, String> =
-        serde_json::from_str(value).map_err(|_invalid| Error::AccountInput)?;
+    let stored: BTreeMap<String, String> = serde_json::from_str(value)
+        .map_err(|_invalid| Error::CorruptData("stored credential fields do not decode".into()))?;
     // Each value moves into a zeroizing Secret without another copy.
     stored
         .into_iter()
         .map(|(name, value)| {
             Secret::new(value)
                 .map(|secret| (name, secret))
-                .map_err(|_invalid| Error::AccountInput)
+                .map_err(|_invalid| {
+                    Error::CorruptData("stored credential field is not a valid secret".into())
+                })
         })
         .collect()
 }
@@ -230,19 +246,22 @@ pub(in crate::account) fn encode_references(
             )
         })
         .collect();
-    serde_json::to_string(&stored).map_err(|_invalid| Error::AccountInput)
+    serde_json::to_string(&stored)
+        .map_err(|_invalid| Error::Internal(crate::InternalFault::Encoding))
 }
 
 /// The references stored beside an Account's sealed record, by field name.
 pub(super) fn decode_references(value: &str) -> Result<BTreeMap<String, SecretReference>, Error> {
-    let stored: BTreeMap<String, StoredReference> =
-        serde_json::from_str(value).map_err(|_invalid| Error::AccountInput)?;
+    let stored: BTreeMap<String, StoredReference> = serde_json::from_str(value)
+        .map_err(|_invalid| Error::CorruptData("stored Secret References do not decode".into()))?;
     stored
         .into_iter()
         .map(|(name, reference)| {
             SecretReference::new(reference.store, reference.path, reference.key)
                 .map(|reference| (name, reference))
-                .map_err(|_invalid| Error::AccountInput)
+                .map_err(|_invalid| {
+                    Error::CorruptData("stored Secret Reference is not valid".into())
+                })
         })
         .collect()
 }
@@ -259,14 +278,16 @@ pub(in crate::account) fn encode_device(
         device.interval,
     ))
     .map(Zeroizing::new)
-    .map_err(|_invalid| Error::AccountInput)
+    .map_err(|_invalid| Error::Internal(crate::InternalFault::Encoding))
 }
 
 pub(in crate::account) fn decode_device(
     value: &str,
 ) -> Result<crate::account::device::DeviceResponse, Error> {
     let (device_code, user_code, verification_uri, expires_in, interval) =
-        serde_json::from_str(value).map_err(|_invalid| Error::AccountInput)?;
+        serde_json::from_str(value).map_err(|_invalid| {
+            Error::CorruptData("stored device authorization does not decode".into())
+        })?;
     Ok(crate::account::device::DeviceResponse {
         device_code,
         user_code,
@@ -274,4 +295,53 @@ pub(in crate::account) fn decode_device(
         expires_in,
         interval,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Error;
+
+    // Catches: stored data that does not decode reported as invalid input
+    // from the caller, which a client reads as its own mistake.
+    #[test]
+    fn stored_data_that_does_not_decode_is_corrupt_data() {
+        let undecodable = "{";
+        let outcomes: [(&str, Option<Error>); 6] = [
+            (
+                "authorization request",
+                super::decode_authorization_request(undecodable).err(),
+            ),
+            ("flow", super::decode_flow(undecodable).err()),
+            ("token", super::decode_token(undecodable).err()),
+            ("values", super::decode_values(undecodable).err()),
+            ("references", super::decode_references(undecodable).err()),
+            ("device", super::decode_device(undecodable).err()),
+        ];
+        for (stored, error) in outcomes {
+            assert!(
+                matches!(error, Some(Error::CorruptData(_))),
+                "{stored}: {error:?}"
+            );
+        }
+        // A stored request that decodes and holds a malformed Provider
+        // Account id is corrupt as well.
+        let id = "00000000-0000-4000-8000-000000000000";
+        let stored = super::encode_authorization_request(&super::AuthorizationRequest {
+            oauth: None,
+            target: super::AuthorizationTarget::Reconnect(
+                super::ProviderAccountId::parse(id).unwrap(),
+            ),
+        })
+        .unwrap();
+        assert!(matches!(
+            super::decode_authorization_request(&stored.replace(id, "not-an-id")),
+            Err(Error::CorruptData(_))
+        ));
+        super::decode_authorization_request(&stored).expect("the stored request decodes");
+        // A reference that decodes and names no store is corrupt as well.
+        assert!(matches!(
+            super::decode_references(r#"{"token":{"store":"","path":"p","key":"k"}}"#),
+            Err(Error::CorruptData(_))
+        ));
+    }
 }

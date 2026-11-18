@@ -77,7 +77,8 @@ pub mod test_fixtures;
 mod types;
 use std::sync::Arc;
 
-use coral_db::{Database, Transaction};
+use coral_db::Clock as _;
+use coral_db::{Database, Transaction, UnixNanos};
 use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
@@ -360,12 +361,7 @@ impl UniversalSearchModule {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
             .workspaces
-            .check_principal_inspection_in_snapshot(
-                &mut transaction,
-                actor,
-                workspace_id,
-                now_unix_nanos()?,
-            )
+            .check_principal_inspection_in_snapshot(&mut transaction, actor, workspace_id, now())
             .await?;
         let searchable = retriever::tools::searchable_providers(
             &mut transaction,
@@ -585,12 +581,7 @@ impl UniversalSearchModule {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
             .workspaces
-            .check_principal_inspection_in_snapshot(
-                &mut transaction,
-                actor,
-                workspace_id,
-                now_unix_nanos()?,
-            )
+            .check_principal_inspection_in_snapshot(&mut transaction, actor, workspace_id, now())
             .await
             .map_err(Error::from)
             .map_err(conceal_description_error)?;
@@ -669,7 +660,7 @@ impl UniversalSearchModule {
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         Ok(self
             .workspaces
-            .check_discovery_in_transaction(transaction, actor, workspace_id, now_unix_nanos()?)
+            .check_discovery_in_transaction(transaction, actor, workspace_id, now())
             .await?)
     }
 }
@@ -750,26 +741,22 @@ const fn ranked_status(retriever: EntityKind, coverage: RetrieverCoverage) -> Re
     RetrieverStatus::new(retriever, state, coverage)
 }
 
-fn now_unix_nanos() -> Result<i64, Error> {
-    unix_now_nanos().ok_or(Error::ServiceUnavailable)
-}
-
-/// The current time in Unix nanoseconds, or `None` when the system clock is
-/// before 1970 or past the durable nanosecond range. Each caller turns `None`
-/// into its own error.
-pub(crate) fn unix_now_nanos() -> Option<i64> {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_nanos()).ok())
+/// The current time.
+pub(crate) fn now() -> UnixNanos {
+    coral_db::SystemClock.now()
 }
 
 fn conceal_description_error(error: Error) -> Error {
     match error {
-        Error::PermissionDenied(_)
-        | Error::Workspace(
-            coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::PermissionDenied(_),
-        ) => Error::AuthoringDescriptionNotFound,
+        Error::PermissionDenied(_) => Error::AuthoringDescriptionNotFound,
+        // Through any module's error that wraps the refusal.
+        other
+            if other
+                .workspace_refusal()
+                .is_some_and(coral_workspace::AuthorityRefusal::denies_access) =>
+        {
+            Error::AuthoringDescriptionNotFound
+        }
         other => other,
     }
 }

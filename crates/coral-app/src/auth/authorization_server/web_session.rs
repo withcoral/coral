@@ -34,7 +34,7 @@ use super::AuthorizationServerHttpState;
 use super::client_authentication::{HeaderCredential, authenticate};
 use super::response::security_headers;
 use super::token::{
-    FormError, MAX_BODY_BYTES, TokenError, TokenForm, json_response, now_unix_nanos, parse_form,
+    FormError, MAX_BODY_BYTES, TokenError, TokenForm, expires_in, json_response, parse_form,
     token_error, valid_content_type,
 };
 
@@ -52,9 +52,7 @@ pub(super) async fn start(
     ) else {
         return token_error(TokenError::InvalidRequest);
     };
-    let Some(now) = now_unix_nanos() else {
-        return token_error(TokenError::ServerError);
-    };
+    let now = state.clock.now();
     match state
         .tokens
         .start_web_session(refresh_token, &client, max_age, now)
@@ -64,7 +62,7 @@ pub(super) async fn start(
             StatusCode::CREATED,
             &serde_json::json!({
                 "session": started.handle.expose(),
-                "expires_in": seconds_until(started.expires_at_unix_nanos, now),
+                "expires_in": seconds_until(started.expires_at, now),
             }),
         ),
         Err(refusal) => refused(refusal),
@@ -82,24 +80,17 @@ pub(super) async fn token(
     let Some(session) = present(form.session.as_ref()) else {
         return token_error(TokenError::InvalidRequest);
     };
-    let Some(now) = now_unix_nanos() else {
-        return token_error(TokenError::ServerError);
-    };
+    let now = state.clock.now();
     match state.tokens.web_session_token(session, &client, now).await {
-        Ok(minted) => {
-            // The token expires after `now` by construction; one second is
-            // the least a client can schedule its next request against.
-            let now_secs = u64::try_from(now / 1_000_000_000).unwrap_or(0);
-            json_response(
-                StatusCode::OK,
-                &serde_json::json!({
-                    "access_token": minted.access_token.access_token,
-                    "token_type": "Bearer",
-                    "expires_in": minted.access_token.expires_at.saturating_sub(now_secs).max(1),
-                    "session_expires_in": seconds_until(minted.session_expires_at_unix_nanos, now),
-                }),
-            )
-        }
+        Ok(minted) => json_response(
+            StatusCode::OK,
+            &serde_json::json!({
+                "access_token": minted.access_token.access_token,
+                "token_type": "Bearer",
+                "expires_in": expires_in(&minted.access_token, now),
+                "session_expires_in": seconds_until(minted.session_expires_at, now),
+            }),
+        ),
         Err(refusal) => refused(refusal),
     }
 }
@@ -165,10 +156,10 @@ fn session_age(value: &str) -> Option<Duration> {
     Some(Duration::from_secs(seconds))
 }
 
-/// Whole seconds until `deadline`, rounded up: a session with any time left
-/// reports at least one second.
-fn seconds_until(deadline_unix_nanos: i64, now_unix_nanos: i64) -> i64 {
-    let remaining = deadline_unix_nanos.saturating_sub(now_unix_nanos).max(0);
+/// Whole seconds from `now` until `deadline`, rounded up: a session with any
+/// time left reports at least one second.
+fn seconds_until(deadline: coral_db::UnixNanos, now: coral_db::UnixNanos) -> i64 {
+    let remaining = deadline.get().saturating_sub(now.get()).max(0);
     remaining / 1_000_000_000 + i64::from(remaining % 1_000_000_000 != 0)
 }
 

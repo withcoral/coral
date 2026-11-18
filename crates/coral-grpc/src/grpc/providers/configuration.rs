@@ -1,5 +1,6 @@
 //! Thin private-wire projections of domain-owned configuration review.
 use super::wire;
+use crate::grpc::status;
 use coral_catalog::{
     AuthenticationConfiguration, CredentialField, CredentialSource, HeaderBinding,
 };
@@ -21,7 +22,7 @@ pub(super) fn input(value: wire::ProviderConfiguration) -> Result<ProviderConfig
             }
         };
         if servers.insert(server.declaration, selection).is_some() {
-            return Err(Status::invalid_argument("duplicate server declaration"));
+            return Err(status::invalid());
         }
     }
     Ok(ProviderConfiguration {
@@ -61,9 +62,7 @@ fn input_authentication(
                             .headers
                             .into_iter()
                             .map(|(header, binding)| {
-                                let source = binding.source.ok_or_else(|| {
-                                    Status::invalid_argument("header binding source is required")
-                                })?;
+                                let source = binding.source.ok_or_else(status::invalid)?;
                                 let binding = match source {
                                     wire::header_binding::Source::Field(value) => {
                                         HeaderBinding::Field {
@@ -123,7 +122,12 @@ fn input_authentication(
         .transpose()
 }
 
-/// One credential source. `part` names it, so the caller learns which one is missing.
+/// The longest name of a missing credential source that a status repeats.
+/// The caller chose a header's name, so a longer one is not echoed.
+const MAX_PART_BYTES: usize = 128;
+
+/// One credential source. `part` names it, so the caller learns which one is
+/// missing: the status carries it as metadata.
 fn credential_source(
     value: Option<wire::CredentialSource>,
     part: &str,
@@ -135,9 +139,18 @@ fn credential_source(
         Some(wire::credential_source::Source::Literal(value)) => {
             Ok(CredentialSource::Literal { value })
         }
-        None => Err(Status::invalid_argument(format!(
-            "the {part} must send a credential field or a value"
-        ))),
+        None => Err(status::safe_status_with(
+            tonic::Code::InvalidArgument,
+            "CREDENTIAL_SOURCE_REQUIRED",
+            [(
+                "part",
+                if part.len() <= MAX_PART_BYTES {
+                    part.to_owned()
+                } else {
+                    "header".to_owned()
+                },
+            )],
+        )),
     }
 }
 
@@ -471,7 +484,7 @@ fn scope_format(value: i32) -> Result<coral_catalog::OAuthScopeFormat, Status> {
             Ok(coral_catalog::OAuthScopeFormat::Space)
         }
         Ok(wire::OAuthScopeFormat::Comma) => Ok(coral_catalog::OAuthScopeFormat::Comma),
-        Err(_) => Err(Status::invalid_argument("unknown OAuth scope format")),
+        Err(_) => Err(status::invalid()),
     }
 }
 

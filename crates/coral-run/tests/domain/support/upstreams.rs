@@ -72,7 +72,7 @@ impl UpstreamSender for DefectiveUpstream {
     ) -> Result<UpstreamOutcome, crate::invocation::UpstreamSendError> {
         assert!(!self.panic, "private upstream defect canary");
         Err(crate::invocation::UpstreamSendError::Fatal(
-            coral_upstream::Error::InvalidLimit,
+            coral_upstream::SendError::CredentialRequired,
         ))
     }
 }

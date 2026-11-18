@@ -2,8 +2,9 @@
 //! Verified login ingestion joins the authentication transaction. Profile refresh and
 //! email grants share the Organization administration hold before any User holds,
 //! so a new profile or eligibility change cannot introduce an unseen email collision.
+use crate::list_repository::Users;
 use crate::profile_repository as repository;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 
 use crate::{
     AuthenticatedUser, Error, OrganizationModule, UserId, WorkspaceAction, WorkspaceId,
@@ -69,7 +70,7 @@ impl OrganizationModule {
         tx: &mut Transaction<'_>,
         user: &UserId,
         profile: VerifiedUserProfile<'_>,
-        observed_at: i64,
+        observed_at: UnixNanos,
     ) -> Result<(), Error> {
         repository::upsert(
             tx,
@@ -90,10 +91,15 @@ pub(super) async fn read_profile(
     tx: &mut Transaction<'_>,
     user: &UserId,
 ) -> Result<UserProfile, Error> {
-    let local = user == crate::local_organization_owner().user_id();
     let row = repository::find(tx, user).await?;
-    let (name, email) = row.map_or_default(|row| (row.name, row.email));
-    Ok(UserProfile {
+    Ok(profile(user, row.as_ref()))
+}
+
+/// The profile of one User from its stored row, if it has one.
+fn profile(user: &UserId, stored: Option<&repository::ProfileRow>) -> UserProfile {
+    let local = user == crate::local_organization_owner().user_id();
+    let (name, email) = stored.map_or_default(|row| (row.name.clone(), row.email.clone()));
+    UserProfile {
         user_id: user.clone(),
         name: if local {
             Some("Local user".into())
@@ -102,7 +108,25 @@ pub(super) async fn read_profile(
         },
         email: if local { None } else { email },
         local,
-    })
+    }
+}
+
+/// The profiles of the Users of one list.
+pub(super) struct ListedProfiles(std::collections::HashMap<String, repository::ProfileRow>);
+
+impl ListedProfiles {
+    /// The profile of one User of the list, as [`read_profile`] reads it.
+    pub(super) fn of(&self, user: &UserId) -> UserProfile {
+        profile(user, self.0.get(user.as_str()))
+    }
+}
+
+/// Reads the profile of every User of one list in one statement.
+pub(super) async fn read_listed_profiles(
+    tx: &mut Transaction<'_>,
+    users: Users<'_>,
+) -> Result<ListedProfiles, Error> {
+    repository::find_listed(tx, users).await.map(ListedProfiles)
 }
 
 async fn eligible_matches(tx: &mut Transaction<'_>, email: &str) -> Result<UserId, Error> {
@@ -115,7 +139,7 @@ async fn eligible_matches(tx: &mut Transaction<'_>, email: &str) -> Result<UserI
                 }
                 matched = Some(id);
             }
-            Ok(_) | Err(Error::PermissionDenied(_)) => {}
+            Ok(_) | Err(Error::PermissionDenied(crate::Denial::NoOrganizationMembership)) => {}
             Err(error) => return Err(error),
         }
     }

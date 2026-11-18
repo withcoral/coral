@@ -535,10 +535,7 @@ impl RunModule {
                 .await
             {
                 Ok(evidence) => Ok(evidence.effective_role() == WorkspaceRole::Owner),
-                Err(
-                    coral_workspace::Error::WorkspaceNotFound
-                    | coral_workspace::Error::PermissionDenied(_),
-                ) => Err(Error::RunNotFound),
+                Err(error) if error.denies_access() => Err(Error::RunNotFound),
                 Err(error) => Err(error.into()),
             };
         }

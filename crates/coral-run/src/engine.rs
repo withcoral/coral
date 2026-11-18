@@ -27,7 +27,7 @@ pub(crate) mod host;
 pub(crate) use host::execute;
 
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use coral_catalog::AuthoredToolKind;
 use coral_run_executor::{AnalysisError, CompileError, CompilerClient, Diagnostics, time_left};
@@ -181,11 +181,7 @@ pub(crate) struct SystemClock;
 
 impl Clock for SystemClock {
     fn now_unix_nanos(&self) -> Result<i64, String> {
-        let elapsed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| error.to_string())?;
-        i64::try_from(elapsed.as_nanos())
-            .map_err(|_error| "current time exceeds durable nanosecond range".to_string())
+        Ok(coral_db::Clock::now(&coral_db::SystemClock).get())
     }
 }
 

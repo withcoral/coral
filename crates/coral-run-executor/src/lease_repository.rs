@@ -1,6 +1,6 @@
 //! The Run Executor lease rows: `run_executors(id, kind, lease_until)`.
 
-use coral_db::Database;
+use coral_db::{Database, UnixNanos};
 use sea_query::{Alias, Expr, ExprTrait as _, Iden, OnConflict, Query};
 
 use crate::pull::Kind;
@@ -13,14 +13,13 @@ enum RunExecutors {
     LeaseUntil,
 }
 
-/// Writes Run Executor `id`'s row with its lease until `lease_until`, in Unix
-/// nanoseconds. A lease never moves back: two pull streams that claim one id
-/// both renew it.
+/// Writes Run Executor `id`'s row with its lease until `lease_until`. A lease
+/// never moves back: two pull streams that claim one id both renew it.
 pub(crate) async fn renew(
     database: &Database,
     id: &str,
     kind: Kind,
-    lease_until: i64,
+    lease_until: UnixNanos,
 ) -> Result<(), coral_db::Error> {
     let upsert = Query::insert()
         .into_table(RunExecutors::Table)

@@ -3,7 +3,7 @@
 //! Nothing observes these rows, so writes use `execute`, not `execute_change`:
 //! a code changing must not wake activity observers or Run waits.
 
-use coral_db::{Database, Transaction};
+use coral_db::{Database, Transaction, UnixNanos};
 use sea_query::{Condition, Expr, ExprTrait as _, Iden, OnConflict, Query};
 
 use super::{AuthorizationCodeError, AuthorizationGrant, CodeRedemption, unavailable};
@@ -28,12 +28,12 @@ enum Codes {
 /// Removes every code that can no longer be redeemed, spent or not.
 pub(super) async fn purge_expired(
     tx: &mut Transaction<'_>,
-    now_unix_nanos: i64,
+    now: UnixNanos,
 ) -> Result<(), AuthorizationCodeError> {
     tx.execute(
         Query::delete()
             .from_table(Codes::Table)
-            .and_where(Expr::col(Codes::ExpiresAtUnixNanos).lte(now_unix_nanos))
+            .and_where(Expr::col(Codes::ExpiresAtUnixNanos).lte(now))
             .to_owned(),
     )
     .await
@@ -47,7 +47,7 @@ pub(super) async fn insert(
     code_digest: &str,
     sign_in_digest: &str,
     grant: &AuthorizationGrant,
-    expires_at_unix_nanos: i64,
+    expires_at: UnixNanos,
 ) -> Result<bool, AuthorizationCodeError> {
     let rows = tx
         .execute(
@@ -74,7 +74,7 @@ pub(super) async fn insert(
                     grant.code_challenge.clone().into(),
                     grant.resource.clone().into(),
                     grant.workspace_id.as_ref().map(ToString::to_string).into(),
-                    expires_at_unix_nanos.into(),
+                    expires_at.into(),
                     grant.refresh_eligible.into(),
                 ])
                 .on_conflict(
@@ -101,11 +101,11 @@ struct GrantRow {
 }
 
 /// The rows a redemption of `code_digest` with `redemption` may spend.
-fn spendable(code_digest: &str, redemption: CodeRedemption<'_>, now_unix_nanos: i64) -> Condition {
+fn spendable(code_digest: &str, redemption: CodeRedemption<'_>, now: UnixNanos) -> Condition {
     Condition::all()
         .add(Expr::col(Codes::CodeDigest).eq(code_digest))
         .add(Expr::col(Codes::RedeemedAtUnixNanos).is_null())
-        .add(Expr::col(Codes::ExpiresAtUnixNanos).gt(now_unix_nanos))
+        .add(Expr::col(Codes::ExpiresAtUnixNanos).gt(now))
         .add(Expr::col(Codes::ClientId).eq(redemption.client.client_id()))
         .add(Expr::col(Codes::RedirectUri).eq(redemption.redirect_uri))
         .add(Expr::col(Codes::CodeChallenge).eq(redemption.code_challenge))
@@ -117,14 +117,14 @@ pub(super) async fn is_spendable(
     database: &Database,
     code_digest: &str,
     redemption: CodeRedemption<'_>,
-    now_unix_nanos: i64,
+    now: UnixNanos,
 ) -> Result<bool, AuthorizationCodeError> {
     let row: Option<(String,)> = database
         .fetch_optional(
             Query::select()
                 .column(Codes::CodeDigest)
                 .from(Codes::Table)
-                .cond_where(spendable(code_digest, redemption, now_unix_nanos))
+                .cond_where(spendable(code_digest, redemption, now))
                 .to_owned(),
         )
         .await
@@ -140,14 +140,14 @@ pub(super) async fn spend(
     tx: &mut Transaction<'_>,
     code_digest: &str,
     redemption: CodeRedemption<'_>,
-    now_unix_nanos: i64,
+    now: UnixNanos,
 ) -> Result<Option<AuthorizationGrant>, AuthorizationCodeError> {
     let row: Option<GrantRow> = tx
         .fetch_optional_returning(
             Query::update()
                 .table(Codes::Table)
-                .value(Codes::RedeemedAtUnixNanos, now_unix_nanos)
-                .cond_where(spendable(code_digest, redemption, now_unix_nanos))
+                .value(Codes::RedeemedAtUnixNanos, now)
+                .cond_where(spendable(code_digest, redemption, now))
                 .returning(Query::returning().columns([
                     Codes::UserId,
                     Codes::ClientId,

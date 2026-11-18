@@ -160,6 +160,60 @@ async fn join_as_owner(
         .unwrap();
 }
 
+// Catches: a Workspace Owner learning from the answer whether a User they
+// name has an Organization Membership.
+#[tokio::test]
+async fn removing_a_user_who_is_no_member_answers_the_same_with_or_without_an_organization_membership()
+ {
+    let db = fixture().await;
+    let database = db.database();
+    let workspaces = WorkspaceModule::new(database.clone());
+    let owner = provision_user(database.clone(), "user:owner", OrganizationRole::Member).await;
+    let workspace = workspaces
+        .create(
+            &change(&owner),
+            WorkspaceDisplayName::parse("Workspace").unwrap(),
+        )
+        .await
+        .unwrap();
+    let outsider =
+        provision_user(database.clone(), "user:outsider", OrganizationRole::Member).await;
+    let stranger = coral_workspace::UserId::parse("user:no-organization-membership").unwrap();
+    let lifecycle = AccessLifecycleModule::new(database, workspaces.clone());
+    // The Memberships, and the events that record a change to them.
+    let state = || async {
+        (
+            format!(
+                "{:?}",
+                workspaces
+                    .list_memberships(&owner, workspace.id())
+                    .await
+                    .unwrap()
+            ),
+            workspaces
+                .list_lifecycle_events(&owner, workspace.id())
+                .await
+                .unwrap()
+                .len(),
+        )
+    };
+    let before = state().await;
+
+    for user in [outsider.user_id(), &stranger] {
+        let absent = lifecycle
+            .remove_workspace_member(&change(&owner), workspace.id(), user)
+            .await;
+        assert!(
+            matches!(
+                absent,
+                Err(Error::Workspace(coral_workspace::Error::MembershipNotFound))
+            ),
+            "{user:?}: {absent:?}"
+        );
+    }
+    assert_eq!(state().await, before, "a refusal changes nothing");
+}
+
 /// One bearer-token Tool, so every published Provider needs an Account.
 const BEARER_OPENAPI: &str = r#"{"openapi":"3.0.3","info":{"title":"Private","version":"1"},"servers":[{"url":"https://example.com"}],"security":[{"token":[]}],"components":{"securitySchemes":{"token":{"type":"http","scheme":"bearer"}}},"paths":{"/value":{"get":{"operationId":"value","responses":{"200":{"description":"OK"}}}}}}"#;
 /// An Organization Owner keeps nothing when their Workspace Membership ends, and
@@ -610,11 +664,15 @@ async fn member_removal_keeps_the_agents_they_provisioned() {
     assert_eq!(agent_account().await, provisioned);
     let agent = f
         .workspaces
-        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 100)
+        .authenticate_agent(
+            f.workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(100),
+        )
         .await
         .unwrap();
     f.workspaces
-        .check_run_admission(&agent, f.workspace.id(), 100)
+        .check_run_admission(&agent, f.workspace.id(), coral_db::UnixNanos::new(100))
         .await
         .unwrap();
 }
@@ -689,7 +747,11 @@ async fn losing_a_workspace_removes_only_that_principals_private_tools() {
             .await
             .unwrap();
         let agent = workspaces
-            .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
+            .authenticate_agent(
+                workspace.id(),
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(100),
+            )
             .await
             .unwrap();
         let owner_principal = AuthenticatedPrincipal::user(owner.clone());
@@ -849,7 +911,11 @@ async fn a_shared_tool_survives_the_loss_of_its_author() {
             .await
             .unwrap();
         let agent = workspaces
-            .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
+            .authenticate_agent(
+                workspace.id(),
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(100),
+            )
             .await
             .unwrap();
         // The publisher and the Principal whose Private Tool it copies: the
@@ -887,11 +953,16 @@ async fn a_shared_tool_survives_the_loss_of_its_author() {
                 .await
                 .unwrap_or_else(|error| panic!("{loss:?}: {error}"));
             let revisions = shared_tools
-                .list_revisions(&reader, workspace.id(), tool.id())
+                .list_revision_summaries(&reader, workspace.id(), tool.id())
                 .await
                 .unwrap_or_else(|error| panic!("{loss:?}: {error}"));
             let events = shared_tools
-                .list_lifecycle_events(&reader, workspace.id(), Some(tool.id()), None, 100)
+                .list_lifecycle_events(
+                    &reader,
+                    workspace.id(),
+                    Some(tool.id()),
+                    &coral_test_support::page_request(None, 100),
+                )
                 .await
                 .unwrap_or_else(|error| panic!("{loss:?}: {error}"));
             (tool, revisions, events)
@@ -939,7 +1010,7 @@ async fn save_answer(
         .save(
             &PrivateToolChangeContext::new(
                 actor.clone(),
-                100,
+                coral_db::UnixNanos::new(100),
                 TraceId::parse("11111111111111111111111111111111").unwrap(),
             ),
             workspace,
@@ -1005,9 +1076,9 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
         lifecycle
             .remove_organization_member(&change(&owner), owner.user_id(), 1, None)
             .await,
-        Err(Error::Workspace(coral_workspace::Error::PermissionDenied(
-            _
-        )))
+        Err(Error::Workspace(
+            coral_workspace::Error::LastOrganizationOwner
+        ))
     ));
     assert!(matches!(
         lifecycle
@@ -1129,7 +1200,7 @@ async fn organization_removal_cleans_all_workspaces_atomically_and_protects_last
     }
     let fault = ChangeContext::new(
         owner.clone(),
-        200,
+        coral_db::UnixNanos::new(200),
         TraceId::parse("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee").unwrap(),
     );
     assert!(matches!(
@@ -1257,7 +1328,11 @@ async fn agent_removal_rolls_back_registration_private_tools_and_events_together
         .await
         .unwrap();
     let agent = workspaces
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(100),
+        )
         .await
         .unwrap();
     let providers = coral_provider::ProviderModule::with_running_catalog(
@@ -1384,7 +1459,11 @@ async fn agent_removal_rolls_back_registration_private_tools_and_events_together
             registration
         );
         workspaces
-            .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
+            .authenticate_agent(
+                workspace.id(),
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(100),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1444,7 +1523,11 @@ async fn agent_removal_rolls_back_registration_private_tools_and_events_together
         .await
         .unwrap();
     workspaces
-        .authenticate_agent(workspace.id(), issued.credential.expose(), 100)
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(100),
+        )
         .await
         .unwrap_err();
     for authorization in [pending.id, reconnect.id] {
@@ -1483,7 +1566,6 @@ async fn agent_removal_rolls_back_registration_private_tools_and_events_together
 
 #[tokio::test]
 async fn prepared_removal_cannot_be_reattributed_or_reused_after_rollback() {
-    const FOREIGN: &str = "access removal belongs to another transaction or change context";
     let db = fixture().await;
     let database = db.database();
     let workspaces = WorkspaceModule::new(database.clone());
@@ -1519,7 +1601,7 @@ async fn prepared_removal_cannot_be_reattributed_or_reused_after_rollback() {
         )
         .await,
         Err(coral_tools::Error::Workspace(
-            coral_workspace::Error::PermissionDenied(FOREIGN)
+            coral_workspace::Error::AccessRemovalMismatch
         ))
     ));
     tx.rollback().await.unwrap();
@@ -1530,7 +1612,7 @@ async fn prepared_removal_cannot_be_reattributed_or_reused_after_rollback() {
         )
         .await,
         Err(coral_tools::Error::Workspace(
-            coral_workspace::Error::PermissionDenied(FOREIGN)
+            coral_workspace::Error::AccessRemovalMismatch
         ))
     ));
     assert!(matches!(
@@ -1539,14 +1621,14 @@ async fn prepared_removal_cannot_be_reattributed_or_reused_after_rollback() {
         )
         .await,
         Err(coral_provider::Error::Workspace(
-            coral_workspace::Error::PermissionDenied(FOREIGN)
+            coral_workspace::Error::AccessRemovalMismatch
         ))
     ));
     assert!(matches!(
         workspaces
             .apply_access_removal_in_transaction(&mut other, &context, prepared)
             .await,
-        Err(coral_workspace::Error::PermissionDenied(FOREIGN))
+        Err(coral_workspace::Error::AccessRemovalMismatch)
     ));
     other.rollback().await.unwrap();
     assert_eq!(

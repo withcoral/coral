@@ -1,6 +1,7 @@
 //! Reef Account projection. Domains own authorization, transactions and lifecycle evidence.
 use super::providers::{error, parent, resource, scope};
-use super::workspaces::{change, invalid, timestamp};
+use super::status::invalid;
+use super::workspaces::{change, timestamp};
 use super::{GrpcServices, management as wire};
 use coral_provider::account::{self as domain, AccountScope};
 use coral_provider::{ManagementRequestId, ProviderId};
@@ -249,7 +250,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
             .provider_readiness
             .inspect_agent_providers(&user, &workspace, &agent)
             .await
-            .map_err(super::providers::readiness_error)?;
+            .map_err(super::providers::search_error)?;
         Ok(Response::new(wire::ListAgentProvidersResponse {
             providers: inspections.into_iter().map(agent_provider_view).collect(),
         }))
@@ -260,7 +261,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         &self,
         request: Request<wire::ListUserAccountsRequest>,
     ) -> Result<Response<wire::ListUserAccountsResponse>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let owner = scope(&request.into_inner().parent)?;
         let accounts = self
             .accounts()?
@@ -288,7 +289,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         &self,
         request: Request<wire::GetProviderAccountRequest>,
     ) -> Result<Response<wire::GetProviderAccountResponse>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let owner = scope(&req.parent)?;
         let provider = self
@@ -316,7 +317,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         request: Request<wire::StartProviderAccountAuthorizationRequest>,
     ) -> Result<Response<wire::ProviderAccountAuthorization>, Status> {
         use wire::start_provider_account_authorization_request::Target;
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let owner = scope(&req.parent)?;
         let request_id = ManagementRequestId::parse(&req.request_id).map_err(error)?;
@@ -369,7 +370,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         &self,
         request: Request<wire::GetProviderAccountAuthorizationRequest>,
     ) -> Result<Response<wire::ProviderAccountAuthorization>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let (owner, id) = authorization(&request.get_ref().name)?;
         Ok(Response::new(authorization_view(
             &owner,
@@ -385,7 +386,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         &self,
         request: Request<wire::SubmitProviderAccountSecretRequest>,
     ) -> Result<Response<wire::ProviderAccountAuthorization>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let (owner, id) = authorization(&req.name)?;
         let value = self
@@ -407,7 +408,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         request: Request<wire::CompleteProviderSetupAuthorizationRequest>,
     ) -> Result<Response<wire::CompleteProviderSetupAuthorizationResponse>, Status> {
         use wire::complete_provider_setup_authorization_response::Workflow;
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let completion = self
             .accounts()?
             .complete_callback(&context, &request.into_inner().query)
@@ -434,7 +435,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         &self,
         request: Request<wire::CancelProviderAccountAuthorizationRequest>,
     ) -> Result<Response<wire::ProviderAccountAuthorization>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let (owner, id) = authorization(&request.get_ref().name)?;
         Ok(Response::new(authorization_view(
             &owner,
@@ -450,7 +451,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         &self,
         request: Request<wire::DisconnectProviderAccountRequest>,
     ) -> Result<Response<()>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let owner = scope(&req.parent)?;
         let provider = self
@@ -468,7 +469,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         &self,
         request: Request<wire::GetAccountConnectionRequestRequest>,
     ) -> Result<Response<wire::AccountConnectionRequest>, Status> {
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let (ws, id) = connection(&request.get_ref().name)?;
         let value = connection_view(
             &ws,
@@ -487,7 +488,7 @@ impl wire::provider_account_service_server::ProviderAccountService for GrpcServi
         request: Request<wire::ResolveAccountConnectionRequestRequest>,
     ) -> Result<Response<wire::AccountConnectionRequest>, Status> {
         use wire::resolve_account_connection_request_request::Decision;
-        let context = change(self.management_user(&request).await?)?;
+        let context = change(self.management_user(&request).await?);
         let req = request.into_inner();
         let (ws, id) = connection(&req.name)?;
         let value = match req.decision.ok_or_else(invalid)? {

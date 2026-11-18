@@ -2,9 +2,9 @@
 //! each coral-tools failure, the diagnostic projection, and the Agent a
 //! request names as a Private Tool's owner.
 use super::management as wire;
-use super::workspaces::{
-    error as workspace_error, invalid, resource, safe_status, safe_status_with,
-};
+use super::resource;
+use super::status::{invalid, safe_status, safe_status_with};
+use super::workspaces::error as workspace_error;
 use coral_catalog::AuthoredToolKind::{Private, Shared};
 use coral_tools::{AuthoredToolDiagnostic, AuthoredToolDiagnosticCategory};
 use coral_workspace::{PrincipalId, WorkspaceId};
@@ -78,7 +78,6 @@ pub(super) fn error(error: coral_tools::Error) -> Status {
         | E::NoCompiler
         | E::CompilerUnavailable(_)
         | E::CompilerWorkerStopped
-        | E::Clock(_)
         | E::Json(_)
         | E::CorruptData(_)
         | E::Database(_) => (tonic::Code::Unavailable, "UNAVAILABLE"),

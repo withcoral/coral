@@ -4,7 +4,7 @@
 )]
 use std::time::Duration;
 
-use super::tests::{CLIENT, Fixture, NOW, REEF, SECOND, real_now, refresh_token};
+use super::tests::{CLIENT, Fixture, NOW, REEF, SECOND, refresh_token};
 use super::{AccessTarget, TokenRefusal, WebSessionToken};
 use crate::oauth_clients::test_support::rewrite_past_checks;
 
@@ -29,7 +29,12 @@ impl Fixture {
             .await
             .unwrap();
         self.tokens
-            .start_web_session(&refresh_token(&issued), &self.client, max_age, now + SECOND)
+            .start_web_session(
+                &refresh_token(&issued),
+                &self.client,
+                max_age,
+                coral_db::UnixNanos::new(now + SECOND),
+            )
             .await
             .unwrap()
             .handle
@@ -39,7 +44,7 @@ impl Fixture {
 
     async fn session_token(&self, handle: &str, now: i64) -> Result<WebSessionToken, TokenRefusal> {
         self.tokens
-            .web_session_token(handle, &self.client, now)
+            .web_session_token(handle, &self.client, coral_db::UnixNanos::new(now))
             .await
     }
 }
@@ -55,8 +60,7 @@ fn claims(token: &WebSessionToken) -> serde_json::Value {
 #[tokio::test]
 async fn a_web_session_mints_reef_tokens_until_it_ends() {
     let fixture = Fixture::new().await;
-    // The last step authenticates a token, which reads the system clock.
-    let now = real_now();
+    let now = NOW;
     let handle = fixture.web_session_at(HOUR, now).await;
     assert!(handle.starts_with("coral_ws_"));
     for at in [2, 3] {
@@ -84,14 +88,11 @@ async fn a_web_session_mints_reef_tokens_until_it_ends() {
     );
     // Ending a session ends refresh only: a token minted before keeps its
     // expiry and its live authority checks.
-    let reef = crate::PrincipalAuthentication::new(
-        &fixture.issuer,
-        coral_workspace::OrganizationModule::new(fixture.database.database()),
-        coral_workspace::WorkspaceModule::new(fixture.database.database()),
-    )
-    .authenticate_user(Some(&issued.access_token.access_token), "reef")
-    .await
-    .expect("the earlier token still authenticates");
+    let (reef, _now) = fixture
+        .authentication()
+        .authenticate_user(Some(&issued.access_token.access_token), "reef")
+        .await
+        .expect("the earlier token still authenticates");
     assert_eq!(
         reef.principal().id().as_str(),
         fixture.user.user_id().as_str()
@@ -122,7 +123,7 @@ async fn only_a_reef_grant_from_its_own_client_starts_a_session() {
         assert_eq!(
             fixture
                 .tokens
-                .start_web_session(token, client, HOUR, NOW + SECOND)
+                .start_web_session(token, client, HOUR, coral_db::UnixNanos::new(NOW + SECOND))
                 .await
                 .err(),
             Some(TokenRefusal::InvalidGrant),
@@ -145,7 +146,12 @@ async fn the_spent_refresh_token_cannot_outlive_its_session() {
     let token = fixture.reef_refresh_token().await;
     let handle = fixture
         .tokens
-        .start_web_session(&token, &fixture.client, HOUR, NOW + SECOND)
+        .start_web_session(
+            &token,
+            &fixture.client,
+            HOUR,
+            coral_db::UnixNanos::new(NOW + SECOND),
+        )
         .await
         .unwrap()
         .handle;
@@ -192,7 +198,7 @@ async fn a_session_ends_at_the_earlier_of_its_age_and_its_grant() {
             .session_token(&handle, last_second - 1)
             .await
             .unwrap();
-        assert_eq!(token.session_expires_at_unix_nanos, end, "{ends_after}s");
+        assert_eq!(token.session_expires_at.get(), end, "{ends_after}s");
         let exp = claims(&token)["exp"].as_i64().unwrap();
         assert!(
             exp <= end / SECOND,
@@ -237,7 +243,7 @@ async fn only_the_sessions_own_client_ends_it() {
     assert_eq!(
         fixture
             .tokens
-            .web_session_token(&handle, &fixture.other, NOW)
+            .web_session_token(&handle, &fixture.other, coral_db::UnixNanos::new(NOW))
             .await
             .err(),
         Some(TokenRefusal::InvalidGrant)
@@ -252,7 +258,12 @@ async fn revoking_the_grant_ends_its_session() {
     let token = fixture.reef_refresh_token().await;
     let handle = fixture
         .tokens
-        .start_web_session(&token, &fixture.client, HOUR, NOW + SECOND)
+        .start_web_session(
+            &token,
+            &fixture.client,
+            HOUR,
+            coral_db::UnixNanos::new(NOW + SECOND),
+        )
         .await
         .unwrap()
         .handle;
@@ -287,7 +298,7 @@ async fn processes_resolve_one_session_concurrently() {
         let (handle, client) = (handle.clone(), fixture.client.clone());
         resolves.spawn(async move {
             tokens
-                .web_session_token(&handle, &client, NOW + 2 * SECOND)
+                .web_session_token(&handle, &client, coral_db::UnixNanos::new(NOW + 2 * SECOND))
                 .await
         });
     }
@@ -392,7 +403,7 @@ async fn stored_state_that_does_not_decode_is_corrupt_and_stays_as_it_was() {
         Refresh => fixture.refresh(&token, now).await.err(),
         Revoke => tokens.revoke(&token, client).await.err(),
         StartSession => tokens
-            .start_web_session(&reef, client, HOUR, now)
+            .start_web_session(&reef, client, HOUR, coral_db::UnixNanos::new(now))
             .await
             .err(),
         SessionToken => fixture.session_token(&handle, now).await.err(),

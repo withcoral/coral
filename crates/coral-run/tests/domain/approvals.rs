@@ -22,7 +22,7 @@ async fn approval_waits_for_the_invoking_user_and_commits_one_decision() {
         &mut tx,
         tool.user.user_id(),
         coral_workspace::VerifiedUserProfile::new(Some("Reviewing user"), None, None, None),
-        40,
+        coral_db::UnixNanos::new(40),
     )
     .await
     .unwrap();
@@ -2913,4 +2913,185 @@ async fn a_pending_request_with_no_valid_stored_id_is_corrupt_data_to_its_reader
         "{observed:?}"
     );
     assert_eq!(fixture.run_record(workspace_id, &held.run).await, before);
+}
+
+/// Holds every Invocation at its approval wait, so that no held recheck
+/// moves a request while a test reads it.
+struct HeldApprovalWaits {
+    held: AtomicUsize,
+    release: watch::Receiver<bool>,
+}
+
+#[async_trait]
+impl InvocationObserver for HeldApprovalWaits {
+    async fn approval_waiting(&self) -> Result<(), Error> {
+        self.held.fetch_add(1, Ordering::SeqCst);
+        let mut release = self.release.clone();
+        let released = release.wait_for(|released| *released).await;
+        released
+            .map(drop)
+            .map_err(|_closed| Error::ProgramHostTerminated)
+    }
+}
+
+/// An Agent's Run held at five approval waits, so that either of its
+/// Workspace's two named Owners decides its requests: two calls of the Tool
+/// whose policy asks for approval, three of the Tool that asks by default.
+struct TwoToolsTwoApprovers {
+    fixture: TestModules,
+    tool: ToolFixture,
+    /// The Owner who is not the Tool's User.
+    second: AuthenticatedPrincipal,
+    run: crate::RunId,
+    _release: watch::Sender<bool>,
+}
+
+impl TwoToolsTwoApprovers {
+    async fn new() -> Self {
+        let (release, released) = watch::channel(false);
+        let waits = Arc::new(HeldApprovalWaits {
+            held: AtomicUsize::new(0),
+            release: released,
+        });
+        let fixture = TestModules::with_invocation_adapters(
+            Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+            Arc::new(RejectingUpstream),
+            waits.clone(),
+        )
+        .await;
+        let tool = fixture.user_tool("user:first-approver", "Two Tools").await;
+        super::required_actions::publish_approval_provider(&fixture, &tool).await;
+        fixture.require_approval(&tool).await;
+        let workspace = &tool.workspace_id;
+        let second = fixture.workspace_user(
+            workspace,
+            &tool.user,
+            "user:second-approver",
+            WorkspaceRole::Owner,
+        );
+        let second = AuthenticatedPrincipal::user(second.await);
+        let mut tx = fixture.database.begin().await.unwrap();
+        coral_workspace::OrganizationModule::hold_profile_updates_in_transaction(&mut tx)
+            .await
+            .unwrap();
+        for (approver, name) in [
+            (&tool.principal, "First approver"),
+            (&second, "Second approver"),
+        ] {
+            coral_workspace::OrganizationModule::refresh_profile_in_transaction(
+                &mut tx,
+                approver.authenticated_user().unwrap().user_id(),
+                coral_workspace::VerifiedUserProfile::new(Some(name), None, None, None),
+                coral_db::UnixNanos::new(40),
+            )
+            .await
+            .unwrap();
+        }
+        tx.commit().await.unwrap();
+
+        let agent = registered_agent(&fixture.workspaces, &tool.principal, workspace).await;
+        let calls = "await Promise.allSettled([\
+            coral.providers.weather.getForecast({}), coral.providers.weather.getForecast({}), \
+            coral.providers.public.getForecast({}), coral.providers.public.getForecast({}), \
+            coral.providers.public.getForecast({})]);";
+        let accepted = fixture.runs.start(&agent, workspace, submission(calls));
+        let run = accepted.await.unwrap().run_id().clone();
+        wait_until(|| waits.held.load(Ordering::SeqCst) == 5).await;
+        Self {
+            fixture,
+            tool,
+            second,
+            run,
+            _release: release,
+        }
+    }
+}
+
+/// Catches: a list of a Run's Approval Requests that shows one request the
+/// answer it decided or the name it read for another: a pending request of a
+/// Tool whose policy no longer asks shown as taking a decision because the
+/// Run's other Tool still asks, or a decided request shown with the name of
+/// another request's approver.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_runs_approval_list_shows_each_request_its_own_decision_and_approver() {
+    let held = TwoToolsTwoApprovers::new().await;
+    let (fixture, tool, run) = (&held.fixture, &held.tool, &held.run);
+    let (workspace, first, second) = (&tool.workspace_id, &tool.principal, &held.second);
+    let approvals = fixture.approvals();
+    let list = async || approvals.list_for_run(first, workspace, run).await.unwrap();
+    let waiting = list().await;
+    assert_eq!(waiting.len(), 5);
+    assert!(
+        waiting
+            .iter()
+            .all(|request| request.state == ApprovalState::Pending && request.actionable),
+        "{waiting:?}"
+    );
+    let of_tool = |tool: &str| {
+        let call_path = format!("coral.providers.{tool}.getForecast");
+        let requests = waiting
+            .iter()
+            .filter(move |request| request.call_path == call_path);
+        requests
+            .map(|request| request.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let [asks_by_policy, also_asks_by_policy] = &of_tool("weather")[..] else {
+        panic!("two requests of the Tool whose policy asks: {waiting:?}")
+    };
+    let [declined_by_first, declined_by_second, undecided] = &of_tool("public")[..] else {
+        panic!("three requests of the Tool that asks by default: {waiting:?}")
+    };
+
+    // Each Owner declines one request, and the first Tool stops asking.
+    for (approver, request) in [(first, declined_by_first), (second, declined_by_second)] {
+        approvals
+            .decide(
+                approver,
+                workspace,
+                request,
+                ApprovalDecision::Decline,
+                None,
+                &TraceId::parse(&"d".repeat(32)).unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+    fixture
+        .policies
+        .set_access_state(
+            &change(tool.user.clone(), 41, '5'),
+            tool.policy_target.clone(),
+            ToolAccessState::Enabled,
+        )
+        .await
+        .unwrap();
+
+    let listed = list().await;
+    let shown = |id: &crate::approval::ApprovalId| {
+        let request = listed.iter().find(|request| request.id == *id);
+        let request = request.expect("the list keeps each request");
+        (
+            request.state,
+            request.actionable,
+            request.approver_name.as_deref(),
+        )
+    };
+    let pending_and_moot = (ApprovalState::Pending, false, None);
+    assert_eq!(shown(asks_by_policy), pending_and_moot);
+    assert_eq!(shown(also_asks_by_policy), pending_and_moot);
+    assert_eq!(shown(undecided), (ApprovalState::Pending, true, None));
+    assert_eq!(
+        shown(declined_by_first),
+        (ApprovalState::Declined, false, Some("First approver"))
+    );
+    assert_eq!(
+        shown(declined_by_second),
+        (ApprovalState::Declined, false, Some("Second approver"))
+    );
+    // The read of one request shows what the list shows of it.
+    for request in &listed {
+        let alone = approvals.get(first, workspace, &request.id).await.unwrap();
+        assert_eq!(request, &alone);
+    }
 }

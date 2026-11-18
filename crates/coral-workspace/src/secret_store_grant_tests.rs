@@ -81,7 +81,7 @@ async fn an_organization_owner_grants_and_revokes_with_an_event_for_each() {
         assert_eq!(event.authority_source(), AuthoritySource::OrganizationOwner);
         assert_eq!(event.target_kind(), LifecycleTargetKind::SecretStore);
         assert_eq!(event.target_id(), "platform");
-        assert_eq!(event.occurred_at_unix_nanos(), at);
+        assert_eq!(event.occurred_at(), coral_db::UnixNanos::new(at));
     }
     // The Organization Owner reads the same Events, as their own governance.
     let governance = f.module.list_governance_events(&f.governor).await.unwrap();
@@ -138,7 +138,12 @@ async fn a_refused_change_changes_nothing() {
             let refused = if archived {
                 matches!(result, Err(Error::WorkspaceArchived))
             } else {
-                matches!(result, Err(Error::PermissionDenied(_)))
+                matches!(
+                    result,
+                    Err(Error::PermissionDenied(
+                        crate::Denial::OrganizationOwnerRequired
+                    ))
+                )
             };
             assert!(refused, "{actor:?}: {result:?}");
         }
@@ -206,7 +211,9 @@ async fn only_a_workspace_owner_reads_the_workspace_grants() {
 
     assert!(matches!(
         f.module.list_workspace_secret_stores(&member, id).await,
-        Err(Error::PermissionDenied(_))
+        Err(Error::PermissionDenied(
+            crate::Denial::WorkspaceOwnerRequired
+        ))
     ));
 }
 
@@ -301,6 +308,8 @@ async fn an_organization_owner_lists_every_workspace_grant() {
 
     assert!(matches!(
         f.module.list_secret_store_grants(&f.owner).await,
-        Err(Error::PermissionDenied(_))
+        Err(Error::PermissionDenied(
+            crate::Denial::OrganizationOwnerRequired
+        ))
     ));
 }

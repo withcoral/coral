@@ -303,7 +303,7 @@ pub(super) async fn insert_authorization(
                 new.generation.into(),
                 new.credential_expires_at.into(),
                 serde_json::to_string(new.client)
-                    .map_err(|_error| Error::AccountInput)?
+                    .map_err(|_error| Error::Internal(crate::InternalFault::Encoding))?
                     .into(),
                 Some(new.private_flow).into(),
                 Some(new.navigation).into(),
@@ -437,7 +437,8 @@ impl StoredRequirement {
     }
 
     pub(crate) fn to_storage(&self) -> Result<String, Error> {
-        serde_json::to_string(self).map_err(|_invalid| Error::AccountInput)
+        serde_json::to_string(self)
+            .map_err(|_invalid| Error::Internal(crate::InternalFault::Encoding))
     }
 }
 

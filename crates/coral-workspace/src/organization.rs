@@ -11,12 +11,14 @@
 #[path = "organization_repository.rs"]
 mod repository;
 
-pub(crate) use repository::enabled_member_total;
+pub(crate) use repository::{current_member_ids, enabled_member_total};
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use coral_db::{Database, Transaction};
+use coral_db::{Database, Transaction, UnixNanos};
 
+use crate::list_repository::Users;
 use crate::{AuthenticatedUser, ChangeContext, Error, OrganizationRole, UserId};
 
 pub(super) async fn hold_administration(tx: &mut Transaction<'_>) -> Result<(), Error> {
@@ -29,6 +31,19 @@ pub(super) async fn is_enabled(tx: &mut Transaction<'_>, user: &UserId) -> Resul
     Ok(repository::find_membership(tx, user)
         .await?
         .is_some_and(|membership| membership.enabled))
+}
+
+/// The Users of one list for whom [`is_enabled`] holds, read in one statement.
+pub(super) async fn enabled_among(
+    tx: &mut Transaction<'_>,
+    users: Users<'_>,
+) -> Result<HashSet<UserId>, Error> {
+    Ok(repository::find_listed_memberships(tx, users)
+        .await?
+        .into_iter()
+        .filter(|membership| membership.enabled)
+        .map(|membership| membership.user_id)
+        .collect())
 }
 
 /// Current Coral-owned role and state of one Organization Membership.
@@ -117,7 +132,7 @@ pub struct OrganizationLifecycleEvent {
     /// Only accepted changes produce evidence.
     pub outcome: crate::LifecycleOutcome,
     /// Event time, not a concurrency control.
-    pub occurred_at_unix_nanos: i64,
+    pub occurred_at: UnixNanos,
     /// Safe trace correlation.
     pub trace_id: crate::TraceId,
 }
@@ -165,7 +180,7 @@ impl OrganizationModule {
             .actor()
             .organization_role()
             .ok_or(Error::PermissionDenied(
-                "login requires Organization Membership",
+                crate::Denial::OrganizationMembershipRequired,
             ))?;
         let user_id = context.actor().user_id();
         let mut created = repository::insert_membership_if_absent(tx, user_id, role).await?;
@@ -194,10 +209,7 @@ impl OrganizationModule {
         user_id: &UserId,
     ) -> Result<AuthenticatedUser, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
-        let user = current_user(&mut tx, user_id).await?;
-        if user.organization_role().is_none() {
-            return Err(Error::PermissionDenied("User is disabled"));
-        }
+        let user = enabled_user(&mut tx, user_id).await?;
         tx.commit().await?;
         Ok(user)
     }
@@ -237,7 +249,7 @@ impl OrganizationModule {
             .await?
             .organization_role()
             .ok_or(Error::PermissionDenied(
-                "current Organization Membership is required",
+                crate::Denial::OrganizationMembershipRequired,
             ))
     }
 
@@ -252,7 +264,9 @@ impl OrganizationModule {
     ) -> Result<AuthenticatedUser, Error> {
         let current = hold_user(tx, user_id).await?;
         if current.organization_role().is_none() {
-            return Err(Error::PermissionDenied("User is disabled"));
+            return Err(Error::PermissionDenied(
+                crate::Denial::OrganizationMembershipRequired,
+            ));
         }
         Ok(current)
     }
@@ -309,8 +323,10 @@ impl OrganizationModule {
         // All Organization administrators take this hold before User row holds.
         repository::hold_administration(&mut tx).await?;
         require_owner(&mut tx, context.actor()).await?;
-        hold_user(&mut tx, user_id).await?;
-        let mut membership = read_membership(&mut tx, user_id).await?;
+        hold_target(&mut tx, context.actor(), user_id).await?;
+        let mut membership = read_membership(&mut tx, user_id)
+            .await
+            .map_err(absent_target)?;
         if membership.revision != revision {
             return Err(Error::OrganizationAuthorityConflict);
         }
@@ -325,9 +341,7 @@ impl OrganizationModule {
         {
             let count = repository::enabled_owner_count(&mut tx).await?;
             if count <= 1 {
-                return Err(Error::PermissionDenied(
-                    "the last enabled Organization Owner must remain",
-                ));
+                return Err(Error::LastOrganizationOwner);
             }
         }
         let next_revision = next_revision(revision)?;
@@ -363,7 +377,7 @@ impl OrganizationModule {
         let membership = read_membership(&mut tx, actor.user_id()).await?;
         if !membership.enabled() {
             return Err(Error::PermissionDenied(
-                "current Organization Membership is required",
+                crate::Denial::OrganizationMembershipRequired,
             ));
         }
         let profile = crate::profile::read_profile(&mut tx, actor.user_id()).await?;
@@ -381,15 +395,17 @@ impl OrganizationModule {
     ) -> Result<Vec<(OrganizationMembership, crate::UserProfile)>, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
         require_owner(&mut tx, actor).await?;
-        let mut memberships = Vec::new();
-        for user in repository::current_members(&mut tx).await? {
-            memberships.push((
-                read_membership(&mut tx, &user).await?,
-                crate::profile::read_profile(&mut tx, &user).await?,
-            ));
-        }
+        let memberships = repository::current_memberships(&mut tx).await?;
+        let profiles =
+            crate::profile::read_listed_profiles(&mut tx, Users::OrganizationMembers).await?;
         tx.commit().await?;
-        Ok(memberships)
+        Ok(memberships
+            .into_iter()
+            .map(|membership| {
+                let profile = profiles.of(membership.user_id());
+                (membership, profile)
+            })
+            .collect())
     }
 
     /// Lists safe Organization administration evidence for a current Owner.
@@ -421,7 +437,7 @@ async fn require_owner(tx: &mut Transaction<'_>, actor: &AuthenticatedUser) -> R
 fn require_owner_role(actor: &AuthenticatedUser) -> Result<(), Error> {
     if actor.organization_role() != Some(OrganizationRole::Owner) {
         return Err(Error::PermissionDenied(
-            "Organization Owner authority is required",
+            crate::Denial::OrganizationOwnerRequired,
         ));
     }
     Ok(())
@@ -435,6 +451,20 @@ pub(crate) async fn current_user(
     Ok(read_membership(tx, user_id).await?.authenticated())
 }
 
+/// [`current_user`], denied when the User's Organization Membership is disabled.
+pub(crate) async fn enabled_user(
+    tx: &mut Transaction<'_>,
+    user_id: &UserId,
+) -> Result<AuthenticatedUser, Error> {
+    let user = current_user(tx, user_id).await?;
+    if user.organization_role().is_none() {
+        return Err(Error::PermissionDenied(
+            crate::Denial::OrganizationMembershipRequired,
+        ));
+    }
+    Ok(user)
+}
+
 async fn read_membership(
     tx: &mut Transaction<'_>,
     user_id: &UserId,
@@ -442,7 +472,7 @@ async fn read_membership(
     repository::find_membership(tx, user_id)
         .await?
         .ok_or(Error::PermissionDenied(
-            "current Organization authority is unavailable",
+            crate::Denial::NoOrganizationMembership,
         ))
 }
 
@@ -456,7 +486,7 @@ pub(crate) async fn share_user(
     repository::find_membership_locked(tx, user_id, coral_db::RowLock::Shared)
         .await?
         .ok_or(Error::PermissionDenied(
-            "current Organization authority is unavailable",
+            crate::Denial::NoOrganizationMembership,
         ))
         .map(|membership| membership.authenticated())
 }
@@ -470,9 +500,81 @@ pub(crate) async fn hold_user(
     repository::hold_membership(tx, user_id)
         .await?
         .ok_or(Error::PermissionDenied(
-            "current Organization authority is unavailable",
+            crate::Denial::NoOrganizationMembership,
         ))
         .map(|membership| membership.authenticated())
+}
+
+/// Holds a User that a request names, and says whether there was a row to
+/// hold. The caller's own missing Membership is a denial, as in
+/// [`hold_user`]. Another User with no row is not reported here: the caller
+/// reports the absence after the held check of its own authority, so a
+/// caller whose authority lapsed learns nothing about the User it named.
+///
+/// A target with no row is absent for the whole request. Nothing serializes
+/// a later read of that User with a change to it, unless the caller holds
+/// the Organization administration guard.
+pub(crate) async fn hold_target(
+    tx: &mut Transaction<'_>,
+    actor: &AuthenticatedUser,
+    user_id: &UserId,
+) -> Result<bool, Error> {
+    if actor.user_id() == user_id {
+        hold_user(tx, user_id).await.map(|_held| true)
+    } else {
+        repository::hold_user_row(tx, user_id).await
+    }
+}
+
+/// Holds the caller and the User it names, in one stable order so that two
+/// requests that name each other cannot deadlock. Says whether the named
+/// User had a row to hold, as [`hold_target`] does.
+pub(crate) async fn hold_actor_and_target(
+    tx: &mut Transaction<'_>,
+    actor: &AuthenticatedUser,
+    target: &UserId,
+) -> Result<bool, Error> {
+    let mut users = vec![actor.user_id(), target];
+    users.sort();
+    users.dedup();
+    let mut target_held = true;
+    for user in users {
+        let held = hold_target(tx, actor, user).await?;
+        if user == target {
+            target_held = held;
+        }
+    }
+    Ok(target_held)
+}
+
+/// Requires that the User a request names has an enabled Organization
+/// Membership. `held` is what [`hold_actor_and_target`] returned: with no
+/// row to hold, a User created since is not held either, so the target is
+/// absent for this request.
+pub(crate) async fn require_enabled_target(
+    tx: &mut Transaction<'_>,
+    held: bool,
+    target: &UserId,
+) -> Result<(), Error> {
+    if !held {
+        return Err(Error::OrganizationMembershipNotFound);
+    }
+    let user = current_user(tx, target).await.map_err(absent_target)?;
+    if user.organization_role().is_none() {
+        return Err(Error::MemberTargetNotEnabled);
+    }
+    Ok(())
+}
+
+/// A User that a request names and that has no Membership is absent. That
+/// is no denial of the caller.
+pub(crate) fn absent_target(error: Error) -> Error {
+    match error {
+        Error::PermissionDenied(crate::Denial::NoOrganizationMembership) => {
+            Error::OrganizationMembershipNotFound
+        }
+        other => other,
+    }
 }
 
 pub(crate) async fn prepare_removal(
@@ -496,11 +598,11 @@ pub(crate) async fn prepare_removal(
         if Some(held) == transfer_to {
             repository::hold_user(tx, held).await?;
         } else {
-            hold_user(tx, held).await?;
+            hold_target(tx, context.actor(), held).await?;
         }
     }
     require_owner(tx, context.actor()).await?;
-    let membership = read_membership(tx, user).await?;
+    let membership = read_membership(tx, user).await.map_err(absent_target)?;
     if membership.revision != revision {
         return Err(Error::OrganizationAuthorityConflict);
     }
@@ -508,9 +610,7 @@ pub(crate) async fn prepare_removal(
         && membership.role == OrganizationRole::Owner
         && repository::enabled_owner_count(tx).await? <= 1
     {
-        return Err(Error::PermissionDenied(
-            "the last enabled Organization Owner must remain",
-        ));
+        return Err(Error::LastOrganizationOwner);
     }
     Ok(())
 }
@@ -520,7 +620,7 @@ pub(crate) async fn apply_removal(
     context: &ChangeContext,
     user: &UserId,
 ) -> Result<(), Error> {
-    let membership = read_membership(tx, user).await?;
+    let membership = read_membership(tx, user).await.map_err(absent_target)?;
     repository::remove_membership(tx, user, next_revision(membership.revision)?).await?;
     repository::record_event(tx, context, user, OrganizationLifecycleAction::Removed).await
 }

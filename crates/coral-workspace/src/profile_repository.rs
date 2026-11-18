@@ -1,8 +1,10 @@
 //! Profile persistence mechanics; callers own authorization, ordering, and commit.
 use super::profile::VerifiedUserProfile;
+use crate::list_repository::Users;
 use crate::{Error, UserId};
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use sea_query::{Alias, Expr, ExprTrait as _, Iden, OnConflict, Query};
+use std::collections::HashMap;
 
 #[derive(Iden)]
 enum UserProfiles {
@@ -27,7 +29,7 @@ pub(super) async fn upsert(
     user: &UserId,
     profile: &VerifiedUserProfile<'_>,
     email_key: Option<String>,
-    observed_at: i64,
+    observed_at: UnixNanos,
 ) -> Result<(), Error> {
     tx.execute(
         Query::insert()
@@ -84,6 +86,30 @@ pub(super) async fn find(
                 .to_owned(),
         )
         .await?)
+}
+/// Reads the stored profile of every User of one list in one statement, by
+/// User id. A User without a stored profile has no entry.
+pub(super) async fn find_listed(
+    tx: &mut Transaction<'_>,
+    users: Users<'_>,
+) -> Result<HashMap<String, ProfileRow>, Error> {
+    let rows: Vec<(String, Option<String>, Option<String>)> = tx
+        .fetch_all(
+            Query::select()
+                .columns([
+                    UserProfiles::UserId,
+                    UserProfiles::Name,
+                    UserProfiles::Email,
+                ])
+                .from(UserProfiles::Table)
+                .and_where(Expr::col(UserProfiles::UserId).in_subquery(users.ids()))
+                .to_owned(),
+        )
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(user, name, email)| (user, ProfileRow { name, email }))
+        .collect())
 }
 pub(super) async fn verified_candidates(
     tx: &mut Transaction<'_>,

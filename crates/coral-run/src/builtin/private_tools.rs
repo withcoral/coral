@@ -243,7 +243,7 @@ fn call_path(path: &PrivateToolPath) -> String {
 fn change_context(host: &BuiltinHost<'_>) -> Result<PrivateToolChangeContext, Error> {
     Ok(PrivateToolChangeContext::new(
         host.actor.clone(),
-        host.run.now()?,
+        coral_db::UnixNanos::new(host.run.now()?),
         coral_workspace::TraceId::current_or_new(),
     ))
 }
@@ -298,7 +298,7 @@ fn failure(field: &str, error: coral_tools::Error) -> Error {
             ))
         }
         E::PermissionDenied(_) => Error::InvocationRejected(CoralFailure::AuthorityLost.into()),
-        E::Workspace(error) if crate::enforcement::loses_authority(&error) => {
+        error if crate::enforcement::ended_authority(error.workspace_refusal()) => {
             Error::InvocationRejected(CoralFailure::AuthorityLost.into())
         }
         other => other.into(),

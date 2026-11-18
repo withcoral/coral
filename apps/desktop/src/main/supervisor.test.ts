@@ -59,14 +59,18 @@ function stub(role: Role, mode: string): Launcher {
 
 const RESTART = { attempts: 2, windowMs: 60_000, backoffMs: 50 }
 
-function supervise(runtime = 'ready', reef = 'ready', restart = RESTART) {
+function supervise(
+  runtime = 'ready',
+  reef = 'ready',
+  { restart = RESTART, stopTimeoutMs = 500 } = {},
+) {
   supervisor = createSupervisor({
     dataDir,
     runtime: stub('runtime', runtime),
     reef: stub('reef', reef),
     readinessTimeoutMs: 1500,
     checkUpdates: false,
-    stopTimeoutMs: 500,
+    stopTimeoutMs,
     restart,
   })
   supervisor.on('state', (state) => states.push(state))
@@ -89,6 +93,14 @@ async function failureOf(promise: Promise<unknown>) {
 /** Makes a running stub exit, as a crash would. */
 async function crash(origin: string) {
   await fetch(`${origin}/exit`).catch(() => {})
+}
+
+/** Creates an empty file in the runtime's state directory, which changes how the stub starts. */
+async function mark(name: string) {
+  const path = join(dataDir, 'runtime', name)
+  await mkdir(dirname(path), { recursive: true })
+  await writeFile(path, '')
+  return path
 }
 
 async function occupy(port: number) {
@@ -305,38 +317,47 @@ describe('after start', () => {
   })
 
   it.each([
-    ['times out', 'stub.hang', { kind: 'timeout', process: 'runtime' }, true],
-    ['refuses to start', 'stub.refuse', { kind: 'exited', process: 'runtime' }, false],
-  ] as const)(
-    'after a crash, retries a relaunch that %s only if it did not refuse',
-    async (_, marker, failure, retried) => {
-      const endpoints = await supervise().start()
-      const markerPath = join(dataDir, 'runtime', marker)
-      await writeFile(markerPath, '')
-      await crash(endpoints.mcp)
+    ['times out is retried', 'stub.hang', { kind: 'timeout', process: 'runtime' }, true],
+    [
+      'refuses to start waits for a start',
+      'stub.refuse',
+      { kind: 'exited', process: 'runtime' },
+      false,
+    ],
+    [
+      'finds the directory held at the deadline waits for a start',
+      'stub.lock-late',
+      { kind: 'state-locked' },
+      false,
+    ],
+  ] as const)('after a crash, a relaunch that %s', async (_, marker, failure, retried) => {
+    const endpoints = await supervise().start()
+    const markerPath = await mark(marker)
+    await crash(endpoints.mcp)
 
-      const relaunchFailure = () =>
-        states.find((state) => state.status === 'failed' && state.failure.kind !== 'crashed')
-      await expect.poll(relaunchFailure, { timeout: 5000 }).toMatchObject({
-        failure,
-        restarting: retried,
-      })
-      await rm(markerPath)
-      if (retried) {
-        await expect
-          .poll(() => states.at(-1), { timeout: 5000 })
-          .toEqual({ status: 'running', endpoints })
-        expect(alive()).toEqual(['runtime', 'reef'])
-      } else {
-        await delay(RESTART.backoffMs * 4)
-        expect(states.at(-1)).toMatchObject({ status: 'failed', restarting: false })
-        expect(alive()).toEqual([])
-      }
-    },
-  )
+    const relaunchFailure = () =>
+      states.find((state) => state.status === 'failed' && state.failure.kind !== 'crashed')
+    await expect.poll(relaunchFailure, { timeout: 5000 }).toMatchObject({
+      failure,
+      restarting: retried,
+    })
+    await rm(markerPath)
+    if (retried) {
+      await expect
+        .poll(() => states.at(-1), { timeout: 5000 })
+        .toEqual({ status: 'running', endpoints })
+      expect(alive()).toEqual(['runtime', 'reef'])
+    } else {
+      await delay(RESTART.backoffMs * 4)
+      expect(states.at(-1)).toMatchObject({ status: 'failed', restarting: false })
+      expect(alive()).toEqual([])
+    }
+  })
 
   it('starts afresh when asked while a restart waits', async () => {
-    const endpoints = await supervise('ready', 'ready', { ...RESTART, backoffMs: 60_000 }).start()
+    const endpoints = await supervise('ready', 'ready', {
+      restart: { ...RESTART, backoffMs: 60_000 },
+    }).start()
     await crash(endpoints.reef)
     await expect.poll(statuses).toContain('failed')
 
@@ -371,16 +392,17 @@ describe('after start', () => {
 })
 
 describe('a state directory another runtime holds', () => {
-  const lock = () => join(dataDir, 'runtime', 'stub.lock')
-  beforeEach(async () => {
-    await mkdir(dirname(lock()), { recursive: true })
-    await writeFile(lock(), '')
-  })
+  // The deadline can catch a runtime that has not started yet. It gets this
+  // long to exit by itself once it is stopped, and the test outlasts the
+  // readiness deadline, this stop and the kill that follows it.
+  const LOCKED_STOP_TIMEOUT_MS = 10_000
+  const LOCKED_TEST_TIMEOUT_MS = 15_000
 
   it('retries the runtime until the directory is free', async () => {
+    const lock = await mark('stub.lock')
     const started = supervise().start()
     await expect.poll(() => roles().length).toBeGreaterThanOrEqual(2)
-    await rm(lock())
+    await rm(lock)
 
     await started
     expect(roles().filter((role) => role === 'runtime').length).toBeGreaterThanOrEqual(2)
@@ -388,8 +410,19 @@ describe('a state directory another runtime holds', () => {
     expect(alive()).toEqual(['runtime', 'reef'])
   })
 
-  it('fails as locked when the directory stays held', async () => {
-    expect(await failureOf(supervise().start())).toMatchObject({ kind: 'state-locked' })
+  it.each([
+    ['the directory stays held', 'stub.lock'],
+    // The deadline passes before the runtime has found the directory held.
+    ['a runtime that is still starting at the deadline finds it held', 'stub.lock-late'],
+  ])('fails as locked when %s', { timeout: LOCKED_TEST_TIMEOUT_MS }, async (_, marker) => {
+    await mark(marker)
+
+    const failure = await failureOf(
+      supervise('ready', 'ready', { stopTimeoutMs: LOCKED_STOP_TIMEOUT_MS }).start(),
+    )
+
+    expect(failure).toMatchObject({ kind: 'state-locked' })
+    expect(failure.kind === 'state-locked' && failure.output).toContain('state directory locked')
     expect(roles().every((role) => role === 'runtime')).toBe(true)
     expect(alive()).toEqual([])
   })

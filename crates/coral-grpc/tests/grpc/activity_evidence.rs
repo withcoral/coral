@@ -1592,7 +1592,7 @@ async fn activity_records_carry_their_authored_location_on_every_projection() {
         .save(
             &coral_tools::PrivateToolChangeContext::new(
                 AuthenticatedPrincipal::user(f.member.clone()),
-                1_700_000_000_000_000_007,
+                coral_db::UnixNanos::new(1_700_000_000_000_000_007),
                 coral_workspace::TraceId::current_or_new(),
             ),
             f.workspace.id(),
@@ -1729,7 +1729,7 @@ async fn nested_call_run(f: &Fixture) -> (coral_run::RunId, Vec<wire::ActivityIn
         .save(
             &coral_tools::PrivateToolChangeContext::new(
                 AuthenticatedPrincipal::user(f.member.clone()),
-                1_700_000_000_000_000_007,
+                coral_db::UnixNanos::new(1_700_000_000_000_000_007),
                 coral_workspace::TraceId::current_or_new(),
             ),
             f.workspace.id(),
@@ -1987,7 +1987,11 @@ async fn settled_approvals_follow_who_invoked_the_run() {
         .unwrap();
     let agent = f
         .workspaces
-        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 2)
+        .authenticate_agent(
+            f.workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(2),
+        )
         .await
         .unwrap();
     let member = AuthenticatedPrincipal::user(f.member.clone());

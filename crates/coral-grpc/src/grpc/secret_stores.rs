@@ -1,4 +1,5 @@
-use super::workspaces::{administration_error, change, error, invalid, state, workspace_id};
+use super::status::invalid;
+use super::workspaces::{administration_error, change, error, state, workspace_id};
 use super::{GrpcServices, management as wire};
 use coral_administration::GrantedSecretStore;
 use coral_secret_store::{ReferenceForm, SecretStoreKind, SecretStoreName, StoreStatus};
@@ -65,7 +66,7 @@ impl GrpcServices {
         request: &Request<T>,
         request_id: &str,
     ) -> Result<ChangeContext, Status> {
-        change(self.management_user(request).await?)?
+        change(self.management_user(request).await?)
             .with_request_id(request_id)
             .map_err(error)
     }

@@ -1,5 +1,6 @@
 //! Task history types. Summaries never contain discovery responses or diagnostics.
 use crate::{Error, TaskId, TaskIntent};
+use coral_db::UnixNanos;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use std::fmt;
 use uuid::Uuid;
@@ -190,9 +191,9 @@ pub struct InteractionSummary {
     /// First durable completion or unresolved uncertainty.
     pub outcome: AttemptOutcome,
     /// Durable begin time.
-    pub started_at_unix_nanos: i64,
+    pub started_at: UnixNanos,
     /// Durable completion time, if known.
-    pub completed_at_unix_nanos: Option<i64>,
+    pub completed_at: Option<UnixNanos>,
     /// Accepted Run reference, without loading exact evidence.
     pub run: Option<coral_run::RunId>,
 }

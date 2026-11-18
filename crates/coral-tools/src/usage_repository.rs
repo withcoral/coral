@@ -10,6 +10,7 @@ pub use crate::shared_tool_repository::{
 
 #[cfg(test)]
 mod tests {
+    use coral_db::UnixNanos;
     use coral_test_support::TestDatabase;
 
     use super::{first_created_before, private_tool_total, private_tools_created};
@@ -56,7 +57,7 @@ mod tests {
         let mut tx = database.begin_read_snapshot().await.expect("snapshot");
         for (start, end, created) in [(0, 20, 1), (0, 21, 2), (11, 20, 0)] {
             assert_eq!(
-                private_tools_created(&mut tx, start, end)
+                private_tools_created(&mut tx, UnixNanos::new(start), UnixNanos::new(end))
                     .await
                     .expect("count"),
                 created,
@@ -65,8 +66,10 @@ mod tests {
         }
         for (end, first) in [(10, None), (11, Some(10)), (30, Some(10))] {
             assert_eq!(
-                first_created_before(&mut tx, end).await.expect("first"),
-                first,
+                first_created_before(&mut tx, UnixNanos::new(end))
+                    .await
+                    .expect("first"),
+                first.map(UnixNanos::new),
                 "before {end}"
             );
         }

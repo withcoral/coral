@@ -1,5 +1,6 @@
 mod execution;
 mod tree;
+use super::status;
 use super::{GrpcServices, management as wire, resource};
 use coral_auth::PrivateAudience;
 use coral_run::approval::ApprovalState as S;
@@ -19,46 +20,41 @@ fn approval_state(state: S) -> &'static str {
         S::Closed => "closed",
     }
 }
-fn error(error: coral_task::Error) -> Status {
+/// The status of one coral-task failure, for every service. An error that
+/// wraps another module's reports what that error reports alone.
+pub(super) fn error(error: coral_task::Error) -> Status {
     match error {
         coral_task::Error::TaskNotFound
         | coral_task::Error::InteractionNotFound
-        | coral_task::Error::WorkspaceNotFound
-        | coral_task::Error::Workspace(
-            coral_workspace::Error::WorkspaceNotFound | coral_workspace::Error::AgentNotFound,
-        ) => Status::not_found("history unavailable"),
-        coral_task::Error::PermissionDenied(_)
-        | coral_task::Error::Workspace(coral_workspace::Error::PermissionDenied(_)) => {
-            Status::permission_denied("history unavailable")
-        }
-        coral_task::Error::InvalidInput(_) => Status::invalid_argument("invalid history query"),
+        | coral_task::Error::WorkspaceNotFound => status::not_found(),
+        coral_task::Error::PermissionDenied(_) => status::permission_denied(),
+        coral_task::Error::InvalidInput(_) => status::invalid(),
+        coral_task::Error::Workspace(error) => super::workspaces::error(error),
         coral_task::Error::Run(error) => execution::run_error(error),
-        coral_task::Error::TaskClosed => Status::failed_precondition("history unavailable"),
+        coral_task::Error::Search(error) => super::providers::search_error(error),
+        coral_task::Error::Tools(error) => super::authored_tools::error(error),
+        coral_task::Error::TaskClosed => {
+            status::safe_status(tonic::Code::FailedPrecondition, "TASK_CLOSED")
+        }
         // Name every remaining variant so a new domain error needs an explicit wire decision.
         coral_task::Error::SnapshotTooLarge
-        | coral_task::Error::Search(_)
-        | coral_task::Error::Tools(_)
-        | coral_task::Error::Clock
         | coral_task::Error::IdentifierIssuance(_)
-        | coral_task::Error::Workspace(_)
         | coral_task::Error::CorruptData(_)
-        | coral_task::Error::Database(_) => Status::unavailable("history unavailable"),
+        | coral_task::Error::Database(_) => status::unavailable(),
     }
 }
 fn task_identity(name: &str) -> Result<TaskIdentity, Status> {
     let (workspace, id) = resource(name, "tasks")?;
-    let task = coral_task::TaskId::parse(id)
-        .map_err(|_invalid| Status::invalid_argument("invalid Task name"))?;
+    let task = coral_task::TaskId::parse(id).map_err(|_invalid| status::invalid())?;
     Ok(TaskIdentity { workspace, task })
 }
 fn interaction_identity(name: &str) -> Result<(TaskIdentity, InteractionId), Status> {
     let (task, id) = name
         .rsplit_once("/interactions/")
-        .ok_or_else(|| Status::invalid_argument("invalid interaction name"))?;
+        .ok_or_else(status::invalid)?;
     Ok((
         task_identity(task)?,
-        InteractionId::parse(id)
-            .map_err(|_invalid| Status::invalid_argument("invalid interaction name"))?,
+        InteractionId::parse(id).map_err(|_invalid| status::invalid())?,
     ))
 }
 /// Parses an optional `workspaces/{id}` filter; empty means every authorized Workspace.
@@ -68,7 +64,7 @@ fn workspace_filter(name: &str) -> Result<Option<WorkspaceId>, Status> {
     }
     WorkspaceId::parse(name.strip_prefix("workspaces/").unwrap_or_default())
         .map(Some)
-        .map_err(|_invalid| Status::invalid_argument("invalid Workspace name"))
+        .map_err(|_invalid| status::invalid())
 }
 
 fn required_action_kind(kind: i32) -> Result<Option<coral_run::RequiredActionKind>, Status> {
@@ -80,7 +76,7 @@ fn required_action_kind(kind: i32) -> Result<Option<coral_run::RequiredActionKin
         Ok(wire::ActivityRequiredActionKind::AccountConnection) => {
             Ok(Some(coral_run::RequiredActionKind::AccountConnection))
         }
-        Err(_unknown) => Err(Status::invalid_argument("invalid required action kind")),
+        Err(_unknown) => Err(status::invalid()),
     }
 }
 
@@ -149,21 +145,18 @@ fn scope(scope: &wire::ActivityScope) -> Result<HistoryScope, Status> {
     }
     let (agent_workspace, agent) = resource(&scope.agent, "agents")?;
     if workspace.as_ref() != Some(&agent_workspace) {
-        return Err(Status::invalid_argument("Agent Workspace mismatch"));
+        return Err(status::invalid());
     }
     Ok(HistoryScope::Agent {
         workspace: agent_workspace,
-        agent: PrincipalId::parse(agent)
-            .map_err(|_invalid| Status::invalid_argument("invalid Agent name"))?,
+        agent: PrincipalId::parse(agent).map_err(|_invalid| status::invalid())?,
     })
 }
 fn limit(value: u32) -> Result<u16, Status> {
     match value {
         0 => Ok(50),
-        1..=100 => {
-            u16::try_from(value).map_err(|_overflow| Status::invalid_argument("invalid page size"))
-        }
-        _ => Err(Status::invalid_argument("invalid page size")),
+        1..=100 => u16::try_from(value).map_err(|_overflow| status::invalid()),
+        _ => Err(status::invalid()),
     }
 }
 fn task(task: &coral_task::Task) -> wire::ActivityTask {
@@ -179,8 +172,8 @@ fn task(task: &coral_task::Task) -> wire::ActivityTask {
             Some(TaskOutcome::Failure) => "failure",
         }
         .into(),
-        started_at_unix_nanos: task.started_at_unix_nanos(),
-        ended_at_unix_nanos: task.ended_at_unix_nanos(),
+        started_at_unix_nanos: task.started_at().get(),
+        ended_at_unix_nanos: task.ended_at().map(coral_db::UnixNanos::get),
         actor: task.principal().id().to_string(),
         agent: execution::agent(task.workspace_id(), task.principal()),
     }
@@ -206,8 +199,8 @@ fn interaction(parent: &str, value: &coral_task::InteractionSummary) -> wire::Ac
             AttemptOutcome::Rejected => "rejected",
         }
         .into(),
-        started_at_unix_nanos: value.started_at_unix_nanos,
-        completed_at_unix_nanos: value.completed_at_unix_nanos,
+        started_at_unix_nanos: value.started_at.get(),
+        completed_at_unix_nanos: value.completed_at.map(coral_db::UnixNanos::get),
         run: None,
         accepted_run: value.run.as_ref().map_or_default(|id| {
             format!(
@@ -233,12 +226,12 @@ fn interaction_window(
     .count()
         > 1
     {
-        return Err(Status::invalid_argument("ambiguous interaction window"));
+        return Err(status::invalid());
     }
     let child = |name: &str| -> Result<InteractionId, Status> {
         let (parent, id) = interaction_identity(name)?;
         if parent.workspace != identity.workspace || parent.task != identity.task {
-            return Err(Status::invalid_argument("interaction Task mismatch"));
+            return Err(status::invalid());
         }
         Ok(id)
     };
@@ -250,9 +243,7 @@ fn interaction_window(
             } else {
                 Some(child(&viewport.anchor)?)
             },
-            preceding: u16::try_from(viewport.preceding).map_err(|_overflow| {
-                Status::invalid_argument("invalid viewport predecessor budget")
-            })?,
+            preceding: u16::try_from(viewport.preceding).map_err(|_overflow| status::invalid())?,
         });
     }
     if !input.after.is_empty() {
@@ -266,7 +257,7 @@ fn interaction_window(
     }
     let (workspace, id) = resource(&input.anchor, "runs")?;
     if workspace != identity.workspace {
-        return Err(Status::invalid_argument("Run Workspace mismatch"));
+        return Err(status::invalid());
     }
     Ok(W::Run(
         coral_run::RunId::parse(id).map_err(execution::run_error)?,
@@ -296,7 +287,10 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
         // The subscription predates the caller's first read, so that read is current.
         sender
             .try_send(Ok(wire::WatchActivityResponse { changed: true }))
-            .map_err(|_full| Status::internal("activity stream unavailable"))?;
+            .map_err(|_full| status::internal())?;
+        // Built here, in the request, so that it names the request's trace.
+        // The task below runs outside the request's span.
+        let stopped = status::unavailable();
         tokio::spawn(async move {
             loop {
                 let result = tokio::select! {
@@ -304,7 +298,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
                     // A stopping listener waits for its open streams, so this
                     // one ends now. UNAVAILABLE has the client connect again.
                     () = async { drop(stopping.wait_for(|stopping| *stopping).await) } => {
-                        Err(Status::unavailable("activity stream unavailable"))
+                        Err(stopped.clone())
                     }
                     result = async {
                         let wake = observer.next().await.map_err(execution::run_error)?;
@@ -392,8 +386,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             .principal(&request, None, PrivateAudience::Reef)
             .await?;
         let input = request.into_inner();
-        let workspace = workspace_filter(&input.workspace)?
-            .ok_or_else(|| Status::invalid_argument("Workspace is required"))?;
+        let workspace = workspace_filter(&input.workspace)?.ok_or_else(status::invalid)?;
         let summary = self
             .tasks
             .activity_summary(&self.runs, &actor, &workspace, input.days)
@@ -453,8 +446,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             .principal(&request, None, PrivateAudience::Reef)
             .await?;
         let input = request.into_inner();
-        let workspace = workspace_filter(&input.workspace)?
-            .ok_or_else(|| Status::invalid_argument("Workspace is required"))?;
+        let workspace = workspace_filter(&input.workspace)?.ok_or_else(status::invalid)?;
         let after = if input.after.is_empty() {
             None
         } else {
@@ -493,7 +485,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
         let decision = match input.decision.as_str() {
             "approve" => coral_run::approval::ApprovalDecision::Approve,
             "decline" => coral_run::approval::ApprovalDecision::Decline,
-            _ => return Err(Status::invalid_argument("invalid approval decision")),
+            _ => return Err(status::invalid()),
         };
         let result = self
             .runs
@@ -519,7 +511,7 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
             .principal(&request, None, PrivateAudience::Reef)
             .await?;
         if actor.authenticated_user().is_none() {
-            return Err(Status::not_found("history unavailable"));
+            return Err(status::not_found());
         }
         let input = request.into_inner();
         let (workspace, id) = resource(&input.name, "runs")?;
@@ -707,6 +699,81 @@ impl wire::activity_service_server::ActivityService for GrpcServices {
 mod tests {
     use tonic::Code;
 
+    /// Catches: a refusal that reads as a retryable failure, or as another
+    /// code, because a Task or Run error wraps the error that refuses.
+    #[test]
+    fn a_wrapped_error_reports_what_it_reports_alone() {
+        use coral_policy::Error as Policy;
+        use coral_provider::Error as Provider;
+        use coral_run::Error as Run;
+        use coral_task::Error as Task;
+        use coral_tools::Error as Tools;
+        use coral_workspace::Error as Workspace;
+        let reported = |status: tonic::Status| (status.code(), status.message().to_owned());
+        let cases = [
+            (
+                Task::Workspace(Workspace::WorkspaceArchived),
+                crate::grpc::workspaces::error(Workspace::WorkspaceArchived),
+                Code::FailedPrecondition,
+            ),
+            (
+                Task::Workspace(Workspace::InvalidAgentCredential),
+                crate::grpc::workspaces::error(Workspace::InvalidAgentCredential),
+                Code::Unauthenticated,
+            ),
+            (
+                Task::Run(Run::Workspace(Workspace::WorkspaceNotFound)),
+                crate::grpc::workspaces::error(Workspace::WorkspaceNotFound),
+                Code::NotFound,
+            ),
+            (
+                Task::Run(Run::Workspace(Workspace::AgentDisabled)),
+                crate::grpc::workspaces::error(Workspace::AgentDisabled),
+                Code::FailedPrecondition,
+            ),
+            (
+                Task::Run(Run::Provider(Provider::Workspace(
+                    Workspace::PermissionDenied(coral_workspace::Denial::WorkspaceOwnerRequired),
+                ))),
+                crate::grpc::workspaces::error(Workspace::PermissionDenied(
+                    coral_workspace::Denial::WorkspaceOwnerRequired,
+                )),
+                Code::PermissionDenied,
+            ),
+            (
+                Task::Run(Run::Provider(Provider::ProviderNotFound)),
+                crate::grpc::providers::error(Provider::ProviderNotFound),
+                Code::NotFound,
+            ),
+            (
+                Task::Run(Run::Policy(Policy::ToolNotFound)),
+                crate::grpc::policies::error(Policy::ToolNotFound),
+                Code::NotFound,
+            ),
+            (
+                Task::Run(Run::Tools(Tools::PermissionDenied("private detail"))),
+                crate::grpc::authored_tools::error(Tools::PermissionDenied("private detail")),
+                Code::PermissionDenied,
+            ),
+            (
+                Task::Tools(Tools::Workspace(Workspace::WorkspaceNotFound)),
+                crate::grpc::workspaces::error(Workspace::WorkspaceNotFound),
+                Code::NotFound,
+            ),
+            (
+                Task::Search(coral_search::Error::Workspace(Workspace::AgentNotFound)),
+                crate::grpc::workspaces::error(Workspace::AgentNotFound),
+                Code::NotFound,
+            ),
+        ];
+        for (wrapped, alone, code) in cases {
+            let label = format!("{wrapped:?}");
+            let status = super::error(wrapped);
+            assert_eq!(status.code(), code, "{label}");
+            assert_eq!(reported(status), reported(alone), "{label}");
+        }
+    }
+
     /// History reads conceal absence and refusal alike and never report a
     /// denial, bad query, or closed Task as a retryable failure.
     #[test]
@@ -725,7 +792,7 @@ mod tests {
             ),
             (
                 coral_task::Error::Workspace(coral_workspace::Error::PermissionDenied(
-                    "private detail",
+                    coral_workspace::Denial::WorkspaceOwnerRequired,
                 )),
                 Code::PermissionDenied,
             ),
@@ -760,7 +827,6 @@ mod tests {
                 coral_task::Error::Run(coral_run::Error::OwnerLost),
                 Code::Aborted,
             ),
-            (coral_task::Error::Clock, Code::Unavailable),
             (
                 coral_task::Error::CorruptData("private detail".into()),
                 Code::Unavailable,

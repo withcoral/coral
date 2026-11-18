@@ -85,7 +85,7 @@ pub use coral_catalog::{
     McpDiscoverySnapshot, OPENAPI_DOCUMENT_MAX_BYTES, OpenApiDocument, ProviderSetupInputDigest,
     ProviderSetupInputKind,
 };
-pub use error::Error;
+pub use error::{Error, InternalFault};
 pub mod history_repository;
 pub mod usage_repository;
 
@@ -123,8 +123,46 @@ pub struct ProviderModule {
     consent: account::consent::Issuer,
     builtin_catalog: coral_catalog::BuiltinCatalog,
     schema_graphs: coral_catalog::SchemaGraphCache,
+    /// Measures how long a Publication has run since its request's instant.
+    clock: Arc<dyn coral_db::Clock>,
     #[cfg(test)]
     publication_observer: Arc<dyn PublicationObserver>,
+}
+
+/// When work that outlives its request's instant began, as its Module's clock
+/// read it.
+///
+/// A request gives its instant once, in its `ChangeContext`. A Publication's
+/// materialization, an upstream exchange or a device worker goes on after it,
+/// so each later decision is dated by the request's instant plus the span
+/// between the clock's reading when the work began and its reading now. The
+/// clock is the one source of that span: a test moves it to move the work's
+/// time.
+#[derive(Clone, Copy)]
+pub(crate) struct Started<'a> {
+    clock: &'a dyn coral_db::Clock,
+    at: coral_db::UnixNanos,
+}
+
+impl<'a> Started<'a> {
+    /// Reads `clock` as the work begins.
+    pub(crate) fn begin(clock: &'a dyn coral_db::Clock) -> Self {
+        Self {
+            clock,
+            at: clock.now(),
+        }
+    }
+
+    /// Reads the clock once and returns `at` moved on by the span since the
+    /// work began.
+    ///
+    /// The span follows the host's clock. A clock that is set back while the
+    /// work runs shortens the span, so this reading can be earlier than the
+    /// one before it. A clock that reads earlier than it did when the work
+    /// began gives no span: the result is never before `at`.
+    pub(crate) fn now_from(self, at: coral_db::UnixNanos) -> coral_db::UnixNanos {
+        at.saturating_add(self.clock.now().saturating_duration_since(self.at))
+    }
 }
 
 impl ProviderModule {
@@ -148,9 +186,24 @@ impl ProviderModule {
             consent: account::consent::Issuer::default(),
             builtin_catalog,
             schema_graphs,
+            clock: Arc::new(coral_db::SystemClock),
             #[cfg(test)]
             publication_observer: Arc::new(NoopPublicationObserver),
         }
+    }
+
+    /// Replaces the system clock that measures how long a Publication has
+    /// run, so that bootstrap gives the Module the Coral Instance's one clock
+    /// and a test moves that time itself.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn coral_db::Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Reads the clock as work that outlives its request's instant begins.
+    pub(crate) fn started(&self) -> Started<'_> {
+        Started::begin(self.clock.as_ref())
     }
 
     /// Builds the Module with the Built-in catalog this Coral version defines
@@ -198,6 +251,7 @@ impl ProviderModule {
             builtin_catalog: coral_catalog::BuiltinCatalog::running()
                 .expect("the built-in catalog prepares"),
             schema_graphs: coral_catalog::SchemaGraphCache::with_default_budget(),
+            clock: Arc::new(coral_db::SystemClock),
             publication_observer,
         }
     }
@@ -867,21 +921,16 @@ impl<'a> InvocationCaller<'a> {
                 transaction,
                 self.actor,
                 workspace_id,
-                self.now_unix_nanos,
+                coral_db::UnixNanos::new(self.now_unix_nanos),
                 coral_db::RowLock::None,
             )
             .await
         {
             Ok(authority) => Ok(Some(authority)),
-            Err(
-                coral_workspace::Error::WorkspaceNotFound
-                | coral_workspace::Error::PermissionDenied(_)
-                | coral_workspace::Error::WorkspaceArchived
-                | coral_workspace::Error::AgentNotFound
-                | coral_workspace::Error::AgentDisabled
-                | coral_workspace::Error::AgentRegistrationExpired,
-            ) => Ok(None),
-            Err(error) => Err(error.into()),
+            Err(error) => match error.refusal() {
+                Some(refusal) if refusal.ends_authority() => Ok(None),
+                Some(_) | None => Err(error.into()),
+            },
         }
     }
 }
@@ -1204,10 +1253,10 @@ fn require_owner(evidence: &WorkspaceEvidence) -> Result<(), Error> {
     if evidence.effective_role() == WorkspaceRole::Owner {
         Ok(())
     } else {
-        Err(
-            coral_workspace::Error::PermissionDenied("Workspace Owner authority is required")
-                .into(),
+        Err(coral_workspace::Error::PermissionDenied(
+            coral_workspace::Denial::WorkspaceOwnerRequired,
         )
+        .into())
     }
 }
 

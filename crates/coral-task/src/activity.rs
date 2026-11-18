@@ -1,5 +1,6 @@
 //! Activity hierarchy: Task owns root grouping and accepted-execution associations.
 use crate::{AttemptKind, Error, InteractionSummary, Task, TaskId, TaskModule};
+use coral_db::UnixNanos;
 use coral_run::{RunId, RunModule, RunSummary};
 use coral_workspace::{AuthenticatedPrincipal, HistoryScope, WorkspaceId};
 
@@ -147,9 +148,12 @@ impl TaskModule {
             .workspaces
             .action_history_authority_in_transaction(&mut tx, actor, Some(workspace))
             .await?;
-        let discovery =
-            crate::repository::activity::discovery_context(&mut tx, &authority, window.since())
-                .await?;
+        let discovery = crate::repository::activity::discovery_context(
+            &mut tx,
+            &authority,
+            UnixNanos::new(window.since()),
+        )
+        .await?;
         let summary = runs
             .activity_summary_in_transaction(&mut tx, &authority, &window, discovery)
             .await?;

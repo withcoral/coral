@@ -12,12 +12,14 @@ mod providers;
 mod releases;
 mod secret_stores;
 mod shared_tools;
+mod status;
 mod usage_data;
 mod workspaces;
 use std::sync::Arc;
 
 use crate::coral::{internal::v1 as internal, management::v1 as management};
 use coral_auth::{PrincipalAuthentication, PrivateAudience};
+use coral_db::{Clock, UnixNanos};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId, WorkspaceModule};
 use tonic::{Request, Response, Status};
 
@@ -69,6 +71,10 @@ pub struct TransportContext {
     /// Principal authentication. With [`PrincipalAuthentication::local`] the
     /// application must bind to loopback.
     pub authentication: PrincipalAuthentication,
+    /// The deployment's one clock, the one `authentication` reads. A request's
+    /// time is the instant its authentication read; a handler reads this
+    /// clock again only after it waited on outside work.
+    pub clock: Arc<dyn Clock>,
     /// Canonical, validated MCP origin, published once after the companion binds.
     /// Until publication, Workspace responses contain an empty MCP endpoint.
     pub mcp_origin: Arc<std::sync::OnceLock<String>>,
@@ -89,6 +95,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
     let services = GrpcServices {
         organization: dependencies.organization,
         authentication: context.authentication,
+        clock: context.clock,
         mcp_origin: context.mcp_origin,
         stopping: context.stopping,
         workspaces: dependencies.workspaces,
@@ -191,6 +198,7 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
 struct GrpcServices {
     organization: coral_workspace::OrganizationModule,
     authentication: PrincipalAuthentication,
+    clock: Arc<dyn Clock>,
     mcp_origin: Arc<std::sync::OnceLock<String>>,
     stopping: tokio::sync::watch::Receiver<bool>,
     workspaces: WorkspaceModule,
@@ -220,36 +228,13 @@ impl GrpcServices {
         audience: PrivateAudience,
     ) -> Result<Response<internal::Task>, Status> {
         let (workspace, id) = resource(name, "tasks")?;
-        let id = coral_task::TaskId::parse(id)
-            .map_err(|_error| Status::invalid_argument("invalid Task name"))?;
+        let id = coral_task::TaskId::parse(id).map_err(|_error| status::invalid())?;
         let principal = self.principal(request, Some(&workspace), audience).await?;
-        let task =
-            self.tasks
-                .get(&principal, &workspace, &id)
-                .await
-                .map_err(|error| match error {
-                    coral_task::Error::TaskNotFound
-                    | coral_task::Error::WorkspaceNotFound
-                    | coral_task::Error::InteractionNotFound => {
-                        Status::not_found("resource not found")
-                    }
-                    coral_task::Error::PermissionDenied(_) => {
-                        Status::permission_denied("permission denied")
-                    }
-                    coral_task::Error::InvalidInput(_) => {
-                        Status::invalid_argument("invalid Task request")
-                    }
-                    coral_task::Error::TaskClosed => Status::failed_precondition("Task closed"),
-                    coral_task::Error::SnapshotTooLarge
-                    | coral_task::Error::Search(_)
-                    | coral_task::Error::Tools(_)
-                    | coral_task::Error::Run(_)
-                    | coral_task::Error::Clock
-                    | coral_task::Error::IdentifierIssuance(_)
-                    | coral_task::Error::Workspace(_)
-                    | coral_task::Error::CorruptData(_)
-                    | coral_task::Error::Database(_) => Status::unavailable("resource unavailable"),
-                })?;
+        let task = self
+            .tasks
+            .get(&principal, &workspace, &id)
+            .await
+            .map_err(activity::error)?;
         Ok(Response::new(internal::Task {
             name: name.to_owned(),
             intent: task.intent().as_str().to_owned(),
@@ -262,13 +247,24 @@ impl GrpcServices {
         workspace: Option<&WorkspaceId>,
         allowed: PrivateAudience,
     ) -> Result<AuthenticatedPrincipal, Status> {
+        self.principal_at(request, workspace, allowed)
+            .await
+            .map(|(principal, _now)| principal)
+    }
+
+    /// Authenticates the request, and returns the instant authentication read
+    /// beside its Principal: the request's time.
+    async fn principal_at<T>(
+        &self,
+        request: &Request<T>,
+        workspace: Option<&WorkspaceId>,
+        allowed: PrivateAudience,
+    ) -> Result<(AuthenticatedPrincipal, UnixNanos), Status> {
         let audience = single_header(request.metadata(), "coral-audience")?
             .and_then(PrivateAudience::parse)
-            .ok_or_else(|| Status::unauthenticated("private audience required"))?;
+            .ok_or_else(status::unauthenticated)?;
         if audience != allowed {
-            return Err(Status::permission_denied(
-                "method is not reachable by this audience",
-            ));
+            return Err(status::permission_denied());
         }
         let bearer = single_header(request.metadata(), "authorization")?
             .map(|header| {
@@ -280,7 +276,7 @@ impl GrpcServices {
                             && !token.contains(char::is_whitespace)
                     })
                     .map(|(_, token)| token)
-                    .ok_or_else(|| Status::unauthenticated("invalid authentication metadata"))
+                    .ok_or_else(status::unauthenticated)
             })
             .transpose()?;
         // An opaque Registration has one fixed access surface: mcp. The reef
@@ -289,7 +285,7 @@ impl GrpcServices {
             PrivateAudience::Mcp => {
                 self.authentication
                     .authenticate_scoped(
-                        workspace.ok_or_else(|| Status::invalid_argument("Workspace required"))?,
+                        workspace.ok_or_else(status::invalid)?,
                         bearer,
                         audience.as_str(),
                     )
@@ -303,17 +299,25 @@ impl GrpcServices {
         }
         .map_err(authentication_error)
     }
+
+    /// Reads the server's clock again, in Unix nanoseconds. It is only for a
+    /// decision a handler makes after it waited on outside work, such as a
+    /// provider's answer: the request's time is stale by then. Every other
+    /// decision takes the request's time from its `ManagementUser`.
+    fn now_after_outside_work(&self) -> i64 {
+        self.clock.now().get()
+    }
 }
 
 fn authentication_error(error: coral_auth::AuthenticationError) -> Status {
     match error {
         // Neither entry point lets the credential fix the Workspace.
         coral_auth::AuthenticationError::Unauthenticated
-        | coral_auth::AuthenticationError::WorkspaceUrlRequired => {
-            Status::unauthenticated("authentication required")
-        }
+        | coral_auth::AuthenticationError::WorkspaceUrlRequired => status::unauthenticated(),
+        // Its own reason: a retry of this call fails until authentication
+        // answers, whatever the method reads.
         coral_auth::AuthenticationError::Unavailable => {
-            Status::unavailable("authentication unavailable")
+            status::safe_status(tonic::Code::Unavailable, "AUTHENTICATION_UNAVAILABLE")
         }
     }
 }
@@ -325,14 +329,10 @@ fn single_header<'a>(
     let mut values = metadata.get_all(name).iter();
     let value = values.next();
     if values.next().is_some() {
-        return Err(Status::unauthenticated("ambiguous authentication metadata"));
+        return Err(status::unauthenticated());
     }
     value
-        .map(|value| {
-            value
-                .to_str()
-                .map_err(|_error| Status::unauthenticated("invalid authentication metadata"))
-        })
+        .map(|value| value.to_str().map_err(|_error| status::unauthenticated()))
         .transpose()
 }
 
@@ -345,13 +345,12 @@ fn resource<'a>(name: &'a str, collection: &str) -> Result<(WorkspaceId, &'a str
         parts.next(),
         parts.next(),
     ) else {
-        return Err(Status::invalid_argument("invalid resource name"));
+        return Err(status::invalid());
     };
     if kind != collection || id.is_empty() {
-        return Err(Status::invalid_argument("invalid resource name"));
+        return Err(status::invalid());
     }
-    let workspace = WorkspaceId::parse(workspace)
-        .map_err(|_error| Status::invalid_argument("invalid Workspace name"))?;
+    let workspace = WorkspaceId::parse(workspace).map_err(|_error| status::invalid())?;
     Ok((workspace, id))
 }
 
@@ -377,12 +376,4 @@ impl internal::task_service_server::TaskService for GrpcServices {
         self.task(&request, &request.get_ref().name, PrivateAudience::Mcp)
             .await
     }
-}
-
-fn now() -> Result<i64, Status> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_error| Status::unavailable("clock unavailable"))?
-        .as_nanos();
-    i64::try_from(nanos).map_err(|_error| Status::unavailable("clock unavailable"))
 }

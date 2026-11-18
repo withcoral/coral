@@ -9,8 +9,14 @@ use super::test_support::{NoFetch, rewrite_past_checks};
 use super::{ClientAuthenticationError, ClientSecret, PresentedCredential};
 use super::{ClientMetadataError, ClientMetadataResolver as _, OAuthClients};
 use super::{RegistrationError, RegistrationRequest};
+use coral_db::UnixNanos;
 use coral_test_support::TestDatabase;
 use serde_json::json;
+
+/// The instant `seconds` after 1970. Registration counts in whole seconds.
+fn at(seconds: i64) -> UnixNanos {
+    UnixNanos::new(seconds * 1_000_000_000)
+}
 
 fn request() -> RegistrationRequest {
     serde_json::from_value(json!({"redirect_uris": ["http://127.0.0.1/callback"]})).unwrap()
@@ -31,7 +37,7 @@ async fn admission_is_global_atomic_durable_and_never_evicts_working_clients() {
         } else {
             peer.clone()
         };
-        tasks.spawn(async move { module.register(request(), 1000).await });
+        tasks.spawn(async move { module.register(request(), at(1000)).await });
     }
     let mut accepted = Vec::new();
     while let Some(result) = tasks.join_next().await {
@@ -47,16 +53,19 @@ async fn admission_is_global_atomic_durable_and_never_evicts_working_clients() {
         Arc::new(NoFetch),
     );
     assert!(matches!(
-        reopened.register(request(), 1001).await,
+        reopened.register(request(), at(1001)).await,
         Err(RegistrationError::Throttled)
     ));
     // A backwards host clock cannot reset admission either.
     assert!(matches!(
-        reopened.register(request(), 900).await,
+        reopened.register(request(), at(900)).await,
         Err(RegistrationError::Throttled)
     ));
     for i in 60..1020 {
-        reopened.register(request(), 1000 + i * 60).await.unwrap();
+        reopened
+            .register(request(), at(1000 + i * 60))
+            .await
+            .unwrap();
     }
     for i in 0..20 {
         let module = if i % 2 == 0 {
@@ -64,7 +73,7 @@ async fn admission_is_global_atomic_durable_and_never_evicts_working_clients() {
         } else {
             peer.clone()
         };
-        tasks.spawn(async move { module.register(request(), 100_000).await });
+        tasks.spawn(async move { module.register(request(), at(100_000)).await });
     }
     let mut remaining = 0;
     while let Some(result) = tasks.join_next().await {
@@ -75,7 +84,7 @@ async fn admission_is_global_atomic_durable_and_never_evicts_working_clients() {
     }
     assert_eq!(remaining, 4);
     assert!(matches!(
-        peer.register(request(), 100_000).await,
+        peer.register(request(), at(100_000)).await,
         Err(RegistrationError::Capacity)
     ));
     for id in accepted {
@@ -110,7 +119,7 @@ async fn unsafe_metadata_is_rejected_without_spending_admission_and_ids_never_fe
         assert!(
             matches!(
                 clients
-                    .register(serde_json::from_value(value).unwrap(), 1000)
+                    .register(serde_json::from_value(value).unwrap(), at(1000))
                     .await,
                 Err(RegistrationError::InvalidMetadata)
             ),
@@ -133,7 +142,7 @@ async fn unsafe_metadata_is_rejected_without_spending_admission_and_ids_never_fe
     ] {
         let request = serde_json::from_value(json!({"redirect_uris": redirects})).unwrap();
         assert!(matches!(
-            clients.register(request, 1000).await,
+            clients.register(request, at(1000)).await,
             Err(RegistrationError::InvalidRedirectUri)
         ));
     }
@@ -150,7 +159,7 @@ async fn unsafe_metadata_is_rejected_without_spending_admission_and_ids_never_fe
         );
     }
     for _ in 0..60 {
-        clients.register(request(), 1000).await.unwrap();
+        clients.register(request(), at(1000)).await.unwrap();
     }
 }
 
@@ -188,7 +197,7 @@ async fn pi_public_registration_resolves_after_reopening_the_module() {
             "scope": "admin"
         }))
         .unwrap();
-        let client = clients.register(request, 1000).await.unwrap();
+        let client = clients.register(request, at(1000)).await.unwrap();
         assert!(client.client_id.starts_with("dcr_"));
         let accepted = serde_json::to_value(&client).unwrap();
         assert_eq!(accepted["grant_types"], echoed, "{grant_types}");
@@ -220,7 +229,8 @@ async fn register(clients: &OAuthClients, method: &str) -> (String, Option<Strin
         "token_endpoint_auth_method": method,
     }))
     .unwrap();
-    let accepted = serde_json::to_value(clients.register(request, 1000).await.unwrap()).unwrap();
+    let accepted =
+        serde_json::to_value(clients.register(request, at(1000)).await.unwrap()).unwrap();
     assert_eq!(accepted["token_endpoint_auth_method"], method);
     let secret = accepted["client_secret"].as_str().map(str::to_owned);
     if let Some(secret) = &secret {
@@ -285,7 +295,10 @@ async fn a_client_authenticates_only_by_its_registered_method() {
             workspace_id: None,
             refresh_eligible: true,
         };
-        codes.issue(code, code, &grant, now).await.unwrap();
+        codes
+            .issue(code, code, &grant, UnixNanos::new(now))
+            .await
+            .unwrap();
     }
     let secret_post = PresentedCredential::ClientSecretPost(ClientSecret::from(
         zeroize::Zeroizing::new(secret.clone()),
@@ -301,7 +314,12 @@ async fn a_client_authenticates_only_by_its_registered_method() {
         resource: RESOURCE,
     };
     let refresh_token = tokens
-        .redeem_code("spent", redemption, AccessTarget::Resource, now)
+        .redeem_code(
+            "spent",
+            redemption,
+            AccessTarget::Resource,
+            UnixNanos::new(now),
+        )
         .await
         .unwrap()
         .refresh_token
@@ -363,7 +381,12 @@ async fn a_client_authenticates_only_by_its_registered_method() {
         resource: RESOURCE,
     };
     tokens
-        .redeem_code("unspent", redemption, AccessTarget::Resource, now + 1)
+        .redeem_code(
+            "unspent",
+            redemption,
+            AccessTarget::Resource,
+            UnixNanos::new(now + 1),
+        )
         .await
         .expect("no refusal spent the code");
     let request = RefreshRequest {
@@ -372,7 +395,7 @@ async fn a_client_authenticates_only_by_its_registered_method() {
         audience: None,
     };
     tokens
-        .refresh(refresh_token.expose(), request, now + 2)
+        .refresh(refresh_token.expose(), request, UnixNanos::new(now + 2))
         .await
         .expect("no refusal ended the grant");
 }

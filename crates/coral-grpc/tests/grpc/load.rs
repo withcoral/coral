@@ -717,9 +717,8 @@ fn counts<'a>(values: impl Iterator<Item = &'a str>) -> Value {
 
 /// Wall-clock milliseconds since the Unix epoch, comparable with a Program's `Date.now()`.
 fn unix_ms() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_secs_f64() * 1000.0)
+    let since_1970 = coral_test_support::now_unix_nanos().unsigned_abs();
+    std::time::Duration::from_nanos(since_1970).as_secs_f64() * 1000.0
 }
 
 /// One arranged cell: the fixture, the upstream mock, the busy Workspace's actor,

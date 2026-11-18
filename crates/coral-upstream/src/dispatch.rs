@@ -5,7 +5,9 @@ use std::sync::Arc;
 use coral_catalog::{ExecutionBinding, MaterializedTool, SchemaGraph};
 use serde_json::Value;
 
-use crate::{Error, HttpOutcome, McpOutcome, McpResources, ReadyHttpDispatch, ReadyMcpDispatch};
+use crate::{
+    HttpOutcome, McpOutcome, McpResources, PlanError, ReadyHttpDispatch, ReadyMcpDispatch,
+};
 
 /// One prepared request, consumed once by its protocol sender.
 pub enum ReadyDispatch {
@@ -29,7 +31,7 @@ impl ReadyDispatch {
         provider: &str,
         resources: Arc<McpResources>,
         limits: coral_value::ValueLimits,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self, PlanError> {
         match tool.execution_binding() {
             ExecutionBinding::Http(_) => ReadyHttpDispatch::plan(tool, schemas, arguments, limits)
                 .map(|ready| Self::Http(Box::new(ready))),
@@ -40,7 +42,9 @@ impl ReadyDispatch {
             // The Run domain performs built-in and Private Tools itself and
             // never plans one. Planning one anyway settles as a safe Coral
             // Failure.
-            ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => Err(Error::ToolUnavailable),
+            ExecutionBinding::Builtin(_) | ExecutionBinding::Code(_) => {
+                Err(PlanError::ToolUnavailable)
+            }
         }
     }
 }

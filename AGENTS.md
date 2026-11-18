@@ -24,9 +24,22 @@
   ([ADR 0029](docs/adr/0029-mcp-requests-are-served-without-sessions-and-a-required-action-reaches-its-user-through-the-assistants-link.md)). Do
   not hold state between a client's requests in the Adapter, and do not send a
   client anything outside the response to its own request.
+- The Workspace, Catalog, Provider, Tool policy, authored Tool, Universal
+  Search, Run and Task errors each state the database error behind them
+  (`database_error`, `into_database_error`). The Provider, Tool policy,
+  authored Tool, Universal Search and Run errors also state the Workspace
+  refusal they wrap (`workspace_refusal`; `refusal` on
+  `coral_workspace::Error`). Each names every variant. Ask the error for
+  these facts; do not match its variants to find them, and give a new error
+  that another module wraps the same methods. A caller still matches the
+  outcomes of the call it made, and an Adapter reports a wrapped error as
+  that error's own mapper does.
 - Read process environment only at process bootstrap. Pass explicit values to
   domain code. The `env` Secret Store is the one exception: bootstrap hands it
   a reader, and it reads only under its guarded prefix (ADR 0036).
+- Bootstrap builds one `coral_db::Clock` (`Launcher::clock()`). Give a new
+  reader of the time that clock, not a `SystemClock` of its own, so that a
+  test can drive it. Code that only decides takes the instant from its caller.
 - A sweep, a check or a cleanup that the server runs on a cadence is a
   periodic pass. Its module exposes the pass as one function, and bootstrap
   schedules it with `Passes` (`crates/coral-app/src/bootstrap/periodic.rs`); do
@@ -87,6 +100,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - Open read-only work with `Database::begin_read_snapshot` and non-holding
   checks. `Database::begin` takes SQLite's write lock at `BEGIN`, so it waits
   behind every other writer.
+- A list that can grow without limit pages by a plain key in its owner, with
+  `coral_db::PageRequest` and `Page`; its cursor binds nothing
+  ([ADR 0037](docs/adr/0037-lists-page-by-a-plain-key.md)).
 - The Policy Enforcement Point and the held rechecks before it read the fact
   rows they never write (a Workspace, a Provider, a policy rule, an Account)
   with `RowLock::Shared`
@@ -198,6 +214,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   or a repair as in product code. `coral_catalog::SchemaGraphCache` relies on
   it: a Coral Instance serves a Generation's parsed schema graph from memory
   while the cache holds it, and never rereads the row to check it.
+- An instant is a `coral_db::UnixNanos` and a span is a `std::time::Duration`.
+  A repository binds and decodes `UnixNanos` directly, and a row struct keeps
+  its column's name. A crate that still carries an instant as an `i64`
+  converts at its call edge with `UnixNanos::new` or `.get()`.
 - Give each independently identified entity one stable ID as its sole primary
   key. Use a composite primary key only when the tuple is the domain identity.
 - For Workspace-owned data, every externally influenced read or write must
@@ -319,6 +339,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   bare error check also passes on a database failure.
 - Assert deltas and domain properties, not totals. Event counts, byte sizes, and
   page sizes move whenever unrelated behavior changes.
+- To prove that a read does not send a statement for each row, read
+  `TestDatabase::statements_sent` around it for a small fixture and a large
+  one, and assert that the two differences are equal. It counts reads and
+  writes on both databases.
 - Extend the nearest shared helper (`coral-test-support` or the crate's test
   harness) and write near-duplicate cases as one table test. After a TDD loop,
   fold the tracer tests into that table before you open the PR.
@@ -326,11 +350,12 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   uses `coral_test_support::TEST_COMPILATION_TIMEOUT`. The production deadline
   fails such tests on a starved runner.
 - In a unit or in-process test, drive time with fake timers or a test
-  clock, not real waits. An end-to-end journey whose subject is real elapsed
-  time, such as a session's renewal, keeps the real clocks. Read the clock
-  once per decision, in tests and product code alike: two readings can
-  differ, and a millisecond then decides which of two equal timers fires
-  first.
+  clock, not real waits. A test that starts Coral in its own process gives it
+  a `coral_test_support::ManualClock` through `Launch::clock`. A Reel journey
+  whose subject is real elapsed time, such as a session's renewal, keeps the
+  real clocks. Read the clock once per decision, in tests and product code
+  alike: two readings can differ, and a millisecond then decides which of two
+  equal timers fires first.
 - Inject faults through the owning crate's API or
   `TestDatabase::execute_fixture_sql`, so the test runs on both databases.
   Production `#[cfg(test)]` hooks only synchronize timing; every tested path is

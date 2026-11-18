@@ -28,13 +28,11 @@ impl GetPolicy {
                 host.actor,
                 host.workspace_id,
                 self.under.as_deref(),
-                host.run.now()?,
+                coral_db::UnixNanos::new(host.run.now()?),
             )
             .await
             .map_err(|error| match error {
-                coral_policy::Error::Workspace(error)
-                    if crate::enforcement::loses_authority(&error) =>
-                {
+                error if crate::enforcement::ended_authority(error.workspace_refusal()) => {
                     Error::InvocationRejected(CoralFailure::AuthorityLost.into())
                 }
                 other => other.into(),

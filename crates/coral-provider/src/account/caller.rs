@@ -76,7 +76,7 @@ impl AccountModule {
                 &AuthenticatedPrincipal::user(actor.clone()),
                 owner,
                 // Only Agent authority expires; this is explicitly a User.
-                0,
+                coral_db::UnixNanos::new(0),
             )
             .await?;
         // A User authors only through a Workspace Membership.

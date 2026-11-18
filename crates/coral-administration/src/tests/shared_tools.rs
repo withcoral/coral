@@ -50,7 +50,7 @@ impl Fixture {
         .save(
             &PrivateToolChangeContext::new(
                 AuthenticatedPrincipal::user(owner.clone()),
-                20,
+                coral_db::UnixNanos::new(20),
                 TraceId::parse(&"2".repeat(32)).unwrap(),
             ),
             &workspace,

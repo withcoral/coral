@@ -521,7 +521,8 @@ pub enum Error {
     /// Exact Tool policy rejected Invocation work.
     #[error(transparent)]
     Policy(#[from] coral_policy::Error),
-    /// The private upstream Adapter could not plan, send, or project a result.
+    /// The private upstream Adapter could not plan, authorize, send, or
+    /// project a result.
     #[error(transparent)]
     Upstream(#[from] coral_upstream::Error),
     /// Workspace authority or lifecycle rejected the operation.
@@ -588,47 +589,112 @@ impl Error {
             .is_some_and(coral_db::Error::is_unanswered)
     }
 
-    /// The database error behind this one, through the module errors that
-    /// wrap it (a Provider's Catalog or Workspace error, a Policy's Provider
-    /// or Workspace error, a Private Tool's Workspace error).
+    /// The database error behind this one, directly or through the module
+    /// error that wraps it. Each module answers for its own error, so this
+    /// lists no other module's variants.
     #[must_use]
-    pub(crate) fn database_error(&self) -> Option<&coral_db::Error> {
-        fn workspace(error: &coral_workspace::Error) -> Option<&coral_db::Error> {
-            match error {
-                coral_workspace::Error::Database(error) => Some(error),
-                _ => None,
-            }
-        }
-        fn catalog(error: &coral_catalog::Error) -> Option<&coral_db::Error> {
-            match error {
-                coral_catalog::Error::Database(error) => Some(error),
-                _ => None,
-            }
-        }
-        fn provider(error: &coral_provider::Error) -> Option<&coral_db::Error> {
-            match error {
-                coral_provider::Error::Database(error) => Some(error),
-                coral_provider::Error::Catalog(error) => catalog(error),
-                coral_provider::Error::Workspace(error) => workspace(error),
-                _ => None,
-            }
-        }
+    pub const fn database_error(&self) -> Option<&coral_db::Error> {
         match self {
             Self::Database(error) => Some(error),
-            Self::Workspace(error) => workspace(error),
-            Self::Provider(error) => provider(error),
-            Self::Policy(error) => match error {
-                coral_policy::Error::Database(error) => Some(error),
-                coral_policy::Error::Provider(error) => provider(error),
-                coral_policy::Error::Workspace(error) => workspace(error),
-                _ => None,
-            },
-            Self::Tools(error) => match error {
-                coral_tools::Error::Database(error) => Some(error),
-                coral_tools::Error::Workspace(error) => workspace(error),
-                _ => None,
-            },
-            _ => None,
+            Self::Workspace(error) => error.database_error(),
+            Self::Provider(error) => error.database_error(),
+            Self::Policy(error) => error.database_error(),
+            Self::Tools(error) => error.database_error(),
+            // Name every variant so a new one that holds a database error
+            // is found here: an unanswered write that this misses reads as
+            // a definite answer, and stops an owner that should retry.
+            Self::InvalidInput(_)
+            | Self::RunNotFound
+            | Self::ApprovalNotFound
+            | Self::ProgramAdmission(_)
+            | Self::PermissionDenied(_)
+            | Self::CompilationTimedOut
+            | Self::CompilerBusy
+            | Self::CompilerUnavailable
+            | Self::PackageTooLarge { .. }
+            | Self::ProgramRuntimeUnavailable(_)
+            | Self::ProgramWorkerStopped
+            | Self::Clock(_)
+            | Self::IdentifierIssuance(_)
+            | Self::ProgramValueTooLarge
+            | Self::InvalidProgramValue
+            | Self::ProgramValueJson(_)
+            | Self::InvocationRejected(_)
+            | Self::InvocationPersistence(_)
+            | Self::RunEventPersistence(_)
+            | Self::ClaimMismatch
+            | Self::HeadMismatch
+            | Self::RunEnded
+            | Self::OwnerLost
+            | Self::RunRequestNotYetRecorded
+            | Self::ShuttingDown
+            | Self::ProgramHostTerminated
+            | Self::Upstream(_)
+            | Self::CorruptData(_) => None,
+        }
+    }
+
+    /// The database error behind this one, by value, or this error back
+    /// when it holds none. [`Self::database_error`] says which it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error itself when no database error is behind it.
+    pub fn into_database_error(self) -> Result<coral_db::Error, Self> {
+        match self {
+            Self::Database(error) => Ok(error),
+            Self::Workspace(error) => error.into_database_error().map_err(Self::Workspace),
+            Self::Provider(error) => error.into_database_error().map_err(Self::Provider),
+            Self::Policy(error) => error.into_database_error().map_err(Self::Policy),
+            Self::Tools(error) => error.into_database_error().map_err(Self::Tools),
+            other => {
+                debug_assert!(other.database_error().is_none());
+                Err(other)
+            }
+        }
+    }
+
+    /// The Workspace refusal this error wraps, directly or through another
+    /// module's error. A refusal reads the same whichever module wrapped
+    /// it, so a caller reports it without naming that module's variants.
+    #[must_use]
+    pub const fn workspace_refusal(&self) -> Option<coral_workspace::AuthorityRefusal> {
+        match self {
+            Self::Workspace(error) => error.refusal(),
+            Self::Provider(error) => error.workspace_refusal(),
+            Self::Policy(error) => error.workspace_refusal(),
+            Self::Tools(error) => error.workspace_refusal(),
+            // Name every variant so a new one that wraps a Workspace error
+            // is found here.
+            Self::Database(_)
+            | Self::InvalidInput(_)
+            | Self::RunNotFound
+            | Self::ApprovalNotFound
+            | Self::ProgramAdmission(_)
+            | Self::PermissionDenied(_)
+            | Self::CompilationTimedOut
+            | Self::CompilerBusy
+            | Self::CompilerUnavailable
+            | Self::PackageTooLarge { .. }
+            | Self::ProgramRuntimeUnavailable(_)
+            | Self::ProgramWorkerStopped
+            | Self::Clock(_)
+            | Self::IdentifierIssuance(_)
+            | Self::ProgramValueTooLarge
+            | Self::InvalidProgramValue
+            | Self::ProgramValueJson(_)
+            | Self::InvocationRejected(_)
+            | Self::InvocationPersistence(_)
+            | Self::RunEventPersistence(_)
+            | Self::ClaimMismatch
+            | Self::HeadMismatch
+            | Self::RunEnded
+            | Self::OwnerLost
+            | Self::RunRequestNotYetRecorded
+            | Self::ShuttingDown
+            | Self::ProgramHostTerminated
+            | Self::Upstream(_)
+            | Self::CorruptData(_) => None,
         }
     }
 
@@ -642,10 +708,8 @@ impl Error {
     /// Returns a definite safe rejection; operational uncertainty has no invented outcome.
     #[must_use]
     pub fn safe_rejection(&self) -> Option<(&'static str, String)> {
-        if let Self::Workspace(error) = self {
-            return error
-                .safe_rejection()
-                .map(|(code, message)| (code, message.to_owned()));
+        if let Some(refusal) = self.workspace_refusal() {
+            return Some((refusal.code(), refusal.message().to_owned()));
         }
         let code = match self {
             Self::InvalidInput(_) => "invalid_input",
@@ -740,10 +804,69 @@ mod tests {
         for (wrap, label) in wrapped {
             assert!(wrap(unanswered()).is_operational(), "{label}");
             assert!(!wrap(definite()).is_operational(), "{label}");
+            // By value, the same database error comes back.
+            assert!(
+                matches!(
+                    wrap(unanswered()).into_database_error(),
+                    Ok(coral_db::Error::WriterBusy)
+                ),
+                "{label}"
+            );
         }
+        assert!(matches!(
+            Error::RunNotFound.into_database_error(),
+            Err(Error::RunNotFound)
+        ));
         assert!(!Error::RunNotFound.is_operational());
         assert!(!Error::ClaimMismatch.is_operational());
         assert!(!Error::RunRequestNotYetRecorded.is_operational());
+    }
+
+    // Catches: a Workspace refusal that stops being a safe rejection
+    // because another module's error wraps it.
+    #[test]
+    fn a_workspace_refusal_is_a_safe_rejection_through_every_module_wrapper() {
+        type Wrap = fn(coral_workspace::Error) -> Error;
+        let wrapped: [(Wrap, &str); 5] = [
+            (Error::Workspace, "workspace"),
+            (
+                |error| Error::Provider(coral_provider::Error::Workspace(error)),
+                "provider",
+            ),
+            (
+                |error| Error::Policy(coral_policy::Error::Workspace(error)),
+                "policy",
+            ),
+            (
+                |error| {
+                    Error::Policy(coral_policy::Error::Provider(
+                        coral_provider::Error::Workspace(error),
+                    ))
+                },
+                "policy provider",
+            ),
+            (
+                |error| Error::Tools(coral_tools::Error::Workspace(error)),
+                "tools",
+            ),
+        ];
+        let refusal = coral_workspace::AuthorityRefusal::WorkspaceArchived;
+        for (wrap, label) in wrapped {
+            assert_eq!(
+                wrap(coral_workspace::Error::WorkspaceArchived).safe_rejection(),
+                Some((refusal.code(), refusal.message().to_owned())),
+                "{label}"
+            );
+            assert_eq!(
+                wrap(coral_workspace::Error::EtagMismatch).safe_rejection(),
+                None,
+                "{label}"
+            );
+        }
+        assert_eq!(
+            Error::Provider(coral_provider::Error::ProviderNotFound).safe_rejection(),
+            None
+        );
     }
 
     #[test]

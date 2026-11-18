@@ -1,6 +1,7 @@
 use std::fmt;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use coral_db::UnixNanos;
 use ring::rand::{SecureRandom as _, SystemRandom};
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -135,7 +136,7 @@ pub struct AgentRegistration {
     pub(crate) agent_id: PrincipalId,
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) enabled: bool,
-    pub(crate) expires_at_unix_nanos: Option<i64>,
+    pub(crate) expires_at: Option<UnixNanos>,
 }
 
 impl AgentRegistration {
@@ -161,18 +162,15 @@ impl AgentRegistration {
     }
     /// Returns the optional exclusive authentication and execution deadline.
     #[must_use]
-    pub const fn expires_at_unix_nanos(&self) -> Option<i64> {
-        self.expires_at_unix_nanos
+    pub const fn expires_at(&self) -> Option<UnixNanos> {
+        self.expires_at
     }
 
-    pub(crate) fn require_active(&self, agent: &Agent, now: i64) -> Result<(), Error> {
+    pub(crate) fn require_active(&self, agent: &Agent, now: UnixNanos) -> Result<(), Error> {
         if agent.state() == AgentState::Disabled || !self.enabled {
             return Err(Error::AgentDisabled);
         }
-        if self
-            .expires_at_unix_nanos
-            .is_some_and(|expiry| now >= expiry)
-        {
+        if self.expires_at.is_some_and(|expiry| now >= expiry) {
             return Err(Error::AgentRegistrationExpired);
         }
         Ok(())

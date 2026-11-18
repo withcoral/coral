@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use coral_run::{RUN_EVENT_PAGE_MAX, RunCursor, RunId, RunObservation};
 use coral_task::{TaskId, TaskIntent, TaskOutcome};
@@ -144,8 +144,10 @@ impl McpServer {
     }
 
     async fn exec(&self, arguments: ExecArguments) -> Result<CallToolResponse, DispatchError> {
+        // A later call that still carries its Task's `goal` continues the Task:
+        // refusing it would only cost the agent a turn to send it again.
         let target = match (&arguments.task_id, &arguments.goal) {
-            (Some(task_id), None) => {
+            (Some(task_id), _) => {
                 ExecTarget::Task(self.attributed_command(task_id, &arguments.intent)?)
             }
             (None, Some(goal)) => ExecTarget::Goal(coral_task::NewTaskCommand::new(
@@ -157,9 +159,9 @@ impl McpServer {
                     .map_err(|error| invalid_input(format!("`goal`: {error}")))?,
                 TaskIntent::parse(&arguments.intent).map_err(invalid_input)?,
             )),
-            _ => {
+            (None, None) => {
                 return Err(invalid_input_message(
-                    "exec takes exactly one of `task_id` or `goal`: pass `task_id` to continue a Task, or `goal` to start a new one".to_owned(),
+                    "exec takes `task_id` or `goal`: pass `task_id` to continue a Task, or `goal` to start a new one".to_owned(),
                 ));
             }
         };
@@ -345,7 +347,7 @@ impl McpServer {
                 &task_id,
                 outcome,
                 arguments.feedback.as_deref(),
-                now_unix_nanos()?,
+                self.runtime.now,
             )
             .await
             .map_err(task_failure)?;
@@ -506,14 +508,6 @@ fn validated_wait(wait_ms: u64) -> Result<u64, DispatchError> {
     Ok(wait_ms)
 }
 
-fn now_unix_nanos() -> Result<i64, DispatchError> {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))?;
-    i64::try_from(duration.as_nanos())
-        .map_err(|_error| DispatchError::Tool(ToolFailure::internal()))
-}
-
 fn invalid_input(error: impl std::fmt::Display) -> DispatchError {
     invalid_input_message(error.to_string())
 }
@@ -529,10 +523,10 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
             ToolFailure::stable("task_not_found", "Task was not found")
         }
         coral_task::Error::WorkspaceNotFound => {
-            ToolFailure::stable("workspace_not_found", "Workspace was not found")
+            refusal_failure(coral_workspace::AuthorityRefusal::WorkspaceNotFound)
         }
         coral_task::Error::PermissionDenied(_) => {
-            ToolFailure::stable("permission_denied", "Permission was denied")
+            refusal_failure(coral_workspace::AuthorityRefusal::PermissionDenied)
         }
         coral_task::Error::Workspace(error) => workspace_tool_failure(error),
         coral_task::Error::Search(error) => return search_failure(error),
@@ -551,8 +545,7 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
             "snapshot_too_large",
             "Complete discovery snapshot exceeds its limit",
         ),
-        coral_task::Error::Clock
-        | coral_task::Error::IdentifierIssuance(_)
+        coral_task::Error::IdentifierIssuance(_)
         | coral_task::Error::CorruptData(_)
         | coral_task::Error::Database(_) => ToolFailure::internal(),
     };
@@ -589,6 +582,8 @@ const fn lookup_error_kind(error: &coral_search::Error) -> &'static str {
     match error {
         coral_search::Error::Database(_) => "database",
         coral_search::Error::Provider(_) => "provider",
+        coral_search::Error::Policy(_) => "policy",
+        coral_search::Error::Tools(_) => "tools",
         coral_search::Error::Workspace(_) => "workspace",
         // Name every remaining variant so a new one needs a kind here.
         coral_search::Error::InvalidInput(_)
@@ -597,9 +592,7 @@ const fn lookup_error_kind(error: &coral_search::Error) -> &'static str {
         | coral_search::Error::AuthoringDescriptionNotFound
         | coral_search::Error::TypesLimit
         | coral_search::Error::UndeclaredTypes { .. }
-        | coral_search::Error::PermissionDenied(_)
-        | coral_search::Error::Policy(_)
-        | coral_search::Error::Tools(_) => "search",
+        | coral_search::Error::PermissionDenied(_) => "search",
     }
 }
 
@@ -609,7 +602,7 @@ fn search_failure(error: coral_search::Error) -> DispatchError {
     }
     let failure = match error {
         coral_search::Error::PermissionDenied(_) => {
-            ToolFailure::stable("permission_denied", "Permission was denied")
+            refusal_failure(coral_workspace::AuthorityRefusal::PermissionDenied)
         }
         coral_search::Error::Workspace(error) => workspace_tool_failure(error),
         coral_search::Error::Tools(error) => return tools_failure(error),
@@ -656,7 +649,6 @@ fn tools_failure(error: coral_tools::Error) -> DispatchError {
         // `safe_rejection` has no answer for the rest.
         | Error::CompilerUnavailable(_)
         | Error::CompilerWorkerStopped
-        | Error::Clock(_)
         | Error::Json(_)
         | Error::CorruptData(_)
         | Error::Database(_) => ToolFailure::internal(),
@@ -671,6 +663,9 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
     let failure = match error {
         coral_run::Error::RunNotFound => {
             ToolFailure::stable("run_not_found", "Program Run was not found")
+        }
+        coral_run::Error::ApprovalNotFound => {
+            ToolFailure::stable("approval_not_found", "Approval Request was not found")
         }
         coral_run::Error::OwnerLost => ToolFailure::stable(
             "run_owner_lost",
@@ -700,7 +695,6 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
         | coral_run::Error::PackageTooLarge { .. }
         | coral_run::Error::ShuttingDown
         // `safe_rejection` has no answer for the rest.
-        | coral_run::Error::ApprovalNotFound
         | coral_run::Error::ProgramRuntimeUnavailable(_)
         | coral_run::Error::ProgramWorkerStopped
         | coral_run::Error::Clock(_)
@@ -722,30 +716,31 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
     DispatchError::Tool(failure)
 }
 
+/// A refusal reports the same code and message whichever module's error
+/// wrapped it.
+fn refusal_failure(refusal: coral_workspace::AuthorityRefusal) -> ToolFailure {
+    ToolFailure::stable(refusal.code(), refusal.message())
+}
+
 fn workspace_tool_failure(error: coral_workspace::Error) -> ToolFailure {
+    if let Some(refusal) = error.refusal() {
+        return refusal_failure(refusal);
+    }
     match error {
         coral_workspace::Error::InvalidInput(message) => {
             ToolFailure::safe("invalid_input", message)
         }
-        coral_workspace::Error::WorkspaceNotFound => {
-            ToolFailure::stable("workspace_not_found", "Workspace was not found")
-        }
-        coral_workspace::Error::WorkspaceArchived => {
-            ToolFailure::stable("workspace_archived", "Workspace is archived")
-        }
-        coral_workspace::Error::PermissionDenied(_)
+        // Name every remaining variant so a new one needs a decision here.
+        // `refusal` answers these before the match.
+        coral_workspace::Error::WorkspaceNotFound
+        | coral_workspace::Error::WorkspaceArchived
+        | coral_workspace::Error::PermissionDenied(_)
         | coral_workspace::Error::AgentNotFound
-        | coral_workspace::Error::InvalidAgentCredential => {
-            ToolFailure::stable("permission_denied", "Permission was denied")
-        }
-        coral_workspace::Error::AgentDisabled => {
-            ToolFailure::stable("agent_disabled", "Agent is disabled")
-        }
-        coral_workspace::Error::AgentRegistrationExpired => ToolFailure::stable(
-            "agent_registration_expired",
-            "Agent Registration has expired",
-        ),
-        coral_workspace::Error::OrganizationAuthorityConflict
+        | coral_workspace::Error::InvalidAgentCredential
+        | coral_workspace::Error::AgentDisabled
+        | coral_workspace::Error::AgentRegistrationExpired
+        // `refusal` has no answer for the rest.
+        | coral_workspace::Error::OrganizationAuthorityConflict
         | coral_workspace::Error::EtagMismatch
         | coral_workspace::Error::RequestAlreadyApplied
         | coral_workspace::Error::CredentialGeneration
@@ -756,6 +751,10 @@ fn workspace_tool_failure(error: coral_workspace::Error) -> ToolFailure {
         | coral_workspace::Error::LastWorkspaceOwner
         | coral_workspace::Error::OwnerTransferRequired
         | coral_workspace::Error::OwnerTargetNotEnabled
+        | coral_workspace::Error::OrganizationMembershipNotFound
+        | coral_workspace::Error::LastOrganizationOwner
+        | coral_workspace::Error::MemberTargetNotEnabled
+        | coral_workspace::Error::AccessRemovalMismatch
         | coral_workspace::Error::CorruptData(_)
         | coral_workspace::Error::Database(_)
         | coral_workspace::Error::EventFields(_)

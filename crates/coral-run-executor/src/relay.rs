@@ -14,14 +14,14 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
-use coral_db::{ChangeSubscription, Database};
+use coral_db::{ChangeSubscription, Database, UnixNanos};
 use coral_telemetry::safe;
 use tokio::time::Instant;
 
 use crate::compile_wire::{ProtocolError, Read, Takes};
 use crate::compiler::STOPPED;
 use crate::relay_repository::{self as rows, Answered, NewRequest, Request, Status, Take, Taken};
-use crate::time::{millis, nanos, unix_now};
+use crate::time::{before, millis, unix_now};
 use crate::wire::v1::compile::Call;
 use crate::{CompileError, LocalRunExecutors, PullStreams, Refused, StreamId, Unavailable};
 
@@ -185,7 +185,7 @@ impl CompileRelay {
             requester: &self.instance,
             call,
             created_at: now,
-            deadline: now.saturating_add(nanos(until.saturating_duration_since(Instant::now()))),
+            deadline: now.saturating_add(until.saturating_duration_since(Instant::now())),
         };
         // Armed first: a write that lands after the wait gave up is deleted.
         let mut row = Withdraw(Some((self.database.clone(), id.clone())));
@@ -292,7 +292,7 @@ impl CompileRelay {
             let now = unix_now();
             let take = Take {
                 taker: &self.instance,
-                deadline_after: now.saturating_add(nanos(UNTAKEN_RESERVE)),
+                deadline_after: now.saturating_add(UNTAKEN_RESERVE),
                 from,
             };
             match rows::work_for(&self.database, &take, orphaned_before(now)).await {
@@ -356,9 +356,16 @@ impl CompileRelay {
     /// Sends a taken call down a stream, and answers it once its `Compiled`
     /// arrives. A held unit that is gone falls back to free room; a call no
     /// stream takes goes back.
-    async fn send(&self, streams: &PullStreams, via: Via, id: String, call: Call, deadline: i64) {
-        let until = deadline.saturating_sub(nanos(self.answer_reserve));
-        let left = Duration::from_nanos(u64::try_from(until - unix_now()).unwrap_or(0));
+    async fn send(
+        &self,
+        streams: &PullStreams,
+        via: Via,
+        id: String,
+        call: Call,
+        deadline: UnixNanos,
+    ) {
+        let until = before(deadline, self.answer_reserve);
+        let left = until.saturating_duration_since(unix_now());
         let time_left_ms = millis(left);
         let sent = match via {
             Via::Free(stream) => streams.compile(stream, time_left_ms, call),
@@ -408,7 +415,7 @@ impl CompileRelay {
         rows::delete_past(&mut transaction, orphaned_before(now)).await?;
         let take = Take {
             taker: &self.instance,
-            deadline_after: now.saturating_add(nanos(UNTAKEN_RESERVE)),
+            deadline_after: now.saturating_add(UNTAKEN_RESERVE),
             from,
         };
         let taken = rows::take_oldest(&mut transaction, take).await?;
@@ -563,8 +570,8 @@ impl Drop for Promised {
 }
 
 /// The deadline before which a row is left over at `now`.
-fn orphaned_before(now: i64) -> i64 {
-    now.saturating_sub(nanos(ORPHAN_GRACE))
+fn orphaned_before(now: UnixNanos) -> UnixNanos {
+    before(now, ORPHAN_GRACE)
 }
 
 fn failed(error: CompileError) -> Answered {

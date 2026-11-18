@@ -48,19 +48,24 @@ enum PersistedDatabaseConfig {
 impl RawPersistedDatabaseConfig {
     fn into_config(self) -> Result<PersistedDatabaseConfig, AppError> {
         if let Some(field) = self.extra.keys().next() {
-            return Err(invalid_config(&format!(
-                "unsupported [database].{field} configuration key"
-            )));
+            return Err(invalid_config(
+                &format!("database.{field}"),
+                &format!("unsupported [database].{field} configuration key"),
+            ));
         }
 
         let backend = self.backend.ok_or_else(|| {
-            invalid_config("[database].backend is required when [database] is present")
+            invalid_config(
+                "database.backend",
+                "[database].backend is required when [database] is present",
+            )
         })?;
 
         match backend {
             PersistedDatabaseBackend::Sqlite => {
                 if self.url_env.is_some() {
                     return Err(invalid_config(
+                        "database.url_env",
                         "database backend 'sqlite' does not support [database].url_env",
                     ));
                 }
@@ -69,11 +74,15 @@ impl RawPersistedDatabaseConfig {
             PersistedDatabaseBackend::Postgres => {
                 if self.path.is_some() {
                     return Err(invalid_config(
+                        "database.path",
                         "database backend 'postgres' does not support [database].path",
                     ));
                 }
                 let url_env = self.url_env.ok_or_else(|| {
-                    invalid_config("database backend 'postgres' requires [database].url_env")
+                    invalid_config(
+                        "database.url_env",
+                        "database backend 'postgres' requires [database].url_env",
+                    )
                 })?;
                 Ok(PersistedDatabaseConfig::Postgres { url_env })
             }
@@ -107,8 +116,11 @@ impl DatabaseConfig {
     }
 }
 
-fn invalid_config(detail: &str) -> AppError {
-    AppError::FailedPrecondition(format!("database configuration is invalid: {detail}"))
+fn invalid_config(setting: &str, detail: &str) -> AppError {
+    AppError::config(
+        setting,
+        format!("database configuration is invalid: {detail}"),
+    )
 }
 
 fn resolve_sqlite_path(layout: &AppStateLayout, path: PathBuf) -> PathBuf {
@@ -187,43 +199,39 @@ mod tests {
     }
 
     #[test]
-    fn database_section_requires_explicit_backend() {
-        let temp = tempdir().expect("temp dir");
-        let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
-        let error =
-            DatabaseConfig::from_toml("[database]\nurl_env = \"CORAL_DATABASE_URL\"\n", &layout)
-                .expect_err("db config should reject backend");
-
-        assert!(
-            matches!(error, AppError::FailedPrecondition(ref detail) if detail.contains("[database].backend is required")),
-            "unexpected error: {error}"
-        );
-    }
-
-    #[test]
-    fn database_backend_rejects_unsupported_fields() {
+    fn the_database_section_refuses_a_missing_backend_and_unsupported_fields() {
         let temp = tempdir().expect("temp dir");
         let layout = AppStateLayout::discover(Some(temp.path().join("coral"))).expect("layout");
 
-        for (raw_config, expected_error) in [
+        for (raw_config, refused) in [
+            (
+                "[database]\nurl_env = \"CORAL_DATABASE_URL\"\n",
+                "database.backend",
+            ),
             (
                 "[database]\nbackend = \"sqlite\"\nurl_env = \"CORAL_DATABASE_URL\"\n",
-                "database backend 'sqlite' does not support [database].url_env",
+                "database.url_env",
             ),
             (
                 "[database]\nbackend = \"postgres\"\npath = \"coral.db\"\nurl_env = \"CORAL_DATABASE_URL\"\n",
-                "database backend 'postgres' does not support [database].path",
+                "database.path",
             ),
+            ("[database]\nbackend = \"postgres\"\n", "database.url_env"),
             (
                 "[database]\nbackend = \"sqlite\"\nurl_environment = \"CORAL_DATABASE_URL\"\n",
-                "unsupported [database].url_environment configuration key",
+                "database.url_environment",
             ),
         ] {
             let error = DatabaseConfig::from_toml(raw_config, &layout)
                 .expect_err("db config should reject field");
 
             assert!(
-                matches!(error, AppError::FailedPrecondition(ref detail) if detail.contains(expected_error)),
+                matches!(
+                    &error,
+                    AppError::Config { setting, message }
+                        if setting == refused
+                            && message.starts_with("database configuration is invalid:")
+                ),
                 "unexpected error for config {raw_config:?}: {error}"
             );
         }

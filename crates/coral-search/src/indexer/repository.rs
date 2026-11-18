@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 use coral_catalog::AuthoredToolKind;
 use coral_catalog::{ProviderGenerationId, ToolKey};
-use coral_db::{DatabaseSystem, Error, Transaction};
+use coral_db::{DatabaseSystem, Error, Transaction, UnixNanos};
 use coral_provider::ProviderId;
 use coral_tools::AuthoredToolId;
 use coral_workspace::{Principal, WorkspaceId};
@@ -105,7 +105,7 @@ fn with_retry_columns<const N: usize>(
 #[derive(sqlx::FromRow)]
 struct RetryColumns {
     failed_attempts: Option<i64>,
-    retry_after_unix_nanos: Option<i64>,
+    retry_after_unix_nanos: Option<UnixNanos>,
     failed_coral_version: Option<String>,
 }
 
@@ -113,7 +113,7 @@ impl From<RetryColumns> for RetryRule {
     fn from(columns: RetryColumns) -> Self {
         Self {
             attempts: columns.failed_attempts,
-            retry_after_unix_nanos: columns.retry_after_unix_nanos,
+            retry_after: columns.retry_after_unix_nanos,
             coral_version: columns.failed_coral_version,
         }
     }
@@ -247,7 +247,7 @@ impl ToolRow<'_> {
         format!("{}:{}", self.generation_id, self.tool_key.as_str())
     }
 
-    fn values(&self, indexed_at_unix_nanos: i64) -> [SimpleExpr; TOOL_COLUMNS.len()] {
+    fn values(&self, indexed_at: UnixNanos) -> [SimpleExpr; TOOL_COLUMNS.len()] {
         let generation_id = self.generation_id.to_string();
         [
             self.workspace_id.to_string().into(),
@@ -266,7 +266,7 @@ impl ToolRow<'_> {
             generation_id.clone().into(),
             self.deprecated.into(),
             generation_id.into(),
-            indexed_at_unix_nanos.into(),
+            indexed_at.into(),
         ]
     }
 }
@@ -288,18 +288,18 @@ pub(super) struct GenerationState<'a> {
     pub(super) generation_id: &'a ProviderGenerationId,
     /// The Provider display name the attempt indexed.
     pub(super) display_name: &'a str,
-    pub(super) attempted_at_unix_nanos: i64,
+    pub(super) attempted_at: UnixNanos,
     pub(super) state: AttemptState,
 }
 
 /// Upserts Tool rows by Workspace and document id, stamped with
-/// `indexed_at_unix_nanos`, as [`changed_rows_only`] describes. An update,
+/// `indexed_at`, as [`changed_rows_only`] describes. An update,
 /// never `INSERT OR REPLACE`: on `SQLite` a replace skips the delete trigger
 /// and leaves a stale copy in the FTS5 table.
 pub(super) async fn upsert_tool_rows(
     transaction: &mut Transaction<'_>,
     rows: &[ToolRow<'_>],
-    indexed_at_unix_nanos: i64,
+    indexed_at: UnixNanos,
 ) -> Result<(), Error> {
     for chunk in rows.chunks(CHUNK_ROWS) {
         let mut statement = Query::insert();
@@ -307,7 +307,7 @@ pub(super) async fn upsert_tool_rows(
             .into_table(SearchEntities::Table)
             .columns(TOOL_COLUMNS);
         for row in chunk {
-            statement.values_panic(row.values(indexed_at_unix_nanos));
+            statement.values_panic(row.values(indexed_at));
         }
         statement.on_conflict(changed_rows_only(TOOL_COLUMNS));
         transaction.execute(statement).await?;
@@ -430,18 +430,18 @@ pub(super) async fn write_generation_state(
         .into()
     };
     let unavailable_since: SimpleExpr = if complete {
-        Expr::val(Option::<i64>::None)
+        Expr::val(Option::<UnixNanos>::None)
     } else {
         Expr::case(
             Expr::col((SearchIndexStates::Table, SearchIndexStates::State)).eq(COMPLETE),
-            state.attempted_at_unix_nanos,
+            state.attempted_at,
         )
         .finally(Func::coalesce([
             Expr::col((
                 SearchIndexStates::Table,
                 SearchIndexStates::UnavailableSinceUnixNanos,
             )),
-            Expr::val(state.attempted_at_unix_nanos),
+            Expr::val(state.attempted_at),
         ]))
         .into()
     };
@@ -473,12 +473,12 @@ pub(super) async fn write_generation_state(
                         state.generation_id.to_string().into(),
                         state.display_name.into(),
                         name.into(),
-                        state.attempted_at_unix_nanos.into(),
+                        state.attempted_at.into(),
                         error.into(),
                         error_kind.into(),
                         INDEXER_REVISION.into(),
                         complete.into(),
-                        (!complete).then_some(state.attempted_at_unix_nanos).into(),
+                        (!complete).then_some(state.attempted_at).into(),
                     ]
                     .into_iter()
                     .chain(retry_values(retry.as_ref())),
@@ -624,7 +624,7 @@ pub(crate) struct AuthoredToolRow<'a> {
 }
 
 impl AuthoredToolRow<'_> {
-    fn values(&self, indexed_at_unix_nanos: i64) -> [SimpleExpr; AUTHORED_TOOL_COLUMNS.len()] {
+    fn values(&self, indexed_at: UnixNanos) -> [SimpleExpr; AUTHORED_TOOL_COLUMNS.len()] {
         let id = self.id.to_string();
         let [principal_id, principal_kind] = principal_values(self.principal);
         [
@@ -644,7 +644,7 @@ impl AuthoredToolRow<'_> {
             authored_tool_fingerprint(self.revision).into(),
             false.into(),
             authored_tool_fingerprint(self.revision).into(),
-            indexed_at_unix_nanos.into(),
+            indexed_at.into(),
         ]
     }
 }
@@ -673,7 +673,7 @@ pub(super) struct FailedAuthoredToolState<'a> {
     pub(super) workspace_id: &'a WorkspaceId,
     pub(super) id: &'a AuthoredToolId,
     pub(super) principal: Option<&'a Principal>,
-    pub(super) attempted_at_unix_nanos: i64,
+    pub(super) attempted_at: UnixNanos,
     pub(super) error: String,
     pub(super) retry: RetryRule,
     /// The revision the attempt tried.
@@ -681,13 +681,13 @@ pub(super) struct FailedAuthoredToolState<'a> {
 }
 
 /// Upserts an Authored Tool row by Workspace and document id, stamped with
-/// `indexed_at_unix_nanos`, as [`changed_rows_only`] describes. An update,
+/// `indexed_at`, as [`changed_rows_only`] describes. An update,
 /// never `INSERT OR REPLACE`, for the reason [`upsert_tool_rows`]
 /// gives.
 pub(super) async fn upsert_authored_tool_row(
     transaction: &mut Transaction<'_>,
     row: &AuthoredToolRow<'_>,
-    indexed_at_unix_nanos: i64,
+    indexed_at: UnixNanos,
 ) -> Result<(), Error> {
     let on_conflict = changed_rows_only(AUTHORED_TOOL_COLUMNS);
     transaction
@@ -695,7 +695,7 @@ pub(super) async fn upsert_authored_tool_row(
             Query::insert()
                 .into_table(SearchEntities::Table)
                 .columns(AUTHORED_TOOL_COLUMNS)
-                .values_panic(row.values(indexed_at_unix_nanos))
+                .values_panic(row.values(indexed_at))
                 .on_conflict(on_conflict)
                 .to_owned(),
         )
@@ -769,7 +769,7 @@ pub(super) async fn write_failed_authored_tool_state(
                         principal_id,
                         principal_kind,
                         FAILED.into(),
-                        state.attempted_at_unix_nanos.into(),
+                        state.attempted_at.into(),
                         state.error.into(),
                         revision_value(state.revision),
                     ]
@@ -797,12 +797,12 @@ fn retry_values(retry: Option<&RetryRule>) -> [SimpleExpr; 3] {
     match retry {
         Some(retry) => [
             retry.attempts.into(),
-            retry.retry_after_unix_nanos.into(),
+            retry.retry_after.into(),
             retry.coral_version.clone().into(),
         ],
         None => [
             Option::<i64>::None.into(),
-            Option::<i64>::None.into(),
+            Option::<UnixNanos>::None.into(),
             Option::<String>::None.into(),
         ],
     }
@@ -945,7 +945,7 @@ struct RecordedGenerationRow {
     provider_display_name: String,
     indexer_revision: Option<i64>,
     ever_visible: Option<bool>,
-    unavailable_since_unix_nanos: Option<i64>,
+    unavailable_since_unix_nanos: Option<UnixNanos>,
     #[sqlx(flatten)]
     retry: RetryColumns,
 }
@@ -954,14 +954,16 @@ struct RecordedGenerationRow {
 #[derive(Clone, Copy)]
 pub(super) enum RecordedVisibility {
     NeverVisible,
-    Visible { unavailable_since: Option<i64> },
+    Visible {
+        unavailable_since: Option<UnixNanos>,
+    },
     Unknown,
 }
 
 fn recorded_visibility(
     state: &str,
     ever_visible: Option<bool>,
-    unavailable_since: Option<i64>,
+    unavailable_since: Option<UnixNanos>,
 ) -> RecordedVisibility {
     if state == COMPLETE {
         return RecordedVisibility::Visible {
@@ -980,7 +982,7 @@ pub(super) async fn generation_visibility(
     workspace: &WorkspaceId,
     generation: &ProviderGenerationId,
 ) -> Result<Option<RecordedVisibility>, IndexError> {
-    let row: Option<(String, Option<bool>, Option<i64>)> = transaction
+    let row: Option<(String, Option<bool>, Option<UnixNanos>)> = transaction
         .fetch_optional(
             Query::select()
                 .columns([
@@ -1363,12 +1365,18 @@ pub(super) async fn failed_authored_tools(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Watermark {
     rows: i64,
-    max_indexed_at_unix_nanos: Option<i64>,
+    max_indexed_at: Option<UnixNanos>,
 }
 
 /// A Workspace id, its stored watermark's row count and newest stamp, and
 /// its rows' count and newest stamp now.
-type WatermarkColumns = (String, Option<i64>, Option<i64>, i64, Option<i64>);
+type WatermarkColumns = (
+    String,
+    Option<i64>,
+    Option<UnixNanos>,
+    i64,
+    Option<UnixNanos>,
+);
 
 /// One Workspace's statistics watermark beside its rows now.
 pub(super) struct WorkspaceWatermarks {
@@ -1430,16 +1438,16 @@ pub(super) async fn statistics_watermarks(
         .await?;
     rows.into_iter()
         .map(
-            |(workspace_id, counted_rows, counted_max, rows, max_indexed_at_unix_nanos)| {
+            |(workspace_id, counted_rows, counted_max, rows, max_indexed_at)| {
                 Ok(WorkspaceWatermarks {
                     workspace_id: parse_workspace_id(&workspace_id)?,
                     counted: counted_rows.map(|rows| Watermark {
                         rows,
-                        max_indexed_at_unix_nanos: counted_max,
+                        max_indexed_at: counted_max,
                     }),
                     current: Watermark {
                         rows,
-                        max_indexed_at_unix_nanos,
+                        max_indexed_at,
                     },
                 })
             },
@@ -1449,7 +1457,7 @@ pub(super) async fn statistics_watermarks(
 
 /// One Workspace's stored watermark's row count and newest stamp, and its
 /// rows' count and newest stamp now.
-type WorkspaceWatermarkColumns = (Option<i64>, Option<i64>, i64, Option<i64>);
+type WorkspaceWatermarkColumns = (Option<i64>, Option<UnixNanos>, i64, Option<UnixNanos>);
 
 /// On Postgres, reads one Workspace's statistics watermark beside its rows
 /// now. `None` on `SQLite`, which keeps no statistics of its own.
@@ -1471,7 +1479,7 @@ pub(super) async fn workspace_watermark(
             sea_query::Values(vec![workspace_id.to_string().into()]),
         )
         .await?;
-    let (counted_rows, counted_max, rows, max_indexed_at_unix_nanos) = rows
+    let (counted_rows, counted_max, rows, max_indexed_at) = rows
         .into_iter()
         .next()
         // An aggregate without a grouping always returns one row.
@@ -1480,11 +1488,11 @@ pub(super) async fn workspace_watermark(
         workspace_id: workspace_id.clone(),
         counted: counted_rows.map(|rows| Watermark {
             rows,
-            max_indexed_at_unix_nanos: counted_max,
+            max_indexed_at: counted_max,
         }),
         current: Watermark {
             rows,
-            max_indexed_at_unix_nanos,
+            max_indexed_at,
         },
     }))
 }

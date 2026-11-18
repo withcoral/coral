@@ -31,7 +31,7 @@ pub use management::{AccountScope, AccountState, AccountSummary, AccountView};
 
 use crate::access::CredentialRoute;
 use crate::{
-    Error, LifecycleAction, LifecycleOutcome, ProviderId, ProviderModule,
+    Error, LifecycleAction, LifecycleOutcome, ProviderId, ProviderModule, Started,
     repository as provider_repository,
 };
 use coral_catalog::ProviderCredentialContract;
@@ -42,6 +42,8 @@ use uuid::Uuid;
 
 /// Maximum open authorization workflows per exact principal and Provider.
 const MAX_PENDING_AUTHORIZATIONS: i64 = 20;
+/// How long a User has to complete an authorization, from its start.
+const AUTHORIZATION_LIFETIME: std::time::Duration = std::time::Duration::from_mins(15);
 
 macro_rules! account_id {
     ($name:ident, $doc:literal) => {
@@ -121,7 +123,9 @@ impl AuthorizationState {
             "failed" => Ok(Self::Failed),
             "canceled" => Ok(Self::Canceled),
             "expired" => Ok(Self::Expired),
-            _ => Err(Error::AccountInput),
+            _ => Err(Error::CorruptData(
+                "stored authorization state is not known".into(),
+            )),
         }
     }
 }
@@ -293,6 +297,8 @@ pub struct AccountModule {
     client_id_metadata_document: Option<String>,
     /// Operator policy for choosing a new automatic client identity.
     client_bootstrap_policy: ClientBootstrapPolicy,
+    /// Measures how long work that outlives its request's instant has run.
+    clock: std::sync::Arc<dyn coral_db::Clock>,
     #[cfg(test)]
     exchange_gate: Option<std::sync::Arc<OAuthExchangeGate>>,
     #[cfg(test)]
@@ -438,6 +444,9 @@ impl AccountModule {
     /// Composes authorization with a bootstrap-selected filesystem credential vault.
     #[must_use]
     pub fn new(providers: ProviderModule, vault: CredentialVault) -> Self {
+        // One clock dates a Provider's work and its Accounts' work, unless
+        // `with_clock` says otherwise.
+        let clock = providers.clock.clone();
         Self {
             providers,
             vault,
@@ -447,6 +456,7 @@ impl AccountModule {
             device_tasks: std::sync::Arc::default(),
             client_id_metadata_document: None,
             client_bootstrap_policy: ClientBootstrapPolicy::default(),
+            clock,
             #[cfg(test)]
             exchange_gate: None,
             #[cfg(test)]
@@ -475,6 +485,19 @@ impl AccountModule {
     pub const fn with_client_bootstrap_policy(mut self, policy: ClientBootstrapPolicy) -> Self {
         self.client_bootstrap_policy = policy;
         self
+    }
+
+    /// Replaces the system clock that measures how long an upstream exchange
+    /// or a device worker has run, so that a test moves that time itself.
+    #[must_use]
+    pub fn with_clock(mut self, clock: std::sync::Arc<dyn coral_db::Clock>) -> Self {
+        self.clock = clock;
+        self
+    }
+
+    /// Reads the clock as work that outlives its request's instant begins.
+    pub(crate) fn started(&self) -> Started<'_> {
+        Started::begin(self.clock.as_ref())
     }
 
     #[cfg(test)]
@@ -653,10 +676,10 @@ impl AccountModule {
         }
         let id = AuthorizationId(Uuid::new_v4());
         let (authorization_url, private_flow) = self.prepare_oauth(id, owner, &contract, oauth)?;
-        let expires_at = context
-            .occurred_at_unix_nanos()
-            .checked_add(900_000_000_000)
-            .ok_or(Error::AccountInput)?;
+        let expires_at = coral_db::UnixNanos::new(context.occurred_at_unix_nanos())
+            .checked_add(AUTHORIZATION_LIFETIME)
+            .ok_or(Error::Internal(crate::InternalFault::Overflow))?
+            .get();
         let row = LoadedAuthorization {
             automatic_refresh: None,
             id,
@@ -1191,6 +1214,7 @@ mod personal_tests;
 pub use personal::UserAccountInspection;
 pub(crate) mod device;
 pub(crate) mod device_repository;
+pub(crate) mod device_schedule;
 mod oauth;
 pub use connection::{
     ConnectionRequest, ConnectionRequestId, ConnectionResolution, ConnectionState,

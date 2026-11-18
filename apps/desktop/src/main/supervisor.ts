@@ -229,12 +229,22 @@ export function createSupervisor(options: SupervisorOptions): Supervisor {
       } catch (error) {
         // A runtime that Desktop stopped, or that outlived a crashed Desktop,
         // may still be finishing its work in the same state directory.
-        if (startFailure?.kind !== 'exited' || startFailure.exit.code !== STATE_LOCKED_EXIT_CODE)
-          throw error
-        if (Date.now() + LOCK_RETRY_MS >= deadline)
-          throw new SupervisorError({ kind: 'state-locked', output: startFailure.output })
-        startFailure = undefined
-        await delay(LOCK_RETRY_MS, undefined, { signal })
+        if (startFailure?.kind === 'exited' && startFailure.exit.code === STATE_LOCKED_EXIT_CODE) {
+          if (Date.now() + LOCK_RETRY_MS >= deadline)
+            throw new SupervisorError({ kind: 'state-locked', output: startFailure.output })
+          startFailure = undefined
+          await delay(LOCK_RETRY_MS, undefined, { signal })
+          continue
+        }
+        // The deadline can pass before a runtime launched just ahead of it has
+        // found the directory held. Stop it and read how it left, so the report
+        // does not depend on how fast the runtime starts.
+        if (!(error instanceof SupervisorError) || error.failure.kind !== 'timeout') throw error
+        await stopAll()
+        // It has exited by now, unless the kill failed.
+        const exit = await exitWithin(runtime.child, 0)
+        if (exit?.code !== STATE_LOCKED_EXIT_CODE) throw error
+        throw new SupervisorError({ kind: 'state-locked', output: runtime.child.outputTail() })
       }
     }
   }
@@ -374,13 +384,11 @@ async function isReady(url: string, signal: AbortSignal): Promise<boolean> {
   }
 }
 
-async function exitsWithin(child: ManagedProcess, ms: number): Promise<boolean> {
+/** How the process exited, or nothing when it still runs after `ms`. */
+async function exitWithin(child: ManagedProcess, ms: number): Promise<ProcessExit | undefined> {
   const timer = new AbortController()
   try {
-    return await Promise.race([
-      child.exited.then(() => true),
-      delay(ms, false, { signal: timer.signal }),
-    ])
+    return await Promise.race([child.exited, delay(ms, undefined, { signal: timer.signal })])
   } finally {
     timer.abort()
   }
@@ -388,7 +396,7 @@ async function exitsWithin(child: ManagedProcess, ms: number): Promise<boolean> 
 
 async function stopProcess(child: ManagedProcess, timeoutMs: number) {
   child.stop()
-  if (await exitsWithin(child, timeoutMs)) return
+  if (await exitWithin(child, timeoutMs)) return
   child.kill()
-  await exitsWithin(child, KILL_GRACE_MS)
+  await exitWithin(child, KILL_GRACE_MS)
 }

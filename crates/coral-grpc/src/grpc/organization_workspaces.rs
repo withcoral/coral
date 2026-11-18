@@ -67,7 +67,7 @@ impl wire::organization_workspace_service_server::OrganizationWorkspaceService f
         let actor = self.management_user(&request).await?;
         let input = request.into_inner();
         let id = workspace_id(&input.name)?;
-        let context = change(actor.clone())?
+        let context = change(actor.clone())
             .with_request_id(&input.request_id)
             .map_err(error)?;
         self.workspaces
@@ -85,7 +85,7 @@ impl wire::organization_workspace_service_server::OrganizationWorkspaceService f
         let actor = self.management_user(&request).await?;
         let input = request.into_inner();
         let id = workspace_id(&input.name)?;
-        let context = change(actor.clone())?
+        let context = change(actor.clone())
             .with_etag(&input.etag)
             .map_err(error)?;
         self.workspaces
@@ -103,7 +103,7 @@ impl wire::organization_workspace_service_server::OrganizationWorkspaceService f
         let actor = self.management_user(&request).await?;
         let input = request.into_inner();
         let id = workspace_id(&input.name)?;
-        let context = change(actor.clone())?
+        let context = change(actor.clone())
             .with_etag(&input.etag)
             .map_err(error)?;
         self.workspaces

@@ -1,10 +1,11 @@
 //! Organization persistence mechanics. All operations join the caller's transaction;
 //! authority policy, sequencing, and commit/rollback belong to `OrganizationModule`.
 
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
 
 use super::{OrganizationLifecycleAction, OrganizationLifecycleEvent, OrganizationMembership};
+use crate::list_repository::Users;
 use crate::{ChangeContext, Error, OrganizationRole, UserId};
 
 #[derive(Iden)]
@@ -127,7 +128,15 @@ pub(super) async fn hold_administration(tx: &mut Transaction<'_>) -> Result<(), 
 /// Holds the User's Organization authority row, removed or not, for the rest
 /// of the transaction. An unknown User holds nothing.
 pub(super) async fn hold_user(tx: &mut Transaction<'_>, user_id: &UserId) -> Result<(), Error> {
-    held_authority_row(tx, user_id).await.map(drop)
+    hold_user_row(tx, user_id).await.map(drop)
+}
+
+/// [`hold_user`], and whether there was a row to hold.
+pub(super) async fn hold_user_row(
+    tx: &mut Transaction<'_>,
+    user_id: &UserId,
+) -> Result<bool, Error> {
+    Ok(held_authority_row(tx, user_id).await?.is_some())
 }
 
 /// Holds the User's Organization authority row as [`hold_user`] does and
@@ -229,18 +238,60 @@ fn decode_revision(revision: i64) -> Result<u64, Error> {
         .ok_or_else(|| Error::CorruptData("invalid Organization authority revision".into()))
 }
 
-pub(super) async fn current_members(tx: &mut Transaction<'_>) -> Result<Vec<UserId>, Error> {
-    let rows: Vec<(String,)> = tx
-        .fetch_all(
-            Query::select()
-                .column(OrganizationAuthorityRecords::UserId)
-                .from(OrganizationAuthorityRecords::Table)
-                .and_where(Expr::col(OrganizationAuthorityRecords::Removed).eq(0_i64))
-                .order_by(OrganizationAuthorityRecords::UserId, sea_query::Order::Asc)
-                .to_owned(),
-        )
-        .await?;
-    rows.into_iter().map(|(id,)| UserId::parse(&id)).collect()
+/// Every current Organization Membership, ordered by User.
+pub(super) async fn current_memberships(
+    tx: &mut Transaction<'_>,
+) -> Result<Vec<OrganizationMembership>, Error> {
+    let statement = current_memberships_statement()
+        .order_by(OrganizationAuthorityRecords::UserId, sea_query::Order::Asc)
+        .to_owned();
+    fetch_memberships(tx, statement).await
+}
+
+/// The current Organization Membership of every User of one list that has
+/// one, in one statement and in no order.
+pub(super) async fn find_listed_memberships(
+    tx: &mut Transaction<'_>,
+    users: Users<'_>,
+) -> Result<Vec<OrganizationMembership>, Error> {
+    let statement = current_memberships_statement()
+        .and_where(Expr::col(OrganizationAuthorityRecords::UserId).in_subquery(users.ids()))
+        .to_owned();
+    fetch_memberships(tx, statement).await
+}
+
+/// Selects the User ids of the current Organization Memberships, in one column.
+pub(crate) fn current_member_ids() -> sea_query::SelectStatement {
+    Query::select()
+        .column(OrganizationAuthorityRecords::UserId)
+        .from(OrganizationAuthorityRecords::Table)
+        .and_where(Expr::col(OrganizationAuthorityRecords::Removed).eq(0_i64))
+        .to_owned()
+}
+
+fn current_memberships_statement() -> sea_query::SelectStatement {
+    Query::select()
+        .columns([
+            OrganizationAuthorityRecords::UserId,
+            OrganizationAuthorityRecords::Revision,
+            OrganizationAuthorityRecords::Role,
+            OrganizationAuthorityRecords::Enabled,
+        ])
+        .from(OrganizationAuthorityRecords::Table)
+        .and_where(Expr::col(OrganizationAuthorityRecords::Removed).eq(0_i64))
+        .to_owned()
+}
+
+async fn fetch_memberships(
+    tx: &mut Transaction<'_>,
+    statement: sea_query::SelectStatement,
+) -> Result<Vec<OrganizationMembership>, Error> {
+    let rows: Vec<(String, i64, String, i64)> = tx.fetch_all(statement).await?;
+    rows.into_iter()
+        .map(|(user, revision, role, enabled)| {
+            decode_membership(&UserId::parse(&user)?, revision, &role, enabled)
+        })
+        .collect()
 }
 
 pub(super) async fn enabled_owner_count(tx: &mut Transaction<'_>) -> Result<i64, Error> {
@@ -302,7 +353,7 @@ pub(super) async fn record_event(
                 context.actor().user_id().as_str().into(),
                 target.as_str().into(),
                 action.as_str().into(),
-                context.occurred_at_unix_nanos().into(),
+                context.occurred_at().into(),
                 context.trace_id().as_str().into(),
             ])
             .to_owned(),
@@ -350,7 +401,7 @@ struct EventRow {
     actor_user_id: String,
     target_user_id: String,
     action: String,
-    occurred_at_unix_nanos: i64,
+    occurred_at_unix_nanos: UnixNanos,
     trace_id: String,
 }
 impl EventRow {
@@ -369,7 +420,7 @@ impl EventRow {
             target_user_id: UserId::parse(&self.target_user_id).map_err(|_error| corrupt())?,
             action,
             outcome: crate::LifecycleOutcome::Accepted,
-            occurred_at_unix_nanos: self.occurred_at_unix_nanos,
+            occurred_at: self.occurred_at_unix_nanos,
             trace_id: crate::TraceId::parse(&self.trace_id).map_err(|_error| corrupt())?,
         })
     }

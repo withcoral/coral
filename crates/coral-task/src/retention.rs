@@ -1,9 +1,12 @@
 //! History retention units. These exact-unit facets do not schedule or enumerate cleanup.
+use std::time::Duration;
+
 use crate::{Error, TaskId, TaskModule, interaction_repository, repository};
+use coral_db::UnixNanos;
 use coral_workspace::WorkspaceId;
 
-/// Fixed v1 history retention: thirty days in durable nanoseconds.
-pub const HISTORY_RETENTION_NANOS: i64 = 30 * 24 * 60 * 60 * 1_000_000_000;
+/// Fixed v1 history retention: thirty days.
+pub const HISTORY_RETENTION: Duration = Duration::from_hours(30 * 24);
 
 impl TaskModule {
     /// Rechecks and atomically removes one inactive group, including associated work.
@@ -16,9 +19,9 @@ impl TaskModule {
         &self,
         workspace: &WorkspaceId,
         task_id: &TaskId,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<bool, Error> {
-        let Some(cutoff) = now.checked_sub(HISTORY_RETENTION_NANOS) else {
+        let Some(cutoff) = now.checked_sub(HISTORY_RETENTION) else {
             return Ok(false);
         };
         let mut transaction = self.database.begin().await?;
@@ -47,7 +50,8 @@ impl TaskModule {
                         "Run association has mismatched attribution".into(),
                     ));
                 }
-                if !evidence.is_terminal() || evidence.last_activity_at_unix_nanos() > cutoff {
+                if !evidence.is_terminal() || evidence.last_activity_at_unix_nanos() > cutoff.get()
+                {
                     return Ok(false);
                 }
                 retained_runs.push(run);
@@ -74,9 +78,9 @@ impl TaskModule {
         &self,
         workspace: &WorkspaceId,
         run: &coral_run::RunId,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<bool, Error> {
-        let Some(cutoff) = now.checked_sub(HISTORY_RETENTION_NANOS) else {
+        let Some(cutoff) = now.checked_sub(HISTORY_RETENTION) else {
             return Ok(false);
         };
         let mut transaction = self.database.begin().await?;
@@ -87,7 +91,7 @@ impl TaskModule {
         };
         if evidence
             .terminal_at_unix_nanos()
-            .is_none_or(|ended| ended > cutoff)
+            .is_none_or(|ended| ended > cutoff.get())
             || interaction_repository::run_task(&mut transaction, workspace, run)
                 .await?
                 .is_some()

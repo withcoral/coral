@@ -1,6 +1,7 @@
 use super::authored_tools::{diagnostic, error, private_tool_agent};
-use super::workspaces::{annotate, invalid, page_start, page_token, timestamp, workspace_id};
-use super::{GrpcServices, management as wire, now};
+use super::status::invalid;
+use super::workspaces::{next_after, page_request, timestamp, workspace_id};
+use super::{GrpcServices, management as wire};
 use coral_tools::{PrivateTool, PrivateToolChangeContext, PrivateToolPath, PrivateToolSummary};
 use coral_workspace::{AuthenticatedPrincipal, TraceId};
 use tonic::{Request, Response, Status};
@@ -13,7 +14,7 @@ fn summary(summary: &PrivateToolSummary) -> wire::PrivateToolSummary {
     wire::PrivateToolSummary {
         path: summary.path().as_str().to_owned(),
         description: summary.description().as_str().to_owned(),
-        update_time: Some(timestamp(summary.saved_at_unix_nanos())),
+        update_time: Some(timestamp(summary.saved_at().get())),
     }
 }
 
@@ -25,7 +26,7 @@ fn private_tool(function: &PrivateTool) -> wire::PrivateTool {
         source: function.source().as_str().to_owned(),
         diagnostics: function.diagnostics().iter().map(diagnostic).collect(),
         diagnostics_truncated: function.diagnostics_truncated(),
-        update_time: Some(timestamp(function.saved_at_unix_nanos())),
+        update_time: Some(timestamp(function.saved_at().get())),
     }
 }
 
@@ -39,13 +40,7 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
-        let scope = format!("{}:{w}:privateTools", user.user_id());
-        let (page_size, after) = page_start(input.page_size, &input.page_token, &scope)?;
-        let after = if after.is_empty() {
-            None
-        } else {
-            Some(PrivateToolPath::parse(&after).map_err(|_error| invalid())?)
-        };
+        let asked = page_request::<PrivateToolPath>(input.page_size, &input.after)?;
         let private_provider = self
             .providers
             .inspect_authored_tool_provider(&user, &w, coral_catalog::AuthoredToolKind::Private)
@@ -53,22 +48,12 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
             .map_err(super::providers::error)?;
         let page = self
             .private_tools
-            .list(
-                &AuthenticatedPrincipal::user(user),
-                &w,
-                after.as_ref(),
-                page_size,
-            )
+            .list(&AuthenticatedPrincipal::user(user.into_user()), &w, &asked)
             .await
             .map_err(error)?;
-        let next_page_token = page
-            .next_after()
-            .map(|after| page_token(&scope, after.as_str()))
-            .transpose()?
-            .unwrap_or_default();
         Ok(Response::new(wire::ListPrivateToolsResponse {
-            private_tools: page.summaries().iter().map(summary).collect(),
-            next_page_token,
+            private_tools: page.items.iter().map(summary).collect(),
+            next_after: next_after(page.next_after.as_ref()),
             private_provider: super::providers::provider_name(&private_provider),
         }))
     }
@@ -82,7 +67,7 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
         let path = path(&input.path)?;
-        let actor = AuthenticatedPrincipal::user(user);
+        let actor = AuthenticatedPrincipal::user(user.into_user());
         let tool = match private_tool_agent(&input.agent, &w)? {
             Some(agent) => {
                 self.private_tools
@@ -104,9 +89,10 @@ impl wire::private_tool_service_server::PrivateToolService for GrpcServices {
         let input = request.into_inner();
         let w = workspace_id(&input.parent)?;
         let path = path(&input.path)?;
+        let now = user.now();
         let context = PrivateToolChangeContext::new(
-            AuthenticatedPrincipal::user(user),
-            now().map_err(annotate)?,
+            AuthenticatedPrincipal::user(user.into_user()),
+            now,
             TraceId::current_or_new(),
         );
         let agent = private_tool_agent(&input.agent, &w)?;

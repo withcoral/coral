@@ -12,7 +12,7 @@
 
 use std::fmt::Write as _;
 
-use coral_db::{DatabaseSystem, Error, Transaction};
+use coral_db::{DatabaseSystem, Error, Transaction, UnixNanos};
 use coral_workspace::WorkspaceId;
 use sea_query::{Value, Values};
 
@@ -26,7 +26,7 @@ use crate::types::EntityKind;
 pub(super) struct StaleEntity {
     pub(super) workspace_id: WorkspaceId,
     pub(super) doc_id: String,
-    pub(super) indexed_at_unix_nanos: i64,
+    pub(super) indexed_at: UnixNanos,
 }
 
 /// The columns of one Search Entity's row that its text reads.
@@ -38,14 +38,14 @@ pub(super) struct EntityText {
     pub(super) description: String,
     pub(super) provider_name: String,
     pub(super) field_names: String,
-    pub(super) indexed_at_unix_nanos: i64,
+    pub(super) indexed_at: UnixNanos,
 }
 
 /// One vector to write for the row of `doc_id` stamped
-/// `indexed_at_unix_nanos`.
+/// `indexed_at`.
 pub(super) struct EntityVector<'a> {
     pub(super) doc_id: &'a str,
-    pub(super) indexed_at_unix_nanos: i64,
+    pub(super) indexed_at: UnixNanos,
     pub(super) vector: &'a [f32],
 }
 
@@ -93,7 +93,7 @@ pub(super) async fn stale_entities(
     limit: usize,
 ) -> Result<Vec<StaleEntity>, IndexError> {
     let [revision_bind, limit_bind] = [1, 2].map(|position| bind(transaction, position));
-    let rows: Vec<(String, String, i64)> = transaction
+    let rows: Vec<(String, String, UnixNanos)> = transaction
         .fetch_all_sql(
             &format!(
                 "SELECT s.workspace_id, s.doc_id, s.indexed_at_unix_nanos {} \
@@ -108,12 +108,12 @@ pub(super) async fn stale_entities(
         )
         .await?;
     rows.into_iter()
-        .map(|(workspace_id, doc_id, indexed_at_unix_nanos)| {
+        .map(|(workspace_id, doc_id, indexed_at)| {
             Ok(StaleEntity {
                 workspace_id: WorkspaceId::parse(&workspace_id)
                     .map_err(|_error| IndexError::Corrupt("search entity workspace id"))?,
                 doc_id,
-                indexed_at_unix_nanos,
+                indexed_at,
             })
         })
         .collect()
@@ -164,7 +164,7 @@ pub(super) async fn entity_texts(
                 description,
                 provider_name,
                 field_names,
-                indexed_at_unix_nanos,
+                indexed_at,
             )| {
                 Ok(EntityText {
                     doc_id,
@@ -174,7 +174,7 @@ pub(super) async fn entity_texts(
                     description,
                     provider_name,
                     field_names,
-                    indexed_at_unix_nanos,
+                    indexed_at,
                 })
             },
         )
@@ -183,7 +183,16 @@ pub(super) async fn entity_texts(
 
 /// `doc_id`, `kind`, `qualified_name`, `title`, `description`,
 /// `provider_name`, `field_names` and `indexed_at_unix_nanos`.
-type EntityTextRow = (String, String, String, String, String, String, String, i64);
+type EntityTextRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    UnixNanos,
+);
 
 /// Writes each vector of `vectors` with `revision`, when its row still holds
 /// the stamp the vector was made from and the stored vector is still stale.
@@ -225,7 +234,7 @@ async fn write_postgres_vectors(
         write!(rows, "(${first}, ${}, ${})", first + 1, first + 2)
             .expect("writing to a String does not fail");
         values.push(vector.doc_id.into());
-        values.push(vector.indexed_at_unix_nanos.into());
+        values.push(vector.indexed_at.into());
         values.push(vector_literal(vector.vector).into());
     }
     let sql = format!(
@@ -285,7 +294,7 @@ async fn write_sqlite_vectors(
                     workspace_id.to_string().into(),
                     vector.doc_id.into(),
                     revision.into(),
-                    vector.indexed_at_unix_nanos.into(),
+                    vector.indexed_at.into(),
                 ]),
             )
             .await?;

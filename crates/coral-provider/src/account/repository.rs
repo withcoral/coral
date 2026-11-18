@@ -34,7 +34,9 @@ impl TryFrom<String> for ConnectionState {
             "expired" => Ok(Self::Expired),
             "route_changed" => Ok(Self::RouteChanged),
             "authorization_changed" => Ok(Self::AuthorizationChanged),
-            _ => Err(Error::AccountInput),
+            _ => Err(Error::CorruptData(
+                "stored connection state is not known".into(),
+            )),
         }
     }
 }
@@ -1468,14 +1470,19 @@ fn connection_contract_key(serialized: &str) -> String {
     URL_SAFE_NO_PAD.encode(Sha256::digest(serialized.as_bytes()))
 }
 
+/// A value that Coral stored. One that no longer parses is corrupt data, and
+/// never the caller's input.
+fn stored<T, E>(value: Result<T, E>, what: &'static str) -> Result<T, Error> {
+    value.map_err(|_invalid| Error::CorruptData(format!("stored {what} is not valid")))
+}
+
 #[derive(sqlx::FromRow)]
 struct AuthorizationRow {
     automatic_refresh: Option<i64>,
     id: String,
     provider_id: String,
     actor_user_id: String,
-    #[sqlx(try_from = "String")]
-    state: AuthorizationState,
+    state: String,
     contract: String,
     account_id: Option<String>,
     authorization_url: Option<String>,
@@ -1490,20 +1497,28 @@ struct AuthorizationRow {
 
 impl AuthorizationRow {
     fn decode(self) -> Result<LoadedAuthorization, Error> {
-        let actor_user_id = coral_workspace::UserId::parse(&self.actor_user_id)?;
+        let actor_user_id = stored(
+            coral_workspace::UserId::parse(&self.actor_user_id),
+            "authorization User id",
+        )?;
         let intent = self.intent.decode(&actor_user_id)?;
         Ok(LoadedAuthorization {
             automatic_refresh: self.automatic_refresh.map(|value| value != 0),
-            id: AuthorizationId::parse(&self.id)?,
-            provider_id: ProviderId::parse(&self.provider_id)?,
+            id: stored(AuthorizationId::parse(&self.id), "authorization id")?,
+            provider_id: stored(ProviderId::parse(&self.provider_id), "Provider id")?,
             actor_user_id,
-            state: self.state,
-            contract: ProviderCredentialContract::from_storage(&self.contract)?,
-            account_id: self
-                .account_id
-                .as_deref()
-                .map(ProviderAccountId::parse)
-                .transpose()?,
+            state: AuthorizationState::parse(&self.state)?,
+            contract: stored(
+                ProviderCredentialContract::from_storage(&self.contract),
+                "credential contract",
+            )?,
+            account_id: stored(
+                self.account_id
+                    .as_deref()
+                    .map(ProviderAccountId::parse)
+                    .transpose(),
+                "Provider Account id",
+            )?,
             authorization_url: self.authorization_url,
             user_code: self.user_code,
             private_flow: self.private_flow,
@@ -1532,14 +1547,19 @@ impl AccountInspectionRow {
     fn decode(self) -> Result<AccountInspection, Error> {
         Ok(AccountInspection {
             connected_at_unix_nanos: self.connected_at_unix_nanos,
-            configured_by_user_id: self
-                .configured_by_user_id
-                .as_deref()
-                .map(UserId::parse)
-                .transpose()?,
+            configured_by_user_id: stored(
+                self.configured_by_user_id
+                    .as_deref()
+                    .map(UserId::parse)
+                    .transpose(),
+                "configuring User id",
+            )?,
             automatic_refresh: self.automatic_refresh.map(|value| value != 0),
-            id: ProviderAccountId::parse(&self.id)?,
-            contract: ProviderCredentialContract::from_storage(&self.contract)?,
+            id: stored(ProviderAccountId::parse(&self.id), "Provider Account id")?,
+            contract: stored(
+                ProviderCredentialContract::from_storage(&self.contract),
+                "credential contract",
+            )?,
             requires_authorization: self.requires_authorization != 0,
             disconnected: self.disconnected != 0,
             granted_scope: self.granted_scope,
@@ -1592,25 +1612,32 @@ impl AccountRow {
     fn decode(self) -> Result<LoadedAccount, Error> {
         Ok(LoadedAccount {
             automatic_refresh: self.automatic_refresh.map(|value| value != 0),
-            id: ProviderAccountId::parse(&self.id)?,
-            provider_id: ProviderId::parse(&self.provider_id)?,
-            workspace_id: WorkspaceId::parse(&self.workspace_id)?,
+            id: stored(ProviderAccountId::parse(&self.id), "Provider Account id")?,
+            provider_id: stored(ProviderId::parse(&self.provider_id), "Provider id")?,
+            workspace_id: stored(WorkspaceId::parse(&self.workspace_id), "Workspace id")?,
             material_revision: self.material_revision,
             authorization_version: self.authorization_version,
-            contract: ProviderCredentialContract::from_storage(&self.contract)?,
+            contract: stored(
+                ProviderCredentialContract::from_storage(&self.contract),
+                "credential contract",
+            )?,
             disconnected: self.encrypted_credentials.is_empty(),
             encrypted_credentials: self.encrypted_credentials,
             secret_references: self.secret_references.map(StoredReferences),
-            user_id: self
-                .user_id
-                .as_deref()
-                .map(coral_workspace::UserId::parse)
-                .transpose()?,
-            agent_id: self
-                .agent_id
-                .as_deref()
-                .map(coral_workspace::PrincipalId::parse)
-                .transpose()?,
+            user_id: stored(
+                self.user_id
+                    .as_deref()
+                    .map(coral_workspace::UserId::parse)
+                    .transpose(),
+                "Account User id",
+            )?,
+            agent_id: stored(
+                self.agent_id
+                    .as_deref()
+                    .map(coral_workspace::PrincipalId::parse)
+                    .transpose(),
+                "Account Agent id",
+            )?,
             requires_authorization: self.requires_authorization != 0,
             granted_scope: self.granted_scope,
             refresh_attempt_id: self.refresh_attempt_id,
@@ -1629,22 +1656,30 @@ struct ConnectionRow {
     account_id: String,
     account_authorization_version: String,
     resolved_account_authorization_version: Option<String>,
-    #[sqlx(try_from = "String")]
-    state: ConnectionState,
+    state: String,
     expires_at_unix_nanos: i64,
 }
 
 impl ConnectionRow {
     fn decode(self) -> Result<LoadedConnection, Error> {
         Ok(LoadedConnection {
-            id: ConnectionRequestId::parse(&self.id)?,
+            id: stored(
+                ConnectionRequestId::parse(&self.id),
+                "connection request id",
+            )?,
             provider_account_setting_version: self.provider_account_setting_version,
-            provider_id: ProviderId::parse(&self.provider_id)?,
-            contract: ProviderCredentialContract::from_storage(&self.contract)?,
-            account_id: ProviderAccountId::parse(&self.account_id)?,
+            provider_id: stored(ProviderId::parse(&self.provider_id), "Provider id")?,
+            contract: stored(
+                ProviderCredentialContract::from_storage(&self.contract),
+                "credential contract",
+            )?,
+            account_id: stored(
+                ProviderAccountId::parse(&self.account_id),
+                "Provider Account id",
+            )?,
             account_authorization_version: self.account_authorization_version,
             resolved_account_authorization_version: self.resolved_account_authorization_version,
-            state: self.state,
+            state: ConnectionState::try_from(self.state)?,
             expires_at_unix_nanos: self.expires_at_unix_nanos,
         })
     }
@@ -1673,10 +1708,10 @@ pub(super) async fn provider_open_authorizations(
         .map(|(workspace, id)| {
             Ok((
                 match workspace {
-                    Some(workspace) => WorkspaceId::parse(&workspace)?,
+                    Some(workspace) => stored(WorkspaceId::parse(&workspace), "Workspace id")?,
                     None => return Err(Error::CorruptData("Provider has no Workspace".into())),
                 },
-                AuthorizationId::parse(&id)?,
+                stored(AuthorizationId::parse(&id), "authorization id")?,
             ))
         })
         .collect()
@@ -1750,4 +1785,170 @@ pub(super) async fn stage_device_token(
         return Err(Error::AccountInput);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        AccountInspectionRow, AccountRow, AuthorizationRow, ConnectionRow, Error,
+        intent::IntentColumns,
+    };
+
+    const ID: &str = "00000000-0000-4000-8000-000000000000";
+    const WORKSPACE: &str = "0199f7a2-6a6e-7c3d-9a51-2f4e8b7d1c06";
+
+    // Catches: a stored authorization that does not decode read as invalid
+    // input from a caller, or as a database failure.
+    #[test]
+    fn a_stored_authorization_that_does_not_decode_is_corrupt_data() {
+        type Break = fn(&mut AuthorizationRow);
+        let row = || AuthorizationRow {
+            automatic_refresh: None,
+            id: ID.into(),
+            provider_id: ID.into(),
+            actor_user_id: "user:actor".into(),
+            state: "pending".into(),
+            contract: "none".into(),
+            account_id: Some(ID.into()),
+            authorization_url: None,
+            user_code: None,
+            private_flow: None,
+            expires_at_unix_nanos: 0,
+            intent: IntentColumns {
+                expected_account_id: ID.into(),
+                expected_authorization_version: "v1".into(),
+                provider_account_setting_version: 1,
+                connection_intent: "initial".into(),
+                agent_id: None,
+                user_id: Some("user:actor".into()),
+            },
+            failure_code: None,
+            granted_scope: None,
+        };
+        row().decode().expect("a valid row decodes");
+        let corrupt: [(&str, Break); 8] = [
+            ("id", |row| row.id = "not-an-id".into()),
+            ("provider id", |row| row.provider_id = "not-an-id".into()),
+            ("actor", |row| row.actor_user_id = String::new()),
+            ("state", |row| row.state = "unknown".into()),
+            ("account id", |row| {
+                row.account_id = Some("not-an-id".into());
+            }),
+            ("expected account", |row| {
+                row.intent.expected_account_id = "not-an-id".into();
+            }),
+            ("caller agent", |row| {
+                row.intent.user_id = None;
+                row.intent.agent_id = Some(String::new());
+            }),
+            ("contract", |row| row.contract = "{".into()),
+        ];
+        for (field, break_it) in corrupt {
+            let mut row = row();
+            break_it(&mut row);
+            assert!(
+                matches!(row.decode(), Err(Error::CorruptData(_))),
+                "{field}"
+            );
+        }
+    }
+
+    // Catches: a stored Account that does not decode read as invalid input.
+    #[test]
+    fn a_stored_account_that_does_not_decode_is_corrupt_data() {
+        type Break = fn(&mut AccountRow);
+        let row = || AccountRow {
+            automatic_refresh: None,
+            id: ID.into(),
+            provider_id: ID.into(),
+            workspace_id: WORKSPACE.into(),
+            material_revision: "r1".into(),
+            authorization_version: "v1".into(),
+            contract: "none".into(),
+            encrypted_credentials: "sealed".into(),
+            secret_references: None,
+            user_id: Some("user:holder".into()),
+            agent_id: None,
+            requires_authorization: 0,
+            granted_scope: String::new(),
+            refresh_attempt_id: None,
+            refresh_deadline: None,
+            token_expires_at_unix_nanos: None,
+        };
+        row().decode().expect("a valid row decodes");
+        let corrupt: [(&str, Break); 6] = [
+            ("id", |row| row.id = "not-an-id".into()),
+            ("provider id", |row| row.provider_id = "not-an-id".into()),
+            ("workspace id", |row| row.workspace_id = "not-an-id".into()),
+            ("user id", |row| row.user_id = Some(String::new())),
+            ("agent id", |row| row.agent_id = Some(String::new())),
+            ("contract", |row| row.contract = "{".into()),
+        ];
+        for (field, break_it) in corrupt {
+            let mut row = row();
+            break_it(&mut row);
+            assert!(
+                matches!(row.decode(), Err(Error::CorruptData(_))),
+                "{field}"
+            );
+        }
+
+        let inspection = |id: &str, configured_by: Option<&str>| AccountInspectionRow {
+            connected_at_unix_nanos: None,
+            configured_by_user_id: configured_by.map(str::to_owned),
+            automatic_refresh: None,
+            id: id.into(),
+            contract: "none".into(),
+            requires_authorization: 0,
+            disconnected: 0,
+            granted_scope: String::new(),
+            secret_references: None,
+        };
+        inspection(ID, Some("user:owner"))
+            .decode()
+            .expect("a valid row decodes");
+        for (field, row) in [
+            ("id", inspection("not-an-id", None)),
+            ("configuring user", inspection(ID, Some(""))),
+        ] {
+            assert!(
+                matches!(row.decode(), Err(Error::CorruptData(_))),
+                "{field}"
+            );
+        }
+    }
+
+    // Catches: a stored connection request that does not decode read as
+    // invalid input from a caller, or as a database failure.
+    #[test]
+    fn a_stored_connection_request_that_does_not_decode_is_corrupt_data() {
+        type Break = fn(&mut ConnectionRow);
+        let row = || ConnectionRow {
+            id: ID.into(),
+            provider_account_setting_version: 1,
+            provider_id: ID.into(),
+            contract: "none".into(),
+            account_id: ID.into(),
+            account_authorization_version: "v1".into(),
+            resolved_account_authorization_version: None,
+            state: "pending".into(),
+            expires_at_unix_nanos: 0,
+        };
+        row().decode().expect("a valid row decodes");
+        let corrupt: [(&str, Break); 5] = [
+            ("id", |row| row.id = "not-an-id".into()),
+            ("provider id", |row| row.provider_id = "not-an-id".into()),
+            ("account id", |row| row.account_id = "not-an-id".into()),
+            ("state", |row| row.state = "unknown".into()),
+            ("contract", |row| row.contract = "{".into()),
+        ];
+        for (field, break_it) in corrupt {
+            let mut row = row();
+            break_it(&mut row);
+            assert!(
+                matches!(row.decode(), Err(Error::CorruptData(_))),
+                "{field}"
+            );
+        }
+    }
 }

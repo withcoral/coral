@@ -1,23 +1,59 @@
-use super::{GrpcServices, PrivateAudience, management as wire, now};
+use super::status::{self, invalid, safe_status};
+use super::{GrpcServices, PrivateAudience, management as wire};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use coral_db::{PageKey, PageRequest, PageSize, UnixNanos};
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, ResourceMetadata, TraceId, WorkspaceDisplayName,
     WorkspaceEvidence, WorkspaceId,
 };
-use prost::Message as _;
 use tonic::{Request, Response, Status};
+
+/// The User a management request authenticated as, with the request's time:
+/// the instant its authentication read the server's clock.
+///
+/// That one reading dates everything the handler decides before it waits on
+/// outside work: [`change`] dates the change by it, and a handler that needs
+/// the time again takes [`Self::now`]. It stands for its User wherever a
+/// domain call borrows one.
+#[derive(Clone)]
+pub(super) struct ManagementUser {
+    user: AuthenticatedUser,
+    now: UnixNanos,
+}
+
+impl ManagementUser {
+    /// The request's time.
+    pub(super) const fn now(&self) -> UnixNanos {
+        self.now
+    }
+
+    /// The User alone, for a domain call that takes one by value.
+    pub(super) fn into_user(self) -> AuthenticatedUser {
+        self.user
+    }
+}
+
+impl std::ops::Deref for ManagementUser {
+    type Target = AuthenticatedUser;
+
+    fn deref(&self) -> &AuthenticatedUser {
+        &self.user
+    }
+}
 
 impl GrpcServices {
     pub(super) async fn management_user<T>(
         &self,
         request: &Request<T>,
-    ) -> Result<AuthenticatedUser, Status> {
-        self.principal(request, None, PrivateAudience::Reef)
-            .await
-            .map_err(annotate)?
+    ) -> Result<ManagementUser, Status> {
+        let (principal, now) = self
+            .principal_at(request, None, PrivateAudience::Reef)
+            .await?;
+        let user = principal
             .authenticated_user()
             .cloned()
-            .ok_or_else(|| annotate(Status::unauthenticated("User required")))
+            .ok_or_else(status::unauthenticated)?;
+        Ok(ManagementUser { user, now })
     }
     async fn workspace_view(
         &self,
@@ -29,14 +65,26 @@ impl GrpcServices {
             .inspect_workspace(user, id)
             .await
             .map_err(error)?;
-        let mut view = workspace(&evidence, meta);
+        let own = self
+            .workspaces
+            .inspect_user_profile(user, id, user.user_id())
+            .await
+            .map_err(error)?;
+        Ok(self.workspace_projection(user, &evidence, meta, profile(own)))
+    }
+
+    /// Projects one Workspace as `user` sees it, with `own`, that User's profile.
+    fn workspace_projection(
+        &self,
+        user: &AuthenticatedUser,
+        evidence: &WorkspaceEvidence,
+        meta: ResourceMetadata,
+        own: wire::UserProfile,
+    ) -> wire::Workspace {
+        let id = evidence.workspace().id();
+        let mut view = workspace(evidence, meta);
         view.current_user = format!("users/{}", user.user_id());
-        view.current_user_profile = Some(profile(
-            self.workspaces
-                .inspect_user_profile(user, id, user.user_id())
-                .await
-                .map_err(error)?,
-        ));
+        view.current_user_profile = Some(own);
         view.mcp_endpoint = self.mcp_origin.get().map_or_else(String::new, |origin| {
             format!("{origin}/workspaces/{id}/mcp")
         });
@@ -46,16 +94,13 @@ impl GrpcServices {
         {
             view.organization_mcp_endpoint = format!("{origin}/mcp");
         }
-        Ok(view)
+        view
     }
 }
 
-pub(super) fn change(user: AuthenticatedUser) -> Result<ChangeContext, Status> {
-    Ok(ChangeContext::new(
-        user,
-        now().map_err(annotate)?,
-        TraceId::current_or_new(),
-    ))
+/// The context of the change `user`'s request makes, dated by the request's time.
+pub(super) fn change(user: ManagementUser) -> ChangeContext {
+    ChangeContext::new(user.user, user.now, TraceId::current_or_new())
 }
 pub(super) fn workspace_id(name: &str) -> Result<WorkspaceId, Status> {
     let Some(id) = name.strip_prefix("workspaces/") else {
@@ -81,8 +126,8 @@ fn workspace(evidence: &WorkspaceEvidence, meta: ResourceMetadata) -> wire::Work
         mcp_endpoint: String::new(),
         organization_mcp_endpoint: String::new(),
         etag: meta.etag,
-        create_time: Some(timestamp(meta.created_at)),
-        update_time: Some(timestamp(meta.updated_at)),
+        create_time: Some(timestamp(meta.created_at.get())),
+        update_time: Some(timestamp(meta.updated_at.get())),
         effective_role: role(evidence.effective_role()).into(),
     }
 }
@@ -125,26 +170,6 @@ pub(super) fn mask(
     Ok(paths)
 }
 
-// Standard google.rpc.Status / ErrorInfo wire layout. The one domain error
-// text exported is the bounded text of a definite refusal, as metadata.
-#[derive(Clone, PartialEq, prost::Message)]
-struct RpcStatus {
-    #[prost(int32, tag = "1")]
-    code: i32,
-    #[prost(string, tag = "2")]
-    message: String,
-    #[prost(message, repeated, tag = "3")]
-    details: Vec<prost_types::Any>,
-}
-#[derive(Clone, PartialEq, prost::Message)]
-struct ErrorInfo {
-    #[prost(string, tag = "1")]
-    reason: String,
-    #[prost(string, tag = "2")]
-    domain: String,
-    #[prost(map = "string, string", tag = "3")]
-    metadata: std::collections::HashMap<String, String>,
-}
 #[expect(
     clippy::needless_pass_by_value,
     reason = "consumes domain failures in Result::map_err without exporting their text"
@@ -153,9 +178,10 @@ pub(super) fn error(error: coral_workspace::Error) -> Status {
     use coral_workspace::Error as E;
     let (code, reason) = match error {
         E::InvalidInput(_) => (tonic::Code::InvalidArgument, "INVALID_ARGUMENT"),
-        E::WorkspaceNotFound | E::MembershipNotFound | E::AgentNotFound => {
-            (tonic::Code::NotFound, "NOT_FOUND")
-        }
+        E::WorkspaceNotFound
+        | E::MembershipNotFound
+        | E::AgentNotFound
+        | E::OrganizationMembershipNotFound => (tonic::Code::NotFound, "NOT_FOUND"),
         E::PermissionDenied(_) => (tonic::Code::PermissionDenied, "PERMISSION_DENIED"),
         E::EtagMismatch | E::OrganizationAuthorityConflict => {
             (tonic::Code::Aborted, "ETAG_MISMATCH")
@@ -165,6 +191,10 @@ pub(super) fn error(error: coral_workspace::Error) -> Status {
         E::MembershipAlreadyExists => (tonic::Code::AlreadyExists, "MEMBERSHIP_ALREADY_EXISTS"),
         E::WorkspaceArchived => (tonic::Code::FailedPrecondition, "WORKSPACE_ARCHIVED"),
         E::LastWorkspaceOwner => (tonic::Code::FailedPrecondition, "LAST_WORKSPACE_OWNER"),
+        E::LastOrganizationOwner => (tonic::Code::FailedPrecondition, "LAST_ORGANIZATION_OWNER"),
+        E::MemberTargetNotEnabled => (tonic::Code::FailedPrecondition, "MEMBER_TARGET_NOT_ENABLED"),
+        // A defect in Coral, which no retry of the request corrects.
+        E::AccessRemovalMismatch => (tonic::Code::Internal, "INTERNAL"),
         E::OwnerTransferRequired => (tonic::Code::FailedPrecondition, "OWNER_TRANSFER_REQUIRED"),
         E::OwnerTargetNotEnabled => (tonic::Code::FailedPrecondition, "OWNER_TARGET_NOT_ENABLED"),
         E::WorkspaceAlreadyActive
@@ -182,79 +212,56 @@ pub(super) fn error(error: coral_workspace::Error) -> Status {
     safe_status(code, reason)
 }
 
+/// The status of one coral-administration failure. An error that wraps
+/// another module's reports what that error reports alone.
 pub(super) fn administration_error(error: coral_administration::Error) -> Status {
     use coral_administration::Error as E;
     match error {
         E::Workspace(error) => self::error(error),
+        E::Provider(error) => super::providers::error(error),
+        E::Tools(error) => super::authored_tools::error(error),
+        E::Policy(error) => super::policies::error(error),
         E::UndefinedSecretStore => {
             safe_status(tonic::Code::FailedPrecondition, "SECRET_STORE_NOT_DEFINED")
         }
-        E::Database(_) | E::Provider(_) | E::Tools(_) | E::Policy(_) | E::Auth(_) => {
-            safe_status(tonic::Code::Unavailable, "UNAVAILABLE")
-        }
+        // An auth error reaches the adapter only here, wrapped, when access
+        // removal fails to retire a Refresh Grant. The adapter has no mapper
+        // of its own for it.
+        E::Database(_) | E::Auth(_) => status::unavailable(),
     }
 }
-/// The one status for a request the adapter refuses as invalid. It does not
-/// say which rule the request broke: the client gets the stable reason alone.
-pub(super) fn invalid() -> Status {
-    safe_status(tonic::Code::InvalidArgument, "INVALID_ARGUMENT")
-}
-
-pub(super) fn resource<'a>(
-    name: &'a str,
-    collection: &str,
-) -> Result<(WorkspaceId, &'a str), Status> {
-    super::resource(name, collection).map_err(annotate)
-}
-
-pub(super) fn annotate(status: Status) -> Status {
-    if !status.details().is_empty() {
-        return status;
+/// The size of the page a list request asks for: zero selects the default of
+/// 30, and a size over `limit`, or a continuation too long to be one, is
+/// refused.
+fn page_size(limit: i32, size: i32, continuation: &str) -> Result<u32, Status> {
+    if !(0..=limit).contains(&size) || continuation.len() > 4096 {
+        return Err(invalid());
     }
-    let reason = match status.code() {
-        tonic::Code::InvalidArgument => "INVALID_ARGUMENT",
-        tonic::Code::Unauthenticated => "UNAUTHENTICATED",
-        tonic::Code::PermissionDenied => "PERMISSION_DENIED",
-        tonic::Code::NotFound => "NOT_FOUND",
-        tonic::Code::Internal => "INTERNAL",
-        _ => "UNAVAILABLE",
-    };
-    safe_status(status.code(), reason)
+    if size == 0 {
+        Ok(30)
+    } else {
+        u32::try_from(size).map_err(|_error| invalid())
+    }
 }
 
-pub(super) fn safe_status(code: tonic::Code, reason: &str) -> Status {
-    safe_status_with(code, reason, [])
+/// The page a request asks for, of a list that its owner pages by the key `K`
+/// (ADR 0037): at most `size` items after the key that `after` spells, or
+/// from the start when it is empty. The cursor binds nothing, so the owner
+/// scopes and authorizes every page from the request alone.
+pub(super) fn page_request<K: PageKey>(size: i32, after: &str) -> Result<PageRequest<K>, Status> {
+    let size = PageSize::new(page_size(100, size, after)?).ok_or_else(invalid)?;
+    let after = if after.is_empty() {
+        None
+    } else {
+        Some(K::from_cursor(after).ok_or_else(invalid)?)
+    };
+    Ok(PageRequest { after, size })
 }
 
-/// A status whose `ErrorInfo` also carries `metadata`: safe values that the
-/// client acts on or shows. An error's text is not one, except the bounded
-/// text its domain returns for a definite refusal.
-pub(super) fn safe_status_with(
-    code: tonic::Code,
-    reason: &str,
-    metadata: impl IntoIterator<Item = (&'static str, String)>,
-) -> Status {
-    let detail = ErrorInfo {
-        reason: reason.into(),
-        domain: "coral.management".into(),
-        metadata: metadata
-            .into_iter()
-            .map(|(key, value)| (key.to_owned(), value))
-            .chain([(
-                "trace_id".to_owned(),
-                TraceId::current_or_new().as_str().to_owned(),
-            )])
-            .collect(),
-    };
-    let status = RpcStatus {
-        code: code as i32,
-        message: reason.into(),
-        details: vec![prost_types::Any {
-            type_url: "type.googleapis.com/google.rpc.ErrorInfo".into(),
-            value: detail.encode_to_vec(),
-        }],
-    };
-    Status::with_details(code, reason, status.encode_to_vec().into())
+/// The cursor of the page after one whose owner returned `next_after`: the
+/// key as text, or empty on the last page.
+pub(super) fn next_after<K: PageKey>(next_after: Option<&K>) -> String {
+    next_after.map_or_default(PageKey::to_cursor)
 }
 
 /// Tokens are opaque continuation positions, never authority. Every page reloads
@@ -271,14 +278,7 @@ pub(super) fn page_start_within(
     token: &str,
     scope: &str,
 ) -> Result<(u32, String), Status> {
-    if !(0..=limit).contains(&size) || token.len() > 4096 {
-        return Err(invalid());
-    }
-    let size = if size == 0 {
-        30
-    } else {
-        u32::try_from(size).map_err(|_error| invalid())?
-    };
+    let size = page_size(limit, size, token)?;
     let after = if token.is_empty() {
         String::new()
     } else {
@@ -326,10 +326,8 @@ pub(super) fn page_of<T>(
 
 /// Encodes the continuation after `after`, bound to `scope`, for [`page_start`].
 pub(super) fn page_token(scope: &str, after: &str) -> Result<String, Status> {
-    Ok(URL_SAFE_NO_PAD.encode(
-        serde_json::to_vec(&(scope, after))
-            .map_err(|_error| annotate(Status::internal("page encoding failed")))?,
-    ))
+    Ok(URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&(scope, after)).map_err(|_error| status::internal())?))
 }
 
 #[tonic::async_trait]
@@ -341,7 +339,7 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
     ) -> Result<Response<wire::Workspace>, Status> {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
-        let context = change(user.clone())?
+        let context = change(user.clone())
             .with_request_id(&input.request_id)
             .map_err(error)?;
         let created = self
@@ -363,18 +361,23 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
     ) -> Result<Response<wire::ListWorkspacesResponse>, Status> {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
-        let values = self.workspaces.list(&user).await.map_err(error)?;
+        let listed = self
+            .workspaces
+            .inspect_workspaces(&user)
+            .await
+            .map_err(error)?;
+        let own = profile(listed.profile);
         let (values, next_page_token) = page(
-            values,
+            listed.workspaces,
             input.page_size,
             &input.page_token,
             &format!("{}:workspaces", user.user_id()),
-            coral_workspace::Workspace::listing_key,
+            |(evidence, _)| evidence.workspace().listing_key(),
         )?;
-        let mut workspaces = Vec::new();
-        for w in values {
-            workspaces.push(self.workspace_view(&user, w.id()).await?);
-        }
+        let workspaces = values
+            .into_iter()
+            .map(|(evidence, meta)| self.workspace_projection(&user, &evidence, meta, own.clone()))
+            .collect();
         Ok(Response::new(wire::ListWorkspacesResponse {
             workspaces,
             next_page_token,
@@ -403,7 +406,7 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
         let id = workspace_id(&w.name)?;
         self.workspaces
             .update_display_name(
-                &change(user.clone())?.with_etag(&w.etag).map_err(error)?,
+                &change(user.clone()).with_etag(&w.etag).map_err(error)?,
                 &id,
                 WorkspaceDisplayName::parse(&w.display_name).map_err(error)?,
             )
@@ -421,9 +424,7 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
         let id = workspace_id(&input.name)?;
         self.workspaces
             .archive(
-                &change(user.clone())?
-                    .with_etag(&input.etag)
-                    .map_err(error)?,
+                &change(user.clone()).with_etag(&input.etag).map_err(error)?,
                 &id,
             )
             .await
@@ -440,9 +441,7 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
         let id = workspace_id(&input.name)?;
         self.workspaces
             .restore(
-                &change(user.clone())?
-                    .with_etag(&input.etag)
-                    .map_err(error)?,
+                &change(user.clone()).with_etag(&input.etag).map_err(error)?,
                 &id,
             )
             .await
@@ -453,8 +452,86 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
 
 #[cfg(test)]
 mod tests {
+    use coral_db::PageKey;
+    use coral_tools::{PrivateToolPath, SharedToolLifecycleEventKey};
     use coral_workspace::Error as E;
     use tonic::Code;
+
+    // Catches: a page size out of bounds or text that is no key of the list
+    // being served, a default other than 30, or a cursor that is not the
+    // key's own text.
+    #[test]
+    fn a_page_request_reads_its_size_and_the_key_its_cursor_spells() {
+        let path = |size, after: &str| {
+            super::page_request::<PrivateToolPath>(size, after)
+                .map(|page| (page.size.get(), page.after.as_ref().map(PageKey::to_cursor)))
+                .map_err(|status| (status.code(), status.message().to_owned()))
+        };
+        let invalid = || Err((Code::InvalidArgument, "INVALID_ARGUMENT".to_owned()));
+        for (size, after, expected) in [
+            (0, "", Ok((30, None))),
+            (1, "", Ok((1, None))),
+            (100, "", Ok((100, None))),
+            (
+                2,
+                "reports.total",
+                Ok((2, Some("reports.total".to_owned()))),
+            ),
+            (-1, "", invalid()),
+            (101, "", invalid()),
+            (2, "not a path", invalid()),
+            (2, "30/00000000-0000-4000-8000-000000000000", invalid()),
+        ] {
+            assert_eq!(path(size, after), expected, "{size} after {after:?}");
+        }
+        // Each list reads its own key: an event position is no path, and a
+        // path is no event position.
+        let position = "30/00000000-0000-4000-8000-000000000000";
+        let event = super::page_request::<SharedToolLifecycleEventKey>(2, position)
+            .expect("an event position");
+        assert_eq!(super::next_after(event.after.as_ref()), position);
+        let no_position =
+            super::page_request::<SharedToolLifecycleEventKey>(2, "reports.total").unwrap_err();
+        assert_eq!(no_position.code(), Code::InvalidArgument);
+        assert_eq!(super::next_after::<PrivateToolPath>(None), "");
+    }
+
+    /// Catches: a refusal that reads as retryable because an administration
+    /// error wraps the error that refuses.
+    #[test]
+    fn an_administration_error_reports_what_it_wraps() {
+        use coral_administration::Error as Administration;
+        let reported = |status: tonic::Status| (status.code(), status.message().to_owned());
+        let cases = [
+            (
+                Administration::Workspace(E::LastWorkspaceOwner),
+                super::error(E::LastWorkspaceOwner),
+            ),
+            (
+                Administration::Provider(coral_provider::Error::ProviderNotFound),
+                crate::grpc::providers::error(coral_provider::Error::ProviderNotFound),
+            ),
+            (
+                Administration::Tools(coral_tools::Error::PrivateToolExists),
+                crate::grpc::authored_tools::error(coral_tools::Error::PrivateToolExists),
+            ),
+            (
+                Administration::Policy(coral_policy::Error::ToolNotFound),
+                crate::grpc::policies::error(coral_policy::Error::ToolNotFound),
+            ),
+        ];
+        for (wrapped, alone) in cases {
+            let label = format!("{wrapped:?}");
+            let status = super::administration_error(wrapped);
+            assert_ne!(status.code(), Code::Unavailable, "{label}");
+            assert_eq!(reported(status), reported(alone), "{label}");
+        }
+        assert_eq!(
+            super::administration_error(Administration::Database(coral_db::Error::WriterBusy))
+                .code(),
+            Code::Unavailable
+        );
+    }
 
     /// Reef names these reasons in management forms (`apps/reef/app/lib/management.server.ts`).
     #[test]
@@ -492,7 +569,23 @@ mod tests {
             ),
             (E::WorkspaceNotFound, Code::NotFound, "NOT_FOUND"),
             (
-                E::PermissionDenied("private detail"),
+                E::OrganizationMembershipNotFound,
+                Code::NotFound,
+                "NOT_FOUND",
+            ),
+            (
+                E::LastOrganizationOwner,
+                Code::FailedPrecondition,
+                "LAST_ORGANIZATION_OWNER",
+            ),
+            (
+                E::MemberTargetNotEnabled,
+                Code::FailedPrecondition,
+                "MEMBER_TARGET_NOT_ENABLED",
+            ),
+            (E::AccessRemovalMismatch, Code::Internal, "INTERNAL"),
+            (
+                E::PermissionDenied(coral_workspace::Denial::WorkspaceOwnerRequired),
                 Code::PermissionDenied,
                 "PERMISSION_DENIED",
             ),

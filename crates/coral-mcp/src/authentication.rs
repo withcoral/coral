@@ -1,4 +1,5 @@
 use coral_auth::PrincipalAuthentication;
+use coral_db::UnixNanos;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 use crate::McpEndpoint;
@@ -36,11 +37,15 @@ pub trait WorkspaceAuthenticator: Send + Sync {
     /// Resolves the presented credential at `endpoint` and returns the
     /// Workspace the request acts in: the one a Workspace URL names, or the
     /// one the credential fixes at the Organization MCP Endpoint.
+    ///
+    /// The instant it returns is its one reading of the deployment's clock,
+    /// the one the credential's expiry was checked against. It is the
+    /// request's time: the Adapter reads no clock of its own.
     async fn authenticate(
         &self,
         endpoint: &McpEndpoint,
         bearer: Option<&str>,
-    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError>;
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId, UnixNanos), AuthenticationError>;
     /// Optional OAuth discovery. Unknown Workspaces reveal no resource existence.
     fn oauth_resource(&self, _endpoint: &McpEndpoint) -> Option<OauthProtectedResource> {
         None
@@ -55,7 +60,7 @@ impl WorkspaceAuthenticator for LocalAuthentication {
         &self,
         endpoint: &McpEndpoint,
         bearer: Option<&str>,
-    ) -> Result<(AuthenticatedPrincipal, WorkspaceId), AuthenticationError> {
+    ) -> Result<(AuthenticatedPrincipal, WorkspaceId, UnixNanos), AuthenticationError> {
         // Local mode verifies no User token, so no audience is read. An empty
         // audience matches no token if that ever changes.
         Ok(self

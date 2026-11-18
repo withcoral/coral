@@ -1,12 +1,13 @@
 use crate::{
     AuthenticatedUser, ChangeContext, OrganizationModule, OrganizationRole, TraceId, UserId,
 };
+use coral_db::UnixNanos;
 use coral_test_support::TestDatabase;
 
 fn context(id: &str, role: OrganizationRole) -> ChangeContext {
     ChangeContext::new(
         AuthenticatedUser::organization_member(UserId::parse(id).unwrap(), role),
-        1,
+        UnixNanos::new(1),
         TraceId::parse(&"a".repeat(32)).unwrap(),
     )
 }
@@ -68,20 +69,26 @@ async fn concurrent_administration_cannot_remove_the_last_enabled_owner() {
     let first = context("first", OrganizationRole::Owner);
     let second = context("second", OrganizationRole::Owner);
     organization.provision_login(&first).await.unwrap();
-    organization
-        .set_role(&first, first.actor().user_id(), 1, OrganizationRole::Member)
-        .await
-        .unwrap_err();
-    organization
-        .set_enabled(&first, first.actor().user_id(), 1, false)
-        .await
-        .unwrap_err();
+    assert!(matches!(
+        organization
+            .set_role(&first, first.actor().user_id(), 1, OrganizationRole::Member)
+            .await,
+        Err(crate::Error::LastOrganizationOwner)
+    ));
+    assert!(matches!(
+        organization
+            .set_enabled(&first, first.actor().user_id(), 1, false)
+            .await,
+        Err(crate::Error::LastOrganizationOwner)
+    ));
     organization.provision_login(&second).await.unwrap();
     let (a, b) = tokio::join!(
         organization.set_enabled(&first, first.actor().user_id(), 1, false),
         organization.set_enabled(&second, second.actor().user_id(), 1, false),
     );
     assert_ne!(a.is_ok(), b.is_ok());
+    let refused = if a.is_ok() { b } else { a };
+    assert!(matches!(refused, Err(crate::Error::LastOrganizationOwner)));
     let first_current = organization
         .resolve_user_authority(first.actor().user_id())
         .await;
@@ -92,6 +99,50 @@ async fn concurrent_administration_cannot_remove_the_last_enabled_owner() {
     let survivor = first_current.or(second_current).unwrap();
     let events = organization.list_lifecycle_events(&survivor).await.unwrap();
     assert_eq!(events.len(), 3, "rejected changes must not write events");
+}
+
+// Catches: an Owner who names a User with no Membership being told they
+// lack permission, and a caller without Owner authority learning from the
+// answer whether that User exists.
+#[tokio::test]
+async fn a_user_with_no_membership_is_absent_to_an_owner_and_concealed_from_a_member() {
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let organization = OrganizationModule::new(fixture.database());
+    let owner = context("owner", OrganizationRole::Owner);
+    let member = context("member", OrganizationRole::Member);
+    let stranger = context("stranger", OrganizationRole::Member);
+    organization.provision_login(&owner).await.unwrap();
+    organization.provision_login(&member).await.unwrap();
+    let unknown = stranger.actor().user_id();
+    let events_before = organization
+        .list_lifecycle_events(owner.actor())
+        .await
+        .unwrap()
+        .len();
+
+    assert!(matches!(
+        organization
+            .set_role(&owner, unknown, 1, OrganizationRole::Owner)
+            .await,
+        Err(crate::Error::OrganizationMembershipNotFound)
+    ));
+    assert!(matches!(
+        organization
+            .set_role(&member, unknown, 1, OrganizationRole::Owner)
+            .await,
+        Err(crate::Error::PermissionDenied(
+            crate::Denial::OrganizationOwnerRequired
+        ))
+    ));
+    let events = organization
+        .list_lifecycle_events(owner.actor())
+        .await
+        .unwrap();
+    assert_eq!(
+        events.len(),
+        events_before,
+        "a refused change writes no event"
+    );
 }
 
 #[tokio::test]
@@ -137,7 +188,7 @@ async fn disabled_user_cannot_use_retained_owner_context_or_dispatch() {
         .unwrap_err();
     let principal = crate::AuthenticatedPrincipal::user(owner.actor().clone());
     workspaces
-        .check_run_admission(&principal, workspace.id(), 1)
+        .check_run_admission(&principal, workspace.id(), UnixNanos::new(1))
         .await
         .unwrap_err();
     let database = fixture.database();
@@ -147,7 +198,7 @@ async fn disabled_user_cannot_use_retained_owner_context_or_dispatch() {
             &mut tx,
             &principal,
             workspace.id(),
-            1,
+            UnixNanos::new(1),
             coral_db::RowLock::Shared,
         )
         .await
@@ -245,7 +296,9 @@ async fn rejoin_after_removal_keeps_the_recorded_disablement() {
             assert!(
                 matches!(
                     authority,
-                    Err(crate::Error::PermissionDenied("User is disabled"))
+                    Err(crate::Error::PermissionDenied(
+                        crate::Denial::OrganizationMembershipRequired
+                    ))
                 ),
                 "a rejoined disabled Membership holds no authority: {authority:?}"
             );

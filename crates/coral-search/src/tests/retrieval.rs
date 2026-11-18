@@ -130,7 +130,11 @@ impl Corpus {
             .unwrap();
         self.modules
             .workspaces
-            .authenticate_agent(&self.workspace, issued.credential.expose(), 66)
+            .authenticate_agent(
+                &self.workspace,
+                issued.credential.expose(),
+                coral_db::UnixNanos::new(66),
+            )
             .await
             .unwrap()
     }

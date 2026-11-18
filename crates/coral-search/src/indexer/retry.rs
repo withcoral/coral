@@ -15,6 +15,8 @@
 use std::cmp::Ordering;
 use std::time::Duration;
 
+use coral_db::UnixNanos;
+
 use super::IndexError;
 
 /// The Coral version that records a failure.
@@ -31,50 +33,49 @@ pub(crate) struct RetryRule {
     pub(super) attempts: Option<i64>,
     /// When a pass may retry the failure. `None` when it waits for a newer
     /// Coral version.
-    pub(super) retry_after_unix_nanos: Option<i64>,
+    pub(super) retry_after: Option<UnixNanos>,
     /// The Coral version that recorded the failure. `None` on a row written
     /// before Coral recorded it.
     pub(super) coral_version: Option<String>,
 }
 
 impl RetryRule {
-    /// The rule a failure attempted at `attempted_at_unix_nanos` records.
+    /// The rule a failure attempted at `attempted_at` records.
     /// `prior` is the rule of the failure before it, when the last attempt
     /// of the same target also failed. Only failures that may pass, in a row
     /// under this Coral version, double the wait.
     pub(super) fn after_failure(
         prior: Option<&Self>,
         error: &IndexError,
-        attempted_at_unix_nanos: i64,
+        attempted_at: UnixNanos,
         reconcile_interval: Duration,
     ) -> Self {
         let attempts = match prior {
             Some(prior)
-                if prior.retry_after_unix_nanos.is_some()
+                if prior.retry_after.is_some()
                     && prior.coral_version.as_deref() == Some(CORAL_VERSION) =>
             {
                 prior.attempts.unwrap_or(1).saturating_add(1)
             }
             _ => 1,
         };
-        let wait = i64::try_from(wait(attempts, reconcile_interval).as_nanos()).unwrap_or(i64::MAX);
+        let wait = wait(attempts, reconcile_interval);
         Self {
             attempts: Some(attempts),
-            retry_after_unix_nanos: (!error.repeats_until_change())
-                .then(|| attempted_at_unix_nanos.saturating_add(wait)),
+            retry_after: (!error.repeats_until_change()).then(|| attempted_at.saturating_add(wait)),
             coral_version: Some(CORAL_VERSION.to_owned()),
         }
     }
 
-    /// Whether a pass that starts at `now_unix_nanos` retries the failure:
+    /// Whether a pass that starts at `now` retries the failure:
     /// a Coral version older than this one, or none, recorded it, or this
     /// version recorded it and its retry time has passed. A failure a newer
     /// version recorded is left to that version: a retry here would record
     /// this older version, and the newer one would retry again at once.
-    pub(super) fn is_due(&self, now_unix_nanos: i64) -> bool {
+    pub(super) fn is_due(&self, now: UnixNanos) -> bool {
         let retry_time_passed = self
-            .retry_after_unix_nanos
-            .is_some_and(|retry_after| retry_after < now_unix_nanos);
+            .retry_after
+            .is_some_and(|retry_after| retry_after < now);
         let Some(recorded) = self.coral_version.as_deref().and_then(Release::parse) else {
             return true;
         };
@@ -160,6 +161,8 @@ fn wait(attempts: i64, reconcile_interval: Duration) -> Duration {
 mod tests {
     use std::time::Duration;
 
+    use coral_db::UnixNanos;
+
     use super::{CORAL_VERSION, Release, RetryRule, wait};
     use crate::indexer::IndexError;
 
@@ -208,16 +211,17 @@ mod tests {
             (Some(newer_patch.as_str()), false, false),
             (Some(newer_major.as_str()), false, false),
         ] {
-            for (retry_after_unix_nanos, due) in [(None, repeating_due), (Some(0), timed_due)] {
+            for (retry_after, due) in [(None, repeating_due), (Some(UnixNanos::new(0)), timed_due)]
+            {
                 let rule = RetryRule {
                     attempts: Some(1),
-                    retry_after_unix_nanos,
+                    retry_after,
                     coral_version: recorded.map(str::to_owned),
                 };
                 assert_eq!(
-                    rule.is_due(i64::MAX),
+                    rule.is_due(UnixNanos::new(i64::MAX)),
                     due,
-                    "recorded: {recorded:?}, retry after: {retry_after_unix_nanos:?}"
+                    "recorded: {recorded:?}, retry after: {retry_after:?}"
                 );
             }
         }
@@ -256,15 +260,11 @@ mod tests {
             (IndexError::Overran(limit), true),
             (IndexError::WriterBusy(limit), false),
             (IndexError::TimedOut(limit), false),
-            (IndexError::Clock, false),
             (IndexError::Corrupt("bad row"), false),
         ] {
-            let rule = RetryRule::after_failure(None, &error, 0, Duration::from_mins(5));
-            assert_eq!(
-                rule.retry_after_unix_nanos.is_none(),
-                waits_for_version,
-                "{error}"
-            );
+            let rule =
+                RetryRule::after_failure(None, &error, UnixNanos::new(0), Duration::from_mins(5));
+            assert_eq!(rule.retry_after.is_none(), waits_for_version, "{error}");
         }
     }
 }

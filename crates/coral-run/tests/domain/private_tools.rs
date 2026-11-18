@@ -514,7 +514,7 @@ async fn lifecycle_actions(
         .list_lifecycle_events(actor, &scope.workspace_id)
         .await
         .unwrap();
-    events.sort_by_key(coral_tools::AdministrativeLifecycleEvent::occurred_at_unix_nanos);
+    events.sort_by_key(coral_tools::AdministrativeLifecycleEvent::occurred_at);
     events
         .iter()
         .map(coral_tools::AdministrativeLifecycleEvent::action)
@@ -877,7 +877,7 @@ async fn old_roots_fail_at_admission_in_a_program_and_in_a_stored_tool() {
             .save(
                 &coral_tools::PrivateToolChangeContext::new(
                     scope.owner.clone(),
-                    60,
+                    coral_db::UnixNanos::new(60),
                     coral_workspace::TraceId::current_or_new(),
                 ),
                 &scope.workspace_id,

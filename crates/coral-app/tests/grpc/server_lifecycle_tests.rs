@@ -2,7 +2,7 @@
 
 use std::fs;
 
-use coral_app::{AppError, McpHttpServeConfig, ServerBuilder};
+use coral_app::{AppError, McpHttpServeConfig, ServerBuilder, StateRefusal};
 use coral_workspace::{
     ChangeContext, TraceId, WorkspaceDisplayName, WorkspaceModule, local_organization_owner,
 };
@@ -40,7 +40,11 @@ async fn server_lifecycle_can_repeat_over_the_domain_schema() {
         assert_eq!(listed, created);
         let workspace = workspaces
             .create(
-                &ChangeContext::new(owner.clone(), restart, TraceId::current_or_new()),
+                &ChangeContext::new(
+                    owner.clone(),
+                    coral_db::UnixNanos::new(restart),
+                    TraceId::current_or_new(),
+                ),
                 WorkspaceDisplayName::parse("Survives restart").expect("display name"),
             )
             .await
@@ -68,7 +72,11 @@ async fn bootstrap_publishes_the_companion_origin_to_private_workspace_responses
         .unwrap();
     let workspace = WorkspaceModule::new(server.database())
         .create(
-            &ChangeContext::new(local_organization_owner(), 1, TraceId::current_or_new()),
+            &ChangeContext::new(
+                local_organization_owner(),
+                coral_db::UnixNanos::new(1),
+                TraceId::current_or_new(),
+            ),
             WorkspaceDisplayName::parse("local").unwrap(),
         )
         .await
@@ -216,7 +224,10 @@ async fn rejected_database_is_unchanged_before_other_settings_are_parsed() {
     let Err(error) = result else {
         panic!("retired database must be rejected");
     };
-    assert!(error.to_string().contains("pre-v1"), "{error}");
+    assert!(
+        matches!(error, AppError::StateRefused(StateRefusal::PreV1Database)),
+        "{error}"
+    );
     assert_eq!(fs::read(config_dir.join("custom.db")).unwrap(), retired);
     assert_eq!(
         fs::read_to_string(config_dir.join("config.toml")).unwrap(),
@@ -317,7 +328,11 @@ async fn removed_root_version_is_rejected_without_marking_fresh_state() {
     };
     // The released product's root key is unknown to the current parser, which
     // runs before anything is written.
-    assert!(error.to_string().contains("version"), "{error}");
+    assert!(
+        matches!(&error, AppError::ConfigDecode(decode)
+            if decode.to_string().starts_with("version: unknown field")),
+        "{error}"
+    );
     assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
     assert_eq!(
         fs::read_to_string(temp.path().join("config.toml")).unwrap(),
@@ -353,9 +368,11 @@ async fn fresh_state_accepts_current_sections_and_reports_configuration_errors_u
     else {
         panic!("a misspelled section must be rejected");
     };
-    let message = error.to_string();
-    assert!(message.contains("listners"), "{message}");
-    assert!(!message.contains("pre-v1"), "{message}");
+    assert!(
+        matches!(&error, AppError::ConfigDecode(decode)
+            if decode.to_string().starts_with("listners: unknown field")),
+        "{error}"
+    );
     assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 1);
     assert_eq!(
         fs::read_to_string(temp.path().join("config.toml")).unwrap(),
@@ -390,10 +407,13 @@ async fn server_lifecycle_refuses_credentials_key_env_when_unset_or_beside_a_key
         .with_config_dir(&config_dir)
         .start()
         .await;
-    let Err(AppError::FailedPrecondition(detail)) = refused else {
+    let Err(AppError::MissingSecret { setting, variable }) = refused else {
         panic!("a missing credential key secret must refuse startup");
     };
-    assert!(detail.contains(&missing_key_env), "{detail}");
+    assert_eq!(
+        (setting.as_str(), variable.as_str()),
+        ("credentials.key_env", missing_key_env.as_str())
+    );
     assert!(
         !key_file.exists(),
         "no key file is created for a secret-held key"
@@ -405,13 +425,12 @@ async fn server_lifecycle_refuses_credentials_key_env_when_unset_or_beside_a_key
         .with_config_dir(&config_dir)
         .start()
         .await;
-    let Err(AppError::FailedPrecondition(detail)) = refused else {
+    let Err(AppError::Config { setting, message }) = refused else {
         panic!("a key file beside credentials.key_env must refuse startup");
     };
-    assert!(
-        detail.contains("credentials.key_env") && detail.contains("remove the file"),
-        "{detail}"
-    );
+    assert_eq!(setting, "credentials.key_env");
+    // The operator reads what to do about it.
+    assert!(message.contains("remove the file"), "{message}");
     assert_eq!(fs::read(&key_file).expect("read key file"), [7_u8; 32]);
 }
 
@@ -445,11 +464,9 @@ async fn server_lifecycle_rejects_postgres_config_without_url_env_value() {
         }
     };
 
-    match error {
-        AppError::FailedPrecondition(detail) => assert!(
-            detail.contains(&missing_url_env),
-            "unexpected detail: {detail}"
-        ),
-        other => panic!("unexpected error: {other}"),
-    }
+    assert!(
+        matches!(&error, AppError::MissingSecret { setting, variable }
+            if setting == "database backend 'postgres'" && *variable == missing_url_env),
+        "unexpected error: {error}"
+    );
 }

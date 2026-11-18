@@ -1,4 +1,4 @@
-use coral_db::{QueryExecutor, Transaction};
+use coral_db::{QueryExecutor, Transaction, UnixNanos};
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 use sqlx::FromRow;
 
@@ -75,7 +75,7 @@ struct RegistrationRow {
     workspace_id: String,
     agent_id: String,
     enabled: i64,
-    expires_at_unix_nanos: Option<i64>,
+    expires_at_unix_nanos: Option<UnixNanos>,
 }
 
 impl RegistrationRow {
@@ -89,7 +89,7 @@ impl RegistrationRow {
                 1 => true,
                 _ => return Err(Error::CorruptData("invalid Registration state".to_string())),
             },
-            expires_at_unix_nanos: self.expires_at_unix_nanos,
+            expires_at: self.expires_at_unix_nanos,
         })
     }
 }
@@ -138,7 +138,7 @@ pub(super) async fn insert(
                     Expr::val(registration.workspace_id().to_string()),
                     Expr::val(registration.agent_id().as_str()),
                     Expr::val(i64::from(registration.is_enabled())),
-                    Expr::val(registration.expires_at_unix_nanos()),
+                    Expr::val(registration.expires_at()),
                     Expr::val(verifier),
                 ])
                 .to_owned(),
@@ -168,6 +168,27 @@ pub(super) async fn list(
 ) -> Result<Vec<Agent>, Error> {
     let rows: Vec<AgentRow> = executor.fetch_all(agents(workspace_id)).await?;
     rows.into_iter().map(AgentRow::decode).collect()
+}
+
+/// Selects one column of the Agents of one Workspace that are not deleted.
+fn agent_column(workspace_id: &WorkspaceId, column: WorkspaceAgents) -> sea_query::SelectStatement {
+    Query::select()
+        .column(column)
+        .from(WorkspaceAgents::Table)
+        .and_where(Expr::col(WorkspaceAgents::Deleted).eq(0))
+        .and_where(Expr::col(WorkspaceAgents::WorkspaceId).eq(workspace_id.to_string()))
+        .to_owned()
+}
+
+/// Selects the ids of the Agents [`list`] returns, in one column.
+pub(super) fn agent_ids(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
+    agent_column(workspace_id, WorkspaceAgents::Id)
+}
+
+/// Selects the ids of the Users who created the Agents [`list`] returns, in
+/// one column.
+pub(super) fn creator_ids(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
+    agent_column(workspace_id, WorkspaceAgents::CreatedBy)
 }
 
 pub(super) async fn find(
@@ -231,6 +252,25 @@ fn any_workspace_registrations() -> sea_query::SelectStatement {
             AgentRegistrations::ExpiresAtUnixNanos,
         ])
         .from(AgentRegistrations::Table)
+        .to_owned()
+}
+
+/// The Registration of every Agent of one Workspace. A deleted Agent has none.
+pub(super) async fn list_registrations(
+    executor: impl QueryExecutor,
+    workspace_id: &WorkspaceId,
+) -> Result<Vec<AgentRegistration>, Error> {
+    let rows: Vec<RegistrationRow> = executor.fetch_all(registrations(workspace_id)).await?;
+    rows.into_iter().map(RegistrationRow::decode).collect()
+}
+
+/// Selects the ids of the Registrations [`list_registrations`] returns, in
+/// one column.
+pub(super) fn registration_ids(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
+    Query::select()
+        .column(AgentRegistrations::Id)
+        .from(AgentRegistrations::Table)
+        .and_where(Expr::col(AgentRegistrations::WorkspaceId).eq(workspace_id.to_string()))
         .to_owned()
 }
 
@@ -329,7 +369,7 @@ pub(super) async fn update_registration(
                 )
                 .value(
                     AgentRegistrations::ExpiresAtUnixNanos,
-                    registration.expires_at_unix_nanos(),
+                    registration.expires_at(),
                 )
                 .and_where(
                     Expr::col(AgentRegistrations::WorkspaceId)

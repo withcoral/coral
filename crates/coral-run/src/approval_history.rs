@@ -2,8 +2,6 @@
 //! lists requests the caller can already inspect, matched by who invoked the
 //! Run, and carries no arguments, comments or decision source.
 
-use std::collections::HashMap;
-
 use coral_db::Transaction;
 use coral_workspace::{AuthenticatedPrincipal, HistoryAuthority, Principal};
 
@@ -111,37 +109,24 @@ impl crate::RunModule {
         let now = self.now()?;
         let (rows, has_more) =
             crate::approval_history_repository::page(tx, authority, after, limit).await?;
-        let mut names = HashMap::new();
+        let runs = crate::history_repository::run_summaries(
+            tx,
+            authority,
+            rows.iter().map(|row| (&row.workspace, &row.run)),
+            now,
+        )
+        .await?;
+        let mut names = crate::approval::ApproverNames::new(&self.workspaces, actor);
         let mut approvals = Vec::with_capacity(rows.len());
         for row in rows {
             let approver = if let Some(principal) = row.approver {
-                // A page often repeats an approver; each is read once.
-                let key = (row.workspace.to_string(), principal.id().to_string());
-                if !names.contains_key(&key) {
-                    let name = crate::approval::approver_name(
-                        tx,
-                        &self.workspaces,
-                        actor,
-                        &row.workspace,
-                        &principal,
-                    )
-                    .await?;
-                    names.insert(key.clone(), name);
-                }
-                let name = names.get(&key).cloned().flatten();
+                let name = names.name(tx, &row.workspace, &principal).await?;
                 Some(Approver { principal, name })
             } else {
                 None
             };
             approvals.push(SettledApproval {
-                run: crate::history_repository::run_summary(
-                    tx,
-                    authority,
-                    &row.workspace,
-                    &row.run,
-                    now,
-                )
-                .await?,
+                run: runs.of(&row.workspace, &row.run)?,
                 approval: row.approval,
                 outcome: outcome(row.state)?,
                 settled_at_unix_nanos: row.settled_at_unix_nanos,

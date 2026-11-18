@@ -1,5 +1,6 @@
 use coral_catalog::AuthoredToolKind;
-use coral_test_support::change;
+use coral_db::{Page, PageKey};
+use coral_test_support::{change, page_request, read_pages};
 use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -37,6 +38,47 @@ fn fixed_private_tool_source_and_declaration_limits_accept_the_boundary_only() {
             "the Tool declaration exceeds 262144 bytes. Return fewer fields, or annotate the return type."
                 .to_string()
         )
+    );
+}
+
+// Catches: a cursor that does not spell its key back, or text that is no key
+// of a list taken for one.
+#[test]
+fn a_page_key_spells_its_cursor_and_reads_no_other_text() {
+    fn spells<K: PageKey>(cursors: &[&str], refused: &[&str]) {
+        for cursor in cursors {
+            let key = K::from_cursor(cursor).unwrap_or_else(|| panic!("{cursor} is a key"));
+            assert_eq!(key.to_cursor(), *cursor);
+        }
+        for text in refused {
+            assert!(K::from_cursor(text).is_none(), "{text:?} is no key");
+        }
+    }
+    let paths = ["alpha", "reports.total", "Middle.upper"];
+    let no_paths = ["", "reports..total", ".alpha", "not a path", "1st", "a/b"];
+    spells::<PrivateToolPath>(&paths, &no_paths);
+    spells::<crate::SharedToolPath>(&paths, &no_paths);
+    spells::<crate::SharedToolLifecycleEventKey>(
+        &[
+            "30/00000000-0000-4000-8000-000000000000",
+            "-30/6f1e3a52-9c0b-4d1e-8a7f-2b5c4d3e2f10",
+            "9223372036854775807/ffffffff-ffff-4fff-bfff-ffffffffffff",
+        ],
+        &[
+            "",
+            "30",
+            "30/",
+            "/00000000-0000-4000-8000-000000000000",
+            "00000000-0000-4000-8000-000000000000",
+            // One time and one identity each have one spelling.
+            "030/00000000-0000-4000-8000-000000000000",
+            "+30/00000000-0000-4000-8000-000000000000",
+            "30.0/00000000-0000-4000-8000-000000000000",
+            "9223372036854775808/00000000-0000-4000-8000-000000000000",
+            "30/00000000-0000-4000-8000-00000000000G",
+            "30/6F1E3A52-9C0B-4D1E-8A7F-2B5C4D3E2F10",
+            "30/00000000-0000-4000-8000-000000000000/",
+        ],
     );
 }
 
@@ -191,7 +233,7 @@ async fn a_save_keeps_the_declared_default_until_one_changes_it_and_names_each_c
             .expect("list lifecycle Events");
         let event = events
             .iter()
-            .max_by_key(|event| event.occurred_at_unix_nanos())
+            .max_by_key(|event| event.occurred_at())
             .expect("the save's Event");
         assert_eq!(
             event.changed_field_paths(),
@@ -278,7 +320,7 @@ async fn failed_save_preserves_current_definition_and_accepted_changes_follow_tr
         .expect("replace despite older occurrence timestamp");
     assert_eq!(replacement.id(), original.id());
     assert_eq!(replacement.source().as_str(), replacement_source);
-    assert_eq!(replacement.saved_at_unix_nanos(), 50);
+    assert_eq!(replacement.saved_at(), coral_db::UnixNanos::new(50));
 
     let deleted_id = fixture
         .private_tools
@@ -890,7 +932,7 @@ async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
             diagnostics
         );
         assert!(!tool.diagnostics_truncated());
-        assert_eq!(tool.saved_at_unix_nanos(), 15);
+        assert_eq!(tool.saved_at(), coral_db::UnixNanos::new(15));
         assert_eq!(tool.revision(), revision);
         assert_eq!(tool.default_access_state(), ToolAccessState::Enabled);
         assert_eq!(tool.execution_binding().definition(), tool.id().to_string());
@@ -2003,6 +2045,31 @@ impl PrivateToolTestModules {
         Ok(deleted)
     }
 
+    /// Saves `source` as `author`'s Private Tool at `path` in `workspace`,
+    /// declaring `default` as its default Tool Access State, if any.
+    async fn save_tool(
+        &self,
+        author: &AuthenticatedPrincipal,
+        workspace: &coral_workspace::WorkspaceId,
+        path: &str,
+        source: &str,
+        default: Option<ToolAccessState>,
+    ) -> crate::PrivateTool {
+        self.private_tools
+            .save(
+                &private_tool_change(author.clone(), 20, 'b'),
+                workspace,
+                PrivateToolSave::new(
+                    PrivateToolPath::parse(path).expect("path"),
+                    AuthoredToolDescription::parse("A private draft").expect("description"),
+                    AuthoredToolSource::parse(source).expect("source"),
+                )
+                .declaring_default(default),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("save the Private Tool {path}: {error}"))
+    }
+
     async fn user_workspace(
         &self,
         user_id: &str,
@@ -2040,19 +2107,23 @@ async fn registered_agent(
         .await
         .expect("create Agent");
     workspaces
-        .authenticate_agent(workspace_id, issued.credential.expose(), 11)
+        .authenticate_agent(
+            workspace_id,
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(11),
+        )
         .await
         .expect("authenticate Agent")
 }
 
 fn private_tool_change(
     actor: AuthenticatedPrincipal,
-    occurred_at_unix_nanos: i64,
+    at: i64,
     digit: char,
 ) -> PrivateToolChangeContext {
     PrivateToolChangeContext::new(
         actor,
-        occurred_at_unix_nanos,
+        coral_db::UnixNanos::new(at),
         TraceId::parse(&digit.to_string().repeat(32)).expect("trace id"),
     )
 }
@@ -2120,7 +2191,7 @@ async fn agent_authoring_rechecks_lifecycle_and_keeps_previous_source_and_events
                     &workspace_id,
                     registration.id(),
                     true,
-                    Some(0),
+                    Some(coral_db::UnixNanos::new(0)),
                 )
                 .await
                 .unwrap();
@@ -2231,12 +2302,12 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
         let after = after.map(|path| PrivateToolPath::parse(path).expect("after path"));
         async move {
             tools
-                .list(&actor, &workspace, after.as_ref(), page_size)
+                .list(&actor, &workspace, &page_request(after, page_size))
                 .await
         }
     };
-    let paths = |page: &crate::PrivateToolPage| {
-        page.summaries()
+    let paths = |page: &Page<crate::PrivateToolSummary, PrivateToolPath>| {
+        page.items
             .iter()
             .map(|summary| summary.path().as_str().to_owned())
             .collect::<Vec<_>>()
@@ -2244,14 +2315,86 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
 
     let first = list(&member, None, 2).await.expect("first page");
     assert_eq!(paths(&first), ["Middle.upper", "alpha.first"]);
-    let summary = first.summaries().last().expect("summary");
+    let summary = first.items.last().expect("summary");
     assert_eq!(summary.description().as_str(), "Describe alpha.first");
-    assert_eq!(summary.saved_at_unix_nanos(), 20);
-    let after = first.next_after().expect("more pages").as_str().to_owned();
-    let second = list(&member, Some(&after), 2).await.expect("second page");
+    assert_eq!(summary.saved_at(), coral_db::UnixNanos::new(20));
+    let first_after = first.next_after;
+    let after = first_after.as_ref().expect("more pages").as_str();
+    let second = list(&member, Some(after), 2).await.expect("second page");
     // A page that ends exactly at the last tool has no continuation.
     assert_eq!(paths(&second), ["reports.total", "zeta.last"]);
-    assert_eq!(second.next_after(), None);
+    assert_eq!(second.next_after, None);
+
+    // Pages of every size hold the same Private Tools in the same order.
+    let whole = ["Middle.upper", "alpha.first", "reports.total", "zeta.last"];
+    for size in [1, 2, 3, 4, 100] {
+        let pages = read_pages(size, async |request| {
+            inspection.list(&member, &workspace_id, &request).await
+        })
+        .await;
+        let read = pages
+            .iter()
+            .map(|page| {
+                page.iter()
+                    .map(|summary| summary.path().as_str())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let expected = whole
+            .chunks(usize::try_from(size).expect("size"))
+            .map(<[_]>::to_vec)
+            .collect::<Vec<_>>();
+        assert_eq!(read, expected, "pages of {size}");
+    }
+    // The path of another Principal's Private Tool, or of the caller's own in
+    // another Workspace, only positions the page: it shows the caller's own
+    // Private Tools of this Workspace after it.
+    for (case, lister, workspace, foreign) in [
+        ("another Principal", &owner, &workspace_id, "owner.private"),
+        (
+            "another Workspace",
+            &member,
+            &other_workspace,
+            "elsewhere.only",
+        ),
+    ] {
+        let theirs = inspection
+            .list(lister, workspace, &page_request(None, 100))
+            .await
+            .expect(case);
+        assert_eq!(paths(&theirs), [foreign], "{case}");
+        let positioned = list(&member, Some(foreign), 100).await.expect(case);
+        assert_eq!(paths(&positioned), ["reports.total", "zeta.last"], "{case}");
+    }
+    // A page sends as many statements for four Private Tools as for one.
+    let sent = async |workspace| {
+        let before = fixture.fixture.statements_sent();
+        let request = page_request(None, 100);
+        let page = inspection.list(&member, workspace, &request).await;
+        page.expect("a page");
+        fixture.fixture.statements_sent() - before
+    };
+    assert_eq!(sent(&workspace_id).await, sent(&other_workspace).await);
+    // The list fetches a page's rows and the one after them, whatever the
+    // collection holds. It fetches no row beyond those: this one fails any
+    // fetch of it.
+    let corrupt = async |from: &str, to: &str| {
+        let changed = fixture
+            .fixture
+            .execute_fixture_sql(&format!(
+                "UPDATE private_tool_records SET path = '{to}' WHERE path = '{from}'"
+            ))
+            .await
+            .expect("change the path");
+        assert_eq!(changed, 1);
+    };
+    corrupt("zeta.last", "zeta.not a path").await;
+    let bounded = list(&member, None, 2).await.expect("a page before the row");
+    assert_eq!(paths(&bounded), ["Middle.upper", "alpha.first"]);
+    assert_eq!(bounded.next_after, first_after);
+    let reached = list(&member, Some("alpha.first"), 2).await;
+    assert!(matches!(reached, Err(Error::CorruptData(_))), "{reached:?}");
+    corrupt("zeta.not a path", "zeta.last").await;
 
     // An Owner sees only their own tools: never a Member's or an Agent's.
     // An Agent likewise sees only its own.
@@ -2280,12 +2423,12 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
         ),
         "{denied:?}"
     );
-    for page_size in [0, crate::PRIVATE_TOOL_PAGE_MAX_SIZE + 1] {
-        assert!(matches!(
-            list(&member, None, page_size).await,
-            Err(Error::InvalidInput(_))
-        ));
-    }
+    // A page size holds one or more, so only a size over the maximum
+    // reaches the list.
+    assert!(matches!(
+        list(&member, None, crate::PRIVATE_TOOL_PAGE_MAX_SIZE + 1).await,
+        Err(Error::InvalidInput(_))
+    ));
 
     let entries = || async {
         let mut transaction = fixture
@@ -2329,4 +2472,425 @@ async fn list_pages_only_the_callers_own_private_tools_in_one_workspace() {
         Err(Error::NotFound(AuthoredToolKind::Private))
     ));
     assert_eq!(entries().await, before);
+}
+
+/// What a narrow read returns of a whole Private Tool.
+fn record_of(tool: &crate::PrivateTool) -> crate::repository::PrivateToolRecord {
+    crate::repository::PrivateToolRecord {
+        workspace_id: tool.workspace_id().clone(),
+        owner: tool.principal().clone(),
+        id: tool.id().clone(),
+        path: tool.path().clone(),
+        revision: tool.revision(),
+        default_access_state: tool.default_access_state(),
+    }
+}
+
+/// A Workspace of `owner_id` with a Member and an Agent, each of which can
+/// save Private Tools: the Workspace, then the Owner, the Member and the
+/// Agent.
+async fn workspace_with_a_member_and_an_agent(
+    fixture: &PrivateToolTestModules,
+    owner_id: &str,
+    member_id: &str,
+) -> (coral_workspace::WorkspaceId, [AuthenticatedPrincipal; 3]) {
+    let (workspace_id, owner) = fixture.user_workspace(owner_id).await;
+    let owner_user = owner.authenticated_user().expect("owner User").clone();
+    let member_user = organization_user(
+        fixture.database.clone(),
+        member_id,
+        OrganizationRole::Member,
+    )
+    .await;
+    fixture
+        .workspaces
+        .set_membership(
+            &change(owner_user, 12, 'a'),
+            &workspace_id,
+            &member_user,
+            WorkspaceRole::Member,
+        )
+        .await
+        .expect("add Member");
+    let agent = registered_agent(&fixture.workspaces, &owner, &workspace_id).await;
+    (
+        workspace_id,
+        [owner, AuthenticatedPrincipal::user(member_user), agent],
+    )
+}
+
+const TAKES_NOTHING: &str =
+    "export default async function remind(): Promise<string> { return 'draft'; }";
+const TAKES_A_NAME: &str = "export default async function greet(input: { name: string }): Promise<string> { return input.name; }";
+
+// Catches: a read of a Private Tool's path, identity, revision, default or
+// declaration that answers differently from the whole definition it stands
+// in for: with another owner's or another Workspace's Private Tool, a
+// replaced one, or a path that names nothing.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture compares every narrow read with the whole read beside it"
+)]
+async fn each_narrow_private_tool_read_agrees_with_the_whole_definition() {
+    let fixture = PrivateToolTestModules::new().await;
+    let (workspace_id, [owner, member, agent]) =
+        workspace_with_a_member_and_an_agent(&fixture, "user:narrow-owner", "user:narrow-member")
+            .await;
+    let elsewhere = fixture
+        .workspaces
+        .create(
+            &change(
+                owner.authenticated_user().expect("owner User").clone(),
+                14,
+                'a',
+            ),
+            WorkspaceDisplayName::parse("Elsewhere").expect("display name"),
+        )
+        .await
+        .expect("create another Workspace")
+        .id()
+        .clone();
+    // Each save: its author, Workspace, path, source and declared default.
+    // The Owner's `mail.send` is saved twice, so it is at revision 2.
+    for (author, workspace, path, source, default) in [
+        (&owner, &workspace_id, "draft", TAKES_NOTHING, None),
+        (&owner, &workspace_id, "mail.send", TAKES_NOTHING, None),
+        (
+            &owner,
+            &workspace_id,
+            "mail.send",
+            TAKES_A_NAME,
+            Some(ToolAccessState::ApprovalRequired),
+        ),
+        (&member, &workspace_id, "draft", TAKES_A_NAME, None),
+        (&agent, &workspace_id, "agent.work", TAKES_NOTHING, None),
+        (&owner, &elsewhere, "draft", TAKES_A_NAME, None),
+    ] {
+        fixture
+            .save_tool(author, workspace, path, source, default)
+            .await;
+    }
+
+    let paths = ["agent.work", "draft", "mail.send", "nothing.here"]
+        .map(|path| PrivateToolPath::parse(path).expect("path"));
+    let named = paths.iter().collect::<Vec<_>>();
+    let mut transaction = fixture.database.begin_read_snapshot().await.expect("begin");
+    // (owner, Workspace, the paths it owns there)
+    let owners: [(
+        &AuthenticatedPrincipal,
+        &coral_workspace::WorkspaceId,
+        &[&str],
+    ); 5] = [
+        (&owner, &workspace_id, &["draft", "mail.send"]),
+        (&member, &workspace_id, &["draft"]),
+        (&agent, &workspace_id, &["agent.work"]),
+        (&owner, &elsewhere, &["draft"]),
+        (&member, &elsewhere, &[]),
+    ];
+    for (principal, workspace, owned) in owners {
+        let principal = principal.principal();
+        let case = format!("{principal:?} in {workspace}");
+        let whole =
+            crate::repository::list_current_in_transaction(&mut transaction, workspace, principal)
+                .await
+                .expect("list whole Private Tools");
+        assert_eq!(
+            whole
+                .iter()
+                .map(|tool| tool.path().as_str())
+                .collect::<Vec<_>>(),
+            owned,
+            "{case}"
+        );
+        assert_eq!(
+            crate::repository::list_current_records_in_transaction(
+                &mut transaction,
+                workspace,
+                principal
+            )
+            .await
+            .expect("list records"),
+            whole.iter().map(record_of).collect::<Vec<_>>(),
+            "{case}"
+        );
+        let mut declarations = std::collections::BTreeMap::new();
+        for path in &paths {
+            let whole = crate::repository::find_current_in_transaction(
+                &mut transaction,
+                workspace,
+                principal,
+                path,
+            )
+            .await
+            .expect("find the whole Private Tool");
+            assert_eq!(
+                crate::repository::find_current_record_in_transaction(
+                    &mut transaction,
+                    workspace,
+                    principal,
+                    path
+                )
+                .await
+                .expect("find the record"),
+                whole.as_ref().map(record_of),
+                "{case}: {path:?}"
+            );
+            let path = crate::AuthoredToolPath::Private(path.clone());
+            assert_eq!(
+                crate::authored_tool_key_in_transaction(
+                    &mut transaction,
+                    workspace,
+                    principal,
+                    &path
+                )
+                .await
+                .expect("read the Tool Key"),
+                crate::select_linked_tool_in_transaction(
+                    &mut transaction,
+                    workspace,
+                    principal,
+                    &path
+                )
+                .await
+                .expect("select")
+                .map(|selection| selection.tool_key().clone()),
+                "{case}: {path:?}"
+            );
+            if let Some(whole) = whole {
+                declarations.insert(whole.path().clone(), whole.declaration().clone());
+            }
+        }
+        assert_eq!(
+            crate::repository::current_declarations_in_transaction(
+                &mut transaction,
+                workspace,
+                principal,
+                &named
+            )
+            .await
+            .expect("read declarations"),
+            declarations,
+            "{case}"
+        );
+    }
+    transaction.rollback().await.expect("finish");
+}
+
+// Catches: a save, a delete, a policy target or an access removal that
+// decodes a definition it only names, so that one Private Tool that Coral
+// cannot read fails work that never reads it.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture takes each caller of a narrow read past the same unreadable definitions"
+)]
+async fn private_tool_work_that_only_names_a_tool_decodes_no_definition() {
+    let fixture = PrivateToolTestModules::new().await;
+    let (workspace_id, [owner, member, agent]) =
+        workspace_with_a_member_and_an_agent(&fixture, "user:names-owner", "user:names-member")
+            .await;
+    let path = |path| PrivateToolPath::parse(path).expect("path");
+    let mut ids = std::collections::BTreeMap::new();
+    for (author, at) in [
+        (&owner, "draft"),
+        (&owner, "mail.send"),
+        (&owner, "mail.digest"),
+        (&member, "draft"),
+        (&agent, "agent.work"),
+    ] {
+        let saved = fixture
+            .save_tool(author, &workspace_id, at, TAKES_NOTHING, None)
+            .await;
+        // Its source is now one byte over the authoring bound, so the whole
+        // definition cannot be read.
+        crate::test_fixtures_repository::corrupt_source(
+            &fixture.database,
+            &workspace_id,
+            saved.id(),
+        )
+        .await;
+        ids.insert(
+            (author.principal().id().as_str().to_owned(), at),
+            saved.id().clone(),
+        );
+    }
+    let id_of = |author: &AuthenticatedPrincipal, at| {
+        ids.get(&(author.principal().id().as_str().to_owned(), at))
+            .expect("a saved Private Tool")
+    };
+    let whole = fixture
+        .private_tools
+        .get(&owner, &workspace_id, &path("draft"))
+        .await;
+    assert!(matches!(whole, Err(Error::CorruptData(_))), "{whole:?}");
+
+    let save = |at, source| {
+        PrivateToolSave::new(
+            path(at),
+            AuthoredToolDescription::parse("A private draft").expect("description"),
+            AuthoredToolSource::parse(source).expect("source"),
+        )
+    };
+
+    // A save at a free path decides its namespace by the paths its author
+    // owns, and is typed by the declaration of the Private Tool it names:
+    // it passes that Tool an argument it does not take.
+    let typed = fixture
+        .private_tools
+        .save(
+            &private_tool_change(owner.clone(), 40, 'c'),
+            &workspace_id,
+            save(
+                "typed",
+                "export default async function typed() { return coral.private.draft(1); }",
+            ),
+        )
+        .await
+        .expect("save beside unreadable definitions");
+    assert_eq!(
+        typed
+            .diagnostics()
+            .iter()
+            .map(crate::AuthoredToolDiagnostic::code)
+            .collect::<Vec<_>>(),
+        [2554],
+        "{:?}",
+        typed.diagnostics()
+    );
+
+    // A save in a namespace the author's paths take is refused by those
+    // paths, and saves nothing.
+    let events = async || {
+        fixture
+            .private_tools
+            .list_lifecycle_events(&owner, &workspace_id)
+            .await
+            .expect("list lifecycle Events")
+    };
+    let before = events().await;
+    let conflict = fixture
+        .private_tools
+        .save(
+            &private_tool_change(owner.clone(), 41, 'c'),
+            &workspace_id,
+            save("mail", TAKES_NOTHING),
+        )
+        .await;
+    assert!(
+        matches!(
+            conflict,
+            Err(Error::PathConflict(AuthoredToolKind::Private))
+        ),
+        "{conflict:?}"
+    );
+    let saved = fixture
+        .private_tools
+        .get(&owner, &workspace_id, &path("mail"))
+        .await;
+    assert!(
+        matches!(saved, Err(Error::NotFound(AuthoredToolKind::Private))),
+        "{saved:?}"
+    );
+    assert_eq!(events().await, before);
+
+    // A conditional save reads the revision it expects, and replaces the
+    // Private Tool under its identity.
+    let replaced = fixture
+        .private_tools
+        .save(
+            &private_tool_change(owner.clone(), 42, 'c'),
+            &workspace_id,
+            save("mail.send", TAKES_A_NAME).replace_only(Some(1)),
+        )
+        .await
+        .expect("replace an unreadable definition");
+    assert_eq!(
+        (replaced.id(), replaced.revision()),
+        (id_of(&owner, "mail.send"), 2)
+    );
+
+    // A policy target names the Private Tool by its Tool Key, where a
+    // linked selection of it reads its whole definition.
+    let digest = id_of(&owner, "mail.digest");
+    let named = crate::AuthoredToolPath::Private(path("mail.digest"));
+    let mut transaction = fixture.database.begin_read_snapshot().await.expect("begin");
+    let selection = crate::select_linked_tool_in_transaction(
+        &mut transaction,
+        &workspace_id,
+        owner.principal(),
+        &named,
+    )
+    .await;
+    let key = crate::authored_tool_key_in_transaction(
+        &mut transaction,
+        &workspace_id,
+        owner.principal(),
+        &named,
+    )
+    .await
+    .expect("read the Tool Key");
+    transaction.rollback().await.expect("finish");
+    assert!(
+        matches!(selection, Err(Error::CorruptData(_))),
+        "{selection:?}"
+    );
+    assert_eq!(key, Some(digest.tool_key()));
+
+    // A delete names the Private Tool: the owner's own, an Agent's for a
+    // Workspace Owner, and each one of a Member who loses access.
+    assert_eq!(
+        &fixture
+            .private_tools
+            .delete(
+                &private_tool_change(owner.clone(), 45, 'c'),
+                &workspace_id,
+                &path("mail.digest")
+            )
+            .await
+            .expect("delete an unreadable Private Tool"),
+        digest
+    );
+    assert_eq!(
+        &fixture
+            .delete_agent(
+                &private_tool_change(owner.clone(), 46, 'c'),
+                &workspace_id,
+                agent.principal().id(),
+                &path("agent.work"),
+            )
+            .await
+            .expect("delete an Agent's unreadable Private Tool"),
+        id_of(&agent, "agent.work")
+    );
+    let departure = change(
+        owner.authenticated_user().expect("owner User").clone(),
+        47,
+        'f',
+    );
+    let mut transaction = fixture.database.begin().await.expect("begin");
+    let prepared = fixture
+        .workspaces
+        .prepare_access_removal_in_transaction(
+            &mut transaction,
+            &departure,
+            coral_workspace::AccessRemovalTarget::WorkspaceMember(
+                &workspace_id,
+                member.authenticated_user().expect("member User").user_id(),
+            ),
+        )
+        .await
+        .expect("prepare the Member's removal");
+    let lost = crate::delete_current_for_access_removal_in_transaction(
+        &mut transaction,
+        &departure,
+        &prepared,
+    )
+    .await
+    .expect("delete the departing Member's unreadable Private Tools");
+    transaction.rollback().await.expect("finish");
+    assert_eq!(
+        lost,
+        [(workspace_id.clone(), vec![id_of(&member, "draft").clone()])]
+    );
 }

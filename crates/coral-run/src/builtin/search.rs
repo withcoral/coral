@@ -134,6 +134,10 @@ fn rejection(field: &str, reason: String) -> Rejection {
 /// namespace is named by its place in the `provider` argument as written,
 /// and the namespaces to use come once.
 fn failure(error: coral_search::Error, provider: Option<&ProviderArgument>) -> Error {
+    // Through any module's error that wraps the refusal.
+    if crate::enforcement::ended_authority(error.workspace_refusal()) {
+        return Error::InvocationRejected(CoralFailure::AuthorityLost.into());
+    }
     match error {
         coral_search::Error::UnknownProviderCallRoot {
             ref searchable,
@@ -159,9 +163,6 @@ fn failure(error: coral_search::Error, provider: Option<&ProviderArgument>) -> E
                     .collect(),
             };
             Error::InvocationRejected(Rejection::invalid_inputs(problems))
-        }
-        coral_search::Error::Workspace(error) if crate::enforcement::loses_authority(&error) => {
-            Error::InvocationRejected(CoralFailure::AuthorityLost.into())
         }
         coral_search::Error::PermissionDenied(_) => {
             Error::InvocationRejected(CoralFailure::AuthorityLost.into())

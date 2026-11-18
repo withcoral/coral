@@ -27,6 +27,10 @@ use zeroize::Zeroizing;
 
 use uuid::Uuid;
 
+/// How long one caller's claim on a renewal lasts, from the claim. Other
+/// callers wait for it until then.
+const REFRESH_CLAIM_LIFETIME: std::time::Duration = std::time::Duration::from_mins(1);
+
 // Contention is not an exchange failure. Remember the exact claim so observing
 // its failure cannot silently start or join a retry using the same token.
 struct PendingRefresh {
@@ -161,12 +165,11 @@ impl AccountModule {
         evidence: &CredentialEvidence,
         now: i64,
     ) -> Result<SettledCredentials, Error> {
-        let started = std::time::Instant::now();
+        let started = self.started();
         let trace = coral_telemetry::TraceId::current_or_new();
         let mut pending = None;
         loop {
-            let elapsed = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
-            let current_time = now.saturating_add(elapsed);
+            let current_time = started.now_from(coral_db::UnixNanos::new(now)).get();
             let observed = pending.take();
             let read = self
                 .read_retained(
@@ -395,12 +398,15 @@ impl AccountModule {
             now,
             trace,
         } = *dispatch;
-        let started = std::time::Instant::now();
+        let started = self.started();
         // Only an OAuth contract's token expires.
         let (token_url, scopes, resource) =
             refresh_endpoint(&evidence.contract).ok_or(Error::AccountRequired)?;
         let attempt = Uuid::new_v4().to_string();
-        let deadline = now.checked_add(60_000_000_000).ok_or(Error::AccountInput)?;
+        let deadline = coral_db::UnixNanos::new(now)
+            .checked_add(REFRESH_CLAIM_LIFETIME)
+            .ok_or(Error::Internal(crate::InternalFault::Overflow))?
+            .get();
         let mut tx = self.providers.database.begin().await?;
         if !repository::claim_refresh(&mut tx, row, &attempt, deadline).await? {
             return Ok(CredentialResolution::Changed);
@@ -434,13 +440,12 @@ impl AccountModule {
             },
         )
         .await;
-        let elapsed = i64::try_from(started.elapsed().as_nanos()).unwrap_or(i64::MAX);
         let client_failed = match &result {
             Ok(_) => Some(false),
             Err(Error::OAuthClientConfiguration) => Some(true),
             Err(_) => None,
         };
-        let completed_at = now.saturating_add(elapsed);
+        let completed_at = started.now_from(coral_db::UnixNanos::new(now)).get();
         let completion = self
             .complete_refresh(workspace, row, &attempt, result, completed_at, trace)
             .await;

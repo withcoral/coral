@@ -90,11 +90,12 @@ mod agent;
 pub use access_removal::{AccessRemovalTarget, LostWorkspaceAccess, PreparedAccessRemoval};
 mod governance;
 pub use governance::{OrganizationWorkspace, WorkspaceOwner};
+mod list_repository;
 mod management;
 mod management_repository;
 mod profile;
 mod profile_repository;
-pub use management::{AgentAccessBlocker, AgentInspection, ResourceMetadata};
+pub use management::{AgentAccessBlocker, AgentInspection, ResourceMetadata, WorkspaceInspections};
 pub use profile::{UserProfile, VerifiedUserProfile};
 mod agent_repository;
 mod agent_types;
@@ -124,7 +125,7 @@ pub use agent_types::{
     IssuedAgentCredential,
 };
 pub use coral_telemetry::TraceId;
-pub use error::Error;
+pub use error::{AuthorityRefusal, Denial, Error};
 pub use principal::{
     AuthenticatedPrincipal, AuthenticatedPrincipalId, Principal, PrincipalId, PrincipalKind,
 };
@@ -193,7 +194,7 @@ impl WorkspaceModule {
         let actor = organization::hold_user(transaction, context.actor().user_id()).await?;
         if actor.organization_role().is_none() {
             return Err(Error::PermissionDenied(
-                "current Organization Membership is required to create a Workspace",
+                Denial::OrganizationMembershipRequired,
             ));
         }
         management::claim_request(transaction, context).await?;
@@ -203,14 +204,13 @@ impl WorkspaceModule {
             WorkspaceState::Active,
             1,
         );
-        repository::insert_workspace(transaction, &workspace, context.occurred_at_unix_nanos())
-            .await?;
+        repository::insert_workspace(transaction, &workspace, context.occurred_at()).await?;
         repository::upsert_membership(
             transaction,
             workspace.id(),
             context.actor().user_id(),
             WorkspaceRole::Owner,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
         )
         .await?;
         record_event(
@@ -252,8 +252,8 @@ impl WorkspaceModule {
         let actor = OrganizationModule::new(self.database.clone())
             .resolve_user_authority(actor.user_id())
             .await?;
-        Ok(repository::list_workspaces(&self.database, actor.user_id())
-            .await?
+        let listed = repository::list_workspaces(&*self.database, actor.user_id()).await?;
+        Ok(listed
             .into_iter()
             .map(|(workspace, _role)| workspace)
             .collect())
@@ -273,8 +273,8 @@ impl WorkspaceModule {
         let actor = OrganizationModule::new(self.database.clone())
             .resolve_user_authority(user_id)
             .await?;
-        Ok(repository::list_workspaces(&self.database, actor.user_id())
-            .await?
+        let listed = repository::list_workspaces(&*self.database, actor.user_id()).await?;
+        Ok(listed
             .into_iter()
             .filter(|(workspace, _role)| workspace.state() == WorkspaceState::Active)
             .map(|(workspace, role)| WorkspaceChoice { workspace, role })
@@ -487,7 +487,7 @@ impl WorkspaceModule {
             &mut transaction,
             workspace_id,
             &display_name,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
         )
         .await?;
         record_event(
@@ -645,12 +645,12 @@ impl WorkspaceModule {
         // Hold both Users before Workspace, in stable order. Target disablement
         // cannot race past the prerequisite check, and opposite grants cannot
         // deadlock by taking their actor/target holds in reverse order.
-        let mut users = vec![context.actor().user_id(), target.user_id()];
-        users.sort();
-        users.dedup();
-        for user in users {
-            organization::hold_user(&mut transaction, user).await?;
-        }
+        let target_held = organization::hold_actor_and_target(
+            &mut transaction,
+            context.actor(),
+            target.user_id(),
+        )
+        .await?;
         let evidence = locked_authority(
             &mut transaction,
             context.actor(),
@@ -658,15 +658,8 @@ impl WorkspaceModule {
             AuthorityAction::Public(WorkspaceAction::Configure),
         )
         .await?;
-        if organization::current_user(&mut transaction, target.user_id())
-            .await?
-            .organization_role()
-            .is_none()
-        {
-            return Err(Error::PermissionDenied(
-                "a Workspace Membership requires current Organization Membership",
-            ));
-        }
+        organization::require_enabled_target(&mut transaction, target_held, target.user_id())
+            .await?;
         let previous = repository::membership_role_in_transaction(
             &mut transaction,
             workspace_id,
@@ -709,7 +702,7 @@ impl WorkspaceModule {
             workspace_id,
             target.user_id(),
             role,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
         )
         .await?;
         record_event(
@@ -770,12 +763,12 @@ impl WorkspaceModule {
         actor: &AuthenticatedUser,
         workspace_id: &WorkspaceId,
     ) -> Result<Vec<WorkspaceMembership>, Error> {
-        Ok(self
-            .inspect_memberships(actor, workspace_id)
-            .await?
-            .into_iter()
-            .map(|(membership, _metadata, _profile, _enabled)| membership)
-            .collect())
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        self.check_owner_inspection_in_transaction(&mut transaction, actor, workspace_id)
+            .await?;
+        let memberships = repository::list_memberships(&mut transaction, workspace_id).await?;
+        transaction.commit().await?;
+        Ok(memberships)
     }
 
     /// Lists safe Workspace-domain Administrative Lifecycle Events.
@@ -852,7 +845,7 @@ impl WorkspaceModule {
             workspace_id,
             next_state,
             next_version,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
         )
         .await?;
         record_event(
@@ -922,9 +915,7 @@ fn authorize(
         | AuthorityAction::Administer => true,
     };
     if requires_owner && effective_role != WorkspaceRole::Owner {
-        return Err(Error::PermissionDenied(
-            "Workspace Owner authority is required",
-        ));
+        return Err(Error::PermissionDenied(Denial::WorkspaceOwnerRequired));
     }
 
     if matches!(
@@ -1024,9 +1015,10 @@ async fn locked_authority(
     user_workspace_authority(transaction, &actor, workspace_id, action).await
 }
 
+/// A caller with no Organization Membership sees no Workspace.
 fn conceal_missing_user(error: Error) -> Error {
     match error {
-        Error::PermissionDenied(_) => Error::WorkspaceNotFound,
+        Error::PermissionDenied(Denial::NoOrganizationMembership) => Error::WorkspaceNotFound,
         other => other,
     }
 }
@@ -1063,7 +1055,7 @@ async fn record_event(
             target_kind: detail.target_kind,
             target_id: detail.target_id,
             changed_field_paths: detail.changed_field_paths,
-            occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+            occurred_at: context.occurred_at(),
             trace_id: context.trace_id(),
         },
     )

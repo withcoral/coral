@@ -295,12 +295,19 @@ impl OidcProviderClient {
         })
     }
 
+    /// Verifies the tokens of one code exchange.
+    ///
+    /// It reads `clock` once, after the provider's keys arrive: the provider
+    /// issued the tokens during the sign-in, so an instant read before its
+    /// answers would date them in the future. The instant comes back with
+    /// the identity, to date what the sign-in decides next.
     pub(super) async fn validate_code_exchange(
         &self,
         provider: &ResolvedOidcProvider,
         exchange: OidcCodeExchange,
         expected_nonce: &str,
-    ) -> Result<ValidatedOidcIdentity, OidcProviderClientError> {
+        clock: &dyn coral_db::Clock,
+    ) -> Result<(ValidatedOidcIdentity, coral_db::UnixNanos), OidcProviderClientError> {
         let OidcCodeExchange {
             id_token,
             access_token,
@@ -322,12 +329,14 @@ impl OidcProviderClient {
             .await
             .map_err(|_error| OidcProviderClientError::Jwks)?;
         let jwks = serde_json::from_slice(&body).map_err(|_error| OidcProviderClientError::Jwks)?;
+        let now = clock.now();
         let identity = validate_id_token(
             provider,
             &id_token,
             expected_nonce,
             &signing_algorithms,
             &jwks,
+            now,
         );
         drop(id_token);
         let identity = identity.map_err(OidcProviderClientError::IdTokenValidation)?;
@@ -336,9 +345,10 @@ impl OidcProviderClient {
             access_token.as_ref().map(|token| token.as_str()),
             &identity,
             &jwks,
+            now,
         )
         .map_err(OidcProviderClientError::AccessTokenAdmission)?;
-        Ok(identity)
+        Ok((identity, now))
     }
 
     /// Returns the provider's validated discovery document, reusing a cached
@@ -718,8 +728,22 @@ mod tests {
 
     use super::*;
     use crate::auth::id_token::tests::{
-        claims as id_token_claims, rsa_key, set_claim, token as id_token,
+        claims_at as id_token_claims_at, rsa_key, set_claim, token as id_token,
     };
+
+    /// The instant these tests' provider issues its tokens at and the client
+    /// validates them at, in 2100: no real clock is near it.
+    const NOW: coral_db::UnixNanos = coral_db::UnixNanos::new(4_102_444_800 * 1_000_000_000);
+
+    /// A clock that reads [`NOW`].
+    fn clock() -> coral_test_support::ManualClock {
+        coral_test_support::ManualClock::starting_at(NOW)
+    }
+
+    /// The claims of an ID token that is valid at [`NOW`].
+    fn id_token_claims() -> Value {
+        id_token_claims_at(NOW)
+    }
 
     const CLIENT_SECRET: &str = "client-secret-must-not-leak";
 
@@ -1203,7 +1227,7 @@ mod tests {
         };
         assert_eq!(
             client
-                .validate_code_exchange(&provider, exchange, "nonce")
+                .validate_code_exchange(&provider, exchange, "nonce", &clock())
                 .await
                 .err(),
             Some(OidcProviderClientError::Jwks)
@@ -1433,9 +1457,10 @@ mod tests {
             .await;
         let client = OidcProviderClient::new(loopback_policy()).expect("client");
         let identity = client
-            .validate_code_exchange(&provider, exchange, "expected-nonce")
+            .validate_code_exchange(&provider, exchange, "expected-nonce", &clock())
             .await
-            .expect("identity");
+            .expect("identity")
+            .0;
         assert_eq!(identity.subject, "subject");
         assert_eq!(identity.display_name.as_deref(), Some("User"));
         // With the keys fetched, a refused token names its check, not the fetch.
@@ -1444,6 +1469,7 @@ mod tests {
                 &provider,
                 validation_exchange(&server.uri()),
                 "another-nonce",
+                &clock(),
             )
             .await
             .map(|_identity| ())
@@ -1517,7 +1543,7 @@ mod tests {
                 .await
                 .expect("code exchange");
             let error = client
-                .validate_code_exchange(&provider, exchange, "expected-nonce")
+                .validate_code_exchange(&provider, exchange, "expected-nonce", &clock())
                 .await
                 .err();
             assert_eq!(
@@ -1548,6 +1574,7 @@ mod tests {
                     &provider("http://localhost/issuer"),
                     validation_exchange(&server.uri()),
                     "nonce-secret",
+                    &clock(),
                 )
                 .await
                 .map(|_| ())
@@ -1576,6 +1603,7 @@ mod tests {
                 &provider("http://localhost/issuer"),
                 validation_exchange(&server.uri()),
                 "nonce-secret",
+                &clock(),
             )
             .await
             .map(|_| ())
@@ -1627,6 +1655,7 @@ mod tests {
                             &provider("http://localhost/issuer"),
                             validation_exchange(&issuer),
                             "expected-nonce",
+                            &clock(),
                         )
                         .await
                         .err(),

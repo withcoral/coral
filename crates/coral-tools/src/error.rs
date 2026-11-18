@@ -82,9 +82,6 @@ pub enum Error {
     /// A compiler worker stopped before returning its result.
     #[error("the authoring compiler worker stopped unexpectedly")]
     CompilerWorkerStopped,
-    /// The clock could not provide safe durable time evidence.
-    #[error("the authoring clock failed: {0}")]
-    Clock(String),
     /// Diagnostics or lifecycle fields could not be encoded.
     #[error("authored Tool evidence JSON was invalid: {0}")]
     Json(#[from] serde_json::Error),
@@ -142,7 +139,6 @@ impl Error {
             Self::NoCompiler => "no_compiler",
             Self::CompilerUnavailable { .. } => "compiler_unavailable",
             Self::CompilerWorkerStopped { .. } => "compiler_worker_stopped",
-            Self::Clock { .. } => "clock",
             Self::Json { .. } => "json",
             Self::Workspace { .. } => "workspace",
             Self::CorruptData { .. } => "corrupt_data",
@@ -150,14 +146,93 @@ impl Error {
         }
     }
 
+    /// The database error behind this one, directly or through the
+    /// Workspace error that wraps it. A module that wraps this error asks
+    /// here, so it never lists another module's variants.
+    #[must_use]
+    pub const fn database_error(&self) -> Option<&coral_db::Error> {
+        match self {
+            Self::Database(error) => Some(error),
+            Self::Workspace(error) => error.database_error(),
+            // Name every variant so a new one that holds a database error
+            // is found here.
+            Self::InvalidInput(_)
+            | Self::NotFound(_)
+            | Self::PrivateToolExists
+            | Self::RevisionConflict { .. }
+            | Self::Admission(..)
+            | Self::SharedToolSourceUnreadable
+            | Self::SharedToolRestoreDiffers
+            | Self::SharedToolDeclarationChanged
+            | Self::SharedToolHasDependents { .. }
+            | Self::PathConflict(_)
+            | Self::NotData(..)
+            | Self::CompilationTimedOut(_)
+            | Self::CompilerBusy
+            | Self::NoCompiler
+            | Self::PermissionDenied(_)
+            | Self::CompilerUnavailable(_)
+            | Self::CompilerWorkerStopped
+            | Self::Json(_)
+            | Self::CorruptData(_) => None,
+        }
+    }
+
+    /// The database error behind this one, by value, or this error back
+    /// when it holds none. [`Self::database_error`] says which it is.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error itself when no database error is behind it.
+    pub fn into_database_error(self) -> Result<coral_db::Error, Self> {
+        match self {
+            Self::Database(error) => Ok(error),
+            Self::Workspace(error) => error.into_database_error().map_err(Self::Workspace),
+            other => {
+                debug_assert!(other.database_error().is_none());
+                Err(other)
+            }
+        }
+    }
+
+    /// The Workspace refusal this error wraps, directly or through another
+    /// module's error. A refusal reads the same whichever module wrapped
+    /// it, so a caller reports it without naming that module's variants.
+    #[must_use]
+    pub const fn workspace_refusal(&self) -> Option<coral_workspace::AuthorityRefusal> {
+        match self {
+            Self::Workspace(error) => error.refusal(),
+            // Name every variant so a new one that wraps a Workspace error
+            // is found here.
+            Self::Database(_)
+            | Self::InvalidInput(_)
+            | Self::NotFound(_)
+            | Self::PrivateToolExists
+            | Self::RevisionConflict { .. }
+            | Self::Admission(..)
+            | Self::SharedToolSourceUnreadable
+            | Self::SharedToolRestoreDiffers
+            | Self::SharedToolDeclarationChanged
+            | Self::SharedToolHasDependents { .. }
+            | Self::PathConflict(_)
+            | Self::NotData(..)
+            | Self::CompilationTimedOut(_)
+            | Self::CompilerBusy
+            | Self::NoCompiler
+            | Self::PermissionDenied(_)
+            | Self::CompilerUnavailable(_)
+            | Self::CompilerWorkerStopped
+            | Self::Json(_)
+            | Self::CorruptData(_) => None,
+        }
+    }
+
     /// Returns a definite safe rejection; operational uncertainty has no invented outcome.
     #[must_use]
     pub fn safe_rejection(&self) -> Option<(&'static str, String)> {
         use AuthoredToolKind::{Private, Shared};
-        if let Self::Workspace(error) = self {
-            return error
-                .safe_rejection()
-                .map(|(code, message)| (code, message.to_owned()));
+        if let Some(refusal) = self.workspace_refusal() {
+            return Some((refusal.code(), refusal.message().to_owned()));
         }
         let code = match self {
             Self::InvalidInput(_) => "invalid_input",
@@ -185,5 +260,38 @@ impl Error {
             code,
             coral_v8::bounded_diagnostic_message(&self.to_string()),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    // Catches: a database error that a caller of Tools cannot find, so an
+    // unanswered write reads as a definite answer.
+    #[test]
+    fn a_tools_error_states_the_database_error_behind_it() {
+        let unanswered = || coral_db::Error::WriterBusy;
+        for (error, label) in [
+            (Error::Database(unanswered()), "tools"),
+            (
+                Error::Workspace(coral_workspace::Error::Database(unanswered())),
+                "workspace",
+            ),
+        ] {
+            assert!(
+                error
+                    .database_error()
+                    .is_some_and(coral_db::Error::is_unanswered),
+                "{label}"
+            );
+        }
+        for error in [
+            Error::PrivateToolExists,
+            Error::CorruptData("row".into()),
+            Error::Workspace(coral_workspace::Error::WorkspaceArchived),
+        ] {
+            assert!(error.database_error().is_none(), "{error:?}");
+        }
     }
 }

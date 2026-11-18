@@ -237,16 +237,16 @@ async function linkCurrentTargets(
     const paths = new Set(
       await listedOrNone(async () => {
         const all: string[] = []
-        let pageToken = ''
+        let after = ''
         do {
           const page = await api.privateTools.listPrivateTools({
             parent: workspace,
             pageSize: 100,
-            pageToken,
+            after,
           })
           all.push(...page.privateTools.map((privateTool) => privateTool.path))
-          pageToken = page.nextPageToken
-        } while (pageToken)
+          after = page.nextAfter
+        } while (after)
         return all
       }),
     )

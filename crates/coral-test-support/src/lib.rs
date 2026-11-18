@@ -11,12 +11,14 @@ mod context;
 mod keys;
 mod migration;
 mod organization;
+mod paging;
 mod provider;
 mod secret_store;
 pub use context::{change, trace};
 pub use keys::{RSA_TEST_PRIVATE_KEY_DER, RSA_TEST_PUBLIC_MODULUS, p256_pkcs8};
 pub use migration::{edited_migration_plan, migration_plan_before, migration_plan_with};
 pub use organization::provision_user;
+pub use paging::{page_request, read_pages};
 pub use provider::fixture_request_id;
 pub use secret_store::{InMemorySecretStore, secret_stores};
 
@@ -36,16 +38,69 @@ pub const EVENTUALLY: Duration = Duration::from_secs(60);
 
 /// The system clock as Unix nanoseconds, for a test whose subject reads the
 /// system clock itself, such as a server that authenticates a token the test
-/// issues. A test that passes its subject the time uses a fixed one instead.
-///
-/// # Panics
-/// Panics when the system clock is before the Unix epoch.
+/// issues. A test that passes its subject the time uses a fixed one instead,
+/// and a test whose subject holds a [`coral_db::Clock`] gives it a
+/// [`ManualClock`].
 #[must_use]
 pub fn now_unix_nanos() -> i64 {
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock");
-    i64::try_from(elapsed.as_nanos()).expect("Unix nanoseconds")
+    coral_db::Clock::now(&coral_db::SystemClock).get()
+}
+
+/// A clock that reads the instant a test last set.
+///
+/// A test gives its subject a clone and keeps one, then moves time with
+/// [`ManualClock::advance`]: every clone reads the same instant.
+#[derive(Debug, Clone)]
+pub struct ManualClock {
+    now: Arc<std::sync::atomic::AtomicI64>,
+}
+
+impl ManualClock {
+    /// A clock that reads `now` until the test moves it.
+    #[must_use]
+    pub fn starting_at(now: coral_db::UnixNanos) -> Self {
+        Self {
+            now: Arc::new(std::sync::atomic::AtomicI64::new(now.get())),
+        }
+    }
+
+    /// A clock that starts at the system clock's reading, for a subject
+    /// whose other inputs carry real time, such as a signed token.
+    #[must_use]
+    pub fn starting_now() -> Self {
+        Self::starting_at(coral_db::Clock::now(&coral_db::SystemClock))
+    }
+
+    /// Makes every clone read `now`.
+    pub fn set(&self, now: coral_db::UnixNanos) {
+        self.now
+            .store(now.get(), std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Moves every clone's reading forward by `span`.
+    ///
+    /// # Panics
+    /// Panics when the new instant is past what a row can hold.
+    pub fn advance(&self, span: Duration) {
+        // One atomic step, so that two advances at once both count.
+        self.now
+            .try_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |now| {
+                    coral_db::UnixNanos::new(now)
+                        .checked_add(span)
+                        .map(coral_db::UnixNanos::get)
+                },
+            )
+            .expect("an instant a row can hold");
+    }
+}
+
+impl coral_db::Clock for ManualClock {
+    fn now(&self) -> coral_db::UnixNanos {
+        coral_db::UnixNanos::new(self.now.load(std::sync::atomic::Ordering::SeqCst))
+    }
 }
 
 pub use coral_credentials::CredentialValues as FixtureCredentialValues;
@@ -126,6 +181,18 @@ impl TestDatabase {
     #[must_use]
     pub fn database(&self) -> Arc<Database> {
         self.database.clone()
+    }
+
+    /// How many statements the fixture's database handle has sent, on either
+    /// database: one for each call that executes or fetches, inside a
+    /// transaction or not.
+    ///
+    /// A test reads this before and after an operation and asserts on the
+    /// difference, for example that a list sends as many statements for
+    /// twelve rows as for two. A peer handle keeps its own count.
+    #[must_use]
+    pub fn statements_sent(&self) -> u64 {
+        self.database.statements_sent()
     }
 
     /// Returns the connection options for this fixture's isolated storage.
@@ -455,6 +522,20 @@ fn optional_environment(name: &str) -> Result<Option<String>, TestDatabaseError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_clone_of_a_manual_clock_reads_what_one_of_them_set() {
+        use coral_db::Clock as _;
+
+        let clock = ManualClock::starting_at(coral_db::UnixNanos::new(1_000));
+        let held_by_the_subject = clock.clone();
+
+        clock.advance(Duration::from_nanos(500));
+        assert_eq!(held_by_the_subject.now(), coral_db::UnixNanos::new(1_500));
+
+        held_by_the_subject.set(coral_db::UnixNanos::new(40));
+        assert_eq!(clock.now(), coral_db::UnixNanos::new(40));
+    }
 
     static MIGRATOR: std::sync::LazyLock<coral_db::MigrationPlan> =
         std::sync::LazyLock::new(|| {

@@ -20,12 +20,6 @@ use crate::{PrincipalAuthentication, PrivateAudience, SessionTokenIssuer};
 pub(super) const NOW: i64 = 1_800_000_000_000_000_000;
 pub(super) const SECOND: i64 = 1_000_000_000;
 
-/// A host time on the system clock, for a test that authenticates the access
-/// tokens it is issued: authentication reads the system clock. It is ten
-/// seconds back, so a token issued seconds after it is not from the future.
-pub(super) fn real_now() -> i64 {
-    coral_test_support::now_unix_nanos() - 10 * SECOND
-}
 pub(super) const CLIENT: &str = "https://client.example.test/oauth/client.json";
 const REDIRECT: &str = "http://127.0.0.1:14554/callback";
 pub(super) const REEF: &str = "https://reef.example.test";
@@ -170,7 +164,7 @@ impl Fixture {
             refresh_eligible,
         };
         self.codes
-            .issue(&code, &sign_in, &grant, now)
+            .issue(&code, &sign_in, &grant, coral_db::UnixNanos::new(now))
             .await
             .unwrap();
         code
@@ -197,7 +191,7 @@ impl Fixture {
                     resource,
                 },
                 target,
-                now,
+                coral_db::UnixNanos::new(now),
             )
             .await
     }
@@ -232,23 +226,36 @@ impl Fixture {
         now: i64,
     ) -> Result<IssuedTokens, TokenRefusal> {
         self.tokens
-            .refresh(token, plain_refresh(&self.client), now)
+            .refresh(
+                token,
+                plain_refresh(&self.client),
+                coral_db::UnixNanos::new(now),
+            )
             .await
     }
 
-    /// Authenticates `access_token` at the fixture Workspace's private MCP
-    /// surface, on the system clock: issue the token at [`real_now`].
-    pub(super) async fn authenticates(&self, access_token: &str) -> bool {
+    /// Authentication over the fixture's issuer and database, at a clock
+    /// that reads ten seconds after [`NOW`]: every access token these tests
+    /// authenticate is issued by then and has not expired.
+    pub(super) fn authentication(&self) -> PrincipalAuthentication {
+        let soon = coral_db::UnixNanos::new(NOW + 10 * SECOND);
         PrincipalAuthentication::new(
             &self.issuer,
             OrganizationModule::new(self.database.database()),
             WorkspaceModule::new(self.database.database()),
+            std::sync::Arc::new(coral_test_support::ManualClock::starting_at(soon)),
         )
-        .authenticate_scoped(&self.workspace, Some(access_token), "mcp")
-        .await
-        .is_ok_and(|principal: AuthenticatedPrincipal| {
-            principal.principal().id().as_str() == self.user.user_id().as_str()
-        })
+    }
+
+    /// Authenticates `access_token` at the fixture Workspace's private MCP
+    /// surface.
+    pub(super) async fn authenticates(&self, access_token: &str) -> bool {
+        self.authentication()
+            .authenticate_scoped(&self.workspace, Some(access_token), "mcp")
+            .await
+            .is_ok_and(|(principal, _now): (AuthenticatedPrincipal, _)| {
+                principal.principal().id().as_str() == self.user.user_id().as_str()
+            })
     }
 }
 
@@ -272,7 +279,7 @@ pub(super) fn refresh_token(issued: &IssuedTokens) -> String {
 #[tokio::test]
 async fn a_refresh_rotates_the_token_and_keeps_the_user_and_workspace() {
     let fixture = Fixture::new().await;
-    let now = real_now();
+    let now = NOW;
     let first = fixture.refreshable_at(now).await;
     let refreshed = fixture.refresh(&first, now + SECOND).await.unwrap();
     assert!(
@@ -299,7 +306,7 @@ async fn a_client_that_did_not_declare_refresh_gets_an_access_token_alone() {
             &fixture.workspace_resource(),
             AccessTarget::PrivateMcp(fixture.workspace.clone()),
             false,
-            real_now(),
+            NOW,
         )
         .await
         .unwrap();
@@ -387,7 +394,10 @@ async fn a_refresh_must_repeat_the_grants_bindings_and_a_mismatch_spends_nothing
         ),
     ] {
         at += SECOND;
-        let outcome = fixture.tokens.refresh(&token, request, at).await;
+        let outcome = fixture
+            .tokens
+            .refresh(&token, request, coral_db::UnixNanos::new(at))
+            .await;
         if accepted {
             token = refresh_token(&outcome.expect(case));
         } else {
@@ -457,7 +467,7 @@ async fn revocation_ends_the_grant_for_its_own_client_only() {
             .await,
         Ok(())
     );
-    let now = real_now();
+    let now = NOW;
     let first = fixture.refreshable_at(now).await;
     let issued = fixture.refresh(&first, now + SECOND).await.unwrap();
     let current = refresh_token(&issued);
@@ -494,7 +504,11 @@ async fn concurrent_rotations_of_one_token_never_both_succeed() {
         let (token, client) = (token.clone(), fixture.client.clone());
         refreshes.spawn(async move {
             tokens
-                .refresh(&token, plain_refresh(&client), NOW + SECOND)
+                .refresh(
+                    &token,
+                    plain_refresh(&client),
+                    coral_db::UnixNanos::new(NOW + SECOND),
+                )
                 .await
         });
     }
@@ -508,9 +522,13 @@ async fn concurrent_rotations_of_one_token_never_both_succeed() {
     assert!(successors.len() <= 1, "{} rotations won", successors.len());
     for successor in successors {
         assert_eq!(
-            peer.refresh(&successor, plain_refresh(&fixture.client), NOW + 2 * SECOND)
-                .await
-                .err(),
+            peer.refresh(
+                &successor,
+                plain_refresh(&fixture.client),
+                coral_db::UnixNanos::new(NOW + 2 * SECOND)
+            )
+            .await
+            .err(),
             Some(TokenRefusal::InvalidGrant)
         );
     }
@@ -547,7 +565,7 @@ async fn a_revocation_racing_a_refresh_leaves_nothing_refreshable() {
 #[tokio::test]
 async fn refresh_rechecks_current_organization_membership() {
     let fixture = Fixture::new().await;
-    let now = real_now();
+    let now = NOW;
     let token = fixture.refreshable_at(now).await;
     let owner = provision_user(
         fixture.database.database(),
@@ -689,7 +707,7 @@ async fn a_user_holds_a_bounded_number_of_grants_per_client() {
                 client: &fixture.other,
                 ..plain_refresh(&fixture.client)
             },
-            later,
+            coral_db::UnixNanos::new(later),
         )
         .await
         .expect("another client's grant survives");

@@ -1,6 +1,5 @@
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicUsize;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use coral_test_support::TestDatabase;
 use hyper_util::rt::TokioIo;
@@ -261,9 +260,8 @@ impl Link {
         timeout(Duration::from_secs(5), found).await.unwrap()
     }
 
-    /// Run Executor `id`'s lease row: its kind, and its lease in Unix
-    /// nanoseconds.
-    async fn lease(&self, id: &str) -> Option<(String, i64)> {
+    /// Run Executor `id`'s lease row: its kind, and when its lease ends.
+    async fn lease(&self, id: &str) -> Option<(String, coral_db::UnixNanos)> {
         let database = self.database.database();
         let mut transaction = database.begin_read_snapshot().await.unwrap();
         let select = sea_query::Query::select()
@@ -482,12 +480,11 @@ async fn the_lease_is_written_at_welcome_and_renewed_only_while_the_stream_is_op
     let channel = link.connect().await;
     let hello = hello(PROTOCOL_LEVEL, 1);
     let id = hello.run_executor_id.clone();
-    let before = SystemTime::now() + LEASE;
+    let before = crate::time::unix_now().saturating_add(LEASE);
     let pull = link.welcomed(&channel, hello).await;
 
     let (kind, written) = link.lease(&id).await.unwrap();
     assert_eq!(kind, "dialed");
-    let before = i64::try_from(before.duration_since(UNIX_EPOCH).unwrap().as_nanos()).unwrap();
     assert!(written >= before, "the lease lasts {LEASE:?} past Welcome");
     let renewed = async {
         while link.lease(&id).await.unwrap().1 <= written {

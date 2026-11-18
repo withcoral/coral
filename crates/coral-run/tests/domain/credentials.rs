@@ -677,14 +677,7 @@ async fn a_token_renewed_during_the_enforcement_check_is_the_one_dispatched() {
     .unwrap()
     .unwrap();
     tx.commit().await.unwrap();
-    let far_future = i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    )
-    .unwrap()
-        + 4_000_000_000_000;
+    let far_future = coral_test_support::now_unix_nanos() + 4_000_000_000_000;
     assert_eq!(
         account
             .accounts
@@ -977,6 +970,104 @@ async fn a_path_argument_cannot_send_shared_credentials_to_an_undeclared_endpoin
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
     server.verify().await;
+}
+
+/// A credential header that the planned request already holds is a fault in
+/// the Provider's stored configuration, not a missing account. The call fails as an
+/// unavailable Tool, the Program can catch that and go on, and nothing is
+/// sent.
+#[tokio::test]
+async fn a_credential_that_collides_with_the_planned_request_makes_the_tool_unavailable() {
+    let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
+    let mut fixture = TestModules::with_upstream(
+        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
+        upstream.clone(),
+    )
+    .await;
+    let mut tool = fixture
+        .user_tool("user:credential-collision", "Credential collision")
+        .await;
+    let document = serde_json::json!({
+        "openapi":"3.1.0", "info":{"title":"Private weather","version":"1"},
+        "servers":[{"url":"https://upstream.example"}],
+        "paths":{"/forecast":{"post":{
+            "operationId":"getForecast",
+            "requestBody":{"content":{"application/json":{"schema":{"type":"object"}}}},
+            "responses":{"200":{"description":"Forecast"}}
+        }}}
+    });
+    let (_directory, accounts) = Box::pin(configure_authored_provider(
+        &fixture,
+        &mut tool,
+        &document,
+        coral_catalog::AuthenticationConfiguration::HeaderCredentials {
+            headers: std::collections::BTreeMap::from([(
+                "x-api-key".into(),
+                coral_catalog::HeaderBinding::Field {
+                    field: "api_key".into(),
+                    prefix: String::new(),
+                },
+            )]),
+        },
+        std::collections::BTreeMap::from([(
+            "api_key".to_string(),
+            coral_catalog::CredentialField {
+                label: "API key".into(),
+                description: String::new(),
+                sensitive: true,
+            },
+        )]),
+        coral_credentials::CredentialValues::new(std::collections::BTreeMap::from([(
+            "api_key".to_string(),
+            Secret::new("collision-canary".into()).unwrap(),
+        )]))
+        .unwrap(),
+    ))
+    .await;
+    // A Provider published before setup refused this header keeps it in its
+    // stored Generation and Account: the credential goes in the header that
+    // the request body plans.
+    for statement in [
+        "UPDATE provider_generations \
+         SET credential_contract = REPLACE(credential_contract, 'x-api-key', 'content-type')",
+        "UPDATE materialized_tools \
+         SET definition_json = REPLACE(definition_json, 'x-api-key', 'content-type')",
+        "UPDATE provider_accounts \
+         SET contract = REPLACE(contract, 'x-api-key', 'content-type')",
+    ] {
+        fixture
+            .test_database
+            .execute_fixture_sql(statement)
+            .await
+            .unwrap();
+    }
+    fixture.runs = fixture.runs.with_accounts(accounts);
+    let accepted = fixture
+        .runs
+        .start(
+            &tool.principal,
+            &tool.workspace_id,
+            submission(
+                "try { await coral.providers.weather.getForecast({body: {}}); } catch (error) { return error.code; }",
+            ),
+        )
+        .await
+        .unwrap();
+    let terminal = wait_for_terminal(
+        &fixture.runs,
+        &tool.principal,
+        &tool.workspace_id,
+        accepted.run_id(),
+    )
+    .await;
+    let Some(RunTerminalOutcome::Succeeded {
+        final_value: FinalValue::Present(value),
+    }) = terminal.terminal_outcome()
+    else {
+        panic!("the Program should catch the failure: {terminal:?}");
+    };
+    assert_eq!(value.as_json(), &serde_json::json!("tool_unavailable"));
+    assert_eq!(upstream.sends.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]

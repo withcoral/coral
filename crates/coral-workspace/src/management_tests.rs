@@ -1,5 +1,6 @@
 use super::{change, organization_user, test_module};
 use crate::{Error, MembershipChange, OrganizationRole, WorkspaceDisplayName, WorkspaceRole};
+use coral_db::UnixNanos;
 
 #[tokio::test]
 #[expect(
@@ -48,7 +49,7 @@ async fn exact_email_grant_resolves_one_verified_user_and_never_retargets_replay
         .unwrap();
         tx.commit().await.unwrap();
     };
-    refresh(alice.user_id(), "Alice+tag@Example.test", 1).await;
+    refresh(alice.user_id(), "Alice+tag@Example.test", UnixNanos::new(1)).await;
     let request = change(owner.clone(), 20, '2')
         .with_request_id(&uuid::Uuid::new_v4().to_string())
         .unwrap();
@@ -87,8 +88,8 @@ async fn exact_email_grant_resolves_one_verified_user_and_never_retargets_replay
             .await,
         Err(Error::RequestAlreadyApplied)
     ));
-    refresh(alice.user_id(), "different@example.test", 2).await;
-    refresh(bob.user_id(), "alice+tag@example.test", 3).await;
+    refresh(alice.user_id(), "different@example.test", UnixNanos::new(2)).await;
+    refresh(bob.user_id(), "alice+tag@example.test", UnixNanos::new(3)).await;
     assert!(matches!(
         module
             .grant_membership_by_email(
@@ -154,7 +155,7 @@ async fn email_grant_serializes_resolution_with_profile_ingestion() {
         &mut tx,
         alice.user_id(),
         crate::VerifiedUserProfile::new(None, Some("race@example.test"), Some(true), None),
-        1,
+        UnixNanos::new(1),
     )
     .await
     .unwrap();
@@ -183,7 +184,7 @@ async fn email_grant_serializes_resolution_with_profile_ingestion() {
         &mut tx,
         bob.user_id(),
         crate::VerifiedUserProfile::new(None, Some("race@example.test"), Some(true), None),
-        2,
+        UnixNanos::new(2),
     )
     .await
     .unwrap();
@@ -232,7 +233,10 @@ async fn management_metadata_preserves_creation_time_and_scopes_membership_etags
         .await
         .unwrap();
     assert_ne!(first_member.etag, second_member.etag);
-    assert_eq!((initial.created_at, initial.updated_at), (10, 10));
+    assert_eq!(
+        (initial.created_at, initial.updated_at),
+        (UnixNanos::new(10), UnixNanos::new(10))
+    );
 
     module
         .update_display_name(
@@ -246,7 +250,10 @@ async fn management_metadata_preserves_creation_time_and_scopes_membership_etags
         .unwrap();
     let (_, updated) = module.inspect_workspace(&owner, first).await.unwrap();
     assert_ne!(updated.etag, initial.etag);
-    assert_eq!((updated.created_at, updated.updated_at), (10, 20));
+    assert_eq!(
+        (updated.created_at, updated.updated_at),
+        (UnixNanos::new(10), UnixNanos::new(20))
+    );
     assert!(matches!(
         module
             .update_display_name(
@@ -262,14 +269,17 @@ async fn management_metadata_preserves_creation_time_and_scopes_membership_etags
     let (evidence, unchanged) = module.inspect_workspace(&owner, first).await.unwrap();
     assert_eq!(evidence.workspace().display_name().as_str(), "Renamed");
     assert_eq!(unchanged.etag, updated.etag);
-    assert_eq!(unchanged.updated_at, 20);
+    assert_eq!(unchanged.updated_at, UnixNanos::new(20));
     for (workspace, original) in [(first, first_member), (second, second_member)] {
         let (_, member, _) = module
             .inspect_membership(&owner, workspace, owner.user_id())
             .await
             .unwrap();
         assert_eq!(member.etag, original.etag);
-        assert_eq!((member.created_at, member.updated_at), (10, 10));
+        assert_eq!(
+            (member.created_at, member.updated_at),
+            (UnixNanos::new(10), UnixNanos::new(10))
+        );
     }
 }
 
@@ -361,7 +371,7 @@ async fn refresh_profile(
         &mut tx,
         user,
         crate::VerifiedUserProfile::new(Some("Person"), Some(email), Some(verified), None),
-        at,
+        UnixNanos::new(at),
     )
     .await
     .unwrap();
@@ -454,7 +464,9 @@ async fn email_grants_require_one_current_verified_exact_address() {
         .unwrap();
     assert!(matches!(
         grant_by_email(&module, &bob, workspace.id(), "alice+tag@example.test").await,
-        Err(Error::PermissionDenied(_))
+        Err(Error::PermissionDenied(
+            crate::Denial::WorkspaceOwnerRequired
+        ))
     ));
     module
         .archive(&change(owner.clone(), 60, '6'), workspace.id())

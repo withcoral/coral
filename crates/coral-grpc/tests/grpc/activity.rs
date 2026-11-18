@@ -315,7 +315,11 @@ async fn execution_transport_keeps_large_exact_output_out_of_roots_and_detail_in
         .unwrap();
     let agent = f
         .workspaces
-        .authenticate_agent(f.workspace.id(), issued.credential.expose(), 2)
+        .authenticate_agent(
+            f.workspace.id(),
+            issued.credential.expose(),
+            coral_db::UnixNanos::new(2),
+        )
         .await
         .unwrap();
     let agent_run = f

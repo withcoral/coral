@@ -110,7 +110,7 @@ mod search;
 mod types;
 mod validators;
 
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 
 #[cfg(test)]
 use coral_v8 as _;
@@ -241,7 +241,7 @@ pub async fn publish_generation_in_transaction(
     setup_input: &ProviderSetupInput,
     input_digest: &ProviderSetupInputDigest,
     prepared: PreparedProviderCatalog,
-    created_at_unix_nanos: i64,
+    created_at: UnixNanos,
 ) -> Result<ProviderGenerationId, Error> {
     repository::publish_generation(
         transaction,
@@ -249,7 +249,7 @@ pub async fn publish_generation_in_transaction(
         input_digest,
         prepared,
         materializer_version(setup_input.kind()),
-        created_at_unix_nanos,
+        created_at,
     )
     .await
 }
@@ -264,7 +264,7 @@ pub async fn publish_generation_in_transaction(
 pub async fn publish_builtin_generation_in_transaction(
     transaction: &mut Transaction<'_>,
     catalog: &BuiltinCatalog,
-    created_at_unix_nanos: i64,
+    created_at: UnixNanos,
 ) -> Result<ProviderGenerationId, Error> {
     let identity = catalog.identity();
     repository::publish_generation(
@@ -273,7 +273,7 @@ pub async fn publish_builtin_generation_in_transaction(
         &ProviderSetupInputDigest::of_bytes(identity.as_str().as_bytes()),
         catalog.prepared(),
         builtin::MATERIALIZER_VERSION,
-        created_at_unix_nanos,
+        created_at,
     )
     .await
 }
@@ -290,7 +290,7 @@ pub async fn publish_builtin_generation_in_transaction(
 pub async fn publish_authored_generation_in_transaction(
     transaction: &mut Transaction<'_>,
     kind: AuthoredToolKind,
-    created_at_unix_nanos: i64,
+    created_at: UnixNanos,
 ) -> Result<ProviderGenerationId, Error> {
     repository::publish_generation(
         transaction,
@@ -298,7 +298,7 @@ pub async fn publish_authored_generation_in_transaction(
         &ProviderSetupInputDigest::of_bytes(kind.call_root().as_bytes()),
         authored::prepared(kind)?,
         kind.materializer_version(),
-        created_at_unix_nanos,
+        created_at,
     )
     .await
 }
@@ -378,7 +378,7 @@ pub async fn verify_generation_in_transaction(
 pub async fn generation_publication_times_in_transaction(
     transaction: &mut Transaction<'_>,
     ids: &[ProviderGenerationId],
-) -> Result<std::collections::BTreeMap<ProviderGenerationId, i64>, Error> {
+) -> Result<std::collections::BTreeMap<ProviderGenerationId, UnixNanos>, Error> {
     repository::generation_publication_times(transaction, ids).await
 }
 
