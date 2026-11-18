@@ -33,6 +33,13 @@
 //! so rejoining revives none. Revocation ends only refresh: access tokens
 //! already issued keep their own expiry and live authority checks.
 //!
+//! An authorization code is spent in the transaction that writes what it
+//! issues. A redemption that cannot issue (storage does not answer, or a
+//! token cannot be made) rolls the spend back and leaves the code
+//! redeemable. One refusal spends the code and issues nothing: a code that
+//! repeats every binding and is presented for a target it does not support.
+//! A spent code is refused, and that refusal changes nothing.
+//!
 //! Only the SHA-256 digest of a refresh token is stored. Nothing is returned
 //! before its writes commit. A storage failure is reported as
 //! [`TokenRefusal::Unavailable`] and a stored row that does not decode as
@@ -269,10 +276,15 @@ impl UserTokens {
     /// Refresh Grant when the User holds the authority a refresh would need;
     /// otherwise it issues the access token alone, as for any other client.
     ///
+    /// One transaction spends the code and writes what it issues. A
+    /// redemption that fails there rolls the spend back, so the client can
+    /// present the same code again.
+    ///
     /// # Errors
     ///
     /// [`TokenRefusal::InvalidGrant`] for a code that cannot be spent or a
-    /// target the code does not support.
+    /// target the code does not support. Every other refusal issued nothing
+    /// and leaves the code unspent.
     pub async fn redeem_code(
         &self,
         code: &str,
@@ -280,9 +292,9 @@ impl UserTokens {
         target: AccessTarget,
         now: UnixNanos,
     ) -> Result<IssuedTokens, TokenRefusal> {
-        let grant = self
+        let (mut tx, grant) = self
             .codes
-            .redeem(code, redemption, now)
+            .spend(code, redemption, now)
             .await
             .map_err(|error| match error {
                 AuthorizationCodeError::Corrupt(code) => TokenRefusal::Corrupt(code),
@@ -291,49 +303,88 @@ impl UserTokens {
                 | AuthorizationCodeError::Unavailable => TokenRefusal::Unavailable,
             })?
             .ok_or(TokenRefusal::InvalidGrant)?;
-        let scope = Scope::for_code(target, &grant)?;
-        if !grant.refresh_eligible {
-            return Ok(IssuedTokens {
-                access_token: self.mint(&scope, now)?,
-                refresh_token: None,
-            });
-        }
-        let expires_at = now
-            .checked_add(self.refresh_grant_lifetime)
-            .ok_or(TokenRefusal::Issuance)?;
-        let mut tx = self.database.begin().await.map_err(unavailable)?;
-        match self.hold_authority(&mut tx, &scope, now).await {
-            Ok(()) => {}
-            Err(TokenRefusal::InvalidGrant) => {
-                rollback(tx).await;
-                return Ok(IssuedTokens {
-                    access_token: self.mint(&scope, now)?,
-                    refresh_token: None,
-                });
+        // A code that repeats every binding but does not support `target` is
+        // refused for good, so the attempt spends it. Only a redemption that
+        // could not issue leaves the code for a retry.
+        let scope = match Scope::for_code(target, &grant) {
+            Ok(scope) => scope,
+            Err(refusal) => {
+                tx.commit().await.map_err(unavailable)?;
+                return Err(refusal);
             }
+        };
+        let issued = match self
+            .issue_for_code(&mut tx, &scope, grant.refresh_eligible, now)
+            .await
+        {
+            Ok(issued) => issued,
             Err(refusal) => {
                 rollback(tx).await;
                 return Err(refusal);
             }
+        };
+        tx.commit().await.map_err(unavailable)?;
+        if issued.refresh_token.is_some() {
+            self.purge_expired(now).await;
+        }
+        Ok(issued)
+    }
+
+    /// Issues what a code spent in `tx` gives its client: an access token
+    /// for `scope` and, for a client that declared the `refresh_token`
+    /// grant, the first refresh token of a Refresh Grant written to `tx`.
+    ///
+    /// Minting signs with the issuer's key in memory, so the transaction
+    /// waits for nothing but the database. Any refusal requires rollback.
+    async fn issue_for_code(
+        &self,
+        tx: &mut Transaction<'_>,
+        scope: &Scope,
+        refresh_eligible: bool,
+        now: UnixNanos,
+    ) -> Result<IssuedTokens, TokenRefusal> {
+        let refresh_token = if refresh_eligible {
+            self.start_grant(tx, scope, now).await?
+        } else {
+            None
+        };
+        Ok(IssuedTokens {
+            access_token: self.mint(scope, now)?,
+            refresh_token,
+        })
+    }
+
+    /// Starts a Refresh Grant for `scope` in `tx` and returns its first
+    /// refresh token, or `None`, having written nothing, when the User lacks
+    /// the authority a refresh would need.
+    async fn start_grant(
+        &self,
+        tx: &mut Transaction<'_>,
+        scope: &Scope,
+        now: UnixNanos,
+    ) -> Result<Option<RefreshToken>, TokenRefusal> {
+        let expires_at = now
+            .checked_add(self.refresh_grant_lifetime)
+            .ok_or(TokenRefusal::Issuance)?;
+        match self.hold_authority(tx, scope, now).await {
+            Ok(()) => {}
+            // A decision, not a failed statement: the transaction goes on to
+            // commit the spend.
+            Err(TokenRefusal::InvalidGrant) => return Ok(None),
+            Err(refusal) => return Err(refusal),
         }
         repository::evict_oldest(
-            &mut tx,
+            tx,
             &scope.user_id,
             &scope.client_id,
             MAX_GRANTS_PER_CLIENT - 1,
         )
         .await?;
         let grant_id = uuid::Uuid::new_v4().to_string();
-        repository::insert_grant(&mut tx, &grant_id, &scope, now, expires_at).await?;
+        repository::insert_grant(tx, &grant_id, scope, now, expires_at).await?;
         let (refresh_token, digest) = RefreshToken::generate()?;
-        repository::insert_token(&mut tx, &digest, &grant_id).await?;
-        let access_token = self.mint(&scope, now)?;
-        tx.commit().await.map_err(unavailable)?;
-        self.purge_expired(now).await;
-        Ok(IssuedTokens {
-            access_token,
-            refresh_token: Some(refresh_token),
-        })
+        repository::insert_token(tx, &digest, &grant_id).await?;
+        Ok(Some(refresh_token))
     }
 
     /// Deletes a bounded batch of grants that can no longer refresh, in a

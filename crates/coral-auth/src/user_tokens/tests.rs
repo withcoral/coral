@@ -12,7 +12,9 @@ use coral_workspace::{
 };
 
 use super::{AccessTarget, IssuedTokens, RefreshRequest, TokenRefusal, UserTokens};
-use crate::authorization_codes::{AuthorizationCodes, AuthorizationGrant, CodeRedemption};
+use crate::authorization_codes::{
+    AUTHORIZATION_CODE_TTL, AuthorizationCodes, AuthorizationGrant, CodeRedemption,
+};
 use crate::oauth_clients::AuthenticatedClient;
 use crate::oauth_clients::test_support::authenticated;
 use crate::{PrincipalAuthentication, PrivateAudience, SessionTokenIssuer};
@@ -184,12 +186,7 @@ impl Fixture {
         self.tokens
             .redeem_code(
                 code,
-                CodeRedemption {
-                    client: &client,
-                    redirect_uri: REDIRECT,
-                    code_challenge: "challenge",
-                    resource,
-                },
+                bindings(&client, resource),
                 target,
                 coral_db::UnixNanos::new(now),
             )
@@ -256,6 +253,17 @@ impl Fixture {
             .is_ok_and(|(principal, _now): (AuthenticatedPrincipal, _)| {
                 principal.principal().id().as_str() == self.user.user_id().as_str()
             })
+    }
+}
+
+/// The redemption that repeats every binding of a code that
+/// [`Fixture::issue_code`] issued to `client` for `resource`.
+fn bindings<'a>(client: &'a AuthenticatedClient, resource: &'a str) -> CodeRedemption<'a> {
+    CodeRedemption {
+        client,
+        redirect_uri: REDIRECT,
+        code_challenge: "challenge",
+        resource,
     }
 }
 
@@ -605,13 +613,24 @@ async fn refresh_rechecks_current_organization_membership() {
         fixture.refresh(&token, now + 2 * SECOND).await.err(),
         Some(TokenRefusal::InvalidGrant)
     );
+    let code = fixture
+        .issue_code(CLIENT, REEF, &AccessTarget::Reef, true, now)
+        .await;
     let access_only = fixture
-        .sign_in_at(REEF, AccessTarget::Reef, true, now)
+        .redeem(&code, CLIENT, REEF, AccessTarget::Reef, now + 1)
         .await
         .unwrap();
     assert!(
         access_only.refresh_token.is_none(),
         "a disabled User starts no grant"
+    );
+    assert_eq!(
+        fixture
+            .redeem(&code, CLIENT, REEF, AccessTarget::Reef, now + 2)
+            .await
+            .err(),
+        Some(TokenRefusal::InvalidGrant),
+        "the sign-in that started no grant spent its code"
     );
     set_enabled(true, 2).await;
     fixture.refresh(&token, now + 3 * SECOND).await.unwrap();
@@ -711,6 +730,250 @@ async fn a_user_holds_a_bounded_number_of_grants_per_client() {
         )
         .await
         .expect("another client's grant survives");
+}
+
+/// Processes sharing the database race to redeem one code: exactly one gets
+/// tokens, and every other gets the refusal a replayed code gets. A replay
+/// ends nothing, so the Refresh Grant the code started still refreshes.
+#[tokio::test]
+async fn a_code_issues_tokens_once_however_many_redemptions_race() {
+    let fixture = Fixture::new().await;
+    let peer = fixture.peer().await;
+    let resource = fixture.workspace_resource();
+    let target = AccessTarget::PrivateMcp(fixture.workspace.clone());
+    for refresh_eligible in [true, false] {
+        let code = fixture
+            .issue_code(CLIENT, &resource, &target, refresh_eligible, NOW)
+            .await;
+        let mut redemptions = tokio::task::JoinSet::new();
+        for index in 0..8 {
+            let tokens = if index % 2 == 0 {
+                fixture.tokens.clone()
+            } else {
+                peer.clone()
+            };
+            let (code, client) = (code.clone(), fixture.client.clone());
+            let (resource, target) = (resource.clone(), target.clone());
+            redemptions.spawn(async move {
+                tokens
+                    .redeem_code(
+                        &code,
+                        bindings(&client, &resource),
+                        target,
+                        coral_db::UnixNanos::new(NOW + 1),
+                    )
+                    .await
+            });
+        }
+        let mut issued = Vec::new();
+        while let Some(outcome) = redemptions.join_next().await {
+            match outcome.unwrap() {
+                Ok(tokens) => issued.push(tokens),
+                Err(refusal) => assert_eq!(refusal, TokenRefusal::InvalidGrant),
+            }
+        }
+        assert_eq!(issued.len(), 1, "refresh eligible: {refresh_eligible}");
+        assert_eq!(issued[0].refresh_token.is_some(), refresh_eligible);
+        let replayed = fixture
+            .redeem(&code, CLIENT, &resource, target.clone(), NOW + 2)
+            .await;
+        assert_eq!(replayed.err(), Some(TokenRefusal::InvalidGrant));
+        if refresh_eligible {
+            fixture
+                .refresh(&refresh_token(&issued[0]), NOW + SECOND)
+                .await
+                .expect("no refused redemption ended the grant");
+        }
+    }
+}
+
+/// A code that cannot be spent, and a redemption that does not repeat the
+/// code's bindings, are each refused as an invalid grant, and none spends
+/// the code.
+#[tokio::test]
+async fn a_refused_redemption_leaves_the_code_redeemable() {
+    let fixture = Fixture::new().await;
+    let resource = fixture.workspace_resource();
+    let target = AccessTarget::PrivateMcp(fixture.workspace.clone());
+    let code = fixture
+        .issue_code(CLIENT, &resource, &target, true, NOW)
+        .await;
+    let expired = fixture
+        .issue_code(CLIENT, &resource, &target, true, NOW)
+        .await;
+    let matching = bindings(&fixture.client, &resource);
+    let lifetime = i64::try_from(AUTHORIZATION_CODE_TTL.as_nanos()).unwrap();
+    for (case, presented, redemption, at) in [
+        ("an unknown code", "guess", matching, NOW + 1),
+        (
+            "another client",
+            code.as_str(),
+            CodeRedemption {
+                client: &fixture.other,
+                ..matching
+            },
+            NOW + 1,
+        ),
+        (
+            "another redirect URI",
+            code.as_str(),
+            CodeRedemption {
+                redirect_uri: "http://127.0.0.1/other",
+                ..matching
+            },
+            NOW + 1,
+        ),
+        (
+            "another PKCE verifier",
+            code.as_str(),
+            CodeRedemption {
+                code_challenge: "other",
+                ..matching
+            },
+            NOW + 1,
+        ),
+        (
+            "another resource",
+            code.as_str(),
+            CodeRedemption {
+                resource: REEF,
+                ..matching
+            },
+            NOW + 1,
+        ),
+        (
+            "an expired code",
+            expired.as_str(),
+            matching,
+            NOW + lifetime,
+        ),
+    ] {
+        let refused = fixture
+            .tokens
+            .redeem_code(
+                presented,
+                redemption,
+                target.clone(),
+                coral_db::UnixNanos::new(at),
+            )
+            .await;
+        assert_eq!(refused.err(), Some(TokenRefusal::InvalidGrant), "{case}");
+    }
+    let issued = fixture
+        .redeem(&code, CLIENT, &resource, target, NOW + 1)
+        .await
+        .expect("no refusal spent the code");
+    assert!(issued.refresh_token.is_some());
+}
+
+/// A code that repeats every binding but cannot serve the target the request
+/// names is refused, and that attempt spends it.
+#[tokio::test]
+async fn a_code_presented_for_a_target_it_does_not_support_is_spent() {
+    let fixture = Fixture::new().await;
+    let resource = "https://mcp.example.test/mcp";
+    // A code for the Organization MCP Endpoint that names no Workspace.
+    let code = fixture
+        .issue_code(CLIENT, resource, &AccessTarget::Resource, true, NOW)
+        .await;
+    for (target, at) in [
+        (AccessTarget::PickedWorkspace, NOW + 1),
+        (AccessTarget::Resource, NOW + 2),
+    ] {
+        assert_eq!(
+            fixture
+                .redeem(&code, CLIENT, resource, target.clone(), at)
+                .await
+                .err(),
+            Some(TokenRefusal::InvalidGrant),
+            "{target:?}"
+        );
+    }
+}
+
+/// A refresh-eligible sign-in for a Workspace its User cannot inspect gets an
+/// access token alone, and spends its code as any other sign-in does.
+#[tokio::test]
+async fn a_sign_in_that_starts_no_grant_still_spends_its_code() {
+    let fixture = Fixture::new().await;
+    let elsewhere = WorkspaceId::parse("0199f7a2-6a6e-7c3d-9a51-2f4e8b7d1c0a").unwrap();
+    let resource = format!("https://mcp.example.test/workspaces/{elsewhere}/mcp");
+    let target = AccessTarget::PrivateMcp(elsewhere);
+    let code = fixture
+        .issue_code(CLIENT, &resource, &target, true, NOW)
+        .await;
+    let issued = fixture
+        .redeem(&code, CLIENT, &resource, target.clone(), NOW + 1)
+        .await
+        .unwrap();
+    assert!(issued.refresh_token.is_none());
+    assert_eq!(
+        fixture
+            .redeem(&code, CLIENT, &resource, target, NOW + 2)
+            .await
+            .err(),
+        Some(TokenRefusal::InvalidGrant)
+    );
+}
+
+/// A redemption that fails after it spent the code issued nothing, so it
+/// leaves the code unspent: the client redeems the same code once the
+/// failure has passed, and the person does not sign in again.
+#[tokio::test]
+async fn a_redemption_that_fails_leaves_the_code_redeemable() {
+    let fixture = Fixture::new().await;
+    let resource = fixture.workspace_resource();
+    let target = AccessTarget::PrivateMcp(fixture.workspace.clone());
+
+    // The database refuses the Refresh Grant's first token.
+    let code = fixture
+        .issue_code(CLIENT, &resource, &target, true, NOW)
+        .await;
+    fixture
+        .database
+        .execute_fixture_sql("ALTER TABLE oauth_refresh_tokens RENAME TO refresh_tokens_away")
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .redeem(&code, CLIENT, &resource, target.clone(), NOW + 1)
+            .await
+            .err(),
+        Some(TokenRefusal::Unavailable)
+    );
+    fixture
+        .database
+        .execute_fixture_sql("ALTER TABLE refresh_tokens_away RENAME TO oauth_refresh_tokens")
+        .await
+        .unwrap();
+    let issued = fixture
+        .redeem(&code, CLIENT, &resource, target.clone(), NOW + 2)
+        .await
+        .expect("the storage failure spent no code");
+    fixture
+        .refresh(&refresh_token(&issued), NOW + SECOND)
+        .await
+        .unwrap();
+
+    // No access token can be issued at a host time before the Unix epoch.
+    for refresh_eligible in [true, false] {
+        let code = fixture
+            .issue_code(CLIENT, &resource, &target, refresh_eligible, -2)
+            .await;
+        assert_eq!(
+            fixture
+                .redeem(&code, CLIENT, &resource, target.clone(), -1)
+                .await
+                .err(),
+            Some(TokenRefusal::Issuance),
+            "refresh eligible: {refresh_eligible}"
+        );
+        let issued = fixture
+            .redeem(&code, CLIENT, &resource, target.clone(), 1)
+            .await
+            .expect("the issuance failure spent no code");
+        assert_eq!(issued.refresh_token.is_some(), refresh_eligible);
+    }
 }
 
 #[test]

@@ -85,6 +85,45 @@ async fn a_code_issued_by_one_process_is_redeemed_once_by_any() {
     assert_eq!(granted, vec![grant()]);
 }
 
+/// A code is spent when the transaction that spends it commits. A redemption
+/// racing that transaction gets nothing if it commits, and the code if it
+/// rolls back.
+#[tokio::test]
+async fn a_spend_takes_effect_when_its_transaction_commits() {
+    for commits in [true, false] {
+        let (codes, fixture) = codes().await;
+        let client = authenticated(fixture.database(), CLIENT).await;
+        let peer = AuthorizationCodes::new(Arc::new(fixture.connect_peer().await.unwrap()));
+        let issued = grant();
+        codes.issue("code", "sign-in", &issued, NOW).await.unwrap();
+        let (tx, spent) = codes
+            .spend("code", redemption(&issued, &client), after(1))
+            .await
+            .unwrap()
+            .expect("the code is spendable");
+        assert_eq!(spent, issued);
+        let (raced, ended) = tokio::join!(
+            peer.redeem("code", redemption(&issued, &client), after(1)),
+            async {
+                if commits {
+                    tx.commit().await
+                } else {
+                    tx.rollback().await
+                }
+            }
+        );
+        ended.unwrap();
+        assert_eq!(raced, Ok((!commits).then(grant)), "commits: {commits}");
+        assert_eq!(
+            codes
+                .redeem("code", redemption(&issued, &client), after(2))
+                .await,
+            Ok(None),
+            "commits: {commits}: either way the code is spent by now"
+        );
+    }
+}
+
 /// A sign-in at the Organization MCP Endpoint picks a Workspace; its code
 /// hands that choice to the token, on every process.
 #[tokio::test]
