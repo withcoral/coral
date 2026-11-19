@@ -324,32 +324,17 @@ impl TaskCommands {
             .pause(crate::command_tests::Checkpoint::BeforeBeginLock)
             .await;
         let mut transaction = self.tasks.database.begin().await?;
-        if !repository::hold(&mut transaction, &call.workspace_id, &call.task_id).await? {
-            return Err(Error::TaskNotFound);
-        }
-        let authority = self
+        // Access was checked above, so a refusal here is not concealed.
+        let (task, authority) = self
             .tasks
-            .workspaces
-            .check_principal_inspection_in_transaction(
+            .hold_open(
                 &mut transaction,
                 &call.actor,
                 &call.workspace_id,
-                self.tasks.now(),
+                &call.task_id,
+                Error::from,
             )
             .await?;
-        let task = repository::find_attributed(
-            &mut transaction,
-            &call.workspace_id,
-            &call.task_id,
-            call.actor.principal(),
-        )
-        .await?
-        .ok_or(Error::TaskNotFound)?;
-        // The command runs in its caller's span, such as an MCP tool call's.
-        tracing::Span::current().record("coral.task.id", safe::id(&task.telemetry_id()));
-        if task.outcome().is_some() {
-            return Err(Error::TaskClosed);
-        }
         let id = InteractionId::generate();
         #[cfg(test)]
         self.control

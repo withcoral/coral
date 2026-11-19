@@ -8,7 +8,7 @@
 use std::sync::LazyLock;
 
 use coral_db::{
-    Database, DatabaseOptions, DatabaseSystem, Error, MigrationPlan, MigrationProgress,
+    ChangeWait, Database, DatabaseOptions, DatabaseSystem, Error, MigrationPlan, MigrationProgress,
     QueryExecutor, ReadOnlyDatabase, RowLock, UnixNanos,
 };
 use coral_test_support::TestDatabase;
@@ -1697,6 +1697,74 @@ async fn postgres_notification_reconnect_requires_a_resnapshot_after_the_gap() {
     );
 }
 
+// Catches: a reader that sleeps through a commit, or rereads at once on every commit.
+#[tokio::test]
+async fn a_committed_change_ends_a_pause_no_sooner_than_the_reread_gap() {
+    use std::time::Duration;
+    use tokio::time::Instant;
+    let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
+    let database = fixture.database();
+    let mut wait = database.wait_for_changes(Instant::now() + Duration::from_secs(300));
+    let mut tx = database.begin().await.unwrap();
+    tx.execute_change(insert_record("observed", "committed"))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let read_at = Instant::now();
+    let reads_again = tokio::time::timeout(coral_test_support::EVENTUALLY, wait.pause(read_at))
+        .await
+        .expect("a committed change ends the pause");
+    assert!(reads_again);
+    assert!(read_at.elapsed() >= ChangeWait::MIN_REREAD_GAP);
+}
+
+// Catches: a wait that outlives its deadline, skips its last read, or sends a statement.
+#[tokio::test]
+async fn a_change_wait_ends_at_its_deadline_after_one_more_read() {
+    use tokio::time::Instant;
+    let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
+    let database = fixture.database();
+    let statements = fixture.statements_sent();
+    let begun = Instant::now();
+    let deadline = begun + ChangeWait::MIN_REREAD_GAP;
+    let mut wait = database.wait_for_changes(deadline);
+    assert!(wait.pause(begun).await, "one more read at the deadline");
+    let read_at = Instant::now();
+    assert!(read_at >= deadline);
+    assert!(!wait.pause(read_at).await, "the wait ended");
+    let mut passed = database.wait_for_changes(read_at);
+    assert!(
+        !passed.pause(read_at).await,
+        "a passed deadline never pauses"
+    );
+    assert_eq!(
+        fixture.statements_sent(),
+        statements,
+        "a wait sends no statement"
+    );
+}
+
+// Catches: a wait that fails, or sleeps to its deadline, once notifications are lost.
+#[tokio::test]
+async fn a_change_wait_rereads_on_the_fallback_poll_through_a_notification_outage() {
+    use std::time::Duration;
+    use tokio::time::Instant;
+    coral_test_support::database_only!(Postgres);
+    let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
+    let database = fixture.database();
+    let mut wait = database.wait_for_changes(Instant::now() + Duration::from_secs(300));
+    database.interrupt_change_notifications().await.unwrap();
+    let outage = tokio::time::timeout(coral_test_support::EVENTUALLY, wait.pause(Instant::now()))
+        .await
+        .expect("the outage ends the pause");
+    assert!(outage);
+    let read_at = Instant::now();
+    let polled = tokio::time::timeout(coral_test_support::EVENTUALLY, wait.pause(read_at))
+        .await
+        .expect("the fallback poll ends the pause");
+    assert!(polled);
+    assert!(read_at.elapsed() >= ChangeWait::FALLBACK_POLL);
+}
 async fn assert_domain_repository_contract(database: &Database) {
     database
         .migrate(&MIGRATOR)

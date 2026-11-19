@@ -146,7 +146,57 @@ impl ChangeSubscription {
         }
     }
 }
+
+/// A bounded wait for committed changes, which paces a reader's reread loop.
+/// It only reads the change signal, so it wakes no other subscriber.
+pub struct ChangeWait {
+    deadline: tokio::time::Instant,
+    /// `None` while notifications are unavailable: the wait polls instead.
+    changes: Option<ChangeSubscription>,
+}
+
+impl ChangeWait {
+    /// The least time between two reads, so a busy writer costs no read per commit.
+    pub const MIN_REREAD_GAP: Duration = Duration::from_millis(50);
+    /// How often a reader reads while notifications are unavailable.
+    pub const FALLBACK_POLL: Duration = Duration::from_millis(500);
+
+    /// Waits for a committed change or the deadline, and at least
+    /// [`Self::MIN_REREAD_GAP`] after `read_at`. Returns `false`, without
+    /// waiting, once `read_at` has reached the deadline.
+    pub async fn pause(&mut self, read_at: tokio::time::Instant) -> bool {
+        if read_at >= self.deadline {
+            return false;
+        }
+        match &mut self.changes {
+            Some(subscription) => tokio::select! {
+                result = subscription.changed() => if result.is_err() { self.changes = None },
+                () = tokio::time::sleep_until(self.deadline) => {}
+            },
+            None => {
+                tokio::time::sleep_until(self.deadline.min(read_at + Self::FALLBACK_POLL)).await;
+            }
+        }
+        tokio::time::sleep_until(self.deadline.min(read_at + Self::MIN_REREAD_GAP)).await;
+        true
+    }
+}
+
 impl Database {
+    /// Starts a wait that ends at `deadline`. Start it before the first read,
+    /// so that a commit during that read ends the next pause.
+    #[must_use]
+    pub fn wait_for_changes(&self, deadline: tokio::time::Instant) -> ChangeWait {
+        ChangeWait {
+            deadline,
+            changes: if deadline > tokio::time::Instant::now() {
+                self.subscribe_changes().ok()
+            } else {
+                None
+            },
+        }
+    }
+
     /// Subscribes to explicit committed mutations, never reads or lock-only writes.
     /// No table names, row identities, payloads, or domain authority cross this interface.
     /// # Errors

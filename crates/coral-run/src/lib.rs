@@ -34,6 +34,7 @@
 //!   the intent in its next chunk. The call waits up to the shutdown grace and
 //!   a settle margin for the owner to record it and end the Run, then returns
 //!   the state recorded by then, or answers that it is not yet recorded.
+//! - [`RunModule::listed_providers`] reads what `coral.listProviders` returns, without a Run.
 //! - [`RunModule::activity_entries`] reads bounded chronological child summaries.
 //!   Exact Event/Invocation anchors retain their identities. Upper owners can join
 //!   authorized read snapshots through transaction facets without Task dependencies.
