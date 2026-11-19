@@ -40,8 +40,8 @@ options not chosen for each part, and its tickets hold the names, the limits and
   it and loads no model. It reads Universal Search from the database alone. Every deployment runs the core role, so an
   operator has nothing more to deploy.
 - **Only the sweeper is elected.** Every Coral Instance with the core role runs each pass and each search task, and each
-  piece settles two runs at once itself. A new periodic pass gets an election only when a second run costs or breaks
-  something.
+  of them stays correct when two Coral Instances run it at the same time. A new periodic pass gets an election only when
+  a second run costs or breaks something.
 
 [Name the Instance Roles and what each one serves](https://github.com/withcoral/coral/issues/3145#issuecomment-6912697006),
 [Decide what the Run Executor role does in a process without the core role](https://github.com/withcoral/coral/issues/3149#issuecomment-6942562345),
@@ -149,22 +149,23 @@ roles. A deployment with one process still upgrades by a restart.
   has every migration of its plan.
 - **An older Coral starts and keeps working on a database that a newer Coral has updated.** v1.9.0 is the first version
   that does.
-- **Coral refuses to start for one kind of break only: a removal in the database.** Coral orders two builds by the
-  steps of their migration plans, because a version does not order two builds of `main`. A removal names the step of
-  the change that stopped using what it removes. The repository's check accepts the removal only when a release has
-  that step, so no release holds both halves of a stagger. On Postgres, Coral refuses an upgrade that skips the step,
-  with no override, and it names the release to start first.
-- **For every other break, the stagger is a rule for the author, and Coral checks nothing at start.** This covers a
-  stored value, an encoding that two versions both read (the sign-in frame, a token, the key set, a page token) and a
-  setting. No build carries a compatibility level.
+- **Between two versions, Coral refuses to start for one kind of break only: a removal in the database.** Coral orders
+  two builds by the steps of their migration plans, because a version does not order two builds of `main`. A removal
+  names the step of the change that stopped using what it removes. The repository's check accepts the removal only when
+  a release has that step, so no release holds both halves of a stagger. On Postgres, Coral refuses an upgrade that
+  skips the step, with no override, and it names the release to start first.
+- **For every other break, the stagger is a rule for the author, and Coral checks nothing about the other version at
+  start.** This covers a stored value, an encoding that two versions both read (the sign-in frame, a token, the key set,
+  a page token) and a setting. No build carries a compatibility level.
 - **A Coral shows a stored value that it does not know as unknown, where it only shows the value.** A new value there
   is not a breaking change. Where a Coral decides on a value, such as a Run's state, a new value is staggered.
 - **The gRPC API changes by protobuf's rules.** A method or a field that goes away is marked `deprecated` in one
   release, then deleted and reserved in a later one. `coral-web` and Coral exchange no version.
 - **A migration does not make the running Corals wait.** Where Postgres has a form that blocks writes and a form that
   does not, a migration uses the form that does not.
-- **A new setting has a default, and a setting that goes away leaves in one release.** That release refuses a config
-  that still holds the key.
+- **A new setting has a default, and a setting that goes away leaves in one release.** That release does not start on a
+  config that still holds the key, because Coral refuses any key that it does not know. This checks the operator's
+  config, and it compares no versions.
 - **The order of an upgrade**: `coral` processes in any order, `coral-web` after every process with the core role, and
   Run Executors at any time, under the protocol level of ADR 0027. A newer MCP or auth process is not ready until a
   core process has updated the database. The operator finishes one upgrade before the next one starts: the database

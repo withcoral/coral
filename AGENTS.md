@@ -289,13 +289,13 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 [ADR 0041](docs/adr/0041-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)
 has the reasons.
 
-- A rolling upgrade runs two versions of Coral on one database, and Coral
-  names no window of versions. So make a change compatible: a Coral without
-  it keeps working beside a Coral that has it, however old the first one is.
-  Stagger a change that cannot be compatible across releases. One release
-  makes every Coral able to do without the old thing or to read the new one,
-  and a later release makes the break. The rules below apply this to each
-  kind of change.
+- A rolling upgrade runs two versions of Coral on one Postgres database (on
+  SQLite, one process serves the database), and Coral names no window of
+  versions. So make a change compatible: a Coral without it keeps working
+  beside a Coral that has it, however old the first one is. Stagger a change
+  that cannot be compatible across releases. One release makes every Coral
+  able to do without the old thing or to read the new one, and a later release
+  makes the break. The rules below apply this to each kind of change.
 - The schema. The newer Coral migrates at boot while the older one still
   serves. Two rules follow.
   - The previous release keeps working on the schema that a new migration
@@ -332,12 +332,12 @@ has the reasons.
   release to write.
 - A stored value. A release reads a new value, such as a new `kind`, before
   any release writes it, and no migration rewrites rows into a form the
-  previous release cannot read. No check reads stored values: keep this rule
-  yourself.
-- An encoding that two versions both read, such as the sign-in frame, a
-  token, a page token or a stored encoding. A release reads both forms
-  before any release writes the new one. No check reads encodings: keep this
-  rule yourself.
+  previous release cannot read. The migration check does not read stored
+  values: keep this rule yourself.
+- An encoding that two versions both read, such as the sign-in frame, a token,
+  a page token or a stored encoding. A release reads both forms before any
+  release writes the new one. No check runs an older Coral against the new
+  form: keep this rule yourself.
 - The gRPC API. Change `coral.management.v1` only as protobuf allows: add a
   method, a field or an enum value, and never change the number or the type
   of a field. To remove a method or a field, mark it `deprecated` in one
