@@ -84,11 +84,11 @@ flowchart TD
     agentsurface -- wraps --> coresurface
 ```
 
-The `coral` process, which every binary runs, will register that implementation through `Extensions`, the way a binary
-adds anything to Coral (ADR 0033). The Sub-agent's tables are in core's migration chain, and the names of its telemetry
-fields and metrics are in core's `coral-telemetry` crate. Nothing else in core names the Sub-agent. To remove it, we
-delete the crate and the registration. To make it an Enterprise Feature, we move the crate to `ee/` and register it
-there.
+The `coral` process, which every binary runs, will register that implementation when it launches the server. No binary
+registers it, so nothing under `ee/` names it. The Sub-agent's tables are in core's migration chain, and the names of
+its telemetry fields and metrics are in core's `coral-telemetry` crate. Nothing else in core names the Sub-agent. To
+remove it, we delete the crate and the registration. To make it an Enterprise Feature, we move the crate to `ee/` and
+give `Extensions` a field through which the Enterprise binary registers it.
 
 The lead sees the Sub-agent only when the config file has a `[sub_agent]` section. Without the section, it receives
 exactly the tools and instructions that Coral serves today.
@@ -407,8 +407,8 @@ section, and the URL in it comes from an organization.
 
 ## Related records
 
-- ADR 0033 gives a binary `Extensions`, the way it adds to Coral. The Sub-agent's tool surface is registered through
-  it.
+- ADR 0033 gives a binary `Extensions`, the way it adds to Coral. The Sub-agent's tool surface is not registered
+  through it: every build serves the Sub-agent, so the `coral` process registers it at launch.
 - ADR 0026 moved Tool search into Programs for outside agents.
 - ADR 0029 says that Coral keeps no MCP session.
 - ADR 0008 sets the operator's destination policy for outbound requests, which the Sub-agent's requests to the model
@@ -481,9 +481,8 @@ because that code is not written yet.
 
 ### What the Sub-agent receives at startup
 
-The `coral` process registers the factory for the Sub-agent's tool surface through `Extensions`, in the same way that a
-binary registers a Secret Store kind. At startup, when the config file has the factory's section, core calls the
-factory and gives it:
+The `coral` process registers the factory for the Sub-agent's tool surface when it launches the server. At startup,
+when the config file has the factory's section, core calls the factory and gives it:
 
 - the `[sub_agent]` section of the config file, as unparsed TOML;
 - the database, and the Task, Workspace, Run and search modules;
