@@ -150,6 +150,7 @@ impl TurnEnd {
             Err(TurnFailure::TooManyModelCalls) => Self::Failed("too_many_model_calls"),
             Err(TurnFailure::NoAnswer) => Self::Failed("no_answer"),
             Err(TurnFailure::Internal) => Self::Failed("internal"),
+            Err(TurnFailure::Canceled) => Self::Canceled,
         }
     }
 }

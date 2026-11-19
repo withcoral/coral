@@ -125,7 +125,7 @@ pub(crate) async fn turn_messages(
 }
 
 /// Holds the row of the running Turn, and reads what it has not read.
-async fn hold_unread(
+pub(super) async fn hold_unread(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     turn_id: &str,

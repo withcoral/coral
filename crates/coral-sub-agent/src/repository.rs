@@ -241,13 +241,18 @@ pub(crate) async fn renew_lease(
 
 /// Adds `message` at `position` in the Sub-agent's thread, marked with its
 /// Turn and the record of the model call that produced it, if one did.
+/// `false` means that the Turn has ended and nothing was written.
 pub(crate) async fn insert_message(
     transaction: &mut Transaction<'_>,
     turn: &RunningTurn,
     position: i64,
     message: &Message,
     call: Option<&ModelCall>,
-) -> Result<(), coral_db::Error> {
+) -> Result<bool, coral_db::Error> {
+    let running = lead_messages::hold_unread(transaction, &turn.caller.workspace_id, &turn.id);
+    if running.await?.is_none() {
+        return Ok(false);
+    }
     let usage = call.and_then(|call| call.usage);
     let latency_ms = call.map(|call| i64::try_from(call.latency.as_millis()).unwrap_or(i64::MAX));
     let statement = Query::insert()
@@ -280,7 +285,7 @@ pub(crate) async fn insert_message(
         ])
         .to_owned();
     transaction.execute_change(statement).await?;
-    Ok(())
+    Ok(true)
 }
 
 /// The Sub-agent's thread, in order.
