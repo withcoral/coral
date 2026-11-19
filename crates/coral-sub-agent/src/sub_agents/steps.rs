@@ -1,16 +1,15 @@
 //! What the lead reads of a Sub-agent: its latest Turn, the steps the Turn
 //! took, and what the Turn's Runs wait for from a person.
 
-use std::collections::HashMap;
-
 use coral_db::UnixNanos;
 use coral_run::{RequiredAction, RunId, RunObservation};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use serde::Deserialize;
 
 use super::{Error, SubAgents, TurnState};
-use crate::model::{Block, Message};
+use crate::model::{Block, Message, ToolCall};
 use crate::repository;
+use crate::run_tools::{first_chars, shortened_intent};
 
 impl SubAgents {
     /// The latest Turn of the caller's own Sub-agent, as the lead reads it.
@@ -124,43 +123,51 @@ pub(crate) struct WaitingAction {
 }
 
 /// The steps of a Turn: each `exec` and `search` call in its messages, an
-/// `exec` with the Run that its result names.
-fn steps(messages: &[Message]) -> Vec<Step> {
-    let blocks = messages.iter().flat_map(|message| &message.content);
-    let started: HashMap<&str, &str> = blocks
-        .filter_map(|block| match block {
-            Block::ToolResult {
-                tool_use_id,
-                run_id,
-                ..
-            } => Some((tool_use_id.as_str(), run_id.as_deref()?)),
-            Block::Text { .. }
-            | Block::Reasoning { .. }
-            | Block::ToolUse(_)
-            | Block::Summary { .. } => None,
-        })
-        .collect();
-    let calls = messages.iter().flat_map(Message::tool_calls);
-    calls
-        .filter_map(|call| match call.name.as_str() {
-            "exec" => {
-                let ExecArguments { intent } = serde_json::from_str(&call.arguments).ok()?;
-                let run_id = started.get(call.id.as_str());
-                let run_id = run_id.and_then(|run_id| RunId::parse(run_id).ok());
-                Some(Step { intent, run_id })
-            }
-            "search" => {
-                let search: SearchArguments = serde_json::from_str(&call.arguments).ok()?;
-                let intent = search.intent();
-                Some(Step {
-                    intent,
-                    run_id: None,
-                })
-            }
-            _ => None,
-        })
-        .collect()
+/// `exec` with the Run that its result names. A reply's results are the next
+/// message, in the order of its calls, so a call is matched to its result by
+/// its place: a model may give two calls the same id.
+pub(super) fn steps(messages: &[Message]) -> Vec<Step> {
+    let mut steps = Vec::new();
+    for (index, reply) in messages.iter().enumerate() {
+        let results = messages
+            .get(index + 1)
+            .map_or(&[][..], |next| &next.content);
+        for (place, call) in reply.tool_calls().enumerate() {
+            let started = match results.get(place) {
+                Some(Block::ToolResult { run_id, .. }) => run_id.as_deref(),
+                _ => None,
+            };
+            steps.extend(step(call, started));
+        }
+    }
+    steps
 }
+
+/// The step that `call` is, if it is an `exec` or a `search`. An `exec` shows
+/// its intent as its Run keeps it, and a search the start of what it looked
+/// for: the model sets no length on either.
+fn step(call: &ToolCall, started: Option<&str>) -> Option<Step> {
+    match call.name.as_str() {
+        "exec" => {
+            let ExecArguments { intent } = serde_json::from_str(&call.arguments).ok()?;
+            Some(Step {
+                intent: shortened_intent(&intent).to_owned(),
+                run_id: started.and_then(|run_id| RunId::parse(run_id).ok()),
+            })
+        }
+        "search" => {
+            let search: SearchArguments = serde_json::from_str(&call.arguments).ok()?;
+            Some(Step {
+                intent: first_chars(&search.intent(), SEARCH_STEP_MAX_CHARS).to_owned(),
+                run_id: None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The most of a search's query or paths that a step shows.
+const SEARCH_STEP_MAX_CHARS: usize = 200;
 
 #[derive(Deserialize)]
 struct ExecArguments {
@@ -181,5 +188,46 @@ impl SearchArguments {
             (None, Some(paths)) => format!("Read the declarations of {}", paths.join(", ")),
             (None, None) => "List the tools you can call".to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Role;
+
+    // Catches: a step that shows another call's Run because the model gave
+    // both calls one id, and a step as long as the model made its intent.
+    #[test]
+    fn a_step_shows_the_run_of_its_own_call_and_a_bounded_intent() {
+        let runs = ["first-run-of-the-turn", "second-run-of-the-turn"];
+        let mut thread = vec![Message::user("brief".to_owned())];
+        for run_id in runs {
+            let call = ToolCall {
+                id: "call_0".to_owned(),
+                name: "exec".to_owned(),
+                arguments: format!(r#"{{"intent":"{}"}}"#, "é".repeat(500)),
+            };
+            let started = RunId::parse(run_id).ok();
+            let result = call.result("{}".to_owned(), started);
+            thread.push(Message {
+                role: Role::Assistant,
+                content: vec![Block::ToolUse(call)],
+            });
+            thread.push(Message::tool_results(vec![result]));
+        }
+
+        let steps = steps(&thread);
+
+        let shown: Vec<_> = steps.iter().map(|step| step.run_id.as_ref()).collect();
+        let started: Vec<_> = runs
+            .iter()
+            .map(|run_id| RunId::parse(run_id).ok())
+            .collect();
+        assert_eq!(
+            shown,
+            started.iter().map(Option::as_ref).collect::<Vec<_>>()
+        );
+        assert!(steps.iter().all(|step| step.intent == "é".repeat(80)));
     }
 }

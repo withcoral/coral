@@ -247,10 +247,15 @@ fn read_after(cursor: Option<&str>) -> Result<RunObservation, Failure> {
 }
 
 /// The first [`TASK_INTENT_MAX_CHARS`] characters of `intent`.
-fn shortened_intent(intent: &str) -> &str {
-    match intent.char_indices().nth(TASK_INTENT_MAX_CHARS) {
-        Some((end, _)) => intent.split_at(end).0,
-        None => intent,
+pub(crate) fn shortened_intent(intent: &str) -> &str {
+    first_chars(intent, TASK_INTENT_MAX_CHARS)
+}
+
+/// The first `count` characters of `text`.
+pub(crate) fn first_chars(text: &str, count: usize) -> &str {
+    match text.char_indices().nth(count) {
+        Some((end, _)) => text.split_at(end).0,
+        None => text,
     }
 }
 
