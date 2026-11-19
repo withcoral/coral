@@ -54,7 +54,7 @@ impl ModelClient {
     ) -> Result<Reply, ModelError> {
         let request = CompletionRequest {
             model: &self.model,
-            messages: chat_messages(system, conversation),
+            messages: chat_messages(system, conversation, &self.model),
             tools: tools.iter().map(ChatTool::from).collect(),
         };
         let mut result = self.send(&request).await;
@@ -104,7 +104,7 @@ impl ModelClient {
         let choice = completion.choices.into_iter().next();
         let message = choice.ok_or(ModelError::Misconfigured)?.message;
         Ok(Reply {
-            message: message.into(),
+            message: message.into_message(&self.model),
             call: ModelCall {
                 model: completion.model.unwrap_or_else(|| self.model.clone()),
                 latency,
@@ -142,7 +142,7 @@ impl Message {
     pub(crate) fn text(&self) -> String {
         let texts = self.content.iter().filter_map(|block| match block {
             Block::Text { text } => Some(text.as_str()),
-            Block::ToolUse(_) | Block::ToolResult { .. } => None,
+            Block::Reasoning { .. } | Block::ToolUse(_) | Block::ToolResult { .. } => None,
         });
         texts.collect()
     }
@@ -151,7 +151,18 @@ impl Message {
     pub(crate) fn tool_calls(&self) -> impl Iterator<Item = &ToolCall> {
         self.content.iter().filter_map(|block| match block {
             Block::ToolUse(call) => Some(call),
-            Block::Text { .. } | Block::ToolResult { .. } => None,
+            Block::Text { .. } | Block::Reasoning { .. } | Block::ToolResult { .. } => None,
+        })
+    }
+
+    /// The reasoning in this message if `model` wrote it: a model reads back only its own.
+    fn reasoning_by(&self, model: &str) -> Option<&str> {
+        self.content.iter().find_map(|block| match block {
+            Block::Reasoning {
+                text,
+                model: writer,
+            } => (writer == model).then_some(text.as_str()),
+            Block::Text { .. } | Block::ToolUse(_) | Block::ToolResult { .. } => None,
         })
     }
 }
@@ -169,6 +180,11 @@ pub(crate) enum Role {
 pub(crate) enum Block {
     Text {
         text: String,
+    },
+    /// What the model reasoned before it replied, and the configured `model` that wrote it.
+    Reasoning {
+        text: String,
+        model: String,
     },
     ToolUse(ToolCall),
     ToolResult {
@@ -258,7 +274,11 @@ struct CompletionRequest<'a> {
 
 /// The conversation as Chat Completions messages: a user's text as content parts, an assistant
 /// message with only tool calls as `null` content, and an empty assistant message left out.
-fn chat_messages<'a>(system: &'a str, conversation: &'a [Message]) -> Vec<ChatMessage<'a>> {
+fn chat_messages<'a>(
+    system: &'a str,
+    conversation: &'a [Message],
+    model: &str,
+) -> Vec<ChatMessage<'a>> {
     let mut messages = vec![ChatMessage::System { content: system }];
     for message in conversation {
         match message.role {
@@ -274,7 +294,7 @@ fn chat_messages<'a>(system: &'a str, conversation: &'a [Message]) -> Vec<ChatMe
                             tool_call_id: tool_use_id,
                             content,
                         }),
-                        Block::ToolUse(_) => {}
+                        Block::Reasoning { .. } | Block::ToolUse(_) => {}
                     }
                 }
                 if !parts.is_empty() {
@@ -288,6 +308,7 @@ fn chat_messages<'a>(system: &'a str, conversation: &'a [Message]) -> Vec<ChatMe
                     let content = (!text.is_empty()).then_some(text);
                     messages.push(ChatMessage::Assistant {
                         content,
+                        reasoning: message.reasoning_by(model),
                         tool_calls,
                     });
                 }
@@ -308,6 +329,8 @@ enum ChatMessage<'a> {
     },
     Assistant {
         content: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reasoning: Option<&'a str>,
         #[serde(skip_serializing_if = "Vec::is_empty")]
         tool_calls: Vec<ChatToolCall<&'a str>>,
     },
@@ -393,28 +416,36 @@ struct Choice {
 struct ChoiceMessage {
     /// `null` when the model wrote no text.
     content: Option<String>,
+    /// vLLM's name for the reasoning; other servers write `reasoning_content`.
+    reasoning: Option<String>,
+    reasoning_content: Option<String>,
     /// Absent or `null` when the model called no tool.
     tool_calls: Option<Vec<ChatToolCall<String>>>,
 }
 
-impl From<ChoiceMessage> for Message {
-    fn from(reply: ChoiceMessage) -> Self {
-        let text = reply.content.filter(|text| !text.is_empty());
-        let calls = reply
-            .tool_calls
-            .unwrap_or_default()
+impl ChoiceMessage {
+    /// The reply as blocks, its reasoning marked as written by `model`.
+    fn into_message(self, model: &str) -> Message {
+        let reasoning = [self.reasoning, self.reasoning_content]
             .into_iter()
-            .map(|call| {
-                Block::ToolUse(ToolCall {
-                    id: call.id,
-                    name: call.function.name,
-                    arguments: call.function.arguments,
-                })
+            .flatten()
+            .find(|text| !text.is_empty())
+            .map(|text| Block::Reasoning {
+                text,
+                model: model.to_owned(),
             });
+        let text = self.content.filter(|text| !text.is_empty());
+        let calls = self.tool_calls.unwrap_or_default().into_iter().map(|call| {
+            Block::ToolUse(ToolCall {
+                id: call.id,
+                name: call.function.name,
+                arguments: call.function.arguments,
+            })
+        });
         let text = text.map(|text| Block::Text { text });
-        Self {
+        Message {
             role: Role::Assistant,
-            content: text.into_iter().chain(calls).collect(),
+            content: reasoning.into_iter().chain(text).chain(calls).collect(),
         }
     }
 }
