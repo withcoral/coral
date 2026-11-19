@@ -6,7 +6,10 @@ status: accepted
 
 Each kind's retriever runs a vector query beside its lexical query, merges the two lists and marks each entry strong or
 weak; the engine's fusion does not change. One embedding model, `BAAI/bge-small-en-v1.5`, runs on the CPU inside the
-Coral process on Desktop and on the server. A background Embedder gives each Search Entity a vector of its text, and an
+Coral process on Desktop and on the server. On a server that separates the Instance Roles, it runs inside each Coral
+Instance that has the core role
+([ADR 0041](0041-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)). A background
+Embedder gives each Search Entity a vector of its text, and an
 Entity without a current vector ranks by words alone. Search Hits carry no evidence. One setting turns the vector side
 off.
 
@@ -119,8 +122,8 @@ failure state. Saving a Private Tool or publishing a Shared Tool never calls the
 blocking thread at normal priority.
 
 Semantic search finds the Tools of a Graph-sized Provider (19,830 rows) after about 11.5 minutes on one x86 vCPU and 2.9
-minutes on one M4 core; until then they rank by words. Two Coral Instances that overlap during a rolling update can embed the
-same rows; the write checks staleness, so this costs CPU only.
+minutes on one M4 core; until then they rank by words. Two Coral Instances that have the core role, side by side or
+overlapping during a rolling upgrade, can embed the same rows; the write checks staleness, so this costs CPU only.
 
 ## Storage
 
@@ -185,7 +188,8 @@ the query embedding, and the Embedder reports its backlog, batch durations and s
 - Vectors cost database memory. On db.t4g.medium (4 GiB) the vectors of about 17 Graph Workspaces stay warm at
   `halfvec(384)` (extrapolated from 10 measured); past that the instance swaps and a query takes 0.8 to 2 s.
 - The Coral process carries the model: about 30 MB of binary, a 133 MB model file, and up to about 360 MiB while it
-  embeds.
+  embeds. Where the Instance Roles are separate, each Coral Instance with the core role carries it, and an MCP or auth
+  process loads no model.
 - Self-hosted operators on Postgres install pgvector or turn the setting off.
 - A model change is a code change: a new manifest, a new revision, and every Entity re-embeds. A new dimension recreates
   the vector table.

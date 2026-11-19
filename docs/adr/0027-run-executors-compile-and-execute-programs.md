@@ -91,8 +91,10 @@ runtime.
   late load from the first Run Executor fails the start's claim predicate and is answered that the Run is not held. No
   Program code has run. Coral logs each put-back with the Run Executor's id and tracks nothing else.
 - **Coral never refuses a Run for capacity.** With no room anywhere and work waiting, a Coral Instance that runs local
-  children starts another, up to their limit; an orchestrator scales Run Executors in their own container. A Coral Instance's readiness
-  checks only its database.
+  children starts another, up to their limit; an orchestrator scales Run Executors in their own container. A Coral
+  Instance is ready without a linked Run Executor:
+  [ADR 0041](0041-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md) says what its
+  readiness checks.
 
 ## The Run stream
 
@@ -176,9 +178,12 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   ask and accepts no new stream. Each pull stream ends cleanly once its compiles in flight are answered or due, and
   its Run Executor redials elsewhere. The Coral Instance keeps each open Run stream, dispatching no call the Program
   makes after the drain starts, until it holds no pull stream and that Run has no dispatch in flight on it, then ends
-  its side of the stream cleanly; the Run Executor reopens it at once and the Run goes on elsewhere. At the drain's
-  length it closes the rest, whose calls in flight end `indeterminate`. Nothing in the drain records Interrupted, and
-  a rolling deploy loses no Run.
+  its side of the stream cleanly; the Run Executor reopens it at once and the Run goes on elsewhere. The drain also
+  finishes the requests in flight on the Coral Instance's other listeners, and it ends when nothing is in flight. One
+  length limits all of it
+  ([ADR 0041](0041-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)): at that
+  length the Coral Instance closes the rest, and the calls in flight of those Runs end `indeterminate`. Nothing in the
+  drain records Interrupted, and a rolling deploy loses no Run.
 - **The word is reconnect.** A Run Executor reconnects a Run, and the Run's stream moves. Coral never resumes a Run: no
   Program is recreated and no isolate is snapshotted.
 
@@ -207,11 +212,13 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   writes. Its unstarted Runs go back to waiting. A Run Executor that reopens later hears on each Run stream that the Run
   ended, and terminates the Program. The sweeper deletes a lapsed row that holds no Run. The Coral Instance that started
   a local child and sees it exit runs the same write for that child's Runs at once.
-- **One sweeper at a time, elected by a lease row.** Every Coral Instance tries the row on a period; the one whose
-  update lands sweeps that pass and renews on each pass, and another takes over when it dies. The first pass runs at
-  boot before the listeners bind. Each pass, bounded, oldest first: `running` Runs past their deadline, `pending`
-  Approval Requests past theirs, taken Runs that never started, Run Executors past their lease. On SQLite the boot pass
-  ends the Runs that local children held, since the one Coral Instance is their parent.
+- **One sweeper at a time, elected by a lease row.** Every Coral Instance that has the core role
+  ([ADR 0041](0041-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)) tries the
+  row on a period; the one whose update lands sweeps that pass and renews on each pass, and another takes over when it
+  dies. The first pass runs at boot before the core role's listeners bind. Each pass, bounded, oldest first: `running`
+  Runs past their deadline, `pending` Approval Requests past theirs, taken Runs that never started, Run Executors past
+  their lease. On SQLite the boot pass ends the Runs that local children held, since the one Coral Instance is their
+  parent.
 
 ## Outside requests and the wake row
 
