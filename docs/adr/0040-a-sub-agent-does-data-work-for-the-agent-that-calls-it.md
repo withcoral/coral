@@ -362,7 +362,8 @@ organization, and an organization's administrator may later set it in the produc
 
 - A Workspace Owner cannot turn the Sub-agent off for one Workspace. It is on for the whole deployment.
 - A Sub-agent can call Built-in Tools from a Program, so it can add a Provider, change policy or save a Tool when its
-  caller can.
+  caller can. Nothing restricts a Sub-agent more than its lead. One way to do that, a Run started in a narrower mode
+  that the Policy Enforcement Point applies, is noted in [issue 3358](https://github.com/withcoral/coral/issues/3358).
 - An interrupted Turn does not continue. The lead must send its message again.
 - Program diagnostics and Tool declarations still come from core, so a change to them changes what the model reads.
 - The four rules behind `exec`, `wait` and `cancel` exist twice, in core's handlers and in the Sub-agent's crate. A
