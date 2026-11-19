@@ -188,8 +188,8 @@ the query embedding, and the Embedder reports its backlog, batch durations and s
 - Vectors cost database memory. On db.t4g.medium (4 GiB) the vectors of about 17 Graph Workspaces stay warm at
   `halfvec(384)` (extrapolated from 10 measured); past that the instance swaps and a query takes 0.8 to 2 s.
 - The Coral process carries the model: about 30 MB of binary, a 133 MB model file, and up to about 360 MiB while it
-  embeds. Where the Instance Roles are separate, each Coral Instance with the core role carries it, and an MCP or auth
-  process loads no model.
+  embeds. Where the Instance Roles are separate, each Coral Instance with the core role carries it, and a Coral Instance
+  without the core role loads no model.
 - Self-hosted operators on Postgres install pgvector or turn the setting off.
 - A model change is a code change: a new manifest, a new revision, and every Entity re-embeds. A new dimension recreates
   the vector table.

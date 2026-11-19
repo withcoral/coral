@@ -1162,8 +1162,8 @@ component, target, mode, tier, Run Executor link role
 
 **Shutdown Drain**: What a Coral Instance does from its stop signal to its exit. It reports not ready, finishes the
 dispatches in flight of its Runs and the requests in flight on its listeners, and closes. It finishes dispatches, not
-Runs: each Run goes on at another Coral Instance. A setting limits its length, and a Shutdown Drain with no work takes
-no time. _Avoid_: graceful shutdown, lame duck, drain timeout
+Runs: each Run goes on at another Coral Instance, except the Runs of its own local Run Executors, which end. A setting
+limits its length, and a Shutdown Drain with no work takes no time. _Avoid_: graceful shutdown, lame duck, drain timeout
 
 **Run Executor**: The runtime outside the Coral process that executes accepted Coral Program packages, each in a fresh
 V8 isolate, and compiles Programs with the Program Compiler. It dials Coral at one address and presents a credential:
@@ -1173,9 +1173,9 @@ credential, never by the network it dials from. It is identified by a random id 
 On one pull stream it reports its room, a count of the Runs and compiles it is willing to hold, and Coral sends it Runs
 and compiles against that count. It opens one stream per Run it holds. A Run starts when Coral records that the Run
 Executor loaded it, and its deadline runs from its start. The Run Executor numbers its Program's requests, keeps the
-ones Coral has not yet committed, and reconnects a Run to any Coral Instance after a lost link. A lost link or a lapsed
-lease never ends a Program. The Program runs until it finishes, exceeds a limit of its own, reaches the Run's deadline,
-or Coral terminates it or answers that the Run ended.
+ones Coral has not yet committed, and reconnects a Run to any Coral Instance that has the core role after a lost link. A
+lost link or a lapsed lease never ends a Program. The Program runs until it finishes, exceeds a limit of its own,
+reaches the Run's deadline, or Coral terminates it or answers that the Run ended.
 
 The Run Executor holds no other secret and no database connection. Its only connections are the ones it opens to Coral,
 and any connection to a remote runtime that it drives. Its isolates run in its own process, or on a remote runtime that

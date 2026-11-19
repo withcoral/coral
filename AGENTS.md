@@ -334,10 +334,10 @@ has the reasons.
   any release writes it, and no migration rewrites rows into a form the
   previous release cannot read. The migration check does not read stored
   values: keep this rule yourself.
-- An encoding that two versions both read, such as the sign-in frame, a token,
-  a page token or a stored encoding. A release reads both forms before any
-  release writes the new one. No check runs an older Coral against the new
-  form: keep this rule yourself.
+- An encoding that two versions both read, such as the sealed sign-in cookie
+  (`sealed_handshake`), an access token, a page token or a stored encoding. A
+  release reads both forms before any release writes the new one. No check
+  runs an older Coral against the new form: keep this rule yourself.
 - The gRPC API. Change `coral.management.v1` only as protobuf allows: add a
   method, a field or an enum value, and never change the number or the type
   of a field. To remove a method or a field, mark it `deprecated` in one

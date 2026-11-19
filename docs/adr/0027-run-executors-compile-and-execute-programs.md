@@ -10,7 +10,7 @@ Runs it holds, and Runs can execute on another runtime for a hosted offering. A 
 as Coral. The in-process V8 engine stays only as a test engine.
 
 A Run Executor dials Coral and takes Runs when it has room. A Run that has not started waits in the database, held by no
-Coral Instance, and any Coral Instance hands it out. The Run Executor numbers its Program's requests and sends them on
+Coral Instance, and any Coral Instance that has the core role hands it out. The Run Executor numbers its Program's requests and sends them on
 one stream per Run; the Coral Instance that holds that stream commits them in chunks, each predicated on the Run's
 head. There is no Run Owner: this ADR supersedes [ADR 0018](0018-run-owner-coordinates-each-run.md), whose Run Ledger,
 head, chunk predicate, budgets, enforcement point and contract it keeps, and
@@ -66,7 +66,7 @@ runtime.
   is willing to hold, not a limit Coral enforces: nothing is refused or put back for room.
 - **The lease follows the pull stream.** The Coral Instance that holds a Run Executor's pull stream renews its lease on
   a period shorter than the lease; nothing else renews it. When the stream closes, for any reason, the holder stops
-  renewing; the lease is the Run Executor's grace to reopen the stream on any Coral Instance.
+  renewing; the lease is the Run Executor's grace to reopen the stream on any Coral Instance that has the core role.
 - **Retiring is a report of zero.** A Run Executor that must stop reports no room, honors what crossed the report,
   keeps the pull stream open while its Runs finish, closes it after its last Run ends, and exits. Coral retires a local
   child that has held no Run and no compile for an idle period by closing the child's stdin, the pipe its token came
@@ -183,7 +183,8 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   length limits all of it
   ([ADR 0041](0041-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)): at that
   length the Coral Instance closes the rest, and the calls in flight of those Runs end `indeterminate`. Nothing in the
-  drain records Interrupted, and a rolling deploy loses no Run.
+  drain records Interrupted for a Run that a Run Executor in a process of its own holds, and a rolling deploy loses no
+  such Run. The Runs of the Coral Instance's own local children end when it stops.
 - **The word is reconnect.** A Run Executor reconnects a Run, and the Run's stream moves. Coral never resumes a Run: no
   Program is recreated and no isolate is snapshotted.
 
@@ -247,7 +248,7 @@ above it, in order. A repeat carries the same number and lands once; an Emission
 Each Run Executor keeps one warm Program Compiler, warmed before it says hello, with the compiler's existing limits. A
 compile travels down the pull stream and its answer comes back on it; it goes to the pull stream with the most room on
 the Coral Instance that needs it. A Coral Instance that holds no pull stream, or none with room, writes the call to a
-relay row that any Coral Instance with room, itself included, picks up, serves and answers through the database. Coral
+relay row that any Coral Instance that has the core role and room, itself included, picks up, serves and answers through the database. Coral
 Instances keep talking only through the database. A compile that no Run Executor can serve yet waits for one: no Run
 Executor linked is a state every rollout passes through. The compile's own time limit runs once a Run Executor serves
 it; a compile that waits past a bound fails as a missing compiler fails today, and Runs already accepted wait. With
