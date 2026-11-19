@@ -128,7 +128,7 @@ impl RunModule {
                 metric::run_claimed(ClaimKind::Takeover, ClaimOutcome::Lost);
                 tracing::warn!(
                     coral.run.id = safe::id(&run.held_id()),
-                    "Run of a failed Run Owner was already ended"
+                    "Run of a failed Run Owner was already ended, taken over, or moved to another Coral Instance"
                 );
             }
             Err(error) => {
