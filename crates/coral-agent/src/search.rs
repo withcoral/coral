@@ -4,14 +4,13 @@ use coral_catalog::{
     Description, PathsResult, SearchArguments, SearchHit, SearchOutput, SearchResult,
     SearchRetriever, SearchRetrieverState,
 };
-use coral_run::RunId;
 use coral_search::{
     DiscoveryRequest, ExactPaths, SearchInput, SearchRequest, UniversalSearchModule,
 };
 use serde::Serialize;
 use serde_json::json;
 
-use crate::run_tools::{Caller, RunTools, shortened};
+use crate::run_tools::{Caller, RunTools, ToolOutput, shortened};
 
 /// Runs one tool call of the model's, `search` here and the rest in
 /// `run_tools`, and shortens its result.
@@ -21,29 +20,41 @@ pub(crate) async fn call(
     caller: &Caller,
     name: &str,
     arguments: &str,
-) -> (String, Option<RunId>) {
-    let (text, run_id) = match name {
-        "search" => (search(module, caller, arguments).await, None),
+) -> ToolOutput {
+    let mut output = match name {
+        "search" => {
+            let (content, is_error) = search(module, caller, arguments).await;
+            ToolOutput {
+                content,
+                is_error,
+                run_id: None,
+            }
+        }
         _ => run_tools.call(caller, name, arguments).await,
     };
-    (shortened(text), run_id)
+    output.content = shortened(output.content);
+    output
 }
 
 /// Core's discovery as the lead's caller, written as the model reads it.
-async fn search(module: &UniversalSearchModule, caller: &Caller, arguments: &str) -> String {
+async fn search(
+    module: &UniversalSearchModule,
+    caller: &Caller,
+    arguments: &str,
+) -> (String, bool) {
     let request = match request(arguments) {
         Ok(request) => request,
-        Err((code, message)) => return error(code, &message),
+        Err((code, message)) => return (error(code, &message), true),
     };
     let found = module
         .discover(&caller.principal, &caller.workspace_id, &request)
         .await;
     match found.as_ref().map(coral_search::projection::discovery) {
-        Ok(SearchOutput::Page(page)) => json!(Page::from(&page)).to_string(),
-        Ok(SearchOutput::Paths(paths)) => json!(Paths::from(&paths)).to_string(),
+        Ok(SearchOutput::Page(page)) => (json!(Page::from(&page)).to_string(), false),
+        Ok(SearchOutput::Paths(paths)) => (json!(Paths::from(&paths)).to_string(), false),
         Err(failure) => {
             let (code, message) = reason(failure);
-            error(code, &message)
+            (error(code, &message), true)
         }
     }
 }

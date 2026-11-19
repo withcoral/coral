@@ -233,7 +233,7 @@ mod tests {
                 arguments: format!(r#"{{"intent":"{}"}}"#, "é".repeat(500)),
             };
             let started = RunId::parse(run_id).ok();
-            let result = call.result("{}".to_owned(), started);
+            let result = call.result("{}".to_owned(), false, started);
             thread.push(Message {
                 role: Role::Assistant,
                 content: vec![Block::ToolUse(call)],
@@ -283,7 +283,7 @@ mod tests {
             let results = calls
                 .iter()
                 .zip(results)
-                .map(|(call, content)| call.result(content, None));
+                .map(|(call, content)| call.result(content, false, None));
             let results = Message::tool_results(results.collect());
             let calls = calls.into_iter().map(Block::ToolUse).collect();
             [

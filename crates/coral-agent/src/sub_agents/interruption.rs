@@ -77,7 +77,7 @@ pub(super) async fn close_calls(
     };
     let no_results: Vec<_> = message
         .tool_calls()
-        .map(|call| call.result(NO_RESULT.to_owned(), None))
+        .map(|call| call.result(NO_RESULT.to_owned(), true, None))
         .collect();
     if no_results.is_empty() {
         return Ok(());

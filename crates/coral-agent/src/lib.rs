@@ -25,7 +25,7 @@ use coral_secret_store::{BuildEnvironment, SettingError, StoreSettings, env_var_
 use serde::Deserialize;
 use url::Url;
 
-use model::ModelClient;
+use model::{ModelClient, Protocol};
 use sub_agents::SubAgents;
 use tools::CoreWithAgent;
 
@@ -77,6 +77,8 @@ const MODEL_CALL_TIMEOUT: Duration = Duration::from_secs(300);
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Section {
+    #[serde(default)]
+    protocol: Protocol,
     base_url: String,
     model: String,
     api_key_env: Option<String>,
@@ -132,7 +134,13 @@ impl Section {
             .map_err(|_error| SettingError::new("", "model client initialization failed"))?;
         let (window, effort) = (self.context_window, self.reasoning_effort);
         Ok(ModelClient::new(
-            http, &base_url, self.model, api_key, window, effort,
+            http,
+            self.protocol,
+            &base_url,
+            self.model,
+            api_key,
+            window,
+            effort,
         ))
     }
 }

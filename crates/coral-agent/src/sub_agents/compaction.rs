@@ -163,9 +163,11 @@ fn size(thread: &[Message]) -> usize {
 /// A message's size in tokens, estimated from its bytes.
 fn tokens(message: &Message) -> usize {
     let bytes = message.content.iter().map(|block| match block {
-        Block::Text { text } | Block::Reasoning { text, .. } | Block::Summary { text, .. } => {
-            text.len()
-        }
+        Block::Text { text } | Block::Summary { text, .. } => text.len(),
+        Block::Reasoning { text, .. } if !text.is_empty() => text.len(),
+        Block::Reasoning { opaque, .. } => opaque
+            .as_ref()
+            .map_or(0, |value| value.to_string().len() / 2),
         Block::ToolUse(call) => call.name.len() + call.arguments.len(),
         Block::ToolResult { content, .. } => content.len(),
     });
@@ -269,7 +271,7 @@ mod tests {
             let uses = calls.iter().cloned().map(Block::ToolUse).collect();
             let results = calls
                 .iter()
-                .map(|call| call.result("x".repeat(12_000), None));
+                .map(|call| call.result("x".repeat(12_000), false, None));
             thread.push(Message {
                 role: Role::Assistant,
                 content: uses,
@@ -316,7 +318,7 @@ mod tests {
             let calls: Vec<ToolCall> = (0..results).map(call).collect();
             let results = calls
                 .iter()
-                .map(|call| call.result("x".repeat(20_480), None));
+                .map(|call| call.result("x".repeat(20_480), false, None));
             let results = Message::tool_results(results.collect());
             let content = calls.into_iter().map(Block::ToolUse).collect();
             let role = Role::Assistant;
@@ -333,12 +335,15 @@ mod tests {
     }
 
     // Catches: reasoning shown to the summarizer as the agent's words, and
-    // reasoning left out of the size that decides when to compact.
+    // reasoning (plain text or opaque-only) left out of the size that decides
+    // when to compact.
     #[test]
     fn reasoning_counts_toward_the_size_and_is_not_summarized() {
         let reasoning = Block::Reasoning {
             text: "x".repeat(295),
             model: "sailfish-1".to_owned(),
+            protocol: Some(crate::model::Protocol::ChatCompletions),
+            opaque: None,
         };
         let text = Block::Text {
             text: "Done.".to_owned(),
@@ -350,5 +355,30 @@ mod tests {
 
         assert_eq!(tokens(&message), 100);
         assert_eq!(transcript(&message), ["[Agent]: Done."]);
+
+        let opaque_only = Block::Reasoning {
+            text: String::new(),
+            model: "gpt-5.4".to_owned(),
+            protocol: Some(crate::model::Protocol::OpenAiResponses),
+            opaque: Some(serde_json::json!({
+                "type": "reasoning",
+                "encrypted_content": "a".repeat(600),
+                "summary": [],
+            })),
+        };
+        let opaque_message = Message {
+            role: Role::Assistant,
+            content: vec![
+                opaque_only,
+                Block::Text {
+                    text: "Done.".to_owned(),
+                },
+            ],
+        };
+        assert!(
+            tokens(&opaque_message) >= 100,
+            "opaque reasoning must count"
+        );
+        assert_eq!(transcript(&opaque_message), ["[Agent]: Done."]);
     }
 }

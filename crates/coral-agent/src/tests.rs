@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use wiremock::matchers::{any, body_string_contains, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-use crate::model::{Block, Message, ModelClient, Role, ToolCall};
+use crate::model::{Block, Message, ModelClient, Protocol, Role, ToolCall};
 use crate::run_tools::Caller;
 use crate::sub_agents::{Error, RunningTurn, SubAgents, TURN_LEASE, TurnState};
 use crate::telemetry::TurnTrace;
@@ -121,7 +121,15 @@ impl Lead {
     fn sub_agents(&self) -> SubAgents {
         let http = coral_outbound::Client::new(POLICY, MODEL_CALL_TIMEOUT).unwrap();
         let base_url = self.base_url().parse().unwrap();
-        let model = ModelClient::new(http, &base_url, MODEL.to_owned(), None, None, None);
+        let model = ModelClient::new(
+            http,
+            Protocol::ChatCompletions,
+            &base_url,
+            MODEL.to_owned(),
+            None,
+            None,
+            None,
+        );
         let modules = self.modules.clone();
         let (tasks, commands, runs) = (modules.tasks, modules.commands, modules.runs);
         let (clock, stopping) = (Arc::new(self.clock.clone()), self.stop.subscribe());
@@ -329,6 +337,20 @@ async fn startup_checks_the_section_and_sends_the_model_nothing() {
         (named.clone(), None),
         (
             format!(
+                "{named}protocol = 'openai_responses'\napi_key_env = 'MODEL_KEY'\ncontext_window = 48000\nreasoning_effort = 'high'"
+            ),
+            None,
+        ),
+        (
+            format!("{named}protocol = 'anthropic'\nreasoning_effort = 'medium'"),
+            None,
+        ),
+        (
+            format!("{named}protocol = 'gemini'"),
+            Some("protocol: unsupported value"),
+        ),
+        (
+            format!(
                 "{named}api_key_env = 'MODEL_KEY'\ncontext_window = 48000\nreasoning_effort = 'none'"
             ),
             None,
@@ -496,7 +518,7 @@ async fn a_turn_runs_a_program_in_the_leads_task_and_answers_from_it() {
         [
             Message::user(brief),
             assistant(vec![Block::ToolUse(exec.clone())]),
-            Message::tool_results(vec![exec.result(result, attempt.run.clone())]),
+            Message::tool_results(vec![exec.result(result, false, attempt.run.clone())]),
             assistant(vec![text]),
         ]
     );
@@ -1069,7 +1091,7 @@ async fn an_interrupted_turn_closes_the_calls_it_left_without_results() {
     let no_result = "No result: the Turn stopped before this call returned. A Run that the call started may still be running.";
     let closed = calls
         .iter()
-        .map(|call| call.result(no_result.to_owned(), None));
+        .map(|call| call.result(no_result.to_owned(), true, None));
     let thread = lead.thread(&sub_agent_id).await;
     let after_the_brief = [asked, Message::tool_results(closed.collect())];
     assert_eq!(thread.get(1..), Some(&after_the_brief[..]));
