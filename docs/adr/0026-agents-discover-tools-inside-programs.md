@@ -32,3 +32,6 @@ product; and a dynamic `coral.call(path, args)`, which invites calls to Tools wh
   checked only when called.
 - A client that turns code mode off, such as one that calls Provider Tools directly (ADR 0024), has no discovery
   surface. Serving one again is a new decision, not a default.
+- Coral's Sub-agent has a `search` tool of its own, which runs the same search outside a Program (ADR 0040).
+  `coral.search` still works in a Sub-agent's Program. Core's MCP tools are unchanged, and core still has one
+  implementation of search.
