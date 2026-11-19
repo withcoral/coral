@@ -550,7 +550,8 @@ flowchart TD
 
 | Situation | What happens |
 | --- | --- |
-| The lead calls `cancel` with the `sub_agent_id`, on any Coral Instance | The call records the cancellation in the database. The Turn stops at its next step or when it next renews its lease. |
+| The lead calls `cancel` with the `sub_agent_id`, on any Coral Instance | The call records the cancellation in the database. The Turn stops when it next renews its lease, and the Coral Instance that runs it cancels the Runs it started that have not ended. |
+| The lead ends the Task | A running Turn in it stops as canceled, at its next model call or when it next renews its lease, and its unfinished Runs are cancelled. |
 | The lead sends another message while the Turn is running | The Sub-agent reads the message before its next model call. |
 | A Run that the Turn started waits for a person to approve a Tool call or connect an account | `wait` returns `needs_action` with that Run's required actions, and the lead shows them to the user. |
 | The conversation comes close to the model's context window | The Sub-agent asks the model to summarize the older messages. It continues with the summary and the most recent messages. |
@@ -559,8 +560,9 @@ flowchart TD
 | The Coral Instance shuts down | It marks its running Turns as interrupted before it exits. |
 | The Coral Instance stops without shutting down | The Turn's lease in the database expires. The next request that reads the Turn marks it as interrupted. |
 
-A Run that an interrupted Turn started continues under its Run Owner. A Turn itself does not use a Run Owner or a Run
-Executor, because those run Programs. A Turn only calls the model and core's Task, Run and search modules.
+A Run that an interrupted or failed Turn started continues under its Run Owner. Only a canceled Turn cancels its Runs.
+A Turn itself does not use a Run Owner or a Run Executor, because those run Programs. A Turn only calls the model and
+core's Task, Run and search modules.
 
 ### What telemetry records
 
