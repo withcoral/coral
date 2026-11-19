@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.10.0](https://github.com/withcoral/coral/compare/v1.9.0...v1.10.0) (2026-11-19)
+
+
+### Features
+
+* **edition:** report the Edition and each Enterprise Feature's state ([#3351](https://github.com/withcoral/coral/issues/3351)) ([a0f49db](https://github.com/withcoral/coral/commit/a0f49dbd76a881ca74f43bae17489bc3f2054514))
+* **edition:** trust the production License signing key ([#3359](https://github.com/withcoral/coral/issues/3359)) ([38755f4](https://github.com/withcoral/coral/commit/38755f4129aed2d098c09c331abfcf6665b917f4)), closes [#3266](https://github.com/withcoral/coral/issues/3266)
+* **run:** drain a Coral Instance's Run streams, not its Runs ([#3353](https://github.com/withcoral/coral/issues/3353)) ([44ea564](https://github.com/withcoral/coral/commit/44ea56469560909a3d15c8ffc4412c20ac825700))
+
 ## [1.9.0](https://github.com/withcoral/coral/compare/v1.8.0...v1.9.0) (2026-11-19)
 
 
