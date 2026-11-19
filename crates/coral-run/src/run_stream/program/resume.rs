@@ -1,8 +1,8 @@
-//! A reopened stream's Program reader takes the Run back from its rows
-//! (ADR 0027, Reconnect): each open Invocation answers its request when it
-//! ends, and each request the Run Executor still waits on that the
-//! watermark covers is answered again from what Coral recorded, as the call
-//! would have answered it. The Run Executor ignores an answer it has.
+//! A reopened stream's Program reader takes the Run back from its rows: each
+//! open Invocation answers its request when it ends, and each request the Run
+//! Executor still waits on that the watermark covers is answered again from
+//! what Coral recorded, as the call would have answered it. The Run Executor
+//! ignores an answer it has.
 
 use std::collections::HashMap;
 use std::sync::PoisonError;

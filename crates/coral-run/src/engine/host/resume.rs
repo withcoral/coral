@@ -1,6 +1,6 @@
 //! A reopened Run stream's Program host takes back the Invocations its rows
-//! record (ADR 0027, Reconnect): each one still open answers its request as
-//! it would have on the stream it was made on.
+//! record: each one still open answers its request as it would have on the
+//! stream it was made on.
 
 use std::collections::HashMap;
 use std::sync::Arc;

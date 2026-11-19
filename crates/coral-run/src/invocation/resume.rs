@@ -1,8 +1,8 @@
 //! The Invocations a Run stream finds on their rows when it reopens on
-//! another loop (ADR 0027, Reconnect): a `pending` one re-enters its gates,
-//! which reread its Approval Request and its account wait, so it parks again
-//! or meets the enforcement point; a `dispatching` Perform keeps its body,
-//! which still runs on the Run Executor. Nothing is admitted again.
+//! another loop: a `pending` one re-enters its gates, which reread its
+//! Approval Request and its account wait, so it parks again or meets the
+//! enforcement point; a `dispatching` Perform keeps its body, which still
+//! runs on the Run Executor. Nothing is admitted again.
 
 use std::sync::Arc;
 

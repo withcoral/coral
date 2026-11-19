@@ -1,7 +1,7 @@
-//! A Run's stream reopens on any Coral Instance (ADR 0027, Reconnect): the
-//! reopen settles the call in flight on the loop before as `indeterminate`,
-//! takes back the call that waits for its approval, answers again what the
-//! Run Executor waits on, and lands each resent request once.
+//! A Run's stream reopens on any Coral Instance: the reopen settles the call
+//! in flight on the loop before as `indeterminate`, takes back the call that
+//! waits for its approval, answers again what the Run Executor waits on, and
+//! lands each resent request once.
 use super::*;
 use coral_run_executor::PROTOCOL_LEVEL;
 use coral_run_executor::wire::v1::{
