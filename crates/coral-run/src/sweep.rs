@@ -31,11 +31,8 @@ use crate::termination::commit_end;
 use crate::types::HeldRunId;
 use crate::{Error, RunId, RunModule, RunState};
 
-/// How often bootstrap runs a pass.
-const SWEEP_INTERVAL: Duration = Duration::from_secs(15);
-
-/// How long one election holds: three passes, so another Coral Instance
-/// takes over once the holder missed two.
+/// How long one election holds: three passes of 15 s, so another Coral
+/// Instance takes over once the holder missed two.
 const SWEEPER_LEASE: Duration = Duration::from_secs(45);
 
 /// How long a taken Run waits for its start before it goes back to waiting.
@@ -55,8 +52,8 @@ pub struct Swept {
     pub expired: usize,
     /// Taken Runs that never started, back to waiting.
     pub put_back: usize,
-    /// Run Executor rows deleted.
-    pub released: usize,
+    /// Rows of Run Executors that are gone, deleted.
+    pub run_executors_removed: usize,
 }
 
 impl Swept {
@@ -71,14 +68,14 @@ impl AddAssign for Swept {
         self.ended += other.ended;
         self.expired += other.expired;
         self.put_back += other.put_back;
-        self.released += other.released;
+        self.run_executors_removed += other.run_executors_removed;
     }
 }
 
 /// Which pass runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Pass {
-    /// Every [`SWEEP_INTERVAL`].
+    /// The scheduled pass; bootstrap sets its cadence.
     Periodic,
     /// Once, before any listener serves.
     Boot,
@@ -95,12 +92,6 @@ enum Released {
 }
 
 impl RunModule {
-    /// How often bootstrap runs [`Self::sweep_runs`].
-    #[must_use]
-    pub const fn run_sweep_interval(&self) -> Duration {
-        SWEEP_INTERVAL
-    }
-
     /// One pass of the Run sweeper: elects this Coral Instance, or renews
     /// its election, and sweeps. `None` when another Coral Instance holds
     /// the election, or this one is shutting down.
@@ -310,7 +301,7 @@ impl RunModule {
             && !run_repository::names_run_executor(&mut transaction, lease.id()).await?
             && leases::delete(&mut transaction, lease).await?
         {
-            swept.released += 1;
+            swept.run_executors_removed += 1;
         }
         transaction.commit().await?;
         Ok(swept)

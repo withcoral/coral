@@ -155,12 +155,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   `Terminate`; no shutdown grace applies (#2904). A reopen of the stream
   (#2905) starts a new owner, rebuilt from the ledger. The owner it
   replaces, whose stream moved to another Coral Instance or to a reopen on
-  its own, rebuilds nothing: its chunk is refused. The Run sweeper (#2906) is
-  the one writer outside a Run Owner that compares `now` with a Run's or an
-  Approval Request's deadline, and only for a Run that no worker claim
-  fences. Elected by its lease row, it writes each Run in its own transaction
-  under the Run's claim and head, and releases a lapsed Run Executor's Runs
-  only while its row holds the lease the pass read. A stream owner writes its
+  its own, rebuilds nothing: its chunk is refused. For a Run that no worker
+  claim fences, the Run sweeper (#2906) also writes under the claim and the
+  head, as the sweeper section of ADR 0027 states. A stream owner writes its
   Run only while the row names its Coral Instance as the stream's holder.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
@@ -188,9 +185,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   Enforcement Point compares, at dispatch, an approved request's decision
   time (the owner's sample when it applied the decision, not when its chunk
   commits) with its deadline, contract line 3, and records no expiry),
-  and no chunk commit is predicated on the clock (contract line 5). Nothing
-  outside the owner compares `now` with those deadlines to write TimedOut
-  or Expired: readers show the recorded state beside the deadline. A
+  and no chunk commit is predicated on the clock (contract line 5). For a
+  Run that a Run Owner holds, nothing outside the owner compares `now` with
+  those deadlines to write TimedOut or Expired: readers show the recorded
+  state beside the deadline. A
   connection request is Account-owned and shared across Runs: the Account
   module records its expiry when a holder reads it, and the owner's timer
   only wakes the Invocations parked on it. Do not open a transaction that

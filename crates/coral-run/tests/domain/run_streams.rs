@@ -717,3 +717,50 @@ async fn an_approval_expires_in_the_loop_unless_a_decision_committed_first() {
         }
     }
 }
+
+/// Catches: a stale stream owner whose interruption lands on a Run whose
+/// stream another Coral Instance now holds, under the claim the reopen kept.
+#[tokio::test]
+async fn a_stream_owner_writes_no_interruption_once_another_instance_holds_the_stream() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let runs = fixture.runs.clone().with_run_streams();
+    let tool = fixture.user_tool("user:holder", "Stream holder").await;
+    let (run_id, stream) = started(&runs, &tool).await;
+    drop(stream);
+    wait_until(|| runs.owners.get(&run_id).is_none()).await;
+    let elsewhere = crate::CoralInstanceId::generate();
+    assert_eq!(
+        fixture
+            .inject_fault(&format!(
+                "UPDATE program_run_records SET holder_instance_id = '{elsewhere}' \
+                 WHERE id = '{run_id}'"
+            ))
+            .await,
+        1
+    );
+    let before = (
+        fixture.run_record(&tool.workspace_id, &run_id).await,
+        fixture.events_after(&tool.workspace_id, &run_id, 0).await,
+    );
+    let claim = before
+        .0
+        .execution_claim_id
+        .clone()
+        .expect("the take's claim");
+
+    let interrupted = runs
+        .interrupt_owned_run(&tool.workspace_id, &run_id, &claim, None, None)
+        .await;
+
+    assert!(
+        matches!(interrupted, Err(Error::ClaimMismatch)),
+        "{interrupted:?}"
+    );
+    assert_eq!(
+        (
+            fixture.run_record(&tool.workspace_id, &run_id).await,
+            fixture.events_after(&tool.workspace_id, &run_id, 0).await,
+        ),
+        before
+    );
+}

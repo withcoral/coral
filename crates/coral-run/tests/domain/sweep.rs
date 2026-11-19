@@ -4,7 +4,7 @@ use super::*;
 use crate::approval::ApprovalState;
 use crate::run_repository::Taker;
 use crate::sweep::Pass;
-use crate::{CoralInstanceId, RunId, Swept};
+use crate::{RunId, Swept};
 use coral_db::{DatabaseSystem, UnixNanos};
 use coral_run_executor::Kind;
 use coral_run_executor::leases;
@@ -269,7 +269,7 @@ async fn one_pass_ends_puts_back_and_releases_only_what_no_stream_decided() {
             ended: 2,
             expired: 0,
             put_back: 2,
-            released: 2,
+            run_executors_removed: 2,
         }
     );
     assert_eq!(sweep.run(&past_deadline).await.state, RunState::TimedOut);
@@ -408,7 +408,7 @@ async fn a_local_childs_exit_releases_its_runs_at_once() {
         Swept {
             ended: 1,
             put_back: 1,
-            released: 1,
+            run_executors_removed: 1,
             ..Swept::default()
         }
     );
@@ -460,36 +460,4 @@ async fn a_pass_ends_the_oldest_deadlines_first_up_to_its_limit() {
     let next = sweep.runs.sweep(Pass::Periodic, 2).await.expect("sweep");
     assert_eq!(next.map(|swept| swept.ended), Some(1));
     assert_eq!(states().await, [RunState::TimedOut; 3]);
-}
-
-/// Catches: a stale stream owner whose interruption lands on a Run whose
-/// stream another Coral Instance now holds, under the claim the reopen kept.
-#[tokio::test]
-async fn a_stream_owner_writes_no_interruption_once_another_instance_holds_the_stream() {
-    let sweep = Sweep::new().await;
-    let run_id = sweep.started(LIVE, Kind::Dialed).await;
-    let elsewhere = CoralInstanceId::generate();
-    sweep
-        .set(&run_id, &format!("holder_instance_id = '{elsewhere}'"))
-        .await;
-    let before = (sweep.run(&run_id).await, sweep.events(&run_id).await);
-    let claim = before
-        .0
-        .execution_claim_id
-        .clone()
-        .expect("the take's claim");
-
-    let interrupted = sweep
-        .runs
-        .interrupt_owned_run(&sweep.tool.workspace_id, &run_id, &claim, None, None)
-        .await;
-
-    assert!(
-        matches!(interrupted, Err(Error::ClaimMismatch)),
-        "{interrupted:?}"
-    );
-    assert_eq!(
-        (sweep.run(&run_id).await, sweep.events(&run_id).await),
-        before
-    );
 }
