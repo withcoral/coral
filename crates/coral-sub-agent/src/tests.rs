@@ -760,6 +760,72 @@ async fn cancel_cancels_the_running_runs_of_the_sub_agent() {
     );
 }
 
+// Catches: a Run that goes on after the lead canceled the Sub-agent because
+// the Sub-agent's `exec` still waited on it, and a reply right after the
+// cancel whose Turn reads that `exec` without a result. The renewal that
+// stops the Turn comes 10 seconds after it starts.
+#[tokio::test]
+async fn cancel_cancels_the_run_that_an_exec_still_waits_on() {
+    let lead = Lead::new().await;
+    let (tools, caller, task_id) = (lead.tools(), lead.caller(), lead.task().await);
+    let paid = "Count only the paid invoices.";
+    let answers = Mock::given(body_string_contains(paid)).respond_with(reply("Seven."));
+    answers.mount(&lead.model).await;
+    let endless = json!({"task_id": task_id.as_str(), "intent": "Loop", "program": "while (true) {}", "wait_ms": 30_000});
+    let exec = tool_calls(&[tool_call("call_1", "exec", &endless)]);
+    Mock::given(any())
+        .respond_with(exec)
+        .up_to_n_times(1)
+        .mount(&lead.model)
+        .await;
+    lead.model_answers(no_reply()).await;
+    let agent = json!({"task_id": task_id.as_str(), "message": MESSAGE});
+    let started = result(call(&*tools, &caller, "agent", agent).await);
+    let (tasks, deadline) = (
+        &lead.modules.tasks,
+        tokio::time::Instant::now() + EVENTUALLY,
+    );
+    let mut changes = lead.database.wait_for_changes(deadline);
+    let run_id = loop {
+        let read_at = tokio::time::Instant::now();
+        let attempts = tasks.interactions(&lead.actor, &lead.workspace_id, &task_id, None, 10);
+        if let Some(run_id) = attempts
+            .await
+            .unwrap()
+            .into_iter()
+            .find_map(|attempt| attempt.run)
+        {
+            break run_id;
+        }
+        assert!(changes.pause(read_at).await, "the exec started no Run");
+    };
+
+    let sub_agent_id = field(&started, "sub_agent_id");
+    result(
+        call(
+            &*tools,
+            &caller,
+            "cancel",
+            json!({"sub_agent_id": sub_agent_id}),
+        )
+        .await,
+    );
+    let message = json!({"sub_agent_id": sub_agent_id, "message": paid});
+    result(call(&*tools, &caller, "agent", message).await);
+    let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
+    let answered = result(call(&*tools, &caller, "wait", wait).await);
+
+    assert_eq!(field(&answered, "answer"), "Seven.", "{answered}");
+    let requests = lead.model.received_requests().await.unwrap();
+    let second = requests
+        .get(1)
+        .map(|request| String::from_utf8_lossy(&request.body));
+    assert!(second.is_some_and(|body| body.contains("No result")));
+    let wait = json!({"run_id": run_id.as_str(), "wait_ms": 30_000});
+    let waited = result(call(&*tools, &caller, "wait", wait).await);
+    assert_eq!(field(&waited, "state"), "canceled", "{waited}");
+}
+
 // Catches: a Turn that reads as running for ever once its Coral Instance
 // stopped without shutting down, and one interrupted while its lease holds.
 #[tokio::test]
@@ -853,6 +919,7 @@ async fn an_interrupted_turn_closes_the_calls_it_left_without_results() {
             principal: actor.clone(),
             workspace_id: workspace_id.clone(),
             task_id,
+            started_runs: std::sync::Mutex::default(),
         },
     };
     let mut transaction = lead.database.begin().await.unwrap();

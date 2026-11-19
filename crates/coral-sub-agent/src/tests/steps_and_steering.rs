@@ -65,6 +65,7 @@ impl Lead {
                 principal: actor.clone(),
                 workspace_id: workspace_id.clone(),
                 task_id,
+                started_runs: Mutex::default(),
             },
         };
         let results = Message::tool_results(vec![call.result(result, run)]);

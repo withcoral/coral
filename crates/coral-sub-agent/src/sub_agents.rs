@@ -2,7 +2,7 @@
 //! Turn is its work from one message to its answer: it calls the model, runs
 //! the tool calls of each reply, and ends on a reply without one.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use coral_db::{Clock, Database, Transaction, UnixNanos};
@@ -102,6 +102,7 @@ impl SubAgents {
                 principal: actor.clone(),
                 workspace_id: workspace_id.clone(),
                 task_id: task_id.clone(),
+                started_runs: Mutex::default(),
             },
         };
         let lease_end = now.saturating_add(TURN_LEASE);
@@ -358,28 +359,23 @@ impl SubAgents {
     /// Cancels the Runs that a Turn started if the lead canceled it. A Run
     /// that has ended stays as it is.
     async fn cancel_runs_if_canceled(&self, turn: &RunningTurn) {
-        let (principal, workspace_id) = (&turn.caller.principal, &turn.caller.workspace_id);
+        let caller = &turn.caller;
+        let (principal, workspace_id) = (&caller.principal, &caller.workspace_id);
         let canceled = async {
             if !repository::turn_canceled(&*self.database, workspace_id, &turn.id).await? {
                 return Ok(());
             }
-            let (sub_agent_id, turn_id) = (&turn.sub_agent_id, &turn.id);
-            let messages =
-                repository::turn_messages(&*self.database, workspace_id, sub_agent_id, turn_id);
             let observation = &RunObservation::immediate(None, 1)?;
-            let run_ids = steps::steps(&messages.await?).into_iter();
-            let cancels = run_ids
-                .filter_map(|step| step.run_id)
-                .map(|run_id| async move {
-                    let canceled = self
-                        .runs
-                        .cancel(principal, workspace_id, &run_id, observation);
-                    canceled.await.map(drop)
-                });
+            let started = caller.started_runs.lock();
+            let started = started.unwrap_or_else(PoisonError::into_inner).clone();
+            let cancels = started.iter().map(|run_id| {
+                self.runs
+                    .cancel(principal, workspace_id, run_id, observation)
+            });
             join_all(cancels)
                 .await
                 .into_iter()
-                .collect::<Result<(), _>>()?;
+                .collect::<Result<Vec<_>, _>>()?;
             Ok::<_, Error>(())
         };
         if let Err(error) = canceled.await {

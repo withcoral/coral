@@ -6,6 +6,7 @@
 #[cfg(test)]
 mod tests;
 
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use coral_mcp::ToolFailure;
@@ -44,6 +45,9 @@ pub(crate) struct Caller {
     pub(crate) principal: AuthenticatedPrincipal,
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) task_id: TaskId,
+    /// The Runs that this caller's `exec` calls started, each from its
+    /// acceptance on.
+    pub(crate) started_runs: Mutex<Vec<RunId>>,
 }
 
 pub(crate) struct RunTools {
@@ -104,6 +108,10 @@ impl RunTools {
             .await
             .map_err(task_failure)?;
         tracing::Span::current().record("coral.run.id", safe::id(&accepted.telemetry_id()));
+        let started = caller.started_runs.lock();
+        started
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(accepted.run_id().clone());
         let Some(first_wait) = first_wait else {
             return Ok(accepted);
         };

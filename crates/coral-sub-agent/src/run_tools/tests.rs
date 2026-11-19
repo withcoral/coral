@@ -56,6 +56,7 @@ impl Harness {
                 principal,
                 workspace_id,
                 task_id: TaskId::parse("placeholder-task-word-id").unwrap(),
+                started_runs: std::sync::Mutex::default(),
             },
         };
         harness.caller.task_id = harness.task().await;
