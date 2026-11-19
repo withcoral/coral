@@ -239,6 +239,24 @@ pub(crate) async fn renew_lease(
     Ok(database.execute(statement).await? == 1)
 }
 
+/// Whether the Turn ended as canceled.
+pub(crate) async fn turn_canceled(
+    executor: impl QueryExecutor,
+    workspace_id: &WorkspaceId,
+    turn_id: &str,
+) -> Result<bool, coral_db::Error> {
+    let (canceled, _, _) = stored(&TurnState::Canceled);
+    let statement = Query::select()
+        .column(SubAgentTurns::Id)
+        .from(SubAgentTurns::Table)
+        .and_where(Expr::col(SubAgentTurns::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SubAgentTurns::Id).eq(turn_id))
+        .and_where(Expr::col(SubAgentTurns::State).eq(canceled))
+        .to_owned();
+    let row: Option<(String,)> = executor.fetch_optional(statement).await?;
+    Ok(row.is_some())
+}
+
 /// Adds `message` at `position` in the Sub-agent's thread, marked with its
 /// Turn and the record of the model call that produced it, if one did.
 /// `false` means that the Turn has ended and nothing was written.

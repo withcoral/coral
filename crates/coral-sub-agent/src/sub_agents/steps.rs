@@ -125,7 +125,7 @@ pub(crate) struct WaitingAction {
 
 /// The steps of a Turn: each `exec` and `search` call in its messages, an
 /// `exec` with the Run that its result names.
-fn steps(messages: &[Message]) -> Vec<Step> {
+pub(super) fn steps(messages: &[Message]) -> Vec<Step> {
     let blocks = messages.iter().flat_map(|message| &message.content);
     let started: HashMap<&str, &str> = blocks
         .filter_map(|block| match block {
