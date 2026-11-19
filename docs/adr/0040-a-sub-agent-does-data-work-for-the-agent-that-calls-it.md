@@ -589,7 +589,7 @@ answer.
 
 During a Turn, the Sub-agent repeats two steps. It sends the conversation to the model. It then runs the tool calls in
 the model's reply and adds their results to the conversation. The Turn ends when the model replies without a tool
-call, and that reply is the Sub-agent's answer.
+call. That reply is the Sub-agent's answer, unless it has no text: then the Turn fails.
 
 ```mermaid
 flowchart TD
@@ -597,19 +597,23 @@ flowchart TD
     start["Coral starts the Turn<br/>in the background and<br/>returns the sub_agent_id"]
     send["The Turn sends the<br/>conversation to the model"]
     tools{"Tool calls<br/>in the reply?"}
+    text{"Text in<br/>the reply?"}
     run["The Turn runs each tool call<br/>and adds the results"]
     answer["The reply is the answer.<br/>The Turn ends."]
+    failed["The Turn fails. The lead is told<br/>to send the message again."]
     wait["The lead calls wait with<br/>the sub_agent_id and reads<br/>the steps and the answer"]
     ask --> start --> send --> tools
     tools -- yes --> run
     run -- next model call --> send
-    tools -- no --> answer --> wait
+    tools -- no --> text
+    text -- yes --> answer --> wait
+    text -- no --> failed --> wait
 ```
 
 | Situation | What happens |
 | --- | --- |
 | The lead calls `cancel` with the `sub_agent_id`, on any Coral Instance | The call records the cancellation in the database and closes the tool calls that the Turn left without results. The Turn stops at its next step, and the Coral Instance that runs it cancels the Runs it started that have not ended. If that Coral Instance stops first, those Runs keep running. |
-| The lead ends the Task, or loses access to it | A running Turn in it stops as canceled, at its next model call or when it next renews its lease. The Runs it started keep running: ending a Task cancels nothing already accepted (ADR 0006). |
+| The lead ends the Task, or can no longer use it | Before each model call and each lease renewal, a running Turn checks that its caller can still use the Task. If the Task has ended, or the caller can no longer see the Task or its Workspace, the Turn stops as canceled. A database error does not stop it. The Runs it started keep running: ending a Task cancels nothing already accepted (ADR 0006). |
 | The model replies with no text and no tool call | The Turn fails. The failure tells the lead to send the message again. |
 | The lead calls `agent` with the `sub_agent_id` and a message while the Turn is running | The Sub-agent reads the message before its next model call. Once the Turn has ended, the same call starts a new Turn with the stored conversation. |
 | A Run that the Turn started waits for a person to approve a Tool call or connect an account | `wait` returns `needs_action` with that Run's required actions. Each names who must act, which can be the Workspace Owner and not the lead's user. |
