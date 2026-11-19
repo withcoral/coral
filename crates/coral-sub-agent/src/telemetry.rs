@@ -270,7 +270,7 @@ fn answered(span: &tracing::Span, reply: &Reply) -> Vec<(TokenType, u64)> {
 fn failed(span: &tracing::Span, error: &ModelError) -> ModelCallOutcome {
     let status = match error {
         ModelError::Unavailable(status) => *status,
-        ModelError::Refused(status) => Some(*status),
+        ModelError::Refused(status) | ModelError::ContextTooLong(status) => Some(*status),
         ModelError::Misconfigured => None,
     };
     if let Some(status) = status {
@@ -289,6 +289,7 @@ const fn model_failure(error: &ModelError) -> &'static str {
     match error {
         ModelError::Unavailable(_) => "model_unavailable",
         ModelError::Refused(_) => "model_refused",
+        ModelError::ContextTooLong(_) => "model_context_too_long",
         ModelError::Misconfigured => "model_misconfigured",
     }
 }
