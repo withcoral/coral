@@ -1,4 +1,4 @@
-//! The Run sweeper (ADR 0027): ends what no Run stream decided in time.
+//! The Run sweeper: ends what no Run stream decided in time.
 //!
 //! A Run that a Run Executor holds has no Run Owner while no stream is open
 //! for it, and a loop that holds its stream may hang. One sweeper at a time,

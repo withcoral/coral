@@ -1,4 +1,4 @@
-//! The Run sweeper's statements (ADR 0027): its election lease, the Runs
+//! The Run sweeper's statements: its election lease, the Runs
 //! each pass reads, and the put-back of a taken Run that never started.
 //!
 //! Every read of Runs starts from [`running_without_owner`]: a Run Owner's
