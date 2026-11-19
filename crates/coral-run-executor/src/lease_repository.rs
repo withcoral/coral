@@ -96,7 +96,7 @@ async fn read_leases(
         .collect())
 }
 
-/// The rows whose lease lapsed before `now`, oldest lease first, up to
+/// The rows whose lease lapsed by `now`, oldest lease first, up to
 /// `limit`.
 ///
 /// # Errors
@@ -109,7 +109,7 @@ pub async fn lapsed(
 ) -> Result<Vec<RunExecutorLease>, coral_db::Error> {
     read_leases(
         executor,
-        Condition::all().add(Expr::col(RunExecutors::LeaseUntil).lt(now)),
+        Condition::all().add(Expr::col(RunExecutors::LeaseUntil).lte(now)),
         limit,
     )
     .await
@@ -159,8 +159,9 @@ fn at_lease(lease: &RunExecutorLease) -> Condition {
 }
 
 /// Holds `lease`'s row exclusively while its lease is still the one read.
-/// `false` when the row is gone or its lease moved: the Run Executor
-/// renewed it, so its Runs are its own again.
+/// `false` when its lease moved, because the Run Executor renewed it and its
+/// Runs are its own again, or when the row is gone, because another pass
+/// released it.
 ///
 /// # Errors
 ///

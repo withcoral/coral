@@ -749,7 +749,14 @@ async fn a_stream_owner_writes_no_interruption_once_another_instance_holds_the_s
         .expect("the take's claim");
 
     let interrupted = runs
-        .interrupt_owned_run(&tool.workspace_id, &run_id, &claim, None, None)
+        .interrupt_owned_run(
+            &tool.workspace_id,
+            &run_id,
+            &claim,
+            None,
+            None,
+            crate::termination::Interrupter::Owner,
+        )
         .await;
 
     assert!(

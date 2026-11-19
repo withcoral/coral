@@ -38,8 +38,11 @@ const SWEEPER_LEASE: Duration = Duration::from_secs(45);
 /// How long a taken Run waits for its start before it goes back to waiting.
 const START_CONFIRMATION: Duration = Duration::from_secs(10);
 
-/// How many Runs, Approval Requests and Run Executors of each kind one pass
-/// writes; the rest wait for the next pass.
+/// How many candidates each kind writes in one pass, the rest waiting for the
+/// next: Runs ended past their deadline, Approval Requests expired, takes put
+/// back, and lapsed Run Executors' Runs released. Each kind has its own, so
+/// one pass can end a limit of Runs past their deadline and as many of lapsed
+/// Run Executors; SQLite's boot release of local children has its own too.
 const PASS_LIMIT: u64 = 100;
 
 /// What one sweep pass wrote.
@@ -87,7 +90,8 @@ enum Released {
     PutBack,
     /// Nothing: the Run moved on since the read.
     Skipped,
-    /// Nothing: the Run Executor renewed its lease since the read.
+    /// Nothing: since the read, the Run Executor renewed its lease, or
+    /// another pass released it.
     Renewed,
 }
 
@@ -109,10 +113,11 @@ impl RunModule {
 
     /// The boot pass, before any listener serves. On `SQLite` it takes the
     /// election whatever its lease, since one Coral process holds the
-    /// database, and first releases every local child's row: this process
-    /// is every local child's parent, so a child of an earlier one is gone,
-    /// and none of its own has said hello yet. A dialed Run Executor's Runs
-    /// wait for its lease. On Postgres it is a plain pass.
+    /// database, and first releases the local children's rows, up to the
+    /// pass limit: this process is every local child's parent, so a child of
+    /// an earlier one is gone, and none of its own has said hello yet. Later
+    /// passes release the rest once their leases lapse. A dialed Run
+    /// Executor's Runs wait for its lease. On Postgres it is a plain pass.
     ///
     /// # Errors
     ///

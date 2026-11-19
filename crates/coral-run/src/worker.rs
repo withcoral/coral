@@ -119,6 +119,7 @@ impl RunModule {
                 &run.claim_id,
                 Some(&takeover_claim_id),
                 None,
+                crate::termination::Interrupter::Owner,
             )
             .await
         {

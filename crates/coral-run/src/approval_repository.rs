@@ -405,8 +405,9 @@ pub(super) async fn undecided_by(
 /// The undecided Approval Requests whose deadline passed by `by_unix_nanos`,
 /// on running Runs that a Run Executor holds and that record no termination
 /// yet, earliest deadline first, up to `limit`: what the Run sweeper expires.
-/// The read starts from the running Runs, which are few, and joins their
-/// requests by Run. Each row decodes on its own.
+/// The read starts from the running Runs that no worker claim fences and
+/// joins their requests by Run through `idx_invocation_approvals_run`. Each
+/// row decodes on its own.
 pub(super) async fn undecided_on_run_executors(
     tx: impl coral_db::QueryExecutor,
     by_unix_nanos: coral_db::UnixNanos,

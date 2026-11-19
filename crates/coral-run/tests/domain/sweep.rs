@@ -353,8 +353,9 @@ async fn two_instances_elect_one_sweeper_and_the_other_takes_over_once_its_lease
     assert!(!elected(first).await);
 }
 
-/// Catches: a boot pass on SQLite that leaves a local child's Run running,
-/// or ends a dialed Run Executor's; or one on Postgres that ends either.
+/// Catches: a boot pass on SQLite that waits for an earlier process's
+/// election, leaves a local child's Run running or ends a dialed Run
+/// Executor's; or a boot pass on Postgres that releases a live local child.
 #[tokio::test]
 async fn the_sqlite_boot_pass_ends_a_local_childs_run_and_leaves_a_dialed_ones() {
     let sweep = Sweep::new().await;
@@ -363,9 +364,12 @@ async fn the_sqlite_boot_pass_ends_a_local_childs_run_and_leaves_a_dialed_ones()
     sweep.lease(LIVE, Kind::Dialed, lease).await;
     let local = sweep.started(LOCAL, Kind::Local).await;
     let dialed = sweep.started(LIVE, Kind::Dialed).await;
-    // Another Coral Instance holds the election.
-    let other = sweep.fixture.next_process();
-    assert!(other.sweep_runs().await.expect("sweep").is_some());
+    let sqlite = sweep.fixture.database.system() == DatabaseSystem::Sqlite;
+    if sqlite {
+        // An earlier process's election still holds.
+        let earlier = sweep.fixture.next_process();
+        assert!(earlier.sweep_runs().await.expect("sweep").is_some());
+    }
 
     let swept = sweep
         .runs
@@ -373,8 +377,7 @@ async fn the_sqlite_boot_pass_ends_a_local_childs_run_and_leaves_a_dialed_ones()
         .await
         .expect("the boot pass");
 
-    let sqlite = sweep.fixture.database.system() == DatabaseSystem::Sqlite;
-    assert_eq!(swept.is_some(), sqlite, "SQLite's boot takes the election");
+    assert!(swept.is_some(), "the boot pass sweeps");
     assert_eq!(
         sweep.run(&local).await.state,
         if sqlite {

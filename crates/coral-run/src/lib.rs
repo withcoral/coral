@@ -58,8 +58,10 @@
 //!   elected by a lease row, ends the Runs past their deadline, expires the
 //!   Approval Requests past theirs, puts back the taken Runs that never
 //!   started, and releases the Run Executors whose lease lapsed.
-//!   [`RunModule::sweep_runs_at_boot`] also releases every local child on
-//!   `SQLite`, and [`RunModule::release_run_executor`] releases one at once.
+//!   On `SQLite`, [`RunModule::sweep_runs_at_boot`] also releases the local
+//!   children's rows, up to the pass limit; later passes release the rest
+//!   once their leases lapse. [`RunModule::release_run_executor`] releases
+//!   one at once.
 //!   Only tests run them until production accepts Runs for Run Executors.
 //! - [`RunModule::shutdown`] refuses new Runs, lets the live ones end for the
 //!   Shutdown Drain, then interrupts the rest within the commit grace.
