@@ -8,10 +8,16 @@ use url::Url;
 use wiremock::matchers::{any, body_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{Message, ModelClient, ModelError, Role};
+use super::{Block, Message, ModelCall, ModelClient, ModelError, Reply, Role, ToolCall, Usage};
+use crate::prompt::ToolText;
 
 const MODEL: &str = "test-model";
 const KEY: &str = "model-key";
+const TOOLS: [ToolText; 1] = [ToolText {
+    name: "exec",
+    description: "Run a Program.",
+    parameters: r#"{"type":"object"}"#,
+}];
 
 fn client(server: &MockServer, api_key: Option<&str>) -> ModelClient {
     let http = coral_outbound::Client::new(
@@ -27,18 +33,36 @@ fn client(server: &MockServer, api_key: Option<&str>) -> ModelClient {
     }
 }
 
+fn call(id: &str) -> ToolCall {
+    ToolCall {
+        id: id.to_owned(),
+        name: "exec".to_owned(),
+        arguments: r#"{"program":"return 1;"}"#.to_owned(),
+    }
+}
+
+fn assistant(content: Vec<Block>) -> Message {
+    Message {
+        role: Role::Assistant,
+        content,
+    }
+}
+
+/// A conversation with every kind of block, and an empty assistant message.
 fn conversation() -> Vec<Message> {
-    [
-        (Role::System, "Be brief."),
-        (Role::User, "Hello?"),
-        (Role::Assistant, "Hi."),
-        (Role::User, "Again?"),
+    vec![
+        Message::user("Hello?".to_owned()),
+        assistant(vec![
+            Block::Text {
+                text: "Looking.".to_owned(),
+            },
+            Block::ToolUse(call("call_1")),
+        ]),
+        Message::tool_results(vec![call("call_1").result("1".to_owned())]),
+        assistant(vec![Block::ToolUse(call("call_2"))]),
+        Message::tool_results(vec![call("call_2").result("2".to_owned())]),
+        assistant(Vec::new()),
     ]
-    .map(|(role, text)| Message {
-        role,
-        text: text.to_owned(),
-    })
-    .into()
 }
 
 fn answer(text: &str) -> ResponseTemplate {
@@ -47,32 +71,80 @@ fn answer(text: &str) -> ResponseTemplate {
     }))
 }
 
+async fn ask(client: &ModelClient) -> Result<Reply, ModelError> {
+    client.reply("Be brief.", &conversation(), &TOOLS).await
+}
+
 async fn received(server: &MockServer) -> Vec<wiremock::Request> {
     server.received_requests().await.unwrap()
 }
 
-// Catches: a request that is not Chat Completions, or a reply read from the wrong field.
+// Catches: a conversation or a tool that does not reach the server as Chat
+// Completions, and a reply whose tool calls or record are lost.
 #[tokio::test]
-async fn reply_is_the_text_of_the_first_choice() {
+async fn the_conversation_goes_as_chat_completions_and_the_reply_comes_back_as_blocks() {
     let server = MockServer::start().await;
+    let arguments = r#"{"program":"return 1;"}"#;
+    let function = json!({"name": "exec", "arguments": arguments});
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .and(body_json(json!({
             "model": MODEL,
             "messages": [
                 {"role": "system", "content": "Be brief."},
-                {"role": "user", "content": "Hello?"},
-                {"role": "assistant", "content": "Hi."},
-                {"role": "user", "content": "Again?"},
+                {"role": "user", "content": [{"type": "text", "text": "Hello?"}]},
+                {"role": "assistant", "content": "Looking.", "tool_calls": [
+                    {"type": "function", "id": "call_1", "function": function},
+                ]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "1"},
+                {"role": "assistant", "content": null, "tool_calls": [
+                    {"type": "function", "id": "call_2", "function": function},
+                ]},
+                {"role": "tool", "tool_call_id": "call_2", "content": "2"},
             ],
+            "tools": [{"type": "function", "function": {
+                "name": "exec",
+                "description": "Run a Program.",
+                "parameters": {"type": "object"},
+                "strict": false,
+            }}],
         })))
-        .respond_with(answer("Once more."))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "served-model",
+            "choices": [{"message": {"role": "assistant", "content": "Again.", "tool_calls": [
+                {"id": "call_3", "type": "function", "function": function},
+            ]}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 7, "prompt_tokens_details": {"cached_tokens": 60}},
+        })))
         .mount(&server)
         .await;
 
-    let reply = client(&server, None).reply(&conversation()).await;
+    let reply = ask(&client(&server, None)).await.unwrap();
 
-    assert_eq!(reply, Ok("Once more.".to_owned()));
+    let again = Block::Text {
+        text: "Again.".to_owned(),
+    };
+    assert_eq!(
+        reply.message,
+        assistant(vec![again, Block::ToolUse(call("call_3"))])
+    );
+    let usage = Usage {
+        input_tokens: 40,
+        cache_read_input_tokens: 60,
+        output_tokens: 7,
+    };
+    let record = ModelCall {
+        latency: Duration::ZERO,
+        ..reply.call
+    };
+    assert_eq!(
+        record,
+        ModelCall {
+            model: "served-model".to_owned(),
+            latency: Duration::ZERO,
+            usage: Some(usage),
+        }
+    );
 }
 
 // Catches: a key not sent as a bearer token, or an Authorization header sent without one.
@@ -85,10 +157,7 @@ async fn bearer_header_is_sent_only_with_a_key() {
             .mount(&server)
             .await;
 
-        client(&server, api_key)
-            .reply(&conversation())
-            .await
-            .unwrap();
+        ask(&client(&server, api_key)).await.unwrap();
 
         let sent: Vec<_> = received(&server)
             .await
@@ -123,9 +192,10 @@ async fn busy_or_failing_server_is_retried_three_times() {
             .mount(&server)
             .await;
 
-        let reply = client(&server, None).reply(&conversation()).await;
+        let reply = ask(&client(&server, None)).await;
 
-        assert_eq!(reply, expected, "status {status}");
+        let text = reply.map(|reply| reply.message.text());
+        assert_eq!(text, expected, "status {status}");
         assert_eq!(received(&server).await.len(), requests);
     }
 }
@@ -147,10 +217,7 @@ async fn refusal_and_unreadable_answer_end_at_once_without_the_answer_or_key() {
         let server = MockServer::start().await;
         Mock::given(any()).respond_with(answer).mount(&server).await;
 
-        let error = client(&server, Some(KEY))
-            .reply(&conversation())
-            .await
-            .unwrap_err();
+        let error = ask(&client(&server, Some(KEY))).await.unwrap_err();
 
         assert_eq!(error, expected);
         assert_eq!(received(&server).await.len(), 1);

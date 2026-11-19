@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+use crate::run_tools::task_failure;
 use crate::sub_agents::{Error, SubAgents, TurnState};
 
 /// Core's tool surface with one more tool, `agent`, and a `wait` and a
@@ -150,7 +151,7 @@ impl CoreWithAgent {
     }
 }
 
-const AGENT_DESCRIPTION: &str = "Give one message to a Sub-agent: a model that Coral runs for you, inside your Task. The call starts the Sub-agent and returns its `sub_agent_id` at once. Read the answer with `wait`, and stop the Sub-agent with `cancel`: pass each the `sub_agent_id` in place of `run_id`. A Sub-agent reads only `message`. It calls no tools: it answers from the message alone.";
+const AGENT_DESCRIPTION: &str = "Give one message to a Sub-agent: a model that Coral runs for you, inside your Task. The call starts the Sub-agent and returns its `sub_agent_id` at once. Read the answer with `wait`, and stop the Sub-agent with `cancel`: pass each the `sub_agent_id` in place of `run_id`. A Sub-agent reads only `message`. It runs Programs in your Task, as you, and answers from what they return.";
 const AGENT_TAKES: &str = "agent takes `message`, and `task_id` or `goal`: pass `task_id` to work in a Task you started, or `goal` to start a new one";
 
 #[derive(Deserialize, JsonSchema)]
@@ -220,24 +221,23 @@ fn invalid(problem: impl std::fmt::Display) -> ToolCallError {
     ToolCallError::Protocol(ErrorData::invalid_params(problem.to_string(), None))
 }
 
-/// The failure that the lead reads when a Sub-agent call did nothing.
+/// The failure that the lead reads when a Sub-agent call did nothing: a Task's
+/// as the model reads it.
 impl From<Error> for ToolCallError {
     fn from(error: Error) -> Self {
         Self::Tool(match error {
             Error::SubAgentNotFound => {
                 ToolFailure::stable("sub_agent_not_found", "Sub-agent was not found")
             }
-            Error::Task(coral_task::Error::TaskNotFound) => {
-                ToolFailure::stable("task_not_found", "Task was not found")
-            }
+            // The lead can start again, which the model cannot.
             Error::Task(coral_task::Error::TaskClosed) => ToolFailure::stable(
                 "task_closed",
                 "Task is closed. Call `agent` with `goal` to start a new Task.",
             ),
-            Error::Task(_)
-            | Error::IdentifierIssuance
-            | Error::CorruptData
-            | Error::Database(_) => ToolFailure::internal(),
+            Error::Task(error) => task_failure(error).into(),
+            Error::IdentifierIssuance | Error::CorruptData | Error::Database(_) => {
+                ToolFailure::internal()
+            }
         })
     }
 }

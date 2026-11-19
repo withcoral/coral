@@ -1186,7 +1186,9 @@ name = "coral-sub-agent"
 version = "1.10.0"
 dependencies = [
  "async-trait",
+ "chrono",
  "coral-app",
+ "coral-catalog",
  "coral-credentials",
  "coral-db",
  "coral-identifier",
@@ -1200,6 +1202,7 @@ dependencies = [
  "coral-telemetry",
  "coral-test-support",
  "coral-workspace",
+ "futures-util",
  "reqwest",
  "rmcp",
  "schemars",
