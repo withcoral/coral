@@ -85,9 +85,10 @@ flowchart TD
 ```
 
 The `coral` process, which every binary runs, will register that implementation through `Extensions`, the way a binary
-adds anything to Coral (ADR 0033). The Sub-agent's tables are in core's migration chain. Nothing else in core names the
-Sub-agent. To remove it, we delete the crate and the registration. To make it an Enterprise Feature, we move the crate
-to `ee/` and register it there.
+adds anything to Coral (ADR 0033). The Sub-agent's tables are in core's migration chain, and the names of its telemetry
+fields and metrics are in core's `coral-telemetry` crate. Nothing else in core names the Sub-agent. To remove it, we
+delete the crate and the registration. To make it an Enterprise Feature, we move the crate to `ee/` and register it
+there.
 
 The lead sees the Sub-agent only when the config file has a `[sub_agent]` section. Without the section, it receives
 exactly the tools and instructions that Coral serves today.
@@ -116,7 +117,7 @@ same Policy Enforcement Point.
 
 Because those Runs belong to the lead's own Task, the lead can check an answer for itself. Each result from `wait`
 lists the steps the Sub-agent took. A step that started a Run holds the intent the Sub-agent gave for it and its
-`run_id`, and nothing else. The lead reads that Run's Program and Final Value with `wait`.
+`run_id`, and nothing else. The lead reads that Run's Events and Final Value with `wait`.
 
 **Rejected:**
 
@@ -320,8 +321,8 @@ reasoning whenever the lead sends a follow-up.
 
 Every request to the model goes through the guarded client of `coral-outbound`, under the operator's `[outbound]`
 policy (ADR 0008). A self-hosting operator writes the model's URL, but we do not treat it as an operator-authored
-endpoint, which `coral-outbound` lets a plain HTTP client call. In a SaaS deployment the URL comes from an
-organization, and an organization's administrator may later set it in the product.
+endpoint, which `coral-outbound` lets a plain HTTP client call. In a SaaS deployment Coral's control plane writes the
+section, and the URL in it comes from an organization.
 
 **Rejected, or left until a hosted model is wanted as a real Sub-agent model:**
 
@@ -361,9 +362,10 @@ organization, and an organization's administrator may later set it in the produc
 **What we accepted**
 
 - A Workspace Owner cannot turn the Sub-agent off for one Workspace. It is on for the whole deployment.
-- A Sub-agent can call Built-in Tools from a Program, so it can add a Provider, change policy or save a Tool when its
-  caller can. Nothing restricts a Sub-agent more than its lead. One way to do that, a Run started in a narrower mode
-  that the Policy Enforcement Point applies, is noted in [issue 3358](https://github.com/withcoral/coral/issues/3358).
+- A Sub-agent can call Built-in Tools from a Program, so it can add a Provider, change policy or save a Private Tool
+  when its caller can. Nothing restricts a Sub-agent more than its lead. Such a restriction is left for later: one way,
+  a Run started in a narrower mode that the Policy Enforcement Point applies, is noted in [issue
+  3358](https://github.com/withcoral/coral/issues/3358).
 - An interrupted Turn does not continue. The lead must send its message again.
 - Program diagnostics and Tool declarations still come from core, so a change to them changes what the model reads.
 - The four rules behind `exec`, `wait` and `cancel` exist twice, in core's handlers and in the Sub-agent's crate. A
@@ -380,8 +382,9 @@ organization, and an organization's administrator may later set it in the produc
   pays in full for the whole conversation. A gateway that calls Anthropic's own API can add caching.
 - Coral does not check that the model server is up. It does not call the model at startup, and it does not probe it
   while it runs. While the model server is down, `agent` stays listed, the lead is still told to hand work to a
-  Sub-agent, and each Turn fails after three retries. Coral could be more robust here: vLLM serves `/health`, and `GET
-  /models` works on any server that speaks Chat Completions. We left that out while we evaluate the Sub-agent.
+  Sub-agent, and each Turn fails after three retries. Coral could be more robust here: vLLM serves a health check, and
+  many servers list their models, but neither is part of the Chat Completions API. We left that out while we evaluate
+  the Sub-agent.
 - Compaction needs `context_window`. Without it, a conversation that outgrows the model fails its Turn.
 - Coral decides nothing by matching text: not which Tools a Program names, not what a model server's refusal means, and
   not which Run a stored result belongs to. Each of those was built once as text matching and removed.
@@ -544,7 +547,7 @@ base_url = "https://sailfish.example/v1"   # required, no default
 model = "sailfish-1"                        # required
 api_key_env = "CORAL_SUB_AGENT_API_KEY"     # optional: the environment variable that holds the token
 context_window = 131072                     # optional: the model's context window, in tokens; compaction needs it
-reasoning_effort = "none"                   # optional: sent with every request when set
+# reasoning_effort = "none"                 # optional: sent with every request when set; leave it unset on vLLM
 ```
 
 - `api_key_env` names an environment variable, as every other secret in the config file does. If it is set and the
@@ -605,10 +608,10 @@ flowchart TD
 
 | Situation | What happens |
 | --- | --- |
-| The lead calls `cancel` with the `sub_agent_id`, on any Coral Instance | The call records the cancellation in the database. The Turn stops when it next renews its lease, and the Coral Instance that runs it cancels the Runs it started that have not ended. |
+| The lead calls `cancel` with the `sub_agent_id`, on any Coral Instance | The call records the cancellation in the database and closes the tool calls that the Turn left without results. The Turn stops at its next step, and the Coral Instance that runs it cancels the Runs it started that have not ended. If that Coral Instance stops first, those Runs keep running. |
 | The lead ends the Task | A running Turn in it stops as canceled, at its next model call or when it next renews its lease, and its unfinished Runs are cancelled. |
-| The lead sends another message while the Turn is running | The Sub-agent reads the message before its next model call. |
-| A Run that the Turn started waits for a person to approve a Tool call or connect an account | `wait` returns `needs_action` with that Run's required actions, and the lead shows them to the user. |
+| The lead calls `agent` with the `sub_agent_id` and a message while the Turn is running | The Sub-agent reads the message before its next model call. Once the Turn has ended, the same call starts a new Turn with the stored conversation. |
+| A Run that the Turn started waits for a person to approve a Tool call or connect an account | `wait` returns `needs_action` with that Run's required actions. Each names who must act, which can be the Workspace Owner and not the lead's user. |
 | The conversation comes close to the `context_window` in the config file | The Sub-agent asks the model to summarize the older messages. It continues with the summary and the most recent messages. |
 | The conversation outgrows the model and no `context_window` is set | The model server refuses the request, and the Turn fails. Coral does not read the window out of the refusal's text. |
 | The model server returns HTTP 429 or a 5xx status, or the request fails to send | The client retries three times. If the request still fails, the Turn fails with the model server's error, and the lead can send the message again. |
