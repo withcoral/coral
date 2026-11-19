@@ -226,7 +226,7 @@ struct WaitArguments {
     wait_ms: Option<u64>,
 }
 
-const CANCEL_BY_SUB_AGENT_ID: &str = "With `sub_agent_id` in place of `run_id`, stop that Sub-agent and return its `state` and `steps`.";
+const CANCEL_BY_SUB_AGENT_ID: &str = "With `sub_agent_id` in place of `run_id`, stop that Sub-agent and its unfinished runs, and return its `state` and `steps`.";
 const CANCEL_TAKES: &str = "with `sub_agent_id`, cancel takes nothing beside it";
 
 #[derive(Deserialize)]
