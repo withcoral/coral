@@ -89,7 +89,7 @@ impl SearchIndex {
         }
         let index = self.clone();
         let _recount = tokio::spawn(
-            async move {
+            self.until_stopped(async move {
                 let _in_flight = in_flight;
                 tokio::select! {
                     () = tokio::time::sleep(index.recount_delay) => {}
@@ -115,7 +115,7 @@ impl SearchIndex {
                             .await,
                     );
                 }
-            }
+            })
             .with_current_subscriber(),
         );
     }
