@@ -39,6 +39,8 @@ enum SubAgentTurns {
     Failure,
     LeaseExpiresAtUnixNanos,
     UnreadMessages,
+    StartedAtUnixNanos,
+    EndedAtUnixNanos,
 }
 
 #[derive(Iden)]
@@ -94,12 +96,14 @@ pub(crate) async fn insert_sub_agent(
     Ok(transaction.execute_change(statement).await? == 1)
 }
 
-/// Inserts the Sub-agent's running Turn, held until `lease_expires_at`.
+/// Inserts the Sub-agent's running Turn, started at `now` and held until
+/// `lease_expires_at`.
 pub(crate) async fn insert_turn(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     sub_agent_id: &str,
     turn_id: &str,
+    now: UnixNanos,
     lease_expires_at: UnixNanos,
 ) -> Result<(), coral_db::Error> {
     let statement = Query::insert()
@@ -109,6 +113,7 @@ pub(crate) async fn insert_turn(
             SubAgentTurns::WorkspaceId,
             SubAgentTurns::SubAgentId,
             SubAgentTurns::State,
+            SubAgentTurns::StartedAtUnixNanos,
             SubAgentTurns::LeaseExpiresAtUnixNanos,
         ])
         .values_panic([
@@ -116,6 +121,7 @@ pub(crate) async fn insert_turn(
             Expr::val(workspace_id.to_string()),
             Expr::val(sub_agent_id),
             Expr::val(RUNNING),
+            Expr::val(now),
             Expr::val(lease_expires_at),
         ])
         .to_owned();
@@ -172,22 +178,25 @@ pub(crate) async fn find_turn(
     row.map(TurnRow::decode).transpose()
 }
 
-/// Ends the Turn as `ending` says. `false` means that it had ended otherwise
-/// and nothing was written: a Turn that recorded this answer as it read the
-/// lead's last message has ended so.
+/// Ends the Turn at `now` as `ending` says. `false` means that it had ended
+/// otherwise and nothing was written: a Turn that recorded this answer as it
+/// read the lead's last message has ended so, and keeps its end time.
 pub(crate) async fn end_turn(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     turn_id: &str,
     ending: &TurnState,
+    now: UnixNanos,
 ) -> Result<bool, coral_db::Error> {
     let (state, answer, failure) = stored(ending);
+    let ended_at = Expr::col(SubAgentTurns::EndedAtUnixNanos).if_null(now);
     let statement = Query::update()
         .table(SubAgentTurns::Table)
         .values([
             (SubAgentTurns::State, Expr::val(state)),
             (SubAgentTurns::Answer, Expr::val(answer)),
             (SubAgentTurns::Failure, Expr::val(failure)),
+            (SubAgentTurns::EndedAtUnixNanos, ended_at),
         ])
         .and_where(Expr::col(SubAgentTurns::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(SubAgentTurns::Id).eq(turn_id))
@@ -213,6 +222,7 @@ pub(crate) async fn interrupt_lapsed_turn(
     let statement = Query::update()
         .table(SubAgentTurns::Table)
         .value(SubAgentTurns::State, INTERRUPTED)
+        .value(SubAgentTurns::EndedAtUnixNanos, now)
         .and_where(Expr::col(SubAgentTurns::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(SubAgentTurns::Id).eq(turn_id))
         .and_where(Expr::col(SubAgentTurns::State).eq(RUNNING))
