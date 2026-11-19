@@ -472,6 +472,7 @@ async fn a_waiting_call_whose_provider_is_gone_ends_as_the_enforcement_point_wou
             &change(moving.tool.user.clone(), 100, 'd'),
             &moving.tool.workspace_id,
             &moving.tool.provider_id,
+            &IfMatch::any(),
         )
         .await
         .expect("remove the Provider")
