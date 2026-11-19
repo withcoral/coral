@@ -249,19 +249,7 @@ impl WorkspaceModule {
     ) -> Result<(AuthenticatedPrincipal, PrincipalWorkspaceEvidence), Error> {
         // The holds are the ones `held_principal_authority` takes, in its
         // order: the User's, then the Workspace's.
-        let actor = match principal.kind() {
-            PrincipalKind::User => {
-                let user_id = UserId::parse(principal.id().as_str())?;
-                let user = crate::organization::hold_user(transaction, &user_id)
-                    .await
-                    .map_err(crate::conceal_missing_user)?;
-                AuthenticatedPrincipal::user(user)
-            }
-            PrincipalKind::Agent => AuthenticatedPrincipal::agent(
-                agent_repository::registration(&mut *transaction, workspace_id, principal.id())
-                    .await?,
-            ),
-        };
+        let actor = run_actor(transaction, principal, workspace_id, true).await?;
         if !repository::hold_workspace(transaction, workspace_id).await? {
             return Err(Error::WorkspaceNotFound);
         }
@@ -274,6 +262,24 @@ impl WorkspaceModule {
         )
         .await?;
         Ok((actor, evidence))
+    }
+
+    /// Rebuilds the Principal that a Run stored from current facts, holding
+    /// nothing, and checks no authority: for a Coral Instance that a started
+    /// Run's stream moved to, where the Policy Enforcement Point rechecks
+    /// authority at each dispatch.
+    ///
+    /// # Errors
+    ///
+    /// A User that no longer exists, or an Agent with no Registration in the
+    /// Workspace, has no actor.
+    pub async fn run_actor_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_>,
+        principal: &Principal,
+        workspace_id: &WorkspaceId,
+    ) -> Result<AuthenticatedPrincipal, Error> {
+        run_actor(transaction, principal, workspace_id, false).await
     }
 
     /// Rechecks and holds Principal authoring authority in the authoring transaction.
@@ -450,5 +456,30 @@ async fn agent_authority(
         effective_user_role: None,
         membership_user_id: None,
         expires_at: registration.expires_at(),
+    })
+}
+
+/// The Principal a Run stored, rebuilt from current facts; a User's row is
+/// held exclusively when `hold`, and read without a hold otherwise.
+async fn run_actor(
+    transaction: &mut Transaction<'_>,
+    principal: &Principal,
+    workspace_id: &WorkspaceId,
+    hold: bool,
+) -> Result<AuthenticatedPrincipal, Error> {
+    Ok(match principal.kind() {
+        PrincipalKind::User => {
+            let user_id = UserId::parse(principal.id().as_str())?;
+            let user = if hold {
+                crate::organization::hold_user(transaction, &user_id).await
+            } else {
+                crate::organization::user_locked(transaction, &user_id, coral_db::RowLock::None)
+                    .await
+            };
+            AuthenticatedPrincipal::user(user.map_err(crate::conceal_missing_user)?)
+        }
+        PrincipalKind::Agent => AuthenticatedPrincipal::agent(
+            agent_repository::registration(&mut *transaction, workspace_id, principal.id()).await?,
+        ),
     })
 }

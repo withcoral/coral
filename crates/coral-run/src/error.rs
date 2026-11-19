@@ -111,6 +111,9 @@ coral_failures! {
     /// A Tool body's leftover work called a Tool after the body's own call
     /// ended.
     ParentInvocationEnded => "parent_invocation_ended",
+    /// A reconnected Run stream cannot answer the call again: Coral refused
+    /// it before admission, so it did not run. It is safe to make again.
+    InvocationNotAdmitted => "invocation_not_admitted",
 }
 
 impl CoralFailure {
@@ -187,6 +190,7 @@ impl CoralFailure {
             Self::ToolFailed => "Tool failed",
             Self::InvalidToolResult => "Tool result is not a JSON value",
             Self::ParentInvocationEnded => "The Tool call that made this call has ended",
+            Self::InvocationNotAdmitted => "The Tool call did not run; make it again",
         }
     }
 }
@@ -221,6 +225,13 @@ impl UpstreamRejection {
             Self::Undeclared => "undeclared_response",
             Self::Undecodable => "undecodable_response",
         }
+    }
+
+    /// Inverse of [`Self::code`] for durable evidence.
+    pub(crate) fn from_code(code: &str) -> Option<Self> {
+        [Self::Error, Self::Undeclared, Self::Undecodable]
+            .into_iter()
+            .find(|rejection| rejection.code() == code)
     }
 
     /// Safe message without upstream content.

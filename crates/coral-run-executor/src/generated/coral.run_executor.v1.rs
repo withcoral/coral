@@ -533,7 +533,7 @@ pub struct ReferenceRejection {
     pub column: u64,
 }
 /// A message the Run Executor sends on a Run stream.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunRequest {
     /// The message.
     #[prost(oneof = "run_request::Message", tags = "1, 2, 3")]
@@ -542,7 +542,7 @@ pub struct RunRequest {
 /// Nested message and enum types in `RunRequest`.
 pub mod run_request {
     /// The message.
-    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Message {
         /// The first message on every Run stream.
         #[prost(message, tag = "1")]
@@ -593,7 +593,7 @@ pub mod run_response {
 /// Opens a Run stream for one taken Run. A stream that ends without Ended
 /// reopens with the same Open: at once after a clean end that followed
 /// Coral's answer to Open, otherwise after the connection's back-off.
-#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Open {
     /// The Run's id.
     #[prost(string, tag = "1")]
@@ -604,6 +604,20 @@ pub struct Open {
     /// The Run Executor's protocol level.
     #[prost(uint32, tag = "3")]
     pub protocol_level: u32,
+    /// Each request that waits for its InvocationResult. Coral answers again
+    /// each one the committed watermark covers, from what it recorded.
+    #[prost(message, repeated, tag = "4")]
+    pub awaited: ::prost::alloc::vec::Vec<Awaited>,
+}
+/// One request that waits for its InvocationResult.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct Awaited {
+    /// The request's number.
+    #[prost(uint64, tag = "1")]
+    pub number: u64,
+    /// For a Complete, the number of the Perform it completes; 0 otherwise.
+    #[prost(uint64, tag = "2")]
+    pub perform: u64,
 }
 /// What a Run Executor needs to load and run one Program.
 #[derive(Clone, PartialEq, ::prost::Message)]

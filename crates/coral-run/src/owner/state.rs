@@ -461,13 +461,21 @@ impl OwnerState {
     }
 
     /// An owner for a Run that a Run Executor runs: it applies the stream's
-    /// numbered requests in order, from one.
-    pub(crate) fn for_run_stream(limits: OwnerLimits, accepted_at_unix_nanos: i64) -> Self {
+    /// numbered requests in order, from one, or, for a reopened stream, from
+    /// the one after the `watermark` committed, on the `output_total` the
+    /// Run row recorded.
+    pub(crate) fn for_run_stream(
+        limits: OwnerLimits,
+        accepted_at_unix_nanos: i64,
+        (watermark, output_total): (u64, usize),
+    ) -> Self {
         Self {
             requests: Some(RequestOrder {
-                next: 1,
+                next: watermark + 1,
                 held: BTreeMap::new(),
             }),
+            output_total,
+            recorded_total: output_total,
             ..Self::new(limits, accepted_at_unix_nanos)
         }
     }

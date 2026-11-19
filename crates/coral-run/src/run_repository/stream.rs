@@ -1,5 +1,6 @@
 //! What a Run stream's loop reads and writes on its own: the Run its `Open`
-//! names, the Tools the Run linked, and the start chunk.
+//! names, the Tools the Run linked, the start chunk, and the chunk that
+//! reopens a started Run's stream.
 
 use std::collections::HashMap;
 
@@ -13,6 +14,7 @@ use super::acceptance::{
     PACKAGE_COLUMNS, PackageRow, ProgramRunPackages, ProgramRunPrivateToolSnapshots,
     ProgramRunSharedToolSnapshots,
 };
+use super::events::OwnedEvent;
 use super::ledger::{Chunk, commit_chunk_with};
 use super::{ProgramRunRecords, RUN_COLUMNS, RunRow};
 use crate::engine::ProgramPackage;
@@ -166,6 +168,29 @@ pub(crate) async fn start_taken(
                 Expr::val(holder.as_str()),
             ),
         ],
+    )
+    .await
+}
+
+/// The reopen of a started Run's stream on this Coral Instance: it holds
+/// the stream from this chunk on, which carries the `invocation.ended`
+/// Events of the calls in flight on the one before, predicated on the
+/// take's claim and the head.
+pub(crate) async fn reopen_taken(
+    transaction: &mut Transaction<'_>,
+    run: &RunRecord,
+    claim_id: &str,
+    events: &[OwnedEvent],
+    committed_at_unix_nanos: i64,
+    holder: &CoralInstanceId,
+) -> Result<(), Error> {
+    commit_chunk_with(
+        transaction,
+        Chunk::new(run, Some(claim_id), committed_at_unix_nanos).owned_events(events),
+        vec![(
+            ProgramRunRecords::HolderInstanceId,
+            Expr::val(holder.as_str()),
+        )],
     )
     .await
 }

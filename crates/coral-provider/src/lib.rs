@@ -1029,6 +1029,60 @@ impl ProviderModule {
         .await
     }
 
+    /// Rebuilds the Tool an Invocation retained at its admission, from what
+    /// its row records: the Provider, its credential route and version, the
+    /// Generation and the Tool. A Coral Instance that a Run's stream moved to
+    /// re-enters the Invocation's gates with it. `None` when that Provider is
+    /// gone from the Workspace or that Generation holds no such Tool. It
+    /// decides nothing: the Policy Enforcement Point verifies that the
+    /// retained access is still current, as for every Invocation.
+    ///
+    /// The Generation id comes from a Workspace-scoped Invocation row that
+    /// Coral wrote, so it reaches the schema graph cache as admission's does.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence or corrupt-package failure.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is one column of the retained Invocation evidence"
+    )]
+    pub async fn retained_invocation_tool_in_transaction(
+        &self,
+        transaction: &mut coral_db::Transaction<'_>,
+        workspace_id: &WorkspaceId,
+        provider_id: &ProviderId,
+        credential_route: CredentialRoute,
+        version: i64,
+        generation_id: &coral_catalog::ProviderGenerationId,
+        tool_key: &ToolKey,
+    ) -> Result<Option<ResolvedInvocationTool>, Error> {
+        let Some(stored) = repository::current_provider(
+            transaction,
+            workspace_id,
+            repository::ProviderKey::Id(provider_id),
+            coral_db::RowLock::None,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        let Some(tool) =
+            coral_catalog::tool_in_transaction(transaction, generation_id, tool_key).await?
+        else {
+            return Ok(None);
+        };
+        let access = ProviderAccess::new(
+            provider_id.clone(),
+            workspace_id.clone(),
+            stored.provider.call_root().clone(),
+            credential_route,
+            version,
+        );
+        self.resolved(transaction, Some((access, generation_id.clone(), tool)))
+            .await
+    }
+
     /// The reached Tool with the schema graph its Invocation plans against,
     /// from this Module's cache. The cache is keyed by Generation alone, so
     /// `reached` must come from a Workspace-scoped read in `transaction`:

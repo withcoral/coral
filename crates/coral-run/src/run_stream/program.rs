@@ -20,6 +20,8 @@ use coral_v8::{
 };
 use tokio_stream::StreamExt as _;
 
+mod resume;
+
 use super::{StreamLink, StreamRun};
 use crate::engine::{self, ExecutionCompletion};
 use crate::owner::{Message, OwnerHandle};
@@ -77,7 +79,7 @@ pub(crate) fn start(
         cpu_budget,
         handle.stop(),
     );
-    let reader = Reader {
+    let mut reader = Reader {
         runtime: tokio::runtime::Handle::current(),
         host,
         owner: handle.clone(),
@@ -97,15 +99,25 @@ pub(crate) fn start(
         performed: Arc::default(),
         completed: std::collections::HashSet::new(),
         last: 0,
+        covered: 0,
     };
+    let resume = stream
+        .resume
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    if let Some(resume) = resume {
+        reader.resume(resume, &accepted.linked_snapshots);
+    }
     drop(entered);
     let value_limits = accepted.value_limits;
     let handle = handle.clone();
     tokio::task::spawn_blocking(move || {
         let _execute = span;
         let message = match reader.read(requests, value_limits) {
-            Read::Finished => return,
-            Read::Detached => Message::Detached,
+            // `Finish` reached the owner, or the reader detached it before
+            // its calls dropped.
+            Read::Finished | Read::Detached => return,
             Read::Violated => {
                 stream_violated(&handle);
                 Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated)
@@ -150,17 +162,21 @@ enum Body {
 
 struct Reader {
     runtime: tokio::runtime::Handle,
-    host: Arc<dyn ProgramHost>,
+    host: Arc<engine::host::RunProgramHost>,
     owner: OwnerHandle,
     link: Arc<StreamLink>,
     /// The Program and each linked Tool's source, by the Tool's id.
     sources: HashMap<String, AuthoredSource>,
     performed: Arc<Mutex<HashMap<u64, Performed>>>,
-    /// The Performs a `Complete` ended: a later call their bodies make is
+    /// The Performs a `Complete` ended, and on a reopened stream every
+    /// Perform its rows record as ended: a later call their bodies make is
     /// refused, not a broken protocol.
     completed: std::collections::HashSet<u64>,
     /// The last request number read.
     last: u64,
+    /// The watermark a reopened stream started from: a resent request at
+    /// or below it is committed already.
+    covered: u64,
 }
 
 impl Reader {
@@ -181,9 +197,15 @@ impl Reader {
                 return if next.is_some() {
                     self.violate()
                 } else {
+                    // Before the open Performs drop: their bodies run on.
+                    self.owner.detach();
                     Read::Detached
                 };
             };
+            // Number 0 is no request: the check below refuses it.
+            if (1..=self.covered).contains(&request.number) {
+                continue;
+            }
             // The Run Executor holds no more than its held cap above the
             // watermark, which never runs ahead of this one.
             let held_cap = u64::try_from(coral_run_executor::HELD_CAP_REQUESTS).unwrap_or(u64::MAX);
@@ -333,16 +355,7 @@ impl Reader {
     fn answer(&self, number: u64, future: coral_v8::ToolFuture) {
         let link = self.link.clone();
         self.runtime.spawn(async move {
-            let result = future.await;
-            let (bytes, outcome) = match result {
-                Ok(json) => (json.len(), invocation_result::Outcome::ResultJson(json)),
-                Err(error) => (0, failure(error)),
-            };
-            link.send(run_response::Message::InvocationResult(InvocationResult {
-                number,
-                bytes: u64::try_from(bytes).unwrap_or(u64::MAX),
-                outcome: Some(outcome),
-            }));
+            send_result(&link, number, future.await);
         });
     }
 
@@ -368,11 +381,7 @@ impl Reader {
                 }
                 Err(error) => failure(error),
             };
-            link.send(run_response::Message::InvocationResult(InvocationResult {
-                number,
-                bytes: 0,
-                outcome: Some(outcome),
-            }));
+            send_outcome(&link, number, 0, outcome);
         });
     }
 
@@ -417,6 +426,24 @@ fn output(written: Result<(), coral_v8::ProgramOutputHostError>) -> Option<()> {
             | coral_v8::ProgramOutputHostError::LimitExceeded,
         ) => None,
     }
+}
+
+/// Answers request `number` with the value or the error its call ended with.
+fn send_result(link: &StreamLink, number: u64, result: Result<String, ToolHostError>) {
+    let (bytes, outcome) = match result {
+        Ok(json) => (json.len(), invocation_result::Outcome::ResultJson(json)),
+        Err(error) => (0, failure(error)),
+    };
+    send_outcome(link, number, bytes, outcome);
+}
+
+/// Answers request `number` with `outcome`, which counts `bytes`.
+fn send_outcome(link: &StreamLink, number: u64, bytes: usize, outcome: invocation_result::Outcome) {
+    link.send(run_response::Message::InvocationResult(InvocationResult {
+        number,
+        bytes: u64::try_from(bytes).unwrap_or(u64::MAX),
+        outcome: Some(outcome),
+    }));
 }
 
 fn failure(error: ToolHostError) -> invocation_result::Outcome {

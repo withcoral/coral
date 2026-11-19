@@ -152,7 +152,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   head that another writer moved under the claim, dropping the requests that
   writer committed. At the Run's deadline, it commits what it applied, then
   ends the Run and its open Invocations in one chunk, and only then sends
-  `Terminate`; no shutdown grace applies (#2904).
+  `Terminate`; no shutdown grace applies (#2904). A reopen of the stream
+  (#2905) starts a new owner, rebuilt from the ledger. The owner it
+  replaces, whose stream moved to another Coral Instance or to a reopen on
+  its own, rebuilds nothing: its chunk is refused.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of

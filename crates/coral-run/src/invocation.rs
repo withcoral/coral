@@ -17,6 +17,8 @@
 //! permitted Invocation sends ends it as `run_terminated` instead, as Run
 //! termination ends a Private Tool call whose body was still running.
 
+mod resume;
+
 use std::fmt;
 use std::sync::Arc;
 
@@ -712,6 +714,7 @@ impl ToolInvoker {
     }
 
     /// [`Self::dispatch`] in its plan span, recording the protocol it plans.
+    /// A resumed Perform records [`PERFORMED_PROTOCOL`] without a plan.
     fn planned(
         &self,
         admitted: &AdmittedInvocation,
@@ -724,11 +727,9 @@ impl ToolInvoker {
             Dispatch::Upstream(ReadyDispatch::Http(_)) => "http",
             Dispatch::Upstream(ReadyDispatch::Mcp(_)) => "mcp",
             Dispatch::Builtin(_) => "builtin",
-            Dispatch::Performed => "code",
+            Dispatch::Performed => PERFORMED_PROTOCOL,
         };
-        admitted
-            .span
-            .record("coral.provider.protocol", safe::kind(protocol));
+        record_protocol(&admitted.span, protocol);
         Ok(planned)
     }
 
@@ -944,16 +945,17 @@ impl ToolInvoker {
                     .await?);
             }
         };
+        let rejection = crate::error::UpstreamRejection::of(outcome.class());
         let result_json = self
             .finish_result(
                 admitted,
                 progress,
-                &outcome.tool_result(),
+                (&outcome.tool_result(), rejection),
                 &mut slot,
                 CoralFailure::ResultTooLarge,
             )
             .await?;
-        match crate::error::UpstreamRejection::of(outcome.class()) {
+        match rejection {
             None => Ok(result_json),
             Some(rejection) => Err(InvocationHostError::Upstream {
                 rejection,
@@ -962,13 +964,14 @@ impl ToolInvoker {
         }
     }
 
-    /// Records a complete Tool Result as the Upstream Outcome, through
-    /// the owner. A result over its bound fails as `too_large`.
+    /// Records a complete Tool Result, and why it rejects the call if it
+    /// does, as the Upstream Outcome, through the owner. A result over its
+    /// bound fails as `too_large`.
     async fn finish_result(
         &self,
         admitted: &Arc<AdmittedInvocation>,
         progress: &InvocationProgress,
-        result: &serde_json::Value,
+        (result, rejection): (&serde_json::Value, Option<crate::error::UpstreamRejection>),
         slot: &mut DispatchSlot,
         too_large: CoralFailure,
     ) -> Result<String, InvocationHostError> {
@@ -979,7 +982,7 @@ impl ToolInvoker {
             return Err(self.finish_failure(admitted, progress, too_large).await?);
         }
         match self
-            .finish_upstream(admitted, progress, &result_json, slot)
+            .finish_upstream(admitted, progress, &result_json, rejection, slot)
             .await
         {
             Ok(()) => Ok(result_json),
@@ -1055,7 +1058,7 @@ impl ToolInvoker {
                 self.finish_result(
                     admitted,
                     progress,
-                    &result,
+                    (&result, None),
                     slot,
                     CoralFailure::ToolResultTooLarge,
                 )
@@ -1543,6 +1546,7 @@ impl ToolInvoker {
         admitted: &Arc<AdmittedInvocation>,
         progress: &InvocationProgress,
         result_json: &str,
+        rejection: Option<crate::error::UpstreamRejection>,
         slot: &mut DispatchSlot,
     ) -> Result<(), Error> {
         let work = FinishWork {
@@ -1552,6 +1556,7 @@ impl ToolInvoker {
             dispatch_started: progress.dispatch_started,
             completion: InvocationCompletion::Upstream {
                 result_json: result_json.to_string(),
+                rejection,
             },
             reply: None,
         };
@@ -1768,7 +1773,7 @@ impl PerformedCall {
                                 .finish_result(
                                     admitted,
                                     progress,
-                                    &value,
+                                    (&value, None),
                                     &mut self.slot,
                                     CoralFailure::ToolResultTooLarge,
                                 )
@@ -1812,6 +1817,11 @@ impl PerformedCall {
     /// chunk, which the Program's end reaches only after this. A Run that
     /// commits nothing more ends it with its termination instead.
     pub(crate) fn abandon(self) {
+        // The Run's stream left this loop: the body runs on, on the Run
+        // Executor, and the loop that holds the stream now ends the call.
+        if self.invoker.owner.is_detached() {
+            return;
+        }
         if let Some(parent) = &self.open_in_parent {
             parent.0.abandon_child();
         }
@@ -2079,7 +2089,11 @@ pub(crate) struct InvocationProgress {
 }
 
 pub(crate) enum InvocationCompletion {
-    Upstream { result_json: String },
+    Upstream {
+        result_json: String,
+        /// Why the outcome rejects the call; `None` for a declared success.
+        rejection: Option<crate::error::UpstreamRejection>,
+    },
     Failure(Rejection),
 }
 
@@ -2934,4 +2948,12 @@ struct Permit {
     ready: Dispatch,
     slot: DispatchSlot,
     progress: InvocationProgress,
+}
+
+/// The protocol of a Perform, whose body Coral performs in the Program.
+const PERFORMED_PROTOCOL: &str = "code";
+
+/// Records on an Invocation's `span` the protocol its call takes.
+fn record_protocol(span: &tracing::Span, protocol: &'static str) {
+    span.record("coral.provider.protocol", safe::kind(protocol));
 }

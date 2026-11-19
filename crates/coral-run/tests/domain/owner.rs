@@ -2967,7 +2967,7 @@ fn a_recovered_owner_writes_its_queued_expiries_in_one_chunk_and_retires() {
 fn a_run_streams_deadline_is_written_after_its_chunks_and_a_cancel_past_it_is_a_repeat() {
     use crate::lifecycle::RunTerminationKind;
 
-    let mut state = OwnerState::for_run_stream(LIMITS, 1);
+    let mut state = OwnerState::for_run_stream(LIMITS, 1, (0, 0));
     deliver(apply_without_tick(&mut state, Message::Launch, 1));
     deliver(apply_without_tick(
         &mut state,

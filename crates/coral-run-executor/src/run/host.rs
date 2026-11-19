@@ -17,9 +17,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 use super::PROGRAM_LOG_MESSAGE_MAX_BYTES;
 use crate::link::HeldUnit;
 use crate::wire::v1::{
-    Complete, Emit, Failure, Finish, FinishEnd, InvocationResult, Invoke, LinkedToolRoot, Location,
-    Log, LogLevel, NotData, Perform, Request, RunRequest, Started, Threw, complete, finish,
-    invocation_result, request, run_request,
+    Awaited, Complete, Emit, Failure, Finish, FinishEnd, InvocationResult, Invoke, LinkedToolRoot,
+    Location, Log, LogLevel, NotData, Perform, Request, RunRequest, Started, Threw, complete,
+    finish, invocation_result, request, run_request,
 };
 
 /// What Coral's answer settles for one request.
@@ -73,6 +73,9 @@ struct State {
     unconfirmed_bytes: usize,
     /// Each request that waits for its `InvocationResult`.
     invocations: HashMap<u64, Awaiting>,
+    /// The Perform each waiting `Complete` completes, by the `Complete`'s
+    /// number.
+    completes: HashMap<u64, u64>,
 }
 
 /// One request above the committed watermark.
@@ -232,6 +235,22 @@ impl RunHost {
         true
     }
 
+    /// Each request that waits for its `InvocationResult`, in number order,
+    /// for a reopen's `Open`: Coral answers again the ones it committed.
+    pub(super) fn awaited(&self) -> Vec<Awaited> {
+        let state = self.state();
+        let mut awaited: Vec<Awaited> = state
+            .invocations
+            .keys()
+            .map(|&number| Awaited {
+                number,
+                perform: state.completes.get(&number).copied().unwrap_or(0),
+            })
+            .collect();
+        awaited.sort_unstable_by_key(|awaited| awaited.number);
+        awaited
+    }
+
     /// The stream is lost: the Program's requests wait above the watermark.
     pub(super) fn detach(&self) {
         self.state().sink = None;
@@ -293,6 +312,7 @@ impl RunHost {
             Some(invocation_result::Outcome::Fatal(_)) => Err(ToolHostError::Fatal),
         };
         let mut state = self.state();
+        state.completes.remove(&result.number);
         let Some(awaiting) = state.invocations.remove(&result.number) else {
             // Coral may answer a request again after a reconnect, committed
             // or not, and a stop drops every waiter; the first answer, or the
@@ -352,6 +372,7 @@ impl RunHost {
         let mut state = self.state();
         state.stopped = true;
         state.invocations.clear();
+        state.completes.clear();
         drop(state);
         self.changed.notify_all();
         let _installed = self.control.terminate();
@@ -382,6 +403,9 @@ impl RunHost {
         state.last = number;
         if let Some(awaiting) = awaiting {
             state.invocations.insert(number, awaiting);
+            if let request::Kind::Complete(complete) = &kind {
+                state.completes.insert(number, complete.perform);
+            }
         }
         state.hold(number, kind, bytes);
         Some(number)

@@ -248,8 +248,15 @@ fn begin(
             Vec::new(),
         ),
         // The start landed already: its `Started` waits in the mailbox.
-        OwnerStart::Stream(_) => {
-            let mut state = OwnerState::for_run_stream(limits, accepted.accepted_at_unix_nanos);
+        OwnerStart::Stream(stream) => {
+            let resumed = stream
+                .resume
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .map_or((0, 0), |resume| (resume.watermark, resume.output_total));
+            let mut state =
+                OwnerState::for_run_stream(limits, accepted.accepted_at_unix_nanos, resumed);
             let mut effects = apply(&mut state, Message::Launch, launched_at(module, accepted));
             effects.retain(|effect| !matches!(effect, Effect::Start));
             (state, effects)
@@ -1002,6 +1009,11 @@ async fn commit_until_answered(
                 }
             }
         };
+        // The Run's stream moved to another loop: what this one has not
+        // committed, the Run Executor sends that loop again.
+        if moved.holder_instance_id.as_ref() != Some(&module.instance) || handle.is_detached() {
+            break Err(CommitRejection::ClaimMismatch);
+        }
         let Some(recorded_total) = rebase(
             &mut items,
             &mut numbers,
@@ -1063,8 +1075,9 @@ fn rebase(
 ) -> Option<usize> {
     let covered = run.committed_request_number.unwrap_or(0);
     // Another writer committed an Invocation this owner admitted under the
-    // same request: two rows would answer one call. A reconnect (#2905)
-    // decides which stands; until then nothing more is written.
+    // same request: two rows would answer one call, so nothing more is
+    // written. A loop whose stream moved never gets here: its chunk is
+    // refused first.
     let admitted_elsewhere = items.iter().zip(numbers.iter()).any(|(item, number)| {
         matches!(item, ChunkItem::Work(_)) && number.is_some_and(|number| number <= covered)
     });
@@ -1177,10 +1190,7 @@ fn marked_chunk<'a>(
         written.lease_until_unix_nanos = Some(lease_until);
         return Ok(Chunk::new(run, Some(claim_id), now).renew_lease(lease_until));
     }
-    let mut committed_at = now;
-    if Some(committed_at) == run.last_commit_at_unix_nanos {
-        committed_at = committed_at.saturating_add(1);
-    }
+    let committed_at = run.commit_mark(now);
     written.committed_at_unix_nanos = Some(committed_at);
     // Never below the watermark another writer left.
     written.request_number = records

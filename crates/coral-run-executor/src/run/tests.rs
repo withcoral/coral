@@ -12,9 +12,10 @@ use crate::testing::{
     Answer, PullCall, RunCall, ScriptedCoral, ended, package, start_run_executor,
 };
 use crate::wire::v1::{
-    Committed, Complete, CoralFailure, Emit, Fatal, Finish, FinishEnd, InvocationResult, Invoke,
-    LinkedSnapshot, LinkedToolRoot, Loaded, Location, Log, LogLevel, Permitted, Request, Started,
-    Terminate, TerminateReason, UpstreamOutcome, complete, finish, invocation_result, request,
+    Awaited, Committed, Complete, CoralFailure, Emit, Fatal, Finish, FinishEnd, InvocationResult,
+    Invoke, LinkedSnapshot, LinkedToolRoot, Loaded, Location, Log, LogLevel, Permitted, Request,
+    Started, Terminate, TerminateReason, UpstreamOutcome, complete, finish, invocation_result,
+    request,
 };
 use crate::{CompilerClient as _, InProcessCompiler};
 
@@ -130,6 +131,7 @@ async fn loaded(coral: &mut ScriptedCoral, run_id: &str, package: RunPackage) ->
             run_id: run_id.to_owned(),
             claim_id: "claim-1".to_owned(),
             protocol_level: PROTOCOL_LEVEL,
+            awaited: Vec::new(),
         }
     );
     run.send(run_response::Message::Package(package)).await;
@@ -795,7 +797,17 @@ return second.title;";
     // The Invoke is in flight when the stream fails.
     run.fail(Status::unavailable("lost")).await;
     let mut run = coral.next_run().await;
-    assert_eq!(run.open, open, "the same Open");
+    assert_eq!(
+        run.open,
+        Open {
+            awaited: vec![Awaited {
+                number: 3,
+                perform: 0
+            }],
+            ..open.clone()
+        },
+        "the same Open, naming the request that waits on its answer"
+    );
     run.send(committed(1)).await;
     assert_eq!(next_request(&mut run).await, (2, emit(r#""a""#, 2)));
     assert_eq!(next_request(&mut run).await, (3, invoke.clone()));
@@ -807,6 +819,7 @@ return second.title;";
     // A clean end moves the stream: it reopens at once.
     drop(run);
     let mut run = coral.next_run().await;
+    assert_eq!(run.open, open, "nothing waits on an answer");
     run.send(committed(2)).await;
     assert_eq!(next_request(&mut run).await, (3, invoke));
     assert_eq!(next_request(&mut run).await, (4, value));
@@ -817,6 +830,37 @@ return second.title;";
         None,
         "nothing more, and the stream closes"
     );
+}
+
+/// Catches: a reopen's `Open` that leaves out a `Complete` still waiting on
+/// its answer, or names it without the Perform it completes.
+#[tokio::test]
+async fn a_reopen_names_a_waiting_complete_with_its_perform() {
+    let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
+    let source = "return await coral.private.notes.title({ id: 7 });";
+    let package = compiled_with(source, &[notes_title()]).await;
+    let mut run = started(&mut coral, package, None).await;
+    let (number, kind) = next_request(&mut run).await;
+    assert!(matches!(kind, request::Kind::Perform(_)), "{kind:?}");
+    run.send(result(
+        number,
+        0,
+        invocation_result::Outcome::Permitted(Permitted {}),
+    ))
+    .await;
+    let (number, _invoke) = next_request(&mut run).await;
+    let issue = r#"{"id":7,"title":"Ship it"}"#.to_owned();
+    run.send(result(
+        number,
+        26,
+        invocation_result::Outcome::ResultJson(issue),
+    ))
+    .await;
+    let (number, kind) = next_request(&mut run).await;
+    assert!(matches!(kind, request::Kind::Complete(_)), "{kind:?}");
+    run.fail(Status::unavailable("lost")).await;
+    let run = coral.next_run().await;
+    assert_eq!(run.open.awaited, [Awaited { number, perform: 1 }]);
 }
 
 /// Catches: a reopen that loads the package again instead of naming it by

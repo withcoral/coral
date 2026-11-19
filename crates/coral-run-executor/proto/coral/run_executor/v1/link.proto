@@ -464,6 +464,17 @@ message Open {
   string claim_id = 2;
   // The Run Executor's protocol level.
   uint32 protocol_level = 3;
+  // Each request that waits for its InvocationResult. Coral answers again
+  // each one the committed watermark covers, from what it recorded.
+  repeated Awaited awaited = 4;
+}
+
+// One request that waits for its InvocationResult.
+message Awaited {
+  // The request's number.
+  uint64 number = 1;
+  // For a Complete, the number of the Perform it completes; 0 otherwise.
+  uint64 perform = 2;
 }
 
 // What a Run Executor needs to load and run one Program.
