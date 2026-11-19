@@ -5,6 +5,7 @@ mod engine;
 mod env;
 mod error;
 mod health;
+mod mcp_interface;
 mod periodic;
 mod runtime;
 mod search_model;
@@ -14,6 +15,7 @@ mod server_config;
 
 pub use error::{AppError, StateRefusal};
 pub use health::EngineReadiness as ListenerReadiness;
+pub use mcp_interface::{McpInterfaceDependencies, McpInterfaceFactory};
 pub use runtime::{
     Extensions, Launch, McpStartError, MigrationProgress, MigrationReport, RunningRuntime,
     RuntimeError, ShutdownFailures, start_runtime,

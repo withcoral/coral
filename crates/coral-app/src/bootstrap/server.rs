@@ -201,6 +201,16 @@ impl ServerBuilder {
         self
     }
 
+    /// Registers the factory of the tool surface MCP serves in place of core's.
+    #[must_use]
+    pub fn with_mcp_interface_factory(
+        mut self,
+        factory: Arc<dyn super::McpInterfaceFactory>,
+    ) -> Self {
+        self.launcher.mcp_interface_factory = Some(factory);
+        self
+    }
+
     /// Compiles in this process instead of on Run Executors, for a test
     /// that starts Coral in its own process: its binary is no `coral`, so
     /// it cannot start a local child.
@@ -350,13 +360,14 @@ impl PreparedServerBuilder {
     /// initialization or gRPC startup fails.
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let session_auth = self.serve_settings()?.take_session_auth();
+        // Boxed, so that the future of a caller stays small.
         let Composition {
             engine,
             private_listeners,
             authorization_server,
             workspace_authentication: _,
             clock: _,
-        } = self.compose(session_auth).await?;
+        } = Box::pin(self.compose(session_auth)).await?;
         private_listeners
             .holding(authorization_server)
             .serve(engine)
@@ -557,12 +568,13 @@ impl PrivateListeners {
             listener,
             self.run_executors,
             shutdown_rx,
-            (stop, stopping),
+            (stop, stopping.clone()),
             routes,
             task_finished_tx,
         );
         Ok(RunningServer {
             mcp_origin,
+            stopping,
             endpoint_uri: format!("http://{local_addr}"),
             local_addr,
             authorization_server: self.held_authorization_server,
@@ -774,6 +786,7 @@ fn resolve_database_config(
 /// does not wait for the task to finish.
 pub struct RunningServer {
     mcp_origin: Arc<std::sync::OnceLock<String>>,
+    stopping: watch::Receiver<bool>,
     endpoint_uri: String,
     local_addr: SocketAddr,
     authorization_server: Option<Box<CoralAuthorizationServer>>,
@@ -825,6 +838,12 @@ impl RunningServer {
     /// the process is built over too.
     pub(crate) fn engine(&self) -> &Engine {
         &self.engine
+    }
+
+    /// True once this server stops its listeners. A dropped sender reads the
+    /// same.
+    pub(crate) fn stopping(&self) -> watch::Receiver<bool> {
+        self.stopping.clone()
     }
 
     /// Takes the authorization server prepared from this server's session

@@ -6,15 +6,16 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use coral_mcp::{
-    McpHttpConfig, McpHttpError, RunningMcpHttpServer, start_authenticated, start_local,
+    McpHttpConfig, McpHttpError, McpModules, RunningMcpHttpServer, start_authenticated, start_local,
 };
 
 use super::engine::Engine;
 use super::error::AppError;
+use super::mcp_interface::{McpInterfaceDependencies, McpInterfaceFactory};
 use super::server::{
     Composition, PreparedServerBuilder, RunningServer as GrpcServer, ServerBuilder,
 };
-use super::server_config::{LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig};
+use super::server_config::{LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig, ServeSettings};
 use crate::auth::{AuthServerError, CoralAuthorizationServer, RunningCoralAuthorizationServer};
 
 /// What a launching binary adds to Coral beyond what every build has.
@@ -71,6 +72,9 @@ pub struct Launch {
     pub usage_environment: Option<coral_usage::SendEnvironment>,
     /// What the launching binary adds to Coral.
     pub extensions: Extensions,
+    /// Builds the tool surface MCP serves in place of core's. Without one,
+    /// MCP serves core's.
+    pub mcp_interface_factory: Option<Arc<dyn McpInterfaceFactory>>,
     /// Compile in this process instead of on Run Executors: for a test that
     /// starts Coral in its own process, whose binary is no `coral`.
     pub compile_in_process: bool,
@@ -87,6 +91,10 @@ impl Launch {
     /// Passes this launch to `builder`.
     fn configure(self, builder: ServerBuilder) -> ServerBuilder {
         let builder = builder.with_extensions(self.extensions);
+        let builder = match self.mcp_interface_factory {
+            Some(factory) => builder.with_mcp_interface_factory(factory),
+            None => builder,
+        };
         let builder = if self.compile_in_process {
             builder.with_in_process_compiler()
         } else {
@@ -262,6 +270,14 @@ pub enum McpStartError {
     /// authentication or its public host.
     #[error("MCP authentication configuration is missing or invalid")]
     MissingAuthentication,
+    /// The registered tool surface did not start.
+    #[error("the tool surface of config section `{section_name}` did not start: {error}")]
+    Interface {
+        /// The config section the surface is built from.
+        section_name: &'static str,
+        /// Why its factory could not build it.
+        error: Box<dyn std::error::Error + Send + Sync>,
+    },
     /// The listener did not bind or serve.
     #[error(transparent)]
     Http(#[from] McpHttpError),
@@ -397,8 +413,7 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, R
     let mut settings = builder
         .serve_settings()
         .map_err(RuntimeError::StartSettings)?;
-    let mcp_config = settings.mcp_http().clone();
-    let public_mcp_origin = match &mcp_config {
+    let public_mcp_origin = match settings.mcp_http() {
         McpHttpServeConfig::Authenticated { public_url, .. } => Some(public_url.clone()),
         McpHttpServeConfig::AuthDisabled { .. } => None,
     };
@@ -435,15 +450,7 @@ async fn start_inner(builder: PreparedServerBuilder) -> Result<RunningRuntime, R
             return Err(RuntimeError::StartAuthSupport { error, cleanup });
         }
     };
-    let mcp_http = match start_mcp_http(
-        mcp_config,
-        grpc.engine(),
-        workspace_authentication,
-        settings.human_interface().clone(),
-        clock,
-    )
-    .await
-    {
+    let mcp_http = match start_mcp_http(&settings, &grpc, workspace_authentication, clock).await {
         Ok(server) => server,
         Err(error) => {
             let cleanup = shutdown_components(grpc, auth_support, None).await.err();
@@ -499,18 +506,19 @@ async fn shutdown_components(
     ShutdownFailures::from_results(mcp_result, auth_support_result, grpc_result)
 }
 
-/// Starts the MCP companion over `engine`. Without sign-in, its
+/// Starts the MCP companion over `grpc`'s `Engine`. Without sign-in, its
 /// authentication reads `clock`.
 async fn start_mcp_http(
-    settings: McpHttpServeConfig,
-    engine: &Engine,
+    settings: &ServeSettings,
+    grpc: &GrpcServer,
     authentication: Option<crate::WorkspaceAuthentication>,
-    human_interface: coral_mcp::HumanInterfaceUrl,
     clock: Arc<dyn coral_db::Clock>,
 ) -> Result<RunningMcpHttpServer, McpStartError> {
+    let engine = grpc.engine();
     let readiness = engine.readiness().probe();
-    let modules = engine.mcp_modules(human_interface);
-    let server = match settings {
+    let modules = engine.mcp_modules(settings.human_interface().clone());
+    let modules = with_registered_interface(modules, settings, grpc)?;
+    let server = match settings.mcp_http().clone() {
         McpHttpServeConfig::AuthDisabled { bind_addr } => {
             start_local(McpHttpConfig::new(bind_addr)?, modules, readiness, clock).await?
         }
@@ -531,6 +539,25 @@ async fn start_mcp_http(
         }
     };
     Ok(server)
+}
+
+/// Serves the registered factory's tool surface over `modules`, when the
+/// config file has the factory's section.
+fn with_registered_interface(
+    modules: McpModules,
+    settings: &ServeSettings,
+    grpc: &GrpcServer,
+) -> Result<McpModules, McpStartError> {
+    let Some(configured) = &settings.mcp_interface else {
+        return Ok(modules);
+    };
+    let interface = configured.build(McpInterfaceDependencies {
+        database: grpc.engine().database(),
+        modules: modules.clone(),
+        outbound_policy: settings.outbound_policy(),
+        stopping: grpc.stopping(),
+    })?;
+    Ok(modules.with_interface(interface))
 }
 
 #[cfg(test)]
