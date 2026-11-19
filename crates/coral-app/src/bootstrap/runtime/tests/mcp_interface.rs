@@ -2,7 +2,8 @@
 
 use std::sync::{Arc, OnceLock};
 
-use coral_mcp::{McpCaller, McpInterface, Progress, ToolCallError};
+use coral_mcp::{McpCaller, McpInterface, Progress, ToolCallError, ToolFailure};
+use coral_test_support::ManualClock;
 use rmcp::ErrorData;
 use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, Tool};
 use serde_json::json;
@@ -46,7 +47,7 @@ impl McpInterfaceFactory for EchoFactory {
 }
 
 /// Core's tool surface with other instructions and one more tool, `echo`,
-/// which returns its arguments.
+/// which returns its arguments, or fails when they hold `refuse`.
 struct CoreWithEcho {
     core: Arc<dyn McpInterface>,
 }
@@ -77,8 +78,12 @@ impl McpInterface for CoreWithEcho {
         if request.name != "echo" {
             return self.core.call(caller, request, progress).await;
         }
-        let arguments = serde_json::Value::Object(request.arguments.unwrap_or_default());
-        Ok(CallToolResult::structured(arguments).into())
+        let arguments = request.arguments.unwrap_or_default();
+        if arguments.contains_key("refuse") {
+            let refused = ToolFailure::stable("echo_refused", "Echo refused the call");
+            return Err(ToolCallError::Tool(refused));
+        }
+        Ok(CallToolResult::structured(serde_json::Value::Object(arguments)).into())
     }
 }
 
@@ -120,6 +125,11 @@ async fn mcp_serves_the_tool_surface_that_a_registered_factory_builds() {
     );
     let said = json!({"said": "hello"});
     assert_eq!(mcp_tool(&client, "echo", said.clone()).await, said);
+    // The surface fails its own tool, and core names the call's trace.
+    let failed = mcp_tool(&client, "echo", json!({"refuse": true})).await;
+    assert_eq!(failed.get("code"), Some(&json!("echo_refused")));
+    let trace = failed.get("trace_id");
+    assert!(trace.is_some_and(serde_json::Value::is_string));
     // Core answers its own tool through the surface that wraps it.
     let no_such_task = json!({"task_id": "alpha-bravo-charlie-delta", "outcome": "success"});
     let refused = mcp_tool(&client, "end_task", no_such_task).await;
@@ -144,6 +154,30 @@ async fn mcp_serves_the_tool_surface_that_a_registered_factory_builds() {
     client.cancel().await.expect("close MCP client");
     server.shutdown().await.expect("stop composed server");
     assert!(*handed.stopping.borrow(), "the instance shut down");
+}
+
+// Catches: a factory that is handed a clock or an environment reader other
+// than the ones this Coral Instance reads.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_factory_is_handed_the_clock_and_the_environment_of_the_instance() {
+    // 2100-01-01: no host's clock reads it.
+    let launched_at = coral_db::UnixNanos::new(4_102_444_800_000_000_000);
+    let factory = Arc::new(EchoFactory::default());
+    let temp = TempDir::new().expect("temporary state root");
+    coral_test_support::write_server_config(temp.path(), &format!("{WEB}{ECHO_SECTION}"));
+    let builder = registering(&factory)
+        .with_config_dir(temp.path())
+        .with_in_process_compiler()
+        .with_clock(Arc::new(ManualClock::starting_at(launched_at)));
+
+    let server = start(builder).await.expect("start composed server");
+
+    let (_section, handed) = factory.handed.get().expect("core called the factory");
+    assert_eq!(handed.clock.now(), launched_at);
+    // Cargo sets this variable for a test process.
+    let package = (handed.env)("CARGO_PKG_NAME");
+    assert_eq!(package, Ok(Some("coral-app".to_owned())));
+    server.shutdown().await.expect("stop composed server");
 }
 
 /// The section turns a registered surface on. Without it, core does not call

@@ -53,6 +53,18 @@ impl McpCaller {
         }
     }
 
+    /// A caller that no MCP request authenticated, for another crate's test
+    /// of a tool surface.
+    #[cfg(feature = "test-fixtures")]
+    #[must_use]
+    pub const fn fixture(
+        principal: AuthenticatedPrincipal,
+        workspace_id: WorkspaceId,
+        now: UnixNanos,
+    ) -> Self {
+        Self::new(principal, workspace_id, now)
+    }
+
     /// The authenticated Principal.
     #[must_use]
     pub const fn principal(&self) -> &AuthenticatedPrincipal {
@@ -97,8 +109,8 @@ pub enum ToolCallError {
     /// The request was wrong. The client gets a JSON-RPC error.
     Protocol(ErrorData),
     /// Coral could not complete the call, and the client gets the failure as
-    /// the tool's result. Core builds it; a surface that wraps core's passes
-    /// it on.
+    /// the tool's result. A surface that wraps core's passes core's on, and
+    /// builds one for a tool of its own.
     Tool(ToolFailure),
 }
 

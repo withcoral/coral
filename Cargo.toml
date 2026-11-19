@@ -165,6 +165,7 @@ coral-sqlite-vec = { path = "crates/coral-sqlite-vec" }
 coral-run = { path = "crates/coral-run" }
 coral-run-executor = { path = "crates/coral-run-executor" }
 coral-search = { path = "crates/coral-search" }
+coral-sub-agent = { path = "crates/coral-sub-agent" }
 coral-task = { path = "crates/coral-task" }
 coral-telemetry = { path = "crates/coral-telemetry" }
 coral-test-support = { path = "crates/coral-test-support" }
