@@ -215,7 +215,7 @@ request. The author then updates it so that the model reads what it read before.
 **Rejected:** a checked-in file of hashes of that text, verified in CI. It would only report a change, and the quickest
 way to satisfy such a check is to update the file.
 
-### 5. The Sub-agent has its own search tool, and its Programs cannot call Built-in Tools
+### 5. The Sub-agent has its own search tool
 
 **Serves point 6.**
 
@@ -224,12 +224,12 @@ changes `coral.search` to improve how they do it. Search is also the only Tool a
 advance, because an agent finds every other Tool by searching.
 
 We will give the Sub-agent's model a `search` tool that the Sub-agent's crate defines. It runs the same search by
-calling core's search module directly. We will also refuse any Sub-agent Program that calls a Built-in Tool, including
-`coral.search`. If `coral.search` worked inside a Program, a model could learn during training to call it there, and it
-would depend on core's names again.
+calling core's search module directly, outside a Program.
 
-As a result, a Sub-agent cannot add a Provider, change policy or save a Private Tool, even when its caller is permitted
-to. The lead does those things itself.
+We will not stop a Sub-agent's Program from calling a Built-in Tool, `coral.search` included. A Program runs with its
+caller's permissions and under its caller's policy, so a Built-in Tool does nothing there that the caller could not do.
+A Sub-agent can therefore add a Provider, change policy or save a Private Tool when its caller is permitted to. The
+lead's guidance tells the lead to do those things itself.
 
 This does not reverse ADR 0026, which rejected serving search through two interfaces and choosing between them by
 detecting the client. Core's MCP tools do not change, Coral does not detect the client, and core still has one
@@ -240,6 +240,11 @@ implementation of search.
 - **Add code to the start of each Program that wraps `coral.search`.** The Program recorded for each Run would contain
   code that the model did not write, and the model could still call `coral.search` directly.
 - **Forbid changes to `coral.search`.** ADR 0026 depends on changing it.
+- **Refuse a Sub-agent's Program that names a Built-in Tool.** We built this first, as a check of the Program's text
+  before each Run, and `search` left Built-in Tools out of its results by the same matching. The check missed a Call
+  Path that a Program builds while it runs, so it promised more than it did, and it put text matching into the code. We
+  would sooner accept that a Sub-agent can call a Built-in Tool. The cost is that a model trained on the Sub-agent's
+  tools can learn to call `coral.search` from a Program, and then depends on core's names.
 
 ### 6. The operator configures the model in the config file, as it configures the database
 
@@ -356,7 +361,8 @@ organization, and an organization's administrator may later set it in the produc
 **What we accepted**
 
 - A Workspace Owner cannot turn the Sub-agent off for one Workspace. It is on for the whole deployment.
-- A Sub-agent cannot administer Coral, even when its caller can.
+- A Sub-agent can call Built-in Tools from a Program, so it can add a Provider, change policy or save a Tool when its
+  caller can.
 - An interrupted Turn does not continue. The lead must send its message again.
 - Program diagnostics and Tool declarations still come from core, so a change to them changes what the model reads.
 - The four rules behind `exec`, `wait` and `cancel` exist twice, in core's handlers and in the Sub-agent's crate. A
@@ -381,8 +387,8 @@ organization, and an organization's administrator may later set it in the produc
 
 - The Sub-agent's own `search` tool has not been measured. ADR 0026 measured search outside Programs as slower for
   outside agents.
-- Sailfish, Coral's own model, was trained to call `coral.search` inside a Program. It will take extra steps until it
-  is retrained against the Sub-agent's tools.
+- Sailfish, Coral's own model, was trained to call `coral.search` inside a Program. That still works in a Sub-agent's
+  Program. We have not measured whether Sailfish does better with the `search` tool or with what it was trained on.
 
 ## How we will confirm it
 
@@ -457,7 +463,6 @@ Decided, the Sub-agent's model calls `exec`:
 ```text
 Turn loop, in the Sub-agent's crate
   Sub-agent code: parse                  job 1: the model's tool call to values
-  Sub-agent code: check the Program      refuses a Built-in Tool
   Sub-agent code: exec                   job 2: its own copy of the four rules
     Task module: submit                  the same call that core's handler makes
     Run module: observe
@@ -505,22 +510,9 @@ The first version of that text starts from what core serves today:
 
 ### What a Sub-agent's Program may call
 
-Before the Sub-agent starts a Run, it checks the text of the Program for the Tools it calls:
-
-| The Program calls | What happens |
-| --- | --- |
-| A Provider Tool (`coral.providers.…`) | Allowed |
-| A Private Tool (`coral.private.…`) | Allowed |
-| A Shared Tool (`coral.shared.…`) | Allowed |
-| `coral.emit` or `coral.ToolError` | Allowed |
-| A Built-in Tool, such as `coral.search`, `coral.addCustomTool`, `coral.addProvider` or `coral.updatePolicy` | The Program is not run. The model receives an error that names the Tool. For `coral.search`, the error tells it to call `search`. |
-
-A Built-in Tool that core adds later is refused in the same way, until someone changes the Sub-agent to allow it. A
-Sub-agent can still call a Provider Tool that writes data, such as one that posts a comment, when its caller's policy
-allows it.
-
-The check finds Call Paths that are written out in the Program. It does not find a Call Path that the Program builds
-while it runs.
+Whatever a Program of its caller may call: Provider Tools, Private Tools, Shared Tools and Built-in Tools, each under
+the caller's policy. Coral does not read a Program's text to decide what it may call. A Sub-agent can call a Provider
+Tool that writes data, such as one that posts a comment, when its caller's policy allows it.
 
 ### How a change in core affects the Sub-agent's model
 
@@ -528,7 +520,7 @@ while it runs.
 | --- | --- |
 | An MCP tool's name, description, argument schema or result field changes, or an MCP tool or argument is added | None. The Sub-agent does not use them. |
 | The arguments or result fields of `coral.search` change | None. If the change alters a Rust type that the Sub-agent uses, its crate stops compiling, and the author updates it so that the model's `search` tool stays the same. |
-| A Built-in Tool is added | None. A Sub-agent's Program cannot call it, and `search` does not return it. |
+| A Built-in Tool is added | `search` can return it, and a Sub-agent's Program can call it. The model reads its declaration when it searches. |
 | A field is added to a Run Update | None, until someone changes the Sub-agent to include it in a result. |
 | A call that the Sub-agent makes on the Task, Run or search module gains an input | Its crate stops compiling. The author decides what value it passes. |
 | A value that the Sub-agent reads is removed, or its type changes | Its crate stops compiling. The author updates it. |
