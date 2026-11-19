@@ -9,7 +9,7 @@ use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, Tool}
 use serde_json::json;
 use tempfile::TempDir;
 
-use super::{WEB, mcp_tool, serve_extended_with_mcp_client, start};
+use super::{WEB, mcp_tool, serve_extended_with_mcp_client, spin_a_run, start};
 use crate::bootstrap::{AppError, McpInterfaceDependencies, McpInterfaceFactory};
 use crate::{LOCAL_OUTBOUND_DEFAULTS, McpStartError, RuntimeError, ServerBuilder};
 
@@ -149,11 +149,39 @@ async fn mcp_serves_the_tool_surface_that_a_registered_factory_builds() {
         LOCAL_OUTBOUND_DEFAULTS.with_loopback(coral_outbound::NetworkAccess::Deny),
         "the operator's destination policy"
     );
-    assert!(!*handed.stopping.borrow(), "the instance serves");
 
     client.cancel().await.expect("close MCP client");
     server.shutdown().await.expect("stop composed server");
-    assert!(*handed.stopping.borrow(), "the instance shut down");
+}
+
+// Catches: a stop signal that fires only once the Shutdown Drain is over,
+// too late for a surface to end its own work while the instance serves.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_factory_is_told_when_shutdown_begins() {
+    let factory = Arc::new(EchoFactory::default());
+    let temp = TempDir::new().expect("temporary state root");
+    coral_test_support::write_server_config(
+        temp.path(),
+        &format!("{WEB}[runtime]\nshutdown_drain_seconds = 3\n{ECHO_SECTION}"),
+    );
+    let (server, _workspace, client) =
+        serve_extended_with_mcp_client(temp.path(), registering(&factory)).await;
+    // A live Run keeps the Shutdown Drain going.
+    spin_a_run(&client).await;
+    client.cancel().await.expect("close MCP client");
+    let (_section, handed) = factory.handed.get().expect("core called the factory");
+    let mut stopping = handed.stopping.clone();
+    assert!(!*stopping.borrow(), "the instance serves");
+
+    let shutdown = tokio::spawn(server.shutdown());
+    let began = stopping.wait_for(|stopping| *stopping);
+    let began = tokio::time::timeout(std::time::Duration::from_secs(1), began).await;
+    assert!(began.is_ok_and(|signal| signal.is_ok()), "shutdown began");
+    assert!(!shutdown.is_finished(), "the Shutdown Drain still runs");
+    shutdown
+        .await
+        .expect("shutdown task")
+        .expect("stop composed server");
 }
 
 // Catches: a factory that is handed a clock or an environment reader other

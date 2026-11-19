@@ -568,13 +568,12 @@ impl PrivateListeners {
             listener,
             self.run_executors,
             shutdown_rx,
-            (stop, stopping.clone()),
+            (stop, stopping),
             routes,
             task_finished_tx,
         );
         Ok(RunningServer {
             mcp_origin,
-            stopping,
             endpoint_uri: format!("http://{local_addr}"),
             local_addr,
             authorization_server: self.held_authorization_server,
@@ -786,7 +785,6 @@ fn resolve_database_config(
 /// does not wait for the task to finish.
 pub struct RunningServer {
     mcp_origin: Arc<std::sync::OnceLock<String>>,
-    stopping: watch::Receiver<bool>,
     endpoint_uri: String,
     local_addr: SocketAddr,
     authorization_server: Option<Box<CoralAuthorizationServer>>,
@@ -838,12 +836,6 @@ impl RunningServer {
     /// the process is built over too.
     pub(crate) fn engine(&self) -> &Engine {
         &self.engine
-    }
-
-    /// True once this server stops its listeners. A dropped sender reads the
-    /// same.
-    pub(crate) fn stopping(&self) -> watch::Receiver<bool> {
-        self.stopping.clone()
     }
 
     /// Takes the authorization server prepared from this server's session

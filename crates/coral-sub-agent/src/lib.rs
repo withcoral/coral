@@ -52,6 +52,7 @@ impl McpInterfaceFactory for SubAgentFactory {
             modules.runs,
             model,
             dependencies.clock,
+            dependencies.stopping,
         );
         Ok(Arc::new(CoreWithAgent::new(core, tasks, sub_agents)))
     }

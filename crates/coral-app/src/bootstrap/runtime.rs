@@ -558,7 +558,7 @@ fn with_registered_interface(
         outbound_policy: settings.outbound_policy(),
         env: Arc::new(super::env_var),
         clock: Arc::clone(clock),
-        stopping: grpc.stopping(),
+        stopping: grpc.engine().readiness().stopping(),
     })?;
     Ok(modules.with_interface(interface))
 }

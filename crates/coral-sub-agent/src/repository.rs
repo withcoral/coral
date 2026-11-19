@@ -50,6 +50,7 @@ enum SubAgentThreadMessages {
 }
 
 const RUNNING: &str = "running";
+const INTERRUPTED: &str = "interrupted";
 
 /// Inserts the Sub-agent of `principal` in its Task. `false` means that `id`
 /// is in use and nothing was written.
@@ -132,6 +133,7 @@ pub(crate) async fn find_turn(
         .column((SubAgentTurns::Table, SubAgentTurns::State))
         .column((SubAgentTurns::Table, SubAgentTurns::Answer))
         .column((SubAgentTurns::Table, SubAgentTurns::Failure))
+        .column((SubAgentTurns::Table, SubAgentTurns::LeaseExpiresAtUnixNanos))
         .from(SubAgentTurns::Table)
         .inner_join(SubAgentRecords::Table, of_sub_agent)
         .and_where(
@@ -171,6 +173,25 @@ pub(crate) async fn end_turn(
         .and_where(Expr::col(SubAgentTurns::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(SubAgentTurns::Id).eq(turn_id))
         .and_where(Expr::col(SubAgentTurns::State).eq(RUNNING))
+        .to_owned();
+    Ok(transaction.execute_change(statement).await? == 1)
+}
+
+/// Ends the running Turn as interrupted if its lease lapsed by `now`.
+/// `false` means that it was renewed or had ended, and nothing was written.
+pub(crate) async fn interrupt_lapsed_turn(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    turn_id: &str,
+    now: UnixNanos,
+) -> Result<bool, coral_db::Error> {
+    let statement = Query::update()
+        .table(SubAgentTurns::Table)
+        .value(SubAgentTurns::State, INTERRUPTED)
+        .and_where(Expr::col(SubAgentTurns::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SubAgentTurns::Id).eq(turn_id))
+        .and_where(Expr::col(SubAgentTurns::State).eq(RUNNING))
+        .and_where(Expr::col(SubAgentTurns::LeaseExpiresAtUnixNanos).lte(now))
         .to_owned();
     Ok(transaction.execute_change(statement).await? == 1)
 }
@@ -257,10 +278,83 @@ pub(crate) async fn thread(
     rows.into_iter().map(MessageRow::decode).collect()
 }
 
+/// The last message of the Turn in the Sub-agent's thread, and its position.
+pub(crate) async fn last_message(
+    executor: impl QueryExecutor,
+    workspace_id: &WorkspaceId,
+    sub_agent_id: &str,
+    turn_id: &str,
+) -> Result<Option<(i64, Message)>, Error> {
+    let statement = Query::select()
+        .columns([
+            SubAgentThreadMessages::Position,
+            SubAgentThreadMessages::Role,
+            SubAgentThreadMessages::ContentJson,
+        ])
+        .from(SubAgentThreadMessages::Table)
+        .and_where(Expr::col(SubAgentThreadMessages::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SubAgentThreadMessages::SubAgentId).eq(sub_agent_id))
+        .and_where(Expr::col(SubAgentThreadMessages::TurnId).eq(turn_id))
+        .order_by(SubAgentThreadMessages::Position, Order::Desc)
+        .limit(1)
+        .to_owned();
+    let row: Option<PositionedMessageRow> = executor.fetch_optional(statement).await?;
+    row.map(|row| Ok((row.position, row.message.decode()?)))
+        .transpose()
+}
+
+/// Adds `message` at `position` in the Sub-agent's thread, marked with the
+/// Turn `turn_id`, unless a message holds that position already.
+pub(crate) async fn insert_message_unless_taken(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    sub_agent_id: &str,
+    turn_id: &str,
+    position: i64,
+    message: &Message,
+) -> Result<(), coral_db::Error> {
+    let statement = Query::insert()
+        .into_table(SubAgentThreadMessages::Table)
+        .columns([
+            SubAgentThreadMessages::WorkspaceId,
+            SubAgentThreadMessages::SubAgentId,
+            SubAgentThreadMessages::Position,
+            SubAgentThreadMessages::TurnId,
+            SubAgentThreadMessages::Role,
+            SubAgentThreadMessages::ContentJson,
+        ])
+        .values_panic([
+            Expr::val(workspace_id.to_string()),
+            Expr::val(sub_agent_id),
+            Expr::val(position),
+            Expr::val(turn_id),
+            Expr::val(stored_role(message.role)),
+            Expr::val(serde_json::json!(message.content).to_string()),
+        ])
+        .on_conflict(
+            OnConflict::columns([
+                SubAgentThreadMessages::SubAgentId,
+                SubAgentThreadMessages::Position,
+            ])
+            .do_nothing()
+            .to_owned(),
+        )
+        .to_owned();
+    transaction.execute_change(statement).await?;
+    Ok(())
+}
+
 #[derive(FromRow)]
 struct MessageRow {
     role: String,
     content_json: String,
+}
+
+#[derive(FromRow)]
+struct PositionedMessageRow {
+    position: i64,
+    #[sqlx(flatten)]
+    message: MessageRow,
 }
 
 impl MessageRow {
@@ -289,6 +383,7 @@ struct TurnRow {
     state: String,
     answer: Option<String>,
     failure: Option<String>,
+    lease_expires_at_unix_nanos: UnixNanos,
 }
 
 impl TurnRow {
@@ -298,9 +393,14 @@ impl TurnRow {
             ("completed", Some(answer), None) => TurnState::Completed { answer },
             ("failed", None, Some(failure)) => TurnState::Failed { failure },
             ("canceled", None, None) => TurnState::Canceled,
+            (INTERRUPTED, None, None) => TurnState::Interrupted,
             _ => return Err(Error::CorruptData),
         };
-        Ok(Turn { id: self.id, state })
+        Ok(Turn {
+            id: self.id,
+            state,
+            lease_expires_at: self.lease_expires_at_unix_nanos,
+        })
     }
 }
 
@@ -311,5 +411,6 @@ fn stored(state: &TurnState) -> (&'static str, Option<&str>, Option<&str>) {
         TurnState::Completed { answer } => ("completed", Some(answer), None),
         TurnState::Failed { failure } => ("failed", None, Some(failure)),
         TurnState::Canceled => ("canceled", None, None),
+        TurnState::Interrupted => (INTERRUPTED, None, None),
     }
 }
