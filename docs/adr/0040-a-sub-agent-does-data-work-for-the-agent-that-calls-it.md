@@ -371,6 +371,10 @@ organization, and an organization's administrator may later set it in the produc
   calls too. A separate allowance for the model could remove this later.
 - A Claude model reached through Anthropic's OpenAI-compatible endpoint gets no prompt caching. Each model call then
   pays in full for the whole conversation. A gateway that calls Anthropic's own API can add caching.
+- Coral does not check that the model server is up. It does not call the model at startup, and it does not probe it
+  while it runs. While the model server is down, `agent` stays listed, the lead is still told to hand work to a
+  Sub-agent, and each Turn fails after three retries. Coral could be more robust here: vLLM serves `/health`, and `GET
+  /models` works on any server that speaks Chat Completions. We left that out while we evaluate the Sub-agent.
 - Reef shows no Sub-agents and no Turns.
 
 **What we are not sure of**
