@@ -613,6 +613,7 @@ dependencies = [
  "anyhow",
  "assert_cmd",
  "clap",
+ "coral-agent",
  "coral-app",
  "coral-db",
  "coral-edition",
@@ -620,7 +621,6 @@ dependencies = [
  "coral-grpc",
  "coral-mcp",
  "coral-run-executor",
- "coral-sub-agent",
  "coral-test-support",
  "reqwest",
  "sha2 0.11.1",
@@ -659,6 +659,47 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "coral-agent"
+version = "1.10.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "coral-app",
+ "coral-catalog",
+ "coral-credentials",
+ "coral-db",
+ "coral-identifier",
+ "coral-mcp",
+ "coral-outbound",
+ "coral-policy",
+ "coral-provider",
+ "coral-run",
+ "coral-search",
+ "coral-secret-store",
+ "coral-task",
+ "coral-telemetry",
+ "coral-test-support",
+ "coral-workspace",
+ "futures-util",
+ "opentelemetry",
+ "reqwest",
+ "rmcp",
+ "schemars",
+ "sea-query",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -1179,47 +1220,6 @@ dependencies = [
  "libsqlite3-sys",
  "sqlite-vec",
  "thiserror",
-]
-
-[[package]]
-name = "coral-sub-agent"
-version = "1.10.0"
-dependencies = [
- "async-trait",
- "chrono",
- "coral-app",
- "coral-catalog",
- "coral-credentials",
- "coral-db",
- "coral-identifier",
- "coral-mcp",
- "coral-outbound",
- "coral-policy",
- "coral-provider",
- "coral-run",
- "coral-search",
- "coral-secret-store",
- "coral-task",
- "coral-telemetry",
- "coral-test-support",
- "coral-workspace",
- "futures-util",
- "opentelemetry",
- "reqwest",
- "rmcp",
- "schemars",
- "sea-query",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "wiremock",
 ]
 
 [[package]]

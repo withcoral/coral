@@ -1,5 +1,5 @@
 [package]
-name = "coral-sub-agent"
+name = "coral-agent"
 description = "The Sub-agent: a model that Coral runs to do data work for the agent that calls it."
 version.workspace = true
 edition.workspace = true
