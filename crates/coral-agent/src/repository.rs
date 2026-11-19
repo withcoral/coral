@@ -8,8 +8,8 @@ use coral_workspace::{Principal, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Order, Query};
 use sqlx::FromRow;
 
-use crate::model::{Message, ModelCall, Role};
-use crate::sub_agents::{Error, RunningTurn, Turn, TurnState};
+use crate::model::{Message, ModelCall, Role, Usage};
+use crate::sub_agents::{Error, RunningTurn, ThreadEntry, Turn, TurnState};
 
 mod lead_messages;
 
@@ -322,18 +322,31 @@ pub(crate) async fn thread(
     workspace_id: &WorkspaceId,
     sub_agent_id: &str,
 ) -> Result<Vec<Message>, Error> {
+    let entries = thread_entries(executor, workspace_id, sub_agent_id).await?;
+    Ok(entries.into_iter().map(|entry| entry.message).collect())
+}
+
+/// The Sub-agent's thread, in order, with each row's reported token usage.
+pub(crate) async fn thread_entries(
+    executor: impl QueryExecutor,
+    workspace_id: &WorkspaceId,
+    sub_agent_id: &str,
+) -> Result<Vec<ThreadEntry>, Error> {
     let statement = Query::select()
         .columns([
             SubAgentThreadMessages::Role,
             SubAgentThreadMessages::ContentJson,
+            SubAgentThreadMessages::InputTokens,
+            SubAgentThreadMessages::CacheReadInputTokens,
+            SubAgentThreadMessages::OutputTokens,
         ])
         .from(SubAgentThreadMessages::Table)
         .and_where(Expr::col(SubAgentThreadMessages::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(SubAgentThreadMessages::SubAgentId).eq(sub_agent_id))
         .order_by(SubAgentThreadMessages::Position, Order::Asc)
         .to_owned();
-    let rows: Vec<MessageRow> = executor.fetch_all(statement).await?;
-    rows.into_iter().map(MessageRow::decode).collect()
+    let rows: Vec<ThreadEntryRow> = executor.fetch_all(statement).await?;
+    rows.into_iter().map(ThreadEntryRow::decode).collect()
 }
 
 /// The last message of the Turn in the Sub-agent's thread, and its position.
@@ -406,6 +419,36 @@ pub(crate) async fn insert_message_unless_taken(
 struct MessageRow {
     role: String,
     content_json: String,
+}
+
+#[derive(FromRow)]
+struct ThreadEntryRow {
+    #[sqlx(flatten)]
+    message: MessageRow,
+    input_tokens: Option<i64>,
+    cache_read_input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+}
+
+impl ThreadEntryRow {
+    fn decode(self) -> Result<ThreadEntry, Error> {
+        let message = self.message.decode()?;
+        let usage = match (
+            self.input_tokens,
+            self.cache_read_input_tokens,
+            self.output_tokens,
+        ) {
+            (Some(input_tokens), Some(cache_read_input_tokens), Some(output_tokens)) => {
+                Some(Usage {
+                    input_tokens,
+                    cache_read_input_tokens,
+                    output_tokens,
+                })
+            }
+            _ => None,
+        };
+        Ok(ThreadEntry { message, usage })
+    }
 }
 
 #[derive(FromRow)]

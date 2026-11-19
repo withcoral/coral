@@ -5,6 +5,38 @@ use super::*;
 const SUMMARY: &str = "## Goal\nCount the open invoices.";
 const ANSWER: &str = "12 are open.";
 
+/// A Chat Completions reply carrying `message` and explicit token usage.
+fn completion_with_usage(
+    message: &Value,
+    prompt_tokens: i64,
+    cached_tokens: i64,
+    completion_tokens: i64,
+) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "model": MODEL,
+        "choices": [{"message": message}],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "prompt_tokens_details": {"cached_tokens": cached_tokens},
+        },
+    }))
+}
+
+fn tool_calls_message(calls: &[ToolCall]) -> Value {
+    let calls: Vec<_> = calls
+        .iter()
+        .map(|call| {
+            json!({
+                "id": call.id,
+                "type": "function",
+                "function": {"name": call.name, "arguments": call.arguments},
+            })
+        })
+        .collect();
+    json!({"role": "assistant", "content": null, "tool_calls": calls})
+}
+
 /// The stub writes a summary, with reasoning, when asked for one. Otherwise
 /// it makes `calls` failed searches of about 11,000 tokens each, then answers.
 pub(super) async fn stub(lead: &Lead, calls: usize) {
@@ -16,9 +48,11 @@ pub(super) async fn stub(lead: &Lead, calls: usize) {
         .await;
     for call in 1..=calls {
         let arguments = json!({"program": "x".repeat(33_000)});
-        let call = tool_call(&format!("call_{call}"), "search", &arguments);
+        let message =
+            tool_calls_message(&[tool_call(&format!("call_{call}"), "search", &arguments)]);
+        let prompt_tokens = 1_000 + i64::try_from(call - 1).unwrap() * 11_000;
         Mock::given(any())
-            .respond_with(tool_calls(&[call]))
+            .respond_with(completion_with_usage(&message, prompt_tokens, 0, 11_000))
             .up_to_n_times(1)
             .mount(&lead.model)
             .await;
@@ -114,4 +148,115 @@ async fn a_refusal_as_too_long_compacts_the_thread_and_asks_again() {
         .map(|request| String::from_utf8_lossy(&request.body));
     let retried = retried.unwrap();
     assert!(retried.contains("Count the open invoices.") && !retried.contains("call_1"));
+}
+
+// Catches: reported usage (including cached input tokens) ignored when deciding
+// to compact, or lost when a second Turn resumes from the database.
+#[tokio::test]
+async fn reported_usage_triggers_compaction_across_turns() {
+    let lead = Lead::new().await;
+    let section = format!(
+        "base_url = '{}'\nmodel = '{MODEL}'\ncontext_window = 48000",
+        lead.base_url()
+    );
+    let factory = SubAgentFactory;
+    let tools = factory
+        .build(&toml::from_str(&section).unwrap(), lead.dependencies())
+        .unwrap();
+    let summary = json!({"role": "assistant", "content": SUMMARY});
+    Mock::given(body_string_contains("max_completion_tokens"))
+        .respond_with(completion(&summary))
+        .with_priority(1)
+        .mount(&lead.model)
+        .await;
+    // Two rounds totaling ~22,000 estimated tokens (below 48,000 - 16,384),
+    // but Turn 1's final reply reports 32,000 actual tokens (cached + uncached + output).
+    let older = tool_calls_message(&[tool_call("call_1", "search", &json!({"program": "old"}))]);
+    let recent = tool_calls_message(&[tool_call(
+        "call_2",
+        "search",
+        &json!({"program": "x".repeat(63_000)}),
+    )]);
+    Mock::given(any())
+        .respond_with(completion_with_usage(&older, 1_000, 0, 500))
+        .up_to_n_times(1)
+        .mount(&lead.model)
+        .await;
+    Mock::given(any())
+        .respond_with(completion_with_usage(&recent, 2_000, 0, 21_000))
+        .up_to_n_times(1)
+        .mount(&lead.model)
+        .await;
+    let first_answer = json!({"role": "assistant", "content": "first"});
+    Mock::given(any())
+        .respond_with(completion_with_usage(&first_answer, 30_000, 10_000, 2_000))
+        .up_to_n_times(1)
+        .mount(&lead.model)
+        .await;
+    lead.model_answers(reply(ANSWER)).await;
+
+    let task = lead.task().await;
+    let (sub_agent_id, waited) = lead.turn(&*tools, &task).await;
+    assert_eq!(waited.get("answer"), Some(&json!("first")), "{waited}");
+    assert_eq!(requests(&lead).await, ["step", "step", "step"]);
+
+    let caller = lead.caller();
+    let follow_up = json!({"sub_agent_id": sub_agent_id, "message": "Check again."});
+    let sent = result(call(&*tools, &caller, "agent", follow_up).await);
+    assert_eq!(sent.get("state"), Some(&json!("running")), "{sent}");
+    let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
+    let waited = result(call(&*tools, &caller, "wait", wait).await);
+    assert_eq!(waited.get("answer"), Some(&json!(ANSWER)), "{waited}");
+    assert_eq!(
+        requests(&lead).await,
+        ["step", "step", "step", "summary", "step"]
+    );
+    let received = lead.model.received_requests().await.unwrap();
+    let last = String::from_utf8_lossy(&received.last().unwrap().body);
+    assert!(last.contains("Count the open invoices.") && !last.contains("call_1"));
+}
+
+// Catches: a server that omits `usage` preventing pre-emptive compaction.
+#[tokio::test]
+async fn missing_usage_falls_back_to_byte_estimate() {
+    let lead = Lead::new().await;
+    let section = format!(
+        "base_url = '{}'\nmodel = '{MODEL}'\ncontext_window = 48000",
+        lead.base_url()
+    );
+    let factory = SubAgentFactory;
+    let tools = factory
+        .build(&toml::from_str(&section).unwrap(), lead.dependencies())
+        .unwrap();
+    let summary = json!({"role": "assistant", "content": SUMMARY});
+    Mock::given(body_string_contains("max_completion_tokens"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": MODEL,
+            "choices": [{"message": summary}],
+        })))
+        .with_priority(1)
+        .mount(&lead.model)
+        .await;
+    for call in 1..=3 {
+        let arguments = json!({"program": "x".repeat(33_000)});
+        let message =
+            tool_calls_message(&[tool_call(&format!("call_{call}"), "search", &arguments)]);
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "model": MODEL,
+                "choices": [{"message": message}],
+            })))
+            .up_to_n_times(1)
+            .mount(&lead.model)
+            .await;
+    }
+    lead.model_answers(reply(ANSWER)).await;
+
+    let (_, waited) = lead.turn(&*tools, &lead.task().await).await;
+
+    assert_eq!(waited.get("answer"), Some(&json!(ANSWER)), "{waited}");
+    assert_eq!(
+        requests(&lead).await,
+        ["step", "step", "step", "summary", "step"]
+    );
 }
