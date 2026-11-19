@@ -381,6 +381,9 @@ organization, and an organization's administrator may later set it in the produc
   while it runs. While the model server is down, `agent` stays listed, the lead is still told to hand work to a
   Sub-agent, and each Turn fails after three retries. Coral could be more robust here: vLLM serves `/health`, and `GET
   /models` works on any server that speaks Chat Completions. We left that out while we evaluate the Sub-agent.
+- Compaction needs `context_window`. Without it, a conversation that outgrows the model fails its Turn.
+- Coral decides nothing by matching text: not which Tools a Program names, not what a model server's refusal means, and
+  not which Run a stored result belongs to. Each of those was built once as text matching and removed.
 - Reef shows no Sub-agents and no Turns.
 
 **What we are not sure of**
@@ -539,7 +542,7 @@ adding one stops its crate compiling, in the same pull request that adds it.
 base_url = "https://sailfish.example/v1"   # required, no default
 model = "sailfish-1"                        # required
 api_key_env = "CORAL_SUB_AGENT_API_KEY"     # optional: the environment variable that holds the token
-context_window = 131072                     # optional: the model's context window, in tokens
+context_window = 131072                     # optional: the model's context window, in tokens; compaction needs it
 reasoning_effort = "none"                   # optional: sent with every request when set
 ```
 
@@ -567,9 +570,9 @@ Sub-agent's conversation, and Coral records the cached input tokens that the ser
 OpenAI-compatible endpoint does not cache.
 
 Coral stores each Sub-agent's conversation in its own format, as a list of typed blocks: text, a tool call, a tool
-result with an error flag, reasoning, and a compaction summary. The client converts between this format and Chat
-Completions messages on every request. Chat Completions messages are not used for storage because they cannot hold a
-tool result's error flag, reasoning or a compaction summary.
+result with the Run it started if it started one, reasoning, and a compaction summary. The client converts between this
+format and Chat Completions messages on every request. Chat Completions messages are not used for storage because they
+cannot hold reasoning, a compaction summary or the Run behind a result.
 
 Coral keeps reasoning in the stored conversation. It sends reasoning back to the model only when the model that wrote
 it is the model named in the config file. It never includes reasoning in the response to the lead.
@@ -605,7 +608,8 @@ flowchart TD
 | The lead ends the Task | A running Turn in it stops as canceled, at its next model call or when it next renews its lease, and its unfinished Runs are cancelled. |
 | The lead sends another message while the Turn is running | The Sub-agent reads the message before its next model call. |
 | A Run that the Turn started waits for a person to approve a Tool call or connect an account | `wait` returns `needs_action` with that Run's required actions, and the lead shows them to the user. |
-| The conversation comes close to the model's context window | The Sub-agent asks the model to summarize the older messages. It continues with the summary and the most recent messages. |
+| The conversation comes close to the `context_window` in the config file | The Sub-agent asks the model to summarize the older messages. It continues with the summary and the most recent messages. |
+| The conversation outgrows the model and no `context_window` is set | The model server refuses the request, and the Turn fails. Coral does not read the window out of the refusal's text. |
 | The model server returns HTTP 429 or a 5xx status, or the request fails to send | The client retries three times. If the request still fails, the Turn fails with the model server's error, and the lead can send the message again. |
 | The Turn makes 60 model calls without finishing | The Turn fails. The error tells the lead to send a narrower message. |
 | The Coral Instance shuts down | Each running Turn marks itself as interrupted when shutdown begins. Coral does not wait for those writes: a Turn that has not written before the process exits is marked by the next request that reads it, once its lease has expired. |
