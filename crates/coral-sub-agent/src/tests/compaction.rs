@@ -84,7 +84,7 @@ async fn a_thread_near_the_window_is_summarized_and_the_turn_answers() {
 }
 
 // Catches: a server's "too long" that fails the Turn where a summary of its
-// older messages lets it go on.
+// older messages lets it go on, and a retry that sends the thread whole again.
 #[tokio::test]
 async fn a_refusal_as_too_long_compacts_the_thread_and_asks_again() {
     let lead = Lead::new().await;
@@ -108,4 +108,10 @@ async fn a_refusal_as_too_long_compacts_the_thread_and_asks_again() {
     assert_eq!(waited.get("answer"), Some(&json!(ANSWER)), "{waited}");
     let steps = ["step", "step", "step", "step", "summary", "step"];
     assert_eq!(requests(&lead).await, steps);
+    let received = lead.model.received_requests().await.unwrap();
+    let retried = received
+        .last()
+        .map(|request| String::from_utf8_lossy(&request.body));
+    let retried = retried.unwrap();
+    assert!(retried.contains("Count the open invoices.") && !retried.contains("call_1"));
 }

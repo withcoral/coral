@@ -13,7 +13,8 @@ impl SubAgents {
     /// The model's reply to the thread, compacted first when the request
     /// would leave less than [`RESERVE_TOKENS`] of the configured window free.
     /// When the server still answers that the request is too long, the thread
-    /// is compacted and sent once more.
+    /// is compacted and, if that added a summary, sent once more. Otherwise
+    /// the refusal stands.
     pub(super) async fn reply_within_window(
         &self,
         turn: &RunningTurn,

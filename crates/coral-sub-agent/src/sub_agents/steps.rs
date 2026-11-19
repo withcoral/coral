@@ -197,7 +197,8 @@ mod tests {
     use crate::model::Role;
 
     // Catches: a step that shows another call's Run because the model gave
-    // both calls one id, and a step as long as the model made its intent.
+    // both calls one id, and a step as long as the model made its intent or
+    // its search.
     #[test]
     fn a_step_shows_the_run_of_its_own_call_and_a_bounded_intent() {
         let runs = ["first-run-of-the-turn", "second-run-of-the-turn"];
@@ -217,17 +218,24 @@ mod tests {
             thread.push(Message::tool_results(vec![result]));
         }
 
+        let search = ToolCall {
+            id: "call_0".to_owned(),
+            name: "search".to_owned(),
+            arguments: format!(r#"{{"query":"{}"}}"#, "é".repeat(500)),
+        };
+        thread.push(Message {
+            role: Role::Assistant,
+            content: vec![Block::ToolUse(search)],
+        });
+
         let steps = steps(&thread);
 
         let shown: Vec<_> = steps.iter().map(|step| step.run_id.as_ref()).collect();
-        let started: Vec<_> = runs
-            .iter()
-            .map(|run_id| RunId::parse(run_id).ok())
-            .collect();
-        assert_eq!(
-            shown,
-            started.iter().map(Option::as_ref).collect::<Vec<_>>()
-        );
-        assert!(steps.iter().all(|step| step.intent == "é".repeat(80)));
+        let started = runs.iter().map(|run_id| RunId::parse(run_id).ok());
+        let started: Vec<_> = started.chain([None]).collect();
+        let started: Vec<_> = started.iter().map(Option::as_ref).collect();
+        assert_eq!(shown, started, "two execs, then the search");
+        let lengths = steps.iter().map(|step| step.intent.chars().count());
+        assert_eq!(lengths.collect::<Vec<_>>(), [80, 80, 200]);
     }
 }
