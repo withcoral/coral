@@ -19,6 +19,7 @@ mod ledger;
 mod retention;
 mod run_row;
 mod stream;
+mod sweep;
 mod take;
 mod termination;
 mod usage;
@@ -40,6 +41,10 @@ pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention
 use run_row::RunRow;
 pub(crate) use run_row::UndecodableRun;
 pub(crate) use stream::{find_taken, linked_tools, reopen_taken, start_taken};
+pub(crate) use sweep::{
+    HeldRun, elect_sweeper, held_by_run_executor, names_run_executor, past_deadline, put_back,
+    unstarted_takes,
+};
 pub(crate) use take::{Claimed, Taker, any_waiting, take_oldest};
 pub(crate) use termination::{
     Takeover, finish_run, finish_taken_run, finish_termination, finish_unstarted_run,
@@ -266,6 +271,23 @@ fn base_run_select() -> sea_query::SelectStatement {
         .expr_as(last_event_sequence(), ComputedRunColumns::LastEventSequence)
         .from(ProgramRunRecords::Table)
         .to_owned()
+}
+
+/// A running Run that no worker claim fences: one a Run Executor waits for,
+/// has taken or holds. A Run Owner's Run holds a worker claim until it ends.
+/// The state is a literal, so each plan can use an index that `state` leads.
+fn running_without_owner() -> Condition {
+    Condition::all()
+        .add(Expr::col(ProgramRunRecords::State).eq(Expr::cust("'running'")))
+        .add(Expr::col(ProgramRunRecords::WorkerClaimId).is_null())
+}
+
+/// [`running_without_owner`] for the Run row a query names `alias`.
+pub(crate) fn running_without_owner_as(alias: &str) -> Condition {
+    let alias = sea_query::Alias::new(alias);
+    Condition::all()
+        .add(Expr::col((alias.clone(), ProgramRunRecords::State)).eq(Expr::cust("'running'")))
+        .add(Expr::col((alias, ProgramRunRecords::WorkerClaimId)).is_null())
 }
 
 fn visibility_condition(principal: &Principal, include_workspace_agents: bool) -> Condition {

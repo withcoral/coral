@@ -26,11 +26,9 @@ pub(crate) struct Claimed {
 /// start writes the execution claim. The state is a literal, so every plan
 /// can use the partial index of waiting Runs.
 fn waiting() -> Condition {
-    Condition::all()
-        .add(Expr::col(ProgramRunRecords::State).eq(Expr::cust("'running'")))
+    super::running_without_owner()
         .add(Expr::col(ProgramRunRecords::ExecutionClaimId).is_null())
         .add(Expr::col(ProgramRunRecords::ExecutionStartedAtUnixNanos).is_null())
-        .add(Expr::col(ProgramRunRecords::WorkerClaimId).is_null())
 }
 
 /// Whether any Run waits, read without the writer lock, so a take with

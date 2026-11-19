@@ -155,7 +155,13 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   `Terminate`; no shutdown grace applies (#2904). A reopen of the stream
   (#2905) starts a new owner, rebuilt from the ledger. The owner it
   replaces, whose stream moved to another Coral Instance or to a reopen on
-  its own, rebuilds nothing: its chunk is refused.
+  its own, rebuilds nothing: its chunk is refused. The Run sweeper (#2906) is
+  the one writer outside a Run Owner that compares `now` with a Run's or an
+  Approval Request's deadline, and only for a Run that no worker claim
+  fences. Elected by its lease row, it writes each Run in its own transaction
+  under the Run's claim and head, and releases a lapsed Run Executor's Runs
+  only while its row holds the lease the pass read. A stream owner writes its
+  Run only while the row names its Coral Instance as the stream's holder.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of

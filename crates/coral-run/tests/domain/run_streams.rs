@@ -123,10 +123,8 @@ pub(super) fn committed(number: u64) -> run_response::Message {
 
 /// Takes the oldest waiting Run as a Run Executor would, and returns its claim.
 pub(super) async fn take(runs: &RunModule) -> String {
-    let mut transaction = runs.database.begin().await.expect("begin the take");
-    let claimed = run_repository::take_oldest(
-        &mut transaction,
-        1,
+    take_for(
+        runs,
         &Taker {
             run_executor_id: "6f0c2a59-55a7-4e0b-9a2e-7c1d4f3b8e21",
             run_executor_kind: Kind::Dialed,
@@ -134,7 +132,19 @@ pub(super) async fn take(runs: &RunModule) -> String {
         1,
     )
     .await
-    .expect("take a waiting Run");
+}
+
+/// Takes the oldest waiting Run for `taker` at `taken_at_unix_nanos`, and
+/// returns its claim.
+pub(super) async fn take_for(
+    runs: &RunModule,
+    taker: &Taker<'_>,
+    taken_at_unix_nanos: i64,
+) -> String {
+    let mut transaction = runs.database.begin().await.expect("begin the take");
+    let claimed = run_repository::take_oldest(&mut transaction, 1, taker, taken_at_unix_nanos)
+        .await
+        .expect("take a waiting Run");
     transaction.commit().await.expect("commit the take");
     claimed.into_iter().next().expect("a waiting Run").claim_id
 }
@@ -462,7 +472,7 @@ async fn a_head_race_with_a_direct_write_lands_each_request_once() {
     assert_eq!(run.committed_request_number, Some(3));
 }
 
-fn invoke_forecast() -> request::Kind {
+pub(super) fn invoke_forecast() -> request::Kind {
     request::Kind::Invoke(coral_run_executor::wire::v1::Invoke {
         call_path: "coral.providers.weather.getForecast".to_owned(),
         arguments_json: "{}".to_owned(),

@@ -53,6 +53,12 @@ pub use pull_compiler::PullStreamCompiler;
 pub use run::{APPLIED_CAP_BYTES, HELD_CAP_REQUESTS, PROGRAM_LOG_MESSAGE_MAX_BYTES, RunLimits};
 pub use served::{Closing, RunStreamServer, ServedRunStream};
 
+/// The Run Executor rows the Run sweeper reads, holds and deletes, each in
+/// the caller's transaction.
+pub mod leases {
+    pub use crate::lease_repository::{RunExecutorLease, delete, find, hold, lapsed, local};
+}
+
 /// The link's wire contract, generated from `proto/`.
 #[allow(
     clippy::allow_attributes,

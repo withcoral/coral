@@ -260,7 +260,9 @@ impl RunModule {
     /// # Errors
     ///
     /// [`Error::ClaimMismatch`] when the Run row no longer holds `claim_id`
-    /// (another writer took the Run), [`Error::RunEnded`] when the Run is
+    /// (another writer took the Run) or, for a Run a Run Executor holds,
+    /// names another Coral Instance as its stream's holder (its stream
+    /// reopened there), [`Error::RunEnded`] when the Run is
     /// terminal already; neither writes anything. An operational error leaves
     /// the outcome unknown, and the next attempt's read reads which it was.
     pub(crate) async fn interrupt_owned_run(
@@ -290,29 +292,25 @@ impl RunModule {
         if run.held_claim() != Some(claim_id) {
             return Err(Error::ClaimMismatch);
         }
+        // A Run Executor's Run keeps its claim when its stream reopens on
+        // another Coral Instance, which records itself as the holder in the
+        // chunk that moves the head: the head fences a reopen after this
+        // read, and the holder one before it.
+        if run.on_run_executor && run.holder_instance_id.as_ref() != Some(&self.instance) {
+            return Err(Error::ClaimMismatch);
+        }
         let now = self.now()?.max(run.accepted_at_unix_nanos);
-        let (kind, ended_at) = end_in_one_chunk(
-            &mut transaction,
+        commit_end(
+            transaction,
             &run,
             decided.cloned(),
-            Vec::new(),
             takeover_claim_id.map(|claim_id| run_repository::Takeover {
                 claim_id,
                 instance: &self.instance,
             }),
             now,
         )
-        .await?;
-        transaction.commit().await?;
-        crate::trace::record_run_end(
-            &run,
-            &RunEnd::Stopped {
-                outcome: &kind.outcome(),
-                reason: kind,
-            },
-            ended_at,
-        );
-        Ok(())
+        .await
     }
 
     /// [`Self::interrupt_owned_run`] until it lands: the last write a Run
@@ -402,6 +400,36 @@ pub(crate) async fn end_in_one_chunk(
     )
     .await?;
     Ok((termination.termination.kind, ended_at_unix_nanos))
+}
+
+/// [`end_in_one_chunk`] with no Events of the caller's, committed, and the
+/// Run's end traced.
+pub(crate) async fn commit_end(
+    mut transaction: Transaction<'_>,
+    run: &RunRecord,
+    cancellation: Option<RequestedTermination>,
+    takeover: Option<run_repository::Takeover<'_>>,
+    now_unix_nanos: i64,
+) -> Result<(), Error> {
+    let (kind, ended_at) = end_in_one_chunk(
+        &mut transaction,
+        run,
+        cancellation,
+        Vec::new(),
+        takeover,
+        now_unix_nanos,
+    )
+    .await?;
+    transaction.commit().await?;
+    crate::trace::record_run_end(
+        run,
+        &RunEnd::Stopped {
+            outcome: &kind.outcome(),
+            reason: kind,
+        },
+        ended_at,
+    );
+    Ok(())
 }
 
 /// A recorded termination to settle: which Run, and until when its
