@@ -121,7 +121,7 @@ impl Lead {
     fn sub_agents(&self) -> SubAgents {
         let http = coral_outbound::Client::new(POLICY, MODEL_CALL_TIMEOUT).unwrap();
         let base_url = self.base_url().parse().unwrap();
-        let model = ModelClient::new(http, &base_url, MODEL.to_owned(), None, None);
+        let model = ModelClient::new(http, &base_url, MODEL.to_owned(), None, None, None);
         let modules = self.modules.clone();
         let (tasks, commands, runs) = (modules.tasks, modules.commands, modules.runs);
         let (clock, stopping) = (Arc::new(self.clock.clone()), self.stop.subscribe());
@@ -328,7 +328,9 @@ async fn startup_checks_the_section_and_sends_the_model_nothing() {
     for (section, refusal) in [
         (named.clone(), None),
         (
-            format!("{named}api_key_env = 'MODEL_KEY'\ncontext_window = 48000"),
+            format!(
+                "{named}api_key_env = 'MODEL_KEY'\ncontext_window = 48000\nreasoning_effort = 'none'"
+            ),
             None,
         ),
         (
@@ -355,6 +357,10 @@ async fn startup_checks_the_section_and_sends_the_model_nothing() {
         (
             format!("{named}context_window = 47999"),
             Some("context_window: must be at least 48000"),
+        ),
+        (
+            format!("{named}reasoning_effort = ''"),
+            Some("reasoning_effort: must not be empty"),
         ),
         (
             format!("{named}api_key_env = 'UNSET_KEY'"),

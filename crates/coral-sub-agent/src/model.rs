@@ -22,6 +22,8 @@ pub(crate) struct ModelClient {
     model: String,
     api_key: Option<Secret>,
     context_window: Option<u32>,
+    /// Sent as written on every request: servers accept different values.
+    reasoning_effort: Option<String>,
     retry_waits: [Duration; 3],
 }
 
@@ -34,6 +36,7 @@ impl ModelClient {
         model: String,
         api_key: Option<Secret>,
         context_window: Option<u32>,
+        reasoning_effort: Option<String>,
     ) -> Self {
         Self {
             http,
@@ -44,6 +47,7 @@ impl ModelClient {
             model,
             api_key,
             context_window,
+            reasoning_effort,
             retry_waits: RETRY_WAITS,
         }
     }
@@ -67,6 +71,7 @@ impl ModelClient {
             messages: chat_messages(system, conversation, &self.model),
             tools: tools.iter().map(ChatTool::from).collect(),
             max_completion_tokens: None,
+            reasoning_effort: self.reasoning_effort.as_deref(),
         };
         self.complete(&request).await
     }
@@ -85,6 +90,7 @@ impl ModelClient {
             messages: chat_messages(system, conversation, &self.model),
             tools: Vec::new(),
             max_completion_tokens: Some(max_tokens),
+            reasoning_effort: self.reasoning_effort.as_deref(),
         };
         self.complete(&request).await
     }
@@ -332,6 +338,8 @@ struct CompletionRequest<'a> {
     tools: Vec<ChatTool<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_completion_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'a str>,
 }
 
 /// The conversation as Chat Completions messages: a user's text as content parts, an assistant

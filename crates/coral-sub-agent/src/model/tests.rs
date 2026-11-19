@@ -30,7 +30,7 @@ fn client(server: &MockServer, api_key: Option<&str>) -> ModelClient {
     let api_key = api_key.map(|key| Secret::new(key.to_owned()).unwrap());
     ModelClient {
         retry_waits: [Duration::ZERO; 3],
-        ..ModelClient::new(http, &base_url, MODEL.to_owned(), api_key, None)
+        ..ModelClient::new(http, &base_url, MODEL.to_owned(), api_key, None, None)
     }
 }
 
@@ -152,6 +152,37 @@ async fn the_conversation_goes_as_chat_completions_and_the_reply_comes_back_as_b
             usage: Some(usage),
         }
     );
+}
+
+// Catches: a set reasoning_effort left off a reply's or a summary's request, or the field sent
+// when it is not set.
+#[tokio::test]
+async fn reasoning_effort_goes_on_every_request_only_when_set() {
+    for (effort, expected) in [(Some("none"), Some(json!("none"))), (None, None)] {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(answer("Hi."))
+            .mount(&server)
+            .await;
+        let client = ModelClient {
+            reasoning_effort: effort.map(str::to_owned),
+            ..client(&server, None)
+        };
+
+        ask(&client).await.unwrap();
+        let summary = client.summarize("Be brief.", &conversation(), 100).await;
+        summary.unwrap();
+
+        let sent: Vec<Option<Value>> = received(&server)
+            .await
+            .iter()
+            .map(|request| {
+                let body: Value = request.body_json().unwrap();
+                body.get("reasoning_effort").cloned()
+            })
+            .collect();
+        assert_eq!(sent, [expected.clone(), expected], "{effort:?}");
+    }
 }
 
 // Catches: reasoning in either field dropped or kept without its model, an empty field taken over

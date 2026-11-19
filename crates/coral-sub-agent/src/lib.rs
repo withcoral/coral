@@ -81,6 +81,7 @@ struct Section {
     model: String,
     api_key_env: Option<String>,
     context_window: Option<u32>,
+    reasoning_effort: Option<String>,
 }
 
 impl Section {
@@ -107,6 +108,13 @@ impl Section {
             let reason = format!("must be at least {CONTEXT_WINDOW_MIN}");
             return Err(SettingError::new("context_window", reason));
         }
+        if self
+            .reasoning_effort
+            .as_deref()
+            .is_some_and(|effort| effort.trim().is_empty())
+        {
+            return Err(SettingError::new("reasoning_effort", "must not be empty"));
+        }
         let policy = dependencies.outbound_policy;
         let environment = BuildEnvironment {
             policy,
@@ -121,9 +129,9 @@ impl Section {
         };
         let http = coral_outbound::Client::new(policy, MODEL_CALL_TIMEOUT)
             .map_err(|_error| SettingError::new("", "model client initialization failed"))?;
-        let window = self.context_window;
+        let (window, effort) = (self.context_window, self.reasoning_effort);
         Ok(ModelClient::new(
-            http, &base_url, self.model, api_key, window,
+            http, &base_url, self.model, api_key, window, effort,
         ))
     }
 }
