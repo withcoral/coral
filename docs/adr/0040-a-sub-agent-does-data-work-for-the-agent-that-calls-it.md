@@ -616,7 +616,7 @@ flowchart TD
 | The conversation comes close to the model's context window | The Sub-agent asks the model to summarize the older messages. It continues with the summary and the most recent messages. |
 | The model server returns HTTP 429 or a 5xx status, or the request fails to send | The client retries three times. If the request still fails, the Turn fails with the model server's error, and the lead can send the message again. |
 | The Turn makes 60 model calls without finishing | The Turn fails. The error tells the lead to send a narrower message. |
-| The Coral Instance shuts down | It marks its running Turns as interrupted before it exits. |
+| The Coral Instance shuts down | Each running Turn marks itself as interrupted when shutdown begins. Coral does not wait for those writes: a Turn that has not written before the process exits is marked by the next request that reads it, once its lease has expired. |
 | The Coral Instance stops without shutting down | The Turn's lease in the database expires. The next request that reads the Turn marks it as interrupted. |
 
 A Run that an interrupted or failed Turn started continues under its Run Owner. Only a canceled Turn cancels its Runs.
