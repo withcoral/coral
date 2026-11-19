@@ -17,6 +17,7 @@ use crate::model::{Message, ModelCall, ModelClient, ModelError, ToolCall};
 use crate::run_tools::{Caller, RunTools};
 use crate::{prompt, repository, search};
 
+mod compaction;
 mod interruption;
 use interruption::close_calls;
 
@@ -206,7 +207,8 @@ impl SubAgents {
                 .await
                 .map_err(|error| TurnFailure::internal(error.code()))?;
         for _model_call in 0..MODEL_CALLS_PER_TURN {
-            let reply = self.model.reply(&system, &thread, &prompt::TOOLS).await?;
+            let reply = self.reply_within_window(turn, &system, &prompt::TOOLS, &mut thread);
+            let reply = reply.await?;
             let calls: Vec<ToolCall> = reply.message.tool_calls().cloned().collect();
             let answer = reply.message.text();
             self.add(turn, &mut thread, reply.message, Some(&reply.call))

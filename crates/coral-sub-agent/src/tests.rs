@@ -28,6 +28,8 @@ use crate::run_tools::Caller;
 use crate::sub_agents::{Error, RunningTurn, SubAgents, TURN_LEASE, TurnState};
 use crate::{MODEL_CALL_TIMEOUT, SubAgentFactory, repository};
 
+mod compaction;
+
 const POLICY: DestinationPolicy =
     DestinationPolicy::new(NetworkAccess::HttpAndHttps, NetworkAccess::Deny);
 const MODEL: &str = "sailfish-1";
@@ -117,7 +119,7 @@ impl Lead {
     fn sub_agents(&self) -> SubAgents {
         let http = coral_outbound::Client::new(POLICY, MODEL_CALL_TIMEOUT).unwrap();
         let base_url = self.base_url().parse().unwrap();
-        let model = ModelClient::new(http, &base_url, MODEL.to_owned(), None);
+        let model = ModelClient::new(http, &base_url, MODEL.to_owned(), None, None);
         let modules = self.modules.clone();
         let (tasks, commands, runs) = (modules.tasks, modules.commands, modules.runs);
         let (clock, stopping) = (Arc::new(self.clock.clone()), self.stop.subscribe());

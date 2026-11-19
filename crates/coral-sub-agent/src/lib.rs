@@ -113,6 +113,9 @@ impl Section {
         };
         let http = coral_outbound::Client::new(policy, MODEL_CALL_TIMEOUT)
             .map_err(|_error| SettingError::new("", "model client initialization failed"))?;
-        Ok(ModelClient::new(http, &base_url, self.model, api_key))
+        let window = self.context_window;
+        Ok(ModelClient::new(
+            http, &base_url, self.model, api_key, window,
+        ))
     }
 }
