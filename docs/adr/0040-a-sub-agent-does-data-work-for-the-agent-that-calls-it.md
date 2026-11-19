@@ -609,7 +609,8 @@ flowchart TD
 | Situation | What happens |
 | --- | --- |
 | The lead calls `cancel` with the `sub_agent_id`, on any Coral Instance | The call records the cancellation in the database and closes the tool calls that the Turn left without results. The Turn stops at its next step, and the Coral Instance that runs it cancels the Runs it started that have not ended. If that Coral Instance stops first, those Runs keep running. |
-| The lead ends the Task | A running Turn in it stops as canceled, at its next model call or when it next renews its lease, and its unfinished Runs are cancelled. |
+| The lead ends the Task, or loses access to it | A running Turn in it stops as canceled, at its next model call or when it next renews its lease. The Runs it started keep running: ending a Task cancels nothing already accepted (ADR 0006). |
+| The model replies with no text and no tool call | The Turn fails. The failure tells the lead to send the message again. |
 | The lead calls `agent` with the `sub_agent_id` and a message while the Turn is running | The Sub-agent reads the message before its next model call. Once the Turn has ended, the same call starts a new Turn with the stored conversation. |
 | A Run that the Turn started waits for a person to approve a Tool call or connect an account | `wait` returns `needs_action` with that Run's required actions. Each names who must act, which can be the Workspace Owner and not the lead's user. |
 | The conversation comes close to the `context_window` in the config file | The Sub-agent asks the model to summarize the older messages. It continues with the summary and the most recent messages. |
@@ -619,9 +620,9 @@ flowchart TD
 | The Coral Instance shuts down | Each running Turn marks itself as interrupted when shutdown begins. Coral does not wait for those writes: a Turn that has not written before the process exits is marked by the next request that reads it, once its lease has expired. |
 | The Coral Instance stops without shutting down | The Turn's lease in the database expires. The next request that reads the Turn marks it as interrupted. |
 
-A Run that an interrupted or failed Turn started continues under its Run Owner. Only a canceled Turn cancels its Runs.
-A Turn itself does not use a Run Owner or a Run Executor, because those run Programs. A Turn only calls the model and
-core's Task, Run and search modules.
+A Run that an interrupted or failed Turn started continues under its Run Owner. Only the lead's `cancel` of a Sub-agent
+cancels the Runs of its Turn. A Turn itself does not use a Run Owner or a Run Executor, because those run Programs. A
+Turn only calls the model and core's Task, Run and search modules.
 
 ### What telemetry records
 
