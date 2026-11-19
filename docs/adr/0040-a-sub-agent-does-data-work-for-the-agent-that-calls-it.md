@@ -255,19 +255,14 @@ Coral from starting.
 
 The settings exist only in the config file. Reef has no form for them, and Coral does not store them in its database.
 
-We will add no reasoning setting, and no limit other than a fixed number of model calls in one Turn. The model server's
-own defaults decide whether the model reasons. Limits on running Turns, tokens and duration wait until usage shows what
-they should be.
+We will add one optional reasoning setting, `reasoning_effort`, which decision 9 describes, and no limit other than a
+fixed number of model calls in one Turn. Without that setting, the model server's own defaults decide whether the model
+reasons. Limits on running Turns, tokens and duration wait until usage shows what they should be.
 
 **Rejected:**
 
 - **A default model URL.** A config file that set only a model name would send provider data to a host that nobody
   chose.
-- **A second model client for the Anthropic Messages API.** Claude can be reached through an OpenAI-compatible URL.
-  That route has a cost, which we accept for the first release: Anthropic's OpenAI-compatible endpoint does not cache
-  prompts. Only Anthropic's own API does.
-- **A `reasoning_effort` key.** On vLLM it turns thinking on for a Qwen model but does not keep the model's earlier
-  reasoning in view. The model would lose that reasoning whenever the lead sent a follow-up.
 
 ### 7. A Turn runs in one Coral Instance and is never resumed
 
@@ -298,6 +293,56 @@ deployment until its operator adds the `[sub_agent]` section.
 The Sub-agent will record a trace and metrics for each Turn through names that core's `coral-telemetry` crate declares.
 They contain counts, token numbers and durations, and never text.
 
+### 9. The Sub-agent speaks one protocol, and sends every request through Coral's guarded client
+
+**Serves points 6 and 10.**
+
+The Sub-agent has one model client, which is Coral's own code. It speaks OpenAI's Chat Completions API. The Sub-agent
+is built for a model that the operator hosts, and on vLLM that one protocol carries everything the Sub-agent uses: tool
+calls, reasoning and prompt caching.
+
+Two hosted providers keep features off that protocol. We met both when we measured the Sub-agent with hosted models.
+
+| Provider | What does not work over Chat Completions | What we do |
+| --- | --- | --- |
+| Anthropic | Prompt caching. Its OpenAI-compatible endpoint does not support it, and Anthropic describes that endpoint as a way to test and compare models, not as a production API. | Nothing. A Claude model works, and each model call pays in full for the whole conversation. |
+| OpenAI | Reasoning together with tools. From GPT-5.4 on, Chat Completions refuses a request that has tools unless `reasoning_effort` is `none`. A Sub-agent's requests always have tools. | One optional setting, `reasoning_effort`, so that such a model works with reasoning off. |
+
+`reasoning_effort` is the only reasoning setting. When the operator sets it, Coral sends it with every request to the
+model and does not interpret its value. When it is not set, Coral sends no reasoning setting. On vLLM, leave it unset:
+for a Qwen model it turns thinking on but does not keep the model's earlier reasoning in view, so the model loses that
+reasoning whenever the lead sends a follow-up.
+
+Every request to the model goes through the guarded client of `coral-outbound`, under the operator's `[outbound]`
+policy (ADR 0008). A self-hosting operator writes the model's URL, but we do not treat it as an operator-authored
+endpoint, which `coral-outbound` lets a plain HTTP client call. In a SaaS deployment the URL comes from an
+organization, and an organization's administrator may later set it in the product.
+
+**Rejected, or left until a hosted model is wanted as a real Sub-agent model:**
+
+- **A second client, for Anthropic's Messages API.** It would give a Claude model caching and control of its thinking.
+  Each added protocol brings its own rules for reasoning and caching, its own tests, and its own failures to word.
+- **A client for OpenAI's Responses API.** It is the only way an OpenAI model reasons while it uses tools. OpenAI
+  returns reasoning there as encrypted items that the caller stores and sends back exactly, which the stored
+  conversation does not hold yet. vLLM serves this API too, but it is newer there than Chat Completions, and we have
+  not run Sailfish through it.
+- **Moving every model to the Responses API.** Sailfish on vLLM would move to the less proven path, and many servers
+  that call themselves OpenAI-compatible serve only Chat Completions.
+- **A library that speaks each provider's own API, such as rig.** This is the choice to make when a second provider is
+  needed, because three protocols are more than Coral should write by hand. rig lets its caller supply how a request is
+  sent, so its requests can pass through the guarded client, the way `rmcp`'s do for Provider calls. We did not take it
+  now: one protocol is a few hundred lines of Coral's own code, rig is before 1.0 and releases often, and we have not
+  measured what it costs to store and send back each provider's reasoning. Conversations are stored in Coral's own
+  format, so the model client can be replaced later with no migration.
+- **genai, a lighter library of the same kind.** It sends each request through a plain HTTP client that its caller
+  hands it, with no place to check a request first. `coral-outbound` allows a plain client only for a URL that an
+  operator wrote, and the model's URL is not one.
+- **Handing a library the HTTP client inside the guarded client.** `coral-outbound` keeps the URL check and the DNS
+  check in one client on purpose, and nothing takes its inner client today.
+- **A gateway in front of the model, as Coral's own answer.** A gateway such as LiteLLM, agentgateway or Bifrost takes
+  Chat Completions requests and calls each provider's own API, with caching. An operator can run one today with no
+  change to Coral. Coral does not ship one or require one.
+
 ## Consequences
 
 **What gets better**
@@ -319,8 +364,11 @@ They contain counts, token numbers and durations, and never text.
 - Removing the Sub-agent later leaves its tables in the database until a later migration drops them.
 - Coral does not record which version of the prompt and tool definitions a model was trained on. A team that trains a
   model records the Coral release.
-- With a hosted API, the operator cannot set the server's defaults, so the model reasons at the provider's default
-  level.
+- With a hosted API, the operator cannot set the server's defaults. The model reasons at the provider's default level
+  unless the operator sets `reasoning_effort`.
+- An OpenAI model from GPT-5.4 on works as a Sub-agent's model only with reasoning off.
+- To reach a model on a private network, the operator opens that network in `[outbound]`, which opens it for Provider
+  calls too. A separate allowance for the model could remove this later.
 - A Claude model reached through Anthropic's OpenAI-compatible endpoint gets no prompt caching. Each model call then
   pays in full for the whole conversation. A gateway that calls Anthropic's own API can add caching.
 - Reef shows no Sub-agents and no Turns.
@@ -496,6 +544,7 @@ base_url = "https://sailfish.example/v1"   # required, no default
 model = "sailfish-1"                        # required
 api_key_env = "CORAL_SUB_AGENT_API_KEY"     # optional: the environment variable that holds the token
 context_window = 131072                     # optional: the model's context window, in tokens
+reasoning_effort = "none"                   # optional: sent with every request when set
 ```
 
 - `api_key_env` names an environment variable, as every other secret in the config file does. If it is set and the
@@ -515,7 +564,7 @@ return tool calls in the `tool_calls` field should work, but they are not tested
 | --- | --- | --- |
 | Return tool calls in the `tool_calls` field of the reply | Coral does not parse tool calls out of the reply's text. | `--enable-auto-tool-choice` and `--tool-call-parser` |
 | For a reasoning model, return reasoning in the `reasoning` or `reasoning_content` field of the reply | Coral does not parse `<think>` tags out of the reply's text. Without this, Coral treats the reasoning as part of the Sub-agent's answer and can show it to the lead. | `--reasoning-parser` |
-| Turn reasoning on or off in the server's own defaults | Coral sends no reasoning setting in its requests. | `--default-chat-template-kwargs` |
+| Turn reasoning on or off in the server's own defaults | Coral sends no reasoning setting unless the operator sets `reasoning_effort`. | `--default-chat-template-kwargs` |
 
 Coral sends no caching setting. A server that caches a repeated prompt by itself, as OpenAI's API does, caches the
 Sub-agent's conversation, and Coral records the cached input tokens that the server reports. Anthropic's
