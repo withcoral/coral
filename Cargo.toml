@@ -144,6 +144,7 @@ zeroize = "1.9"
 
 coral = { path = "crates/coral" }
 coral-administration = { path = "crates/coral-administration" }
+coral-agent = { path = "crates/coral-agent" }
 coral-app = { path = "crates/coral-app" }
 coral-auth = { path = "crates/coral-auth" }
 coral-catalog = { path = "crates/coral-catalog" }
@@ -165,7 +166,6 @@ coral-sqlite-vec = { path = "crates/coral-sqlite-vec" }
 coral-run = { path = "crates/coral-run" }
 coral-run-executor = { path = "crates/coral-run-executor" }
 coral-search = { path = "crates/coral-search" }
-coral-sub-agent = { path = "crates/coral-sub-agent" }
 coral-task = { path = "crates/coral-task" }
 coral-telemetry = { path = "crates/coral-telemetry" }
 coral-test-support = { path = "crates/coral-test-support" }

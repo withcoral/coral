@@ -67,7 +67,7 @@ explains how each part works in detail.
 
 **Serves points 2 and 5.**
 
-We will keep all Sub-agent code in one crate, `coral-sub-agent`. Core's MCP shell will ask a tool surface interface,
+We will keep all Sub-agent code in one crate, `coral-agent`. Core's MCP shell will ask a tool surface interface,
 `McpInterface`, for the instructions, for the list of tools, and to run each tool call. Core will supply the default
 implementation, which serves the tools that Coral serves today. The Sub-agent's crate will supply a second
 implementation that wraps the first. It adds the `agent` tool, lets `wait` and `cancel` accept a `sub_agent_id`, and

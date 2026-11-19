@@ -167,7 +167,7 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
         service_version: Some(VERSION),
         extensions,
         // Every build serves the Sub-agent.
-        mcp_interface_factory: Some(Arc::new(coral_sub_agent::SubAgentFactory)),
+        mcp_interface_factory: Some(Arc::new(coral_agent::SubAgentFactory)),
         migration_report: Some(print_migrations()),
         ..coral_app::Launch::from_env()
             .map_err(|error| anyhow::anyhow!("invalid launch environment: {error}"))?
