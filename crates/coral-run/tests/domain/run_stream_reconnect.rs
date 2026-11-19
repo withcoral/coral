@@ -664,7 +664,11 @@ async fn a_reopened_stream_refuses_a_call_under_an_ended_perform_and_breaks_on_a
         assert!(permitted(&answer(&mut stream, 1).await), "{number}");
         stream.request(2, emit(&serde_json::json!({"early": true})));
         stream.request(3, returned(1, "21"));
-        stream.until(|read| read.contains(&committed(3))).await;
+        // The watermark can pass request 3 before the body's end is
+        // durable; its answer comes once it is, so nothing is awaited.
+        stream
+            .until(|read| !answers(read, 3).is_empty() && read.contains(&committed(3)))
+            .await;
         drop(stream);
         let mut stream = reopen(&moving, &[]);
         assert_eq!(stream.next().await, committed(3), "{number}");
