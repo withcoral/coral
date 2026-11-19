@@ -265,10 +265,10 @@ pub(crate) enum Message {
 pub(crate) enum DrainStep {
     /// Start no new dispatch; keep committing the stream's requests.
     Hold,
-    /// Leave the stream once no dispatch is in flight.
-    Leave,
-    /// The drain is out: leave the stream now.
-    LeaveNow,
+    /// Move the stream once no dispatch is in flight.
+    Move,
+    /// The drain is out: move the stream now.
+    MoveNow,
 }
 
 impl fmt::Debug for Message {
@@ -577,7 +577,7 @@ impl OwnerHandle {
     pub(crate) fn drain(&self, step: DrainStep) {
         if self.shared.stream {
             self.send(Message::Drain(step));
-        } else if step == DrainStep::LeaveNow {
+        } else if step == DrainStep::MoveNow {
             self.request_stop();
         }
     }

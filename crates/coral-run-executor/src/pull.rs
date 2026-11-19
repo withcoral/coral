@@ -32,7 +32,7 @@ use crate::wire::v1::{
 };
 use crate::{
     LocalRunExecutors, MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, PullStreamCompiler, RunStreamServer,
-    ServedRunStream, lease_repository,
+    SHUTTING_DOWN, ServedRunStream, lease_repository,
 };
 
 /// How long the listener keeps a connection, and a pull stream its open
@@ -822,7 +822,6 @@ impl LinkService for PullService {
             self.link.run_streams.clone().ok_or_else(|| {
                 Status::unimplemented("this Coral Instance serves no Run streams")
             })?;
-        self.refuse_while_draining()?;
         let (responses, outbound) = mpsc::unbounded_channel();
         // A message the link cannot decode ends the requests; the server
         // sees the Run Executor's side end.
@@ -894,6 +893,8 @@ impl LinkService for PullService {
             );
             Status::unavailable("the Run Executor lease is not written")
         })?;
+        // The drain may have started while the Hello or the lease was due.
+        self.refuse_while_draining()?;
         let (outbound, responses) = mpsc::unbounded_channel();
         let welcome = response(pull_response::Message::Welcome(Welcome {
             protocol_level: PROTOCOL_LEVEL,
@@ -914,11 +915,12 @@ impl LinkService for PullService {
 }
 
 impl PullService {
-    /// A draining Coral Instance opens no stream: the Run Executor opens it
-    /// on another.
+    /// A draining Coral Instance opens no pull stream: the Run Executor
+    /// opens it on another. A stream that opens past this check is born
+    /// closing. The Run module refuses a new Run stream.
     fn refuse_while_draining(&self) -> Result<(), Status> {
         if self.link.streams.is_draining() {
-            return Err(Status::unavailable("this Coral Instance is shutting down"));
+            return Err(Status::unavailable(SHUTTING_DOWN));
         }
         Ok(())
     }

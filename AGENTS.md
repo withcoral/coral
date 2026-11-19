@@ -156,9 +156,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   (#2905) starts a new owner, rebuilt from the ledger. The owner it
   replaces, whose stream moved to another Coral Instance or to a reopen on
   its own, rebuilds nothing: its chunk is refused. The Shutdown Drain never
-  stops that owner (#2908): it starts no new dispatch, and once its Coral
-  Instance holds no pull stream and no dispatch is in flight on the stream,
-  or at the drain's length, it detaches and ends the stream cleanly.
+  interrupts that owner's Run (#2908): the owner dispatches no call the
+  Program makes after the drain starts, and once its Coral Instance holds no
+  pull stream and no dispatch is in flight on the stream, or at the drain's
+  length, it detaches and ends the stream cleanly.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of

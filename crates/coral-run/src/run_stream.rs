@@ -14,7 +14,9 @@ use coral_run_executor::wire::v1::{
     Committed, Ended, LinkedSnapshot, LinkedToolRoot, RunEnd as WireEnd, RunPackage, RunRequest,
     RunResponse, Terminate, TerminateReason, run_request, run_response,
 };
-use coral_run_executor::{Closing, PROTOCOL_LEVEL, RunStreamServer, ServedRunStream};
+use coral_run_executor::{
+    Closing, PROTOCOL_LEVEL, RunStreamServer, SHUTTING_DOWN, ServedRunStream,
+};
 use coral_workspace::AuthenticatedPrincipal;
 use tokio::sync::{mpsc, watch};
 use tokio_stream::StreamExt as _;
@@ -69,7 +71,7 @@ pub(crate) struct StreamLink {
     finished: AtomicBool,
     /// The Run Executor broke the protocol.
     violated: AtomicBool,
-    /// The Shutdown Drain moves the stream ([`Self::go_away`]).
+    /// The Shutdown Drain moves the stream ([`Self::start_moving`]).
     moving: AtomicBool,
     /// The stream's server is done with it.
     retired: watch::Sender<bool>,
@@ -101,7 +103,7 @@ impl StreamLink {
     /// the Program's host ending; from now on no such answer, and no
     /// `Terminate`, reaches the Program, which runs on. The Coral Instance
     /// the stream reopens on answers what the Run Executor still waits on.
-    pub(crate) fn go_away(&self) {
+    pub(crate) fn start_moving(&self) {
         self.moving.store(true, Ordering::SeqCst);
     }
 
@@ -204,7 +206,7 @@ impl RunModule {
         // A draining Coral Instance opens no stream, so the Run Executor
         // opens it on another before it loads anything.
         if self.admission.check().is_err() {
-            return link.close(Closing::Unavailable("this Coral Instance is shutting down"));
+            return link.close(Closing::Unavailable(SHUTTING_DOWN));
         }
         let Ok(run_id) = RunId::parse(&open.run_id) else {
             return link.end(WireEnd::NotHeld);
@@ -235,7 +237,7 @@ impl RunModule {
         }
         // Held until the owner is registered, so a Shutdown Drain counts it.
         let Ok(admitted) = self.admission.admit() else {
-            return link.close(Closing::Unavailable("this Coral Instance is shutting down"));
+            return link.close(Closing::Unavailable(SHUTTING_DOWN));
         };
         let attempted = AtomicBool::new(false);
         let started_at = std::sync::atomic::AtomicI64::new(0);

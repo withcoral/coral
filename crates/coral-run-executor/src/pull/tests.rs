@@ -826,7 +826,7 @@ impl RunStreamServer for Moves {
 }
 
 #[tokio::test]
-async fn a_draining_link_ends_its_pull_streams_and_opens_no_new_stream() {
+async fn a_draining_link_ends_its_pull_streams_and_opens_no_new_one() {
     let link = start_serving(Timing::default(), Some(Arc::new(Moves))).await;
     let channel = link.connect().await;
     // A moved Run stream ends OK after Coral's last message.
@@ -861,8 +861,6 @@ async fn a_draining_link_ends_its_pull_streams_and_opens_no_new_stream() {
         )
         .await;
     assert_eq!(code(reopened), Some(Code::Unavailable));
-    assert_eq!(
-        code(link.run_stream(&channel).await),
-        Some(Code::Unavailable)
-    );
+    assert!(link.streams.held().is_empty(), "the refusal holds nothing");
+    assert!(!link.streams.has_room());
 }

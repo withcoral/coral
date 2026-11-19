@@ -18,6 +18,9 @@ pub struct ServedRunStream {
     pub responses: mpsc::UnboundedSender<Result<RunResponse, Closing>>,
 }
 
+/// What a Coral Instance in its Shutdown Drain answers a new stream with.
+pub const SHUTTING_DOWN: &str = "this Coral Instance is shutting down";
+
 /// Why Coral closes a Run stream without `Ended`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Closing {

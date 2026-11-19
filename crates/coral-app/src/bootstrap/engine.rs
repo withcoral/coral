@@ -645,8 +645,7 @@ impl Engine {
 
     /// Reports not ready, stops the expired-lease sweep and drains the Runs
     /// ([`coral_run::RunModule::shutdown`]). Every listener still serves
-    /// meanwhile, but the Run Executor listener opens no new stream; stop
-    /// them after it.
+    /// meanwhile, but no new Run Executor stream opens; stop them after it.
     pub(crate) async fn drain_runs(&self) {
         self.modules.readiness.stop_serving();
         self.run_recovery.abort();

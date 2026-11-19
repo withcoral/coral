@@ -51,7 +51,7 @@ pub use pull::{
 };
 pub use pull_compiler::PullStreamCompiler;
 pub use run::{APPLIED_CAP_BYTES, HELD_CAP_REQUESTS, PROGRAM_LOG_MESSAGE_MAX_BYTES, RunLimits};
-pub use served::{Closing, RunStreamServer, ServedRunStream};
+pub use served::{Closing, RunStreamServer, SHUTTING_DOWN, ServedRunStream};
 
 /// The link's wire contract, generated from `proto/`.
 #[allow(

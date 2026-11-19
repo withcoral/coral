@@ -1668,8 +1668,8 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
     }
 
     // The Shutdown Drain on a Run stream's owner: a request after `Hold`
-    // starts no dispatch and stays in memory; `Leave` waits for the
-    // dispatch in flight, and its result frees the stream to go away. The
+    // starts no dispatch and stays in memory; `Move` waits for the
+    // dispatch in flight, and its result frees the stream to move. The
     // held request is answered as the Program's host ending, its result's
     // row commits with no dispatch, and nothing writes the Run's end.
     {
@@ -1682,7 +1682,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         assert!(deliver(effects).is_empty());
         assert_eq!(state.waiting_for_a_slot(), 1, "held, with a slot free");
         assert_eq!(state.slots_held(), 1);
-        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::Leave), 54);
+        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::Move), 54);
         assert!(effects.is_empty(), "the batch is in flight: {effects:?}");
         let effects = deliver(apply_without_tick(&mut state, Message::Committed, 55));
         assert!(effects.is_empty(), "its dispatch is in flight: {effects:?}");
@@ -1690,7 +1690,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         let (effects, _applied, _work) = result(&mut state, 10, 56);
         let effects = deliver(effects);
         assert!(
-            matches!(effects.as_slice(), [Effect::GoAway]),
+            matches!(effects.as_slice(), [Effect::MoveStream]),
             "the result frees the stream: {effects:?}"
         );
         assert!(matches!(
@@ -1709,7 +1709,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         );
     }
 
-    // At the drain's length a stream leaves with its dispatch in flight,
+    // At the drain's length a stream moves with its dispatch in flight,
     // and a batch not yet committed starts no dispatch. A request that its
     // mailbox held behind the move is held too, and the detach answers it.
     {
@@ -1718,9 +1718,12 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         deliver(apply_without_tick(&mut state, Message::Drained, 61));
         let (effects, mut unsent) = enforce_as(&mut state, 1, 62);
         assert!(deliver(effects).is_empty());
-        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::LeaveNow), 63);
+        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::MoveNow), 63);
         assert!(
-            matches!(effects.as_slice(), [Effect::GoAway, Effect::Abandon(..)]),
+            matches!(
+                effects.as_slice(),
+                [Effect::MoveStream, Effect::Abandon(..)]
+            ),
             "{effects:?}"
         );
         deliver(effects);
@@ -1732,8 +1735,8 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         let (effects, mut behind) = enforce_as(&mut state, 2, 64);
         assert!(deliver(effects).is_empty());
         assert_eq!(state.waiting_for_a_slot(), 1);
-        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::LeaveNow), 65);
-        assert!(deliver(effects).is_empty(), "it leaves once");
+        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::MoveNow), 65);
+        assert!(deliver(effects).is_empty(), "it moves once");
         deliver(apply_without_tick(&mut state, Message::Detached, 66));
         assert!(matches!(
             answered(&mut behind),
