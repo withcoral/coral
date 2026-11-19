@@ -249,8 +249,9 @@ async fn discover(
         config,
     );
     let mut info = ClientConfig::default();
-    // The SDK reads the version that Coral itself names.
-    info.protocol_version = serde_json::from_value(json!("2025-11-25"))
+    // The SDK reads the version that Coral itself names: the newest it speaks.
+    let [.., newest] = coral_catalog::MCP_PROTOCOL_VERSIONS;
+    info.protocol_version = serde_json::from_value(json!(newest))
         .map_err(|_invalid_version| McpDiscoveryError::Internal)?;
     let mut client = match info.serve(transport).await {
         Ok(client) => client,
@@ -258,12 +259,11 @@ async fn discover(
     };
     let result = async {
         let initialization = take(&captured)?;
-        if !matches!(
-            initialization
-                .get("protocolVersion")
-                .and_then(Value::as_str),
-            Some("2025-03-26" | "2025-06-18" | "2025-11-25")
-        ) {
+        if !initialization
+            .get("protocolVersion")
+            .and_then(Value::as_str)
+            .is_some_and(|version| coral_catalog::MCP_PROTOCOL_VERSIONS.contains(&version))
+        {
             return Err(McpDiscoveryError::UnsupportedProtocol);
         }
         let mut tools = Vec::new();

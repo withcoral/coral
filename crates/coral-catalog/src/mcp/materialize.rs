@@ -255,7 +255,7 @@ fn build_mcp(
 
 fn protocol_version(root: &Map<String, Value>) -> Result<String, CatalogDiagnostic> {
     match root.get("protocolVersion").and_then(Value::as_str) {
-        Some(version @ ("2025-06-18" | "2025-11-25")) => Ok(version.to_string()),
+        Some(version) if crate::MCP_PROTOCOL_VERSIONS.contains(&version) => Ok(version.to_string()),
         _ => Err(diagnostic(
             "unsupported_mcp_protocol_version",
             "the MCP discovery snapshot uses an unsupported protocol version",

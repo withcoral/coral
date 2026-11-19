@@ -3,6 +3,11 @@ use crate::Error;
 /// Maximum normalized MCP discovery snapshot size accepted by the synchronous profile.
 pub const MCP_DISCOVERY_SNAPSHOT_MAX_BYTES: usize = 4 * 1024 * 1024;
 
+/// The MCP protocol versions that Coral speaks to a Provider's server, oldest
+/// first. Discovery offers the newest and pins the version that the server
+/// answers; a snapshot materializes only at one of these.
+pub const MCP_PROTOCOL_VERSIONS: [&str; 3] = ["2025-03-26", "2025-06-18", "2025-11-25"];
+
 /// Exact UTF-8 normalized MCP discovery snapshot accepted for durable Provider Setup.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpDiscoverySnapshot {

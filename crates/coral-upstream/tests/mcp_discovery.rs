@@ -9,7 +9,9 @@ use coral_catalog::AuthenticationConfiguration;
 use coral_catalog::{MaterializationOutcome, ProviderCredentialContract, ProviderSetupInput};
 use coral_credentials::Secret;
 use coral_outbound::DestinationPolicy;
-use coral_upstream::{McpDiscoveryError, discover_mcp};
+use coral_upstream::{
+    McpDiscoveryError, McpResources, McpUpstream, ReadyMcpDispatch, discover_mcp,
+};
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, method};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -141,6 +143,95 @@ async fn authenticated_discovery_pins_every_page_and_stamps_the_supplied_contrac
         .collect();
     assert!(!methods.iter().any(|m| m == "tools/call"));
     assert_eq!(methods.iter().filter(|m| *m == "tools/list").count(), 2);
+}
+
+/// Every protocol version that Coral speaks reaches a Tool call. A server
+/// names one version and answers it to every client, as Metabase answers
+/// 2025-03-26, so Coral must discover, materialize and call at that version.
+#[tokio::test]
+async fn a_server_at_each_supported_protocol_version_is_discovered_materialized_and_called() {
+    for version in ["2025-03-26", "2025-06-18", "2025-11-25"] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "initialize"})))
+            .respond_with(move |request: &Request| {
+                envelope(
+                    request,
+                    &json!({
+                        "protocolVersion": version,
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "fixture", "version": "1"}
+                    }),
+                )
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                json!({"method": "notifications/initialized"}),
+            ))
+            .respond_with(ResponseTemplate::new(202))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/list"})))
+            .respond_with(|request: &Request| {
+                envelope(
+                    request,
+                    &json!({"tools": [{"name": "query", "inputSchema": {"type": "object"}}]}),
+                )
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(json!({"method": "tools/call"})))
+            .respond_with(|request: &Request| {
+                envelope(
+                    request,
+                    &json!({"content": [{"type": "text", "text": "42"}]}),
+                )
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let snapshot = discover_catalog(
+            &format!("{}/mcp", server.uri()),
+            None,
+            &ProviderCredentialContract::NONE,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("discovery at {version}: {error:?}"));
+        let prepared = match coral_catalog::materialize(
+            loopback(),
+            &ProviderSetupInput::from(snapshot),
+            &[],
+        ) {
+            MaterializationOutcome::Ready(prepared) => prepared,
+            MaterializationOutcome::Rejected(diagnostic) => {
+                panic!("materialization at {version}: {}", diagnostic.code())
+            }
+        };
+        let dispatch = ReadyMcpDispatch::plan(
+            &prepared.tools()[0],
+            &json!({}),
+            "provider-a",
+            std::sync::Arc::new(McpResources::default()),
+            coral_value::ValueLimits::new(8 << 20, 16 << 20, 16 << 20, 64 << 20).expect("limits"),
+        )
+        .expect("plan");
+        let outcome = McpUpstream::new(loopback())
+            .expect("client")
+            .send(dispatch)
+            .await
+            .unwrap_or_else(|error| panic!("call at {version}: {error:?}"));
+        assert_eq!(
+            outcome.tool_result()["data"]["content"][0]["text"],
+            "42",
+            "{version}"
+        );
+        server.verify().await;
+    }
 }
 
 fn sse_envelope(request: &Request, result: &Value) -> ResponseTemplate {
