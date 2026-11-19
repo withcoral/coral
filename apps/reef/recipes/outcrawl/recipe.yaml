@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=../schema.json
+# Official provider documentation: https://outcrawl.ai/docs/mcp/overview
+schema_version: 1
+id: outcrawl
+display_name: Outcrawl
+description: Web search results, page content and site crawls from Outcrawl.
+source:
+  mcp:
+    url: https://api.outcrawl.ai/mcp
+authentication:
+  default: api_key
+  options:
+    api_key:
+      method: bearer
+      label: API key
+      documentation_url: https://outcrawl.ai/docs/account/api-keys
+icons:
+  light: logo.svg
