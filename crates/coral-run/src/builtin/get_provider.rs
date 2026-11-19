@@ -48,12 +48,20 @@ impl GetProvider {
     }
 
     fn result(&self, inspected: ProviderWithConfiguration) -> Result<GetProviderResult, Error> {
+        // Coral checked the source URL when it read the source.
+        let unparsed = || {
+            Error::from(coral_provider::Error::CorruptData(
+                "a Provider's source URL does not parse".into(),
+            ))
+        };
         let source = match (inspected.source.kind, inspected.source.url) {
             (ProviderSetupInputKind::OpenApi, None) => ProviderSourceOutput::OpenapiDocument,
             (ProviderSetupInputKind::OpenApi, Some(url)) => {
-                ProviderSourceOutput::OpenapiUrl { url }
+                ProviderSourceOutput::openapi_url(&url).ok_or_else(unparsed)?
             }
-            (ProviderSetupInputKind::Mcp, Some(url)) => ProviderSourceOutput::McpUrl { url },
+            (ProviderSetupInputKind::Mcp, Some(url)) => {
+                ProviderSourceOutput::mcp_url(&url).ok_or_else(unparsed)?
+            }
             (ProviderSetupInputKind::Mcp, None) => {
                 return Err(coral_provider::Error::CorruptData(
                     "an MCP Provider has no source URL".into(),
