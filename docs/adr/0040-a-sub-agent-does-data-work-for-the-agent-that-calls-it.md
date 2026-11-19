@@ -264,6 +264,8 @@ they should be.
 - **A default model URL.** A config file that set only a model name would send provider data to a host that nobody
   chose.
 - **A second model client for the Anthropic Messages API.** Claude can be reached through an OpenAI-compatible URL.
+  That route has a cost, which we accept for the first release: Anthropic's OpenAI-compatible endpoint does not cache
+  prompts. Only Anthropic's own API does.
 - **A `reasoning_effort` key.** On vLLM it turns thinking on for a Qwen model but does not keep the model's earlier
   reasoning in view. The model would lose that reasoning whenever the lead sent a follow-up.
 
@@ -319,6 +321,8 @@ They contain counts, token numbers and durations, and never text.
   model records the Coral release.
 - With a hosted API, the operator cannot set the server's defaults, so the model reasons at the provider's default
   level.
+- A Claude model reached through Anthropic's OpenAI-compatible endpoint gets no prompt caching. Each model call then
+  pays in full for the whole conversation. A gateway that calls Anthropic's own API can add caching.
 - Reef shows no Sub-agents and no Turns.
 
 **What we are not sure of**
@@ -512,6 +516,10 @@ return tool calls in the `tool_calls` field should work, but they are not tested
 | Return tool calls in the `tool_calls` field of the reply | Coral does not parse tool calls out of the reply's text. | `--enable-auto-tool-choice` and `--tool-call-parser` |
 | For a reasoning model, return reasoning in the `reasoning` or `reasoning_content` field of the reply | Coral does not parse `<think>` tags out of the reply's text. Without this, Coral treats the reasoning as part of the Sub-agent's answer and can show it to the lead. | `--reasoning-parser` |
 | Turn reasoning on or off in the server's own defaults | Coral sends no reasoning setting in its requests. | `--default-chat-template-kwargs` |
+
+Coral sends no caching setting. A server that caches a repeated prompt by itself, as OpenAI's API does, caches the
+Sub-agent's conversation, and Coral records the cached input tokens that the server reports. Anthropic's
+OpenAI-compatible endpoint does not cache.
 
 Coral stores each Sub-agent's conversation in its own format, as a list of typed blocks: text, a tool call, a tool
 result with an error flag, reasoning, and a compaction summary. The client converts between this format and Chat
