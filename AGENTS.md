@@ -159,7 +159,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   interrupts that owner's Run (#2908): the owner dispatches no call the
   Program makes after the drain starts, and once its Coral Instance holds no
   pull stream and no dispatch is in flight on the stream, or at the drain's
-  length, it detaches and ends the stream cleanly.
+  length, it detaches and ends the stream cleanly. For a Run that no worker
+  claim fences, the Run sweeper (#2906) also writes under the claim and the
+  head, as the sweeper section of ADR 0027 states. A stream owner writes its
+  Run only while the row names its Coral Instance as the stream's holder.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of
@@ -186,9 +189,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   Enforcement Point compares, at dispatch, an approved request's decision
   time (the owner's sample when it applied the decision, not when its chunk
   commits) with its deadline, contract line 3, and records no expiry),
-  and no chunk commit is predicated on the clock (contract line 5). Nothing
-  outside the owner compares `now` with those deadlines to write TimedOut
-  or Expired: readers show the recorded state beside the deadline. A
+  and no chunk commit is predicated on the clock (contract line 5). For a
+  Run that a Run Owner holds, nothing outside the owner compares `now` with
+  those deadlines to write TimedOut or Expired: readers show the recorded
+  state beside the deadline. A
   connection request is Account-owned and shared across Runs: the Account
   module records its expiry when a holder reads it, and the owner's timer
   only wakes the Invocations parked on it. Do not open a transaction that

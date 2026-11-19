@@ -123,10 +123,8 @@ pub(super) fn committed(number: u64) -> run_response::Message {
 
 /// Takes the oldest waiting Run as a Run Executor would, and returns its claim.
 pub(super) async fn take(runs: &RunModule) -> String {
-    let mut transaction = runs.database.begin().await.expect("begin the take");
-    let claimed = run_repository::take_oldest(
-        &mut transaction,
-        1,
+    take_for(
+        runs,
         &Taker {
             run_executor_id: "6f0c2a59-55a7-4e0b-9a2e-7c1d4f3b8e21",
             run_executor_kind: Kind::Dialed,
@@ -134,7 +132,19 @@ pub(super) async fn take(runs: &RunModule) -> String {
         1,
     )
     .await
-    .expect("take a waiting Run");
+}
+
+/// Takes the oldest waiting Run for `taker` at `taken_at_unix_nanos`, and
+/// returns its claim.
+pub(super) async fn take_for(
+    runs: &RunModule,
+    taker: &Taker<'_>,
+    taken_at_unix_nanos: i64,
+) -> String {
+    let mut transaction = runs.database.begin().await.expect("begin the take");
+    let claimed = run_repository::take_oldest(&mut transaction, 1, taker, taken_at_unix_nanos)
+        .await
+        .expect("take a waiting Run");
     transaction.commit().await.expect("commit the take");
     claimed.into_iter().next().expect("a waiting Run").claim_id
 }
@@ -462,7 +472,7 @@ async fn a_head_race_with_a_direct_write_lands_each_request_once() {
     assert_eq!(run.committed_request_number, Some(3));
 }
 
-fn invoke_forecast() -> request::Kind {
+pub(super) fn invoke_forecast() -> request::Kind {
     request::Kind::Invoke(coral_run_executor::wire::v1::Invoke {
         call_path: "coral.providers.weather.getForecast".to_owned(),
         arguments_json: "{}".to_owned(),
@@ -706,4 +716,58 @@ async fn an_approval_expires_in_the_loop_unless_a_decision_committed_first() {
             );
         }
     }
+}
+
+/// Catches: a stale stream owner whose interruption lands on a Run whose
+/// stream another Coral Instance now holds, under the claim the reopen kept.
+#[tokio::test]
+async fn a_stream_owner_writes_no_interruption_once_another_instance_holds_the_stream() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let runs = fixture.runs.clone().with_run_streams();
+    let tool = fixture.user_tool("user:holder", "Stream holder").await;
+    let (run_id, stream) = started(&runs, &tool).await;
+    drop(stream);
+    wait_until(|| runs.owners.get(&run_id).is_none()).await;
+    let elsewhere = crate::CoralInstanceId::generate();
+    assert_eq!(
+        fixture
+            .inject_fault(&format!(
+                "UPDATE program_run_records SET holder_instance_id = '{elsewhere}' \
+                 WHERE id = '{run_id}'"
+            ))
+            .await,
+        1
+    );
+    let before = (
+        fixture.run_record(&tool.workspace_id, &run_id).await,
+        fixture.events_after(&tool.workspace_id, &run_id, 0).await,
+    );
+    let claim = before
+        .0
+        .execution_claim_id
+        .clone()
+        .expect("the take's claim");
+
+    let interrupted = runs
+        .interrupt_owned_run(
+            &tool.workspace_id,
+            &run_id,
+            &claim,
+            None,
+            None,
+            crate::termination::Interrupter::Owner,
+        )
+        .await;
+
+    assert!(
+        matches!(interrupted, Err(Error::ClaimMismatch)),
+        "{interrupted:?}"
+    );
+    assert_eq!(
+        (
+            fixture.run_record(&tool.workspace_id, &run_id).await,
+            fixture.events_after(&tool.workspace_id, &run_id, 0).await,
+        ),
+        before
+    );
 }

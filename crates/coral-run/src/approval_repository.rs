@@ -402,6 +402,78 @@ pub(super) async fn undecided_by(
     request_deadlines(rows)
 }
 
+/// The undecided Approval Requests whose deadline passed by `by_unix_nanos`,
+/// on running Runs that a Run Executor holds and that record no termination
+/// yet, earliest deadline first, up to `limit`: what the Run sweeper expires.
+/// The read starts from the running Runs that no worker claim fences and
+/// joins their requests by Run through `idx_invocation_approvals_run`. Each
+/// row decodes on its own.
+pub(super) async fn undecided_on_run_executors(
+    tx: impl coral_db::QueryExecutor,
+    by_unix_nanos: coral_db::UnixNanos,
+    limit: u64,
+) -> Result<
+    Vec<Result<(WorkspaceId, RunId, ApprovalId), crate::run_repository::UndecodableRun>>,
+    Error,
+> {
+    use InvocationApprovals as Approvals;
+    let (run, approval) = (Alias::new("run"), Alias::new("approval"));
+    let rows: Vec<(String, String, String)> = tx
+        .fetch_all(
+            Query::select()
+                .column((approval.clone(), Approvals::WorkspaceId))
+                .column((approval.clone(), Approvals::RunId))
+                .column((approval.clone(), Approvals::Id))
+                .from_as(Alias::new("program_run_records"), run.clone())
+                .join_as(
+                    JoinType::InnerJoin,
+                    Approvals::Table,
+                    approval.clone(),
+                    Expr::col((approval.clone(), Approvals::WorkspaceId))
+                        .equals((run.clone(), Alias::new("workspace_id")))
+                        .and(
+                            Expr::col((approval.clone(), Approvals::RunId))
+                                .equals((run.clone(), Alias::new("id"))),
+                        ),
+                )
+                .cond_where(
+                    crate::run_repository::running_without_owner_as("run")
+                        .add(Expr::col((run, Alias::new("termination_kind"))).is_null())
+                        .add(
+                            Expr::col((approval.clone(), Approvals::State))
+                                .eq(ApprovalState::Pending.storage()),
+                        )
+                        .add(
+                            Expr::col((approval.clone(), Approvals::DeadlineAtUnixNanos))
+                                .lte(by_unix_nanos),
+                        ),
+                )
+                .order_by(
+                    (approval.clone(), Approvals::DeadlineAtUnixNanos),
+                    Order::Asc,
+                )
+                .order_by((approval, Approvals::Id), Order::Asc)
+                .limit(limit)
+                .to_owned(),
+        )
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(workspace, run, approval)| {
+            let parsed = RunId::parse(&run).ok();
+            let invalid = |what: &str| crate::run_repository::UndecodableRun {
+                id: parsed.clone().map(crate::types::HeldRunId::of_held_row),
+                error: Box::new(Error::CorruptData(format!("{what} has invalid identity"))),
+            };
+            Ok((
+                WorkspaceId::parse(&workspace).map_err(|_error| invalid("Run"))?,
+                parsed.clone().ok_or_else(|| invalid("Run"))?,
+                ApprovalId::parse(&approval).map_err(|_error| invalid("Approval Request"))?,
+            ))
+        })
+        .collect())
+}
+
 pub(super) async fn insert_pending(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,

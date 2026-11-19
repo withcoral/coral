@@ -38,6 +38,7 @@ mod secret_stores;
 mod shared_tools;
 mod summary;
 mod support;
+mod sweep;
 mod take;
 mod tool_bodies;
 mod trace;

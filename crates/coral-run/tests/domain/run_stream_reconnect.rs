@@ -441,10 +441,14 @@ async fn a_loop_whose_stream_moved_commits_nothing_more() {
 #[tokio::test]
 async fn a_reopen_rebuilds_the_runs_actor_and_interrupts_a_run_whose_principal_is_gone() {
     // A disabled Agent keeps its Run, whose calls the enforcement point
-    // refuses; a deleted one leaves no actor to run it as.
-    for (loss, reopened) in [
-        (AgentLoss::AgentDisabled, committed(0)),
-        (AgentLoss::Deleted, ended(WireEnd::Interrupted)),
+    // refuses; a deleted one leaves no actor to run it as. The reopen lands
+    // on the Coral Instance that held the stream, or on another, which the
+    // row does not name as the holder yet.
+    for (loss, reopened, elsewhere) in [
+        (AgentLoss::AgentDisabled, committed(0), false),
+        (AgentLoss::AgentDisabled, committed(0), true),
+        (AgentLoss::Deleted, ended(WireEnd::Interrupted), false),
+        (AgentLoss::Deleted, ended(WireEnd::Interrupted), true),
     ] {
         let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
         let runs = fixture.runs.clone().with_run_streams();
@@ -461,8 +465,13 @@ async fn a_reopen_rebuilds_the_runs_actor_and_interrupts_a_run_whose_principal_i
         drop(stream);
         loss.apply(&fixture, &owner, &workspace_id, &agent, &registration)
             .await;
-        let mut stream = Scripted::open(&runs, &run_id, &claim);
-        assert_eq!(stream.next().await, reopened, "{loss:?}");
+        let reopening = if elsewhere {
+            fixture.next_process().with_run_streams()
+        } else {
+            runs.clone()
+        };
+        let mut stream = Scripted::open(&reopening, &run_id, &claim);
+        assert_eq!(stream.next().await, reopened, "{loss:?} {elsewhere}");
     }
 }
 
@@ -664,7 +673,12 @@ async fn a_reopened_stream_refuses_a_call_under_an_ended_perform_and_breaks_on_a
         assert!(permitted(&answer(&mut stream, 1).await), "{number}");
         stream.request(2, emit(&serde_json::json!({"early": true})));
         stream.request(3, returned(1, "21"));
-        stream.until(|read| read.contains(&committed(3))).await;
+        // The watermark can pass request 3 before the body's end is
+        // durable, so wait for request 3's answer too: it comes once the
+        // end is durable, and the reopen then awaits no answer.
+        stream
+            .until(|read| !answers(read, 3).is_empty() && read.contains(&committed(3)))
+            .await;
         drop(stream);
         let mut stream = reopen(&moving, &[]);
         assert_eq!(stream.next().await, committed(3), "{number}");

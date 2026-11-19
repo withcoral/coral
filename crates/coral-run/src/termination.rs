@@ -254,13 +254,17 @@ impl RunModule {
     /// claim the supervisor mints so that nothing still in flight under
     /// `claim_id` can land afterwards. A Run stream's owner passes the
     /// termination it `decided` (its deadline), which a recorded one still
-    /// precedes. The Run row is read without a hold: the write's predicate
-    /// on the claim and the head fences it.
+    /// precedes. A reopen that finds the Run's Principal gone interrupts it
+    /// too, as [`Interrupter::Reopen`]. The Run row is read without a hold:
+    /// the write's predicate on the claim and the head fences it.
     ///
     /// # Errors
     ///
     /// [`Error::ClaimMismatch`] when the Run row no longer holds `claim_id`
-    /// (another writer took the Run), [`Error::RunEnded`] when the Run is
+    /// (another writer took the Run) or, for an [`Interrupter::Owner`]
+    /// on a Run a Run Executor holds, names another
+    /// Coral Instance as its stream's holder (its stream reopened there),
+    /// [`Error::RunEnded`] when the Run is
     /// terminal already; neither writes anything. An operational error leaves
     /// the outcome unknown, and the next attempt's read reads which it was.
     pub(crate) async fn interrupt_owned_run(
@@ -270,6 +274,7 @@ impl RunModule {
         claim_id: &str,
         takeover_claim_id: Option<&str>,
         decided: Option<&RequestedTermination>,
+        by: Interrupter,
     ) -> Result<(), Error> {
         let mut transaction = self.database.begin().await?;
         let run = run_repository::find_exact_in_transaction(&mut transaction, workspace_id, run_id)
@@ -290,29 +295,28 @@ impl RunModule {
         if run.held_claim() != Some(claim_id) {
             return Err(Error::ClaimMismatch);
         }
+        // A Run Executor's Run keeps its claim when its stream reopens on
+        // another Coral Instance, which records itself as the holder in the
+        // chunk that moves the head: the head fences a reopen after this
+        // read, and the holder one before it.
+        if by == Interrupter::Owner
+            && run.on_run_executor
+            && run.holder_instance_id.as_ref() != Some(&self.instance)
+        {
+            return Err(Error::ClaimMismatch);
+        }
         let now = self.now()?.max(run.accepted_at_unix_nanos);
-        let (kind, ended_at) = end_in_one_chunk(
-            &mut transaction,
+        commit_end(
+            transaction,
             &run,
             decided.cloned(),
-            Vec::new(),
             takeover_claim_id.map(|claim_id| run_repository::Takeover {
                 claim_id,
                 instance: &self.instance,
             }),
             now,
         )
-        .await?;
-        transaction.commit().await?;
-        crate::trace::record_run_end(
-            &run,
-            &RunEnd::Stopped {
-                outcome: &kind.outcome(),
-                reason: kind,
-            },
-            ended_at,
-        );
-        Ok(())
+        .await
     }
 
     /// [`Self::interrupt_owned_run`] until it lands: the last write a Run
@@ -327,12 +331,20 @@ impl RunModule {
         claim_id: &str,
         takeover_claim_id: Option<&str>,
         decided: Option<&RequestedTermination>,
+        by: Interrupter,
     ) -> Result<(), Error> {
         let run_id = held.run_id();
         let mut backoff = crate::execution::Backoff::new(held, "interruption");
         loop {
             match self
-                .interrupt_owned_run(workspace_id, run_id, claim_id, takeover_claim_id, decided)
+                .interrupt_owned_run(
+                    workspace_id,
+                    run_id,
+                    claim_id,
+                    takeover_claim_id,
+                    decided,
+                    by,
+                )
                 .await
             {
                 Err(fenced @ (Error::ClaimMismatch | Error::RunEnded)) => return Err(fenced),
@@ -402,6 +414,50 @@ pub(crate) async fn end_in_one_chunk(
     )
     .await?;
     Ok((termination.termination.kind, ended_at_unix_nanos))
+}
+
+/// Who writes an interruption: it decides how a Run that a Run Executor
+/// holds fences it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Interrupter {
+    /// A Run Owner, or the supervisor of its task. It writes such a Run only
+    /// while the row names its Coral Instance as the stream's holder: a
+    /// reopen elsewhere keeps the claim.
+    Owner,
+    /// A reopen that found the Run's Principal gone. It read the row just
+    /// now and does not hold the stream yet, so the claim and the head fence
+    /// it.
+    Reopen,
+}
+
+/// [`end_in_one_chunk`] with no Events of the caller's, committed, and the
+/// Run's end traced.
+pub(crate) async fn commit_end(
+    mut transaction: Transaction<'_>,
+    run: &RunRecord,
+    cancellation: Option<RequestedTermination>,
+    takeover: Option<run_repository::Takeover<'_>>,
+    now_unix_nanos: i64,
+) -> Result<(), Error> {
+    let (kind, ended_at) = end_in_one_chunk(
+        &mut transaction,
+        run,
+        cancellation,
+        Vec::new(),
+        takeover,
+        now_unix_nanos,
+    )
+    .await?;
+    transaction.commit().await?;
+    crate::trace::record_run_end(
+        run,
+        &RunEnd::Stopped {
+            outcome: &kind.outcome(),
+            reason: kind,
+        },
+        ended_at,
+    );
+    Ok(())
 }
 
 /// A recorded termination to settle: which Run, and until when its

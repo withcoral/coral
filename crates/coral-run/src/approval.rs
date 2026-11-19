@@ -734,6 +734,34 @@ pub(crate) async fn undecided_by(
     approval_repository::undecided_by(tx, &run.workspace_id, &run.id, by_unix_nanos).await
 }
 
+/// The undecided Approval Requests past their deadline by `by_unix_nanos`
+/// on the running Runs that Run Executors hold, each with its Run, earliest
+/// deadline first, up to `limit`: the Run sweeper expires them.
+pub(crate) async fn undecided_on_run_executors(
+    tx: impl coral_db::QueryExecutor,
+    by_unix_nanos: coral_db::UnixNanos,
+    limit: u64,
+) -> Result<Vec<Result<(WorkspaceId, RunId, ApprovalId), run_repository::UndecodableRun>>, Error> {
+    approval_repository::undecided_on_run_executors(tx, by_unix_nanos, limit).await
+}
+
+/// Whether `approval`, a request on `run`, is still undecided with its
+/// deadline passed by `by_unix_nanos`.
+pub(crate) async fn undecided_past(
+    tx: &mut Transaction<'_>,
+    run: &RunRecord,
+    approval: &ApprovalId,
+    by_unix_nanos: i64,
+) -> Result<bool, Error> {
+    match approval_repository::load(tx, &run.workspace_id, approval).await {
+        Ok(row) => Ok(row.run_id == run.id
+            && row.state == ApprovalState::Pending
+            && row.deadline_at_unix_nanos <= by_unix_nanos),
+        Err(Error::ApprovalNotFound) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 // Safe summary only: Agents observing their own Runs must not load approval detail.
 pub(super) async fn pending_for_run(
     tx: &mut Transaction<'_>,

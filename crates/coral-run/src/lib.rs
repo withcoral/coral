@@ -53,6 +53,16 @@
 //!   which records the timers that passed and the Run's end in one chunk.
 //!   Bootstrap runs it before any listener binds and then every
 //!   [`RunModule::sweep_interval`]. Coral never resumes a Run.
+//! - [`RunModule::sweep_runs`] is one pass of the Run sweeper,
+//!   for the Runs that Run Executors hold: one Coral Instance at a time,
+//!   elected by a lease row, ends the Runs past their deadline, expires the
+//!   Approval Requests past theirs, puts back the taken Runs that never
+//!   started, and releases the Run Executors whose lease lapsed.
+//!   On `SQLite`, [`RunModule::sweep_runs_at_boot`] also releases the local
+//!   children's rows, up to the pass limit; later passes release the rest
+//!   once their leases lapse. [`RunModule::release_run_executor`] releases
+//!   one at once.
+//!   Only tests run them until production accepts Runs for Run Executors.
 //! - [`RunModule::shutdown`] refuses new Runs, lets the live ones end for the
 //!   Shutdown Drain, then interrupts the rest within the commit grace.
 //! - [`approval::ApprovalModule`] exposes human-only exact Invocation decisions;
@@ -182,6 +192,8 @@ mod shutdown;
 mod source_location_repository;
 mod summary;
 mod summary_repository;
+mod sweep;
+pub use sweep::Swept;
 mod take;
 mod termination;
 mod tool_result_shape;

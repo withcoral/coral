@@ -95,7 +95,14 @@ impl RunModule {
             Ok(Reopen::Ended(end)) => return link.end(end),
             Ok(Reopen::Unowned) => {
                 let recorded = self
-                    .record_interruption(&run.workspace_id, &held, &claim_id, None, None)
+                    .record_interruption(
+                        &run.workspace_id,
+                        &held,
+                        &claim_id,
+                        None,
+                        None,
+                        crate::termination::Interrupter::Reopen,
+                    )
                     .await;
                 return match recorded {
                     Ok(()) => link.end(WireEnd::Interrupted),

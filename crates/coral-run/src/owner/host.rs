@@ -701,6 +701,7 @@ fn spawn_interruption(module: &RunModule, accepted: &AcceptedRun, handle: &Owner
                 &accepted.claim_id,
                 None,
                 None,
+                crate::termination::Interrupter::Owner,
             )
             .await
             .map_err(CommitRejection::from);
@@ -749,6 +750,7 @@ fn spawn_stream_end(
                 &accepted.claim_id,
                 None,
                 Some(&termination),
+                crate::termination::Interrupter::Owner,
             )
             .await;
         if let Err(error) = &ended {
