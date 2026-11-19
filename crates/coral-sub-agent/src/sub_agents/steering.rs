@@ -86,6 +86,7 @@ impl SubAgents {
                 workspace_id,
                 &turn.id,
                 answer,
+                self.clock.now(),
             );
             let ended = ended.await?;
             transaction.commit().await?;
@@ -148,6 +149,7 @@ impl SubAgents {
             workspace_id,
             sub_agent_id,
             &turn.id,
+            now,
             lease_end,
         )
         .await?;

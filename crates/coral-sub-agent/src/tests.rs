@@ -21,7 +21,7 @@ use rmcp::model::{CallToolRequestParams, CallToolResponse, Tool};
 use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
 use serde_json::{Value, json};
 use wiremock::matchers::{any, body_string_contains, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use crate::model::{Block, Message, ModelClient, Role, ToolCall};
 use crate::run_tools::Caller;
@@ -177,6 +177,24 @@ impl Lead {
         self.database.fetch_all(statement).await.unwrap()
     }
 
+    /// The state of the Sub-agent's one Turn, and when it started and ended.
+    async fn turn_times(
+        &self,
+        sub_agent_id: &str,
+    ) -> (String, Option<UnixNanos>, Option<UnixNanos>) {
+        let columns = ["state", "started_at_unix_nanos", "ended_at_unix_nanos"];
+        let statement = Query::select()
+            .columns(columns.map(Alias::new))
+            .from(Alias::new("sub_agent_turns"))
+            .and_where(Expr::col(Alias::new("sub_agent_id")).eq(sub_agent_id))
+            .to_owned();
+        self.database
+            .fetch_optional(statement)
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
     fn caller(&self) -> McpCaller {
         McpCaller::fixture(
             self.actor.clone(),
@@ -186,7 +204,7 @@ impl Lead {
     }
 
     /// The stub answers every request with `answer`.
-    async fn model_answers(&self, answer: ResponseTemplate) {
+    async fn model_answers(&self, answer: impl Respond + 'static) {
         Mock::given(any())
             .respond_with(answer)
             .mount(&self.model)
@@ -595,8 +613,15 @@ async fn cancel_ends_a_running_turn_for_good() {
     let renewed = repository::renew_lease(database, workspace_id, &turn_id, lease_end).await;
     assert!(renewed.unwrap(), "a running Turn renews its lease");
     let mut transaction = database.begin().await.unwrap();
-    let second =
-        repository::insert_turn(&mut transaction, workspace_id, sub_agent_id, "2", lease_end).await;
+    let second = repository::insert_turn(
+        &mut transaction,
+        workspace_id,
+        sub_agent_id,
+        "2",
+        NOON,
+        lease_end,
+    )
+    .await;
     assert!(second.is_err_and(|error| error.is_unique_violation()));
     drop(transaction);
     let running = result(call(&*tools, &caller, "wait", by_id.clone()).await);
@@ -884,6 +909,47 @@ async fn a_wait_returns_once_the_lease_of_its_turn_lapses() {
         "the wait ran out"
     );
     assert_eq!(field(&waited, "state"), "interrupted", "{waited}");
+}
+
+// Catches: an ending that records no end time, or a start or an end dated by
+// another clock reading than the one that started or ended the Turn.
+#[tokio::test]
+async fn a_turn_records_when_it_started_and_when_it_ended() {
+    let held = NOON.saturating_add(Duration::from_secs(10));
+    let lapsed = UnixNanos::new(i64::MAX);
+    for (answer, state, ended_at) in [
+        (reply("Twelve."), "completed", held),
+        (ResponseTemplate::new(400), "failed", held),
+        (no_reply(), "canceled", held),
+        (no_reply(), "interrupted", lapsed),
+    ] {
+        let lead = Lead::new().await;
+        let (sub_agents, task_id) = (lead.sub_agents(), lead.task().await);
+        let (actor, workspace_id) = (&lead.actor, &lead.workspace_id);
+        let clock = lead.clock.clone();
+        // The model answers once the clock reads the end.
+        let answer = move |_: &Request| {
+            clock.set(ended_at);
+            answer.clone()
+        };
+        lead.model_answers(answer).await;
+        let started = sub_agents.start(actor, workspace_id, &task_id, MESSAGE.to_owned());
+        let sub_agent_id = started.await.unwrap();
+
+        lead.clock.set(ended_at);
+        if state == "canceled" {
+            let running = ("running".to_owned(), Some(NOON), None);
+            assert_eq!(lead.turn_times(&sub_agent_id).await, running);
+            let canceled = sub_agents.cancel(actor, workspace_id, &sub_agent_id);
+            canceled.await.unwrap();
+        }
+        let wait = Duration::from_secs(30);
+        let waited = sub_agents.wait(actor, workspace_id, &sub_agent_id, None, wait);
+        waited.await.unwrap();
+
+        let ended = (state.to_owned(), Some(NOON), Some(ended_at));
+        assert_eq!(lead.turn_times(&sub_agent_id).await, ended);
+    }
 }
 
 // Catches: an interrupted Turn that leaves tool calls without results, which

@@ -111,6 +111,7 @@ impl SubAgents {
             workspace_id,
             &sub_agent_id,
             &turn.id,
+            now,
             lease_end,
         )
         .await?;
@@ -334,7 +335,9 @@ impl SubAgents {
         ending: &TurnState,
     ) -> Result<bool, Error> {
         let mut transaction = self.database.begin().await?;
-        let ended = repository::end_turn(&mut transaction, workspace_id, turn_id, ending).await?;
+        let now = self.clock.now();
+        let ended =
+            repository::end_turn(&mut transaction, workspace_id, turn_id, ending, now).await?;
         if ended {
             close_calls(&mut transaction, workspace_id, sub_agent_id, turn_id).await?;
         }

@@ -1,7 +1,7 @@
 //! The lead's messages after its first, which a running Turn holds unread,
 //! and the messages of one Turn.
 
-use coral_db::{QueryExecutor, RowLock, Transaction};
+use coral_db::{QueryExecutor, RowLock, Transaction, UnixNanos};
 use coral_task::TaskId;
 use coral_workspace::WorkspaceId;
 use sea_query::{Expr, ExprTrait as _, Order, Query};
@@ -46,7 +46,7 @@ pub(crate) async fn take_unread_messages(
     Ok(unread)
 }
 
-/// Completes the Turn with `answer` unless it holds an unread message.
+/// Completes the Turn at `now` with `answer` unless it holds an unread message.
 /// `false` means that a message waits and nothing was written; `true` that
 /// the Turn has ended, now or before.
 pub(crate) async fn complete_unless_unread(
@@ -54,6 +54,7 @@ pub(crate) async fn complete_unless_unread(
     workspace_id: &WorkspaceId,
     turn_id: &str,
     answer: &str,
+    now: UnixNanos,
 ) -> Result<bool, coral_db::Error> {
     match hold_unread(transaction, workspace_id, turn_id).await? {
         Some((Some(_unread),)) => Ok(false),
@@ -61,7 +62,7 @@ pub(crate) async fn complete_unless_unread(
             let completed = TurnState::Completed {
                 answer: answer.to_owned(),
             };
-            end_turn(transaction, workspace_id, turn_id, &completed).await?;
+            end_turn(transaction, workspace_id, turn_id, &completed, now).await?;
             Ok(true)
         }
         None => Ok(true),
