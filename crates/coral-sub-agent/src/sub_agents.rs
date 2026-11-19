@@ -12,9 +12,11 @@ use coral_task::{TaskCommands, TaskId, TaskModule};
 use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use futures_util::future::join_all;
+use tracing::Instrument as _;
 
 use crate::model::{Message, ModelCall, ModelClient, ModelError, ToolCall};
 use crate::run_tools::{Caller, RunTools};
+use crate::telemetry::{TurnEnd, TurnTrace};
 use crate::{prompt, repository, search};
 
 mod compaction;
@@ -78,7 +80,7 @@ impl SubAgents {
         message: String,
     ) -> Result<String, Error> {
         let mut transaction = self.database.begin().await?;
-        let (_task, authority) = self
+        let (task, authority) = self
             .tasks
             .hold_open_in_transaction(&mut transaction, actor, workspace_id, task_id)
             .await?;
@@ -88,6 +90,7 @@ impl SubAgents {
             .map_err(coral_task::Error::from)?;
         let sub_agent_id = insert_sub_agent(&mut transaction, actor, workspace_id, task_id).await?;
         let turn = RunningTurn {
+            trace: TurnTrace::begin(&sub_agent_id, actor, workspace_id, task.telemetry_id()),
             id: uuid::Uuid::new_v4().to_string(),
             sub_agent_id: sub_agent_id.clone(),
             caller: Caller {
@@ -108,7 +111,8 @@ impl SubAgents {
         let brief = Message::user(brief(task_id, now, &message));
         repository::insert_message(&mut transaction, &turn, 0, &brief, None).await?;
         transaction.commit().await?;
-        tokio::spawn(self.clone().run_turn(turn));
+        let span = turn.trace.span();
+        tokio::spawn(self.clone().run_turn(turn).instrument(span));
         Ok(sub_agent_id)
     }
 
@@ -174,9 +178,16 @@ impl SubAgents {
         let workspace_id = &turn.caller.workspace_id;
         let answered = tokio::select! {
             answered = self.answer(&turn) => answered,
-            () = self.hold_lease(workspace_id, &turn.id) => return,
-            () = self.interrupt_at_shutdown(&turn) => return,
+            () = self.hold_lease(workspace_id, &turn.id) => {
+                turn.trace.ended(TurnEnd::Canceled);
+                return;
+            }
+            () = self.interrupt_at_shutdown(&turn) => {
+                turn.trace.ended(TurnEnd::Interrupted);
+                return;
+            }
         };
+        let end = TurnEnd::of(&answered);
         let ending = match answered {
             Ok(answer) => TurnState::Completed { answer },
             Err(failure) => TurnState::Failed {
@@ -184,11 +195,13 @@ impl SubAgents {
             },
         };
         let ended = self.end_turn(workspace_id, &turn.sub_agent_id, &turn.id, &ending);
-        if let Err(error) = ended.await {
-            tracing::warn!(
+        match ended.await {
+            Ok(true) => turn.trace.ended(end),
+            Ok(false) => turn.trace.ended(TurnEnd::Canceled),
+            Err(error) => tracing::warn!(
                 error.type = safe::kind(error.code()),
                 "the end of a Sub-agent Turn was not recorded"
-            );
+            ),
         }
     }
 
@@ -207,6 +220,7 @@ impl SubAgents {
                 .await
                 .map_err(|error| TurnFailure::internal(error.code()))?;
         for _model_call in 0..MODEL_CALLS_PER_TURN {
+            turn.trace.count_model_call();
             let reply = self.reply_within_window(turn, &system, &prompt::TOOLS, &mut thread);
             let reply = reply.await?;
             let calls: Vec<ToolCall> = reply.message.tool_calls().cloned().collect();
@@ -227,7 +241,7 @@ impl SubAgents {
                     &call.name,
                     &call.arguments,
                 );
-                call.result(result.await)
+                call.result(turn.trace.tool_call(&call.name, result).await)
             }));
             let results = Message::tool_results(results.await);
             self.add(turn, &mut thread, results, None).await?;
@@ -320,6 +334,7 @@ pub(crate) struct Turn {
 
 /// A Turn that this Coral Instance runs, and the caller its tools act as.
 pub(crate) struct RunningTurn {
+    pub(crate) trace: TurnTrace,
     pub(crate) id: String,
     pub(crate) sub_agent_id: String,
     pub(crate) caller: Caller,
@@ -357,7 +372,7 @@ impl Error {
 
 /// Why a Turn ended without an answer. The lead reads the text.
 #[derive(Debug, thiserror::Error)]
-enum TurnFailure {
+pub(crate) enum TurnFailure {
     #[error(transparent)]
     Model(#[from] ModelError),
     #[error(

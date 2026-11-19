@@ -66,7 +66,10 @@ impl RunTools {
         };
         match outcome {
             Ok(update) => run_result(&update),
-            Err(failure) => failure.text(),
+            Err(failure) => {
+                coral_telemetry::record_failure(&tracing::Span::current(), failure.code);
+                failure.text()
+            }
         }
     }
 
@@ -91,6 +94,7 @@ impl RunTools {
             .submit(&call, &exec.program, timeout_ms)
             .await
             .map_err(task_failure)?;
+        tracing::Span::current().record("coral.run.id", safe::id(&accepted.telemetry_id()));
         let Some(first_wait) = first_wait else {
             return Ok(accepted);
         };
@@ -271,7 +275,7 @@ impl Failure {
     fn unknown_tool(name: &str) -> Self {
         Self::shown(
             "unknown_tool",
-            format!("There is no tool named {name:?}. Call exec, wait or cancel."),
+            format!("There is no tool named {name:?}. Call exec, wait, cancel or search."),
         )
     }
 

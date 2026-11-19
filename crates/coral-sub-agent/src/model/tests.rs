@@ -249,10 +249,11 @@ async fn bearer_header_is_sent_only_with_a_key() {
 // Catches: a busy or failing server not retried, or retried more than three times.
 #[tokio::test]
 async fn busy_or_failing_server_is_retried_three_times() {
+    let busy = ModelError::Unavailable(Some(StatusCode::SERVICE_UNAVAILABLE));
     for (status, failures, requests, expected) in [
         (429, 1, 2, Ok("Hi.".to_owned())),
         (500, 3, 4, Ok("Hi.".to_owned())),
-        (503, 4, 4, Err(ModelError::Unavailable)),
+        (503, 4, 4, Err(busy)),
     ] {
         let server = MockServer::start().await;
         Mock::given(any())

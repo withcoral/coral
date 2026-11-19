@@ -193,8 +193,8 @@ async fn failures_show_only_what_is_safe() {
     let rows = [
         (
             "unknown tool",
-            harness.call("search", &json!({})).await,
-            json!({"error": {"code": "unknown_tool", "message": "There is no tool named \"search\". Call exec, wait or cancel."}}),
+            harness.call("find", &json!({})).await,
+            json!({"error": {"code": "unknown_tool", "message": "There is no tool named \"find\". Call exec, wait, cancel or search."}}),
         ),
         (
             "Program that does not compile",

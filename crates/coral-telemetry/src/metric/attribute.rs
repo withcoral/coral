@@ -341,3 +341,48 @@ attribute! {
         Authoring => "authoring",
     }
 }
+
+attribute! {
+    /// How a Sub-agent Turn ended, for `sub_agent.turn.outcome`.
+    SubAgentTurnOutcome {
+        /// The model answered.
+        Completed => "completed",
+        Failed => "failed",
+        Canceled => "canceled",
+        /// The Coral Instance that ran it stopped first.
+        Interrupted => "interrupted",
+    }
+}
+
+attribute! {
+    /// How a call to a Sub-agent's model ended, after its retries, for
+    /// `outcome`.
+    ModelCallOutcome {
+        Ok => "ok",
+        /// The model server gave no answer.
+        Unreachable => "unreachable",
+        TooManyRequests => "429",
+        /// A 5xx status.
+        ServerError => "5xx",
+        /// Another refusal, or an answer that is not a chat completion.
+        Other => "other",
+    }
+}
+
+attribute! {
+    /// A kind of token a model call used, for `gen_ai.token.type`.
+    TokenType {
+        /// Input not read from the model server's cache.
+        Input => "input",
+        CachedInput => "cached_input",
+        Output => "output",
+    }
+}
+
+attribute! {
+    /// Whether a Sub-agent compacted its thread, for `outcome`.
+    CompactionOutcome {
+        Done => "done",
+        Skipped => "skipped",
+    }
+}

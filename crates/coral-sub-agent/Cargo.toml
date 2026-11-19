@@ -44,6 +44,9 @@ uuid.workspace = true
 [dev-dependencies]
 coral-mcp = { workspace = true, features = ["test-fixtures"] }
 coral-provider = { workspace = true, features = ["test-fixtures"] }
+coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-test-support.workspace = true
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
+opentelemetry.workspace = true
+tracing-subscriber.workspace = true
 wiremock.workspace = true

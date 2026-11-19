@@ -220,6 +220,43 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         &["outcome", "secret_store.kind"],
     ),
     (
+        "coral.sub_agent.turn.ended",
+        "counter",
+        "{turn}",
+        &["failure.code", "sub_agent.turn.outcome"],
+    ),
+    (
+        "coral.sub_agent.turn.duration",
+        "histogram",
+        "s",
+        &["sub_agent.turn.outcome"],
+    ),
+    ("coral.sub_agent.turn.active", "gauge", "{turn}", &[]),
+    (
+        "coral.sub_agent.turn.model_calls",
+        "histogram",
+        "{call}",
+        &[],
+    ),
+    (
+        "coral.sub_agent.model_call.duration",
+        "histogram",
+        "s",
+        &["outcome"],
+    ),
+    (
+        "coral.sub_agent.model_call.tokens",
+        "histogram",
+        "{token}",
+        &["gen_ai.token.type"],
+    ),
+    (
+        "coral.sub_agent.compactions",
+        "counter",
+        "{compaction}",
+        &["outcome"],
+    ),
+    (
         "coral.telemetry.dropped",
         "counter",
         "{signal}",
@@ -318,8 +355,26 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
     output_kept(OutputKind::Emission, 512);
     output_rejected(OutputKind::FinalValue);
     metrics.telemetry_dropped(SignalKind::Span, DropReason::QueueFull, 3);
+    record_sub_agent();
     drop((active, queued));
     (pool, search)
+}
+
+/// Records each Sub-agent instrument once, with every attribute it can carry.
+fn record_sub_agent() {
+    drop(sub_agent_turn_active());
+    sub_agent_turn_ended(
+        SubAgentTurnOutcome::Failed,
+        Some("model_refused"),
+        Duration::from_secs(9),
+        3,
+    );
+    sub_agent_model_called(
+        ModelCallOutcome::TooManyRequests,
+        Duration::from_secs(2),
+        &[(TokenType::CachedInput, 40)],
+    );
+    sub_agent_compacted(CompactionOutcome::Skipped);
 }
 
 #[test]

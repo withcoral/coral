@@ -26,9 +26,11 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use crate::model::{Block, Message, ModelClient, Role, ToolCall};
 use crate::run_tools::Caller;
 use crate::sub_agents::{Error, RunningTurn, SubAgents, TURN_LEASE, TurnState};
+use crate::telemetry::TurnTrace;
 use crate::{MODEL_CALL_TIMEOUT, SubAgentFactory, repository};
 
 mod compaction;
+mod telemetry;
 
 const POLICY: DestinationPolicy =
     DestinationPolicy::new(NetworkAccess::HttpAndHttps, NetworkAccess::Deny);
@@ -692,7 +694,10 @@ async fn an_interrupted_turn_closes_the_calls_it_left_without_results() {
         role: Role::Assistant,
         content: calls.iter().cloned().map(Block::ToolUse).collect(),
     };
+    let task = lead.modules.tasks.get(actor, workspace_id, &task_id);
+    let task = task.await.unwrap();
     let running = RunningTurn {
+        trace: TurnTrace::begin(&sub_agent_id, actor, workspace_id, task.telemetry_id()),
         id: turn.id,
         sub_agent_id: sub_agent_id.clone(),
         caller: Caller {
