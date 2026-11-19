@@ -4,6 +4,7 @@ use coral_catalog::{
     Description, PathsResult, SearchArguments, SearchHit, SearchOutput, SearchResult,
     SearchRetriever, SearchRetrieverState,
 };
+use coral_run::RunId;
 use coral_search::{
     DiscoveryRequest, ExactPaths, SearchInput, SearchRequest, UniversalSearchModule,
 };
@@ -20,12 +21,12 @@ pub(crate) async fn call(
     caller: &Caller,
     name: &str,
     arguments: &str,
-) -> String {
-    let text = match name {
-        "search" => search(module, caller, arguments).await,
+) -> (String, Option<RunId>) {
+    let (text, run_id) = match name {
+        "search" => (search(module, caller, arguments).await, None),
         _ => run_tools.call(caller, name, arguments).await,
     };
-    shortened(text)
+    (shortened(text), run_id)
 }
 
 /// Core's discovery as the lead's caller, written as the model reads it.

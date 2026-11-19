@@ -56,21 +56,30 @@ impl RunTools {
         Self { commands, runs }
     }
 
-    /// Runs the tool `name` with the arguments the model wrote, and returns the JSON text the model reads.
-    pub(crate) async fn call(&self, caller: &Caller, name: &str, arguments: &str) -> String {
+    /// Runs the tool `name` with the arguments the model wrote, and returns the JSON text the model
+    /// reads and the Run that an `exec` started.
+    pub(crate) async fn call(
+        &self,
+        caller: &Caller,
+        name: &str,
+        arguments: &str,
+    ) -> (String, Option<RunId>) {
         let outcome = match name {
             "exec" => self.exec(caller, arguments).await,
             "wait" => self.wait(caller, arguments).await,
             "cancel" => self.cancel(caller, arguments).await,
             _ => Err(Failure::unknown_tool(name)),
         };
-        match outcome {
+        let started = outcome.as_ref().ok().filter(|_| name == "exec");
+        let started = started.map(|update| update.run_id().clone());
+        let text = match outcome {
             Ok(update) => run_result(&update),
             Err(failure) => {
                 coral_telemetry::record_failure(&tracing::Span::current(), failure.code);
                 failure.text()
             }
-        }
+        };
+        (text, started)
     }
 
     /// Runs a Program in the lead's Task, then waits for its Run.
@@ -319,7 +328,7 @@ pub(crate) fn task_failure(error: coral_task::Error) -> Failure {
     clippy::needless_pass_by_value,
     reason = "it is the `map_err` of every Run call"
 )]
-fn run_failure(error: coral_run::Error) -> Failure {
+pub(crate) fn run_failure(error: coral_run::Error) -> Failure {
     use coral_run::Error;
     if let Some(safe) = error.safe_rejection() {
         return safe_or_internal(Some(safe));

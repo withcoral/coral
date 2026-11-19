@@ -2,6 +2,7 @@
 //! agent that calls it, the lead. The lead reaches it through one more MCP
 //! tool, `agent`, while the config file has a `[sub_agent]` section.
 
+mod lead_text;
 mod model;
 mod prompt;
 mod repository;
@@ -45,6 +46,7 @@ impl McpInterfaceFactory for SubAgentFactory {
         let section: Section = StoreSettings::new(section.clone()).decode()?;
         let model = section.model_client(&dependencies)?;
         let core = dependencies.modules.core_interface();
+        let human_interface = dependencies.modules.human_interface().clone();
         let modules = dependencies.modules;
         let tasks = modules.tasks;
         let sub_agents = SubAgents::new(
@@ -57,7 +59,12 @@ impl McpInterfaceFactory for SubAgentFactory {
             dependencies.clock,
             dependencies.stopping,
         );
-        Ok(Arc::new(CoreWithAgent::new(core, tasks, sub_agents)))
+        Ok(Arc::new(CoreWithAgent::new(
+            core,
+            tasks,
+            sub_agents,
+            human_interface,
+        )))
     }
 }
 

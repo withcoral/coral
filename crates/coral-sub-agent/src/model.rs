@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use coral_credentials::Secret;
 use coral_outbound::{FetchError, OutboundUrlPolicyError};
+use coral_run::RunId;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -235,6 +236,9 @@ pub(crate) enum Block {
     ToolResult {
         tool_use_id: String,
         content: String,
+        /// The Run that an `exec` started.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
     },
     /// The model's summary of the thread's older messages, which later calls read in their place.
     Summary {
@@ -254,11 +258,12 @@ pub(crate) struct ToolCall {
 }
 
 impl ToolCall {
-    /// The block that answers this call with `content`.
-    pub(crate) fn result(&self, content: String) -> Block {
+    /// The block that answers this call with `content`, and the Run it started.
+    pub(crate) fn result(&self, content: String, run_id: Option<RunId>) -> Block {
         Block::ToolResult {
             tool_use_id: self.id.clone(),
             content,
+            run_id: run_id.map(|run_id| run_id.as_str().to_owned()),
         }
     }
 }
@@ -347,6 +352,7 @@ fn chat_messages<'a>(
                         Block::ToolResult {
                             tool_use_id,
                             content,
+                            ..
                         } => messages.push(ChatMessage::Tool {
                             tool_call_id: tool_use_id,
                             content,

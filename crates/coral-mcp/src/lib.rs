@@ -99,6 +99,12 @@ impl McpModules {
         self
     }
 
+    /// Where projections send people to act, for a surface that wraps core's.
+    #[must_use]
+    pub const fn human_interface(&self) -> &HumanInterfaceUrl {
+        &self.human_interface
+    }
+
     /// Core's tool surface over these modules, for a surface that wraps it.
     #[must_use]
     pub fn core_interface(&self) -> Arc<dyn McpInterface> {

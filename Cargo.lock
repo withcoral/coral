@@ -1194,6 +1194,7 @@ dependencies = [
  "coral-identifier",
  "coral-mcp",
  "coral-outbound",
+ "coral-policy",
  "coral-provider",
  "coral-run",
  "coral-search",

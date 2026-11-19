@@ -23,6 +23,11 @@ mod compaction;
 mod interruption;
 use interruption::close_calls;
 
+mod steering;
+mod steps;
+
+pub(crate) use steps::{TurnPage, WaitingAction};
+
 /// How long a running Turn stays held after its Coral Instance last renewed
 /// the lease.
 pub(crate) const TURN_LEASE: Duration = Duration::from_secs(30);
@@ -116,29 +121,36 @@ impl SubAgents {
         Ok(sub_agent_id)
     }
 
-    /// Reads the Sub-agent's Turn once it has ended or `wait` has passed.
+    /// Reads the Sub-agent's Turn once it has ended, a Run of it waits on a
+    /// request that `cursor` has not seen, or `wait` has passed.
     pub(crate) async fn wait(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         sub_agent_id: &str,
+        cursor: Option<&str>,
         wait: Duration,
-    ) -> Result<TurnState, Error> {
+    ) -> Result<TurnPage, Error> {
         let mut changes = self
             .database
             .wait_for_changes(tokio::time::Instant::now() + wait);
+        let mut seen = None;
         loop {
-            let turn = self.turn(actor, workspace_id, sub_agent_id).await?;
+            let page = self.page(actor, workspace_id, sub_agent_id).await?;
             let read_at = tokio::time::Instant::now();
-            if turn.state != TurnState::Running {
-                return Ok(turn.state);
+            let seen = match &seen {
+                Some(seen) => seen,
+                None => seen.insert(page.seen(cursor)?),
+            };
+            if page.state != TurnState::Running || page.newly_needs_a_person(seen) {
+                return Ok(page);
             }
             // No write marks a lapsed lease: read again once it lapses.
-            let lapse = turn
+            let lapse = page
                 .lease_expires_at
                 .saturating_duration_since(self.clock.now());
             if tokio::time::timeout(lapse, changes.pause(read_at)).await == Ok(false) {
-                return Ok(turn.state);
+                return Ok(page);
             }
         }
     }
@@ -149,12 +161,12 @@ impl SubAgents {
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         sub_agent_id: &str,
-    ) -> Result<TurnState, Error> {
+    ) -> Result<TurnPage, Error> {
         let turn = self.turn(actor, workspace_id, sub_agent_id).await?;
         let canceled = &TurnState::Canceled;
         self.end_turn(workspace_id, sub_agent_id, &turn.id, canceled)
             .await?;
-        Ok(self.turn(actor, workspace_id, sub_agent_id).await?.state)
+        self.page(actor, workspace_id, sub_agent_id).await
     }
 
     /// The Turn of the caller's own Sub-agent, interrupted if its lease
@@ -220,6 +232,7 @@ impl SubAgents {
                 .await
                 .map_err(|error| TurnFailure::internal(error.code()))?;
         for _model_call in 0..MODEL_CALLS_PER_TURN {
+            self.read_messages(turn, &mut thread).await?;
             turn.trace.count_model_call();
             let reply = self.reply_within_window(turn, &system, &prompt::TOOLS, &mut thread);
             let reply = reply.await?;
@@ -231,7 +244,10 @@ impl SubAgents {
                 if answer.trim().is_empty() {
                     return Err(TurnFailure::NoAnswer);
                 }
-                return Ok(answer);
+                if self.end_unless_messaged(turn, &answer).await? {
+                    return Ok(answer);
+                }
+                continue;
             }
             let results = join_all(calls.iter().map(|call| async {
                 let result = search::call(
@@ -241,7 +257,8 @@ impl SubAgents {
                     &call.name,
                     &call.arguments,
                 );
-                call.result(turn.trace.tool_call(&call.name, result).await)
+                let (content, run_id) = turn.trace.tool_call(&call.name, result).await;
+                call.result(content, run_id)
             }));
             let results = Message::tool_results(results.await);
             self.add(turn, &mut thread, results, None).await?;
@@ -349,6 +366,11 @@ pub(crate) enum Error {
     /// The Task module refused the caller or the Task.
     #[error(transparent)]
     Task(#[from] coral_task::Error),
+    /// The Run module could not read a Run of the Turn.
+    #[error(transparent)]
+    Run(#[from] coral_run::Error),
+    #[error("cursor belongs to another Turn")]
+    CursorOfAnotherTurn,
     #[error("Sub-agent identifier could not be issued")]
     IdentifierIssuance,
     #[error("database contains corrupt Sub-agent data")]
@@ -363,6 +385,8 @@ impl Error {
         match self {
             Self::SubAgentNotFound => "sub_agent_not_found",
             Self::Task(_) => "task",
+            Self::Run(_) => "run",
+            Self::CursorOfAnotherTurn => "cursor_of_another_turn",
             Self::IdentifierIssuance => "identifier_issuance",
             Self::CorruptData => "corrupt_data",
             Self::Database(error) => error.code(),
