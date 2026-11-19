@@ -18,6 +18,9 @@ pub struct ServedRunStream {
     pub responses: mpsc::UnboundedSender<Result<RunResponse, Closing>>,
 }
 
+/// What a Coral Instance in its Shutdown Drain answers a new stream with.
+pub const SHUTTING_DOWN: &str = "this Coral Instance is shutting down";
+
 /// Why Coral closes a Run stream without `Ended`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Closing {
@@ -27,14 +30,20 @@ pub enum Closing {
     FailedPrecondition(&'static str),
     /// Coral cannot serve the stream now; the Run Executor opens it again.
     Unavailable(&'static str),
+    /// Coral moves the stream: it ends with an OK status and no message, and
+    /// the Run Executor reopens it at once on its current connection.
+    Moved,
 }
 
-impl From<Closing> for Status {
-    fn from(closing: Closing) -> Self {
-        match closing {
-            Closing::InvalidArgument(message) => Self::invalid_argument(message),
-            Closing::FailedPrecondition(message) => Self::failed_precondition(message),
-            Closing::Unavailable(message) => Self::unavailable(message),
+impl Closing {
+    /// The status the stream ends with; none for a move, which ends it OK.
+    #[must_use]
+    pub fn status(self) -> Option<Status> {
+        match self {
+            Self::InvalidArgument(message) => Some(Status::invalid_argument(message)),
+            Self::FailedPrecondition(message) => Some(Status::failed_precondition(message)),
+            Self::Unavailable(message) => Some(Status::unavailable(message)),
+            Self::Moved => None,
         }
     }
 }

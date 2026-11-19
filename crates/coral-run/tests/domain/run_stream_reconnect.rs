@@ -16,7 +16,7 @@ use crate::approval::ApprovalDecision;
 
 /// A call to the weather Tool, from the body of the Perform `parent` when
 /// there is one.
-fn forecast(parent: Option<u64>) -> request::Kind {
+pub(super) fn forecast(parent: Option<u64>) -> request::Kind {
     request::Kind::Invoke(Invoke {
         call_path: "coral.providers.weather.getForecast".to_owned(),
         arguments_json: "{}".to_owned(),
@@ -26,7 +26,7 @@ fn forecast(parent: Option<u64>) -> request::Kind {
 }
 
 /// The answers to request `number` in `messages`.
-fn answers(messages: &[run_response::Message], number: u64) -> Vec<&InvocationResult> {
+pub(super) fn answers(messages: &[run_response::Message], number: u64) -> Vec<&InvocationResult> {
     messages
         .iter()
         .filter_map(|message| match message {
@@ -40,7 +40,7 @@ fn answers(messages: &[run_response::Message], number: u64) -> Vec<&InvocationRe
 
 impl Scripted {
     /// Reads until `done` holds for every message read so far.
-    async fn until(
+    pub(super) async fn until(
         &mut self,
         done: impl Fn(&[run_response::Message]) -> bool,
     ) -> Vec<run_response::Message> {
@@ -53,9 +53,18 @@ impl Scripted {
 
     /// Reads past any messages to how Coral closed the stream.
     async fn closed(&mut self) -> coral_run_executor::Closing {
+        self.read_to_close().await.1
+    }
+
+    /// Reads to how Coral closed the stream, with every message before it.
+    pub(super) async fn read_to_close(
+        &mut self,
+    ) -> (Vec<run_response::Message>, coral_run_executor::Closing) {
+        let mut read = Vec::new();
         loop {
-            if let Err(closing) = self.recv().await {
-                return closing;
+            match self.recv().await {
+                Ok(response) => read.push(response.message.expect("a message")),
+                Err(closing) => return (read, closing),
             }
         }
     }
@@ -99,7 +108,7 @@ async fn approve(
 }
 
 /// The one answer to request `number` in `read`.
-fn only_answer(read: &[run_response::Message], number: u64) -> &InvocationResult {
+pub(super) fn only_answer(read: &[run_response::Message], number: u64) -> &InvocationResult {
     let [answer] = answers(read, number)[..] else {
         panic!("one answer to request {number}: {read:?}");
     };
@@ -125,7 +134,7 @@ async fn decide_in_the_inbox(
 }
 
 /// Each Invocation of `run_id`, in admission order, by its result kind.
-async fn result_kinds(
+pub(super) async fn result_kinds(
     fixture: &TestModules,
     tool: &ToolFixture,
     run_id: &crate::RunId,
@@ -141,13 +150,13 @@ async fn result_kinds(
 /// A started Run on its stream from `first`, and `second`, the module its
 /// stream moves to: another Coral Instance on Postgres; on SQLite, which has
 /// one, the same module, whose stream drops.
-struct Moving {
-    fixture: TestModules,
-    first: RunModule,
-    second: RunModule,
-    tool: ToolFixture,
-    run_id: crate::RunId,
-    claim: String,
+pub(super) struct Moving {
+    pub(super) fixture: TestModules,
+    pub(super) first: RunModule,
+    pub(super) second: RunModule,
+    pub(super) tool: ToolFixture,
+    pub(super) run_id: crate::RunId,
+    pub(super) claim: String,
 }
 
 /// The two modules over `fixture` a Run's stream moves between, each as
@@ -166,7 +175,7 @@ fn modules(
 }
 
 /// Starts a Run of `source` as `tool`'s User on a stream from `first`.
-async fn start_moving(
+pub(super) async fn start_moving(
     fixture: TestModules,
     (first, second): (RunModule, RunModule),
     tool: ToolFixture,
@@ -202,7 +211,7 @@ async fn moving(upstream: Arc<SequencedUpstream>) -> (Moving, Scripted) {
 }
 
 /// Reopens the moved stream on `second`, waiting on `awaited`.
-fn reopen(moving: &Moving, awaited: &[(u64, u64)]) -> Scripted {
+pub(super) fn reopen(moving: &Moving, awaited: &[(u64, u64)]) -> Scripted {
     Scripted::open_with(
         &moving.second,
         Open {
@@ -217,13 +226,13 @@ fn reopen(moving: &Moving, awaited: &[(u64, u64)]) -> Scripted {
     )
 }
 
-fn finish_with(value: &str) -> request::Kind {
+pub(super) fn finish_with(value: &str) -> request::Kind {
     request::Kind::Finish(Finish {
         completion: Some(finish::Completion::ValueJson(value.to_owned())),
     })
 }
 
-fn failed_with(answer: &InvocationResult, code: &str) -> bool {
+pub(super) fn failed_with(answer: &InvocationResult, code: &str) -> bool {
     matches!(&answer.outcome,
         Some(invocation_result::Outcome::CoralFailure(failure)) if failure.code == code)
 }

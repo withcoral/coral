@@ -502,6 +502,7 @@ fn run_effect(
         Effect::EndStreamRun(termination) => {
             spawn_stream_end(module, accepted, start, handle, termination);
         }
+        Effect::MoveStream => move_stream(start, handle),
         Effect::Commit { .. }
         | Effect::TerminateProgram
         | Effect::Settle { .. }
@@ -517,6 +518,16 @@ fn run_effect(
             );
         }
     }
+}
+
+/// Moves the Run's stream in the Shutdown Drain. The answers the detach
+/// releases never reach the Program: the Coral Instance the stream reopens
+/// on answers what it waits on.
+fn move_stream(start: &OwnerStart, handle: &OwnerHandle) {
+    if let Some(link) = stream_link(start) {
+        link.start_moving();
+    }
+    handle.detach();
 }
 
 /// Starts the Program: in this process's isolate, or on the Run stream of a

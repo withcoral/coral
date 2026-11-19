@@ -155,7 +155,11 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   `Terminate`; no shutdown grace applies (#2904). A reopen of the stream
   (#2905) starts a new owner, rebuilt from the ledger. The owner it
   replaces, whose stream moved to another Coral Instance or to a reopen on
-  its own, rebuilds nothing: its chunk is refused. For a Run that no worker
+  its own, rebuilds nothing: its chunk is refused. The Shutdown Drain never
+  interrupts that owner's Run (#2908): the owner dispatches no call the
+  Program makes after the drain starts, and once its Coral Instance holds no
+  pull stream and no dispatch is in flight on the stream, or at the drain's
+  length, it detaches and ends the stream cleanly. For a Run that no worker
   claim fences, the Run sweeper (#2906) also writes under the claim and the
   head, as the sweeper section of ADR 0027 states. A stream owner writes its
   Run only while the row names its Coral Instance as the stream's holder.

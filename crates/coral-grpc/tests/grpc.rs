@@ -137,6 +137,19 @@ impl Fixture {
             None,
             coral_secret_store::SecretStores::default(),
             Arc::new(clock),
+            coral_edition::EditionInspection::default(),
+        )
+        .await
+    }
+
+    /// A server with sign-in that reports `edition`.
+    async fn with_edition(edition: coral_edition::EditionInspection) -> Self {
+        Self::compose_at(
+            true,
+            None,
+            coral_secret_store::SecretStores::default(),
+            Arc::new(coral_db::SystemClock),
+            edition,
         )
         .await
     }
@@ -151,6 +164,7 @@ impl Fixture {
             releases,
             secret_stores,
             Arc::new(coral_db::SystemClock),
+            coral_edition::EditionInspection::default(),
         )
         .await
     }
@@ -164,6 +178,7 @@ impl Fixture {
         releases: Option<coral_release::ReleaseCheck>,
         secret_stores: coral_secret_store::SecretStores,
         clock: Arc<dyn coral_db::Clock>,
+        edition: coral_edition::EditionInspection,
     ) -> Self {
         let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
         let database = fixture.database();
@@ -322,6 +337,7 @@ impl Fixture {
                 ),
                 shared_tools,
                 releases,
+                edition,
                 usage: Some(coral_usage::UsageData::new(
                     database.clone(),
                     coral_usage::Host {
@@ -500,6 +516,10 @@ impl Fixture {
 
     fn usage_data(&self) -> management::usage_data_service_client::UsageDataServiceClient<Channel> {
         management::usage_data_service_client::UsageDataServiceClient::new(self.channel.clone())
+    }
+
+    fn editions(&self) -> management::edition_service_client::EditionServiceClient<Channel> {
+        management::edition_service_client::EditionServiceClient::new(self.channel.clone())
     }
 
     fn releases(&self) -> management::release_service_client::ReleaseServiceClient<Channel> {
@@ -1347,6 +1367,78 @@ async fn task_concealment_and_live_membership_survive_both_audiences() {
             .unwrap_err()
             .code(),
         tonic::Code::NotFound
+    );
+}
+
+/// `GetEdition` projects the Edition and each registered feature's state, as
+/// the server holds them when asked. A source build, which registers no
+/// Enterprise Feature, answers Community with none. Only a signed-in User may
+/// ask. `coral-edition` owns how a state follows the Edition.
+#[tokio::test]
+async fn edition_inspection_projects_the_edition_and_its_features() {
+    let ask = |fixture: &Fixture| {
+        let request = request(
+            management::GetEditionRequest {},
+            &fixture.token(&fixture.member, "reef"),
+            "reef",
+        );
+        let mut client = fixture.editions();
+        async move { client.get_edition(request).await.unwrap().into_inner() }
+    };
+    let feature = |state: management::EnterpriseFeatureState| management::EnterpriseFeature {
+        id: "example-feature".into(),
+        display_name: "Example feature".into(),
+        state: state.into(),
+    };
+
+    let source = Fixture::new().await;
+    assert_eq!(
+        ask(&source).await,
+        management::GetEditionResponse {
+            edition: management::Edition::Community.into(),
+            features: vec![],
+        }
+    );
+
+    let switch = Arc::new(coral_edition::test_fixtures::SwitchedEdition::default());
+    let licensed = Fixture::with_edition(coral_edition::EditionInspection::new(
+        coral_edition::EditionCheck::new(switch.clone()),
+        coral_edition::EnterpriseFeatures::default().with(coral_edition::EnterpriseFeature::new(
+            coral_edition::EnterpriseFeatureId::new("example-feature"),
+            "Example feature",
+        )),
+    ))
+    .await;
+    for (source, edition, state) in [
+        (
+            coral_edition::Edition::Community,
+            management::Edition::Community,
+            management::EnterpriseFeatureState::NeedsEnterprise,
+        ),
+        (
+            coral_edition::Edition::Enterprise,
+            management::Edition::Enterprise,
+            management::EnterpriseFeatureState::Enabled,
+        ),
+    ] {
+        switch.set(source);
+        assert_eq!(
+            ask(&licensed).await,
+            management::GetEditionResponse {
+                edition: edition.into(),
+                features: vec![feature(state)],
+            }
+        );
+    }
+
+    let denied = licensed
+        .editions()
+        .get_edition(tonic::Request::new(management::GetEditionRequest {}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (denied.code(), error_reason(&denied).as_str()),
+        (tonic::Code::Unauthenticated, "UNAUTHENTICATED")
     );
 }
 

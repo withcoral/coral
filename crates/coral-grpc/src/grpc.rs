@@ -3,6 +3,7 @@ mod accounts;
 mod activity;
 mod agents;
 mod authored_tools;
+mod editions;
 mod memberships;
 mod organization_memberships;
 mod organization_workspaces;
@@ -60,6 +61,10 @@ pub struct Dependencies {
     pub access_lifecycle: coral_administration::AccessLifecycleModule,
     /// The newest published release; absent when the operator turned the check off.
     pub releases: Option<coral_release::ReleaseCheck>,
+    /// The deployment's Edition, read each time it is asked, and the
+    /// Enterprise Features the launching binary registers; none in a source
+    /// build.
+    pub edition: coral_edition::EditionInspection,
     /// The deployment's usage data; absent where the application composes none.
     pub usage: Option<coral_usage::UsageData>,
     /// The Secret Stores the operator defined and their grants to Workspaces.
@@ -92,30 +97,13 @@ pub struct TransportContext {
 /// domain modules. Failures become bounded statuses, never raw domain error text.
 #[must_use]
 pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::service::Routes {
-    let services = GrpcServices {
-        organization: dependencies.organization,
-        authentication: context.authentication,
-        clock: context.clock,
-        mcp_origin: context.mcp_origin,
-        stopping: context.stopping,
-        workspaces: dependencies.workspaces,
-        providers: dependencies.providers,
-        provider_workflow: dependencies.provider_workflow,
-        workspace_workflow: dependencies.workspace_workflow,
-        provider_readiness: dependencies.provider_readiness,
-        policies: dependencies.policies,
-        accounts: dependencies.accounts,
-        tasks: dependencies.tasks,
-        private_tools: dependencies.private_tools,
-        private_tool_workflow: dependencies.private_tool_workflow,
-        shared_tools: dependencies.shared_tools,
-        shared_tool_workflow: dependencies.shared_tool_workflow,
-        runs: dependencies.runs,
-        access_lifecycle: dependencies.access_lifecycle,
-        releases: dependencies.releases,
-        usage: dependencies.usage,
-        secret_stores: dependencies.secret_stores,
-    };
+    let services = GrpcServices::new(
+        dependencies,
+        context.authentication,
+        context.clock,
+        context.mcp_origin,
+        context.stopping,
+    );
     let mut routes = tonic::service::Routes::default()
         .add_service(
             management::activity_service_server::ActivityServiceServer::new(services.clone())
@@ -159,6 +147,9 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
             management::workspace_service_server::WorkspaceServiceServer::new(services.clone()),
         )
         .add_service(management::release_service_server::ReleaseServiceServer::new(
+            services.clone(),
+        ))
+        .add_service(management::edition_service_server::EditionServiceServer::new(
             services.clone(),
         ))
         .add_service(
@@ -216,11 +207,46 @@ struct GrpcServices {
     runs: coral_run::RunModule,
     access_lifecycle: coral_administration::AccessLifecycleModule,
     releases: Option<coral_release::ReleaseCheck>,
+    edition: coral_edition::EditionInspection,
     usage: Option<coral_usage::UsageData>,
     secret_stores: coral_administration::SecretStoreAdministration,
 }
 
 impl GrpcServices {
+    fn new(
+        dependencies: Dependencies,
+        authentication: PrincipalAuthentication,
+        clock: Arc<dyn Clock>,
+        mcp_origin: Arc<std::sync::OnceLock<String>>,
+        stopping: tokio::sync::watch::Receiver<bool>,
+    ) -> Self {
+        Self {
+            organization: dependencies.organization,
+            authentication,
+            clock,
+            mcp_origin,
+            stopping,
+            workspaces: dependencies.workspaces,
+            providers: dependencies.providers,
+            provider_workflow: dependencies.provider_workflow,
+            workspace_workflow: dependencies.workspace_workflow,
+            provider_readiness: dependencies.provider_readiness,
+            policies: dependencies.policies,
+            accounts: dependencies.accounts,
+            tasks: dependencies.tasks,
+            private_tools: dependencies.private_tools,
+            private_tool_workflow: dependencies.private_tool_workflow,
+            shared_tools: dependencies.shared_tools,
+            shared_tool_workflow: dependencies.shared_tool_workflow,
+            runs: dependencies.runs,
+            access_lifecycle: dependencies.access_lifecycle,
+            releases: dependencies.releases,
+            edition: dependencies.edition,
+            usage: dependencies.usage,
+            secret_stores: dependencies.secret_stores,
+        }
+    }
+
     async fn task<T>(
         &self,
         request: &Request<T>,

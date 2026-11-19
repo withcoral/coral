@@ -5,8 +5,8 @@
 use super::*;
 
 use crate::owner::{
-    CHUNK_WORK_CAP, Check, CommitRejection, Effect, Message, OwnerLimits, OwnerState, ParkedWait,
-    Phase, StartedExecution, Timer,
+    CHUNK_WORK_CAP, Check, CommitRejection, DrainStep, Effect, Message, OwnerLimits, OwnerState,
+    ParkedWait, Phase, StartedExecution, Timer,
 };
 
 /// [`crate::owner::apply`] without the idle tick's re-arming, which every
@@ -440,6 +440,24 @@ fn started(limits: OwnerLimits) -> OwnerState {
     ));
     assert_eq!(state.phase(), Phase::Running);
     assert_eq!(state.head(), 1);
+    state
+}
+
+/// A Run stream's owner, launched at 1 and started at 2 with the deadline
+/// `limits` names.
+fn stream_started(limits: OwnerLimits) -> OwnerState {
+    let mut state = OwnerState::for_run_stream(limits, 1, (0, 0));
+    deliver(apply_without_tick(&mut state, Message::Launch, 1));
+    deliver(apply_without_tick(
+        &mut state,
+        Message::Started(Ok(Some(StartedExecution {
+            package: ProgramPackage::scripted("x"),
+            head: 1,
+            deadline_at_unix_nanos: limits.deadline_at_unix_nanos,
+        }))),
+        2,
+    ));
+    assert_eq!(state.phase(), Phase::Running);
     state
 }
 
@@ -1647,6 +1665,83 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         }
         assert_eq!(state.waiting_for_a_slot(), 0);
         assert_eq!(state.pending_chunks(), 0);
+    }
+
+    // The Shutdown Drain on a Run stream's owner: a request after `Hold`
+    // starts no dispatch and stays in memory; `Move` waits for the
+    // dispatch in flight, and its result frees the stream to move. The
+    // held request is answered as the Program's host ending, its result's
+    // row commits with no dispatch, and nothing writes the Run's end.
+    {
+        let mut state = stream_started(LIMITED);
+        let mut answers = enforce_each(&mut state, 50..51);
+        deliver(apply_without_tick(&mut state, Message::Drained, 51));
+        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::Hold), 52);
+        assert!(deliver(effects).is_empty());
+        let (effects, mut held) = enforce_as(&mut state, 1, 53);
+        assert!(deliver(effects).is_empty());
+        assert_eq!(state.waiting_for_a_slot(), 1, "held, with a slot free");
+        assert_eq!(state.slots_held(), 1);
+        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::Move), 54);
+        assert!(effects.is_empty(), "the batch is in flight: {effects:?}");
+        let effects = deliver(apply_without_tick(&mut state, Message::Committed, 55));
+        assert!(effects.is_empty(), "its dispatch is in flight: {effects:?}");
+        assert!(answered(answers.first_mut().expect("the batched request")).is_none());
+        let (effects, _applied, _work) = result(&mut state, 10, 56);
+        let effects = deliver(effects);
+        assert!(
+            matches!(effects.as_slice(), [Effect::MoveStream]),
+            "the result frees the stream: {effects:?}"
+        );
+        assert!(matches!(
+            answered(&mut held),
+            Some(Err(Error::ProgramHostTerminated))
+        ));
+        let effects = deliver(apply_without_tick(&mut state, Message::Detached, 57));
+        assert!(
+            matches!(effects.as_slice(), [Effect::Commit { chunk, .. }] if chunk.enforcement.is_none()),
+            "the result's row commits, with no dispatch: {effects:?}"
+        );
+        let effects = apply_without_tick(&mut state, Message::Committed, 58);
+        assert!(
+            matches!(effects.as_slice(), [Effect::Retire]),
+            "{effects:?}"
+        );
+    }
+
+    // At the drain's length a stream moves with its dispatch in flight,
+    // and a batch not yet committed starts no dispatch. A request that its
+    // mailbox held behind the move is held too, and the detach answers it.
+    {
+        let mut state = stream_started(LIMITS);
+        let mut answers = enforce_each(&mut state, 60..61);
+        deliver(apply_without_tick(&mut state, Message::Drained, 61));
+        let (effects, mut unsent) = enforce_as(&mut state, 1, 62);
+        assert!(deliver(effects).is_empty());
+        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::MoveNow), 63);
+        assert!(
+            matches!(
+                effects.as_slice(),
+                [Effect::MoveStream, Effect::Abandon(..)]
+            ),
+            "{effects:?}"
+        );
+        deliver(effects);
+        assert!(matches!(
+            answered(&mut unsent),
+            Some(Err(Error::ProgramHostTerminated))
+        ));
+        assert!(answered(answers.first_mut().expect("in flight")).is_none());
+        let (effects, mut behind) = enforce_as(&mut state, 2, 64);
+        assert!(deliver(effects).is_empty());
+        assert_eq!(state.waiting_for_a_slot(), 1);
+        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::MoveNow), 65);
+        assert!(deliver(effects).is_empty(), "it moves once");
+        deliver(apply_without_tick(&mut state, Message::Detached, 66));
+        assert!(matches!(
+            answered(&mut behind),
+            Some(Err(Error::ProgramHostTerminated))
+        ));
     }
 }
 

@@ -39,7 +39,7 @@ or seat count: the Edition is all it sets. A binary refuses a format version or 
 
 A build with a Release Date trusts only the production public keys. A build without one, any source or development
 build, trusts only a test public key, and counts as released on its own commit's date, or on the current date when git
-is unavailable. The test signing key's private half stays in the Coral team's password vault, outside this repository and CI. The
+is unavailable. The test signing key's private half never leaves AWS KMS in a staging account, so it stays outside this repository and CI. The
 repository keeps three Licenses signed with it: a Commercial License that covers every development build, which Reel and
 developers load to run as Enterprise, one that has lapsed, and an Evaluation License that never expires, to show the
 trial path. Tests that need other Licenses sign them with signing keys they generate, which they pass to the check directly. So

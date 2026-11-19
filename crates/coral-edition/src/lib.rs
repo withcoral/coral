@@ -9,6 +9,10 @@
 //! running: an Evaluation License stops Coral when it expires. An Enterprise
 //! Feature still asks [`EditionCheck::is_enterprise`] each time it is used,
 //! not once at startup.
+//!
+//! A launching binary registers the Enterprise Features it contains as
+//! [`EnterpriseFeatures`], and [`EditionInspection::report`] says what state each
+//! is in, for Reef to show.
 
 use std::fmt;
 use std::sync::Arc;
@@ -207,6 +211,129 @@ impl EditionCheck {
     }
 }
 
+/// The deployment's Edition beside the Enterprise Features the launching
+/// binary registers, for the private API to report.
+#[derive(Clone, Debug, Default)]
+pub struct EditionInspection {
+    check: EditionCheck,
+    features: EnterpriseFeatures,
+}
+
+impl EditionInspection {
+    /// Reports `features` in the Edition `check` decides.
+    #[must_use]
+    pub const fn new(check: EditionCheck, features: EnterpriseFeatures) -> Self {
+        Self { check, features }
+    }
+
+    /// The Edition right now, and the state of each feature in it. It asks
+    /// the source once, so every feature agrees with the Edition.
+    #[must_use]
+    pub fn report(&self) -> EditionReport {
+        let edition = self.check.current();
+        let state = match edition {
+            Edition::Community => FeatureState::NeedsEnterprise,
+            Edition::Enterprise => FeatureState::Enabled,
+        };
+        EditionReport {
+            edition,
+            features: self
+                .features
+                .0
+                .iter()
+                .map(|feature| (feature.clone(), state))
+                .collect(),
+        }
+    }
+}
+
+/// The stable name code gives an Enterprise Feature. Reef finds a feature
+/// by it, so it never changes once a release reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EnterpriseFeatureId(&'static str);
+
+impl EnterpriseFeatureId {
+    /// The id `id`, in lowercase words joined by hyphens.
+    #[must_use]
+    pub const fn new(id: &'static str) -> Self {
+        Self(id)
+    }
+
+    /// The id as the private API reports it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+impl fmt::Display for EnterpriseFeatureId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+/// An Enterprise Feature a build contains, as people see it named.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnterpriseFeature {
+    id: EnterpriseFeatureId,
+    display_name: &'static str,
+}
+
+impl EnterpriseFeature {
+    /// A feature that `id` names for code and `display_name` names for
+    /// people.
+    #[must_use]
+    pub const fn new(id: EnterpriseFeatureId, display_name: &'static str) -> Self {
+        Self { id, display_name }
+    }
+
+    /// The feature's stable id.
+    #[must_use]
+    pub const fn id(&self) -> EnterpriseFeatureId {
+        self.id
+    }
+
+    /// The name people read.
+    #[must_use]
+    pub const fn display_name(&self) -> &'static str {
+        self.display_name
+    }
+}
+
+/// The Enterprise Features a launching binary registers. Core registers
+/// none, so a source build does not know they exist (ADR 0033).
+#[derive(Clone, Debug, Default)]
+pub struct EnterpriseFeatures(Vec<EnterpriseFeature>);
+
+impl EnterpriseFeatures {
+    /// Adds a feature. A later feature with the same id replaces the
+    /// earlier one.
+    #[must_use]
+    pub fn with(mut self, feature: EnterpriseFeature) -> Self {
+        self.0.retain(|other| other.id != feature.id);
+        self.0.push(feature);
+        self
+    }
+}
+
+/// Whether an Enterprise Feature works right now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FeatureState {
+    /// The Edition is Enterprise, so the feature works.
+    Enabled,
+    /// The Edition is Community, so the feature fails closed.
+    NeedsEnterprise,
+}
+
+/// The Edition at one moment, and each registered feature's state in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditionReport {
+    /// The Edition when asked.
+    pub edition: Edition,
+    /// Each registered feature, in the order registered, with its state.
+    pub features: Vec<(EnterpriseFeature, FeatureState)>,
+}
+
 impl Default for EditionCheck {
     fn default() -> Self {
         Self::new(Arc::new(Edition::Community))
@@ -221,16 +348,26 @@ impl fmt::Debug for EditionCheck {
     }
 }
 
-#[cfg(test)]
-mod tests {
+/// Sources a test drives.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_fixtures {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    use super::*;
+    use super::{Edition, EditionSource};
 
-    /// A source whose answer changes.
-    struct Switch(AtomicBool);
+    /// An Edition a test changes while Coral runs, as a License can.
+    #[derive(Debug, Default)]
+    pub struct SwitchedEdition(AtomicBool);
 
-    impl EditionSource for Switch {
+    impl SwitchedEdition {
+        /// Makes the Edition `edition` from the next read on.
+        pub fn set(&self, edition: Edition) {
+            self.0
+                .store(edition == Edition::Enterprise, Ordering::SeqCst);
+        }
+    }
+
+    impl EditionSource for SwitchedEdition {
         fn edition(&self) -> Edition {
             if self.0.load(Ordering::SeqCst) {
                 Edition::Enterprise
@@ -238,6 +375,16 @@ mod tests {
                 Edition::Community
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_fixtures::SwitchedEdition;
+    use super::*;
+
+    fn id(id: &'static str) -> EnterpriseFeatureId {
+        EnterpriseFeatureId::new(id)
     }
 
     #[test]
@@ -280,15 +427,54 @@ mod tests {
     }
 
     #[test]
+    fn each_feature_follows_the_edition_when_asked() {
+        let switch = Arc::new(SwitchedEdition::default());
+        let check = EditionCheck::new(Arc::clone(&switch) as Arc<dyn EditionSource>);
+        let inspection = EditionInspection::new(
+            check,
+            EnterpriseFeatures::default()
+                .with(EnterpriseFeature::new(id("one"), "One"))
+                .with(EnterpriseFeature::new(id("two"), "Two"))
+                // A later registration under the same id replaces the earlier one.
+                .with(EnterpriseFeature::new(id("one"), "One again")),
+        );
+
+        for (edition, state) in [
+            (Edition::Community, FeatureState::NeedsEnterprise),
+            (Edition::Enterprise, FeatureState::Enabled),
+            (Edition::Community, FeatureState::NeedsEnterprise),
+        ] {
+            switch.set(edition);
+            let report = inspection.report();
+            assert_eq!(report.edition, edition);
+            assert_eq!(
+                report
+                    .features
+                    .iter()
+                    .map(|(feature, state)| (feature.id(), feature.display_name(), *state))
+                    .collect::<Vec<_>>(),
+                [(id("two"), "Two", state), (id("one"), "One again", state)]
+            );
+        }
+    }
+
+    #[test]
+    fn a_build_that_registers_nothing_reports_community_alone() {
+        let report = EditionInspection::default().report();
+        assert_eq!(report.edition, Edition::Community);
+        assert_eq!(report.features, []);
+    }
+
+    #[test]
     fn check_follows_a_source_that_changes() {
-        let switch = Arc::new(Switch(AtomicBool::new(false)));
+        let switch = Arc::new(SwitchedEdition::default());
         let check = EditionCheck::new(Arc::clone(&switch) as Arc<dyn EditionSource>);
         assert!(!check.is_enterprise());
 
-        switch.0.store(true, Ordering::SeqCst);
+        switch.set(Edition::Enterprise);
         assert!(check.is_enterprise());
 
-        switch.0.store(false, Ordering::SeqCst);
+        switch.set(Edition::Community);
         assert!(!check.is_enterprise());
     }
 }

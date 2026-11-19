@@ -2,6 +2,7 @@ import type { ShouldRevalidateFunctionArgs } from 'react-router'
 import { Code, ConnectError } from '@connectrpc/connect'
 import { expect, it, vi } from 'vitest'
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
+import { Edition, EnterpriseFeatureState } from '@/generated/coral/management/v1/edition_pb'
 import { OrganizationRole } from '@/generated/coral/management/v1/organization_membership_pb'
 import { WorkspaceRole, WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
 import { fakeManagementTransport } from '@/lib/management.test-support'
@@ -24,6 +25,12 @@ const transport = fakeManagementTransport({
       return { secretStores: [], disabled: secretStores === 'off' }
     },
   },
+  editions: {
+    getEdition: () => {
+      if (edition === 'unavailable') throw new ConnectError('down', Code.Unavailable)
+      return { ...edition, features: [...edition.features] }
+    },
+  },
   releases: {
     getNewerRelease: () => {
       if (release === 'unavailable') throw new ConnectError('down', Code.Unavailable)
@@ -33,6 +40,12 @@ const transport = fakeManagementTransport({
 })
 let role = OrganizationRole.UNSPECIFIED
 let release: { version: string; notesUrl: string } | undefined | 'unavailable'
+let edition:
+  | {
+      edition: Edition
+      features: readonly { id: string; displayName: string; state: EnterpriseFeatureState }[]
+    }
+  | 'unavailable' = { edition: Edition.COMMUNITY, features: [] }
 let secretStores: 'none defined' | 'off' | 'unavailable' = 'none defined'
 vi.mock('@/lib/coral-request.server', () => ({ managementTransportForRequest: () => transport }))
 
@@ -98,6 +111,39 @@ it.each([
     expect(result.data.secretStoresEnabled).toBe(shown)
   },
 )
+
+const feature = { id: 'example-feature', displayName: 'Example feature' }
+
+// Catches: a page that cannot tell whether an Enterprise Feature works, or one
+// that shows a feature as missing when Coral could not answer.
+it.each([
+  [
+    'a source build',
+    { edition: Edition.COMMUNITY, features: [] },
+    { edition: 'community', features: [] },
+  ],
+  [
+    'a released build without a license',
+    {
+      edition: Edition.COMMUNITY,
+      features: [{ ...feature, state: EnterpriseFeatureState.NEEDS_ENTERPRISE }],
+    },
+    { edition: 'community', features: [{ ...feature, state: 'needs_enterprise' }] },
+  ],
+  [
+    'a released build with a license',
+    {
+      edition: Edition.ENTERPRISE,
+      features: [{ ...feature, state: EnterpriseFeatureState.ENABLED }],
+    },
+    { edition: 'enterprise', features: [{ ...feature, state: 'enabled' }] },
+  ],
+  ['Coral when it cannot answer', 'unavailable', null],
+] as const)('gives every page the edition of %s', async (_case, answer, expected) => {
+  edition = answer
+  const result = await loader(authRouteTestArgs(new Request('http://reef/activity'), {}, null))
+  expect(result.data.edition).toEqual(expected)
+})
 
 // A row opens its review through the query. The sidebar must not reload for it, but a refresh
 // and a move to another page must still read the shell.

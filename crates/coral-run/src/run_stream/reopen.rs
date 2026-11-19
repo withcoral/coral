@@ -10,8 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use coral_provider::ResolvedInvocationTool;
-use coral_run_executor::Closing;
 use coral_run_executor::wire::v1::{Awaited, RunEnd as WireEnd};
+use coral_run_executor::{Closing, SHUTTING_DOWN};
 use coral_workspace::AuthenticatedPrincipal;
 
 use super::{LinkedTools, Requests, StreamLink, taken_end, wire_end};
@@ -79,7 +79,7 @@ impl RunModule {
         let held = run.held_id();
         // Held until the owner is registered, so a Shutdown Drain counts it.
         let Ok(admitted) = self.admission.admit() else {
-            return link.close(Closing::Unavailable("this Coral Instance is shutting down"));
+            return link.close(Closing::Unavailable(SHUTTING_DOWN));
         };
         // An owner of this Run still here commits nothing more on a moved head.
         self.owners.supersede(&run.id);
@@ -401,6 +401,11 @@ impl RunModule {
             return link.close(Closing::InvalidArgument(
                 "the Run stream broke the protocol",
             ));
+        }
+        // The stream moves: the Coral Instance it reopens on answers how the
+        // Run stands.
+        if link.moving.load(std::sync::atomic::Ordering::SeqCst) {
+            return link.close(Closing::Moved);
         }
         if let Ok(Some(run)) = run_repository::find_exact(&self.database, workspace_id, id).await
             && run.state.is_terminal()

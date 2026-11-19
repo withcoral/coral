@@ -462,6 +462,7 @@ impl PreparedServerBuilder {
                 compile_in_process: launcher.compile_in_process,
             },
             releases,
+            edition: launcher.extensions.inspection(),
             usage,
         })
         .await?;

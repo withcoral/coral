@@ -492,7 +492,7 @@ fn a_build_trusts_the_test_key_only_when_it_has_no_release_date() {
         })
     );
 
-    let test_kid = "k4.pid.6QBZRKbcbaaDgOpU7uN8FmoacXm3GV74aLGp3KbQ5E27";
+    let test_kid = "k4.pid.k5Q9R6AmQDkRdgJFsN88LflWipg9-A1eWuHfuZwgX6Eu";
     let edition = LicensedEdition::new(Keys::for_build(released), released);
     for license in [covering, lapsed, evaluation] {
         assert_eq!(
@@ -507,10 +507,9 @@ fn a_build_trusts_the_test_key_only_when_it_has_no_release_date() {
     // A development build trusts the test signing key alone, so it refuses every
     // production-signed License.
     assert_eq!(Keys::for_build(development).trusted_ids(), [test_kid]);
-    assert!(
-        !Keys::for_build(released)
-            .trusted_ids()
-            .iter()
-            .any(|id| id == test_kid)
+    // A released build trusts the production signing key alone.
+    assert_eq!(
+        Keys::for_build(released).trusted_ids(),
+        ["k4.pid.st8whdOWHmuzmpTwpoLR6TufziJyJJwnpdZaonWITHBG"]
     );
 }

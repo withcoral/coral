@@ -173,9 +173,12 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   rows; the Fan-out slots are the count of `dispatching` Invocations; the output total is the committed total with the
   resent requests applied on top. The reconnect's write records the new holder.
 - **The Shutdown Drain finishes dispatches, not Runs.** At its start the Coral Instance reports not ready, answers no
-  ask and accepts no new stream. It keeps each open Run stream until that Run has no dispatch in flight on it, then
-  ends its side of the stream cleanly; the Run Executor reopens it at once and the Run goes on elsewhere. At the drain's
-  length it closes the rest. Nothing in the drain records Interrupted, and a rolling deploy loses nothing.
+  ask and accepts no new stream. Each pull stream ends cleanly once its compiles in flight are answered or due, and
+  its Run Executor redials elsewhere. The Coral Instance keeps each open Run stream, dispatching no call the Program
+  makes after the drain starts, until it holds no pull stream and that Run has no dispatch in flight on it, then ends
+  its side of the stream cleanly; the Run Executor reopens it at once and the Run goes on elsewhere. At the drain's
+  length it closes the rest, whose calls in flight end `indeterminate`. Nothing in the drain records Interrupted, and
+  a rolling deploy loses no Run.
 - **The word is reconnect.** A Run Executor reconnects a Run, and the Run's stream moves. Coral never resumes a Run: no
   Program is recreated and no isolate is snapshotted.
 

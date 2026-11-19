@@ -32,7 +32,7 @@ use crate::wire::v1::{
 };
 use crate::{
     LocalRunExecutors, MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, PullStreamCompiler, RunStreamServer,
-    ServedRunStream, lease_repository,
+    SHUTTING_DOWN, ServedRunStream, lease_repository,
 };
 
 /// How long the listener keeps a connection, and a pull stream its open
@@ -224,12 +224,17 @@ pub struct PullStreams {
     /// Signalled when a stream opens or reports its room.
     room_signal: Arc<tokio::sync::Notify>,
     next: Arc<AtomicU64>,
+    /// Set once this Coral Instance drains ([`Self::drain`]).
+    draining: Arc<watch::Sender<bool>>,
+    /// How many streams it holds, for [`Self::ended`].
+    count: Arc<watch::Sender<usize>>,
 }
 
 struct Held {
     /// What the take loop and the compiler client see.
     view: HeldStream,
-    /// Set at the connection age or shutdown: nothing more is sent.
+    /// Set at the connection age, the drain or shutdown: nothing more is
+    /// sent.
     closing: bool,
     outbound: mpsc::UnboundedSender<Result<PullResponse, Status>>,
     compiles_sent: u64,
@@ -532,8 +537,23 @@ impl PullStreams {
             kept_for_callers: 0,
             compiles: HashMap::new(),
         };
-        lock(&self.held).insert(stream, held);
-        self.signal_room();
+        let mut held_streams = lock(&self.held);
+        // Read under the lock `drain` walks the streams in: a stream that
+        // opens while the Coral Instance drains takes no send, and its
+        // holder ends it.
+        let draining = *self.draining.borrow();
+        held_streams.insert(
+            stream,
+            Held {
+                closing: draining,
+                ..held
+            },
+        );
+        self.count.send_replace(held_streams.len());
+        drop(held_streams);
+        if !draining {
+            self.signal_room();
+        }
         stream
     }
 
@@ -616,10 +636,48 @@ impl PullStreams {
     /// Forgets `stream`, which fails its compiles in flight, and ends
     /// Coral's side with `violation`, or cleanly without one: the move.
     pub(crate) fn end(&self, stream: StreamId, violation: Option<Status>) {
-        let held = lock(&self.held).remove(&stream);
+        let mut held_streams = lock(&self.held);
+        let held = held_streams.remove(&stream);
+        self.count.send_replace(held_streams.len());
+        drop(held_streams);
         if let (Some(held), Some(violation)) = (held, violation) {
             drop(held.outbound.send(Err(violation)));
         }
+    }
+
+    /// Drains this Coral Instance's link: every stream takes no send from
+    /// now on and ends cleanly once its compiles in flight are answered or
+    /// due, as at its connection age, and the listener refuses a new pull
+    /// stream or Run stream with `UNAVAILABLE`. The Run Executor redials and
+    /// lands on another Coral Instance.
+    pub fn drain(&self) {
+        self.draining.send_replace(true);
+        for held in lock(&self.held).values_mut() {
+            held.closing = true;
+        }
+    }
+
+    /// Whether [`Self::drain`] ran.
+    pub(crate) fn is_draining(&self) -> bool {
+        *self.draining.borrow()
+    }
+
+    /// Watches [`Self::drain`].
+    fn draining(&self) -> watch::Receiver<bool> {
+        self.draining.subscribe()
+    }
+
+    /// Returns once this Coral Instance holds no pull stream.
+    pub async fn ended(&self) {
+        let mut count = self.count.subscribe();
+        // The sender lives as long as `self`.
+        let _none_held = count.wait_for(|count| *count == 0).await;
+    }
+
+    /// Ends a stream [`Self::scripted`] opened, as its holder would.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn end_scripted(&self, stream: StreamId) {
+        self.end(stream, None);
     }
 }
 
@@ -779,9 +837,13 @@ impl LinkService for PullService {
                 })
                 .await;
         });
-        Ok(Response::new(Box::pin(tokio_stream::StreamExt::map(
+        // A move ends the stream with OK and no message.
+        Ok(Response::new(Box::pin(tokio_stream::StreamExt::map_while(
             UnboundedReceiverStream::new(outbound),
-            |message| message.map_err(Status::from),
+            |message| match message {
+                Ok(response) => Some(Ok(response)),
+                Err(closing) => closing.status().map(Err),
+            },
         ))))
     }
 
@@ -796,6 +858,7 @@ impl LinkService for PullService {
         let admitted = self.link.credentials.admit(authorization).ok_or_else(|| {
             Status::unauthenticated("the Run Executor credential is not accepted")
         })?;
+        self.refuse_while_draining()?;
         let mut inbound = request.into_inner();
         // A Run Executor sends Hello with the call; one that sends none
         // within a keepalive holds nothing open, shutdown included.
@@ -830,6 +893,8 @@ impl LinkService for PullService {
             );
             Status::unavailable("the Run Executor lease is not written")
         })?;
+        // The drain may have started while the Hello or the lease was due.
+        self.refuse_while_draining()?;
         let (outbound, responses) = mpsc::unbounded_channel();
         let welcome = response(pull_response::Message::Welcome(Welcome {
             protocol_level: PROTOCOL_LEVEL,
@@ -850,6 +915,16 @@ impl LinkService for PullService {
 }
 
 impl PullService {
+    /// A draining Coral Instance opens no pull stream: the Run Executor
+    /// opens it on another. A stream that opens past this check is born
+    /// closing. The Run module refuses a new Run stream.
+    fn refuse_while_draining(&self) -> Result<(), Status> {
+        if self.link.streams.is_draining() {
+            return Err(Status::unavailable(SHUTTING_DOWN));
+        }
+        Ok(())
+    }
+
     /// Holds `stream` until it ends: applies its messages, renews its lease,
     /// and ends it cleanly at its age or shutdown once its compiles in
     /// flight are answered or due. A protocol violation ends it with
@@ -873,6 +948,7 @@ impl PullService {
         let deadline = sleep_until(opened + timing.connection_age);
         tokio::pin!(deadline);
         let mut closing = self.closing.clone();
+        let mut draining = streams.draining();
         let mut draining_until = None;
         let end = loop {
             if let Some(until) = draining_until
@@ -915,6 +991,10 @@ impl PullService {
                 }
                 // Its only change is to closing; a dropped sender closes too.
                 _ = closing.changed(), if draining_until.is_none() => {
+                    draining_until = Some(drain(streams, stream, deadline.as_mut()));
+                }
+                // The Coral Instance drains, now or before this stream opened.
+                _ = draining.wait_for(|draining| *draining), if draining_until.is_none() => {
                     draining_until = Some(drain(streams, stream, deadline.as_mut()));
                 }
             }

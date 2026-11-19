@@ -36,7 +36,7 @@ Enterprise, load the covering Commercial License, which never expires:
 
 ```toml
 [license]
-key = "v4.public.eyJjdXN0b21lciI6IkNvcmFsIGRldmVsb3BtZW50ICh0ZXN0IGtleSkiLCJleHBfZGF0ZSI6Ijk5OTktMTItMzEiLCJpYXQiOiIyMDI2LTExLTE4VDAwOjAwOjAwWiIsImtpbmQiOiJjb21tZXJjaWFsIiwibGlkIjoibGljX3Rlc3RfY292ZXJpbmciLCJ2IjoxfflEZrsafdS9BJkmESZ1K5vYGO6YXDe7ZWoDo25DkaEeihtow4Oax3mey2Jmqp4UuQugdEoqT8C3B1FaCzJZewQ.eyJraWQiOiJrNC5waWQuNlFCWlJLYmNiYWFEZ09wVTd1TjhGbW9hY1htM0dWNzRhTEdwM0tiUTVFMjcifQ"
+key = "v4.public.eyJ2IjoxLCJraW5kIjoiY29tbWVyY2lhbCIsImxpZCI6ImI3OTFjZjRkLWIyMGUtNDFlMC1hZTg3LTEzMjIzNTE2YjIxNCIsImN1c3RvbWVyIjoiQ29yYWwgZGV2ZWxvcG1lbnQgKHRlc3Qga2V5KSIsImlhdCI6IjIwMjYtMTEtMTlUMTM6MDU6MjJaIiwiZXhwX2RhdGUiOiI5OTk5LTEyLTMxIn3yDt03J1O9AaQQE1jBB16dWMIwElN5mO0r_3d8L5m0SfZjTIezNldjzsdG_pxEsPe3VJYIEdAuu8R-tIq2GtwL.eyJraWQiOiJrNC5waWQuazVROVI2QW1RRGtSZGdKRnNOODhMZmxXaXBnOS1BMWVXdUhmdVp3Z1g2RXUifQ"
 ```
 
 That is the `v4.public.` line of
@@ -54,9 +54,9 @@ passes it, Coral stops and does not start again with it. A build released after
 it does not start with it either.
 
 A published build trusts only the production signing keys, so it refuses all
-three. The private half of the test signing key is in the team's password
-vault, not in this repository or CI. Tests sign the other Licenses they need
-with signing keys they generate.
+three. The private half of the test signing key never leaves AWS KMS in
+Coral's staging licensing account, so it is not in this repository or CI.
+Tests sign the other Licenses they need with signing keys they generate.
 
 [ADR 0033](../docs/adr/0033-enterprise-code-lives-in-ee-and-runs-only-in-the-enterprise-edition.md)
 explains the split.

@@ -36,14 +36,13 @@ const FORMAT_VERSION: u64 = 1;
 /// The production public keys, as PASERK `k4.public` strings with a comment
 /// naming each. A build with a Release Date trusts these alone.
 ///
-/// There are none until Coral issues its first License. Until then, a
-/// published build runs as Community without a License, and refuses to start
-/// with one, since it trusts no signing key.
-///
 /// To revoke a leaked signing key, move its literal from here to [`REVOKED_KEYS`].
 /// Builds released after that refuse its Licenses by name; builds released
 /// before still trust it (ADR 0038).
-const PRODUCTION_KEYS: &[&str] = &[];
+const PRODUCTION_KEYS: &[&str] = &[
+    // coral-license-signing, in AWS KMS in Coral's prod licensing account.
+    "k4.public.Ss4ilKoJBHAX6j3_WArO3kmErH_BATMH_Y9xkaeOUUI",
+];
 
 /// Production public keys that leaked, as PASERK `k4.public` strings moved
 /// here from [`PRODUCTION_KEYS`]. Builds released before the leak still trust
@@ -51,9 +50,9 @@ const PRODUCTION_KEYS: &[&str] = &[];
 const REVOKED_KEYS: &[&str] = &[];
 
 /// The test public key, which every build without a Release Date trusts
-/// alone. Its private half is in the Coral team's password vault, never in
-/// this repository or CI.
-const TEST_KEY: &str = "k4.public.PrMXB8YYnuvNy5ZIx80g62X6m-3wodHtb7Lp65X-Wyk";
+/// alone. Its private half never leaves AWS KMS in Coral's staging licensing
+/// account, so it is never in this repository or CI.
+const TEST_KEY: &str = "k4.public.amHVXG5-96AhJYS79NY8SdjjbP9Wq6uQT1OKR9u8IR4";
 
 /// This build, as its build script dated it.
 #[must_use]

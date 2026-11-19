@@ -17,6 +17,7 @@ import { ProviderAccountService } from '@/generated/coral/management/v1/account_
 import { ActivityService } from '@/generated/coral/management/v1/activity_pb'
 import { ToolPolicyService } from '@/generated/coral/management/v1/policy_pb'
 import { PrivateToolService } from '@/generated/coral/management/v1/private_tool_pb'
+import { EditionService } from '@/generated/coral/management/v1/edition_pb'
 import { ReleaseService } from '@/generated/coral/management/v1/release_pb'
 import { SharedToolService } from '@/generated/coral/management/v1/shared_tool_pb'
 import { UsageDataService } from '@/generated/coral/management/v1/usage_data_pb'
@@ -46,6 +47,7 @@ export function management(context: Readonly<RouterContextProvider>) {
     policies: createClient(ToolPolicyService, transport),
     privateTools: createClient(PrivateToolService, transport),
     sharedTools: createClient(SharedToolService, transport),
+    editions: createClient(EditionService, transport),
     releases: createClient(ReleaseService, transport),
     usageData: createClient(UsageDataService, transport),
     secretStores: createClient(SecretStoreService, transport),
