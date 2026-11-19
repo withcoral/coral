@@ -14,6 +14,8 @@ import { ContentContainer } from '@/components/content-container'
 import { Sidebar } from '@/components/sidebar'
 import { loadActionCounts } from '@/lib/action-count.server'
 import { LocalDeploymentContext } from '@/lib/deployment'
+import { EditionContext } from '@/lib/edition'
+import { editionView } from '@/lib/edition.server'
 import { ActionSignalContext, useActionSignal } from '@/lib/use-action-signal'
 import { memberWorkspaces } from '@/lib/workspace-route.server'
 import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
@@ -31,10 +33,11 @@ import * as styles from './app-shell.css'
 export async function loader({ request, context }: Route.LoaderArgs) {
   try {
     const api = management(context)
-    const [all, membership, release] = await Promise.all([
+    const [all, membership, release, edition] = await Promise.all([
       memberWorkspaces(api).catch(() => []),
       api.organizationMemberships.getCurrentOrganizationMembership({}).catch(() => null),
       api.releases.getNewerRelease({}).catch(() => null),
+      api.editions.getEdition({}).then(editionView, () => null),
     ])
     const organizationOwner = membership?.role === OrganizationRole.OWNER
     const workspaces = all.filter((w) => w.state === WorkspaceState.ACTIVE)
@@ -52,6 +55,7 @@ export async function loader({ request, context }: Route.LoaderArgs) {
     return data(
       {
         actionCounts,
+        edition,
         organizationOwner,
         secretStoresEnabled,
         newerRelease:
@@ -111,45 +115,47 @@ export default function AppShell({ loaderData }: Route.ComponentProps) {
     .find((w) => w && (location.pathname === w.path || location.pathname.startsWith(`${w.path}/`)))
   return (
     <LocalDeploymentContext value={loaderData.auth.mode === 'disabled'}>
-      <ShellFormContext value={loaderData.form}>
-        <NavigationRoot>
-          <div className={styles.layout}>
-            <Sidebar
-              actionCounts={actionSignal.counts}
-              auth={loaderData.auth}
-              area={inSettings ? 'settings' : 'work'}
-              organizationOwner={loaderData.organizationOwner}
-              secretStoresEnabled={loaderData.secretStoresEnabled}
-              newerRelease={loaderData.newerRelease}
-              userName={loaderData.userName}
-              initialIsMinimized={rootData?.sidebarIsMinimized ?? false}
-              workspaces={loaderData.workspaces}
-              workspace={workspace}
-              form={loaderData.form}
-            />
-            <ContentContainer>
-              <ToastContainer />
-              {/* Every page in a workspace names it first in its breadcrumb. */}
-              <BreadcrumbRoot
-                value={
-                  workspace
-                    ? {
-                        id: 'workspace',
-                        type: 'link',
-                        text: workspace.displayName,
-                        to: workspace.path,
-                      }
-                    : null
-                }
-              >
-                <ActionSignalContext value={actionSignal}>
-                  <Outlet />
-                </ActionSignalContext>
-              </BreadcrumbRoot>
-            </ContentContainer>
-          </div>
-        </NavigationRoot>
-      </ShellFormContext>
+      <EditionContext value={loaderData.edition}>
+        <ShellFormContext value={loaderData.form}>
+          <NavigationRoot>
+            <div className={styles.layout}>
+              <Sidebar
+                actionCounts={actionSignal.counts}
+                auth={loaderData.auth}
+                area={inSettings ? 'settings' : 'work'}
+                organizationOwner={loaderData.organizationOwner}
+                secretStoresEnabled={loaderData.secretStoresEnabled}
+                newerRelease={loaderData.newerRelease}
+                userName={loaderData.userName}
+                initialIsMinimized={rootData?.sidebarIsMinimized ?? false}
+                workspaces={loaderData.workspaces}
+                workspace={workspace}
+                form={loaderData.form}
+              />
+              <ContentContainer>
+                <ToastContainer />
+                {/* Every page in a workspace names it first in its breadcrumb. */}
+                <BreadcrumbRoot
+                  value={
+                    workspace
+                      ? {
+                          id: 'workspace',
+                          type: 'link',
+                          text: workspace.displayName,
+                          to: workspace.path,
+                        }
+                      : null
+                  }
+                >
+                  <ActionSignalContext value={actionSignal}>
+                    <Outlet />
+                  </ActionSignalContext>
+                </BreadcrumbRoot>
+              </ContentContainer>
+            </div>
+          </NavigationRoot>
+        </ShellFormContext>
+      </EditionContext>
     </LocalDeploymentContext>
   )
 }

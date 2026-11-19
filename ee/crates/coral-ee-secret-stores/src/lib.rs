@@ -20,6 +20,15 @@ pub mod kv_v2;
 
 use kv_v2::{AppRole, KvV2Settings, KvV2Store, MountPath, StoreAddress};
 
+/// The Enterprise Feature every kind here is part of: reading credentials
+/// from a secrets system outside Coral. The `env` kind every build has is
+/// not part of it.
+pub const EXTERNAL_SECRET_STORES: coral_edition::EnterpriseFeature =
+    coral_edition::EnterpriseFeature::new(
+        coral_edition::EnterpriseFeatureId::new("external-secret-stores"),
+        "External secret stores",
+    );
+
 /// The `kv-v2` store kind.
 pub struct KvV2Kind {
     kind: SecretStoreKind,

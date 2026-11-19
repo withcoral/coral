@@ -29,6 +29,19 @@ pub struct Extensions {
     /// The Secret Store kinds this binary adds to the `env` kind every build
     /// has. A store of any other kind shows as a kind the build lacks.
     pub secret_store_kinds: coral_secret_store::SecretStoreKinds,
+    /// The Enterprise Features this binary contains, which Reef shows with
+    /// their state. Core registers none.
+    pub enterprise_features: coral_edition::EnterpriseFeatures,
+}
+
+impl Extensions {
+    /// The Edition beside the features this binary registers.
+    pub(crate) fn inspection(&self) -> coral_edition::EditionInspection {
+        coral_edition::EditionInspection::new(
+            self.edition.clone(),
+            self.enterprise_features.clone(),
+        )
+    }
 }
 
 pub use coral_db::MigrationProgress;

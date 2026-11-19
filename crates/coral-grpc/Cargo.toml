@@ -17,6 +17,7 @@ coral-auth.workspace = true
 coral-catalog.workspace = true
 coral-credentials.workspace = true
 coral-db.workspace = true
+coral-edition.workspace = true
 coral-tools.workspace = true
 coral-policy.workspace = true
 coral-provider.workspace = true
@@ -39,6 +40,7 @@ tokio.workspace = true
 tokio-stream.workspace = true
 
 [dev-dependencies]
+coral-edition = { workspace = true, features = ["test-fixtures"] }
 coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-search = { workspace = true, features = ["test-fixtures"] }
