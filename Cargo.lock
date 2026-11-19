@@ -883,6 +883,7 @@ dependencies = [
  "coral-catalog",
  "coral-credentials",
  "coral-db",
+ "coral-edition",
  "coral-outbound",
  "coral-policy",
  "coral-provider",

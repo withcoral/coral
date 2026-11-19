@@ -9,6 +9,10 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# The Edition sources tests drive. Only dev-dependencies enable it.
+test-fixtures = []
+
 [dependencies]
 chrono.workspace = true
 coral-credentials.workspace = true

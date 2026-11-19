@@ -1,0 +1,51 @@
+syntax = "proto3";
+package coral.management.v1;
+
+// The deployment's Edition and the Enterprise Features this build contains.
+service EditionService {
+  // Reads the Edition each time it is asked, never a stored answer.
+  rpc GetEdition(GetEditionRequest) returns (GetEditionResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}
+
+// Asks for the Edition.
+message GetEditionRequest {}
+
+// The Edition now, and each Enterprise Feature's state in it.
+message GetEditionResponse {
+  // The Edition when Coral read it for this request.
+  Edition edition = 1;
+  // Each Enterprise Feature this build contains. A build lists none it lacks.
+  repeated EnterpriseFeature features = 2;
+}
+
+// Whether the deployment runs as the Community or the Enterprise Edition.
+enum Edition {
+  // Unknown to this client.
+  EDITION_UNSPECIFIED = 0;
+  // No Enterprise Feature works.
+  EDITION_COMMUNITY = 1;
+  // The Enterprise Features this build contains work.
+  EDITION_ENTERPRISE = 2;
+}
+
+// An Enterprise Feature this build contains.
+message EnterpriseFeature {
+  // Stable id, in lowercase words joined by hyphens.
+  string id = 1;
+  // The name people read.
+  string display_name = 2;
+  // Whether it works now, in `edition`.
+  EnterpriseFeatureState state = 3;
+}
+
+// Whether an Enterprise Feature works right now. Its use still decides.
+enum EnterpriseFeatureState {
+  // Unknown to this client.
+  ENTERPRISE_FEATURE_STATE_UNSPECIFIED = 0;
+  // The Edition is Enterprise, so the feature works.
+  ENTERPRISE_FEATURE_STATE_ENABLED = 1;
+  // The Edition is Community, so the feature fails closed.
+  ENTERPRISE_FEATURE_STATE_NEEDS_ENTERPRISE = 2;
+}

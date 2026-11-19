@@ -17,6 +17,7 @@ import { OrganizationMembershipService } from '@/generated/coral/management/v1/o
 import { OrganizationWorkspaceService } from '@/generated/coral/management/v1/organization_workspace_pb'
 import { ToolPolicyService } from '@/generated/coral/management/v1/policy_pb'
 import { ProviderService, ProviderSetupService } from '@/generated/coral/management/v1/provider_pb'
+import { EditionService } from '@/generated/coral/management/v1/edition_pb'
 import { ReleaseService } from '@/generated/coral/management/v1/release_pb'
 import { PrivateToolService } from '@/generated/coral/management/v1/private_tool_pb'
 import { SharedToolService } from '@/generated/coral/management/v1/shared_tool_pb'
@@ -41,6 +42,7 @@ const services = {
   policies: ToolPolicyService,
   privateTools: PrivateToolService,
   sharedTools: SharedToolService,
+  editions: EditionService,
   releases: ReleaseService,
   usageData: UsageDataService,
   secretStores: SecretStoreService,

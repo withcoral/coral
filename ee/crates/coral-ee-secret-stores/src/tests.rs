@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: LicenseRef-Coral-Enterprise
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use coral_edition::{Edition, EditionCheck, EditionSource};
+use coral_edition::test_fixtures::SwitchedEdition;
+use coral_edition::{Edition, EditionCheck};
 use coral_outbound::{DestinationPolicy, NetworkAccess};
 use coral_secret_store::{
     BuildEnvironment, Error, KeyField, NamedVariables, ReferenceForm, SecretReference, SecretStore,
@@ -173,19 +173,6 @@ fn building_a_store_sends_nothing() {
     .unwrap();
 }
 
-/// An Edition a test changes while the store runs, as a licence can.
-struct Switch(AtomicBool);
-
-impl EditionSource for Switch {
-    fn edition(&self) -> Edition {
-        if self.0.load(Ordering::SeqCst) {
-            Edition::Enterprise
-        } else {
-            Edition::Community
-        }
-    }
-}
-
 /// ADR 0033: an Enterprise Feature refuses while the Edition is Community,
 /// checks the Edition on every use, and deletes nothing.
 #[tokio::test]
@@ -205,7 +192,7 @@ async fn a_store_reads_only_while_the_edition_is_enterprise() {
         })))
         .mount(&server)
         .await;
-    let switch = Arc::new(Switch(AtomicBool::new(false)));
+    let switch = Arc::new(SwitchedEdition::default());
     let kind = KvV2Kind::new(EditionCheck::new(Arc::clone(&switch) as _));
     let store = build(&kind, &good(&server.uri()), Some("secret-id")).unwrap();
     let reference =
@@ -221,11 +208,11 @@ async fn a_store_reads_only_while_the_edition_is_enterprise() {
         "a refused read sends nothing"
     );
 
-    switch.0.store(true, Ordering::SeqCst);
+    switch.set(Edition::Enterprise);
     assert_eq!(store.status(), StoreStatus::Available);
     assert_eq!(store.read(&reference).await.unwrap().expose(), "value");
 
-    switch.0.store(false, Ordering::SeqCst);
+    switch.set(Edition::Community);
     assert_eq!(store.status(), StoreStatus::NeedsEnterprise);
     assert_eq!(
         store.read(&reference).await.unwrap_err(),

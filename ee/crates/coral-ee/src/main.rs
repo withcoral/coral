@@ -13,11 +13,42 @@ fn main() -> ExitCode {
     let edition = coral_edition::EditionCheck::new(Arc::new(
         coral_ee_license::LicensedEdition::for_this_build(),
     ));
+    coral::run(extensions(edition))
+}
+
+/// What this binary adds to Coral, each part asking `edition` when used.
+fn extensions(edition: coral_edition::EditionCheck) -> coral_app::Extensions {
     let secret_store_kinds = coral_secret_store::SecretStoreKinds::default().with(Arc::new(
         coral_ee_secret_stores::KvV2Kind::new(edition.clone()),
     ));
-    coral::run(coral_app::Extensions {
+    let enterprise_features = coral_edition::EnterpriseFeatures::default()
+        .with(coral_ee_secret_stores::EXTERNAL_SECRET_STORES);
+    coral_app::Extensions {
         edition,
         secret_store_kinds,
-    })
+        enterprise_features,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use coral_edition::{Edition, EditionCheck, EditionInspection, FeatureState};
+
+    use super::*;
+
+    /// Reef shows External Secret Stores only because this binary
+    /// registers it.
+    #[test]
+    fn registers_external_secret_stores() {
+        let extensions = extensions(EditionCheck::new(Arc::new(Edition::Community)));
+        let report =
+            EditionInspection::new(extensions.edition, extensions.enterprise_features).report();
+        assert_eq!(
+            report.features,
+            [(
+                coral_ee_secret_stores::EXTERNAL_SECRET_STORES,
+                FeatureState::NeedsEnterprise
+            )]
+        );
+    }
 }

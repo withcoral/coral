@@ -63,6 +63,9 @@ pub(crate) struct EngineParts {
     pub(crate) run_executors: RunExecutorParts,
     /// The release check; none while `[updates] check` is off.
     pub(crate) releases: Option<coral_release::ReleaseCheck>,
+    /// The deployment's Edition and the Enterprise Features the launching
+    /// binary registers, for the private API to report.
+    pub(crate) edition: coral_edition::EditionInspection,
     /// Usage data; none when the launch supplied no environment.
     pub(crate) usage: Option<UsageReporting>,
 }
@@ -309,6 +312,7 @@ struct Modules {
     search_index: coral_search::SearchIndex,
     secret_stores: coral_secret_store::SecretStores,
     releases: Option<coral_release::ReleaseCheck>,
+    edition: coral_edition::EditionInspection,
     usage: Option<coral_usage::UsageData>,
     readiness: EngineReadiness,
     /// The instance's one clock, which the periodic passes and the modules
@@ -425,6 +429,7 @@ impl Engine {
             search,
             run_executors,
             releases,
+            edition,
             usage,
         } = parts;
         let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
@@ -495,6 +500,7 @@ impl Engine {
                 search_index,
                 secret_stores,
                 releases,
+                edition,
                 usage: usage.as_ref().map(|usage| usage.data.clone()),
                 readiness,
                 clock,
@@ -589,6 +595,7 @@ impl Engine {
             shared_tools,
             runs: self.modules.runs.clone(),
             releases: self.modules.releases.clone(),
+            edition: self.modules.edition.clone(),
             usage: self.modules.usage.clone(),
             secret_stores: coral_administration::SecretStoreAdministration::new(
                 coral_workspace::OrganizationModule::new(database.clone()),

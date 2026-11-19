@@ -54,9 +54,14 @@ says otherwise. _Avoid_: OSS edition, core, free edition
 **Enterprise Edition**: The Edition that enables the Enterprise Features a build contains. _Avoid_: EE (outside code
 paths), commercial edition, pro
 
-**Enterprise Feature**: A product feature that only the Enterprise Edition enables, such as reading credentials from a
-customer's Secret Store. A build that contains it enables it only while the Edition is Enterprise. A build that lacks it
-does not know that it exists. _Avoid_: capability (a Program term), entitlement, add-on
+**Enterprise Feature**: A product feature that only the Enterprise Edition enables, such as External Secret Stores. It
+may cover several kinds of one thing, as External Secret Stores covers every Secret Store kind but `env`. A build that
+contains it enables it only while the Edition is Enterprise. A build that lacks it does not know that it exists.
+_Avoid_: capability (a Program term), entitlement, add-on
+
+**External Secret Stores**: The Enterprise Feature that reads Credential Fields from a Secret Store of any kind but
+`env`, such as HashiCorp Vault. The `env` kind works in every Edition.
+_Avoid_: BYOV, bring your own vault
 
 **License**: A grant signed by Coral that sets a self-hosted deployment's Edition to Enterprise on every build whose
 Release Date is on or before the License's expiry. A License is a Commercial License or an Evaluation License. An
@@ -508,8 +513,8 @@ named by a Secret Reference.
 _Avoid_: credential input, secret (a field need not be sensitive), credential parameter
 
 **Secret Store**: An operator-defined connection to a secrets system outside Coral, such as HashiCorp Vault, with its
-own identity there. That system's policy decides what the store can read. Its kind names the secrets system. A kind may
-be an Enterprise Feature.
+own identity there. That system's policy decides what the store can read. Its kind names the secrets system. Every kind
+but `env` is part of External Secret Stores.
 _Avoid_: vault, credential vault, external credential store
 
 **Secret Reference**: The address of one Credential Field's value in a Secret Store granted to the Account's Workspace:
