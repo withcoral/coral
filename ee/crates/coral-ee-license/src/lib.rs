@@ -51,9 +51,9 @@ const PRODUCTION_KEYS: &[&str] = &[];
 const REVOKED_KEYS: &[&str] = &[];
 
 /// The test public key, which every build without a Release Date trusts
-/// alone. Its private half is in the Coral team's password vault, never in
-/// this repository or CI.
-const TEST_KEY: &str = "k4.public.PrMXB8YYnuvNy5ZIx80g62X6m-3wodHtb7Lp65X-Wyk";
+/// alone. Its private half never leaves AWS KMS in Coral's staging licensing
+/// account, so it is never in this repository or CI.
+const TEST_KEY: &str = "k4.public.amHVXG5-96AhJYS79NY8SdjjbP9Wq6uQT1OKR9u8IR4";
 
 /// This build, as its build script dated it.
 #[must_use]
