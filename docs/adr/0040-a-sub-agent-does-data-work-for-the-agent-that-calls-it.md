@@ -385,9 +385,15 @@ section, and the URL in it comes from an organization.
   Sub-agent, and each Turn fails after three retries. Coral could be more robust here: vLLM serves a health check, and
   many servers list their models, but neither is part of the Chat Completions API. We left that out while we evaluate
   the Sub-agent.
-- Compaction needs `context_window`. Without it, a conversation that outgrows the model fails its Turn.
-- Coral decides nothing by matching text: not which Tools a Program names, not what a model server's refusal means, and
-  not which Run a stored result belongs to. Each of those was built once as text matching and removed.
+- Compaction needs `context_window`. Without it, a conversation that outgrows the model fails its Turn. With it, one
+  reply's tool results that are larger than the window still fail the Turn: Coral keeps the newest results whole and
+  does not shorten them to fit.
+- Coral decides almost nothing by matching text: not which Tools a Program names, and not which Run a stored result
+  belongs to. Both were built once as text matching and removed. The one exception is whether a model server's refusal
+  means that the request is too long. One function at the model client reads it: the status first, then the reason the
+  server names, then its message against a list of phrases taken from Pi. It reads only a 400 or a 413, an answer it
+  does not know is a plain refusal, and the rest of the crate sees a typed error. A server whose phrase is not in the
+  list fails the Turn as before.
 - Reef shows no Sub-agents and no Turns.
 
 **What we are not sure of**
@@ -611,13 +617,14 @@ flowchart TD
 
 | Situation | What happens |
 | --- | --- |
-| The lead calls `cancel` with the `sub_agent_id`, on any Coral Instance | The call records the cancellation in the database and closes the tool calls that the Turn left without results. The Turn stops at its next step, and the Coral Instance that runs it cancels the Runs it started that have not ended. If that Coral Instance stops first, those Runs keep running. |
+| The lead calls `cancel` with the `sub_agent_id`, on any Coral Instance | The call records the cancellation in the database and closes the tool calls that the Turn left without results. It also cancels the unfinished Runs that the Sub-agent's stored conversation names, whether the Turn is running or has ended. A running Turn stops at its next step, and the Coral Instance that runs it cancels the Runs it holds that are not stored yet. If that Coral Instance stops first, those few keep running. |
 | The lead ends the Task, or can no longer use it | Before each model call and each lease renewal, a running Turn checks that its caller can still use the Task. If the Task has ended, or the caller can no longer see the Task or its Workspace, the Turn stops as canceled. A database error does not stop it. The Runs it started keep running: ending a Task cancels nothing already accepted (ADR 0006). |
 | The model replies with no text and no tool call | The Turn fails. The failure tells the lead to send the message again. |
 | The lead calls `agent` with the `sub_agent_id` and a message while the Turn is running | The Sub-agent reads the message before its next model call. Once the Turn has ended, the same call starts a new Turn with the stored conversation. |
 | A Run that the Turn started waits for a person to approve a Tool call or connect an account | `wait` returns `needs_action` with that Run's required actions. Each names who must act, which can be the Workspace Owner and not the lead's user. |
-| The conversation comes close to the `context_window` in the config file | The Sub-agent asks the model to summarize the older messages. It continues with the summary and the most recent messages. |
-| The conversation outgrows the model and no `context_window` is set | The model server refuses the request, and the Turn fails. Coral does not read the window out of the refusal's text. |
+| The conversation comes close to the `context_window` in the config file | The Sub-agent asks the model to summarize the older messages. It continues with the summary and the most recent messages. The newest tool results stay whole with the reply that called for them, however large: the model has not read them yet. |
+| The model server answers that a request is too long, and `context_window` is set | Coral's count of tokens is an estimate. The Sub-agent summarizes the older messages and sends the request once more. If nothing is left to summarize, or the server refuses again, the Turn fails. |
+| The conversation outgrows the model and no `context_window` is set | The model server refuses the request, and the Turn fails with a failure that says the conversation is too long. Coral does not read the window out of the refusal's text. |
 | The model server returns HTTP 429 or a 5xx status, or the request fails to send | The client retries three times. If the request still fails, the Turn fails with the model server's error, and the lead can send the message again. |
 | The Turn makes 60 model calls without finishing | The Turn fails. The error tells the lead to send a narrower message. |
 | The Coral Instance shuts down | Each running Turn marks itself as interrupted when shutdown begins. Coral does not wait for those writes: a Turn that has not written before the process exits is marked by the next request that reads it, once its lease has expired. |
