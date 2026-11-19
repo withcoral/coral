@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use coral_db::{Clock, Database, Transaction, UnixNanos};
 use coral_run::RunModule;
+use coral_search::UniversalSearchModule;
 use coral_task::{TaskCommands, TaskId, TaskModule};
 use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
@@ -14,7 +15,7 @@ use futures_util::future::join_all;
 
 use crate::model::{Message, ModelCall, ModelClient, ModelError, ToolCall};
 use crate::run_tools::{Caller, RunTools};
-use crate::{prompt, repository};
+use crate::{prompt, repository, search};
 
 mod interruption;
 use interruption::close_calls;
@@ -33,17 +34,23 @@ pub(crate) struct SubAgents {
     tasks: TaskModule,
     runs: RunModule,
     run_tools: Arc<RunTools>,
+    search: UniversalSearchModule,
     model: Arc<ModelClient>,
     clock: Arc<dyn Clock>,
     stopping: tokio::sync::watch::Receiver<bool>,
 }
 
 impl SubAgents {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is a module or a dependency that bootstrap hands over"
+    )]
     pub(crate) fn new(
         database: Arc<Database>,
         tasks: TaskModule,
         commands: TaskCommands,
         runs: RunModule,
+        search: UniversalSearchModule,
         model: ModelClient,
         clock: Arc<dyn Clock>,
         stopping: tokio::sync::watch::Receiver<bool>,
@@ -53,6 +60,7 @@ impl SubAgents {
             tasks,
             run_tools: Arc::new(RunTools::new(commands, runs.clone())),
             runs,
+            search,
             model: Arc::new(model),
             clock,
             stopping,
@@ -210,7 +218,13 @@ impl SubAgents {
                 return Ok(answer);
             }
             let results = join_all(calls.iter().map(|call| async {
-                let result = self.run_tools.call(caller, &call.name, &call.arguments);
+                let result = search::call(
+                    &self.search,
+                    &self.run_tools,
+                    caller,
+                    &call.name,
+                    &call.arguments,
+                );
                 call.result(result.await)
             }));
             let results = Message::tool_results(results.await);

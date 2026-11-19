@@ -126,6 +126,7 @@ impl Lead {
             tasks,
             commands,
             runs,
+            modules.search,
             model,
             clock,
             stopping,
@@ -714,3 +715,5 @@ async fn an_interrupted_turn_closes_the_calls_it_left_without_results() {
     let after_the_brief = [asked, Message::tool_results(closed.collect())];
     assert_eq!(thread.get(1..), Some(&after_the_brief[..]));
 }
+
+mod search;
