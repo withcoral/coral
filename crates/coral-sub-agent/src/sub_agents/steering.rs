@@ -2,6 +2,8 @@
 //! them before its next model call, and before it ends with an answer. Once
 //! the Turn has ended, a new Turn answers them and continues the thread.
 
+use std::sync::Mutex;
+
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use tracing::Instrument as _;
 
@@ -137,6 +139,7 @@ impl SubAgents {
                 principal: actor.clone(),
                 workspace_id: workspace_id.clone(),
                 task_id,
+                started_runs: Mutex::default(),
             },
         };
         let lease_end = now.saturating_add(TURN_LEASE);

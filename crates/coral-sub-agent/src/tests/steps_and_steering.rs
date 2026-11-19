@@ -33,7 +33,7 @@ impl Lead {
 
     /// Writes into the Sub-agent's running Turn an `exec` call with `intent`
     /// and its result naming `run_id`, as the Turn writes them.
-    async fn exec_step(&self, sub_agent_id: &Value, intent: &str, run_id: &Value) {
+    pub(super) async fn exec_step(&self, sub_agent_id: &Value, intent: &str, run_id: &Value) {
         let exec = tool_call("call_exec", "exec", &json!({"intent": intent}));
         let started = json!({"run_id": run_id, "state": "running"}).to_string();
         let run_id = RunId::parse(run_id.as_str().unwrap()).ok();
@@ -65,6 +65,7 @@ impl Lead {
                 principal: actor.clone(),
                 workspace_id: workspace_id.clone(),
                 task_id,
+                started_runs: Mutex::default(),
             },
         };
         let results = Message::tool_results(vec![call.result(result, run)]);
@@ -118,7 +119,7 @@ impl Lead {
 
     /// Holds the stub's first reply, `reply`, until the test releases it.
     /// The receiver hears when that request arrives.
-    async fn hold_first_reply(
+    pub(super) async fn hold_first_reply(
         &self,
         reply: ResponseTemplate,
     ) -> (oneshot::Receiver<()>, mpsc::Sender<()>) {

@@ -2,11 +2,11 @@
 //! Turn is its work from one message to its answer: it calls the model, runs
 //! the tool calls of each reply, and ends on a reply without one.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use coral_db::{Clock, Database, Transaction, UnixNanos};
-use coral_run::RunModule;
+use coral_run::{RunModule, RunObservation};
 use coral_search::UniversalSearchModule;
 use coral_task::{TaskCommands, TaskId, TaskModule};
 use coral_telemetry::safe;
@@ -102,6 +102,7 @@ impl SubAgents {
                 principal: actor.clone(),
                 workspace_id: workspace_id.clone(),
                 task_id: task_id.clone(),
+                started_runs: Mutex::default(),
             },
         };
         let lease_end = now.saturating_add(TURN_LEASE);
@@ -190,10 +191,7 @@ impl SubAgents {
         let workspace_id = &turn.caller.workspace_id;
         let answered = tokio::select! {
             answered = self.answer(&turn) => answered,
-            () = self.hold_lease(workspace_id, &turn.id) => {
-                turn.trace.ended(TurnEnd::Canceled);
-                return;
-            }
+            () = self.hold_lease(&turn) => Err(TurnFailure::Canceled),
             () = self.interrupt_at_shutdown(&turn) => {
                 turn.trace.ended(TurnEnd::Interrupted);
                 return;
@@ -202,19 +200,25 @@ impl SubAgents {
         let end = TurnEnd::of(&answered);
         let ending = match answered {
             Ok(answer) => TurnState::Completed { answer },
+            Err(TurnFailure::Canceled) => TurnState::Canceled,
             Err(failure) => TurnState::Failed {
                 failure: failure.to_string(),
             },
         };
         let ended = self.end_turn(workspace_id, &turn.sub_agent_id, &turn.id, &ending);
         match ended.await {
-            Ok(true) => turn.trace.ended(end),
+            // Its own ending stands, so the lead did not cancel it: its Runs keep running.
+            Ok(true) => {
+                turn.trace.ended(end);
+                return;
+            }
             Ok(false) => turn.trace.ended(TurnEnd::Canceled),
             Err(error) => tracing::warn!(
                 error.type = safe::kind(error.code()),
                 "the end of a Sub-agent Turn was not recorded"
             ),
         }
+        self.cancel_runs_if_canceled(&turn).await;
     }
 
     /// Calls the model until it replies without a tool call, and returns that
@@ -232,6 +236,9 @@ impl SubAgents {
                 .await
                 .map_err(|error| TurnFailure::internal(error.code()))?;
         for _model_call in 0..MODEL_CALLS_PER_TURN {
+            if !self.task_usable(caller).await {
+                return Err(TurnFailure::Canceled);
+            }
             self.read_messages(turn, &mut thread).await?;
             turn.trace.count_model_call();
             let reply = self.reply_within_window(turn, &system, &prompt::TOOLS, &mut thread);
@@ -267,7 +274,8 @@ impl SubAgents {
     }
 
     /// Stores `message` at the end of the Turn's thread, then keeps it there
-    /// in memory: a Turn is the only writer of its thread.
+    /// in memory: a Turn is the only writer of its thread. A Turn that has
+    /// ended stops here.
     async fn add(
         &self,
         turn: &RunningTurn,
@@ -278,24 +286,33 @@ impl SubAgents {
         let position = i64::try_from(thread.len()).unwrap_or(i64::MAX);
         let stored = async {
             let mut transaction = self.database.begin().await?;
-            repository::insert_message(&mut transaction, turn, position, &message, call).await?;
-            transaction.commit().await
+            let stored =
+                repository::insert_message(&mut transaction, turn, position, &message, call);
+            let stored = stored.await?;
+            transaction.commit().await?;
+            Ok::<_, coral_db::Error>(stored)
         };
-        stored
-            .await
-            .map_err(|error| TurnFailure::internal(error.code()))?;
+        let stored = stored.await;
+        if !stored.map_err(|error| TurnFailure::internal(error.code()))? {
+            return Err(TurnFailure::Canceled);
+        }
         thread.push(message);
         Ok(())
     }
 
     /// Renews the Turn's lease until a renewal finds that the Turn has ended,
-    /// as a cancellation ends it.
-    async fn hold_lease(&self, workspace_id: &WorkspaceId, turn_id: &str) {
+    /// as a cancellation ends it, or that its caller can no longer use its
+    /// Task.
+    async fn hold_lease(&self, turn: &RunningTurn) {
+        let workspace_id = &turn.caller.workspace_id;
         loop {
             tokio::time::sleep(TURN_LEASE / 3).await;
+            if !self.task_usable(&turn.caller).await {
+                return;
+            }
             let lease_end = self.clock.now().saturating_add(TURN_LEASE);
             let renewed =
-                repository::renew_lease(&self.database, workspace_id, turn_id, lease_end).await;
+                repository::renew_lease(&self.database, workspace_id, &turn.id, lease_end).await;
             match renewed {
                 Ok(true) => {}
                 Ok(false) => return,
@@ -323,6 +340,50 @@ impl SubAgents {
         }
         transaction.commit().await?;
         Ok(ended)
+    }
+
+    /// Whether the caller can still use its Task: the Task is open and the
+    /// caller has not lost access. A database error reads as usable: the
+    /// Turn's next write meets it.
+    async fn task_usable(&self, caller: &Caller) -> bool {
+        let (principal, workspace_id) = (&caller.principal, &caller.workspace_id);
+        let checked = self
+            .tasks
+            .check_open(principal, workspace_id, &caller.task_id);
+        match checked.await {
+            Ok(()) => true,
+            Err(refused) => refused.database_error().is_some(),
+        }
+    }
+
+    /// Cancels the Runs that a Turn started if the lead canceled it. A Run
+    /// that has ended stays as it is.
+    async fn cancel_runs_if_canceled(&self, turn: &RunningTurn) {
+        let caller = &turn.caller;
+        let (principal, workspace_id) = (&caller.principal, &caller.workspace_id);
+        let canceled = async {
+            if !repository::turn_canceled(&*self.database, workspace_id, &turn.id).await? {
+                return Ok(());
+            }
+            let observation = &RunObservation::immediate(None, 1)?;
+            let started = caller.started_runs.lock();
+            let started = started.unwrap_or_else(PoisonError::into_inner).clone();
+            let cancels = started.iter().map(|run_id| {
+                self.runs
+                    .cancel(principal, workspace_id, run_id, observation)
+            });
+            join_all(cancels)
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok::<_, Error>(())
+        };
+        if let Err(error) = canceled.await {
+            tracing::warn!(
+                error.type = safe::kind(error.code()),
+                "the Runs of a canceled Sub-agent Turn were not all canceled"
+            );
+        }
     }
 }
 
@@ -407,6 +468,10 @@ pub(crate) enum TurnFailure {
     NoAnswer,
     #[error("the Sub-agent stopped on an internal error")]
     Internal,
+    /// The lead canceled the Turn or ended its Task, or the caller can no
+    /// longer use the Task: the Turn ends as canceled.
+    #[error("the Sub-agent was canceled")]
+    Canceled,
 }
 
 impl TurnFailure {

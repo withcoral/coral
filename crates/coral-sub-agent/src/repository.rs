@@ -239,15 +239,38 @@ pub(crate) async fn renew_lease(
     Ok(database.execute(statement).await? == 1)
 }
 
+/// Whether the Turn ended as canceled.
+pub(crate) async fn turn_canceled(
+    executor: impl QueryExecutor,
+    workspace_id: &WorkspaceId,
+    turn_id: &str,
+) -> Result<bool, coral_db::Error> {
+    let (canceled, _, _) = stored(&TurnState::Canceled);
+    let statement = Query::select()
+        .column(SubAgentTurns::Id)
+        .from(SubAgentTurns::Table)
+        .and_where(Expr::col(SubAgentTurns::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SubAgentTurns::Id).eq(turn_id))
+        .and_where(Expr::col(SubAgentTurns::State).eq(canceled))
+        .to_owned();
+    let row: Option<(String,)> = executor.fetch_optional(statement).await?;
+    Ok(row.is_some())
+}
+
 /// Adds `message` at `position` in the Sub-agent's thread, marked with its
 /// Turn and the record of the model call that produced it, if one did.
+/// `false` means that the Turn has ended and nothing was written.
 pub(crate) async fn insert_message(
     transaction: &mut Transaction<'_>,
     turn: &RunningTurn,
     position: i64,
     message: &Message,
     call: Option<&ModelCall>,
-) -> Result<(), coral_db::Error> {
+) -> Result<bool, coral_db::Error> {
+    let running = lead_messages::hold_unread(transaction, &turn.caller.workspace_id, &turn.id);
+    if running.await?.is_none() {
+        return Ok(false);
+    }
     let usage = call.and_then(|call| call.usage);
     let latency_ms = call.map(|call| i64::try_from(call.latency.as_millis()).unwrap_or(i64::MAX));
     let statement = Query::insert()
@@ -280,7 +303,7 @@ pub(crate) async fn insert_message(
         ])
         .to_owned();
     transaction.execute_change(statement).await?;
-    Ok(())
+    Ok(true)
 }
 
 /// The Sub-agent's thread, in order.

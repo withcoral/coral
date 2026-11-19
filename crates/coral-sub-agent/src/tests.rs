@@ -14,8 +14,8 @@ use coral_test_support::{
     EVENTUALLY, ManualClock, TEST_COMPILATION_TIMEOUT, TestDatabase, change, provision_user,
 };
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, WorkspaceDisplayName, WorkspaceId,
-    WorkspaceModule,
+    AuthenticatedPrincipal, AuthenticatedUser, IfMatch, OrganizationModule, OrganizationRole,
+    WorkspaceDisplayName, WorkspaceId, WorkspaceModule,
 };
 use rmcp::model::{CallToolRequestParams, CallToolResponse, Tool};
 use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
@@ -632,13 +632,198 @@ async fn shutdown_interrupts_a_running_turn() {
     let agent = json!({"goal": "Count the invoices", "message": MESSAGE});
     let started = result(call(&*tools, &caller, "agent", agent).await);
     let sub_agent_id = started.get("sub_agent_id").unwrap();
+    let endless = json!({"task_id": started.get("task_id"), "intent": "Loop", "program": "while (true) {}", "wait_ms": 0});
+    let endless = result(call(&*tools, &caller, "exec", endless).await);
+    let run_id = field(&endless, "run_id");
+    lead.exec_step(sub_agent_id, "Loop", run_id).await;
 
     lead.stop.send_replace(true);
 
     let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
     let waited = result(call(&*tools, &caller, "wait", wait).await);
-    let interrupted = json!({"sub_agent_id": sub_agent_id, "state": "interrupted", "steps": []});
+    let steps = json!([{"intent": "Loop", "run_id": run_id}]);
+    let interrupted = json!({"sub_agent_id": sub_agent_id, "state": "interrupted", "steps": steps});
     assert_eq!(without_cursor(waited), interrupted);
+    let run = json!({"run_id": run_id, "wait_ms": 1_000});
+    let run = result(call(&*tools, &caller, "wait", run).await);
+    assert_eq!(
+        field(&run, "state"),
+        "running",
+        "the Turn left its Run alone"
+    );
+}
+
+// Catches: a Turn that calls the model again after the lead ended its Task,
+// or that then cancels the Runs it started.
+#[tokio::test]
+async fn a_turn_whose_task_ends_stops_as_canceled() {
+    let lead = Lead::new().await;
+    let (tools, caller, task_id) = (lead.tools(), lead.caller(), lead.task().await);
+    let endless = json!({"task_id": task_id.as_str(), "intent": "Loop", "program": "while (true) {}", "wait_ms": 0});
+    Mock::given(any())
+        .respond_with(tool_calls(&[tool_call("call_1", "exec", &endless)]))
+        .up_to_n_times(1)
+        .mount(&lead.model)
+        .await;
+    let nothing = tool_calls(&[tool_call("call_2", "nothing", &json!({}))]);
+    let (arrived, release) = lead.hold_first_reply(nothing.clone()).await;
+    lead.model_answers(nothing).await;
+    let agent = json!({"task_id": task_id.as_str(), "message": MESSAGE});
+    let started = result(call(&*tools, &caller, "agent", agent).await);
+    arrived.await.unwrap();
+
+    let end = json!({"task_id": task_id.as_str(), "outcome": "success"});
+    result(call(&*tools, &caller, "end_task", end).await);
+    release.send(()).unwrap();
+
+    let wait = json!({"sub_agent_id": field(&started, "sub_agent_id"), "wait_ms": 30_000});
+    let waited = result(call(&*tools, &caller, "wait", wait).await);
+    assert_eq!(field(&waited, "state"), "canceled", "{waited}");
+    assert_eq!(lead.model.received_requests().await.unwrap().len(), 2);
+    let run = json!({"run_id": waited.pointer("/steps/0/run_id"), "wait_ms": 1_000});
+    let run = result(call(&*tools, &caller, "wait", run).await);
+    assert_eq!(field(&run, "state"), "running", "{run}");
+}
+
+// Catches: a Turn that calls the model again after its caller lost access to
+// its Task.
+#[tokio::test]
+async fn a_turn_whose_caller_lost_access_stops_as_canceled() {
+    let lead = Lead::new().await;
+    let nothing = tool_calls(&[tool_call("call_1", "nothing", &json!({}))]);
+    let (arrived, release) = lead.hold_first_reply(nothing.clone()).await;
+    lead.model_answers(nothing).await;
+    let (sub_agents, task_id, actor) = (lead.sub_agents(), lead.task().await, &lead.actor);
+    let started = sub_agents.start(actor, &lead.workspace_id, &task_id, MESSAGE.to_owned());
+    let sub_agent_id = started.await.unwrap();
+    arrived.await.unwrap();
+
+    let owner = provision_user(lead.database.clone(), "owner", OrganizationRole::Owner).await;
+    let lead_id = actor.authenticated_user().unwrap().user_id();
+    OrganizationModule::new(lead.database.clone())
+        .set_enabled(&change(owner, 3, 'b'), lead_id, &IfMatch::any(), false)
+        .await
+        .unwrap();
+    release.send(()).unwrap();
+
+    let wait = Duration::from_secs(30);
+    let waited = sub_agents.wait(actor, &lead.workspace_id, &sub_agent_id, None, wait);
+    assert_eq!(waited.await.unwrap().state, TurnState::Canceled);
+    assert_eq!(lead.model.received_requests().await.unwrap().len(), 1);
+}
+
+// Catches: a canceled Sub-agent whose running Run goes on, a cancel that
+// changes a Run that had ended, and a canceled Turn that stores the reply of
+// its last model call.
+#[tokio::test]
+async fn cancel_cancels_the_running_runs_of_the_sub_agent() {
+    let lead = Lead::new().await;
+    let (tools, caller, task_id) = (lead.tools(), lead.caller(), lead.task().await);
+    let exec = |id, intent, program, wait_ms: u64| {
+        let task_id = task_id.as_str();
+        let arguments =
+            json!({"task_id": task_id, "intent": intent, "program": program, "wait_ms": wait_ms});
+        tool_call(id, "exec", &arguments)
+    };
+    let execs = [
+        exec("call_1", "Loop", "while (true) {}", 0),
+        exec("call_2", "Count", "return 1;", 30_000),
+    ];
+    Mock::given(any())
+        .respond_with(tool_calls(&execs))
+        .up_to_n_times(1)
+        .mount(&lead.model)
+        .await;
+    let (arrived, release) = lead.hold_first_reply(reply("Done.")).await;
+    let agent = json!({"task_id": task_id.as_str(), "message": MESSAGE});
+    let started = result(call(&*tools, &caller, "agent", agent).await);
+    arrived.await.unwrap();
+    let by_id = json!({"sub_agent_id": field(&started, "sub_agent_id")});
+    let running = result(call(&*tools, &caller, "wait", by_id.clone()).await);
+
+    result(call(&*tools, &caller, "cancel", by_id).await);
+    release.send(()).unwrap();
+
+    let steps = field(&running, "steps");
+    let (looped, counted) = (field(&steps[0], "run_id"), field(&steps[1], "run_id"));
+    let wait = json!({"run_id": looped, "wait_ms": 30_000});
+    let looped = result(call(&*tools, &caller, "wait", wait).await);
+    assert_eq!(field(&looped, "state"), "canceled", "{looped}");
+    let read = json!({"run_id": counted});
+    let counted = result(call(&*tools, &caller, "wait", read).await);
+    assert_eq!(field(&counted, "state"), "succeeded", "{counted}");
+    let sub_agent_id = field(&started, "sub_agent_id").as_str().unwrap();
+    assert_eq!(
+        lead.thread(sub_agent_id).await.len(),
+        3,
+        "brief, calls, results"
+    );
+}
+
+// Catches: a Run that goes on after the lead canceled the Sub-agent because
+// the Sub-agent's `exec` still waited on it, and a reply right after the
+// cancel whose Turn reads that `exec` without a result. The renewal that
+// stops the Turn comes 10 seconds after it starts.
+#[tokio::test]
+async fn cancel_cancels_the_run_that_an_exec_still_waits_on() {
+    let lead = Lead::new().await;
+    let (tools, caller, task_id) = (lead.tools(), lead.caller(), lead.task().await);
+    let paid = "Count only the paid invoices.";
+    let answers = Mock::given(body_string_contains(paid)).respond_with(reply("Seven."));
+    answers.mount(&lead.model).await;
+    let endless = json!({"task_id": task_id.as_str(), "intent": "Loop", "program": "while (true) {}", "wait_ms": 30_000});
+    let exec = tool_calls(&[tool_call("call_1", "exec", &endless)]);
+    Mock::given(any())
+        .respond_with(exec)
+        .up_to_n_times(1)
+        .mount(&lead.model)
+        .await;
+    lead.model_answers(no_reply()).await;
+    let agent = json!({"task_id": task_id.as_str(), "message": MESSAGE});
+    let started = result(call(&*tools, &caller, "agent", agent).await);
+    let (tasks, deadline) = (
+        &lead.modules.tasks,
+        tokio::time::Instant::now() + EVENTUALLY,
+    );
+    let mut changes = lead.database.wait_for_changes(deadline);
+    let run_id = loop {
+        let read_at = tokio::time::Instant::now();
+        let attempts = tasks.interactions(&lead.actor, &lead.workspace_id, &task_id, None, 10);
+        if let Some(run_id) = attempts
+            .await
+            .unwrap()
+            .into_iter()
+            .find_map(|attempt| attempt.run)
+        {
+            break run_id;
+        }
+        assert!(changes.pause(read_at).await, "the exec started no Run");
+    };
+
+    let sub_agent_id = field(&started, "sub_agent_id");
+    result(
+        call(
+            &*tools,
+            &caller,
+            "cancel",
+            json!({"sub_agent_id": sub_agent_id}),
+        )
+        .await,
+    );
+    let message = json!({"sub_agent_id": sub_agent_id, "message": paid});
+    result(call(&*tools, &caller, "agent", message).await);
+    let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
+    let answered = result(call(&*tools, &caller, "wait", wait).await);
+
+    assert_eq!(field(&answered, "answer"), "Seven.", "{answered}");
+    let requests = lead.model.received_requests().await.unwrap();
+    let second = requests
+        .get(1)
+        .map(|request| String::from_utf8_lossy(&request.body));
+    assert!(second.is_some_and(|body| body.contains("No result")));
+    let wait = json!({"run_id": run_id.as_str(), "wait_ms": 30_000});
+    let waited = result(call(&*tools, &caller, "wait", wait).await);
+    assert_eq!(field(&waited, "state"), "canceled", "{waited}");
 }
 
 // Catches: a Turn that reads as running for ever once its Coral Instance
@@ -734,6 +919,7 @@ async fn an_interrupted_turn_closes_the_calls_it_left_without_results() {
             principal: actor.clone(),
             workspace_id: workspace_id.clone(),
             task_id,
+            started_runs: std::sync::Mutex::default(),
         },
     };
     let mut transaction = lead.database.begin().await.unwrap();
