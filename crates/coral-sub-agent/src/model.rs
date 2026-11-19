@@ -136,7 +136,8 @@ impl ModelClient {
                 return Err(ModelError::Unavailable(Some(status)));
             }
             status => {
-                // A missing or oversized body reads as any other refusal.
+                // A 413 is too long whatever its body. With another status, a body that
+                // is missing or oversized reads as any other refusal.
                 let body = coral_outbound::read_bounded_body(response, REFUSAL_BODY_LIMIT).await;
                 return Err(match Refusal::read(status, &body.unwrap_or_default()) {
                     Refusal::ContextTooLong => ModelError::ContextTooLong(status),

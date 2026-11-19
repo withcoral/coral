@@ -169,8 +169,9 @@ impl SubAgents {
         self.end_turn(workspace_id, sub_agent_id, &turn.id, canceled)
             .await?;
         // A running Turn cancels the Runs it holds in memory when it stops.
-        // The Runs that the stored thread names are canceled here, so that a
-        // Turn that has ended leaves none running.
+        // The Runs that the stored thread names are asked to stop here, so that
+        // a Turn that has ended does not leave them running. A cancel that fails
+        // is logged, and that Run keeps running.
         let thread = repository::thread(&*self.database, workspace_id, sub_agent_id).await?;
         let started = steps::steps(&thread).into_iter();
         let started = started.filter_map(|step| step.run_id).collect();

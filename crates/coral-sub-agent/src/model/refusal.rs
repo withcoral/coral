@@ -108,8 +108,6 @@ const TOO_LONG_PHRASES: &[&str] = &[
     "range of input length should be",        // DashScope, Qwen
     "context length exceeded",                // generic
     "context_length_exceeded",                // generic, written in a message
-    "too many tokens",                        // generic
-    "token limit exceeded",                   // generic
 ];
 
 #[cfg(test)]
@@ -150,6 +148,8 @@ mod tests {
                 429,
                 wrapped("Too many tokens, please wait before trying again."),
             ),
+            // Words that another bad request can use, such as one about the reply's length.
+            (400, wrapped("max_tokens: too many tokens requested")),
             (401, wrapped("prompt is too long")),
             (400, wrapped("Unknown tool `nothing`")),
             (400, "prompt is too long".to_owned()),
