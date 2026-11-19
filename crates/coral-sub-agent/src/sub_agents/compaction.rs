@@ -4,7 +4,7 @@
 
 use tracing::Instrument as _;
 
-use crate::model::{Block, Message, Reply, Role};
+use crate::model::{Block, Message, ModelError, Reply, Role};
 use crate::prompt::ToolText;
 
 use super::{RunningTurn, SubAgents, TurnFailure};
@@ -12,6 +12,8 @@ use super::{RunningTurn, SubAgents, TurnFailure};
 impl SubAgents {
     /// The model's reply to the thread, compacted first when the request
     /// would leave less than [`RESERVE_TOKENS`] of the configured window free.
+    /// When the server still answers that the request is too long, the thread
+    /// is compacted and sent once more.
     pub(super) async fn reply_within_window(
         &self,
         turn: &RunningTurn,
@@ -19,26 +21,38 @@ impl SubAgents {
         tools: &[ToolText],
         thread: &mut Vec<Message>,
     ) -> Result<Reply, TurnFailure> {
-        if let Some(window) = self.model.context_window()
+        let window = self.model.context_window();
+        if let Some(window) = window
             && is_near(system, tools, &for_model(thread), window)
         {
             self.compact(turn, thread, window).await?;
         }
+        let reply = self.model.reply(system, &for_model(thread), tools).await;
+        let (Err(ModelError::ContextTooLong(_)), Some(window)) = (&reply, window) else {
+            return Ok(reply?);
+        };
+        // The server counts tokens and Coral estimates them. With nothing
+        // left to summarize, the refusal stands.
+        if !self.compact(turn, thread, window).await? {
+            return Ok(reply?);
+        }
         Ok(self.model.reply(system, &for_model(thread), tools).await?)
     }
 
-    /// Compacts the thread in a span that records its tokens before and after.
+    /// Compacts the thread in a span that records its tokens before and
+    /// after, and returns whether it added a summary.
     async fn compact(
         &self,
         turn: &RunningTurn,
         thread: &mut Vec<Message>,
         window: u32,
-    ) -> Result<(), TurnFailure> {
+    ) -> Result<bool, TurnFailure> {
         let (length, compaction) = (thread.len(), turn.trace.compaction(size(thread)));
         let summarized = self.summarize_older(turn, thread, window);
         let summarized = summarized.instrument(compaction.span()).await;
-        compaction.ended(thread.len() > length, size(thread));
-        summarized
+        let compacted = thread.len() > length;
+        compaction.ended(compacted, size(thread));
+        summarized.map(|()| compacted)
     }
 
     /// Adds the model's summary of the messages before the newest ones to the
@@ -159,12 +173,14 @@ fn tokens(message: &Message) -> usize {
 
 /// Where the messages left whole start: walking back from the newest while
 /// fewer than [`KEEP_RECENT_TOKENS`] are kept, the earliest message that
-/// answers no call. `None` when nothing before it is left to summarize.
+/// answers no call. The newest results stay with the reply that called for
+/// them, however large they are: the model has not read them yet. `None`
+/// when nothing before the cut is left to summarize.
 fn cut(thread: &[Message], start: usize) -> Option<usize> {
     let mut kept = 0;
     let mut cut = thread.len();
     for (index, message) in thread.iter().enumerate().skip(start).rev() {
-        if kept >= KEEP_RECENT_TOKENS {
+        if kept >= KEEP_RECENT_TOKENS && cut < thread.len() {
             break;
         }
         if summary_in(message).is_some() {
@@ -284,6 +300,35 @@ mod tests {
             }
         }
         assert_eq!(open, Vec::<&str>::new());
+    }
+
+    // Catches: a cut that summarizes away results the model has not read,
+    // because they alone fill what is kept.
+    #[test]
+    fn the_newest_results_stay_with_their_call_however_large() {
+        let round = |results: usize| {
+            let call = |n| ToolCall {
+                id: format!("call_{results}_{n}"),
+                name: "exec".to_owned(),
+                arguments: "{}".to_owned(),
+            };
+            let calls: Vec<ToolCall> = (0..results).map(call).collect();
+            let results = calls
+                .iter()
+                .map(|call| call.result("x".repeat(20_480), None));
+            let results = Message::tool_results(results.collect());
+            let content = calls.into_iter().map(Block::ToolUse).collect();
+            let role = Role::Assistant;
+            [Message { role, content }, results]
+        };
+        let brief = Message::user("brief".to_owned());
+        let thread = [vec![brief], round(1).to_vec(), round(3).to_vec()].concat();
+
+        assert_eq!(
+            cut(&thread, 1),
+            Some(3),
+            "the reply that made the three calls"
+        );
     }
 
     // Catches: reasoning shown to the summarizer as the agent's words, and

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use coral_db::{Clock, Database, Transaction, UnixNanos};
-use coral_run::{RunModule, RunObservation};
+use coral_run::{RunId, RunModule, RunObservation};
 use coral_search::UniversalSearchModule;
 use coral_task::{TaskCommands, TaskId, TaskModule};
 use coral_telemetry::safe;
@@ -168,6 +168,13 @@ impl SubAgents {
         let canceled = &TurnState::Canceled;
         self.end_turn(workspace_id, sub_agent_id, &turn.id, canceled)
             .await?;
+        // A running Turn cancels the Runs it holds in memory when it stops.
+        // The Runs that the stored thread names are canceled here, so that a
+        // Turn that has ended leaves none running.
+        let thread = repository::thread(&*self.database, workspace_id, sub_agent_id).await?;
+        let started = steps::steps(&thread).into_iter();
+        let started = started.filter_map(|step| step.run_id).collect();
+        self.cancel_runs(actor, workspace_id, started).await;
         self.page(actor, workspace_id, sub_agent_id).await
     }
 
@@ -364,14 +371,32 @@ impl SubAgents {
     async fn cancel_runs_if_canceled(&self, turn: &RunningTurn) {
         let caller = &turn.caller;
         let (principal, workspace_id) = (&caller.principal, &caller.workspace_id);
-        let canceled = async {
-            if !repository::turn_canceled(&*self.database, workspace_id, &turn.id).await? {
-                return Ok(());
+        match repository::turn_canceled(&*self.database, workspace_id, &turn.id).await {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(error) => {
+                tracing::warn!(
+                    error.type = safe::kind(error.code()),
+                    "the Runs of a canceled Sub-agent Turn were not canceled"
+                );
+                return;
             }
+        }
+        let started = caller.started_runs.lock();
+        let started = started.unwrap_or_else(PoisonError::into_inner).clone();
+        self.cancel_runs(principal, workspace_id, started).await;
+    }
+
+    /// Cancels `runs` as `principal`. A Run that has ended stays as it is.
+    async fn cancel_runs(
+        &self,
+        principal: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        runs: Vec<RunId>,
+    ) {
+        let canceled = async {
             let observation = &RunObservation::immediate(None, 1)?;
-            let started = caller.started_runs.lock();
-            let started = started.unwrap_or_else(PoisonError::into_inner).clone();
-            let cancels = started.iter().map(|run_id| {
+            let cancels = runs.iter().map(|run_id| {
                 self.runs
                     .cancel(principal, workspace_id, run_id, observation)
             });
@@ -384,7 +409,7 @@ impl SubAgents {
         if let Err(error) = canceled.await {
             tracing::warn!(
                 error.type = safe::kind(error.code()),
-                "the Runs of a canceled Sub-agent Turn were not all canceled"
+                "the Runs of a canceled Sub-agent were not all canceled"
             );
         }
     }

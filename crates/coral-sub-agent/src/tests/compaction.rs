@@ -82,3 +82,30 @@ async fn a_thread_near_the_window_is_summarized_and_the_turn_answers() {
         "brief, 3 calls, 3 results, summary, answer"
     );
 }
+
+// Catches: a server's "too long" that fails the Turn where a summary of its
+// older messages lets it go on.
+#[tokio::test]
+async fn a_refusal_as_too_long_compacts_the_thread_and_asks_again() {
+    let lead = Lead::new().await;
+    let section = format!(
+        "base_url = '{}'\nmodel = '{MODEL}'\ncontext_window = 200000",
+        lead.base_url()
+    );
+    let factory = SubAgentFactory;
+    let tools = factory.build(&toml::from_str(&section).unwrap(), lead.dependencies());
+    let too_long = json!({"error": {"message": "m", "code": "context_length_exceeded"}});
+    // The request that holds the third round is refused once.
+    Mock::given(body_string_contains("call_3"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(too_long))
+        .up_to_n_times(1)
+        .mount(&lead.model)
+        .await;
+    stub(&lead, 3).await;
+
+    let (_, waited) = lead.turn(&*tools.unwrap(), &lead.task().await).await;
+
+    assert_eq!(waited.get("answer"), Some(&json!(ANSWER)), "{waited}");
+    let steps = ["step", "step", "step", "step", "summary", "step"];
+    assert_eq!(requests(&lead).await, steps);
+}

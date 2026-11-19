@@ -791,6 +791,31 @@ async fn cancel_cancels_the_running_runs_of_the_sub_agent() {
     );
 }
 
+// Catches: a cancel of a Sub-agent whose Turn has ended that leaves the
+// Turn's Run running, because the Turn no longer holds it in memory.
+#[tokio::test]
+async fn cancel_cancels_the_runs_of_a_turn_that_has_ended() {
+    let lead = Lead::new().await;
+    let (tools, caller, task_id) = (lead.tools(), lead.caller(), lead.task().await);
+    let endless = json!({"task_id": task_id.as_str(), "intent": "Loop", "program": "while (true) {}", "wait_ms": 0});
+    Mock::given(any())
+        .respond_with(tool_calls(&[tool_call("call_1", "exec", &endless)]))
+        .up_to_n_times(1)
+        .mount(&lead.model)
+        .await;
+    lead.model_answers(reply("It is still running.")).await;
+    let (sub_agent_id, completed) = lead.turn(&*tools, &task_id).await;
+    assert_eq!(field(&completed, "state"), "completed", "{completed}");
+
+    let by_id = json!({"sub_agent_id": sub_agent_id});
+    result(call(&*tools, &caller, "cancel", by_id).await);
+
+    let steps = field(&completed, "steps");
+    let wait = json!({"run_id": field(&steps[0], "run_id"), "wait_ms": 30_000});
+    let run = result(call(&*tools, &caller, "wait", wait).await);
+    assert_eq!(field(&run, "state"), "canceled", "{run}");
+}
+
 // Catches: a Run that goes on after the lead canceled the Sub-agent because
 // the Sub-agent's `exec` still waited on it, and a reply right after the
 // cancel whose Turn reads that `exec` without a result. The renewal that

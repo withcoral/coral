@@ -15,6 +15,9 @@ use url::Url;
 use crate::prompt::ToolText;
 use crate::telemetry::ModelCallTrace;
 
+mod refusal;
+use refusal::Refusal;
+
 /// A model behind an OpenAI-compatible Chat Completions endpoint.
 pub(crate) struct ModelClient {
     http: coral_outbound::Client,
@@ -132,7 +135,14 @@ impl ModelClient {
             status if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() => {
                 return Err(ModelError::Unavailable(Some(status)));
             }
-            status => return Err(ModelError::Refused(status)),
+            status => {
+                // A missing or oversized body reads as any other refusal.
+                let body = coral_outbound::read_bounded_body(response, REFUSAL_BODY_LIMIT).await;
+                return Err(match Refusal::read(status, &body.unwrap_or_default()) {
+                    Refusal::ContextTooLong => ModelError::ContextTooLong(status),
+                    Refusal::Other => ModelError::Refused(status),
+                });
+            }
         }
         let body = coral_outbound::read_bounded_body(response, BODY_LIMIT)
             .await
@@ -315,6 +325,9 @@ pub(crate) enum ModelError {
     /// The server refused the request.
     #[error("the model server refused the request with status {0}")]
     Refused(StatusCode),
+    /// The server refused the request because it does not fit the model's context window.
+    #[error("the conversation is too long for the model: start a new agent with a narrower brief")]
+    ContextTooLong(StatusCode),
     /// The destination policy forbids the server, or its answer is not a chat completion.
     #[error("the model settings do not lead to a Chat Completions endpoint Coral may use")]
     Misconfigured,
@@ -329,6 +342,9 @@ const RETRY_WAITS: [Duration; 3] = [
 
 /// The largest answer Coral reads from the model server.
 const BODY_LIMIT: usize = 4 << 20;
+
+/// The most of a refusal that Coral reads to learn whether the request was too long.
+const REFUSAL_BODY_LIMIT: usize = 64 << 10;
 
 #[derive(Serialize)]
 struct CompletionRequest<'a> {
