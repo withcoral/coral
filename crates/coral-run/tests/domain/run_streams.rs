@@ -86,7 +86,7 @@ impl Scripted {
     }
 
     /// How Coral closed the stream without `Ended`.
-    async fn closing(&mut self) -> Closing {
+    pub(super) async fn closing(&mut self) -> Closing {
         self.recv().await.expect_err("a close, not a message")
     }
 

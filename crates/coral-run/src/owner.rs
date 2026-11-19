@@ -50,7 +50,7 @@ pub(crate) use chunk::ChunkWork;
 #[cfg(test)]
 pub(crate) use chunk::{CHUNK_WORK_CAP, ChunkBuildView, ENFORCEMENT_BATCH_CAP};
 pub(crate) use handle::{
-    Check, DecisionRequest, Message, OwnerHandle, OwnerRegistration, Owners, ParkedWait,
+    Check, DecisionRequest, DrainStep, Message, OwnerHandle, OwnerRegistration, Owners, ParkedWait,
     RequestTicket, StartedExecution, Timer,
 };
 #[cfg(test)]

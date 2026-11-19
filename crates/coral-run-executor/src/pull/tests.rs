@@ -114,6 +114,11 @@ struct Link {
 
 /// Serves the link with both operator tokens on a loopback port.
 async fn start(timing: Timing) -> Link {
+    start_serving(timing, None).await
+}
+
+/// [`start`], serving Run streams with `run_streams`.
+async fn start_serving(timing: Timing, run_streams: Option<Arc<dyn RunStreamServer>>) -> Link {
     let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let credentials =
         Credentials::new([TOKEN, ROTATED].map(|token| Token::new(token.to_owned()).unwrap()));
@@ -126,7 +131,7 @@ async fn start(timing: Timing) -> Link {
         database: database.database(),
         coral_instance_id: INSTANCE.to_owned(),
         timing,
-        run_streams: None,
+        run_streams,
     };
     let (stop, stopped) = oneshot::channel::<()>();
     tokio::spawn(server.serve(listener, async {
@@ -230,6 +235,17 @@ impl Link {
             requests,
             responses,
         })
+    }
+
+    /// Opens a Run stream on `channel` that sends nothing.
+    async fn run_stream(&self, channel: &Channel) -> Result<Streaming<RunResponse>, Status> {
+        let mut request = Request::new(tokio_stream::iter(Vec::<RunRequest>::new()));
+        request
+            .metadata_mut()
+            .insert("authorization", bearer(TOKEN).parse().unwrap());
+        let mut client =
+            crate::wire::v1::link_service_client::LinkServiceClient::new(channel.clone());
+        Ok(client.run(request).await?.into_inner())
     }
 
     /// Opens a pull stream that Coral welcomes.
@@ -792,4 +808,61 @@ fn a_call_is_too_large_exactly_when_its_compile_passes_the_bound() {
             encoded(&call)
         );
     }
+}
+
+/// Serves each Run stream with one `Committed`, then moves it.
+struct Moves;
+
+#[tonic::async_trait]
+impl RunStreamServer for Moves {
+    async fn serve(&self, stream: ServedRunStream) {
+        let committed =
+            wire::run_response::Message::Committed(wire::Committed { request_number: 1 });
+        drop(stream.responses.send(Ok(RunResponse {
+            message: Some(committed),
+        })));
+        drop(stream.responses.send(Err(crate::Closing::Moved)));
+    }
+}
+
+#[tokio::test]
+async fn a_draining_link_ends_its_pull_streams_and_opens_no_new_stream() {
+    let link = start_serving(Timing::default(), Some(Arc::new(Moves))).await;
+    let channel = link.connect().await;
+    // A moved Run stream ends OK after Coral's last message.
+    let mut moved = link.run_stream(&channel).await.unwrap();
+    let first = timeout(Duration::from_secs(5), moved.message())
+        .await
+        .unwrap();
+    assert!(matches!(
+        first.unwrap().and_then(|response| response.message),
+        Some(wire::run_response::Message::Committed(_))
+    ));
+    let end = timeout(Duration::from_secs(5), moved.message())
+        .await
+        .unwrap();
+    assert!(matches!(end, Ok(None)), "a clean end, the move: {end:?}");
+
+    let hello = hello(PROTOCOL_LEVEL, 2);
+    let id = hello.run_executor_id.clone();
+    let mut pull = link.welcomed(&channel, hello).await;
+    link.held(&id, |_| true).await;
+    link.streams.drain();
+    assert!(!link.streams.has_room(), "no send from the drain's start");
+    assert_eq!(pull.next().await.unwrap(), None, "a clean end, the move");
+    timeout(Duration::from_secs(5), link.streams.ended())
+        .await
+        .unwrap();
+    let reopened = link
+        .open(
+            &channel,
+            &bearer(TOKEN),
+            Up::Hello(self::hello(PROTOCOL_LEVEL, 2)),
+        )
+        .await;
+    assert_eq!(code(reopened), Some(Code::Unavailable));
+    assert_eq!(
+        code(link.run_stream(&channel).await),
+        Some(Code::Unavailable)
+    );
 }

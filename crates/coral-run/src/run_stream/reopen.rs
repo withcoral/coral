@@ -395,6 +395,11 @@ impl RunModule {
                 "the Run stream broke the protocol",
             ));
         }
+        // The stream moves: the Coral Instance it reopens on answers how the
+        // Run stands.
+        if link.moving.load(std::sync::atomic::Ordering::SeqCst) {
+            return link.close(Closing::Moved);
+        }
         if let Ok(Some(run)) = run_repository::find_exact(&self.database, workspace_id, id).await
             && run.state.is_terminal()
         {

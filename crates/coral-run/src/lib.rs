@@ -276,6 +276,8 @@ pub struct RunModule {
     /// Accepted Runs wait for a take and a Run stream instead of a Run Owner
     /// (ADR 0027). Only tests set it until production switches over.
     run_streams: bool,
+    /// This Coral Instance's pull streams, which its Shutdown Drain closes.
+    pull_streams: Option<coral_run_executor::PullStreams>,
     owners: Owners,
     admission: shutdown::Admission,
     /// Bounds the recovered owners' writes at once, so a mass recovery after
@@ -361,6 +363,7 @@ impl RunModule {
             instance,
             inbox,
             run_streams: false,
+            pull_streams: None,
             owners: Owners::default(),
             admission: shutdown::Admission::default(),
             recovery_writes: recovery::write_permits(),
@@ -405,6 +408,7 @@ impl RunModule {
             instance: CoralInstanceId::generate(),
             inbox,
             run_streams: false,
+            pull_streams: None,
             owners: Owners::default(),
             admission: shutdown::Admission::default(),
             recovery_writes: recovery::write_permits(),
@@ -419,6 +423,14 @@ impl RunModule {
     #[must_use]
     pub fn with_run_streams(mut self) -> Self {
         self.run_streams = true;
+        self
+    }
+
+    /// Drains `streams`, this Coral Instance's pull streams, in its Shutdown
+    /// Drain ([`Self::shutdown`]).
+    #[must_use]
+    pub fn with_pull_streams(mut self, streams: coral_run_executor::PullStreams) -> Self {
+        self.pull_streams = Some(streams);
         self
     }
 

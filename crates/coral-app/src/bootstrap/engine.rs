@@ -467,7 +467,8 @@ impl Engine {
         .map_err(|error| AppError::engine_boot(error.to_string()))?
         .with_provider_renamer(Arc::new(provider_workflow.clone()))
         .with_search(search_module.clone())
-        .with_accounts(accounts.clone());
+        .with_accounts(accounts.clone())
+        .with_pull_streams(link.server.streams());
 
         // The expired-lease sweep's first pass runs before any listener serves,
         // and before any but the Run Executor listener binds:
@@ -644,7 +645,8 @@ impl Engine {
 
     /// Reports not ready, stops the expired-lease sweep and drains the Runs
     /// ([`coral_run::RunModule::shutdown`]). Every listener still serves
-    /// meanwhile; stop them after it.
+    /// meanwhile, but the Run Executor listener opens no new stream; stop
+    /// them after it.
     pub(crate) async fn drain_runs(&self) {
         self.modules.readiness.stop_serving();
         self.run_recovery.abort();

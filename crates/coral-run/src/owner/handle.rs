@@ -256,6 +256,19 @@ pub(crate) enum Message {
     /// The Run stream is gone: the owner records what it applied and
     /// retires, and the Run stays as it is.
     Detached,
+    /// A step of the Shutdown Drain for a Run stream owner.
+    Drain(DrainStep),
+}
+
+/// How the Shutdown Drain moves a Run stream (ADR 0027).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DrainStep {
+    /// Start no new dispatch; keep committing the stream's requests.
+    Hold,
+    /// Leave the stream once no dispatch is in flight.
+    Leave,
+    /// The drain is out: leave the stream now.
+    LeaveNow,
 }
 
 impl fmt::Debug for Message {
@@ -349,6 +362,7 @@ impl fmt::Debug for Message {
                 .field("recorded_total", recorded_total)
                 .finish(),
             Self::Detached => formatter.write_str("Detached"),
+            Self::Drain(step) => formatter.debug_tuple("Drain").field(step).finish(),
         }
     }
 }
@@ -434,6 +448,9 @@ struct Shared {
     /// Its Run's stream ended, or a reopen of it on this Coral Instance
     /// replaced it: the Run goes on without it.
     detached: AtomicBool,
+    /// It hosts a Run stream: the Shutdown Drain moves its stream instead
+    /// of stopping it.
+    stream: bool,
     /// The number of the Run stream request being handed to the Program's
     /// host, until the call it makes takes it.
     request: std::sync::Mutex<Option<u64>>,
@@ -482,6 +499,15 @@ pub(crate) struct OwnerHandle {
 
 impl OwnerHandle {
     pub(crate) fn new(run_id: HeldRunId, claim_id: String) -> (Self, Mailbox) {
+        Self::with_stream(run_id, claim_id, false)
+    }
+
+    /// The handle on the owner that hosts a Run stream's Run.
+    pub(crate) fn for_stream(run_id: HeldRunId, claim_id: String) -> (Self, Mailbox) {
+        Self::with_stream(run_id, claim_id, true)
+    }
+
+    fn with_stream(run_id: HeldRunId, claim_id: String, stream: bool) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::unbounded_channel();
         let handle = Self {
             shared: Arc::new(Shared {
@@ -491,6 +517,7 @@ impl OwnerHandle {
                 stop: Arc::new(ExecutionStop::new()),
                 stopped: AtomicBool::new(false),
                 detached: AtomicBool::new(false),
+                stream,
                 request: std::sync::Mutex::new(None),
             }),
         };
@@ -542,6 +569,17 @@ impl OwnerHandle {
     /// commits only on the head it tracks, and ends no call for it.
     pub(crate) fn is_detached(&self) -> bool {
         self.shared.detached.load(Ordering::SeqCst)
+    }
+
+    /// A step of the Shutdown Drain. An owner that hosts a Run stream moves
+    /// the stream; another is stopped once the drain is out, which
+    /// interrupts its Run.
+    pub(crate) fn drain(&self, step: DrainStep) {
+        if self.shared.stream {
+            self.send(Message::Drain(step));
+        } else if step == DrainStep::LeaveNow {
+            self.request_stop();
+        }
     }
 
     /// Its Run's stream ended, or reopens elsewhere: the Run goes on

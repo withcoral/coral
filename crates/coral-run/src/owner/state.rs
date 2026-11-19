@@ -63,7 +63,7 @@ use crate::{CoralFailure, Error};
 
 use super::chunk::{ChunkBuild, ChunkItem, ChunkWork};
 use super::handle::{
-    Check, CommitRejection, DecisionRequest, Message, ParkedWait, Reply, RequestKey,
+    Check, CommitRejection, DecisionRequest, DrainStep, Message, ParkedWait, Reply, RequestKey,
     StartedExecution, Timer,
 };
 
@@ -223,6 +223,11 @@ pub(crate) enum Effect {
     /// self-interrupt bound. The Program is terminated with its dispatches,
     /// and the Interrupted chunk is written as soon as the database answers.
     Interrupt { last_commit_age_nanos: i64 },
+    /// A Run stream owner leaves its stream in the Shutdown Drain: the
+    /// stream sends nothing more but `Committed`, the owner detaches and
+    /// retires with no terminal write, and the stream ends cleanly so the
+    /// Run Executor reopens it on another Coral Instance.
+    GoAway,
     /// A recovered owner's one chunk, written until the database answers:
     /// the expiries and decisions it applied, in its order, then every
     /// nonterminal Invocation ends, and the Run ends with the termination its
@@ -334,8 +339,24 @@ pub(crate) enum Phase {
     Retired,
 }
 
+/// How far a Run stream owner is in the Shutdown Drain (ADR 0027).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Draining {
+    #[default]
+    No,
+    /// The owner commits the stream's requests but starts no dispatch.
+    Holding,
+    /// It leaves the stream once no dispatch is in flight.
+    Leaving,
+    /// It left.
+    Left,
+}
+
 struct InFlight {
     bytes: usize,
+    /// The chunk carries an enforcement batch: its dispatches start once it
+    /// lands.
+    enforces: bool,
     waiters: Vec<Reply>,
     /// The entities the chunk's outside requests and expiries decide.
     requests: Vec<RequestKey>,
@@ -420,6 +441,8 @@ pub(crate) struct OwnerState {
     requests: Option<RequestOrder>,
     /// Items pushed into chunks so far, so a request knows whether it made one.
     pushed: u64,
+    /// A Run stream owner's place in the Shutdown Drain.
+    draining: Draining,
 }
 
 impl OwnerState {
@@ -457,6 +480,7 @@ impl OwnerState {
             recovered: None,
             requests: None,
             pushed: 0,
+            draining: Draining::No,
         }
     }
 
@@ -812,6 +836,12 @@ impl OwnerState {
                 Error::ProgramHostTerminated,
             )];
         }
+        // In the Shutdown Drain the Invocation stays `pending`; the Coral
+        // Instance its stream reopens on takes it to its permit.
+        if self.holds_dispatches() {
+            self.waiting.push_back(request);
+            return Vec::new();
+        }
         if request.holds_fan_out_slot() {
             if self.slots_held >= self.limits.fan_out_invocations {
                 self.waiting.push_back(request);
@@ -838,6 +868,9 @@ impl OwnerState {
         self.slots_held = self.slots_held.saturating_sub(1);
         if !self.accepts_program_requests(now_unix_nanos) {
             return self.release_waiting(|| Error::ProgramHostTerminated);
+        }
+        if self.holds_dispatches() {
+            return Vec::new();
         }
         match self.waiting.pop_front() {
             Some(request) => self.enforce(request, now_unix_nanos),
@@ -1411,6 +1444,7 @@ impl OwnerState {
         chunk.head = self.head;
         self.in_flight = Some(InFlight {
             bytes: chunk.bytes,
+            enforces: chunk.enforcement.is_some(),
             waiters: std::mem::take(&mut chunk.waiters),
             requests: std::mem::take(&mut chunk.requests),
             terminates: chunk.termination.is_some(),
@@ -1776,6 +1810,81 @@ impl OwnerState {
         chunk.request_number = Some(number);
     }
 
+    /// Whether a Run stream owner in the Shutdown Drain holds new
+    /// dispatches back: one that left still applies what its mailbox held
+    /// before its detach.
+    fn holds_dispatches(&self) -> bool {
+        self.draining != Draining::No
+    }
+
+    /// A step of the Shutdown Drain, which only a Run stream owner takes.
+    fn drain(&mut self, step: DrainStep) -> Vec<Effect> {
+        if self.draining == Draining::Left {
+            return Vec::new();
+        }
+        match step {
+            DrainStep::Hold => {
+                if self.draining == Draining::No {
+                    self.draining = Draining::Holding;
+                }
+                Vec::new()
+            }
+            // The idle check after every message leaves once it can.
+            DrainStep::Leave => {
+                self.draining = Draining::Leaving;
+                Vec::new()
+            }
+            // The drain is out: the Coral Instance the stream reopens on
+            // settles the dispatches still in flight.
+            DrainStep::LeaveNow => {
+                self.draining = Draining::Leaving;
+                self.go_away()
+            }
+        }
+    }
+
+    /// Leaves the stream once the drain lets it and no dispatch is in
+    /// flight: no Fan-out slot is held, and no enforcement batch waits in a
+    /// chunk or rides the one in flight.
+    fn go_away_when_idle(&mut self) -> Vec<Effect> {
+        if self.draining != Draining::Leaving {
+            return Vec::new();
+        }
+        let idle = self.slots_held == 0
+            && self
+                .closed
+                .iter()
+                .chain(std::iter::once(&self.open))
+                .all(|chunk| chunk.enforcement.is_none())
+            && self
+                .in_flight
+                .as_ref()
+                .is_none_or(|flight| !flight.enforces);
+        if !idle {
+            return Vec::new();
+        }
+        self.go_away()
+    }
+
+    /// Leaves a running stream whose Run is not ending; a Run that ends
+    /// here, or has not started, keeps its stream. No enforcement batch not
+    /// yet committed starts a dispatch: each Invocation stays `pending` for
+    /// the Coral Instance the stream reopens on. The answers go out after
+    /// the stream stops passing them on.
+    fn go_away(&mut self) -> Vec<Effect> {
+        if self.phase != Phase::Running
+            || self.stop_requested
+            || self.termination.is_some()
+            || self.stream_end.is_some()
+        {
+            return Vec::new();
+        }
+        self.draining = Draining::Left;
+        let mut effects = vec![Effect::GoAway];
+        effects.extend(self.refuse_unsent_dispatches());
+        effects
+    }
+
     /// The Run stream is gone: no more Program requests; what is applied
     /// commits, and the owner retires with no terminal write.
     fn detached(&mut self) -> Vec<Effect> {
@@ -1809,10 +1918,12 @@ pub(crate) fn apply(state: &mut OwnerState, message: Message, now_unix_nanos: i6
     if matches!(message, Message::Committed | Message::Started(Ok(Some(_)))) {
         let mut effects = apply_message(state, message, now_unix_nanos);
         effects.extend(state.check_liveness(now_unix_nanos));
+        effects.extend(state.go_away_when_idle());
         return effects;
     }
     let mut effects = state.check_liveness(now_unix_nanos);
     effects.extend(apply_message(state, message, now_unix_nanos));
+    effects.extend(state.go_away_when_idle());
     effects
 }
 
@@ -1928,5 +2039,6 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
             Vec::new()
         }
         Message::Detached => state.detached(),
+        Message::Drain(step) => state.drain(step),
     }
 }
