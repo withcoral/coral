@@ -183,8 +183,8 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   length limits all of it
   ([ADR 0041](0041-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)): at that
   length the Coral Instance closes the rest, and the calls in flight of those Runs end `indeterminate`. Nothing in the
-  drain records Interrupted for a Run that a Run Executor in a process of its own holds, and a rolling deploy loses no
-  such Run. The Runs of the Coral Instance's own local children end when it stops.
+  drain records Interrupted for a Run whose Run Executor is not a local child of the stopping Coral Instance, and a
+  rolling deploy loses no such Run. The Runs of the Coral Instance's own local children end when it stops.
 - **The word is reconnect.** A Run Executor reconnects a Run, and the Run's stream moves. Coral never resumes a Run: no
   Program is recreated and no isolate is snapshotted.
 
