@@ -5,11 +5,12 @@ use super::workspaces::{change, page, page_start, timestamp, workspace_id};
 use super::{GrpcServices, management as wire};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use coral_catalog::AuthenticationKind;
+use coral_db::UnixNanos;
 use coral_provider::access::{CredentialRoute, ProviderCallRoot, ProviderNamespace};
 use coral_provider::{
     self as domain, ManagementRequestId, ProviderId, ProviderSetupId, WorkspaceId,
 };
-use coral_workspace::AuthenticatedUser;
+use coral_workspace::{AuthenticatedUser, IfMatch};
 use tonic::{Request, Response, Status};
 use wire::create_provider_setup_request::Input;
 mod configuration;
@@ -205,7 +206,7 @@ fn authorization_view(
             None => wire::ClientBootstrap::Unspecified,
         }
         .into(),
-        expire_time: Some(timestamp(authorization.expires_at_unix_nanos)),
+        expire_time: Some(timestamp(authorization.expires_at)),
         failure_code: authorization.failure_code.unwrap_or_default(),
         client_id: authorization.client_id.unwrap_or_default(),
     }
@@ -473,9 +474,9 @@ impl GrpcServices {
             automatic_refresh: authentication.automatic_refresh,
             holds_secret_references: authentication.holds_secret_references,
             granted_scope: authentication.granted_scope,
-            credential_expire_time: authentication.expires_at_unix_nanos.map(timestamp),
+            credential_expire_time: authentication.expires_at.map(timestamp),
             publication,
-            create_time: Some(timestamp(setup.created_at_unix_nanos())),
+            create_time: Some(timestamp(setup.created_at())),
             input_url: setup.input_url().unwrap_or_default().to_owned(),
             authorization,
             discovery_failure: authentication.discovery_failure.map(|code| {
@@ -484,7 +485,7 @@ impl GrpcServices {
                     message: "authenticated discovery did not complete".into(),
                 }
             }),
-            expire_time: Some(timestamp(setup.expires_at_unix_nanos())),
+            expire_time: Some(timestamp(setup.expires_at())),
             configuration: Some(review),
             request: setup.request().map(|request| wire::ProviderSetupRequest {
                 namespace: request.namespace.as_str().to_owned(),
@@ -503,7 +504,7 @@ impl GrpcServices {
         user: &AuthenticatedUser,
         owner: &WorkspaceId,
         id: &ProviderSetupId,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<Response<wire::ProviderSetup>, Status> {
         let inspected = self
             .providers
@@ -700,8 +701,8 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
             .cancel_setup(&context, &owner, &id)
             .await
             .map_err(error)?;
-        let now = context.occurred_at_unix_nanos();
-        self.setup_response(context.actor(), &owner, &id, now).await
+        self.setup_response(context.actor(), &owner, &id, context.occurred_at())
+            .await
     }
 
     #[tracing::instrument(skip_all, name = "coral.private.get_provider_setup")]
@@ -712,8 +713,7 @@ impl wire::provider_setup_service_server::ProviderSetupService for GrpcServices 
         let user = self.management_user(&request).await?;
         let (owner, id) = resource(&request.get_ref().name, "providerSetups")?;
         let id = ProviderSetupId::parse(id).map_err(error)?;
-        self.setup_response(&user, &owner, &id, user.now().get())
-            .await
+        self.setup_response(&user, &owner, &id, user.now()).await
     }
 
     #[tracing::instrument(skip_all, name = "coral.private.authorize_provider_setup")]
@@ -812,9 +812,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
             if !req.namespace.is_empty() {
                 return Err(invalid());
             }
-            let context = context
-                .with_etag(&req.etag)
-                .map_err(super::workspaces::error)?;
+            let if_match = IfMatch::parse(&req.etag).map_err(super::workspaces::error)?;
             let publication_request = domain::ProviderRegenerationRequest::new(
                 request_id,
                 owner,
@@ -841,7 +839,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
             };
             let publication = self
                 .provider_workflow
-                .regenerate_provider(&context, publication_request)
+                .regenerate_provider(&context, &if_match, publication_request)
                 .await
                 .map_err(error)?;
             return Ok(Response::new(wire::ProviderPublication {
@@ -967,9 +965,8 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::UpdateProviderRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)
-            .with_etag(&request.get_ref().etag)
-            .map_err(super::workspaces::error)?;
+        let context = change(self.management_user(&request).await?);
+        let if_match = IfMatch::parse(&request.get_ref().etag).map_err(super::workspaces::error)?;
         let req = request.into_inner();
         let (workspace, id) = resource(&req.name, "providers")?;
         let provider = self
@@ -978,6 +975,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
                 &context,
                 &workspace,
                 &domain::ProviderId::parse(id).map_err(error)?,
+                &if_match,
                 domain::ProviderDisplayName::parse(&req.display_name).map_err(error)?,
             )
             .await
@@ -1016,16 +1014,15 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::SetProviderIconRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)
-            .with_etag(&request.get_ref().etag)
-            .map_err(super::workspaces::error)?;
+        let context = change(self.management_user(&request).await?);
+        let if_match = IfMatch::parse(&request.get_ref().etag).map_err(super::workspaces::error)?;
         let req = request.into_inner();
         let (workspace, id) = resource(&req.name, "providers")?;
         let id = domain::ProviderId::parse(id).map_err(error)?;
         let icon = domain::ProviderIcon::parse(req.content).map_err(error)?;
         let provider = self
             .providers
-            .set_provider_icon(&context, &workspace, &id, Some(icon))
+            .set_provider_icon(&context, &workspace, &id, &if_match, Some(icon))
             .await
             .map_err(error)?;
         self.provider_projection(context.actor(), &workspace, provider.id())
@@ -1038,14 +1035,13 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::DeleteProviderIconRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)
-            .with_etag(&request.get_ref().etag)
-            .map_err(super::workspaces::error)?;
+        let context = change(self.management_user(&request).await?);
+        let if_match = IfMatch::parse(&request.get_ref().etag).map_err(super::workspaces::error)?;
         let (workspace, id) = resource(&request.get_ref().name, "providers")?;
         let id = domain::ProviderId::parse(id).map_err(error)?;
         let provider = self
             .providers
-            .set_provider_icon(&context, &workspace, &id, None)
+            .set_provider_icon(&context, &workspace, &id, &if_match, None)
             .await
             .map_err(error)?;
         self.provider_projection(context.actor(), &workspace, provider.id())
@@ -1058,9 +1054,8 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::DisableProviderRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)
-            .with_etag(&request.get_ref().etag)
-            .map_err(super::workspaces::error)?;
+        let context = change(self.management_user(&request).await?);
+        let if_match = IfMatch::parse(&request.get_ref().etag).map_err(super::workspaces::error)?;
         let (owner, id) = resource(&request.get_ref().name, "providers")?;
         let provider = self
             .providers
@@ -1068,6 +1063,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
                 &context,
                 &owner,
                 &domain::ProviderId::parse(id).map_err(error)?,
+                &if_match,
             )
             .await
             .map_err(error)?;
@@ -1081,9 +1077,8 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::RestoreProviderRequest>,
     ) -> Result<Response<wire::Provider>, Status> {
-        let context = change(self.management_user(&request).await?)
-            .with_etag(&request.get_ref().etag)
-            .map_err(super::workspaces::error)?;
+        let context = change(self.management_user(&request).await?);
+        let if_match = IfMatch::parse(&request.get_ref().etag).map_err(super::workspaces::error)?;
         let (owner, id) = resource(&request.get_ref().name, "providers")?;
         let provider = self
             .providers
@@ -1091,6 +1086,7 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
                 &context,
                 &owner,
                 &domain::ProviderId::parse(id).map_err(error)?,
+                &if_match,
             )
             .await
             .map_err(error)?;
@@ -1104,15 +1100,15 @@ impl wire::provider_service_server::ProviderService for GrpcServices {
         &self,
         request: Request<wire::DeleteProviderRequest>,
     ) -> Result<Response<()>, Status> {
-        let context = change(self.management_user(&request).await?)
-            .with_etag(&request.get_ref().etag)
-            .map_err(super::workspaces::error)?;
+        let context = change(self.management_user(&request).await?);
+        let if_match = IfMatch::parse(&request.get_ref().etag).map_err(super::workspaces::error)?;
         let (owner, id) = resource(&request.get_ref().name, "providers")?;
         self.provider_workflow
             .delete_provider(
                 &context,
                 &owner,
                 &domain::ProviderId::parse(id).map_err(error)?,
+                &if_match,
             )
             .await
             .map_err(error)?;

@@ -77,8 +77,7 @@ pub mod test_fixtures;
 mod types;
 use std::sync::Arc;
 
-use coral_db::Clock as _;
-use coral_db::{Database, Transaction, UnixNanos};
+use coral_db::{Database, Transaction};
 use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, PrincipalWorkspaceEvidence};
 use coral_workspace::{WorkspaceId, WorkspaceModule};
@@ -130,6 +129,8 @@ pub struct UniversalSearchModule {
     /// The model the engine embeds each query with, when the vector side
     /// is on; until the model is ready, the slot says why there is none.
     model: Option<index::EmbedderModel>,
+    /// Dates each check of the caller's authority.
+    clock: Arc<dyn coral_db::Clock>,
 }
 
 /// The most type names one `describe` call may request.
@@ -139,6 +140,7 @@ pub const DESCRIBE_TYPE_NAME_MAX_BYTES: usize = 256;
 
 impl UniversalSearchModule {
     /// Builds discovery over initialized domain persistence and Workspace authority.
+    /// It reads the host's clock until [`Self::with_clock`] replaces it.
     #[must_use]
     pub fn new(database: Arc<Database>, workspaces: WorkspaceModule) -> Self {
         Self::with_retrievers(
@@ -147,6 +149,14 @@ impl UniversalSearchModule {
             ToolRetriever::default(),
             AuthoredToolRetriever::new,
         )
+    }
+
+    /// Replaces the system clock, so that bootstrap gives the Module the
+    /// Coral Instance's one clock and a test drives time.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn coral_db::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Turns the vector side on: once `model` is ready, the engine embeds
@@ -196,6 +206,7 @@ impl UniversalSearchModule {
                 Arc::new(authored_tools(coral_catalog::AuthoredToolKind::Shared)),
             ]),
             model: None,
+            clock: Arc::new(coral_db::SystemClock),
         }
     }
 
@@ -364,7 +375,12 @@ impl UniversalSearchModule {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
             .workspaces
-            .check_principal_inspection_in_snapshot(&mut transaction, actor, workspace_id, now())
+            .check_principal_inspection_in_snapshot(
+                &mut transaction,
+                actor,
+                workspace_id,
+                self.clock.now(),
+            )
             .await?;
         let searchable = retriever::tools::searchable_providers(
             &mut transaction,
@@ -584,7 +600,12 @@ impl UniversalSearchModule {
         let mut transaction = self.database.begin_read_snapshot().await?;
         let authority = self
             .workspaces
-            .check_principal_inspection_in_snapshot(&mut transaction, actor, workspace_id, now())
+            .check_principal_inspection_in_snapshot(
+                &mut transaction,
+                actor,
+                workspace_id,
+                self.clock.now(),
+            )
             .await
             .map_err(Error::from)
             .map_err(conceal_description_error)?;
@@ -663,7 +684,7 @@ impl UniversalSearchModule {
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         Ok(self
             .workspaces
-            .check_discovery_in_transaction(transaction, actor, workspace_id, now())
+            .check_discovery_in_transaction(transaction, actor, workspace_id, self.clock.now())
             .await?)
     }
 }
@@ -745,10 +766,6 @@ const fn ranked_status(retriever: EntityKind, coverage: RetrieverCoverage) -> Re
 }
 
 /// The current time.
-pub(crate) fn now() -> UnixNanos {
-    coral_db::SystemClock.now()
-}
-
 fn conceal_description_error(error: Error) -> Error {
     match error {
         Error::PermissionDenied(_) => Error::AuthoringDescriptionNotFound,

@@ -9,7 +9,7 @@ use coral_workspace::WorkspaceId;
 use coral_catalog::AuthenticationConfiguration;
 use coral_catalog::{OAuthClientBootstrap, OAuthClientPolicy, ProviderCredentialContract};
 use coral_credentials::{CredentialValues, Secret};
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::{
     AuthenticatedUser, AuthoritySource, ChangeContext, TraceId, UserId, WorkspaceAction,
 };
@@ -42,22 +42,22 @@ pub(crate) struct Provisional {
     /// The Secret References beside the sealed record, as stored, for a Setup with any.
     pub(super) secret_references: Option<String>,
     /// When the sealed access token expires, carried to the Account at promotion.
-    pub(super) token_expires_at_unix_nanos: Option<i64>,
+    pub(super) token_expires_at: Option<UnixNanos>,
     pub(super) granted_scope: String,
-    pub(super) expires_at_unix_nanos: i64,
+    pub(super) expires_at: UnixNanos,
     pub(super) oauth_client: Option<StoredClient>,
     pub(super) private_flow: Option<String>,
     pub(super) authorization_url: Option<String>,
     pub(super) user_code: Option<String>,
     pub(super) authorization_state: SetupAuthorizationState,
-    pub(super) authorization_expires_at_unix_nanos: Option<i64>,
+    pub(super) authorization_expires_at: Option<UnixNanos>,
     pub(super) callback_fingerprint: Option<String>,
     pub(super) failure_code: Option<String>,
 }
 
 impl Provisional {
-    pub(super) fn is_live(&self, now: i64) -> bool {
-        self.encrypted_credentials.is_some() && self.expires_at_unix_nanos > now
+    pub(super) fn is_live(&self, now: UnixNanos) -> bool {
+        self.encrypted_credentials.is_some() && self.expires_at > now
     }
 
     pub(super) fn belongs_to(&self, actor: &AuthenticatedUser) -> bool {
@@ -260,7 +260,7 @@ pub struct SetupAuthorization {
     /// The public client identifier the flow runs through; never a secret.
     pub client_id: Option<String>,
     /// Host deadline for the Authorization.
-    pub expires_at_unix_nanos: i64,
+    pub expires_at: UnixNanos,
     /// Stable safe failure code, never an upstream description.
     pub failure_code: Option<String>,
 }
@@ -285,7 +285,7 @@ pub struct SetupAuthentication {
     /// The Reported Grant, verbatim from the token endpoint; empty for secrets.
     pub granted_scope: String,
     /// Host deadline after which the sealed material cannot be promoted.
-    pub expires_at_unix_nanos: Option<i64>,
+    pub expires_at: Option<UnixNanos>,
     /// The inspecting User's setup-scoped OAuth Authorization, when one exists.
     pub authorization: Option<SetupAuthorization>,
     /// Safe code of the last failed discovery attempt, while awaiting discovery.
@@ -422,7 +422,7 @@ pub(crate) struct SealedSetupCredential {
     /// The Secret References to keep beside the sealed record, as stored.
     pub(crate) secret_references: Option<String>,
     pub(crate) granted_scope: String,
-    pub(crate) expires_at_unix_nanos: i64,
+    pub(crate) expires_at: UnixNanos,
 }
 
 impl AccountModule {
@@ -770,7 +770,7 @@ impl AccountModule {
         material: &CredentialMaterial,
         setup: &crate::ProviderSetup,
     ) -> Result<SealedSetupCredential, Error> {
-        if setup.is_past_deadline(context.occurred_at_unix_nanos()) {
+        if setup.is_past_deadline(context.occurred_at()) {
             return Err(Error::ProviderSetupNotApplicable);
         }
         let credential_generation = Uuid::new_v4().to_string();
@@ -789,7 +789,7 @@ impl AccountModule {
             ciphertext,
             secret_references,
             granted_scope: String::new(),
-            expires_at_unix_nanos: setup.expires_at_unix_nanos(),
+            expires_at: setup.expires_at(),
         })
     }
 
@@ -894,7 +894,7 @@ impl AccountModule {
             self.retry_setup_discovery(context, owner, id).await?;
             return self
                 .providers
-                .setup_authentication(context.actor(), owner, id, context.occurred_at_unix_nanos())
+                .setup_authentication(context.actor(), owner, id, context.occurred_at())
                 .await;
         }
         Ok(SetupAuthentication {
@@ -905,7 +905,7 @@ impl AccountModule {
             provisional_grant_id: Some(sealed.provisional_grant_id),
             holds_secret_references: sealed.secret_references.is_some(),
             granted_scope: String::new(),
-            expires_at_unix_nanos: Some(sealed.expires_at_unix_nanos),
+            expires_at: Some(sealed.expires_at),
             authorization: None,
             discovery_failure: None,
         })
@@ -924,7 +924,7 @@ impl ProviderModule {
         actor: &AuthenticatedUser,
         owner: &WorkspaceId,
         id: &ProviderSetupId,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<SetupAuthentication, Error> {
         Ok(Box::pin(self.inspect_setup(actor, owner, id, now))
             .await?
@@ -944,13 +944,9 @@ impl ProviderModule {
         actor: &AuthenticatedUser,
         owner: &WorkspaceId,
         id: &ProviderSetupId,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<ProviderSetupInspection, Error> {
-        let context = ChangeContext::new(
-            actor.clone(),
-            coral_db::UnixNanos::new(now),
-            TraceId::current_or_new(),
-        );
+        let context = ChangeContext::new(actor.clone(), now, TraceId::current_or_new());
         let mut tx = self.database.begin().await?;
         // Acquire the write lock before snapshot reads: settling expiry may write.
         let exists = providers::lock_setup_for_publication(&mut tx, owner, id).await?;
@@ -1080,9 +1076,9 @@ impl ProviderModule {
                         .oauth_client
                         .as_ref()
                         .map(|client| client.client_id.clone()),
-                    expires_at_unix_nanos: row.authorization_expires_at_unix_nanos.ok_or_else(
-                        || Error::CorruptData("setup authorization has no deadline".into()),
-                    )?,
+                    expires_at: row.authorization_expires_at.ok_or_else(|| {
+                        Error::CorruptData("setup authorization has no deadline".into())
+                    })?,
                     failure_code: row.failure_code.clone(),
                 })
             }
@@ -1098,7 +1094,7 @@ impl ProviderModule {
                 .as_ref()
                 .is_some_and(|row| row.secret_references.is_some()),
             granted_scope: own.as_ref().map_or_default(|row| row.granted_scope.clone()),
-            expires_at_unix_nanos: own.as_ref().map(|row| row.expires_at_unix_nanos),
+            expires_at: own.as_ref().map(|row| row.expires_at),
             authorization,
             discovery_failure: loaded.discovery_failure_code,
         };
@@ -1119,13 +1115,12 @@ impl ProviderModule {
     }
 }
 
-/// The host deadline that a Setup created at `created_at_unix_nanos` stores:
+/// The host deadline that a Setup created at `created_at` stores:
 /// one hour later. Only Setup creation asks; every later decision reads the
 /// stored deadline through `ProviderSetup::is_past_deadline`.
-pub(crate) fn setup_deadline(created_at_unix_nanos: i64) -> Result<i64, Error> {
-    coral_db::UnixNanos::new(created_at_unix_nanos)
+pub(crate) fn setup_deadline(created_at: UnixNanos) -> Result<UnixNanos, Error> {
+    created_at
         .checked_add(SETUP_CREDENTIAL_LIFETIME)
-        .map(coral_db::UnixNanos::get)
         .ok_or(Error::Internal(crate::InternalFault::Overflow))
 }
 
@@ -1264,7 +1259,7 @@ enum Material {
 }
 
 impl Provisional {
-    fn material(&self, now: i64) -> Material {
+    fn material(&self, now: UnixNanos) -> Material {
         if self.is_live(now) {
             return Material::Live;
         }
@@ -1339,7 +1334,7 @@ pub(crate) async fn decide(
     if !row.belongs_to(context.actor()) {
         return Ok(Err(account_required()));
     }
-    match row.material(context.occurred_at_unix_nanos()) {
+    match row.material(context.occurred_at()) {
         Material::Live => {}
         Material::Expired => {
             return Ok(Err(PublicationDiagnostic::stable(
@@ -1398,7 +1393,7 @@ pub(crate) async fn replace_shared(
             .ok_or(Error::AccountRequired)?,
         secret_references: row.secret_references.as_deref(),
         granted_scope: &row.granted_scope,
-        token_expires_at_unix_nanos: row.token_expires_at_unix_nanos,
+        token_expires_at: row.token_expires_at,
     };
     if super::repository::connect_account(
         tx,
@@ -1477,7 +1472,7 @@ pub(crate) async fn promote(
                 .ok_or(Error::AccountRequired)?,
             secret_references: row.secret_references.as_deref(),
             granted_scope: &row.granted_scope,
-            token_expires_at_unix_nanos: row.token_expires_at_unix_nanos,
+            token_expires_at: row.token_expires_at,
         },
     )
     .await?;

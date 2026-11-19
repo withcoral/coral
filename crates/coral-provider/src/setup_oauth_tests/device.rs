@@ -1,4 +1,5 @@
 use super::*;
+use coral_db::UnixNanos;
 
 const SECOND: i64 = 1_000_000_000;
 /// One worker lease on a device job, in nanoseconds.
@@ -90,12 +91,7 @@ async fn poll_setup(
         loop {
             let progress = harness
                 .providers
-                .setup_authentication(
-                    context.actor(),
-                    workspace,
-                    setup,
-                    context.occurred_at_unix_nanos(),
-                )
+                .setup_authentication(context.actor(), workspace, setup, context.occurred_at())
                 .await
                 .unwrap();
             if until(&progress) {
@@ -137,7 +133,10 @@ async fn resumed_at(
 ) -> crate::account::AccountModule {
     stopped.stop_device_authorizations().await.unwrap();
     let resumed = accounts_reading(harness, clock);
-    resumed.recover_device_authorizations(now).await.unwrap();
+    resumed
+        .recover_device_authorizations(UnixNanos::new(now))
+        .await
+        .unwrap();
     resumed
 }
 
@@ -510,7 +509,7 @@ async fn device_reconnect_replays_the_same_authorization_across_a_restart() {
     harness.accounts.stop_device_authorizations().await.unwrap();
     let restarted = harness.restarted_accounts();
     restarted
-        .recover_device_authorizations(context.occurred_at_unix_nanos())
+        .recover_device_authorizations(context.occurred_at())
         .await
         .unwrap();
     let replay = restarted
@@ -749,7 +748,7 @@ async fn a_busy_writer_during_a_device_poll_leaves_the_reconnection_to_recovery(
     // code once that lease has lapsed.
     let restarted = device.harness.restarted_accounts();
     restarted
-        .recover_device_authorizations(60_000_000_000)
+        .recover_device_authorizations(UnixNanos::new(60_000_000_000))
         .await
         .unwrap();
     let connected = reconnected(&device, pending.id).await;
@@ -772,12 +771,7 @@ async fn a_busy_writer_during_a_device_poll_leaves_the_setup_authorization_to_re
 
     let stopped = h
         .providers
-        .setup_authentication(
-            context.actor(),
-            &owner,
-            &setup,
-            context.occurred_at_unix_nanos(),
-        )
+        .setup_authentication(context.actor(), &owner, &setup, context.occurred_at())
         .await
         .unwrap();
     let authorization = stopped.authorization.as_ref().unwrap();
@@ -795,7 +789,7 @@ async fn a_busy_writer_during_a_device_poll_leaves_the_setup_authorization_to_re
     // code once that lease has lapsed.
     let restarted = h.restarted_accounts();
     restarted
-        .recover_device_authorizations(60_000_000_000)
+        .recover_device_authorizations(UnixNanos::new(60_000_000_000))
         .await
         .unwrap();
     poll_setup(&h, &context, &owner, &setup, |progress| {
@@ -995,7 +989,7 @@ async fn device_confidential_client_polls_pending_and_slows_down_without_exposin
         setup,
         ..
     } = &device;
-    let issued = context.occurred_at_unix_nanos();
+    let issued = context.occurred_at().get();
     let second = std::time::Duration::from_secs(1);
 
     // The service asked for one second between polls.
@@ -1064,7 +1058,7 @@ async fn canceling_device_setup_discards_a_late_token() {
     tokio::time::sleep(std::time::Duration::from_millis(350)).await;
     let progress = harness
         .providers
-        .setup_authentication(context.actor(), &workspace, &setup, 10)
+        .setup_authentication(context.actor(), &workspace, &setup, UnixNanos::new(10))
         .await
         .unwrap();
     assert!(!progress.authorized);
@@ -1304,7 +1298,7 @@ async fn device_recovery_keeps_the_code_and_slow_down_schedule_with_one_poller()
         setup,
         ..
     } = &device;
-    let issued = context.occurred_at_unix_nanos();
+    let issued = context.occurred_at().get();
     storing(h, owner, timing(1, issued + SECOND)).await;
 
     // The first poll gets slow_down, and the worker stores the longer
@@ -1319,8 +1313,8 @@ async fn device_recovery_keeps_the_code_and_slow_down_schedule_with_one_poller()
     let competitor = accounts_reading(h, &clock);
     let now = issued + 7 * SECOND;
     let (first, second) = tokio::join!(
-        restarted.recover_device_authorizations(now),
-        competitor.recover_device_authorizations(now)
+        restarted.recover_device_authorizations(UnixNanos::new(now)),
+        competitor.recover_device_authorizations(UnixNanos::new(now))
     );
     first.unwrap();
     second.unwrap();
@@ -1330,7 +1324,7 @@ async fn device_recovery_keeps_the_code_and_slow_down_schedule_with_one_poller()
     storing(h, owner, timing(6, issued + 13 * SECOND)).await;
     let progress = h
         .providers
-        .setup_authentication(context.actor(), owner, setup, now)
+        .setup_authentication(context.actor(), owner, setup, UnixNanos::new(now))
         .await
         .unwrap();
     assert_eq!(
@@ -1380,7 +1374,7 @@ async fn recovery_does_not_repeat_an_interrupted_token_request_immediately() {
     device.harness.accounts = accounts_reading(&device.harness, &clock);
     start_device_sign_in(&device).await;
     let (h, owner) = (&device.harness, &device.workspace);
-    let issued = device.context.occurred_at_unix_nanos();
+    let issued = device.context.occurred_at().get();
     storing(h, owner, timing(1, issued + SECOND)).await;
 
     // The request leaves at the first poll and gets no answer. Before it
@@ -1446,7 +1440,7 @@ async fn recovery_never_completes_for_an_initiator_who_lost_organization_access(
         .set_enabled(
             &change_context(administrator.clone(), 20, '2'),
             context.actor().user_id(),
-            1,
+            &IfMatch::any(),
             false,
         )
         .await
@@ -1456,7 +1450,7 @@ async fn recovery_never_completes_for_an_initiator_who_lost_organization_access(
     // runs as a User without Organization membership and must not.
     let restarted = h.restarted_accounts();
     restarted
-        .recover_device_authorizations(60_000_000_000)
+        .recover_device_authorizations(UnixNanos::new(60_000_000_000))
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -1470,14 +1464,19 @@ async fn recovery_never_completes_for_an_initiator_who_lost_organization_access(
         .set_enabled(
             &change_context(administrator, 30, '3'),
             context.actor().user_id(),
-            disabled.revision(),
+            &IfMatch::version(disabled.version()),
             true,
         )
         .await
         .unwrap();
     let progress = h
         .providers
-        .setup_authentication(context.actor(), &owner, &setup, 60_000_000_000)
+        .setup_authentication(
+            context.actor(),
+            &owner,
+            &setup,
+            UnixNanos::new(60_000_000_000),
+        )
         .await
         .unwrap();
     assert!(!progress.authorized, "no credential is sealed");
@@ -1489,7 +1488,7 @@ async fn recovery_never_completes_for_an_initiator_who_lost_organization_access(
     // Control: with access restored, the same recovery completes the flow.
     let recovered = h.restarted_accounts();
     recovered
-        .recover_device_authorizations(110_000_000_000)
+        .recover_device_authorizations(UnixNanos::new(110_000_000_000))
         .await
         .unwrap();
     poll_setup(&h, &context, &owner, &setup, |progress| progress.authorized).await;
@@ -1505,7 +1504,7 @@ async fn recovery_waits_for_an_abandoned_lease_and_keeps_the_original_deadline()
     let (h, context, owner, setup) =
         pending_device_setup(&api, crate::OAuthClientAuthentication::None).await;
     let before = showing_user_code(&h, &context, &owner, &setup, "SAME-CODE").await;
-    let deadline = before.authorization.unwrap().expires_at_unix_nanos;
+    let deadline = before.authorization.unwrap().expires_at;
     h.accounts.abort_device_authorizations();
     // The worker dated each renewal of its lease by the wall time it had run,
     // so the abandoned lease ends one lease, 45 seconds, after a renewal no
@@ -1522,7 +1521,7 @@ async fn recovery_waits_for_an_abandoned_lease_and_keeps_the_original_deadline()
     assert_eq!(pinned, 1, "the aborted worker leaves its job behind");
     let restarted = h.restarted_accounts();
     restarted
-        .recover_device_authorizations(20_000_000_010)
+        .recover_device_authorizations(UnixNanos::new(20_000_000_010))
         .await
         .unwrap();
     // Past the lease and the device interval: the worker that reclaims the
@@ -1530,17 +1529,13 @@ async fn recovery_waits_for_an_abandoned_lease_and_keeps_the_original_deadline()
     // hold it past this recovery and poll 30 seconds later, which this
     // bound tells apart.
     restarted
-        .recover_device_authorizations(60_000_000_000)
+        .recover_device_authorizations(UnixNanos::new(60_000_000_000))
         .await
         .unwrap();
     // The reclaimed lease keeps the device grant's original deadline.
     let reclaimed = poll_setup(&h, &context, &owner, &setup, |progress| {
         assert_eq!(
-            progress
-                .authorization
-                .as_ref()
-                .unwrap()
-                .expires_at_unix_nanos,
+            progress.authorization.as_ref().unwrap().expires_at,
             deadline
         );
         progress.authorized
@@ -1579,7 +1574,7 @@ async fn recovery_resumes_a_sign_in_behind_pages_of_jobs_that_do_not_decode() {
     store_undecodable_jobs(h, owner, second_page, deferred + 1).await;
     let restarted = h.restarted_accounts();
     restarted
-        .recover_device_authorizations(first_pass)
+        .recover_device_authorizations(UnixNanos::new(first_pass))
         .await
         .expect("a job that does not decode fails only itself");
 
@@ -1602,7 +1597,7 @@ async fn recovery_resumes_a_sign_in_behind_pages_of_jobs_that_do_not_decode() {
     // ends before the second page's, and its id sorts before the first
     // page's. A first page that had not moved would fill this pass again.
     restarted
-        .recover_device_authorizations(deferred + 5 * SECOND)
+        .recover_device_authorizations(UnixNanos::new(deferred + 5 * SECOND))
         .await
         .expect("the corrupt jobs share this pass with the sign-in");
     poll_setup(h, context, owner, setup, |progress| progress.authorized).await;
@@ -1647,7 +1642,7 @@ async fn recovery_goes_on_to_the_next_job_when_a_failed_job_cannot_be_moved() {
 
     let restarted = h.restarted_accounts();
     restarted
-        .recover_device_authorizations(pass)
+        .recover_device_authorizations(UnixNanos::new(pass))
         .await
         .expect("a job that cannot be moved fails only itself");
     let refused = logged(&logs, NOT_MOVED);
@@ -1753,7 +1748,7 @@ async fn recovery_passes_over_a_reconnection_that_fails_and_tries_it_again_after
             (first_pass + LEASE, 2, "the job fails again after the lease"),
         ] {
             restarted
-                .recover_device_authorizations(now)
+                .recover_device_authorizations(UnixNanos::new(now))
                 .await
                 .unwrap_or_else(|error| panic!("{fails}: {why}: {error:?}"));
             let warnings = logged(&logs, NOT_RESUMED);
@@ -1778,7 +1773,7 @@ async fn recovery_passes_over_a_reconnection_that_fails_and_tries_it_again_after
         // after its lease resumes it.
         fixture.execute_fixture_sql(&repair).await.unwrap();
         restarted
-            .recover_device_authorizations(first_pass + 2 * LEASE)
+            .recover_device_authorizations(UnixNanos::new(first_pass + 2 * LEASE))
             .await
             .unwrap();
         let connected = reconnected(&device, pending.id).await;

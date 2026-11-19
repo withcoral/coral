@@ -12,6 +12,7 @@ use coral_catalog::AuthenticationConfiguration;
 use coral_catalog::OAuthClientAuthenticationMethod as Method;
 use coral_catalog::ProviderCredentialContract;
 use coral_credentials::Secret;
+use coral_db::UnixNanos;
 use coral_workspace::ChangeContext;
 use ring::rand::{SecureRandom as _, SystemRandom};
 use serde::Deserialize;
@@ -435,7 +436,7 @@ impl AccountModule {
             &flow,
             &code,
             scopes,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
             resource.as_deref(),
             &TokenAuthentication {
                 policy: row.contract.oauth_client(),
@@ -558,7 +559,7 @@ pub(super) struct TokenResponse {
     #[serde(skip_deserializing)]
     pub(super) client_id: String,
     #[serde(skip_deserializing)]
-    pub(super) expires_at: Option<i64>,
+    pub(super) expires_at: Option<UnixNanos>,
 }
 pub(super) struct TokenEndpoint<'a> {
     pub(super) url: &'a str,
@@ -570,7 +571,7 @@ pub(super) async fn exchange(
     flow: &Flow,
     code: &Secret,
     scopes: &[String],
-    now: i64,
+    now: UnixNanos,
     resource: Option<&str>,
     authentication: &TokenAuthentication<'_>,
 ) -> Result<TokenResponse, Error> {
@@ -739,7 +740,7 @@ pub(super) async fn refresh_token(
     endpoint: TokenEndpoint<'_>,
     previous: &TokenResponse,
     scopes: &[String],
-    now: i64,
+    now: UnixNanos,
     resource: Option<&str>,
     authentication: &TokenAuthentication<'_>,
 ) -> Result<TokenResponse, Error> {
@@ -788,22 +789,20 @@ impl TokenResponse {
         mut self,
         requested: &[String],
         client_id: &str,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<Self, Error> {
         self.accept(requested)?;
         self.stamp(client_id, now)?;
         Ok(self)
     }
 
-    pub(super) fn stamp(&mut self, client_id: &str, now: i64) -> Result<(), Error> {
+    pub(super) fn stamp(&mut self, client_id: &str, now: UnixNanos) -> Result<(), Error> {
         // Never trust host-only fields supplied by the upstream response.
         self.client_id = client_id.to_string();
         self.expires_at = self
             .expires_in
             .map(|seconds| {
-                coral_db::UnixNanos::new(now)
-                    .checked_add(std::time::Duration::from_secs(seconds))
-                    .map(coral_db::UnixNanos::get)
+                now.checked_add(std::time::Duration::from_secs(seconds))
                     // The service named a lifetime that no clock can hold.
                     .ok_or(Error::OAuthTokenExchange(
                         TokenExchangeFailure::ResponseInvalid,
@@ -861,7 +860,7 @@ impl TokenResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{Error, TokenExchangeFailure, TokenResponse};
+    use super::{Error, TokenExchangeFailure, TokenResponse, UnixNanos};
 
     fn response(token_type: &str, scope: Option<&str>, expires_in: Option<u64>) -> TokenResponse {
         TokenResponse {
@@ -910,10 +909,12 @@ mod tests {
 
         // A lifetime that no clock can hold.
         assert!(invalid(
-            response("Bearer", None, Some(u64::MAX)).stamp("client", 0)
+            response("Bearer", None, Some(u64::MAX)).stamp("client", UnixNanos::new(0))
         ));
         let mut stamped = response("Bearer", None, Some(60));
-        stamped.stamp("client", 5).expect("a lifetime in range");
-        assert_eq!(stamped.expires_at, Some(60_000_000_005));
+        stamped
+            .stamp("client", UnixNanos::new(5))
+            .expect("a lifetime in range");
+        assert_eq!(stamped.expires_at, Some(UnixNanos::new(60_000_000_005)));
     }
 }

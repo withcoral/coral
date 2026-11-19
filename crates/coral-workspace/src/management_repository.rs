@@ -28,9 +28,11 @@ enum WorkspaceManagementRequests {
     GrantResult,
 }
 
+/// Records what the claimed `request` of `user` granted, on the claim's row.
 pub(super) async fn record_email_grant(
     tx: &mut Transaction<'_>,
-    context: &crate::ChangeContext,
+    user: &UserId,
+    request: &crate::RequestId,
     workspace: &WorkspaceId,
     email: &str,
     target: &UserId,
@@ -63,15 +65,8 @@ pub(super) async fn record_email_grant(
                 ),
                 (WorkspaceManagementRequests::GrantResult, result.into()),
             ])
-            .and_where(
-                Expr::col(WorkspaceManagementRequests::UserId)
-                    .eq(context.actor().user_id().as_str()),
-            )
-            .and_where(
-                Expr::col(WorkspaceManagementRequests::RequestId).eq(context
-                    .request_id()
-                    .ok_or_else(|| Error::InvalidInput("request identity required".into()))?),
-            )
+            .and_where(Expr::col(WorkspaceManagementRequests::UserId).eq(user.as_str()))
+            .and_where(Expr::col(WorkspaceManagementRequests::RequestId).eq(request.to_string()))
             .to_owned(),
     )
     .await?;
@@ -107,6 +102,19 @@ pub(super) async fn metadata(
         created_at,
         updated_at,
     })
+}
+
+/// The etag that the metadata of one resource holds. Coral writes only UUIDs
+/// there, so other text is corrupt.
+pub(super) async fn metadata_etag(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    kind: LifecycleTargetKind,
+    id: &str,
+) -> Result<uuid::Uuid, Error> {
+    let stored = metadata(tx, workspace, kind, id).await?.etag;
+    uuid::Uuid::parse_str(&stored)
+        .map_err(|_error| Error::CorruptData("resource metadata has an invalid etag".into()))
 }
 
 fn missing_metadata() -> Error {
@@ -223,7 +231,7 @@ pub(super) async fn upsert_metadata(
 pub(super) async fn insert_request(
     tx: &mut Transaction<'_>,
     user: &UserId,
-    request_id: &str,
+    request: &crate::RequestId,
 ) -> Result<bool, Error> {
     let inserted = tx
         .execute(
@@ -233,7 +241,7 @@ pub(super) async fn insert_request(
                     WorkspaceManagementRequests::UserId,
                     WorkspaceManagementRequests::RequestId,
                 ])
-                .values_panic([user.as_str().into(), request_id.into()])
+                .values_panic([user.as_str().into(), request.to_string().into()])
                 .on_conflict(
                     OnConflict::columns([
                         WorkspaceManagementRequests::UserId,

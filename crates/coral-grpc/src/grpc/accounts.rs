@@ -86,7 +86,7 @@ fn authorization_view(
             .map(super::providers::consent_navigation),
         consent_rejected: value.consent_rejected,
         account: value.account_id.map_or_default(|id| id.to_string()),
-        expire_time: Some(timestamp(value.expires_at_unix_nanos)),
+        expire_time: Some(timestamp(value.expires_at)),
         failure_code: value.failure_code().unwrap_or_default().into(),
         automatic_refresh: value.automatic_refresh,
         granted_scope: value.granted_scope,
@@ -108,7 +108,7 @@ fn account_view(value: domain::AccountSummary) -> wire::ProviderAccount {
         granted_scope: value.granted_scope,
         management_parent: parent(&value.management_scope),
         can_manage: value.can_manage,
-        connected_time: value.connected_at_unix_nanos.map(timestamp),
+        connected_time: value.connected_at.map(timestamp),
         configured_by_user: value
             .configured_by_user_id
             .map_or_default(|id| id.to_string()),
@@ -207,7 +207,7 @@ fn connection_view(
             }
         }
         .into(),
-        expire_time: Some(timestamp(value.expires_at_unix_nanos)),
+        expire_time: Some(timestamp(value.expires_at)),
     }
 }
 fn provider_in_scope(owner: &WorkspaceId, name: &str) -> Result<(WorkspaceId, ProviderId), Status> {

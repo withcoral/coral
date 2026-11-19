@@ -21,7 +21,7 @@ use coral_tools::{
     AuthoredToolDescription, AuthoredToolId, AuthoredToolSource, PrivateTool, SharedTool,
     SharedToolOrigin, SharedToolPath, SharedToolPublish,
 };
-use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
+use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, RequestId, WorkspaceId};
 use opentelemetry_sdk::trace::SpanData;
 use tokio::sync::watch;
 
@@ -1278,6 +1278,7 @@ impl World {
             .workspaces
             .create_agent(
                 &change(self.user.clone(), 65, '6'),
+                &RequestId::generate(),
                 &self.workspace,
                 coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
                 None,

@@ -252,7 +252,7 @@ impl SearchIndex {
     /// watermarks: no span then records counts the pass did not take.
     async fn run_pass(&self) -> PassWork {
         let mut work = PassWork::default();
-        let now = crate::now();
+        let now = self.clock.now();
         work.step_failed |= step(
             step_span!("coral.search.reconcile.remove_superseded"),
             self.remove_superseded_generations(),

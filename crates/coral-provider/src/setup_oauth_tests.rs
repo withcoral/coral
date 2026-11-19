@@ -5,6 +5,7 @@
     reason = "fixtures assert known JSON-RPC envelope members"
 )]
 use coral_catalog::AuthenticationConfiguration;
+use coral_db::UnixNanos;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -18,8 +19,8 @@ use crate::{
 };
 use coral_catalog::{OAuthClientBootstrap, ProviderCredentialContract};
 use coral_credentials::Secret;
-use coral_workspace::OrganizationRole;
 use coral_workspace::WorkspaceAction;
+use coral_workspace::{IfMatch, OrganizationRole, RequestId};
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -350,10 +351,10 @@ async fn challenge_produces_a_resumable_setup_that_consent_and_discovery_make_re
         .expect("a challenge yields a resumable Setup");
     assert_eq!(setup.state(), ProviderSetupState::AwaitingAuthorization);
     assert_eq!(setup.input_url(), Some(upstream.mcp_url().as_str()));
-    assert_eq!(setup.expires_at_unix_nanos(), 10 + HOUR);
+    assert_eq!(setup.expires_at(), UnixNanos::new(10 + HOUR));
     let before = harness
         .providers
-        .setup_authentication(&owner, &scope, setup.id(), 11)
+        .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(11))
         .await
         .unwrap();
     let AuthenticationConfiguration::OAuthAuthorizationCode {
@@ -401,7 +402,7 @@ async fn challenge_produces_a_resumable_setup_that_consent_and_discovery_make_re
         Some(OAuthClientBootstrap::DynamicClientRegistration)
     );
     assert_eq!(authorization.requested_scopes, ["read", "write"]);
-    assert_eq!(authorization.expires_at_unix_nanos, 20 + 15 * MINUTE);
+    assert_eq!(authorization.expires_at, UnixNanos::new(20 + 15 * MINUTE));
     let navigation = authorization.authorization_url.expect("navigation url");
     assert!(navigation.starts_with(&format!("{}/authorize?", upstream.server.uri())));
     assert_eq!(query(&navigation, "response_type").as_deref(), Some("code"));
@@ -914,7 +915,7 @@ async fn an_exchange_that_outlasts_the_authorization_deadline_seals_nothing() {
             .await
             .unwrap();
         let authorization = started.authorization.unwrap();
-        assert_eq!(authorization.expires_at_unix_nanos, deadline);
+        assert_eq!(authorization.expires_at, UnixNanos::new(deadline));
         let state_parameter = state_of(&authorization.authorization_url.unwrap());
         let exchange = {
             let accounts = harness.accounts.clone();
@@ -1280,7 +1281,7 @@ impl FlowFixture {
     ) -> crate::account::SetupAuthentication {
         self.harness
             .providers
-            .setup_authentication(&self.owner, &self.scope, setup.id(), at)
+            .setup_authentication(&self.owner, &self.scope, setup.id(), UnixNanos::new(at))
             .await
             .unwrap()
     }
@@ -1944,7 +1945,7 @@ async fn the_client_bootstrap_policy_decides_the_automatic_method_before_any_han
                 // and the document was never used in its place.
                 let authentication = harness
                     .providers
-                    .setup_authentication(&owner, &scope, &setup, at + 2)
+                    .setup_authentication(&owner, &scope, &setup, UnixNanos::new(at + 2))
                     .await
                     .unwrap();
                 assert!(authentication.authorization.is_none(), "{case}");
@@ -2385,7 +2386,7 @@ async fn a_confirmation_that_races_sign_in_keeps_the_state_sign_in_wrote() {
     assert!(
         harness
             .providers
-            .setup_authentication(&owner, workspace.id(), setup.id(), 11)
+            .setup_authentication(&owner, workspace.id(), setup.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -2480,7 +2481,7 @@ async fn new_headers_drop_the_catalog_that_sign_in_read_and_start_authorization_
     assert_eq!(confirmed.tools, []);
     let authentication = harness
         .providers
-        .setup_authentication(&owner, workspace.id(), setup.id(), 11)
+        .setup_authentication(&owner, workspace.id(), setup.id(), UnixNanos::new(11))
         .await
         .unwrap();
     assert!(!authentication.authorized);
@@ -2976,8 +2977,8 @@ async fn a_ready_openapi_oauth_setup_signs_in_with_an_explicit_client_that_publi
     );
     assert_eq!(authorization.client_id.as_deref(), Some("manual-client"));
     assert_eq!(authorization.requested_scopes, ["read", "write"]);
-    assert_eq!(authorization.expires_at_unix_nanos, 21 + 15 * MINUTE);
-    assert_eq!(started.expires_at_unix_nanos, Some(10 + HOUR));
+    assert_eq!(authorization.expires_at, UnixNanos::new(21 + 15 * MINUTE));
+    assert_eq!(started.expires_at, Some(UnixNanos::new(10 + HOUR)));
     assert!(!started.authorized);
     let navigation = authorization.authorization_url.unwrap();
     assert!(navigation.starts_with(&format!("{}/authorize?", api.server.uri())));
@@ -3171,6 +3172,7 @@ async fn a_ready_openapi_oauth_setup_signs_in_with_an_explicit_client_that_publi
         .providers
         .regenerate_provider(
             &change_context(owner.clone(), 61, '5'),
+            &IfMatch::any(),
             crate::ProviderRegenerationRequest::new(
                 ManagementRequestId::parse("e0000000-0000-4000-8000-000000000011").unwrap(),
                 scope.clone(),
@@ -3586,7 +3588,7 @@ async fn automatic_public_client_configuration_is_durable_before_account_consent
     assert!(
         harness
             .providers
-            .setup_authentication(&owner, &scope, setup.id(), 11)
+            .setup_authentication(&owner, &scope, setup.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .provisional_grant_id
@@ -3664,7 +3666,7 @@ async fn abandoned_setup_scrubs_the_application_secret_before_account_consent() 
         assert!(
             harness
                 .providers
-                .setup_authentication(&actor, &owner, setup.id(), 11)
+                .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(11))
                 .await
                 .unwrap()
                 .client_secret_configured
@@ -3679,7 +3681,7 @@ async fn abandoned_setup_scrubs_the_application_secret_before_account_consent() 
         assert!(
             !harness
                 .providers
-                .setup_authentication(&actor, &owner, setup.id(), HOUR + 11)
+                .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(HOUR + 11))
                 .await
                 .unwrap()
                 .client_secret_configured
@@ -3735,7 +3737,7 @@ async fn a_setups_stored_deadline_decides_every_deadline_decision() {
             )
             .await
             .unwrap();
-        assert_eq!(setup.expires_at_unix_nanos(), 2 + HOUR, "{namespace}");
+        assert_eq!(setup.expires_at(), UnixNanos::new(2 + HOUR), "{namespace}");
         let review = harness
             .providers
             .review_setup_configuration(&actor, &owner, setup.id())
@@ -3805,7 +3807,7 @@ async fn a_setups_stored_deadline_decides_every_deadline_decision() {
             .open_requested_setups(
                 &coral_workspace::AuthenticatedPrincipal::user(actor.clone()),
                 &owner,
-                now,
+                UnixNanos::new(now),
             )
             .await
             .unwrap();
@@ -3858,8 +3860,8 @@ async fn a_setups_stored_deadline_decides_every_deadline_decision() {
         let grant = if open {
             let sealed = sealed.unwrap_or_else(|error| panic!("{namespace}: sealing: {error:?}"));
             assert_eq!(
-                sealed.expires_at_unix_nanos,
-                Some(stored_deadline),
+                sealed.expires_at,
+                Some(UnixNanos::new(stored_deadline)),
                 "{namespace}: sealing"
             );
             sealed.provisional_grant_id
@@ -3872,7 +3874,7 @@ async fn a_setups_stored_deadline_decides_every_deadline_decision() {
             assert!(
                 !harness
                     .providers
-                    .setup_authentication(&actor, &owner, setup.id(), 2)
+                    .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(2))
                     .await
                     .unwrap()
                     .authorized,
@@ -3895,8 +3897,8 @@ async fn a_setups_stored_deadline_decides_every_deadline_decision() {
             let started = started.unwrap_or_else(|error| panic!("{namespace}: sign-in: {error:?}"));
             assert!(started.authorization.is_some(), "{namespace}: sign-in");
             assert_eq!(
-                started.expires_at_unix_nanos,
-                Some(stored_deadline),
+                started.expires_at,
+                Some(UnixNanos::new(stored_deadline)),
                 "{namespace}: sign-in"
             );
         } else {
@@ -3908,7 +3910,7 @@ async fn a_setups_stored_deadline_decides_every_deadline_decision() {
         assert_eq!(
             harness
                 .providers
-                .setup_authentication(&actor, &owner, sign_in.id(), now)
+                .setup_authentication(&actor, &owner, sign_in.id(), UnixNanos::new(now))
                 .await
                 .unwrap()
                 .client_secret_configured,
@@ -4496,6 +4498,7 @@ async fn confidential_application_lifecycle(organization: bool) {
             &context,
             workspace.id(),
             provider_access.id(),
+            &IfMatch::any(),
             CredentialRoute::Caller,
         )
         .await
@@ -4504,6 +4507,7 @@ async fn confidential_application_lifecycle(organization: bool) {
         .workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -4998,7 +5002,7 @@ async fn rotation_preserves_consent_but_contract_edits_cancel_pending_and_dispat
         assert!(
             harness
                 .providers
-                .setup_authentication(&actor, &owner, replacement.id(), 11)
+                .setup_authentication(&actor, &owner, replacement.id(), UnixNanos::new(11))
                 .await
                 .unwrap()
                 .client_secret_configured,
@@ -5051,6 +5055,7 @@ async fn rotation_preserves_consent_but_contract_edits_cancel_pending_and_dispat
             .providers
             .regenerate_provider(
                 &context,
+                &IfMatch::any(),
                 crate::ProviderRegenerationRequest::new(
                     super::account_tests::authorization_request(),
                     owner.clone(),
@@ -5525,6 +5530,7 @@ async fn regeneration_to_a_public_application_drops_the_old_secret_and_its_failu
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             crate::ProviderRegenerationRequest::new(
                 super::account_tests::authorization_request(),
                 owner.clone(),
@@ -5594,7 +5600,7 @@ async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_appli
         let now_context = change_context(actor.clone(), now, '3');
         let result = harness
             .providers
-            .regenerate_provider(&now_context, request.clone())
+            .regenerate_provider(&now_context, &IfMatch::any(), request.clone())
             .await
             .unwrap()
             .skip_search();
@@ -5611,7 +5617,7 @@ async fn regeneration_expires_only_setup_secrets_and_repairs_only_replaced_appli
         }
         let replay = harness
             .providers
-            .regenerate_provider(&now_context, request)
+            .regenerate_provider(&now_context, &IfMatch::any(), request)
             .await
             .unwrap()
             .skip_search();
@@ -5786,7 +5792,7 @@ async fn automatic_bootstrap_preserves_parameters_and_settles_denied_consent() {
         .unwrap_err();
     let after = harness
         .providers
-        .setup_authentication(&actor, &owner, setup.id(), 11)
+        .setup_authentication(&actor, &owner, setup.id(), UnixNanos::new(11))
         .await
         .unwrap();
     let failed = after.authorization.unwrap();
@@ -6193,11 +6199,11 @@ async fn consent_issuance_rechecks_dns_on_setup_reads_account_reads_and_request_
             public.store(true, Ordering::SeqCst);
             for refused in [
                 h.providers
-                    .setup_authentication(&actor, scope, setup.id(), 11)
+                    .setup_authentication(&actor, scope, setup.id(), UnixNanos::new(11))
                     .await
                     .unwrap(),
                 h.providers
-                    .inspect_setup(&actor, scope, setup.id(), 11)
+                    .inspect_setup(&actor, scope, setup.id(), UnixNanos::new(11))
                     .await
                     .unwrap()
                     .authentication,
@@ -6210,7 +6216,7 @@ async fn consent_issuance_rechecks_dns_on_setup_reads_account_reads_and_request_
             public.store(false, Ordering::SeqCst);
             assert!(
                 h.providers
-                    .setup_authentication(&actor, scope, setup.id(), 12)
+                    .setup_authentication(&actor, scope, setup.id(), UnixNanos::new(12))
                     .await
                     .unwrap()
                     .authorization
@@ -6360,7 +6366,7 @@ async fn a_setup_reports_its_fitting_routes_and_whether_connect_can_start() {
         let case = format!("{source:?}, canceled {canceled}");
         let inspected = harness
             .providers
-            .inspect_setup(&owner, workspace.id(), setup.id(), at + 1)
+            .inspect_setup(&owner, workspace.id(), setup.id(), UnixNanos::new(at + 1))
             .await
             .unwrap();
         assert_eq!(inspected.configuration.allowed_routes(), routes, "{case}");

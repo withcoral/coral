@@ -12,7 +12,7 @@ use crate::Error;
 /// with what each offers it, and the Setups its `addProvider` calls left
 /// for a person to finish.
 pub(super) async fn perform(host: &BuiltinHost<'_>) -> Result<serde_json::Value, Error> {
-    let now = host.run.now()?;
+    let now = coral_db::UnixNanos::new(host.run.now()?);
     // Setups first: one published between the two reads is then in both
     // lists, never in neither, which a Program would read as ended.
     let setups = host

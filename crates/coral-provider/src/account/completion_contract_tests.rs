@@ -4,7 +4,7 @@ use crate::account_tests::{authorization_request, publish_provider};
 use crate::tests::{change_context, organization_user, test_modules};
 use crate::{CredentialRoute, OpenApiDocument, ProviderRegenerationRequest};
 use coral_credentials::Secret;
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName};
+use coral_workspace::{IfMatch, OrganizationRole, WorkspaceDisplayName};
 use serde_json::{Value, json};
 coral_test_support::provider_setup_fixtures!(crate);
 
@@ -102,6 +102,7 @@ async fn rejects_changed_contract(before: Value, after: Value, destination_chang
     providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 authorization_request(),
                 scope.clone(),
@@ -140,7 +141,7 @@ async fn rejects_changed_contract(before: Value, after: Value, destination_chang
         .account
         .expect("initial Account remains unconnected");
     assert_eq!(account.state, crate::account::AccountState::Disconnected);
-    assert_eq!(account.connected_at_unix_nanos, None);
+    assert_eq!(account.connected_at, None);
     assert_eq!(account.configured_by_user_id, None);
     let events = accounts
         .list_user_lifecycle_events(&context, scope)

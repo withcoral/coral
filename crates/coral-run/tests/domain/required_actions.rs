@@ -904,6 +904,7 @@ async fn a_wait_returns_when_the_waiting_tools_provider_is_renamed() {
             &change(tool.user.clone(), 50, '5'),
             scope,
             &tool.provider_id,
+            &IfMatch::any(),
             coral_provider::ProviderDisplayName::parse("Forecasts").unwrap(),
         )
         .await
@@ -999,7 +1000,7 @@ async fn required_actions_name_their_request_and_ignore_event_paging() {
     );
     assert_eq!(
         connection_action.deadline_at_unix_nanos,
-        mixed.request.expires_at_unix_nanos
+        mixed.request.expires_at.get()
     );
     assert_eq!(
         connection_action.call_path.as_deref(),
@@ -1551,7 +1552,7 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
                         .get_connection_request(
                             &change(
                                 tool.user.clone(),
-                                request.expires_at_unix_nanos + 1_000_000_000,
+                                request.expires_at.get() + 1_000_000_000,
                                 '6',
                             ),
                             &tool.workspace_id,
@@ -1577,8 +1578,8 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
                     .find(|event| event.target_id() == id.to_string())
                     .unwrap();
                 assert_eq!(
-                    event.occurred_at_unix_nanos(),
-                    request.expires_at_unix_nanos,
+                    event.occurred_at(),
+                    request.expires_at,
                     "late inspection cannot advance expiry activity to observation time"
                 );
             }

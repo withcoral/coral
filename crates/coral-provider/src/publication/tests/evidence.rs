@@ -128,6 +128,7 @@ async fn a_regeneration_names_the_generation_it_replaced_and_a_reuse_or_failure_
         let (published, search) = providers
             .regenerate_provider(
                 &context,
+                &IfMatch::any(),
                 fixture.request(setup.id(), "15000000-0000-4000-8000-000000000012"),
             )
             .await
@@ -176,11 +177,11 @@ async fn a_request_that_finds_its_committed_result_is_a_replay() {
     let context = change_context(fixture.owner.clone(), 50, '5');
     // Both preparations miss: neither request has committed yet.
     let first = providers
-        .prepare_regeneration(&context, request.clone())
+        .prepare_regeneration(&context, &IfMatch::any(), request.clone())
         .await
         .expect("prepare first");
     let second = providers
-        .prepare_regeneration(&context, request.clone())
+        .prepare_regeneration(&context, &IfMatch::any(), request.clone())
         .await
         .expect("prepare second");
     let committed = providers
@@ -204,7 +205,7 @@ async fn a_request_that_finds_its_committed_result_is_a_replay() {
     );
 
     let crate::publication::PreparedPublication::Replayed(stored) = providers
-        .prepare_regeneration(&context, request)
+        .prepare_regeneration(&context, &IfMatch::any(), request)
         .await
         .expect("prepare after commit")
     else {

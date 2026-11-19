@@ -22,7 +22,7 @@ use crate::{
 };
 use coral_catalog::AuthenticationConfiguration;
 use coral_credentials::{CredentialField, CredentialValues, Secret};
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use zeroize::Zeroizing;
 
 use uuid::Uuid;
@@ -122,7 +122,7 @@ impl AccountModule {
     /// Resolves the retained authorization for one dispatch: refreshes expired
     /// OAuth material, and reads any field a Secret Store holds, outside every lock.
     /// Call this only after the Policy Enforcement Point permits the dispatch.
-    /// The host supplies Unix nanoseconds. Accepted refresh survives request loss.
+    /// The host supplies `now`. Accepted refresh survives request loss.
     /// # Errors
     /// Temporary failures preserve Account state. Permanent rejection requires
     /// reconnect. Explicit authorization changes reject the retained evidence.
@@ -132,7 +132,7 @@ impl AccountModule {
         workspace: &WorkspaceId,
         provider: &ProviderId,
         evidence: &CredentialEvidence,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<CredentialValues, Error> {
         match self.settle(workspace, provider, evidence, now).await? {
             SettledCredentials::Ready(values) => Ok(values),
@@ -151,7 +151,7 @@ impl AccountModule {
         workspace: &WorkspaceId,
         provider: &ProviderId,
         evidence: &CredentialEvidence,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<(), Error> {
         self.settle(workspace, provider, evidence, now)
             .await
@@ -163,13 +163,13 @@ impl AccountModule {
         workspace: &WorkspaceId,
         provider: &ProviderId,
         evidence: &CredentialEvidence,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<SettledCredentials, Error> {
         let started = self.started();
         let trace = coral_telemetry::TraceId::current_or_new();
         let mut pending = None;
         loop {
-            let current_time = started.now_from(coral_db::UnixNanos::new(now)).get();
+            let current_time = started.now_from(now);
             let observed = pending.take();
             let read = self
                 .read_retained(
@@ -248,7 +248,7 @@ impl AccountModule {
         workspace: &WorkspaceId,
         provider: &ProviderId,
         evidence: &CredentialEvidence,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<Option<CredentialValues>, Error> {
         let row = held_account(tx, workspace, provider, evidence).await?;
         let plaintext = self.open_retained(&row)?;
@@ -299,7 +299,7 @@ impl AccountModule {
         workspace: &WorkspaceId,
         provider: &ProviderId,
         evidence: &CredentialEvidence,
-        now: i64,
+        now: UnixNanos,
         observed: Option<&PendingRefresh>,
     ) -> Result<RetainedRead, Error> {
         let refreshes = refresh_endpoint(&evidence.contract).is_some();
@@ -403,10 +403,9 @@ impl AccountModule {
         let (token_url, scopes, resource) =
             refresh_endpoint(&evidence.contract).ok_or(Error::AccountRequired)?;
         let attempt = Uuid::new_v4().to_string();
-        let deadline = coral_db::UnixNanos::new(now)
+        let deadline = now
             .checked_add(REFRESH_CLAIM_LIFETIME)
-            .ok_or(Error::Internal(crate::InternalFault::Overflow))?
-            .get();
+            .ok_or(Error::Internal(crate::InternalFault::Overflow))?;
         let mut tx = self.providers.database.begin().await?;
         if !repository::claim_refresh(&mut tx, row, &attempt, deadline).await? {
             return Ok(CredentialResolution::Changed);
@@ -445,7 +444,7 @@ impl AccountModule {
             Err(Error::OAuthClientConfiguration) => Some(true),
             Err(_) => None,
         };
-        let completed_at = started.now_from(coral_db::UnixNanos::new(now)).get();
+        let completed_at = started.now_from(now);
         let completion = self
             .complete_refresh(workspace, row, &attempt, result, completed_at, trace)
             .await;
@@ -491,7 +490,7 @@ impl AccountModule {
         row: &LoadedAccount,
         attempt: &str,
         result: Result<oauth::TokenResponse, Error>,
-        now: i64,
+        now: UnixNanos,
         trace: &coral_telemetry::TraceId,
     ) -> Result<Secret, Error> {
         let mut tx = self.providers.database.begin().await?;
@@ -512,7 +511,7 @@ impl AccountModule {
                     &material_revision,
                     &ciphertext,
                     &granted_scope,
-                    material.token_expires_at_unix_nanos(),
+                    material.token_expires_at(),
                 )
                 .await?;
                 refresh_event(
@@ -547,7 +546,7 @@ struct RetainedDispatch<'a> {
     workspace: &'a WorkspaceId,
     provider: &'a ProviderId,
     evidence: &'a CredentialEvidence,
-    now: i64,
+    now: UnixNanos,
     trace: &'a coral_telemetry::TraceId,
 }
 
@@ -635,7 +634,7 @@ async fn reconnection_required(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     row: &LoadedAccount,
-    now: i64,
+    now: UnixNanos,
     trace: &coral_telemetry::TraceId,
 ) -> Result<(), Error> {
     refresh_event(
@@ -654,7 +653,7 @@ async fn refresh_event(
     workspace: &WorkspaceId,
     row: &LoadedAccount,
     action: LifecycleAction,
-    now: i64,
+    now: UnixNanos,
     trace: &coral_telemetry::TraceId,
 ) -> Result<(), Error> {
     let owner_workspace = Some(&row.workspace_id);
@@ -680,7 +679,7 @@ async fn refresh_event(
             } else {
                 &["state"]
             },
-            occurred_at_unix_nanos: now,
+            occurred_at: now,
             trace_id: trace,
         },
         user,

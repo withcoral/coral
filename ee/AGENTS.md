@@ -10,5 +10,9 @@ The root `AGENTS.md` applies here too. These rules add to it.
   general extension point outside `ee/` first, then implement it here. Reach
   it through `coral_app::Extensions`.
 - An Enterprise Feature checks `EditionCheck::is_enterprise` each time it is
-  used, not once at startup: a licence can change while Coral runs. Give each
-  one a test that it refuses to work while the Edition is Community.
+  used, not once at startup, so it never caches the Edition. Give each one a
+  test that it refuses to work while the Edition is Community.
+- Never add a private signing key to the repository or CI. A test that needs
+  a License other than the ones in `crates/coral-test-support/test-licenses/`
+  signs it with a signing key it generates (ADR 0038). Those are for development and
+  tests only: no published build accepts them.

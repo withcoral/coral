@@ -6,7 +6,7 @@ use coral_catalog::{
     AuthenticationConfiguration, ConfigurationChoices, ConfigurationFieldError, ConfigurationPatch,
     ProviderConfiguration,
 };
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::{AuthenticatedPrincipal, ChangeContext, WorkspaceAction, WorkspaceId};
 
 use crate::account::AccountModule;
@@ -132,7 +132,7 @@ impl ProviderModule {
         if configured.is_err() {
             // Best effort: the Setup still expires at its deadline.
             let _ended = self
-                .abandon_setup(owner, setup.id(), context.occurred_at_unix_nanos())
+                .abandon_setup(owner, setup.id(), context.occurred_at())
                 .await;
         }
         configured
@@ -372,7 +372,7 @@ impl ProviderModule {
         &self,
         workspace_id: &WorkspaceId,
         setup_id: &ProviderSetupId,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<(), Error> {
         let mut transaction = self.database.begin().await?;
         crate::account::end_setup_in_transaction(
@@ -400,17 +400,12 @@ impl ProviderModule {
         &self,
         actor: &AuthenticatedPrincipal,
         owner: &WorkspaceId,
-        now: i64,
+        now: UnixNanos,
     ) -> Result<Vec<ProviderSetup>, Error> {
         let mut tx = self.database.begin_read_snapshot().await?;
         let role = self
             .workspaces
-            .check_principal_inspection_in_snapshot(
-                &mut tx,
-                actor,
-                owner,
-                coral_db::UnixNanos::new(now),
-            )
+            .check_principal_inspection_in_snapshot(&mut tx, actor, owner, now)
             .await?
             .effective_user_role();
         let Some(user) = actor

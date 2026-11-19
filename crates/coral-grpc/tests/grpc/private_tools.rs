@@ -3,7 +3,7 @@ use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, PrivateToolChangeContext, PrivateToolPath,
     PrivateToolSave,
 };
-use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, TraceId};
+use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, RequestId, TraceId};
 
 async fn save(f: &Fixture, user: &AuthenticatedUser, path: &str, source: &str) {
     save_as(f, AuthenticatedPrincipal::user(user.clone()), path, source).await;
@@ -39,6 +39,7 @@ async fn agent_with_private_tool(
         .workspaces
         .create_agent(
             &super::change(&f.owner),
+            &RequestId::generate(),
             f.workspace.id(),
             coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
             None,

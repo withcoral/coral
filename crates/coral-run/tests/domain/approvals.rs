@@ -451,7 +451,12 @@ async fn organization_ownership_does_not_restore_agent_approval_to_a_demoted_own
     let organization = coral_workspace::OrganizationModule::new(audience.fixture.database.clone());
     let administrator = organization_admin(&audience.fixture).await;
     organization
-        .set_role(&administrator, user.user_id(), 1, OrganizationRole::Owner)
+        .set_role(
+            &administrator,
+            user.user_id(),
+            &IfMatch::any(),
+            OrganizationRole::Owner,
+        )
         .await
         .unwrap();
     assert!(matches!(
@@ -542,12 +547,22 @@ async fn destructive_lifecycle_keeps_exact_agent_invocation_and_approval_history
         fixture.database.clone(),
         fixture.workspaces.clone(),
     )
-    .delete_agent(&context, &tool.workspace_id, agent.principal().id())
+    .delete_agent(
+        &context,
+        &tool.workspace_id,
+        agent.principal().id(),
+        &IfMatch::any(),
+    )
     .await
     .unwrap();
     fixture
         .providers
-        .delete_provider(&context, &tool.workspace_id.clone(), &tool.provider_id)
+        .delete_provider(
+            &context,
+            &tool.workspace_id.clone(),
+            &tool.provider_id,
+            &IfMatch::any(),
+        )
         .await
         .unwrap()
         .skip_search();
@@ -1210,14 +1225,19 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
             "revoke" => {
                 fixture
                     .providers
-                    .disable_provider(&context, &tool.workspace_id.clone(), &tool.provider_id)
+                    .disable_provider(
+                        &context,
+                        &tool.workspace_id.clone(),
+                        &tool.provider_id,
+                        &IfMatch::any(),
+                    )
                     .await
                     .unwrap();
             }
             "archive" => {
                 fixture
                     .workspaces
-                    .archive(&context, &tool.workspace_id)
+                    .archive(&context, &tool.workspace_id, &IfMatch::any())
                     .await
                     .unwrap();
             }
@@ -1957,6 +1977,7 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
                         &context,
                         &tool.workspace_id,
                         invoker.principal().id(),
+                        &IfMatch::any(),
                         coral_workspace::AgentState::Disabled,
                     )
                     .await
@@ -2143,7 +2164,11 @@ async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_reque
     let held = probe.held();
     fixture
         .workspaces
-        .archive(&change(tool.user.clone(), 50, '5'), &tool.workspace_id)
+        .archive(
+            &change(tool.user.clone(), 50, '5'),
+            &tool.workspace_id,
+            &IfMatch::any(),
+        )
         .await
         .unwrap();
 

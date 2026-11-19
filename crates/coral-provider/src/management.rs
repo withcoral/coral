@@ -226,16 +226,11 @@ impl ProviderModule {
         tx: &mut coral_db::Transaction<'_>,
         actor: &coral_workspace::AuthenticatedPrincipal,
         workspace: &WorkspaceId,
-        now: i64,
+        now: coral_db::UnixNanos,
     ) -> Result<Vec<crate::PublishedProvider>, Error> {
         let role = self
             .workspaces
-            .check_principal_inspection_in_snapshot(
-                tx,
-                actor,
-                workspace,
-                coral_db::UnixNanos::new(now),
-            )
+            .check_principal_inspection_in_snapshot(tx, actor, workspace, now)
             .await?
             .effective_user_role();
         let providers = crate::listed_providers(tx, workspace, None).await?;
@@ -448,18 +443,21 @@ impl ProviderModule {
 }
 
 impl ProviderModule {
-    /// Replaces the Provider's icon or, with `None`, removes it, in its own
-    /// transaction. The same icon, or removing an absent one, writes
-    /// nothing. Search indexes no icon, so the change hands it nothing.
+    /// Replaces the icon of the Provider that the caller read at `if_match`
+    /// or, with `None`, removes it, in its own transaction. The same icon, or
+    /// removing an absent one, writes nothing. Search indexes no icon, so the
+    /// change hands it nothing.
     ///
     /// # Errors
-    /// Requires current owner authority, an exact Provider that an Owner
-    /// added, and its current etag.
+    /// Requires current owner authority and an exact Provider that an Owner
+    /// added. Returns [`Error::EtagMismatch`] for a Provider that changed
+    /// since.
     pub async fn set_provider_icon(
         &self,
         context: &coral_workspace::ChangeContext,
         workspace: &WorkspaceId,
         id: &ProviderId,
+        if_match: &coral_workspace::IfMatch,
         icon: Option<crate::ProviderIcon>,
     ) -> Result<Provider, Error> {
         let mut tx = self.database.begin().await?;
@@ -469,7 +467,8 @@ impl ProviderModule {
                 context,
                 workspace,
                 id,
-                crate::change::ProviderChange::SetIcon,
+                crate::change::GuardedChange::SetIcon,
+                if_match,
             )
             .await?;
         if held.current.provider.icon_digest() == icon.as_ref().map(crate::ProviderIcon::digest) {
@@ -497,17 +496,19 @@ impl ProviderModule {
         Ok(updated)
     }
 
-    /// Changes safe display metadata in its own transaction, retaining
-    /// identity, namespace, route and policy. An unchanged display name
-    /// writes nothing.
+    /// Changes the safe display metadata of the Provider that the caller
+    /// read at `if_match`, in its own transaction, retaining identity,
+    /// namespace, route and policy. An unchanged display name writes nothing.
     ///
     /// # Errors
-    /// Requires current owner authority, an exact Provider and its current etag.
+    /// Requires current owner authority and an exact Provider. Returns
+    /// [`Error::EtagMismatch`] for a Provider that changed since.
     pub async fn rename_provider(
         &self,
         context: &coral_workspace::ChangeContext,
         workspace: &WorkspaceId,
         id: &ProviderId,
+        if_match: &coral_workspace::IfMatch,
         display_name: crate::ProviderDisplayName,
     ) -> Result<crate::Committed<Provider>, Error> {
         let mut tx = self.database.begin().await?;
@@ -517,7 +518,8 @@ impl ProviderModule {
                 context,
                 workspace,
                 id,
-                crate::change::ProviderChange::Rename,
+                crate::change::GuardedChange::Rename,
+                if_match,
             )
             .await?;
         if held.current.provider.display_name() == display_name.as_str() {

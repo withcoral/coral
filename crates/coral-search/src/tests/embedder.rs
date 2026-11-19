@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use coral_embed::{Embed, EmbedError, MANIFEST};
 use coral_telemetry::testing::{MetricCapture, SpanCapture, attribute};
-use coral_workspace::{AuthenticatedUser, WorkspaceId};
+use coral_workspace::{AuthenticatedUser, IfMatch, WorkspaceId};
 use sea_query::{Alias, Expr, ExprTrait as _, Query};
 use tokio::sync::watch;
 use tracing_subscriber::layer::SubscriberExt as _;
@@ -261,6 +261,7 @@ async fn a_reconcile_pass_removes_the_vectors_of_a_deleted_provider_and_keeps_th
             &change(world.user.clone(), 80, '9'),
             &world.workspace,
             &ledger,
+            &IfMatch::any(),
         )
         .await
         .expect("delete the ledger")
@@ -855,6 +856,7 @@ impl World {
                 &change(self.user.clone(), 70, '7'),
                 &self.workspace,
                 provider,
+                &IfMatch::any(),
                 coral_provider::ProviderDisplayName::parse(display_name).unwrap(),
             )
             .await

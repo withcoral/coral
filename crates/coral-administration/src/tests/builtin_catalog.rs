@@ -6,8 +6,8 @@ use coral_provider::{Provider, ProviderModule};
 use coral_search::{CallPath, SearchIndex, SearchQuery, SearchRequest, UniversalSearchModule};
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, Workspace, WorkspaceDisplayName,
-    WorkspaceModule,
+    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, RequestId, Workspace,
+    WorkspaceDisplayName, WorkspaceModule,
 };
 
 const ADDED: &str = "coral.listThings";
@@ -66,6 +66,7 @@ impl Fixture {
         )
         .create_workspace(
             &coral_test_support::change(self.owner.clone(), at, '1'),
+            &RequestId::generate(),
             WorkspaceDisplayName::parse(name).unwrap(),
         )
         .await

@@ -9,7 +9,7 @@ use coral_tools::{
     AuthoredToolDescription, AuthoredToolSource, SharedTool, SharedToolOrigin, SharedToolPath,
     SharedToolPublish,
 };
-use coral_workspace::AuthenticatedPrincipal;
+use coral_workspace::{AuthenticatedPrincipal, RequestId};
 use sea_query::{Alias, Expr, ExprTrait as _, Query};
 
 use super::{TestModules, TracerScope, organization_user};
@@ -45,6 +45,7 @@ impl SharedScope {
             .workspaces
             .create_agent(
                 &change(scope.user.clone(), 51, '5'),
+                &RequestId::generate(),
                 &scope.workspace_id,
                 coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
                 None,
@@ -533,11 +534,10 @@ async fn search_and_describe_read_a_shared_tools_rule_and_its_providers_state() 
         .fixture
         .providers
         .disable_provider(
-            &change(shared.scope.user.clone(), 90, 'd')
-                .with_etag(&provider.etag())
-                .unwrap(),
+            &change(shared.scope.user.clone(), 90, 'd'),
             &shared.scope.workspace_id,
             provider.id(),
+            &provider.if_match(),
         )
         .await
         .expect("disable the Shared Provider");

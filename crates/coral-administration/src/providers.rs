@@ -14,7 +14,7 @@ use coral_provider::{
 };
 use coral_search::SearchIndex;
 use coral_telemetry::safe;
-use coral_workspace::{ChangeContext, WorkspaceId};
+use coral_workspace::{ChangeContext, IfMatch, WorkspaceId};
 
 /// Publishes, removes, and renames Providers, and tells search after each.
 #[derive(Clone)]
@@ -50,7 +50,8 @@ impl ProviderWorkflow {
         Ok(self.notify(committed))
     }
 
-    /// Activates one replacement Provider Generation.
+    /// Activates one replacement Generation of the Provider that the caller
+    /// read at `if_match`.
     ///
     /// # Errors
     ///
@@ -58,13 +59,19 @@ impl ProviderWorkflow {
     pub async fn regenerate_provider(
         &self,
         context: &ChangeContext,
+        if_match: &IfMatch,
         request: ProviderRegenerationRequest,
     ) -> Result<ProviderRegenerationPublication, Error> {
-        let committed = Box::pin(self.providers.regenerate_provider(context, request)).await?;
+        let committed = Box::pin(
+            self.providers
+                .regenerate_provider(context, if_match, request),
+        )
+        .await?;
         Ok(self.notify(committed))
     }
 
-    /// Removes one Provider's current configuration.
+    /// Removes the current configuration of the Provider that the caller
+    /// read at `if_match`.
     ///
     /// # Errors
     ///
@@ -74,16 +81,17 @@ impl ProviderWorkflow {
         context: &ChangeContext,
         owner: &WorkspaceId,
         provider: &ProviderId,
+        if_match: &IfMatch,
     ) -> Result<(), Error> {
         let committed = self
             .providers
-            .delete_provider(context, owner, provider)
+            .delete_provider(context, owner, provider, if_match)
             .await?;
         self.notify(committed);
         Ok(())
     }
 
-    /// Renames one Provider.
+    /// Renames the Provider that the caller read at `if_match`.
     ///
     /// # Errors
     ///
@@ -93,11 +101,12 @@ impl ProviderWorkflow {
         context: &ChangeContext,
         workspace: &WorkspaceId,
         id: &ProviderId,
+        if_match: &IfMatch,
         display_name: ProviderDisplayName,
     ) -> Result<Provider, Error> {
         let committed = self
             .providers
-            .rename_provider(context, workspace, id, display_name)
+            .rename_provider(context, workspace, id, if_match, display_name)
             .await?;
         Ok(self.notify(committed))
     }
@@ -118,7 +127,7 @@ impl ProviderWorkflow {
     ) -> Result<(), Error> {
         for missing in self
             .providers
-            .install_missing_coral_defined(occurred_at.get())
+            .install_missing_coral_defined(occurred_at)
             .await?
         {
             let workspace_id = missing.workspace_id().clone();
@@ -146,7 +155,7 @@ impl ProviderWorkflow {
         for outdated in self.providers.outdated_builtin_generations().await? {
             match self
                 .providers
-                .update_builtin_catalog(&outdated, occurred_at.get())
+                .update_builtin_catalog(&outdated, occurred_at)
                 .await
             {
                 Ok(committed) => {
@@ -230,8 +239,9 @@ impl ProviderRenamer for ProviderWorkflow {
         context: &ChangeContext,
         workspace: &WorkspaceId,
         provider: &ProviderId,
+        if_match: &IfMatch,
         display_name: ProviderDisplayName,
     ) -> Result<Provider, Error> {
-        Self::rename_provider(self, context, workspace, provider, display_name).await
+        Self::rename_provider(self, context, workspace, provider, if_match, display_name).await
     }
 }

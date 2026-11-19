@@ -81,7 +81,11 @@ async fn rejected_commit(setting: bool) {
     // The regeneration stops after staging its writes, before they commit.
     let interrupted = tokio::spawn({
         let context = context.clone();
-        async move { failing.regenerate_provider(&context, request).await }
+        async move {
+            failing
+                .regenerate_provider(&context, &IfMatch::any(), request)
+                .await
+        }
     });
     hold.held().await;
     interrupted.abort();
@@ -135,7 +139,7 @@ async fn rejected_commit(setting: bool) {
         .unwrap();
     assert!(
         !h.providers
-            .setup_authentication(&actor, workspace.id(), candidate.id(), 11)
+            .setup_authentication(&actor, workspace.id(), candidate.id(), UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
@@ -187,14 +191,14 @@ async fn first_shared_publication_wins_over_a_competing_prepared_replacement() {
     let loser = requests.next().unwrap();
     let first = h
         .providers
-        .regenerate_provider(&context, winner.clone())
+        .regenerate_provider(&context, &IfMatch::any(), winner.clone())
         .await
         .unwrap()
         .skip_search();
     assert_eq!(first.outcome(), ProviderPublicationOutcome::Succeeded);
     let rejected = h
         .providers
-        .regenerate_provider(&context, loser.clone())
+        .regenerate_provider(&context, &IfMatch::any(), loser.clone())
         .await
         .unwrap()
         .skip_search();
@@ -205,14 +209,14 @@ async fn first_shared_publication_wins_over_a_competing_prepared_replacement() {
     );
     assert!(
         !h.providers
-            .setup_authentication(&actor, workspace.id(), loser.setup_id(), 11)
+            .setup_authentication(&actor, workspace.id(), loser.setup_id(), UnixNanos::new(11))
             .await
             .unwrap()
             .authorized
     );
     assert_eq!(
         h.providers
-            .regenerate_provider(&context, winner)
+            .regenerate_provider(&context, &IfMatch::any(), winner)
             .await
             .unwrap()
             .skip_search(),
@@ -282,6 +286,7 @@ async fn setting_change_cancels_pending_connections_and_reconnects_before_their_
     h.providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 request_id(),
                 workspace.id().clone(),
@@ -339,6 +344,7 @@ async fn setting_change_cancels_pending_connections_and_reconnects_before_their_
     h.providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 request_id(),
                 workspace.id().clone(),

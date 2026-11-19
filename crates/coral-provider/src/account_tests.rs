@@ -146,7 +146,7 @@ async fn workspace_provider_deletion_removes_its_accounts_and_cancels_open_autho
         .await
         .unwrap();
     providers
-        .delete_provider(&admin, &scope, provider.id())
+        .delete_provider(&admin, &scope, provider.id(), &IfMatch::any())
         .await
         .unwrap()
         .skip_search();
@@ -634,7 +634,8 @@ async fn user_authorization_connects_only_its_user_and_never_satisfies_a_shared_
                 &admin,
                 workspace.id(),
                 provider_access.id(),
-                CredentialRoute::Fixed
+                &IfMatch::any(),
+                CredentialRoute::Fixed,
             )
             .await,
         Err(crate::Error::AccountRequired)
@@ -768,6 +769,7 @@ async fn owner_provisions_an_agent_not_the_authorizing_human() {
     let agent = workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             AgentDisplayName::parse("Worker").unwrap(),
             None,
@@ -777,6 +779,7 @@ async fn owner_provisions_an_agent_not_the_authorizing_human() {
     let other = workspaces
         .create_agent(
             &context,
+            &RequestId::generate(),
             workspace.id(),
             AgentDisplayName::parse("Other").unwrap(),
             None,
@@ -1015,7 +1018,8 @@ async fn owner_provisions_an_agent_not_the_authorizing_human() {
                 &context,
                 workspace.id(),
                 provider_access.id(),
-                CredentialRoute::Fixed
+                &IfMatch::any(),
+                CredentialRoute::Fixed,
             )
             .await,
         Err(crate::Error::AccountRequired)
@@ -1329,7 +1333,7 @@ paths:
         '200':
           description: Forecast
 ";
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName};
+use coral_workspace::{IfMatch, OrganizationRole, RequestId, WorkspaceDisplayName};
 
 #[tokio::test]
 async fn oauth_callback_is_pinned_one_use_and_survives_request_loss() {
@@ -1388,6 +1392,7 @@ async fn oauth_callback_journey(provision_agent: bool) {
         let agent = workspaces
             .create_agent(
                 &context,
+                &RequestId::generate(),
                 workspace.id(),
                 coral_workspace::AgentDisplayName::parse("OAuth Agent").unwrap(),
                 None,
@@ -1665,6 +1670,7 @@ async fn shared_authorization_survives_restart_and_preserves_account_without_exp
             &context,
             workspace.id(),
             provider.id(),
+            &IfMatch::any(),
             CredentialRoute::Fixed,
         )
         .await
@@ -1745,7 +1751,8 @@ async fn shared_authorization_survives_restart_and_preserves_account_without_exp
                 &context,
                 workspace.id(),
                 provider_access.id(),
-                CredentialRoute::None
+                &IfMatch::any(),
+                CredentialRoute::None,
             )
             .await,
         Err(crate::Error::AccountRequired)
@@ -1807,7 +1814,7 @@ async fn shared_authorization_survives_restart_and_preserves_account_without_exp
         )
         .await
         .expect("expiring authorization");
-    let late = change_context(owner.clone(), pending.expires_at_unix_nanos, 'b');
+    let late = change_context(owner.clone(), pending.expires_at.get(), 'b');
     assert_eq!(
         accounts
             .get_authorization(&late, &scope, pending.id)

@@ -1,4 +1,5 @@
 use super::{Fixture, change, internal, request};
+use coral_workspace::RequestId;
 
 #[tokio::test]
 async fn duplicate_metadata_rejects_an_otherwise_valid_agent_in_both_authentication_modes() {
@@ -8,6 +9,7 @@ async fn duplicate_metadata_rejects_an_otherwise_valid_agent_in_both_authenticat
             .workspaces
             .create_agent(
                 &change(&f.owner),
+                &RequestId::generate(),
                 f.workspace.id(),
                 coral_workspace::AgentDisplayName::parse("agent").unwrap(),
                 None,

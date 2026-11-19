@@ -1,6 +1,7 @@
 //! Provider removal retires Update preparation without widening event visibility.
 use super::*;
 use crate::{OAuthClientAuthentication, OAuthClientConfiguration};
+use coral_db::UnixNanos;
 
 fn confidential_client() -> SetupOAuthClient {
     SetupOAuthClient::application(
@@ -71,7 +72,7 @@ async fn provider_deletion_cancels_ready_updates_and_rejects_late_secrets() {
         .await
         .unwrap();
     h.providers
-        .delete_provider(&context, owner, provider.id())
+        .delete_provider(&context, owner, provider.id(), &IfMatch::any())
         .await
         .unwrap()
         .skip_search();
@@ -85,7 +86,7 @@ async fn provider_deletion_cancels_ready_updates_and_rejects_late_secrets() {
     );
     let authentication = h
         .providers
-        .setup_authentication(&actor, owner, update.id(), 11)
+        .setup_authentication(&actor, owner, update.id(), UnixNanos::new(11))
         .await
         .unwrap();
     assert!(!authentication.authorized);
@@ -162,19 +163,19 @@ async fn provider_deletion_scrubs_update_application_secrets_before_consent() {
         .unwrap();
     let before = h
         .providers
-        .setup_authentication(&actor, owner, update.id(), 11)
+        .setup_authentication(&actor, owner, update.id(), UnixNanos::new(11))
         .await
         .unwrap();
     assert!(before.client_secret_configured);
     assert!(before.authorization.is_none());
     h.providers
-        .delete_provider(&context, owner, provider.id())
+        .delete_provider(&context, owner, provider.id(), &IfMatch::any())
         .await
         .unwrap()
         .skip_search();
     let after = h
         .providers
-        .inspect_setup(&actor, owner, update.id(), 11)
+        .inspect_setup(&actor, owner, update.id(), UnixNanos::new(11))
         .await
         .unwrap();
     assert_eq!(after.setup.state(), ProviderSetupState::Canceled);
@@ -250,7 +251,7 @@ async fn deletion_fences_callback(in_flight: bool) {
         None
     };
     h.providers
-        .delete_provider(&context, owner, provider.id())
+        .delete_provider(&context, owner, provider.id(), &IfMatch::any())
         .await
         .unwrap()
         .skip_search();
@@ -265,7 +266,7 @@ async fn deletion_fences_callback(in_flight: bool) {
     }
     let after = h
         .providers
-        .inspect_setup(&actor, owner, update.id(), 11)
+        .inspect_setup(&actor, owner, update.id(), UnixNanos::new(11))
         .await
         .unwrap();
     assert_eq!(after.setup.state(), ProviderSetupState::Canceled);
@@ -396,7 +397,7 @@ async fn provider_deletion_discards_in_flight_update_discovery() {
         .await
         .unwrap();
     h.providers
-        .delete_provider(&context, owner, provider.id())
+        .delete_provider(&context, owner, provider.id(), &IfMatch::any())
         .await
         .unwrap()
         .skip_search();
@@ -407,7 +408,7 @@ async fn provider_deletion_discards_in_flight_update_discovery() {
     assert!(!completing.await.unwrap().unwrap().authentication.authorized);
     let after = h
         .providers
-        .inspect_setup(&actor, owner, update.id(), 11)
+        .inspect_setup(&actor, owner, update.id(), UnixNanos::new(11))
         .await
         .unwrap();
     assert_eq!(after.setup.state(), ProviderSetupState::Canceled);

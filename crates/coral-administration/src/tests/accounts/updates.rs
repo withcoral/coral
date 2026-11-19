@@ -18,12 +18,22 @@ async fn remove(f: &AccountFixture, removal: Removal) {
     match removal {
         Removal::Workspace => f
             .lifecycle
-            .remove_workspace_member(&change(&f.owner), f.workspace.id(), f.member.user_id())
+            .remove_workspace_member(
+                &change(&f.owner),
+                f.workspace.id(),
+                f.member.user_id(),
+                &IfMatch::any(),
+            )
             .await
             .unwrap(),
         Removal::Organization => f
             .lifecycle
-            .remove_organization_member(&change(&f.owner), f.member.user_id(), 1, None)
+            .remove_organization_member(
+                &change(&f.owner),
+                f.member.user_id(),
+                &IfMatch::any(),
+                None,
+            )
             .await
             .unwrap(),
     }
@@ -58,7 +68,7 @@ async fn connected_account(
     if initially_shared {
         let initial = candidate(f, providers, true, "initial-shared-secret").await;
         providers
-            .regenerate_provider(&change(&f.member), initial)
+            .regenerate_provider(&change(&f.member), &IfMatch::any(), initial)
             .await
             .unwrap()
             .skip_search();
@@ -195,8 +205,9 @@ async fn removal_wins(removal: Removal, initially_shared: bool, shared: bool) {
     let context = change(&f.member);
     // Start publication while offboarding holds current authority, then release
     // removal. No sleep or scheduler timing decides which transaction wins.
+    let any = IfMatch::any();
     let (result, ()) = tokio::join!(biased;
-        providers.regenerate_provider(&context, update.clone()),
+        providers.regenerate_provider(&context, &any, update.clone()),
         async { gate.proceed.notify_one(); },
     );
     removing.await.unwrap();
@@ -223,7 +234,12 @@ async fn removal_wins(removal: Removal, initially_shared: bool, shared: bool) {
     );
     assert!(
         !providers
-            .setup_authentication(&f.member, f.workspace.id(), update.setup_id(), 100)
+            .setup_authentication(
+                &f.member,
+                f.workspace.id(),
+                update.setup_id(),
+                coral_db::UnixNanos::new(100)
+            )
             .await
             .unwrap()
             .authorized
@@ -244,7 +260,7 @@ async fn removal_wins(removal: Removal, initially_shared: bool, shared: bool) {
         AuthorizationState::Canceled
     );
     providers
-        .regenerate_provider(&context, update)
+        .regenerate_provider(&context, &IfMatch::any(), update)
         .await
         .unwrap_err();
     let scope = if initially_shared {
@@ -263,7 +279,12 @@ async fn removal_wins(removal: Removal, initially_shared: bool, shared: bool) {
         let evidence = credential_evidence(&f.db.database(), f.workspace.id(), &f.owner).await;
         assert_eq!(
             f.accounts
-                .credentials(f.workspace.id(), &f.provider, &evidence, 100)
+                .credentials(
+                    f.workspace.id(),
+                    &f.provider,
+                    &evidence,
+                    coral_db::UnixNanos::new(100)
+                )
                 .await
                 .unwrap()
                 .get(coral_credentials::CredentialValues::TOKEN)
@@ -297,7 +318,7 @@ async fn publication_before_offboarding_preserves_shared_accounts_but_retires_ca
             connected_account(&f, &providers, initially_shared).await;
             let update = candidate(&f, &providers, shared, "candidate-secret").await;
             let result = providers
-                .regenerate_provider(&change(&f.member), update)
+                .regenerate_provider(&change(&f.member), &IfMatch::any(), update)
                 .await
                 .unwrap()
                 .skip_search();
@@ -336,7 +357,12 @@ async fn publication_before_offboarding_preserves_shared_accounts_but_retires_ca
                     credential_evidence(&f.db.database(), f.workspace.id(), &f.owner).await;
                 assert_eq!(
                     f.accounts
-                        .credentials(f.workspace.id(), &f.provider, &evidence, 100)
+                        .credentials(
+                            f.workspace.id(),
+                            &f.provider,
+                            &evidence,
+                            coral_db::UnixNanos::new(100)
+                        )
                         .await
                         .unwrap()
                         .get(coral_credentials::CredentialValues::TOKEN)

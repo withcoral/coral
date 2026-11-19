@@ -66,8 +66,9 @@ impl EntityIndexer for AuthoredToolIndexer {
         transaction: &mut Transaction<'_>,
         entry: &AuthoredToolEntry,
         row: &AuthoredToolRow<'_>,
+        clock: &dyn coral_db::Clock,
     ) -> Result<super::IndexEffect, IndexError> {
-        repository::upsert_authored_tool_row(transaction, row, crate::now()).await?;
+        repository::upsert_authored_tool_row(transaction, row, clock.now()).await?;
         repository::delete_authored_tool_state(transaction, entry.workspace_id(), entry.id())
             .await?;
         Ok(super::IndexEffect::Updated)
@@ -231,6 +232,7 @@ pub(crate) async fn record_failed_attempt(
     entry: &AuthoredToolEntry,
     error: &IndexError,
     reconcile_interval: Duration,
+    clock: &dyn coral_db::Clock,
 ) -> Result<bool, IndexError> {
     // A failure of another revision starts the count again.
     let prior = repository::failed_authored_tool(transaction, entry.workspace_id(), entry.id())
@@ -239,7 +241,7 @@ pub(crate) async fn record_failed_attempt(
         .map(|failure| failure.retry);
     let removed =
         repository::delete_authored_tool_row(transaction, entry.workspace_id(), entry.id()).await?;
-    let attempted_at = crate::now();
+    let attempted_at = clock.now();
     repository::write_failed_authored_tool_state(
         transaction,
         FailedAuthoredToolState {

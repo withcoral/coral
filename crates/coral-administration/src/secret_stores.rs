@@ -6,7 +6,8 @@ use coral_secret_store::{
     SecretStoreKind, SecretStoreName, SecretStores, StoreDescription, StoreStatus,
 };
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, OrganizationModule, Workspace, WorkspaceId, WorkspaceModule,
+    AuthenticatedUser, ChangeContext, OrganizationModule, RequestId, Workspace, WorkspaceId,
+    WorkspaceModule,
 };
 
 /// A store a grant names, as config defines it now.
@@ -113,15 +114,18 @@ impl SecretStoreAdministration {
             .collect())
     }
 
-    /// Grants a store config defines to a Workspace.
+    /// Grants a store config defines to a Workspace. `request` names the
+    /// grant, so that a repeat of it does not run again.
     ///
     /// # Errors
     /// Denies anyone but a current, enabled Organization Owner, before it says
-    /// whether config defines the store. Refuses a store config does not define
-    /// and an archived Workspace. A rejected request changes nothing.
+    /// whether config defines the store. Refuses a store config does not define,
+    /// an archived Workspace, and a request that already ran. A rejected
+    /// request changes nothing.
     pub async fn grant(
         &self,
         context: &ChangeContext,
+        request: &RequestId,
         workspace: &WorkspaceId,
         store: &SecretStoreName,
     ) -> Result<(), crate::Error> {
@@ -131,24 +135,27 @@ impl SecretStoreAdministration {
         }
         Ok(self
             .workspaces
-            .grant_secret_store(context, workspace, store.as_str())
+            .grant_secret_store(context, request, workspace, store.as_str())
             .await?)
     }
 
     /// Revokes a grant, whether or not config still defines its store.
+    /// `request` names the revocation, so that a repeat of it does not run again.
     ///
     /// # Errors
     /// Denies anyone but a current, enabled Organization Owner, and refuses an
-    /// archived Workspace. A rejected request changes nothing.
+    /// archived Workspace and a request that already ran. A rejected request
+    /// changes nothing.
     pub async fn revoke(
         &self,
         context: &ChangeContext,
+        request: &RequestId,
         workspace: &WorkspaceId,
         store: &SecretStoreName,
     ) -> Result<(), crate::Error> {
         Ok(self
             .workspaces
-            .revoke_secret_store(context, workspace, store.as_str())
+            .revoke_secret_store(context, request, workspace, store.as_str())
             .await?)
     }
 
@@ -242,12 +249,17 @@ mod tests {
         let f = fixture().await;
         let id = f.workspace.id();
         f.administration
-            .grant(&change(&f.governor), id, &named("platform"))
+            .grant(
+                &change(&f.governor),
+                &RequestId::generate(),
+                id,
+                &named("platform"),
+            )
             .await
             .unwrap();
         // Config defined `removed` when this grant was made.
         f.workspaces
-            .grant_secret_store(&change(&f.governor), id, "removed")
+            .grant_secret_store(&change(&f.governor), &RequestId::generate(), id, "removed")
             .await
             .unwrap();
 
@@ -285,7 +297,12 @@ mod tests {
 
         // A removed store can still lose its grant.
         f.administration
-            .revoke(&change(&f.governor), id, &named("removed"))
+            .revoke(
+                &change(&f.governor),
+                &RequestId::generate(),
+                id,
+                &named("removed"),
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -312,13 +329,13 @@ mod tests {
 
         assert!(matches!(
             f.administration
-                .grant(&change(&f.governor), id, &undefined)
+                .grant(&change(&f.governor), &RequestId::generate(), id, &undefined)
                 .await,
             Err(crate::Error::UndefinedSecretStore)
         ));
         assert!(matches!(
             f.administration
-                .grant(&change(&f.owner), id, &undefined)
+                .grant(&change(&f.owner), &RequestId::generate(), id, &undefined)
                 .await,
             Err(crate::Error::Workspace(
                 coral_workspace::Error::PermissionDenied(_)

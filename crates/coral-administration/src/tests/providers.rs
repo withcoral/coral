@@ -14,8 +14,8 @@ use coral_search::test_fixtures::{IndexedGeneration, indexed_generations, indexe
 use coral_search::{SearchIndex, SearchQuery, SearchRequest, UniversalSearchModule};
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
-    AuthenticatedPrincipal, AuthenticatedUser, OrganizationRole, WorkspaceDisplayName, WorkspaceId,
-    WorkspaceModule,
+    AuthenticatedPrincipal, AuthenticatedUser, IfMatch, OrganizationRole, WorkspaceDisplayName,
+    WorkspaceId, WorkspaceModule,
 };
 
 use super::configured_provider_fixtures::ConfiguredProviderFixtures as _;
@@ -190,7 +190,11 @@ async fn publication_indexes_the_new_tools_and_regeneration_removes_the_supersed
     let setup = f.setup(CURRENT).await;
     let regeneration = f
         .workflow
-        .regenerate_provider(&change(&f.owner), f.regeneration(&provider, &setup))
+        .regenerate_provider(
+            &change(&f.owner),
+            &IfMatch::any(),
+            f.regeneration(&provider, &setup),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -243,7 +247,11 @@ async fn a_replay_a_reused_generation_or_a_failed_outcome_notifies_nothing() {
     let unchanged = f.setup(FORECAST).await;
     let reused = f
         .workflow
-        .regenerate_provider(&change(&f.owner), f.regeneration(&provider, &unchanged))
+        .regenerate_provider(
+            &change(&f.owner),
+            &IfMatch::any(),
+            f.regeneration(&provider, &unchanged),
+        )
         .await
         .unwrap();
     let conflict = f.setup(CURRENT).await;
@@ -275,7 +283,7 @@ async fn removal_removes_the_providers_rows() {
     assert_eq!(f.found("forecast").await, hit(FORECAST_PATH, "Weather"));
 
     f.workflow
-        .delete_provider(&change(&f.owner), &f.workspace, &provider)
+        .delete_provider(&change(&f.owner), &f.workspace, &provider, &IfMatch::any())
         .await
         .unwrap();
     f.index.settled().await;
@@ -296,6 +304,7 @@ async fn rename_rewrites_the_rows_of_the_same_generation_under_the_new_name() {
             &change(&f.owner),
             &f.workspace,
             &provider,
+            &IfMatch::any(),
             ProviderDisplayName::parse("Forecasts").unwrap(),
         )
         .await

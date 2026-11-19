@@ -435,6 +435,7 @@ impl coral_provider::ProviderRenamer for RenamedFirst {
         context: &coral_workspace::ChangeContext,
         workspace: &coral_workspace::WorkspaceId,
         provider: &coral_provider::ProviderId,
+        if_match: &IfMatch,
         display_name: coral_provider::ProviderDisplayName,
     ) -> Result<coral_provider::Provider, coral_provider::Error> {
         self.0
@@ -442,11 +443,12 @@ impl coral_provider::ProviderRenamer for RenamedFirst {
                 context,
                 workspace,
                 provider,
+                if_match,
                 coral_provider::ProviderDisplayName::parse("Raced").unwrap(),
             )
             .await?;
         self.0
-            .rename_provider(context, workspace, provider, display_name)
+            .rename_provider(context, workspace, provider, if_match, display_name)
             .await
     }
 }
@@ -496,12 +498,13 @@ impl coral_provider::ProviderRenamer for StallingRenamer {
         context: &coral_workspace::ChangeContext,
         workspace: &coral_workspace::WorkspaceId,
         provider: &coral_provider::ProviderId,
+        if_match: &IfMatch,
         display_name: coral_provider::ProviderDisplayName,
     ) -> Result<coral_provider::Provider, coral_provider::Error> {
         self.entered.store(true, Ordering::SeqCst);
         self.release.notified().await;
         self.workflow
-            .rename_provider(context, workspace, provider, display_name)
+            .rename_provider(context, workspace, provider, if_match, display_name)
             .await
     }
 }

@@ -3,8 +3,8 @@ use super::status::invalid;
 use super::workspaces::{change, error, mask, page, timestamp, workspace_id};
 use super::{GrpcServices, management as wire};
 use coral_workspace::{
-    Agent, AgentDisplayName, AgentRegistration, AgentState, IssuedAgentCredential, PrincipalId,
-    ResourceMetadata, WorkspaceId,
+    Agent, AgentDisplayName, AgentRegistration, AgentState, IfMatch, IssuedAgentCredential,
+    PrincipalId, RequestId, ResourceMetadata, WorkspaceId,
 };
 use tonic::{Request, Response, Status};
 
@@ -34,8 +34,8 @@ fn agent(a: Agent, meta: ResourceMetadata) -> wire::Agent {
         }
         .into(),
         etag: meta.etag,
-        create_time: Some(timestamp(meta.created_at.get())),
-        update_time: Some(timestamp(meta.updated_at.get())),
+        create_time: Some(timestamp(meta.created_at)),
+        update_time: Some(timestamp(meta.updated_at)),
         creator_profile: None,
         access_blockers: Vec::new(),
     }
@@ -53,10 +53,10 @@ fn registration(r: AgentRegistration, meta: ResourceMetadata) -> wire::AgentRegi
         ),
         uid: r.id().to_string(),
         enabled: r.is_enabled(),
-        expire_time: r.expires_at().map(coral_db::UnixNanos::get).map(timestamp),
+        expire_time: r.expires_at().map(timestamp),
         etag: meta.etag,
-        create_time: Some(timestamp(meta.created_at.get())),
-        update_time: Some(timestamp(meta.updated_at.get())),
+        create_time: Some(timestamp(meta.created_at)),
+        update_time: Some(timestamp(meta.updated_at)),
     }
 }
 fn issued(view: IssuedAgentCredential, now: coral_db::UnixNanos) -> wire::IssuedAgentCredential {
@@ -121,9 +121,8 @@ impl wire::agent_service_server::AgentService for GrpcServices {
         let created = self
             .workspaces
             .create_agent(
-                &change(actor.clone())
-                    .with_request_id(&input.request_id)
-                    .map_err(error)?,
+                &change(actor.clone()),
+                &RequestId::parse(&input.request_id).map_err(error)?,
                 &w,
                 AgentDisplayName::parse(&input.display_name).map_err(error)?,
                 expiration(input.expire_time)?,
@@ -194,9 +193,10 @@ impl wire::agent_service_server::AgentService for GrpcServices {
         };
         self.workspaces
             .set_agent_state(
-                &change(actor.clone()).with_etag(&a.etag).map_err(error)?,
+                &change(actor.clone()),
                 &w,
                 &id,
+                &IfMatch::parse(&a.etag).map_err(error)?,
                 state,
             )
             .await
@@ -218,9 +218,10 @@ impl wire::agent_service_server::AgentService for GrpcServices {
         let (w, id) = agent_id(&input.name)?;
         self.access_lifecycle
             .delete_agent(
-                &change(actor).with_etag(&input.etag).map_err(error)?,
+                &change(actor),
                 &w,
                 &id,
+                &IfMatch::parse(&input.etag).map_err(error)?,
             )
             .await
             .map_err(super::workspaces::administration_error)?;
@@ -274,9 +275,10 @@ impl wire::agent_registration_service_server::AgentRegistrationService for GrpcS
         };
         self.workspaces
             .update_agent_registration(
-                &change(actor.clone()).with_etag(&r.etag).map_err(error)?,
+                &change(actor.clone()),
                 &w,
                 view.registration.id(),
+                &IfMatch::parse(&r.etag).map_err(error)?,
                 enabled,
                 expires,
             )
@@ -305,16 +307,17 @@ impl wire::agent_registration_service_server::AgentRegistrationService for GrpcS
             .inspect_agent(&actor, &w, &id)
             .await
             .map_err(error)?;
+        // The etag is read before the request id, as it always was.
+        let if_match = IfMatch::parse(&input.etag).map_err(error)?;
+        let rotation = RequestId::parse(&input.request_id).map_err(error)?;
         let rotated = self
             .workspaces
             .rotate_agent_credential(
-                &change(actor.clone())
-                    .with_etag(&input.etag)
-                    .map_err(error)?
-                    .with_request_id(&input.request_id)
-                    .map_err(error)?,
+                &change(actor.clone()),
+                &rotation,
                 &w,
                 view.registration.id(),
+                &if_match,
             )
             .await
             .map_err(error)?;

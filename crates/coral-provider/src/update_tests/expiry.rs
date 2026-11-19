@@ -40,10 +40,10 @@ async fn expired_shared_replacement_records_one_terminal_failure_and_scrubs_the_
     )
     .with_account_grant(grant.provisional_grant_id.unwrap())
     .with_incompatible_configuration_confirmation();
-    let expired = change_context(actor.clone(), grant.expires_at_unix_nanos.unwrap() + 1, '3');
+    let expired = change_context(actor.clone(), grant.expires_at.unwrap().get() + 1, '3');
     let failed = h
         .providers
-        .regenerate_provider(&expired, request.clone())
+        .regenerate_provider(&expired, &IfMatch::any(), request.clone())
         .await
         .expect("expiry is a terminal domain diagnostic")
         .skip_search();
@@ -72,7 +72,7 @@ async fn expired_shared_replacement_records_one_terminal_failure_and_scrubs_the_
             "update",
             "read",
             &user_principal(&actor),
-            expired.occurred_at_unix_nanos()
+            expired.occurred_at().get()
         )
         .await
         .unwrap()
@@ -98,7 +98,7 @@ async fn expired_shared_replacement_records_one_terminal_failure_and_scrubs_the_
     );
     assert_eq!(
         h.providers
-            .regenerate_provider(&expired, request)
+            .regenerate_provider(&expired, &IfMatch::any(), request)
             .await
             .unwrap()
             .skip_search(),
@@ -118,7 +118,7 @@ async fn expired_shared_replacement_records_one_terminal_failure_and_scrubs_the_
                 &actor,
                 workspace.id(),
                 candidate.id(),
-                context.occurred_at_unix_nanos()
+                context.occurred_at()
             )
             .await
             .unwrap()

@@ -1,6 +1,7 @@
 //! Exact evidence through native private transport, with real owning-domain writes.
 use super::{AuthenticatedPrincipal, Fixture, request, wire};
 use coral_test_support::provider_setup_fixtures;
+use coral_workspace::RequestId;
 use serde_json::json;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
@@ -579,6 +580,7 @@ async fn discovery_wire_projects_typed_context_and_exact_deleted_private_tool_re
         .workspaces
         .create_agent(
             &super::super::change(&f.owner),
+            &RequestId::generate(),
             f.workspace.id(),
             coral_workspace::AgentDisplayName::parse("No history audience").unwrap(),
             None,
@@ -1979,6 +1981,7 @@ async fn settled_approvals_follow_who_invoked_the_run() {
         .workspaces
         .create_agent(
             &super::super::change(&f.owner),
+            &RequestId::generate(),
             f.workspace.id(),
             coral_workspace::AgentDisplayName::parse("History agent").unwrap(),
             None,

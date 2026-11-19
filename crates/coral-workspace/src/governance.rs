@@ -7,9 +7,9 @@ use coral_db::Transaction;
 
 use crate::list_repository::{Resources, Users};
 use crate::{
-    AuthenticatedUser, AuthoritySource, ChangeContext, Error, EventDetail, LifecycleAction,
-    LifecycleTargetKind, OrganizationRole, ResourceMetadata, UserId, UserProfile, Workspace,
-    WorkspaceId, WorkspaceModule, WorkspaceRole, WorkspaceState,
+    AuthenticatedUser, AuthoritySource, ChangeContext, Error, EventDetail, IfMatch,
+    LifecycleAction, LifecycleTargetKind, OrganizationRole, RequestId, ResourceMetadata, UserId,
+    UserProfile, Workspace, WorkspaceId, WorkspaceModule, WorkspaceRole, WorkspaceState,
 };
 
 /// One designated Owner on record.
@@ -185,20 +185,24 @@ impl WorkspaceModule {
         Ok(events)
     }
 
-    /// Archives a Workspace as an Organization Owner, with or without a Membership.
+    /// Archives the Workspace that the caller read at `if_match`, as an
+    /// Organization Owner, with or without a Membership.
     ///
     /// # Errors
     ///
     /// Requires current Organization Owner authority and an active Workspace.
-    /// A rejected request changes nothing.
+    /// Returns [`Error::EtagMismatch`] for a Workspace that changed since. A
+    /// rejected request changes nothing.
     pub async fn archive_as_organization_owner(
         &self,
         context: &ChangeContext,
         workspace: &WorkspaceId,
+        if_match: &IfMatch,
     ) -> Result<Workspace, Error> {
         self.change_lifecycle(
             context,
             workspace,
+            if_match,
             crate::AuthorityAction::GovernArchive,
             WorkspaceState::Archived,
             LifecycleAction::WorkspaceArchived,
@@ -206,20 +210,24 @@ impl WorkspaceModule {
         .await
     }
 
-    /// Restores a Workspace as an Organization Owner, with or without a Membership.
+    /// Restores the Workspace that the caller read at `if_match`, as an
+    /// Organization Owner, with or without a Membership.
     ///
     /// # Errors
     ///
     /// Requires current Organization Owner authority and an archived Workspace.
-    /// A rejected request changes nothing.
+    /// Returns [`Error::EtagMismatch`] for a Workspace that changed since. A
+    /// rejected request changes nothing.
     pub async fn restore_as_organization_owner(
         &self,
         context: &ChangeContext,
         workspace: &WorkspaceId,
+        if_match: &IfMatch,
     ) -> Result<Workspace, Error> {
         self.change_lifecycle(
             context,
             workspace,
+            if_match,
             crate::AuthorityAction::GovernRestore,
             WorkspaceState::Active,
             LifecycleAction::WorkspaceRestored,
@@ -229,15 +237,18 @@ impl WorkspaceModule {
 
     /// Makes one User a designated Owner of an active Workspace. A current
     /// Member is promoted; a current Owner is left unchanged with no Event.
+    /// `request` names the assignment, so that a repeat of it does not run again.
     ///
     /// # Errors
     ///
     /// Requires current Organization Owner authority, an active Workspace, and
-    /// an enabled Organization Membership for the target. A rejected assignment
-    /// changes nothing.
+    /// an enabled Organization Membership for the target. Returns
+    /// [`Error::RequestAlreadyApplied`] for a request that already assigned an
+    /// Owner. A rejected assignment changes nothing.
     pub async fn assign_owner(
         &self,
         context: &ChangeContext,
+        request: &RequestId,
         workspace: &WorkspaceId,
         target: &UserId,
     ) -> Result<(), Error> {
@@ -262,7 +273,7 @@ impl WorkspaceModule {
         if !crate::organization::is_enabled(&mut tx, target).await? {
             return Err(Error::OwnerTargetNotEnabled);
         }
-        crate::management::claim_request(&mut tx, context).await?;
+        crate::management::claim_request(&mut tx, context.actor().user_id(), request).await?;
         make_owner(&mut tx, context, workspace, target).await?;
         tx.commit().await?;
         Ok(())

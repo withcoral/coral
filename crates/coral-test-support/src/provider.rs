@@ -17,7 +17,7 @@ macro_rules! provider_setup_fixtures {
             use coral_catalog::{
                 OpenApiDocument, ProviderConfiguration, ProviderCredentialContract,
             };
-            use coral_workspace::{ChangeContext, WorkspaceId};
+            use coral_workspace::{ChangeContext, IfMatch, WorkspaceId};
             use $domain as providers;
 
             pub(super) trait ConfiguredProviderFixtures {
@@ -33,6 +33,7 @@ macro_rules! provider_setup_fixtures {
                     context: &ChangeContext,
                     workspace: &WorkspaceId,
                     provider: &providers::ProviderId,
+                    if_match: &IfMatch,
                     route: providers::CredentialRoute,
                 ) -> Result<providers::ProviderAccess, providers::Error>;
                 async fn publish_shared_fixture(
@@ -112,6 +113,7 @@ macro_rules! provider_setup_fixtures {
                     context: &ChangeContext,
                     workspace: &WorkspaceId,
                     provider: &providers::ProviderId,
+                    if_match: &IfMatch,
                     route: providers::CredentialRoute,
                 ) -> Result<providers::ProviderAccess, providers::Error> {
                     let setup = self
@@ -138,6 +140,7 @@ macro_rules! provider_setup_fixtures {
                         self
                             .regenerate_provider(
                                 context,
+                                if_match,
                                 providers::ProviderRegenerationRequest::new(
                                     providers::ManagementRequestId::parse(
                                         &$crate::fixture_request_id(),

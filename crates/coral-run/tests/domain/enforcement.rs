@@ -59,7 +59,7 @@ async fn organization_ownership_neither_grants_nor_retains_workspace_authority()
         fixture.database.clone(),
         fixture.workspaces.clone(),
     )
-    .remove_workspace_member(&owner, &tool.workspace_id, user.user_id())
+    .remove_workspace_member(&owner, &tool.workspace_id, user.user_id(), &IfMatch::any())
     .await
     .unwrap();
     release.send(()).unwrap();
@@ -104,7 +104,12 @@ async fn workspace_membership_loss_at_the_enforcement_point_blocks_dispatch() {
         fixture.database.clone(),
         fixture.workspaces.clone(),
     )
-    .remove_workspace_member(&admin, &tool.workspace_id, tool.user.user_id())
+    .remove_workspace_member(
+        &admin,
+        &tool.workspace_id,
+        tool.user.user_id(),
+        &IfMatch::any(),
+    )
     .await
     .unwrap();
     release.send(()).unwrap();
@@ -164,7 +169,12 @@ async fn offboarding_ends_a_waiting_connection_and_rejoin_cannot_resume_it() {
         fixture.database.clone(),
         fixture.workspaces.clone(),
     )
-    .remove_workspace_member(&administrator, &tool.workspace_id, tool.user.user_id())
+    .remove_workspace_member(
+        &administrator,
+        &tool.workspace_id,
+        tool.user.user_id(),
+        &IfMatch::any(),
+    )
     .await
     .unwrap();
     fixture
@@ -248,7 +258,12 @@ async fn an_organization_downgrade_keeps_current_explicit_workspace_authority() 
     let organization = coral_workspace::OrganizationModule::new(fixture.database.clone());
     let administrator = organization_admin(&fixture).await;
     organization
-        .set_role(&administrator, owner.user_id(), 1, OrganizationRole::Owner)
+        .set_role(
+            &administrator,
+            owner.user_id(),
+            &IfMatch::any(),
+            OrganizationRole::Owner,
+        )
         .await
         .unwrap();
     let actor = AuthenticatedPrincipal::user(owner);
@@ -266,7 +281,7 @@ async fn an_organization_downgrade_keeps_current_explicit_workspace_authority() 
         .set_role(
             &administrator,
             tool.user.user_id(),
-            2,
+            &IfMatch::any(),
             OrganizationRole::Member,
         )
         .await
@@ -307,7 +322,7 @@ async fn user_disablement_cannot_be_undone_by_stale_login_or_administration() {
     let authority = coral_workspace::OrganizationModule::new(fixture.database.clone());
     let administrator = organization_admin(&fixture).await;
     authority
-        .set_enabled(&administrator, tool.user.user_id(), 1, false)
+        .set_enabled(&administrator, tool.user.user_id(), &IfMatch::any(), false)
         .await
         .unwrap();
     assert!(
@@ -317,10 +332,15 @@ async fn user_disablement_cannot_be_undone_by_stale_login_or_administration() {
             .unwrap()
             .enabled()
     );
-    for revision in [0, 1, u64::MAX] {
+    // The disablement left the Membership at its second version.
+    for stale in [
+        IfMatch::parse("1").unwrap(),
+        IfMatch::parse(&i64::MAX.to_string()).unwrap(),
+        IfMatch::token(uuid::Uuid::new_v4()),
+    ] {
         assert!(matches!(
             authority
-                .set_enabled(&administrator, tool.user.user_id(), revision, true)
+                .set_enabled(&administrator, tool.user.user_id(), &stale, true)
                 .await,
             Err(coral_workspace::Error::OrganizationAuthorityConflict)
         ));
@@ -328,7 +348,7 @@ async fn user_disablement_cannot_be_undone_by_stale_login_or_administration() {
     release.send(()).unwrap();
     wait_until(|| gate.failure_code.lock().unwrap().is_some()).await;
     authority
-        .set_enabled(&administrator, tool.user.user_id(), 2, true)
+        .set_enabled(&administrator, tool.user.user_id(), &IfMatch::any(), true)
         .await
         .unwrap();
     let terminal = wait_for_terminal(
@@ -397,7 +417,7 @@ async fn organization_loss_commits_while_permitted_upstream_work_is_blocked() {
     let administrator = organization_admin(&fixture).await;
     let changed = tokio::time::timeout(
         Duration::from_secs(2),
-        authority.set_enabled(&administrator, tool.user.user_id(), 1, false),
+        authority.set_enabled(&administrator, tool.user.user_id(), &IfMatch::any(), false),
     )
     .await;
     upstream.release();
@@ -406,7 +426,7 @@ async fn organization_loss_commits_while_permitted_upstream_work_is_blocked() {
         .unwrap();
     wait_until(|| gate.failure_code.lock().unwrap().is_some()).await;
     authority
-        .set_enabled(&administrator, tool.user.user_id(), 2, true)
+        .set_enabled(&administrator, tool.user.user_id(), &IfMatch::any(), true)
         .await
         .unwrap();
     let terminal = wait_for_terminal(
@@ -491,7 +511,7 @@ async fn provider_disablement_at_the_enforcement_point_blocks_dispatch() {
     wait_until(|| gate.entered()).await;
     fixture
         .providers
-        .disable_provider(&context, &workspace, provider.id())
+        .disable_provider(&context, &workspace, provider.id(), &IfMatch::any())
         .await
         .unwrap();
     release.send(()).unwrap();
@@ -600,6 +620,7 @@ async fn provider_disablement_and_deletion_after_the_enforcement_point_preserve_
                             &change(tool.user.clone(), 100, 'd'),
                             &tool.workspace_id.clone(),
                             &tool.provider_id,
+                            &IfMatch::any(),
                         )
                         .await
                         .expect("revoke Provider after enforcement");
@@ -611,6 +632,7 @@ async fn provider_disablement_and_deletion_after_the_enforcement_point_preserve_
                             &change(tool.user.clone(), 100, 'e'),
                             &tool.workspace_id,
                             &tool.provider_id,
+                            &IfMatch::any(),
                         )
                         .await
                         .expect("remove Provider after enforcement")
@@ -761,7 +783,11 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
             EnforcementRace::Workspace => {
                 fixture
                     .workspaces
-                    .archive(&change(tool.user.clone(), 100, 'a'), &tool.workspace_id)
+                    .archive(
+                        &change(tool.user.clone(), 100, 'a'),
+                        &tool.workspace_id,
+                        &IfMatch::any(),
+                    )
                     .await
                     .expect("archive before enforcement");
             }
@@ -772,6 +798,7 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
                         &change(tool.user.clone(), 100, 'c'),
                         &tool.workspace_id.clone(),
                         &tool.provider_id,
+                        &IfMatch::any(),
                     )
                     .await
                     .expect("revoke Provider before enforcement");
@@ -783,6 +810,7 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
                         &change(tool.user.clone(), 100, 'd'),
                         &tool.workspace_id,
                         &tool.provider_id,
+                        &IfMatch::any(),
                     )
                     .await
                     .expect("remove Provider before enforcement")
@@ -914,6 +942,7 @@ async fn dispatches_the_resolved_generation_after_regeneration_at(point: GatePoi
         .providers
         .regenerate_provider(
             &change(tool.user.clone(), 101, 'f'),
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse("00000000-0000-4000-8000-000000000058")
                     .expect("request id"),
@@ -1282,7 +1311,7 @@ async fn enforcement_checks_of_two_runs_share_their_locks_and_an_authority_write
     let provider_id = tool.provider_id.clone();
     let mut writer = tokio::spawn(async move {
         providers
-            .disable_provider(&context, &workspace_id, &provider_id)
+            .disable_provider(&context, &workspace_id, &provider_id, &IfMatch::any())
             .await
     });
     assert!(
@@ -1474,7 +1503,7 @@ async fn the_precheck_and_the_enforcement_point_reach_the_same_decision_on_the_s
         .unwrap();
     fixture
         .workspaces
-        .archive(&context, &tool.workspace_id)
+        .archive(&context, &tool.workspace_id, &IfMatch::any())
         .await
         .unwrap();
     let (precheck, enforced) = decide_twice(

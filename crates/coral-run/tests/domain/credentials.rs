@@ -329,6 +329,7 @@ impl PublicClientAccount {
             .providers
             .regenerate_provider(
                 &context,
+                &IfMatch::any(),
                 ProviderRegenerationRequest::new(
                     ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                     owner.clone(),
@@ -681,7 +682,12 @@ async fn a_token_renewed_during_the_enforcement_check_is_the_one_dispatched() {
     assert_eq!(
         account
             .accounts
-            .credentials(owner, &account.tool.provider_id, &evidence, far_future)
+            .credentials(
+                owner,
+                &account.tool.provider_id,
+                &evidence,
+                coral_db::UnixNanos::new(far_future)
+            )
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -1148,6 +1154,7 @@ async fn agent_caller_dispatch_uses_only_preprovisioned_credentials_without_inte
                 .providers
                 .regenerate_provider(
                     &context,
+                    &IfMatch::any(),
                     ProviderRegenerationRequest::new(
                         ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                         scope.clone(),

@@ -1,9 +1,10 @@
 //! The Built-in Provider: one per Workspace at `coral`. Each of its
 //! Tools is discoverable and callable by the Principals whose authority
 //! permits the Workspace action it declares.
+use coral_db::UnixNanos;
 use coral_workspace::{
-    AgentDisplayName, AuthenticatedPrincipal, OrganizationRole, WorkspaceAction,
-    WorkspaceDisplayName, WorkspaceId, WorkspaceRole,
+    AgentDisplayName, AuthenticatedPrincipal, IfMatch, OrganizationRole, RequestId,
+    WorkspaceAction, WorkspaceDisplayName, WorkspaceId, WorkspaceRole,
 };
 
 use coral_catalog::{AuthenticationKind, BuiltinCatalog, ToolHints};
@@ -92,7 +93,11 @@ async fn each_builtin_tool_reaches_the_principals_its_workspace_action_permits()
                 .resolve_invocation_tool_in_transaction(
                     &mut transaction,
                     workspace,
-                    crate::InvocationCaller::new(&arranged.workspaces, &principal, 13),
+                    crate::InvocationCaller::new(
+                        &arranged.workspaces,
+                        &principal,
+                        UnixNanos::new(13),
+                    ),
                     &format!("coral.{key}"),
                 )
                 .await
@@ -336,13 +341,15 @@ async fn an_owner_can_only_disable_and_restore_the_providers_coral_defines() {
         .chain(refused.map(|change| (&private, change)))
     {
         let before = events().await.len();
-        let context = context.clone().with_etag(&provider.etag()).unwrap();
+        // The etag is current, so the refusal is the Call Root's.
+        let read = provider.if_match();
         let result = match change {
             BuiltinChange::Rename => providers
                 .rename_provider(
                     &context,
                     workspace.id(),
                     provider.id(),
+                    &read,
                     ProviderDisplayName::parse("Renamed").unwrap(),
                 )
                 .await
@@ -352,6 +359,7 @@ async fn an_owner_can_only_disable_and_restore_the_providers_coral_defines() {
                     &context,
                     workspace.id(),
                     provider.id(),
+                    &read,
                     Some(crate::ProviderIcon::parse(b"<svg/>".to_vec()).unwrap()),
                 )
                 .await
@@ -363,6 +371,7 @@ async fn an_owner_can_only_disable_and_restore_the_providers_coral_defines() {
             BuiltinChange::Regenerate => providers
                 .prepare_regeneration(
                     &context,
+                    &read,
                     ProviderRegenerationRequest::new(
                         ManagementRequestId::parse("15000000-0000-4000-8000-000000000611").unwrap(),
                         workspace.id().clone(),
@@ -396,7 +405,7 @@ async fn an_owner_can_only_disable_and_restore_the_providers_coral_defines() {
                     .await
             }
             BuiltinChange::Delete => providers
-                .delete_provider(&context, workspace.id(), provider.id())
+                .delete_provider(&context, workspace.id(), provider.id(), &read)
                 .await
                 .map(drop),
         };
@@ -430,22 +439,20 @@ async fn an_owner_can_only_disable_and_restore_the_providers_coral_defines() {
         let before = events().await.len();
         let disabled = providers
             .disable_provider(
-                &change_context(owner.clone(), at, '2')
-                    .with_etag(&provider.etag())
-                    .unwrap(),
+                &change_context(owner.clone(), at, '2'),
                 workspace.id(),
                 provider.id(),
+                &provider.if_match(),
             )
             .await
             .unwrap();
         assert_eq!(disabled.state(), ProviderState::Disabled);
         let restored = providers
             .restore_provider(
-                &change_context(owner.clone(), at + 10, '3')
-                    .with_etag(&disabled.etag())
-                    .unwrap(),
+                &change_context(owner.clone(), at + 10, '3'),
                 workspace.id(),
                 provider.id(),
+                &disabled.if_match(),
             )
             .await
             .unwrap();
@@ -612,7 +619,7 @@ impl BuiltinWorkspace {
         let mut updated = Vec::new();
         for outdated in process.outdated_builtin_generations().await.unwrap() {
             if process
-                .update_builtin_catalog(&outdated, at)
+                .update_builtin_catalog(&outdated, UnixNanos::new(at))
                 .await
                 .unwrap()
                 .skip_search()
@@ -633,7 +640,7 @@ impl BuiltinWorkspace {
             .resolve_invocation_tool_in_transaction(
                 &mut transaction,
                 self.workspace.id(),
-                crate::InvocationCaller::new(&self.workspaces, &owner, at),
+                crate::InvocationCaller::new(&self.workspaces, &owner, UnixNanos::new(at)),
                 call_path,
             )
             .await
@@ -673,6 +680,7 @@ impl BuiltinWorkspace {
             .workspaces
             .create_agent(
                 &change_context(self.owner.clone(), at, '3'),
+                &RequestId::generate(),
                 self.workspace.id(),
                 AgentDisplayName::parse("Worker").unwrap(),
                 None,
@@ -737,9 +745,10 @@ async fn each_boot_moves_the_builtin_provider_to_the_booting_catalog_once() {
                 arranged
                     .providers
                     .disable_provider(
-                        &context.clone().with_etag(&arranged.builtin.etag()).unwrap(),
+                        &context,
                         arranged.workspace.id(),
                         arranged.builtin.id(),
+                        &arranged.builtin.if_match(),
                     )
                     .await
                     .unwrap();
@@ -747,7 +756,7 @@ async fn each_boot_moves_the_builtin_provider_to_the_booting_catalog_once() {
             Arranged::Archived => {
                 arranged
                     .workspaces
-                    .archive(&context, arranged.workspace.id())
+                    .archive(&context, arranged.workspace.id(), &IfMatch::any())
                     .await
                     .unwrap();
             }
@@ -822,7 +831,10 @@ async fn two_processes_that_boot_together_activate_one_generation() {
         async move { process.update_builtin_catalog(&outdated, at).await.unwrap() }
     };
 
-    let (left, right) = tokio::join!(update(&first, 20), update(&second, 21),);
+    let (left, right) = tokio::join!(
+        update(&first, UnixNanos::new(20)),
+        update(&second, UnixNanos::new(21)),
+    );
 
     // The winner tells search to read its Generation and drop the outdated
     // one; the process that found it replaced tells search nothing.
@@ -868,11 +880,10 @@ async fn published_providers_lists_every_provider_in_creation_order() {
     arranged
         .providers
         .disable_provider(
-            &change_context(arranged.owner.clone(), 17, '4')
-                .with_etag(&weather.etag())
-                .unwrap(),
+            &change_context(arranged.owner.clone(), 17, '4'),
             workspace,
             weather.id(),
+            &weather.if_match(),
         )
         .await
         .unwrap();
@@ -1103,8 +1114,10 @@ type BootInstall = (
 /// What `process`'s boot at `at` installed. An install that lost a race
 /// reports no Provider, and it is left out.
 async fn boot_installs(process: &ProviderModule, at: i64) -> Vec<BootInstall> {
-    let installs: Vec<MissingCoralDefinedProvider> =
-        process.install_missing_coral_defined(at).await.unwrap();
+    let installs: Vec<MissingCoralDefinedProvider> = process
+        .install_missing_coral_defined(UnixNanos::new(at))
+        .await
+        .unwrap();
     installs
         .into_iter()
         .filter_map(|missing| {
@@ -1165,7 +1178,7 @@ async fn a_boot_installs_each_coral_defined_provider_only_where_a_workspace_has_
     );
     arranged
         .workspaces
-        .archive(&context, archived.id())
+        .archive(&context, archived.id(), &IfMatch::any())
         .await
         .unwrap();
     let events = async |workspace: &coral_workspace::Workspace| {

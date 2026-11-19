@@ -10,8 +10,7 @@ use coral_workspace::{
 };
 
 use crate::authoring::{
-    Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, now, tool_paths_overlap,
-    v8_compiler,
+    Authoring, PreparedAuthoredTool, Typing, missing_linked_tool, tool_paths_overlap, v8_compiler,
 };
 use crate::linking::LinkedToolReference;
 use crate::repository::{self, PrivateToolRecord};
@@ -47,6 +46,9 @@ pub struct PrivateToolModule {
     inspection: PrivateToolInspection,
     deletion: PrivateToolDeletion,
     authoring: Authoring,
+    /// Dates each check of the caller's authority and its recheck. The
+    /// inspection and the deletion this Module holds read the same clock.
+    clock: Arc<dyn coral_db::Clock>,
 }
 
 impl PrivateToolModule {
@@ -84,13 +86,34 @@ impl PrivateToolModule {
         compiler: Arc<dyn CompilerClient>,
         compilation_timeout: Duration,
     ) -> Self {
+        Self::over(
+            Authoring::new(database.clone(), v8_compiler(compiler), compilation_timeout),
+            database,
+            workspaces,
+        )
+    }
+
+    /// The Module over `authoring`, reading the host's clock.
+    fn over(authoring: Authoring, database: Arc<Database>, workspaces: WorkspaceModule) -> Self {
         Self {
             inspection: PrivateToolInspection::new(database.clone(), workspaces.clone()),
             deletion: PrivateToolDeletion::new(workspaces.clone()),
-            authoring: Authoring::new(database.clone(), v8_compiler(compiler), compilation_timeout),
+            authoring,
+            clock: Arc::new(coral_db::SystemClock),
             database,
             workspaces,
         }
+    }
+
+    /// Replaces the system clock, so that bootstrap gives the Module the
+    /// Coral Instance's one clock and a test drives time. The inspection and
+    /// the deletion this Module holds read `clock` too.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn coral_db::Clock>) -> Self {
+        self.inspection = self.inspection.with_clock(clock.clone());
+        self.deletion = self.deletion.with_clock(clock.clone());
+        self.clock = clock;
+        self
     }
 
     #[cfg(test)]
@@ -99,17 +122,15 @@ impl PrivateToolModule {
         workspaces: WorkspaceModule,
         compiler: Arc<dyn crate::authoring::AuthoredToolCompiler>,
     ) -> Self {
-        Self {
-            inspection: PrivateToolInspection::new(database.clone(), workspaces.clone()),
-            deletion: PrivateToolDeletion::new(workspaces.clone()),
-            authoring: Authoring::new(
+        Self::over(
+            Authoring::new(
                 database.clone(),
                 compiler,
                 coral_test_support::TEST_COMPILATION_TIMEOUT,
             ),
             database,
             workspaces,
-        }
+        )
     }
 
     /// Atomically creates or replaces the current definition at one owned path.
@@ -258,7 +279,7 @@ impl PrivateToolModule {
             revision,
             default_access_state,
         );
-        authority.require_current_at(now())?;
+        authority.require_current_at(self.clock.now())?;
         match previous.as_ref() {
             None => repository::insert_current(transaction, &tool).await?,
             Some(previous) => {
@@ -474,7 +495,7 @@ impl PrivateToolModule {
         workspace_id: &WorkspaceId,
     ) -> Result<(), Error> {
         self.workspaces
-            .check_authoring(actor, workspace_id, now())
+            .check_authoring(actor, workspace_id, self.clock.now())
             .await?;
         Ok(())
     }
@@ -486,7 +507,7 @@ impl PrivateToolModule {
         workspace_id: &WorkspaceId,
     ) -> Result<PrincipalWorkspaceEvidence, Error> {
         self.workspaces
-            .check_authoring_in_transaction(transaction, actor, workspace_id, now())
+            .check_authoring_in_transaction(transaction, actor, workspace_id, self.clock.now())
             .await
             .map_err(Into::into)
     }

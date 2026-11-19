@@ -12,7 +12,9 @@ use coral_catalog::{
     ToolAvailability, ToolKey,
 };
 pub(super) use coral_test_support::provision_user as organization_user;
-use coral_workspace::{AuthenticatedUser, OrganizationRole, WorkspaceDisplayName, WorkspaceModule};
+use coral_workspace::{
+    AuthenticatedUser, IfMatch, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
+};
 use tokio::sync::{Barrier, Notify};
 
 use crate::access::{CredentialRoute, ProviderNamespace};
@@ -376,6 +378,7 @@ async fn successful_regeneration_atomically_activates_current_material_and_retai
     let regeneration = providers
         .regenerate_provider(
             &change_context(fixture.owner.clone(), 50, '5'),
+            &IfMatch::any(),
             request.clone(),
         )
         .await
@@ -523,6 +526,7 @@ async fn regeneration_reuses_the_active_generation_only_for_an_unchanged_package
         let regeneration = providers
             .regenerate_provider(
                 &change_context(fixture.owner.clone(), 50, '5'),
+                &IfMatch::any(),
                 fixture.request(setup.id(), "14000000-0000-4000-8000-000000000029"),
             )
             .await
@@ -579,6 +583,7 @@ async fn regeneration_carries_active_collision_paths_and_releases_removed_claims
     providers
         .regenerate_provider(
             &change_context(fixture.owner.clone(), 50, '5'),
+            &IfMatch::any(),
             fixture.request(first_setup.id(), "14000000-0000-4000-8000-000000000032"),
         )
         .await
@@ -597,6 +602,7 @@ async fn regeneration_carries_active_collision_paths_and_releases_removed_claims
     providers
         .regenerate_provider(
             &change_context(fixture.owner.clone(), 70, '7'),
+            &IfMatch::any(),
             fixture.request(
                 replacement_setup.id(),
                 "14000000-0000-4000-8000-000000000033",
@@ -626,6 +632,7 @@ async fn regeneration_carries_active_collision_paths_and_releases_removed_claims
     providers
         .regenerate_provider(
             &change_context(fixture.owner.clone(), 90, '9'),
+            &IfMatch::any(),
             fixture.request(removal_setup.id(), "14000000-0000-4000-8000-000000000034"),
         )
         .await
@@ -662,6 +669,7 @@ async fn failed_regeneration_consumes_setup_and_leaves_active_material_and_provi
     let failed = providers
         .regenerate_provider(
             &change_context(fixture.owner.clone(), 50, '5'),
+            &IfMatch::any(),
             request.clone(),
         )
         .await
@@ -712,7 +720,11 @@ async fn failed_regeneration_consumes_setup_and_leaves_active_material_and_provi
     );
     assert_eq!(
         providers
-            .regenerate_provider(&change_context(fixture.owner.clone(), 60, '6'), request)
+            .regenerate_provider(
+                &change_context(fixture.owner.clone(), 60, '6'),
+                &IfMatch::any(),
+                request
+            )
             .await
             .expect("replay failed regeneration")
             .skip_search(),
@@ -764,7 +776,7 @@ async fn regeneration_materialization_holds_no_transaction_and_preserves_indepen
         let request = request.clone();
         tokio::spawn(async move {
             providers
-                .regenerate_provider(&change_context(owner, 50, '5'), request)
+                .regenerate_provider(&change_context(owner, 50, '5'), &IfMatch::any(), request)
                 .await
                 .map(crate::Committed::skip_search)
         })
@@ -853,7 +865,7 @@ async fn active_generation_race_records_no_outcome_and_leaves_setup_reusable() {
         let request = raced_request.clone();
         tokio::spawn(async move {
             providers
-                .regenerate_provider(&change_context(owner, 50, '5'), request)
+                .regenerate_provider(&change_context(owner, 50, '5'), &IfMatch::any(), request)
                 .await
         })
     };
@@ -865,6 +877,7 @@ async fn active_generation_race_records_no_outcome_and_leaves_setup_reusable() {
     default_providers
         .regenerate_provider(
             &change_context(fixture.owner.clone(), 70, '7'),
+            &IfMatch::any(),
             fixture.request(winning_setup.id(), "14000000-0000-4000-8000-000000000021"),
         )
         .await
@@ -903,6 +916,7 @@ async fn active_generation_race_records_no_outcome_and_leaves_setup_reusable() {
     let retried = raced_providers
         .regenerate_provider(
             &change_context(fixture.owner.clone(), 80, '8'),
+            &IfMatch::any(),
             raced_request,
         )
         .await
@@ -957,6 +971,7 @@ async fn regeneration_request_id_reuse_returns_conflict_without_changing_state()
     providers
         .regenerate_provider(
             &change_context(fixture.owner.clone(), 60, '6'),
+            &IfMatch::any(),
             fixture.request(first_setup.id(), request_id),
         )
         .await
@@ -967,6 +982,7 @@ async fn regeneration_request_id_reuse_returns_conflict_without_changing_state()
         providers
             .regenerate_provider(
                 &change_context(fixture.owner.clone(), 70, '7'),
+                &IfMatch::any(),
                 fixture.request(conflicting_setup.id(), request_id),
             )
             .await,
@@ -993,6 +1009,7 @@ async fn regeneration_request_id_reuse_returns_conflict_without_changing_state()
     let independent = providers
         .regenerate_provider(
             &change_context(other_fixture.owner.clone(), 80, '8'),
+            &IfMatch::any(),
             other_fixture.request(cross_owner_setup.id(), request_id),
         )
         .await
@@ -1120,7 +1137,11 @@ async fn archived_workspace_permits_exact_replay_and_safe_inspection() {
         .id()
         .clone();
     workspaces
-        .archive(&change_context(owner.clone(), 44, '8'), workspace.id())
+        .archive(
+            &change_context(owner.clone(), 44, '8'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .expect("archive Workspace");
     let before = providers
@@ -1782,7 +1803,11 @@ fn spawn_regeneration(
 ) -> tokio::task::JoinHandle<Result<crate::ProviderRegenerationPublication, crate::Error>> {
     tokio::spawn(async move {
         providers
-            .regenerate_provider(&change_context(owner, at, trace_digit), request)
+            .regenerate_provider(
+                &change_context(owner, at, trace_digit),
+                &IfMatch::any(),
+                request,
+            )
             .await
             .map(crate::Committed::skip_search)
     })
@@ -1908,7 +1933,7 @@ async fn provider_authority_ignores_a_disabled_users_retained_workspace_role() {
         .set_enabled(
             &change_context(administrator, 2, '2'),
             owner.user_id(),
-            1,
+            &IfMatch::any(),
             false,
         )
         .await
@@ -1942,6 +1967,10 @@ async fn provider_authority_ignores_a_disabled_users_retained_workspace_role() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Publication is followed through its publisher's disablement and restoration"
+)]
 async fn final_commit_refreshes_the_publishers_organization_membership() {
     let (fixture, database, workspaces) = test_foundation().await;
     let creator = organization_user(
@@ -2006,7 +2035,12 @@ async fn final_commit_refreshes_the_publishers_organization_membership() {
     };
     materializer.held().await;
     organization
-        .set_enabled(&administrator, organization_owner.user_id(), 1, false)
+        .set_enabled(
+            &administrator,
+            organization_owner.user_id(),
+            &IfMatch::any(),
+            false,
+        )
         .await
         .unwrap();
     materializer.release();
@@ -2020,7 +2054,12 @@ async fn final_commit_refreshes_the_publishers_organization_membership() {
         crate::Error::Workspace(coral_workspace::Error::WorkspaceNotFound)
     ));
     organization
-        .set_enabled(&administrator, organization_owner.user_id(), 2, true)
+        .set_enabled(
+            &administrator,
+            organization_owner.user_id(),
+            &IfMatch::any(),
+            true,
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -2040,6 +2079,10 @@ async fn final_commit_refreshes_the_publishers_organization_membership() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one Publication is followed through an archive during materialization and a retry"
+)]
 async fn materialization_holds_no_transaction_and_final_commit_rechecks_workspace() {
     let (fixture, database, workspaces) = test_foundation().await;
     let default_providers = ProviderModule::with_running_catalog(
@@ -2096,7 +2139,11 @@ async fn materialization_holds_no_transaction_and_final_commit_rechecks_workspac
 
     let archived = tokio::time::timeout(
         std::time::Duration::from_secs(2),
-        workspaces.archive(&change_context(owner.clone(), 530, '9'), workspace.id()),
+        workspaces.archive(
+            &change_context(owner.clone(), 530, '9'),
+            workspace.id(),
+            &IfMatch::any(),
+        ),
     )
     .await;
     if archived.is_err() {
@@ -2117,7 +2164,11 @@ async fn materialization_holds_no_transaction_and_final_commit_rechecks_workspac
     ));
 
     workspaces
-        .restore(&change_context(owner.clone(), 540, 'a'), workspace.id())
+        .restore(
+            &change_context(owner.clone(), 540, 'a'),
+            workspace.id(),
+            &IfMatch::any(),
+        )
         .await
         .expect("restore Workspace");
     assert!(matches!(
@@ -2351,7 +2402,7 @@ async fn interrupted_publications_leave_no_outcome_or_replay_the_committed_one()
                             (terminal.id().clone(), terminal.outcome())
                         }),
                     Regeneration => providers
-                        .regenerate_provider(&context, regeneration)
+                        .regenerate_provider(&context, &IfMatch::any(), regeneration)
                         .await
                         .map(|terminal| {
                             let terminal = terminal.skip_search();
@@ -2425,6 +2476,7 @@ async fn interrupted_publications_leave_no_outcome_or_replay_the_committed_one()
             providers
                 .regenerate_provider(
                     &change_context(fixture.owner.clone(), 80, '8'),
+                    &IfMatch::any(),
                     fixture.request(later.id(), "14000000-0000-4000-8000-000000000042"),
                 )
                 .await

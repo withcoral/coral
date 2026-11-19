@@ -104,13 +104,13 @@ fn a_page_is_measured_as_its_encoded_result() {
             let (value, block) = projected(output_value(value, "urn:coral:output:run:2", index));
             let event = Event::Emitted {
                 sequence: sequence.to_string(),
-                occurred_at: timestamp(0),
+                occurred_at: timestamp(UnixNanos::new(0)),
                 value,
             };
             projected(events.push(event, block));
             let log = Event::Logged {
                 sequence: sequence.to_string(),
-                occurred_at: timestamp(0),
+                occurred_at: timestamp(UnixNanos::new(0)),
                 level: LogLevel::Warn,
                 message: "a \"quoted\" log\\\n",
             };

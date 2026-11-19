@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{Error, LifecycleAction, LifecycleOutcome, ProviderId};
 use coral_catalog::{AuthenticationConfiguration, ProviderCredentialContract};
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::WorkspaceId;
 use coral_workspace::{AuthoritySource, ChangeContext};
 use uuid::Uuid;
@@ -24,7 +24,7 @@ pub(super) struct AuthorizedAccount<'a> {
     pub(super) secret_references: Option<&'a str>,
     pub(super) granted_scope: &'a str,
     /// When the sealed access token expires, recorded beside the material.
-    pub(super) token_expires_at_unix_nanos: Option<i64>,
+    pub(super) token_expires_at: Option<UnixNanos>,
 }
 
 /// Publication joins this facet after validating the exact provisional grant.
@@ -195,7 +195,7 @@ impl AccountModule {
             ciphertext: &ciphertext,
             secret_references: secret_references.as_deref(),
             granted_scope: row.granted_scope.as_deref().unwrap_or_default(),
-            token_expires_at_unix_nanos: material.token_expires_at_unix_nanos(),
+            token_expires_at: material.token_expires_at(),
         };
         if repository::connect_account(
             &mut tx,

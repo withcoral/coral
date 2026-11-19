@@ -14,8 +14,8 @@ use tonic::transport::server::TcpIncoming;
 use zeroize::Zeroizing;
 
 use super::engine::{
-    BootedEngine, CredentialParts, Engine, EngineParts, LocalChildren, RunExecutorLink,
-    RunExecutorParts, SearchParts, UsageReporting,
+    BootedEngine, CredentialParts, Engine, EngineParts, LicenseRecheck, LocalChildren,
+    RunExecutorLink, RunExecutorParts, SearchParts, UsageReporting,
 };
 use super::env::AppEnvironment;
 use super::error::AppError;
@@ -386,6 +386,7 @@ impl PreparedServerBuilder {
         } = self;
         let launcher = builder.launcher;
         let clock = launcher.clock();
+        let license_notices = apply_license(&deployment_config, &launcher, clock.as_ref())?;
         let policy = deployment_config.outbound_policy(builder.outbound_defaults);
         let vault = open_credential_vault(
             deployment_config.credential_key_env(),
@@ -432,6 +433,7 @@ impl PreparedServerBuilder {
             &instance.to_string(),
             launcher.service_version,
         )?;
+        trace_license_notices(&license_notices);
         tracing::info!(
             coral.edition = safe::kind(launcher.extensions.edition.current().as_str()),
             "Coral Instance starting"
@@ -473,6 +475,8 @@ impl PreparedServerBuilder {
                 clock: clock.clone(),
                 run_executors,
                 held_authorization_server: None,
+                license_notices,
+                edition: launcher.extensions.edition.clone(),
             },
             authorization_server,
             workspace_authentication,
@@ -504,6 +508,10 @@ pub(crate) struct PrivateListeners {
     clock: Arc<dyn coral_db::Clock>,
     run_executors: RunExecutorLink,
     held_authorization_server: Option<Box<CoralAuthorizationServer>>,
+    /// What startup made of the configured License, for the launcher to show.
+    license_notices: Vec<coral_edition::LicenseNotice>,
+    /// The Edition source, which the License recheck asks.
+    edition: coral_edition::EditionCheck,
 }
 
 impl PrivateListeners {
@@ -524,7 +532,11 @@ impl PrivateListeners {
     pub(crate) async fn serve(self, engine: BootedEngine) -> Result<RunningServer, AppError> {
         let listener = TcpListener::bind(self.grpc_bind).await?;
         let local_addr = listener.local_addr()?;
-        let engine = engine.run();
+        let (lapse, license_lapse) = watch::channel(None);
+        let engine = engine.run(LicenseRecheck {
+            edition: self.edition,
+            lapse,
+        });
         let mcp_origin = Arc::new(std::sync::OnceLock::new());
         // One stop signal for both listeners and the streams they serve.
         let (stop, stopping) = watch::channel(false);
@@ -553,6 +565,8 @@ impl PrivateListeners {
             endpoint_uri: format!("http://{local_addr}"),
             local_addr,
             authorization_server: self.held_authorization_server,
+            license_notices: self.license_notices,
+            license_lapse,
             shutdown_tx: Mutex::new(Some(shutdown_tx)),
             task_finished,
             task: Mutex::new(Some(task)),
@@ -609,7 +623,7 @@ async fn private_authentication(
     coral_workspace::OrganizationModule::new(database.clone())
         .provision_login(&coral_workspace::ChangeContext::new(
             coral_workspace::local_organization_owner(),
-            coral_db::UnixNanos::new(0),
+            clock.now(),
             coral_workspace::TraceId::current_or_new(),
         ))
         .await
@@ -636,6 +650,45 @@ fn build_authorization_server(
             .into_authorization_server(policy, Arc::clone(coral_db), Arc::clone(clock))?
             .with_readiness(readiness.clone()),
     ))
+}
+
+/// Hands the configured License to the launching binary's Edition source,
+/// once, and returns what to log about it once telemetry starts. A License
+/// Coral must not start with refuses the start.
+///
+/// The clock is read once. Only an Evaluation License is decided with it
+/// (ADR 0038).
+fn apply_license(
+    deployment_config: &DeploymentConfig,
+    launcher: &Launcher,
+    clock: &dyn coral_db::Clock,
+) -> Result<Vec<coral_edition::LicenseNotice>, AppError> {
+    let license = deployment_config.license(&AppEnvironment::required_env_var)?;
+    launcher
+        .extensions
+        .edition
+        .apply_license(license.as_ref(), utc_date(clock))
+        .map_err(|refusal| AppError::config("license", refusal.to_string()))
+}
+
+/// Today's UTC date, as `clock` reads it.
+pub(crate) fn utc_date(clock: &dyn coral_db::Clock) -> chrono::NaiveDate {
+    chrono::DateTime::from_timestamp_nanos(clock.now().get()).date_naive()
+}
+
+/// Records each License notice on the host. Its text names the customer, so
+/// it stays in a `coral.local.*` field that never leaves the host.
+fn trace_license_notices(notices: &[coral_edition::LicenseNotice]) {
+    for notice in notices {
+        match notice.level {
+            coral_edition::NoticeLevel::Info => {
+                tracing::info!(coral.local.license = %notice.message, "License applied");
+            }
+            coral_edition::NoticeLevel::Warning => {
+                tracing::warn!(coral.local.license = %notice.message, "License needs attention");
+            }
+        }
+    }
 }
 
 fn init_server_telemetry(
@@ -723,6 +776,9 @@ pub struct RunningServer {
     endpoint_uri: String,
     local_addr: SocketAddr,
     authorization_server: Option<Box<CoralAuthorizationServer>>,
+    license_notices: Vec<coral_edition::LicenseNotice>,
+    /// Why the License recheck stopped Coral, once it has.
+    license_lapse: watch::Receiver<Option<coral_edition::LicenseRefusal>>,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
     task_finished: watch::Receiver<bool>,
     task: Mutex<Option<JoinHandle<Result<(), tonic::transport::Error>>>>,
@@ -739,6 +795,13 @@ impl RunningServer {
     /// listener whose lifecycle they control.
     pub fn endpoint_uri(&self) -> &str {
         &self.endpoint_uri
+    }
+
+    /// What startup made of the configured License, for the launcher to
+    /// show the operator. Exported telemetry carries none of this text.
+    #[must_use]
+    pub fn license_notices(&self) -> &[coral_edition::LicenseNotice] {
+        &self.license_notices
     }
 
     /// Returns the address bound by this server.
@@ -780,9 +843,22 @@ impl RunningServer {
     /// consume the task result, or release server resources. Call
     /// [`RunningServer::shutdown`] afterward to join the task, surface errors,
     /// and complete cleanup.
+    /// It also completes when the License recheck finds that Coral must
+    /// stop; [`Self::license_lapse`] then says why.
     pub async fn wait_for_exit(&self) {
         let mut task_finished = self.task_finished.clone();
-        let _finished = task_finished.wait_for(|finished| *finished).await;
+        let mut license_lapse = self.license_lapse.clone();
+        tokio::select! {
+            _finished = task_finished.wait_for(|finished| *finished) => {}
+            _lapsed = license_lapse.wait_for(Option::is_some) => {}
+        }
+    }
+
+    /// Why the License recheck stopped Coral, if it has. The launcher shuts
+    /// the server down and exits with this as its error.
+    #[must_use]
+    pub fn license_lapse(&self) -> Option<coral_edition::LicenseRefusal> {
+        self.license_lapse.borrow().clone()
     }
 
     /// Shuts the server down and waits for the background task to finish,
@@ -952,6 +1028,30 @@ mod tests {
             );
         }
         assert_eq!(std::fs::read(&damaged).unwrap(), [7_u8; 8]);
+    }
+
+    // Catches: the login dated by a fixed zero, which records the local
+    // Organization Owner as created on 1 January 1970.
+    #[tokio::test]
+    async fn the_local_owners_login_is_dated_by_the_launchs_clock() {
+        let fixture = coral_test_support::TestDatabase::new(coral_db::migration_plan())
+            .await
+            .expect("apply current migrations");
+        let started = coral_db::UnixNanos::new(4_102_444_800_000_000_000);
+        let clock = coral_test_support::ManualClock::starting_at(started);
+
+        private_authentication(None, &fixture.database(), std::sync::Arc::new(clock))
+            .await
+            .expect("provision the local login");
+
+        let events = coral_workspace::OrganizationModule::new(fixture.database())
+            .list_lifecycle_events(&coral_workspace::local_organization_owner())
+            .await
+            .expect("the local Owner reads the Organization's events");
+        assert!(!events.is_empty(), "the login records an event");
+        for event in &events {
+            assert_eq!(event.occurred_at, started, "{event:?}");
+        }
     }
 
     /// Catches: a start that says only that the local authority failed, with

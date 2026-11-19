@@ -1,5 +1,6 @@
 //! Current-catalog Update and borrowed runtime authorization through the Account interface.
 use super::*;
+use coral_db::UnixNanos;
 
 #[tokio::test]
 #[expect(
@@ -96,7 +97,7 @@ async fn current_mcp_catalog_can_change_application_and_complete_fresh_discovery
     assert!(confirmed.errors.is_empty(), "{:?}", confirmed.errors);
     let inspected = h
         .providers
-        .inspect_setup(&actor, owner, update.id(), 11)
+        .inspect_setup(&actor, owner, update.id(), UnixNanos::new(11))
         .await
         .unwrap();
     assert_eq!(
@@ -157,6 +158,7 @@ async fn current_mcp_catalog_can_change_application_and_complete_fresh_discovery
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             crate::ProviderRegenerationRequest::new(
                 crate::account_tests::authorization_request(),
                 owner.clone(),
@@ -286,7 +288,7 @@ async fn authenticated_update_renews_expired_borrowed_material_without_reconnect
     assert_eq!(ready.state(), ProviderSetupState::Ready);
     assert!(
         !h.providers
-            .setup_authentication(&actor, owner, update.id(), 2 * HOUR + 1)
+            .setup_authentication(&actor, owner, update.id(), UnixNanos::new(2 * HOUR + 1))
             .await
             .unwrap()
             .authorized

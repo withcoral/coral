@@ -6,8 +6,9 @@ use coral_catalog::{
     CatalogSearchTarget, MaterializedTool, ProviderGenerationId, ProviderSetupInputDigest,
     ProviderSetupInputKind,
 };
+use coral_db::UnixNanos;
 use coral_telemetry::TraceId;
-use coral_workspace::{AuthoritySource, UserId};
+use coral_workspace::{AuthoritySource, IfMatch, UserId};
 use uuid::Uuid;
 
 use crate::access::{ProviderAccess, ProviderCallRoot};
@@ -161,9 +162,9 @@ pub struct ProviderSetup {
     input_kind: ProviderSetupInputKind,
     input_digest: Option<ProviderSetupInputDigest>,
     state: ProviderSetupState,
-    created_at_unix_nanos: i64,
+    created_at: UnixNanos,
     input_url: Option<String>,
-    expires_at_unix_nanos: i64,
+    expires_at: UnixNanos,
     request: Option<SetupRequest>,
 }
 
@@ -178,8 +179,8 @@ pub struct SetupRequest {
 }
 
 impl ProviderSetup {
-    /// `created_at_unix_nanos` is when the Setup was created, and
-    /// `expires_at_unix_nanos`, the later of the two times, is its host
+    /// `created_at` is when the Setup was created, and
+    /// `expires_at`, the later of the two times, is its host
     /// deadline. Creation stores both, and neither changes afterwards.
     pub(crate) const fn new(
         id: ProviderSetupId,
@@ -187,8 +188,8 @@ impl ProviderSetup {
         input_kind: ProviderSetupInputKind,
         input_digest: Option<ProviderSetupInputDigest>,
         state: ProviderSetupState,
-        created_at_unix_nanos: i64,
-        expires_at_unix_nanos: i64,
+        created_at: UnixNanos,
+        expires_at: UnixNanos,
     ) -> Self {
         Self {
             id,
@@ -196,9 +197,9 @@ impl ProviderSetup {
             input_kind,
             input_digest,
             state,
-            created_at_unix_nanos,
+            created_at,
             input_url: None,
-            expires_at_unix_nanos,
+            expires_at,
             request: None,
         }
     }
@@ -227,15 +228,15 @@ impl ProviderSetup {
 
     /// Returns the Setup's host deadline, stored once when the Setup is created.
     #[must_use]
-    pub const fn expires_at_unix_nanos(&self) -> i64 {
-        self.expires_at_unix_nanos
+    pub const fn expires_at(&self) -> UnixNanos {
+        self.expires_at
     }
 
     /// Whether `now` is at or past the Setup's host deadline. Ask here
     /// instead of adding the Setup lifetime to the creation time again.
     #[must_use]
-    pub const fn is_past_deadline(&self, now: i64) -> bool {
-        now >= self.expires_at_unix_nanos
+    pub fn is_past_deadline(&self, now: UnixNanos) -> bool {
+        now >= self.expires_at
     }
 
     /// Returns the stable Setup identity.
@@ -270,8 +271,8 @@ impl ProviderSetup {
 
     /// Returns when the Setup was accepted.
     #[must_use]
-    pub const fn created_at_unix_nanos(&self) -> i64 {
-        self.created_at_unix_nanos
+    pub const fn created_at(&self) -> UnixNanos {
+        self.created_at
     }
 }
 
@@ -376,8 +377,23 @@ impl Provider {
     pub fn etag(&self) -> String {
         self.id().etag(self.version)
     }
-    pub(crate) fn check_etag(&self, context: &coral_workspace::ChangeContext) -> Result<(), Error> {
-        check_etag(context.expected_etag(), &self.etag())
+    /// The precondition that the Provider is as it is here, for a caller
+    /// inside the process that changes the Provider it just read.
+    #[must_use]
+    pub fn if_match(&self) -> IfMatch {
+        IfMatch::token(self.id().etag_token(self.version))
+    }
+    /// Checks the etag a caller read against the Provider as it is now.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::EtagMismatch`] for a Provider that changed since.
+    pub(crate) fn admit(&self, if_match: &IfMatch) -> Result<(), Error> {
+        if if_match.admits_token(&self.id().etag_token(self.version)) {
+            Ok(())
+        } else {
+            Err(Error::EtagMismatch)
+        }
     }
     /// Immutable Provider identity.
     #[must_use]
@@ -435,22 +451,14 @@ impl Provider {
     }
 }
 impl ProviderId {
+    /// The etag of the Provider at `version`, as an Adapter shows it.
     pub(crate) fn etag(&self, version: i64) -> String {
-        resource_etag(&self.0, version)
+        self.etag_token(version).hyphenated().to_string()
     }
-}
-/// Derives a deterministic, non-authorizing UUID token from one identity and version.
-pub(crate) fn resource_etag(id: &Uuid, version: i64) -> String {
-    Uuid::new_v5(id, version.to_string().as_bytes())
-        .hyphenated()
-        .to_string()
-}
-
-/// Applies an explicit etag precondition when one is present.
-pub(crate) fn check_etag(expected: Option<&str>, current: &str) -> Result<(), Error> {
-    match expected {
-        Some(expected) if expected != current => Err(Error::EtagMismatch),
-        _ => Ok(()),
+    /// The etag of the Provider at `version`: a deterministic,
+    /// non-authorizing UUID derived from the identity and the version.
+    fn etag_token(&self, version: i64) -> Uuid {
+        Uuid::new_v5(&self.0, version.to_string().as_bytes())
     }
 }
 
@@ -824,7 +832,7 @@ pub struct AdministrativeLifecycleEvent {
     target_id: String,
     outcome: LifecycleOutcome,
     changed_field_paths: Vec<String>,
-    occurred_at_unix_nanos: i64,
+    occurred_at: UnixNanos,
     trace_id: TraceId,
 }
 
@@ -840,7 +848,7 @@ impl AdministrativeLifecycleEvent {
         target_id: String,
         outcome: LifecycleOutcome,
         changed_field_paths: Vec<String>,
-        occurred_at_unix_nanos: i64,
+        occurred_at: UnixNanos,
         trace_id: TraceId,
     ) -> Self {
         Self {
@@ -850,7 +858,7 @@ impl AdministrativeLifecycleEvent {
             target_id,
             outcome,
             changed_field_paths,
-            occurred_at_unix_nanos,
+            occurred_at,
             trace_id,
         }
     }
@@ -893,8 +901,8 @@ impl AdministrativeLifecycleEvent {
 
     /// Returns when the change committed.
     #[must_use]
-    pub const fn occurred_at_unix_nanos(&self) -> i64 {
-        self.occurred_at_unix_nanos
+    pub const fn occurred_at(&self) -> UnixNanos {
+        self.occurred_at
     }
 
     /// Returns safe trace correlation evidence.

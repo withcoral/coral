@@ -11,7 +11,7 @@ use crate::{
     Error, LifecycleAction, LifecycleOutcome, ProviderId, repository as provider_repository,
 };
 use coral_catalog::ProviderCredentialContract;
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::{AuthoritySource, ChangeContext, Principal, PrincipalKind, UserId};
 use uuid::Uuid;
 
@@ -48,8 +48,8 @@ pub struct ConnectionRequest {
     pub provider_id: ProviderId,
     /// Current durable state.
     pub state: ConnectionState,
-    /// Independent host deadline in Unix nanoseconds.
-    pub expires_at_unix_nanos: i64,
+    /// Independent host deadline.
+    pub expires_at: UnixNanos,
 }
 
 pub(super) struct LoadedConnection {
@@ -61,7 +61,7 @@ pub(super) struct LoadedConnection {
     pub(super) account_authorization_version: String,
     pub(super) resolved_account_authorization_version: Option<String>,
     pub(super) state: ConnectionState,
-    pub(super) expires_at_unix_nanos: i64,
+    pub(super) expires_at: UnixNanos,
 }
 impl LoadedConnection {
     fn view(&self) -> ConnectionRequest {
@@ -69,7 +69,7 @@ impl LoadedConnection {
             id: self.id,
             provider_id: self.provider_id.clone(),
             state: self.state,
-            expires_at_unix_nanos: self.expires_at_unix_nanos,
+            expires_at: self.expires_at,
         }
     }
 }
@@ -102,13 +102,8 @@ impl AccountModule {
         let mut tx = self.providers.database.begin().await?;
         self.scope_authority(&mut tx, actor, &workspace.clone())
             .await?;
-        let requests = pending_for_user(
-            &mut tx,
-            workspace,
-            actor.user_id(),
-            context.occurred_at_unix_nanos(),
-        )
-        .await?;
+        let requests =
+            pending_for_user(&mut tx, workspace, actor.user_id(), context.occurred_at()).await?;
         tx.commit().await?;
         Ok(requests)
     }
@@ -132,7 +127,7 @@ impl AccountModule {
             workspace,
             actor.user_id(),
             &mut row,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
         )
         .await?;
         tx.commit().await?;
@@ -159,7 +154,7 @@ impl AccountModule {
             workspace,
             actor.user_id(),
             &mut row,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
         )
         .await?;
         if row.state == ConnectionState::Pending {
@@ -169,7 +164,7 @@ impl AccountModule {
                 actor.user_id(),
                 &mut row,
                 ConnectionCompletion::Declined,
-                context.occurred_at_unix_nanos(),
+                context.occurred_at(),
                 Some((context, authority)),
             )
             .await?;
@@ -185,7 +180,7 @@ pub(super) async fn pending_for_user(
     tx: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     user: &UserId,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<Vec<ConnectionRequest>, Error> {
     let mut requests = Vec::new();
     for id in repository::pending_connections(tx, workspace, user).await? {
@@ -216,7 +211,7 @@ async fn end(
     user: &UserId,
     row: &mut LoadedConnection,
     completion: ConnectionCompletion,
-    now: i64,
+    now: UnixNanos,
     decision: Option<(&ChangeContext, AuthoritySource)>,
 ) -> Result<(), Error> {
     let (state, account_authorization_version) = match completion {
@@ -266,8 +261,8 @@ async fn end(
             },
             changed_field_paths: &["state"],
             // Expiry occurs at its deadline, not when a reader or worker notices it.
-            occurred_at_unix_nanos: if state == ConnectionState::Expired {
-                row.expires_at_unix_nanos
+            occurred_at: if state == ConnectionState::Expired {
+                row.expires_at
             } else {
                 now
             },
@@ -297,7 +292,7 @@ pub(super) async fn end_for_configuration(
             &user,
             &mut row,
             ConnectionCompletion::RouteChanged,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
             Some((context, authority)),
         )
         .await?;
@@ -310,7 +305,7 @@ async fn refresh(
     workspace: &WorkspaceId,
     user: &UserId,
     row: &mut LoadedConnection,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<(), Error> {
     if let Some(completion) = pending_completion(tx, workspace, user, row, now).await? {
         end(tx, workspace, user, row, completion, now, None).await?;
@@ -324,7 +319,7 @@ async fn pending_completion(
     workspace: &WorkspaceId,
     user: &UserId,
     row: &LoadedConnection,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<Option<ConnectionCompletion>, Error> {
     if row.state != ConnectionState::Pending {
         return Ok(None);
@@ -349,7 +344,7 @@ async fn pending_completion(
             && (account.disconnected || account.requires_authorization_for(&row.contract))
     }) {
         Some(ConnectionCompletion::AuthorizationChanged)
-    } else if now >= row.expires_at_unix_nanos {
+    } else if now >= row.expires_at {
         Some(ConnectionCompletion::Expired)
     } else {
         None
@@ -368,8 +363,8 @@ pub async fn connection_pending_until_in_snapshot(
     target: &crate::ResolvedInvocationTool,
     principal: &Principal,
     request: ConnectionRequestId,
-    now: i64,
-) -> Result<Option<i64>, Error> {
+    now: UnixNanos,
+) -> Result<Option<UnixNanos>, Error> {
     let target_provider = target.provider_access();
     if !super::connects_during_invocation(target_provider, principal) {
         return Ok(None);
@@ -387,7 +382,7 @@ pub async fn connection_pending_until_in_snapshot(
         && pending_completion(tx, workspace, &user, &row, now)
             .await?
             .is_none();
-    Ok(pending.then_some(row.expires_at_unix_nanos))
+    Ok(pending.then_some(row.expires_at))
 }
 /// A completed connection of the User's exact Account satisfies every pending
 /// request it is compatible with, wherever the User connected. Incompatible
@@ -412,13 +407,13 @@ pub(super) async fn satisfy_pending(
     .filter(|current| current.id == account && !current.disconnected) else {
         return Ok(());
     };
-    let now = context.occurred_at_unix_nanos();
+    let now = context.occurred_at();
     for id in repository::pending_connections(tx, workspace, user).await? {
         let mut row = repository::load_connection(tx, workspace, user, id).await?;
         if &row.provider_id != access.id() {
             continue;
         }
-        if now >= row.expires_at_unix_nanos {
+        if now >= row.expires_at {
             end(
                 tx,
                 workspace,
@@ -456,8 +451,8 @@ pub(super) async fn satisfy_pending(
 pub struct PendingConnection {
     /// Exact Provider; route changes never retarget it.
     pub provider_id: ProviderId,
-    /// Independent host deadline in Unix nanoseconds.
-    pub expires_at_unix_nanos: i64,
+    /// Independent host deadline.
+    pub expires_at: UnixNanos,
 }
 
 /// Reads only a pending request's Provider and deadline for the invoking
@@ -485,12 +480,12 @@ pub enum ConnectionResolution {
     /// Exact credential selection is ready, or the route needs no credentials.
     Ready(Option<CredentialEvidence>),
     /// Keep the original Invocation pending until the request is resolved or
-    /// expires at `expires_at_unix_nanos`; its own Run deadline still applies.
+    /// expires at `expires_at`; its own Run deadline still applies.
     Waiting {
         /// The request the Invocation waits on.
         request: ConnectionRequestId,
         /// When the request expires unless the User resolves it first.
-        expires_at_unix_nanos: i64,
+        expires_at: UnixNanos,
     },
 }
 
@@ -511,7 +506,7 @@ pub async fn resolve_connection_in_transaction(
     target: &crate::ResolvedInvocationTool,
     principal: &Principal,
     request: Option<ConnectionRequestId>,
-    now: i64,
+    now: UnixNanos,
 ) -> Result<ConnectionResolution, Error> {
     let target_provider = target.provider_access();
     let workspace = target_provider.workspace_id();
@@ -547,15 +542,14 @@ pub async fn resolve_connection_in_transaction(
             if previous.state == ConnectionState::Pending {
                 return Ok(ConnectionResolution::Waiting {
                     request: id,
-                    expires_at_unix_nanos: previous.expires_at_unix_nanos,
+                    expires_at: previous.expires_at,
                 });
             }
         }
         let id = ConnectionRequestId(Uuid::new_v4());
-        let expires = coral_db::UnixNanos::new(now)
+        let expires = now
             .checked_add(CONNECTION_REQUEST_LIFETIME)
-            .ok_or(Error::AccountInput)?
-            .get();
+            .ok_or(Error::AccountInput)?;
         let account = repository::ensure_account(
             tx,
             workspace,
@@ -569,7 +563,7 @@ pub async fn resolve_connection_in_transaction(
         {
             return Ok(ConnectionResolution::Waiting {
                 request: id,
-                expires_at_unix_nanos: expires,
+                expires_at: expires,
             });
         }
         // Another creator committed this User's request between the lookup
@@ -590,7 +584,7 @@ pub async fn resolve_connection_in_transaction(
         }
         return Ok(ConnectionResolution::Waiting {
             request: id,
-            expires_at_unix_nanos: joined.expires_at_unix_nanos,
+            expires_at: joined.expires_at,
         });
     };
     if &row.provider_id != target_provider.id()
@@ -603,7 +597,7 @@ pub async fn resolve_connection_in_transaction(
     match row.state {
         ConnectionState::Pending => Ok(ConnectionResolution::Waiting {
             request: row.id,
-            expires_at_unix_nanos: row.expires_at_unix_nanos,
+            expires_at: row.expires_at,
         }),
         ConnectionState::Connected => {
             let evidence = caller::select(tx, target_provider, principal, contract).await?;
@@ -637,7 +631,7 @@ pub(super) async fn retire_for_access_removal(
             user,
             &mut row,
             ConnectionCompletion::AuthorizationChanged,
-            context.occurred_at_unix_nanos(),
+            context.occurred_at(),
             Some((context, authority)),
         )
         .await?;

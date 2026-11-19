@@ -12,8 +12,8 @@ use coral_auth::oauth_clients::{
 use coral_auth::user_tokens::{AccessTarget, RefreshRequest, TokenRefusal, UserTokens};
 use coral_test_support::{TestDatabase, provision_user};
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, OrganizationModule, OrganizationRole, WorkspaceDisplayName,
-    WorkspaceId, WorkspaceModule, WorkspaceRole,
+    AuthenticatedUser, ChangeContext, IfMatch, OrganizationModule, OrganizationRole,
+    WorkspaceDisplayName, WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
 
 const NOW: i64 = 1_800_000_000_000_000_000;
@@ -179,7 +179,12 @@ impl Fixture {
 
     async fn remove_from_workspace(&self) {
         self.administration
-            .remove_workspace_member(&change(&self.owner), &self.workspace, self.member.user_id())
+            .remove_workspace_member(
+                &change(&self.owner),
+                &self.workspace,
+                self.member.user_id(),
+                &IfMatch::any(),
+            )
             .await
             .unwrap();
     }
@@ -233,7 +238,7 @@ async fn removal_ends_the_grants_it_takes_away_and_rejoining_revives_none() {
         .remove_organization_member(
             &change(&fixture.owner),
             fixture.member.user_id(),
-            membership.revision(),
+            &IfMatch::version(membership.version()),
             None,
         )
         .await

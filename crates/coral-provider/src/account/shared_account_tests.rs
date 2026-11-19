@@ -2,7 +2,8 @@ use crate::account::{AccountScope, AccountState};
 use crate::account_tests::CREDENTIAL_REQUIRED_OPENAPI;
 use crate::tests::{change_context, organization_user, test_modules};
 use coral_credentials::Secret;
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName, WorkspaceRole};
+use coral_db::UnixNanos;
+use coral_workspace::{IfMatch, OrganizationRole, WorkspaceDisplayName, WorkspaceRole};
 coral_test_support::provider_setup_fixtures!(crate);
 
 #[tokio::test]
@@ -55,7 +56,7 @@ async fn workspace_owner_inspects_one_shared_account_with_management_authority()
         .unwrap();
     assert_eq!(account.state, AccountState::Ready);
     assert!(account.can_manage);
-    assert_eq!(account.connected_at_unix_nanos, Some(10));
+    assert_eq!(account.connected_at, Some(UnixNanos::new(10)));
     assert_eq!(
         account.configured_by_user_id.as_ref(),
         Some(admin.actor().user_id())
@@ -71,7 +72,7 @@ async fn workspace_owner_inspects_one_shared_account_with_management_authority()
         "shared credentials never become the configuring human's private Account"
     );
     providers
-        .disable_provider(&admin, workspace.id(), provider.id())
+        .disable_provider(&admin, workspace.id(), provider.id(), &IfMatch::any())
         .await
         .unwrap();
     assert_eq!(
@@ -87,7 +88,10 @@ async fn workspace_owner_inspects_one_shared_account_with_management_authority()
             .account,
         Some(account.clone())
     );
-    workspaces.archive(&context, workspace.id()).await.unwrap();
+    workspaces
+        .archive(&context, workspace.id(), &IfMatch::any())
+        .await
+        .unwrap();
     let mut archived = account;
     archived.can_manage = false;
     assert_eq!(

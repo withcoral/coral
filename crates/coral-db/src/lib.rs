@@ -41,6 +41,8 @@
 //! - [`UnixNanos`] is an instant as the tables store it: a statement binds
 //!   one and a row decodes one as the integer its column holds.
 //!   [`SystemClock`] is the one reader of the host's clock, behind [`Clock`].
+//! - [`Version`] is the count of accepted changes that a row keeps of itself,
+//!   and owns the one text form of that count.
 //!
 //! # Invariants
 //!
@@ -72,6 +74,7 @@ mod statements;
 mod time;
 mod transaction;
 mod upgrade;
+mod version;
 
 pub use backend::DatabaseSystem;
 pub use changes::ChangeSubscription;
@@ -84,3 +87,4 @@ pub use page::{Page, PageKey, PageRequest, PageSize, text_key_order};
 pub use query::{col, column};
 pub use time::{Clock, SystemClock, UnixNanos};
 pub use transaction::{RowLock, Transaction, TransactionToken};
+pub use version::{InvalidVersion, Version};

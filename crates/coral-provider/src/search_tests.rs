@@ -1,7 +1,7 @@
 //! What coral-provider hands to Universal Search: the catalog-free Provider
 //! reads and the entries prepared for the search index.
 use coral_catalog::ProviderGenerationId;
-use coral_workspace::{OrganizationRole, WorkspaceDisplayName, WorkspaceId};
+use coral_workspace::{IfMatch, OrganizationRole, WorkspaceDisplayName, WorkspaceId};
 
 use super::tests::{
     CREDENTIAL_FREE_OPENAPI, change_context, organization_user, publish_provider, test_modules,
@@ -258,6 +258,7 @@ async fn stored_entries_follow_the_providers_active_generation() {
     let regeneration = providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             crate::ProviderRegenerationRequest::new(
                 crate::ManagementRequestId::parse(&setup.id().to_string()).unwrap(),
                 workspace.id().clone(),
@@ -325,11 +326,13 @@ async fn a_committed_change_names_what_search_must_reread() {
         CredentialRoute::None,
     )
     .await;
+    let any = IfMatch::any();
     let rename = || {
         providers.rename_provider(
             &context,
             workspace.id(),
             provider.id(),
+            &any,
             crate::ProviderDisplayName::parse("Renamed").unwrap(),
         )
     };
@@ -366,7 +369,7 @@ async fn a_committed_change_names_what_search_must_reread() {
     assert_eq!(stored().await, before, "the etag and the lifecycle events");
 
     let removed = providers
-        .delete_provider(&context, workspace.id(), provider.id())
+        .delete_provider(&context, workspace.id(), provider.id(), &IfMatch::any())
         .await
         .unwrap()
         .into_parts();
@@ -416,7 +419,7 @@ async fn active_provider_reads_skip_disabled_providers_and_other_workspaces() {
     )
     .await;
     providers
-        .disable_provider(&context, workspace.id(), disabled.id())
+        .disable_provider(&context, workspace.id(), disabled.id(), &IfMatch::any())
         .await
         .unwrap();
     publish_provider(
@@ -501,7 +504,7 @@ async fn active_generations_read_covers_every_provider_of_every_workspace() {
         .await;
         if namespace == "weather_disabled" {
             providers
-                .disable_provider(&context, first.id(), provider.id())
+                .disable_provider(&context, first.id(), provider.id(), &IfMatch::any())
                 .await
                 .unwrap();
         }

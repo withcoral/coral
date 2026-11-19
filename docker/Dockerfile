@@ -60,6 +60,10 @@ ARG TARGETARCH
 ARG CORAL_GIT_SHA
 # The release workflow passes 1: only a release build sends usage data.
 ARG CORAL_RELEASE_BUILD=
+# The release workflow passes the Release Date a License compares its expiry
+# with (ADR 0038). A release build does not compile without one; any other
+# build is dated by its commit, or by today without git.
+ARG CORAL_RELEASE_DATE=
 WORKDIR /src
 COPY . .
 # The v8 crate's build script downloads a prebuilt V8 archive, and stops the

@@ -8,7 +8,8 @@ use crate::account_tests::{CREDENTIAL_REQUIRED_OPENAPI, authorization_request};
 use crate::setup_tests::{credential_for, user_principal, workspace_owner};
 use coral_administration::AccessLifecycleModule;
 use coral_credentials::Secret;
-use coral_workspace::{ChangeContext, OrganizationModule, WorkspaceRole};
+use coral_db::UnixNanos;
+use coral_workspace::{ChangeContext, OrganizationModule, RequestId, WorkspaceRole};
 use fixture::{assert_cleanup_events, candidate, evidence, harness, pause_update};
 
 #[derive(Clone, Copy)]
@@ -139,7 +140,7 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
     .await;
     assert_eq!(
         h.accounts
-            .credentials(workspace.id(), private.id(), &retained, 11)
+            .credentials(workspace.id(), private.id(), &retained, UnixNanos::new(11))
             .await
             .unwrap()
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -184,12 +185,17 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
         match removal {
             Removal::Workspace => {
                 lifecycle
-                    .remove_workspace_member(&cleanup, workspace.id(), member.user_id())
+                    .remove_workspace_member(
+                        &cleanup,
+                        workspace.id(),
+                        member.user_id(),
+                        &IfMatch::any(),
+                    )
                     .await
             }
             Removal::Organization => {
                 lifecycle
-                    .remove_organization_member(&cleanup, member.user_id(), 1, None)
+                    .remove_organization_member(&cleanup, member.user_id(), &IfMatch::any(), None)
                     .await
             }
         }
@@ -199,7 +205,7 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
     .expect("offboarding commits while materialization is paused");
     assert!(!publishing.is_finished());
     h.accounts
-        .credentials(workspace.id(), private.id(), &retained, 31)
+        .credentials(workspace.id(), private.id(), &retained, UnixNanos::new(31))
         .await
         .unwrap_err();
     let events = h
@@ -217,7 +223,7 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
     assert_eq!(canceled.len(), 1);
     for event in canceled {
         assert_eq!(event.trace_id(), cleanup.trace_id());
-        assert_eq!(event.occurred_at_unix_nanos(), 30);
+        assert_eq!(event.occurred_at(), UnixNanos::new(30));
     }
     match removal {
         Removal::Workspace => {
@@ -387,11 +393,11 @@ async fn member_removal(removal: Removal, initially_shared: bool, shared: bool) 
             .is_none()
     );
     h.accounts
-        .credentials(workspace.id(), private.id(), &retained, 32)
+        .credentials(workspace.id(), private.id(), &retained, UnixNanos::new(32))
         .await
         .unwrap_err();
     h.providers
-        .regenerate_provider(&context, update)
+        .regenerate_provider(&context, &IfMatch::any(), update)
         .await
         .unwrap_err();
     assert_eq!(

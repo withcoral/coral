@@ -8,3 +8,7 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+chrono.workspace = true
+coral-credentials.workspace = true

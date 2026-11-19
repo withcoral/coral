@@ -225,6 +225,7 @@ async fn deleted_agent_execution_is_readable_only_in_owner_authorized_history() 
         &change(owner.authenticated_user().unwrap().clone(), 30, '2'),
         &workspace,
         agent.principal().id(),
+        &IfMatch::any(),
     )
     .await
     .unwrap();

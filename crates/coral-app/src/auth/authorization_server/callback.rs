@@ -246,7 +246,7 @@ async fn provision(
                 identity.email_verified,
                 identity.hosted_domain.as_deref(),
             ))
-            .with_profile_observed_at(UnixNanos::new(identity.profile_observed_at_unix_nanos)),
+            .with_profile_observed_at(identity.profile_observed_at),
         )
         .await;
     match provisioning {

@@ -10,10 +10,10 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use coral_db::DatabaseSystem;
+use coral_db::{Clock as _, DatabaseSystem};
 use coral_provider::{ActiveGeneration, GenerationEntries};
 use coral_telemetry::testing::{SpanCapture, attribute};
-use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, WorkspaceId};
+use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, IfMatch, WorkspaceId};
 use opentelemetry::trace::SpanId;
 use opentelemetry_sdk::trace::SpanData;
 use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
@@ -138,6 +138,7 @@ async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() 
                     &change(world.user.clone(), 70, '7'),
                     &world.workspace,
                     &world.tracer,
+                    &IfMatch::any(),
                     coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
                 )
                 .await
@@ -188,7 +189,7 @@ async fn complete_rewrites_and_failed_rebuilds_do_not_repeat_first_visibility() 
         let _stopped = background.await;
 
         // Repeated failures retain the original outage clock.
-        let five_seconds_ago = crate::now().get() - 5_000_000_000;
+        let five_seconds_ago = coral_test_support::now_unix_nanos() - 5_000_000_000;
         world.set_outage_start(five_seconds_ago).await;
         world.make_retries_due().await;
         world.reconcile_and_settle().await;
@@ -734,7 +735,7 @@ async fn a_generation_replaced_after_a_pass_read_it_is_no_longer_stale() {
         let database = &world.modules.search.database;
         let mut transaction = database.begin_read_snapshot().await.unwrap();
         ToolIndexer
-            .still_needs_indexing(&mut transaction, generation, crate::now())
+            .still_needs_indexing(&mut transaction, generation, coral_db::SystemClock.now())
             .await
             .unwrap()
     }
@@ -793,6 +794,72 @@ async fn a_transient_failure_waits_twice_as_long_after_each_attempt() {
         )]
     );
     assert_eq!(world.retries().await, [Retry::none()]);
+}
+
+/// The index reads the clock it was given. It stamps a failed attempt by
+/// that clock, a pass retries the Generation only once that clock passes the
+/// retry time, and the state and the rows the retry writes carry that
+/// clock's reading. So does the row of a Private Tool it is told of.
+///
+/// Catches: the index reading the host's clock, which no host sets to 2100.
+/// A failed attempt stamped by the host is due at once on this clock, a
+/// pass on the host's clock never finds this clock's retry time, and a write
+/// on the host's clock stamps its rows a lifetime early.
+#[tokio::test]
+async fn a_pass_retries_a_failed_generation_once_the_indexs_clock_passes_its_retry_time() {
+    // 2100-01-01.
+    let start = coral_db::UnixNanos::new(4_102_444_800 * 1_000_000_000);
+    let clock = coral_test_support::ManualClock::starting_at(start);
+    let upstream = MockServer::start().await;
+    let mut world = World::publish_tracer(&upstream).await;
+    world.index = SearchIndex::new(world.modules.search.database.clone(), RECONCILE_INTERVAL)
+        .with_clock(Arc::new(clock.clone()));
+
+    world.fail_an_attempt().await;
+    assert_eq!(world.attempt_stamps().await, [start.get()]);
+    assert_eq!(world.retries().await, [Retry::after(1, RECONCILE_INTERVAL)]);
+    clock.advance(RECONCILE_INTERVAL);
+    world.index.reconcile().await;
+    assert!(
+        world.tool_rows().await.is_empty(),
+        "a pass at the retry time leaves the failure"
+    );
+
+    clock.advance(std::time::Duration::from_nanos(1));
+    world.reconcile_and_settle().await;
+    let retried_at = clock.now().get();
+    assert_eq!(world.attempt_stamps().await, [retried_at]);
+    assert_eq!(world.retries().await, [Retry::none()]);
+    let stamps = world.row_stamps().await;
+    assert!(!stamps.is_empty(), "the retry indexes the Generation");
+    assert!(
+        stamps.iter().all(|(_row, stamp)| *stamp == retried_at),
+        "{stamps:?}"
+    );
+
+    clock.advance(std::time::Duration::from_secs(1));
+    let saved = world
+        .modules
+        .save_private_tool(
+            &AuthenticatedPrincipal::user(world.user.clone()),
+            &world.workspace,
+            "internal.summarizeTides",
+            "Summarize the tides",
+            60,
+        )
+        .await;
+    world
+        .index
+        .sync_authored_tool(world.workspace.clone(), saved.id().clone());
+    world.index.settled().await;
+    let later_stamps = world
+        .row_stamps()
+        .await
+        .into_iter()
+        .filter(|row| !stamps.contains(row))
+        .map(|(_row, stamp)| stamp)
+        .collect::<Vec<_>>();
+    assert_eq!(later_stamps, [clock.now().get()]);
 }
 
 #[tokio::test]
@@ -1091,6 +1158,7 @@ async fn a_pass_reindexes_a_renamed_provider_under_its_new_name() {
             &change(world.user.clone(), 70, '7'),
             &world.workspace,
             &world.tracer,
+            &IfMatch::any(),
             coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
         )
         .await
@@ -1951,6 +2019,7 @@ async fn a_failed_attempt_leaves_only_a_failed_state_and_logs_the_error() {
                     &change(world.user.clone(), 70, '7'),
                     &world.workspace,
                     &world.tracer,
+                    &IfMatch::any(),
                     coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
                 )
                 .await
@@ -2126,6 +2195,7 @@ async fn a_renamed_provider_rewrites_its_generation_under_the_new_name() {
             &change(world.user.clone(), 70, '7'),
             &world.workspace,
             &world.tracer,
+            &IfMatch::any(),
             coral_provider::ProviderDisplayName::parse("Storm Watch").unwrap(),
         )
         .await

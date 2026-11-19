@@ -8,6 +8,7 @@ use crate::account_tests::{CREDENTIAL_REQUIRED_OPENAPI, authorization_request, p
 use crate::setup_tests::{credential_evidence, harness, user_principal, workspace_owner};
 use crate::tests::{Harness, change_context};
 use coral_credentials::{CredentialValues, Secret};
+use coral_db::UnixNanos;
 use coral_telemetry::testing::MetricCapture;
 use std::sync::Arc;
 use std::time::Duration;
@@ -113,7 +114,7 @@ impl Connected {
         let evidence = self.evidence.clone();
         tokio::spawn(async move {
             accounts
-                .credentials(&workspace, &provider, &evidence, now)
+                .credentials(&workspace, &provider, &evidence, UnixNanos::new(now))
                 .await
         })
     }
@@ -236,10 +237,10 @@ async fn a_current_credential_is_read_beside_a_writer_without_a_write_transactio
         assert!(begun > 0, "{row}: the held writer is counted");
         let read = tokio::time::timeout(coral_test_support::EVENTUALLY, async {
             h.accounts
-                .prepare_dispatch(owner, provider.id(), evidence, 11)
+                .prepare_dispatch(owner, provider.id(), evidence, UnixNanos::new(11))
                 .await?;
             h.accounts
-                .credentials(owner, provider.id(), evidence, 11)
+                .credentials(owner, provider.id(), evidence, UnixNanos::new(11))
                 .await
         })
         .await
@@ -297,11 +298,12 @@ async fn a_read_during_a_claimed_refresh_waits_for_the_renewed_token_whatever_it
     let refresher = oauth.read(&refreshing, 2_000_000_000);
     entered("the refresh is claimed", &exchange).await;
     // At 11 ns the first token, stamped at 10 ns, has a second to live.
-    let reading =
-        oauth
-            .h
-            .accounts
-            .credentials(&oauth.workspace, oauth.provider.id(), &oauth.evidence, 11);
+    let reading = oauth.h.accounts.credentials(
+        &oauth.workspace,
+        oauth.provider.id(),
+        &oauth.evidence,
+        UnixNanos::new(11),
+    );
     tokio::pin!(reading);
     assert!(
         tokio::time::timeout(Duration::from_millis(100), &mut reading)

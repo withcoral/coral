@@ -1,5 +1,6 @@
 use super::*;
 use crate::setup_tests::Harness;
+use coral_db::UnixNanos;
 
 pub(super) async fn harness() -> Harness {
     Harness::new().await
@@ -57,7 +58,7 @@ pub(super) async fn candidate(
             .unwrap();
         assert!(
             h.providers
-                .setup_authentication(context.actor(), workspace, setup.id(), 11)
+                .setup_authentication(context.actor(), workspace, setup.id(), UnixNanos::new(11))
                 .await
                 .unwrap()
                 .authorized
@@ -145,10 +146,7 @@ pub(super) fn assert_cleanup_events(
         assert_eq!(matching.len(), 1);
         for event in matching {
             assert_eq!(event.trace_id(), context.trace_id());
-            assert_eq!(
-                event.occurred_at_unix_nanos(),
-                context.occurred_at_unix_nanos()
-            );
+            assert_eq!(event.occurred_at(), context.occurred_at());
         }
     }
 }

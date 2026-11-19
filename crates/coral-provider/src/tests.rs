@@ -1,3 +1,4 @@
+use coral_db::UnixNanos;
 use coral_outbound::DestinationPolicy;
 use std::sync::Arc;
 
@@ -7,7 +8,8 @@ use coral_telemetry::TraceId;
 use coral_test_support::TestDatabase;
 pub(crate) use coral_test_support::provision_user as organization_user;
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, OrganizationRole, WorkspaceDisplayName, WorkspaceModule,
+    AuthenticatedUser, ChangeContext, IfMatch, OrganizationRole, RequestId, WorkspaceDisplayName,
+    WorkspaceModule,
 };
 
 use crate::access::{CredentialRoute, ProviderCallRoot};
@@ -62,7 +64,7 @@ async fn disabled_provider_remains_a_valid_tool_policy_target() {
     )
     .await;
     providers
-        .disable_provider(&context, workspace.id(), provider.id())
+        .disable_provider(&context, workspace.id(), provider.id(), &IfMatch::any())
         .await
         .unwrap();
     let mut transaction = providers
@@ -269,7 +271,7 @@ pub(crate) async fn published_providers(
 ) -> Result<Vec<crate::PublishedProvider>, crate::Error> {
     let mut tx = providers.database.begin_read_snapshot().await?;
     let published = providers
-        .published_providers_in_snapshot(&mut tx, actor, workspace, 20)
+        .published_providers_in_snapshot(&mut tx, actor, workspace, UnixNanos::new(20))
         .await;
     tx.rollback().await?;
     published
@@ -451,6 +453,7 @@ pub(crate) async fn join_as_owner(
     workspaces
         .assign_owner(
             &change_context(user.clone(), 1, 'f'),
+            &RequestId::generate(),
             workspace,
             user.user_id(),
         )

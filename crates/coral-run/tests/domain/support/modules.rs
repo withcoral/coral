@@ -46,6 +46,7 @@ pub(crate) async fn registered_agent(
                 10,
                 '1',
             ),
+            &RequestId::generate(),
             workspace_id,
             coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
             None,
@@ -947,7 +948,12 @@ pub(crate) async fn configure_shared_account(
     tx.commit().await.unwrap();
     assert_eq!(
         accounts
-            .credentials(&tool.workspace_id, &tool.provider_id, &evidence, 40)
+            .credentials(
+                &tool.workspace_id,
+                &tool.provider_id,
+                &evidence,
+                coral_db::UnixNanos::new(40)
+            )
             .await
             .expect("published shared Account credentials")
             .get(coral_credentials::CredentialValues::TOKEN)
@@ -973,7 +979,12 @@ pub(crate) async fn configure_authored_provider(
     let (dir, accounts) = fixture.accounts();
     fixture
         .providers
-        .delete_provider(&context, &tool.workspace_id, &tool.provider_id)
+        .delete_provider(
+            &context,
+            &tool.workspace_id,
+            &tool.provider_id,
+            &IfMatch::any(),
+        )
         .await
         .unwrap()
         .skip_search();
@@ -1065,7 +1076,12 @@ pub(crate) async fn configure_shared_provider(
     let (dir, accounts) = fixture.accounts();
     fixture
         .providers
-        .delete_provider(&context, &tool.workspace_id, &tool.provider_id)
+        .delete_provider(
+            &context,
+            &tool.workspace_id,
+            &tool.provider_id,
+            &IfMatch::any(),
+        )
         .await
         .unwrap()
         .skip_search();
@@ -1141,6 +1157,7 @@ pub(crate) async fn configure_user_caller_paths(
         .providers
         .regenerate_provider(
             &context,
+            &IfMatch::any(),
             ProviderRegenerationRequest::new(
                 ManagementRequestId::parse(&uuid::Uuid::new_v4().to_string()).unwrap(),
                 tool.workspace_id.clone(),
@@ -1564,7 +1581,11 @@ pub(crate) async fn admitted_invocation(
         .resolve_invocation_tool_in_transaction(
             &mut transaction,
             &tool.workspace_id,
-            coral_provider::InvocationCaller::new(&fixture.workspaces, &tool.principal, now),
+            coral_provider::InvocationCaller::new(
+                &fixture.workspaces,
+                &tool.principal,
+                coral_db::UnixNanos::new(now),
+            ),
             &tool.call_path,
         )
         .await

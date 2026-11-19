@@ -763,7 +763,11 @@ impl ToolInvoker {
             .resolve_invocation_tool_in_transaction(
                 &mut transaction,
                 &self.workspace_id,
-                InvocationCaller::new(&self.workspaces, &self.actor, resolved_at),
+                InvocationCaller::new(
+                    &self.workspaces,
+                    &self.actor,
+                    coral_db::UnixNanos::new(resolved_at),
+                ),
                 call_path,
             )
             .await?
@@ -1090,7 +1094,7 @@ impl ToolInvoker {
                 &self.workspace_id,
                 admitted.target.provider_access().id(),
                 evidence,
-                self.now()?,
+                coral_db::UnixNanos::new(self.now()?),
             ) => result.map_err(account_error)?,
         };
         let authorization = match ready {
@@ -1234,7 +1238,7 @@ impl ToolInvoker {
                 &self.workspace_id,
                 admitted.target.provider_access().id(),
                 evidence,
-                self.now()?,
+                coral_db::UnixNanos::new(self.now()?),
             ) => result.map_err(account_error),
         }
     }
@@ -1310,7 +1314,7 @@ impl ToolInvoker {
                 &admitted.target,
                 &self.principal,
                 progress.connection_request,
-                self.now()?,
+                coral_db::UnixNanos::new(self.now()?),
             )
             .await
         } else {
@@ -1324,7 +1328,7 @@ impl ToolInvoker {
         match selection {
             ConnectionResolution::Waiting {
                 request,
-                expires_at_unix_nanos,
+                expires_at,
             } => {
                 if progress.connection_request.is_none() {
                     invocation_repository::attach_connection(
@@ -1341,7 +1345,7 @@ impl ToolInvoker {
                     progress,
                     wait: ParkedWait::Connection {
                         request,
-                        expires_at_unix_nanos,
+                        expires_at_unix_nanos: expires_at.get(),
                     },
                 })
             }
@@ -2484,9 +2488,10 @@ impl PrecheckBatch {
                     &target.admitted.target,
                     &invoker.principal,
                     request,
-                    now,
+                    coral_db::UnixNanos::new(now),
                 )
-                .await?;
+                .await?
+                .map(coral_db::UnixNanos::get);
                 pending_until.insert(request, until);
             }
         }

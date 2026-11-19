@@ -2,10 +2,14 @@
 //! Search after it commits.
 //!
 //! Every path that changes an existing Provider names its change here, and
-//! [`ProviderModule::hold_for_change`] runs the steps every such change shares:
-//! Owner configuration authority, the exclusive hold, the Call Root's
-//! allow-list and, for a rename, an icon, a state change or a removal, the etag. An
-//! Owner-added Provider permits every change. A
+//! holds the Provider through one of two entry points, which run the steps
+//! every such change shares: Owner configuration authority, the exclusive
+//! hold and the Call Root's allow-list. [`ProviderModule::hold_for_change`]
+//! takes a [`GuardedChange`] (a rename, an icon, a state change or a removal)
+//! with the etag the caller read, and checks it.
+//! [`ProviderModule::hold_for_unguarded_change`] takes an
+//! [`UnguardedChange`] and no etag, so a guarded change cannot go without
+//! its check. An Owner-added Provider permits every change. A
 //! Provider Coral defines (the Built-in, the Private and the Shared Provider)
 //! permits only disabling and restoring it, so a new kind of change is denied
 //! for it until someone allows it below. Its Tools' policy belongs to
@@ -19,7 +23,7 @@
 //! after it settles the Account decision it reviewed, so it keeps its own
 //! hold in the Publication transaction.
 use coral_db::Transaction;
-use coral_workspace::{AuthoritySource, ChangeContext, WorkspaceId};
+use coral_workspace::{AuthoritySource, ChangeContext, IfMatch, WorkspaceId};
 
 use crate::repository::{self, ProviderWithActiveGeneration};
 use crate::{
@@ -70,15 +74,48 @@ impl ProviderChange {
             Err(Error::BuiltinProviderManaged)
         }
     }
+}
 
-    /// Whether the change requires the context's etag to match the
-    /// Provider's. A Setup and a secret rotation leave the Provider's own
-    /// fields alone, so they take no etag.
-    const fn checks_etag(self) -> bool {
-        matches!(
-            self,
-            Self::Rename | Self::SetIcon | Self::SetState | Self::Delete
-        )
+/// A change to the Provider's own fields. It takes the etag the caller read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GuardedChange {
+    /// Change the Provider's display name.
+    Rename,
+    /// Replace or remove the Provider's icon.
+    SetIcon,
+    /// Disable or restore the Provider.
+    SetState,
+    /// Remove the Provider.
+    Delete,
+}
+
+impl GuardedChange {
+    const fn change(self) -> ProviderChange {
+        match self {
+            Self::Rename => ProviderChange::Rename,
+            Self::SetIcon => ProviderChange::SetIcon,
+            Self::SetState => ProviderChange::SetState,
+            Self::Delete => ProviderChange::Delete,
+        }
+    }
+}
+
+/// A change that holds the Provider and leaves its own fields alone, so it
+/// takes no etag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnguardedChange {
+    /// Prepare or create a Setup that updates the Provider's configuration.
+    Reconfigure,
+    /// Replace the Provider's shared OAuth application secret.
+    RotateOAuthClientSecret,
+}
+
+impl UnguardedChange {
+    const fn change(self) -> ProviderChange {
+        match self {
+            Self::Reconfigure => ProviderChange::Reconfigure,
+            Self::RotateOAuthClientSecret => ProviderChange::RotateOAuthClientSecret,
+        }
     }
 }
 
@@ -112,7 +149,7 @@ impl HeldProvider {
                 target_id: &self.current.provider.id().to_string(),
                 outcome: LifecycleOutcome::Accepted,
                 changed_field_paths,
-                occurred_at_unix_nanos: context.occurred_at_unix_nanos(),
+                occurred_at: context.occurred_at(),
                 trace_id: context.trace_id(),
             },
         )
@@ -121,17 +158,56 @@ impl HeldProvider {
 }
 
 impl ProviderModule {
-    /// Starts the acting Owner's `change` to `provider` in `transaction`:
-    /// checks Owner configuration authority, holds the Provider row
-    /// exclusively, applies its Call Root's allow-list and, for a change that
-    /// takes one, the context's etag.
+    /// Starts the acting Owner's `change` to the `provider` that the caller
+    /// read at `if_match`, in `transaction`: checks Owner configuration
+    /// authority, holds the Provider row exclusively, applies its Call Root's
+    /// allow-list, and checks the etag.
     ///
     /// # Errors
     ///
     /// Returns an authority failure, [`Error::ProviderNotFound`] for an absent
     /// Provider, the error of [`ProviderChange::permit`],
-    /// [`Error::EtagMismatch`], or a persistence failure.
+    /// [`Error::EtagMismatch`] for a Provider that changed since, or a
+    /// persistence failure.
     pub(crate) async fn hold_for_change(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: &ChangeContext,
+        workspace: &WorkspaceId,
+        provider: &ProviderId,
+        change: GuardedChange,
+        if_match: &IfMatch,
+    ) -> Result<HeldProvider, Error> {
+        let held = self
+            .hold(transaction, context, workspace, provider, change.change())
+            .await?;
+        held.current.provider.admit(if_match)?;
+        Ok(held)
+    }
+
+    /// Starts the acting Owner's `change` to `provider` in `transaction`, as
+    /// [`Self::hold_for_change`] does, for a change that takes no etag.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authority failure, [`Error::ProviderNotFound`] for an absent
+    /// Provider, the error of [`ProviderChange::permit`], or a persistence
+    /// failure.
+    pub(crate) async fn hold_for_unguarded_change(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: &ChangeContext,
+        workspace: &WorkspaceId,
+        provider: &ProviderId,
+        change: UnguardedChange,
+    ) -> Result<HeldProvider, Error> {
+        self.hold(transaction, context, workspace, provider, change.change())
+            .await
+    }
+
+    /// The steps every hold shares: Owner configuration authority, the
+    /// exclusive hold, and the Call Root's allow-list.
+    async fn hold(
         &self,
         transaction: &mut Transaction<'_>,
         context: &ChangeContext,
@@ -151,9 +227,6 @@ impl ProviderModule {
         .await?
         .ok_or(Error::ProviderNotFound)?;
         change.permit(current.provider.call_root())?;
-        if change.checks_etag() {
-            current.provider.check_etag(context)?;
-        }
         Ok(HeldProvider { authority, current })
     }
 
@@ -163,7 +236,7 @@ impl ProviderModule {
     ///
     /// # Errors
     ///
-    /// Returns the errors of [`Self::hold_for_change`].
+    /// Returns the errors of [`Self::hold_for_unguarded_change`].
     pub(crate) async fn hold_for_setup(
         &self,
         transaction: &mut Transaction<'_>,
@@ -178,12 +251,12 @@ impl ProviderModule {
             return Ok((authority, None));
         };
         let held = self
-            .hold_for_change(
+            .hold_for_unguarded_change(
                 transaction,
                 context,
                 owner,
                 target,
-                ProviderChange::Reconfigure,
+                UnguardedChange::Reconfigure,
             )
             .await?;
         Ok((held.authority, Some(held.current)))

@@ -30,6 +30,16 @@ use coral_telemetry::safe;
 /// mid-flight.
 const DEVICE_RECOVERY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// How often the License recheck asks whether Coral may keep running. An
+/// Evaluation License that expires stops Coral within this span (ADR 0038).
+const LICENSE_RECHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What the License recheck asks, and where it says that Coral must stop.
+pub(crate) struct LicenseRecheck {
+    pub(crate) edition: coral_edition::EditionCheck,
+    pub(crate) lapse: watch::Sender<Option<coral_edition::LicenseRefusal>>,
+}
+
 /// What bootstrap resolved for one [`Engine`]: every dependency it does not
 /// choose itself.
 pub(crate) struct EngineParts {
@@ -42,8 +52,9 @@ pub(crate) struct EngineParts {
     /// The one readiness of every listener, so shutdown takes them all out
     /// of rotation at once.
     pub(crate) readiness: EngineReadiness,
-    /// The instance's one clock. The Provider and Account modules, the boot
-    /// writes and the periodic passes read it.
+    /// The instance's one clock. The modules this Engine gives it to, the
+    /// boot writes and the periodic passes read it. The Run module and the
+    /// Run Executor link keep their own until ADR 0027.
     pub(crate) clock: Arc<dyn coral_db::Clock>,
     pub(crate) policy: coral_outbound::DestinationPolicy,
     pub(crate) runtime_limits: coral_run::RuntimeLimits,
@@ -97,11 +108,13 @@ pub(crate) struct SearchParts {
 
 impl SearchParts {
     /// The search index, the one search module of the process, and the slot
-    /// the Embedder's model loads into while the vector side is on.
+    /// the Embedder's model loads into while the vector side is on. Both
+    /// read `clock`, the instance's one clock.
     fn modules(
         &self,
         database: &Arc<Database>,
         workspaces: &coral_workspace::WorkspaceModule,
+        clock: &Arc<dyn coral_db::Clock>,
     ) -> (
         coral_search::SearchIndex,
         coral_search::UniversalSearchModule,
@@ -110,11 +123,13 @@ impl SearchParts {
         // State initialization already ran the search checks and stream. The
         // reconcile task's first pass runs in the background, so neither boot nor
         // a request waits for it.
-        let index = coral_search::SearchIndex::new(Arc::clone(database), self.reconcile_interval);
+        let index = coral_search::SearchIndex::new(Arc::clone(database), self.reconcile_interval)
+            .with_clock(Arc::clone(clock));
         // Runs, gRPC and MCP share this module. It embeds queries with
         // the Embedder's model, so a query waits for at most the one document
         // the Embedder runs.
-        let module = coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone());
+        let module = coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone())
+            .with_clock(Arc::clone(clock));
         if self.model.is_none() {
             return (index, module, None);
         }
@@ -296,7 +311,8 @@ struct Modules {
     releases: Option<coral_release::ReleaseCheck>,
     usage: Option<coral_usage::UsageData>,
     readiness: EngineReadiness,
-    /// The instance's one clock, which the periodic passes read.
+    /// The instance's one clock, which the periodic passes and the modules
+    /// each surface builds read.
     clock: Arc<dyn coral_db::Clock>,
     /// The local child supervisor; none with the children turned off.
     local_run_executors: Option<coral_run_executor::LocalRunExecutors>,
@@ -327,7 +343,7 @@ impl BootedEngine {
 
     /// Starts the periodic passes, the search reconcile task and the search
     /// model's delivery.
-    pub(crate) fn run(self) -> Engine {
+    pub(crate) fn run(self, license: LicenseRecheck) -> Engine {
         let Self {
             modules,
             usage_reporting,
@@ -344,6 +360,7 @@ impl BootedEngine {
             usage_reporting,
             &modules.clock,
         );
+        start_license_recheck(&mut passes, license, &modules.clock);
         let search_reconcile = modules.search_index.spawn_reconcile_task();
         let (search_model, search_model_delivery) = search_model.map(SearchModel::start).unzip();
         let search_model_load = search_model
@@ -424,7 +441,8 @@ impl Engine {
         )
         .with_clock(clock.clone());
         let (accounts, secret_stores) = credentials.accounts(providers.clone(), clock.clone());
-        let (search_index, search_module, embedder_slot) = search.modules(&database, &workspaces);
+        let (search_index, search_module, embedder_slot) =
+            search.modules(&database, &workspaces, &clock);
         let provider_workflow =
             coral_administration::ProviderWorkflow::new(providers.clone(), search_index.clone());
         install_coral_providers(&provider_workflow, clock.now()).await?;
@@ -520,13 +538,15 @@ impl Engine {
     pub(crate) fn grpc_dependencies(&self) -> coral_grpc::Dependencies {
         let database = &self.modules.database;
         let workspaces = &self.modules.workspaces;
+        let clock = &self.modules.clock;
         // A Shared Tool Publish compiles through the same warm compiler.
         let shared_tools = coral_tools::SharedToolModule::with_compiler_client(
             database.clone(),
             workspaces.clone(),
             self.modules.compiler.clone(),
             self.modules.runtime_limits.compilation_timeout(),
-        );
+        )
+        .with_clock(Arc::clone(clock));
         coral_grpc::Dependencies {
             organization: coral_workspace::OrganizationModule::new(database.clone()),
             // A publish and a removal tell the search index after they commit.
@@ -552,15 +572,18 @@ impl Engine {
             workspaces: workspaces.clone(),
             providers: self.modules.providers.clone(),
             accounts: Some(self.modules.accounts.clone()),
-            tasks: coral_task::TaskModule::new(database.clone(), workspaces.clone()),
+            tasks: coral_task::TaskModule::new(database.clone(), workspaces.clone())
+                .with_clock(Arc::clone(clock)),
             private_tools: coral_tools::PrivateToolInspection::new(
                 database.clone(),
                 workspaces.clone(),
-            ),
+            )
+            .with_clock(Arc::clone(clock)),
             // A delete removes the Private Tool's exact rule and tells the search index.
             private_tool_workflow: coral_administration::PrivateToolWorkflow::new(
                 database.clone(),
-                coral_tools::PrivateToolDeletion::new(workspaces.clone()),
+                coral_tools::PrivateToolDeletion::new(workspaces.clone())
+                    .with_clock(Arc::clone(clock)),
                 self.modules.search_index.clone(),
             ),
             shared_tools,
@@ -584,14 +607,17 @@ impl Engine {
         human_interface: coral_mcp::HumanInterfaceUrl,
     ) -> coral_mcp::McpModules {
         let workspaces = self.modules.workspaces.clone();
+        let clock = &self.modules.clock;
         let tasks =
-            coral_task::TaskModule::new(Arc::clone(&self.modules.database), workspaces.clone());
+            coral_task::TaskModule::new(Arc::clone(&self.modules.database), workspaces.clone())
+                .with_clock(Arc::clone(clock));
         let private_tools = coral_tools::PrivateToolModule::with_compiler_client(
             Arc::clone(&self.modules.database),
             workspaces.clone(),
             Arc::clone(&self.modules.compiler),
             self.modules.runtime_limits.compilation_timeout(),
-        );
+        )
+        .with_clock(Arc::clone(clock));
         // MCP-started Runs link people to Reef and save Private Tools through
         // the one module, so every save shares its compiler and deadline. This
         // clone shares this `Engine`'s Run Owners; no other clone runs a Program.
@@ -714,7 +740,7 @@ fn start_passes(
     let recovery_clock = Arc::clone(clock);
     passes.start("device_authorization_recovery", schedule, move || {
         let accounts = accounts.clone();
-        let now = recovery_clock.now().get();
+        let now = recovery_clock.now();
         async move {
             accounts
                 .recover_device_authorizations(now)
@@ -750,6 +776,36 @@ fn start_passes(
         });
     }
     run_recovery
+}
+
+/// Schedules the License recheck. When it finds that Coral must stop, it
+/// logs why and says so on the lapse channel, which the launcher waits on.
+/// The Edition does not change before Coral stops.
+fn start_license_recheck(
+    passes: &mut Passes,
+    license: LicenseRecheck,
+    clock: &Arc<dyn coral_db::Clock>,
+) {
+    let clock = Arc::clone(clock);
+    passes.start(
+        "license_recheck",
+        Schedule::every(LICENSE_RECHECK_INTERVAL),
+        move || {
+            let today = super::server::utc_date(clock.as_ref());
+            if let Err(refusal) = license.edition.recheck_license(today) {
+                tracing::error!(
+                    coral.local.license = %refusal,
+                    "License ended; Coral stops"
+                );
+                license.lapse.send_if_modified(|lapse| {
+                    let first = lapse.is_none();
+                    lapse.get_or_insert(refusal);
+                    first
+                });
+            }
+            std::future::ready(Ok(()))
+        },
+    );
 }
 
 /// One pass of the expired-lease sweep. It fails with the error's code, and
@@ -867,9 +923,9 @@ mod tests {
         assert_eq!(
             installs
                 .iter()
-                .map(coral_provider::AdministrativeLifecycleEvent::occurred_at_unix_nanos)
+                .map(coral_provider::AdministrativeLifecycleEvent::occurred_at)
                 .collect::<std::collections::BTreeSet<_>>(),
-            [launched_at.get()].into(),
+            [launched_at].into(),
             "every install is dated by the one reading of the launch's clock"
         );
         // The pass found the lease ended and moved it one lease on from its

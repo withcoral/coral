@@ -44,7 +44,12 @@ async fn store_backed(engine: Arc<dyn ProgramEngine>) -> StoreBacked {
     .await;
     fixture
         .workspaces
-        .grant_secret_store(&change(governor, 40, '4'), &tool.workspace_id, "team")
+        .grant_secret_store(
+            &change(governor, 40, '4'),
+            &RequestId::generate(),
+            &tool.workspace_id,
+            "team",
+        )
         .await
         .unwrap();
     submit_reference(&accounts, &tool, &change(tool.user.clone(), 41, '4'), PATH).await;

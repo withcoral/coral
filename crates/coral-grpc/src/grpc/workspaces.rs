@@ -3,8 +3,8 @@ use super::{GrpcServices, PrivateAudience, management as wire};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use coral_db::{PageKey, PageRequest, PageSize, UnixNanos};
 use coral_workspace::{
-    AuthenticatedUser, ChangeContext, ResourceMetadata, TraceId, WorkspaceDisplayName,
-    WorkspaceEvidence, WorkspaceId,
+    AuthenticatedUser, ChangeContext, IfMatch, RequestId, ResourceMetadata, TraceId,
+    WorkspaceDisplayName, WorkspaceEvidence, WorkspaceId,
 };
 use tonic::{Request, Response, Status};
 
@@ -108,7 +108,10 @@ pub(super) fn workspace_id(name: &str) -> Result<WorkspaceId, Status> {
     };
     WorkspaceId::parse(id).map_err(error)
 }
-pub(super) fn timestamp(nanos: i64) -> prost_types::Timestamp {
+/// An instant as the wire carries it. This is the adapter's one conversion
+/// from an instant to a protobuf `Timestamp`.
+pub(super) fn timestamp(instant: UnixNanos) -> prost_types::Timestamp {
+    let nanos = instant.get();
     prost_types::Timestamp {
         seconds: nanos.div_euclid(1_000_000_000),
         nanos: i32::try_from(nanos.rem_euclid(1_000_000_000))
@@ -126,8 +129,8 @@ fn workspace(evidence: &WorkspaceEvidence, meta: ResourceMetadata) -> wire::Work
         mcp_endpoint: String::new(),
         organization_mcp_endpoint: String::new(),
         etag: meta.etag,
-        create_time: Some(timestamp(meta.created_at.get())),
-        update_time: Some(timestamp(meta.updated_at.get())),
+        create_time: Some(timestamp(meta.created_at)),
+        update_time: Some(timestamp(meta.updated_at)),
         effective_role: role(evidence.effective_role()).into(),
     }
 }
@@ -339,13 +342,11 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
     ) -> Result<Response<wire::Workspace>, Status> {
         let user = self.management_user(&request).await?;
         let input = request.into_inner();
-        let context = change(user.clone())
-            .with_request_id(&input.request_id)
-            .map_err(error)?;
         let created = self
             .workspace_workflow
             .create_workspace(
-                &context,
+                &change(user.clone()),
+                &RequestId::parse(&input.request_id).map_err(error)?,
                 WorkspaceDisplayName::parse(&input.display_name).map_err(error)?,
             )
             .await
@@ -406,8 +407,9 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
         let id = workspace_id(&w.name)?;
         self.workspaces
             .update_display_name(
-                &change(user.clone()).with_etag(&w.etag).map_err(error)?,
+                &change(user.clone()),
                 &id,
+                &IfMatch::parse(&w.etag).map_err(error)?,
                 WorkspaceDisplayName::parse(&w.display_name).map_err(error)?,
             )
             .await
@@ -424,8 +426,9 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
         let id = workspace_id(&input.name)?;
         self.workspaces
             .archive(
-                &change(user.clone()).with_etag(&input.etag).map_err(error)?,
+                &change(user.clone()),
                 &id,
+                &IfMatch::parse(&input.etag).map_err(error)?,
             )
             .await
             .map_err(error)?;
@@ -441,8 +444,9 @@ impl wire::workspace_service_server::WorkspaceService for GrpcServices {
         let id = workspace_id(&input.name)?;
         self.workspaces
             .restore(
-                &change(user.clone()).with_etag(&input.etag).map_err(error)?,
+                &change(user.clone()),
                 &id,
+                &IfMatch::parse(&input.etag).map_err(error)?,
             )
             .await
             .map_err(error)?;

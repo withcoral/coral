@@ -181,9 +181,14 @@ async fn rename(
     if !host.run.still_current().await? {
         return Err(Error::ProgramHostTerminated);
     }
-    let context = context.clone().with_etag(&provider.etag())?;
     let changed = renamer
-        .rename_provider(&context, host.workspace_id, provider.id(), display_name)
+        .rename_provider(
+            context,
+            host.workspace_id,
+            provider.id(),
+            &provider.if_match(),
+            display_name,
+        )
         .await
         .map_err(|error| match error {
             // An Owner changed the Provider since the call began.

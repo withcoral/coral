@@ -139,7 +139,11 @@ impl AdminScope {
             .resolve_invocation_tool_in_transaction(
                 &mut transaction,
                 &self.workspace_id,
-                coral_provider::InvocationCaller::new(&self.fixture.workspaces, &self.owner, 12),
+                coral_provider::InvocationCaller::new(
+                    &self.fixture.workspaces,
+                    &self.owner,
+                    coral_db::UnixNanos::new(12),
+                ),
                 call_path,
             )
             .await
@@ -315,12 +319,10 @@ impl AdminScope {
             .await
             .unwrap()
             .revision;
-        let context = change(self.owner_user(), 21, '5')
-            .with_etag(&provider.etag())
-            .unwrap();
         let publication = workflow(&self.fixture)
             .regenerate_provider(
-                &context,
+                &change(self.owner_user(), 21, '5'),
+                &provider.if_match(),
                 ProviderRegenerationRequest::new(
                     ManagementRequestId::parse(&setup.to_string()).unwrap(),
                     self.workspace_id.clone(),
@@ -810,7 +812,7 @@ async fn a_tool_this_version_does_not_perform_fails_before_approval() {
         .expect("the Workspace's Built-in Provider pins the older catalog");
     assert!(
         newer
-            .update_builtin_catalog(&outdated, 20)
+            .update_builtin_catalog(&outdated, coral_db::UnixNanos::new(20))
             .await
             .unwrap()
             .skip_search(),
@@ -1537,11 +1539,10 @@ async fn list_providers_lists_every_provider_without_approval() {
         .fixture
         .providers
         .disable_provider(
-            &change(scope.owner_user(), 21, '6')
-                .with_etag(&weather.etag())
-                .unwrap(),
+            &change(scope.owner_user(), 21, '6'),
             &scope.workspace_id,
             weather.id(),
+            &weather.if_match(),
         )
         .await
         .unwrap();

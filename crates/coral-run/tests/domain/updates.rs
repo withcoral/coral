@@ -152,7 +152,7 @@ async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_
         }
         let published = fixture
             .providers
-            .regenerate_provider(&context, request)
+            .regenerate_provider(&context, &IfMatch::any(), request)
             .await
             .unwrap()
             .skip_search();

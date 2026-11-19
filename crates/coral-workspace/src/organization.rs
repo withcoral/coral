@@ -2,10 +2,10 @@
 //!
 //! Login provisioning is host-only: the authentication Adapter
 //! selects Member or the explicitly configured bootstrap Owner. Administration
-//! requires current Owner authority and an exact revision. Both use the same
-//! record read by Workspace authorization and held by the Policy Enforcement
-//! Point. Removal retains revision continuity; login can rejoin only removed
-//! Membership. No protocol work, remote synchronization, or destructive cleanup
+//! requires current Owner authority and the version the caller read. Both use
+//! the same record read by Workspace authorization and held by the Policy
+//! Enforcement Point. Removal retains version continuity; login can rejoin
+//! only removed Membership. No protocol work, remote synchronization, or destructive cleanup
 //! lives here.
 
 #[path = "organization_repository.rs"]
@@ -16,10 +16,10 @@ pub(crate) use repository::{current_member_ids, enabled_member_total};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use coral_db::{Database, Transaction, UnixNanos};
+use coral_db::{Database, Transaction, UnixNanos, Version};
 
 use crate::list_repository::Users;
-use crate::{AuthenticatedUser, ChangeContext, Error, OrganizationRole, UserId};
+use crate::{AuthenticatedUser, ChangeContext, Error, IfMatch, OrganizationRole, UserId};
 
 pub(super) async fn hold_administration(tx: &mut Transaction<'_>) -> Result<(), Error> {
     repository::hold_administration(tx).await
@@ -52,7 +52,7 @@ pub struct OrganizationMembership {
     user_id: UserId,
     role: OrganizationRole,
     enabled: bool,
-    revision: u64,
+    version: Version,
 }
 impl OrganizationMembership {
     /// Stable User identity.
@@ -70,10 +70,11 @@ impl OrganizationMembership {
     pub const fn enabled(&self) -> bool {
         self.enabled
     }
-    /// Exact revision required for an administrative update.
+    /// The version an administrative update must have read: the count of
+    /// accepted changes to this Membership.
     #[must_use]
-    pub const fn revision(&self) -> u64 {
-        self.revision
+    pub const fn version(&self) -> Version {
+        self.version
     }
     fn authenticated(&self) -> AuthenticatedUser {
         if self.enabled {
@@ -184,8 +185,8 @@ impl OrganizationModule {
             ))?;
         let user_id = context.actor().user_id();
         let mut created = repository::insert_membership_if_absent(tx, user_id, role).await?;
-        if !created && let Some(revision) = repository::removed_revision(tx, user_id).await? {
-            repository::rejoin_membership(tx, user_id, role, next_revision(revision)?).await?;
+        if !created && let Some(removed) = repository::removed_version(tx, user_id).await? {
+            repository::rejoin_membership(tx, user_id, role, next_version(removed)?.get()).await?;
             created = true;
         }
         if created {
@@ -283,31 +284,37 @@ impl OrganizationModule {
         require_owner_role(&current)
     }
 
-    /// Changes a User's role under current Organization Owner authority.
+    /// Changes the role of the Organization Membership that the caller read
+    /// at `if_match`, under current Organization Owner authority.
     /// # Errors
-    /// Denies stale revisions, absent authority, and loss of the last enabled Owner.
+    /// Denies a Membership that changed since with
+    /// [`Error::OrganizationAuthorityConflict`], absent authority, and loss of
+    /// the last enabled Owner.
     pub async fn set_role(
         &self,
         context: &ChangeContext,
         user_id: &UserId,
-        revision: u64,
+        if_match: &IfMatch,
         role: OrganizationRole,
     ) -> Result<OrganizationMembership, Error> {
-        self.update(context, user_id, revision, Some(role), None)
+        self.update(context, user_id, if_match, Some(role), None)
             .await
     }
 
-    /// Disables or explicitly restores a User without changing retained work.
+    /// Disables or explicitly restores the User whose Organization Membership
+    /// the caller read at `if_match`, without changing retained work.
     /// # Errors
-    /// Denies stale revisions, absent authority, and loss of the last enabled Owner.
+    /// Denies a Membership that changed since with
+    /// [`Error::OrganizationAuthorityConflict`], absent authority, and loss of
+    /// the last enabled Owner.
     pub async fn set_enabled(
         &self,
         context: &ChangeContext,
         user_id: &UserId,
-        revision: u64,
+        if_match: &IfMatch,
         enabled: bool,
     ) -> Result<OrganizationMembership, Error> {
-        self.update(context, user_id, revision, None, Some(enabled))
+        self.update(context, user_id, if_match, None, Some(enabled))
             .await
     }
 
@@ -315,7 +322,7 @@ impl OrganizationModule {
         &self,
         context: &ChangeContext,
         user_id: &UserId,
-        revision: u64,
+        if_match: &IfMatch,
         role: Option<OrganizationRole>,
         enabled: Option<bool>,
     ) -> Result<OrganizationMembership, Error> {
@@ -327,7 +334,7 @@ impl OrganizationModule {
         let mut membership = read_membership(&mut tx, user_id)
             .await
             .map_err(absent_target)?;
-        if membership.revision != revision {
+        if !if_match.admits(membership.version) {
             return Err(Error::OrganizationAuthorityConflict);
         }
         let next_role = role.unwrap_or(membership.role);
@@ -344,9 +351,16 @@ impl OrganizationModule {
                 return Err(Error::LastOrganizationOwner);
             }
         }
-        let next_revision = next_revision(revision)?;
-        repository::update_membership(&mut tx, user_id, next_role, next_enabled, next_revision)
-            .await?;
+        // The User is held, so the row is at the version just read.
+        let next_version = next_version(membership.version)?;
+        repository::update_membership(
+            &mut tx,
+            user_id,
+            next_role,
+            next_enabled,
+            next_version.get(),
+        )
+        .await?;
         repository::record_event(
             &mut tx,
             context,
@@ -361,7 +375,7 @@ impl OrganizationModule {
         tx.commit().await?;
         membership.role = next_role;
         membership.enabled = next_enabled;
-        membership.revision = next_revision.cast_unsigned();
+        membership.version = next_version;
         Ok(membership)
     }
 
@@ -423,10 +437,10 @@ impl OrganizationModule {
     }
 }
 
-fn next_revision(revision: u64) -> Result<i64, Error> {
-    i64::try_from(revision)
-        .ok()
-        .and_then(|revision| revision.checked_add(1))
+/// The version an accepted change leaves an Organization Membership at.
+fn next_version(version: Version) -> Result<Version, Error> {
+    version
+        .next()
         .ok_or_else(|| Error::CorruptData("Organization authority revision overflowed".into()))
 }
 
@@ -590,11 +604,11 @@ pub(crate) async fn prepare_removal(
     tx: &mut Transaction<'_>,
     context: &ChangeContext,
     user: &UserId,
-    revision: u64,
+    if_match: &IfMatch,
     transfer_to: Option<&UserId>,
 ) -> Result<(), Error> {
     // The caller already holds the Organization administration guard. Check
-    // authority before exposing target-dependent absence or revision errors.
+    // authority before exposing target-dependent absence or version errors.
     require_owner(tx, context.actor()).await?;
     // The transfer target joins the ordered holds, so it cannot be disabled
     // between this check and the Owner Membership write.
@@ -612,7 +626,7 @@ pub(crate) async fn prepare_removal(
     }
     require_owner(tx, context.actor()).await?;
     let membership = read_membership(tx, user).await.map_err(absent_target)?;
-    if membership.revision != revision {
+    if !if_match.admits(membership.version) {
         return Err(Error::OrganizationAuthorityConflict);
     }
     if membership.enabled
@@ -630,6 +644,6 @@ pub(crate) async fn apply_removal(
     user: &UserId,
 ) -> Result<(), Error> {
     let membership = read_membership(tx, user).await.map_err(absent_target)?;
-    repository::remove_membership(tx, user, next_revision(membership.revision)?).await?;
+    repository::remove_membership(tx, user, next_version(membership.version)?.get()).await?;
     repository::record_event(tx, context, user, OrganizationLifecycleAction::Removed).await
 }
