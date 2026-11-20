@@ -25,6 +25,7 @@ url.workspace = true
 zeroize = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
+coral-aws.workspace = true
 coral-edition = { workspace = true, features = ["test-fixtures"] }
 toml.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }

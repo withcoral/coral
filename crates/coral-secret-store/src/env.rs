@@ -197,6 +197,7 @@ mod tests {
             &BuildEnvironment {
                 policy: coral_outbound::DestinationPolicy::default(),
                 env: &no_env,
+                aws: &coral_aws::Environment::default(),
             },
         )
         .unwrap()

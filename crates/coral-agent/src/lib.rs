@@ -119,6 +119,8 @@ impl Section {
         let environment = BuildEnvironment {
             policy,
             env: &*dependencies.env,
+            // A model client signs no AWS request.
+            aws: &coral_aws::Environment::default(),
         };
         let api_key = match &self.api_key_env {
             Some(name) => {

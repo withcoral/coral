@@ -215,8 +215,9 @@ impl SecretStoreDefinitions {
         &self,
         policy: coral_outbound::DestinationPolicy,
         env: &EnvReader,
+        aws: &coral_aws::Environment,
     ) -> Result<SecretStores, AppError> {
-        build(&self.named, &self.raw, &self.kinds, policy, env)
+        build(&self.named, &self.raw, &self.kinds, policy, env, aws)
     }
 }
 
@@ -226,11 +227,13 @@ fn build(
     kinds: &SecretStoreKinds,
     policy: coral_outbound::DestinationPolicy,
     env: &EnvReader,
+    aws: &coral_aws::Environment,
 ) -> Result<SecretStores, AppError> {
     let kinds = with_core_kinds(kinds, Arc::clone(env));
     let environment = BuildEnvironment {
         policy,
         env: &**env,
+        aws,
     };
     let mut stores = Vec::with_capacity(raw.len());
     for entry in entries(named, raw, &kinds)? {
@@ -333,6 +336,7 @@ mod tests {
         validated_with(raw, kinds)?.secret_stores_from(
             DestinationPolicy::default(),
             &(Arc::new(move |name: &str| Ok(env(name))) as coral_secret_store::EnvReader),
+            &coral_aws::Environment::default(),
         )
     }
 

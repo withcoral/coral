@@ -47,6 +47,7 @@ fn build(
         &BuildEnvironment {
             policy: DestinationPolicy::new(NetworkAccess::HttpAndHttps, NetworkAccess::Deny),
             env: &env,
+            aws: &coral_aws::Environment::default(),
         },
     )
 }

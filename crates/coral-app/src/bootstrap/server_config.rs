@@ -465,6 +465,7 @@ impl DeploymentConfig {
         self.secret_stores_from(
             policy,
             &(std::sync::Arc::new(AppEnvironment::env_var) as coral_secret_store::EnvReader),
+            &super::env::aws_environment(),
         )
     }
 
@@ -472,9 +473,10 @@ impl DeploymentConfig {
         &self,
         policy: coral_outbound::DestinationPolicy,
         env: &coral_secret_store::EnvReader,
+        aws: &coral_aws::Environment,
     ) -> Result<coral_secret_store::SecretStores, AppError> {
         match &self.secret_stores {
-            Some(defined) => defined.build(policy, env),
+            Some(defined) => defined.build(policy, env, aws),
             None => Ok(coral_secret_store::SecretStores::disabled()),
         }
     }
@@ -2153,6 +2155,7 @@ client_secret = 'test-secret'
                 .secret_stores_from(
                     coral_outbound::DestinationPolicy::default(),
                     &(std::sync::Arc::new(|_: &str| Ok(None)) as coral_secret_store::EnvReader),
+                    &coral_aws::Environment::default(),
                 )
                 .expect(raw);
             assert_eq!(stores.is_disabled(), disabled, "{raw:?}");

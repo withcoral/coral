@@ -140,6 +140,8 @@ pub struct BuildEnvironment<'a> {
     /// Reads one process environment variable. Bootstrap owns the environment,
     /// so a store kind reads it only through this.
     pub env: &'a dyn Fn(&str) -> Result<Option<String>, VarError>,
+    /// The environment AWS credential lookup reads, as bootstrap saw it.
+    pub aws: &'a coral_aws::Environment,
 }
 
 impl BuildEnvironment<'_> {
@@ -252,6 +254,7 @@ mod tests {
         let environment = BuildEnvironment {
             policy: coral_outbound::DestinationPolicy::default(),
             env: &env,
+            aws: &coral_aws::Environment::default(),
         };
         assert_eq!(environment.secret("f", "SET").unwrap().expose(), "value");
         for (name, reason) in [
