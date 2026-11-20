@@ -210,25 +210,14 @@ We will therefore write three things in the Sub-agent's crate: the system prompt
 can call, and the code that writes each tool result, including the wording of each failure. The Sub-agent's model will
 never receive core's MCP instructions or core's MCP tool descriptions, which change to suit outside agents.
 
-The model's tools include `end_task`, as core's MCP tools do. Sailfish was trained in Pi against core's MCP tools, and
-it ends nearly every task by calling `end_task` and then writing its answer. Without that tool, a Sub-agent that held
-its answer looked for another closing call: it started Runs that only returned the answer, or waited on Runs that had
-ended, until the lead stopped it or the Turn used all its model calls. The Sub-agent's `end_task` takes core's
-arguments and answers with core's fields, but it ends nothing: the lead owns the Task, and the Turn ends on the
-message that follows.
+The model's tools include core's `end_task`, which Sailfish calls before nearly every answer. It takes core's arguments
+and ends nothing: the lead owns the Task, and the Turn ends on the message that follows.
 
 When a change in core alters a value that the Sub-agent's crate reads, the crate stops compiling in the same pull
 request. The author then updates it so that the model reads what it read before.
 
-**Rejected:**
-
-- **A checked-in file of hashes of that text, verified in CI.** It would only report a change, and the quickest way to
-  satisfy such a check is to update the file.
-- **Tell the model, and not give it `end_task`, that a message without a tool call is its answer.** The system prompt
-  already says so, and briefs that repeated it still left most Turns ending on a Run or a `wait`, some of them Runs
-  that only returned the answer.
-- **An `answer` tool that ends the Turn.** No model has been trained on it, while Sailfish calls `end_task` before
-  nearly every answer.
+**Rejected:** a checked-in file of hashes of that text, verified in CI. It would only report a change, and the quickest
+way to satisfy such a check is to update the file.
 
 ### 5. The Sub-agent has its own search tool
 
