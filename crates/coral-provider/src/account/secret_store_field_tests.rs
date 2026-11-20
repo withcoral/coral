@@ -155,26 +155,35 @@ impl Shared {
         error
     }
 
+    /// The Owner's evidence for the `shared` Provider.
     async fn evidence(&self) -> CredentialEvidence {
-        crate::setup_tests::credential_evidence(
-            &self.db.database(),
-            &self.workspace,
+        self.evidence_as(
             "shared",
-            "getPrivateForecast",
             &crate::setup_tests::user_principal(self.owner.actor()),
         )
         .await
         .unwrap()
     }
 
+    /// Evidence that `principal` may call the Provider published as `namespace`.
+    async fn evidence_as(
+        &self,
+        namespace: &str,
+        principal: &coral_workspace::Principal,
+    ) -> Result<CredentialEvidence, Error> {
+        crate::setup_tests::credential_evidence(
+            &self.db.database(),
+            &self.workspace,
+            namespace,
+            "getPrivateForecast",
+            principal,
+        )
+        .await
+    }
+
+    /// The `shared` Provider's token, as a dispatch reads it.
     async fn read(&self, evidence: &CredentialEvidence) -> Result<String, Error> {
-        self.accounts
-            .credentials(
-                &self.workspace,
-                &self.provider,
-                evidence,
-                UnixNanos::new(20),
-            )
+        self.credentials(&self.provider, evidence)
             .await
             .map(|values| {
                 values
@@ -183,6 +192,17 @@ impl Shared {
                     .expose()
                     .to_owned()
             })
+    }
+
+    /// Every Credential Field of `provider`, as a dispatch reads them.
+    async fn credentials(
+        &self,
+        provider: &ProviderId,
+        evidence: &CredentialEvidence,
+    ) -> Result<CredentialValues, Error> {
+        self.accounts
+            .credentials(&self.workspace, provider, evidence, UnixNanos::new(20))
+            .await
     }
 
     async fn view(&self) -> AccountView {
@@ -598,9 +618,9 @@ async fn disconnecting_removes_the_reference_and_leaves_the_store_alone() {
     assert_eq!(cleared, 1, "the reference went with the Account's values");
 }
 
-/// A connected `fixed` Account in the `shared()` Workspace that sends `email` and
-/// `api_token` as HTTP Basic, Jira's shape.
-async fn publish_basic(f: &Shared) -> (ProviderId, ProviderAccountId) {
+/// A Setup in the `shared()` Workspace whose confirmed configuration sends `email`
+/// and `api_token` as HTTP Basic, Jira's shape, and its configuration revision.
+async fn basic_setup(f: &Shared) -> (crate::ProviderSetupId, i64) {
     let setup = f
         .providers
         .prepare_openapi_fixture(
@@ -645,14 +665,21 @@ async fn publish_basic(f: &Shared) -> (ProviderId, ProviderAccountId) {
         .await
         .unwrap();
     assert!(confirmed.errors.is_empty(), "{:?}", confirmed.errors);
+    (setup.id().clone(), confirmed.revision)
+}
+
+/// A connected `fixed` Account in the `shared()` Workspace that sends `email` and
+/// `api_token` as HTTP Basic.
+async fn publish_basic(f: &Shared) -> (ProviderId, ProviderAccountId) {
+    let (setup, revision) = basic_setup(f).await;
     let secret = |value: &str| Secret::new(value.into()).unwrap();
     let grant = f
         .accounts
         .authorize_setup(
             &f.owner,
             &f.workspace,
-            setup.id(),
-            confirmed.revision,
+            &setup,
+            revision,
             CredentialValues::new(BTreeMap::from([
                 ("email".to_owned(), secret("typed@example.com")),
                 ("api_token".to_owned(), secret("typed-token")),
@@ -667,7 +694,7 @@ async fn publish_basic(f: &Shared) -> (ProviderId, ProviderAccountId) {
             &f.owner,
             crate::tests::publication_request(
                 &f.workspace,
-                setup.id(),
+                &setup,
                 "basic",
                 crate::access::CredentialRoute::Fixed,
                 "a0000000-0000-4000-8000-000000000098",
@@ -692,10 +719,6 @@ async fn publish_basic(f: &Shared) -> (ProviderId, ProviderAccountId) {
 // Catches: a typed field lost beside a reference, or a stored value that Basic
 // would split at its colon, so the service reads another username.
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one Account follows a refused field, a mixed save and a refused stored value"
-)]
 async fn one_account_mixes_a_typed_value_and_a_reference() {
     let f = shared().await;
     let (provider, account) = publish_basic(&f).await;
@@ -758,20 +781,14 @@ async fn one_account_mixes_a_typed_value_and_a_reference() {
         .submit_fields(&f.owner, &f.workspace, start().await, fields("token"))
         .await
         .unwrap();
-    let evidence = crate::setup_tests::credential_evidence(
-        &f.db.database(),
-        &f.workspace,
-        "basic",
-        "getPrivateForecast",
-        &crate::setup_tests::user_principal(f.owner.actor()),
-    )
-    .await
-    .unwrap();
-    let values = f
-        .accounts
-        .credentials(&f.workspace, &provider, &evidence, UnixNanos::new(20))
+    let evidence = f
+        .evidence_as(
+            "basic",
+            &crate::setup_tests::user_principal(f.owner.actor()),
+        )
         .await
         .unwrap();
+    let values = f.credentials(&provider, &evidence).await.unwrap();
     assert_eq!(values.get("email").unwrap().expose(), "typed@example.com");
     assert_eq!(values.get("api_token").unwrap().expose(), "stored-canary");
 
@@ -805,11 +822,7 @@ async fn one_account_mixes_a_typed_value_and_a_reference() {
         connected.account.as_ref().unwrap().connected_at,
         Some(UnixNanos::new(10))
     );
-    let values = f
-        .accounts
-        .credentials(&f.workspace, &provider, &evidence, UnixNanos::new(20))
-        .await
-        .unwrap();
+    let values = f.credentials(&provider, &evidence).await.unwrap();
     assert_eq!(values.get("email").unwrap().expose(), "typed@example.com");
 }
 
@@ -1320,13 +1333,15 @@ async fn updating_a_provider_moves_the_setups_references_to_its_shared_account()
 /// connection the Workspace Owner has started and not yet completed.
 struct AgentAccount {
     provider: ProviderId,
+    namespace: &'static str,
     agent: coral_workspace::Principal,
     started: AuthorizationId,
 }
 
 impl Shared {
-    async fn agent_account(&self) -> AgentAccount {
-        let provider = crate::tests::publish_provider(
+    /// A `caller` Provider with one token field, published as `agentic`.
+    async fn publish_token_for_callers(&self) -> ProviderId {
+        crate::tests::publish_provider(
             &self.providers,
             &self.owner,
             &self.workspace,
@@ -1334,7 +1349,37 @@ impl Shared {
             "agentic",
             crate::access::CredentialRoute::Caller,
         )
-        .await;
+        .await
+        .id()
+        .clone()
+    }
+
+    /// A `caller` Provider that sends `email` and `api_token` as HTTP Basic,
+    /// published as `agentbasic`.
+    async fn publish_basic_for_callers(&self) -> ProviderId {
+        let (setup, _) = basic_setup(self).await;
+        self.providers
+            .publish_workspace_provider(
+                &self.owner,
+                crate::tests::publication_request(
+                    &self.workspace,
+                    &setup,
+                    "agentbasic",
+                    crate::access::CredentialRoute::Caller,
+                    "a0000000-0000-4000-8000-000000000099",
+                ),
+            )
+            .await
+            .unwrap()
+            .skip_search()
+            .published_provider()
+            .unwrap()
+            .id()
+            .clone()
+    }
+
+    /// A new Agent, and the Owner's start of its Account on `provider`.
+    async fn agent_account(&self, provider: ProviderId, namespace: &'static str) -> AgentAccount {
         let issued = self
             .workspaces
             .create_agent(
@@ -1363,7 +1408,7 @@ impl Shared {
                 &self.owner,
                 &self.workspace,
                 agent.id(),
-                provider.id(),
+                &provider,
                 authorization_request(),
                 None,
             )
@@ -1371,43 +1416,11 @@ impl Shared {
             .unwrap()
             .id;
         AgentAccount {
-            provider: provider.id().clone(),
+            provider,
+            namespace,
             agent,
             started,
         }
-    }
-
-    async fn agent_evidence(&self, account: &AgentAccount) -> Result<CredentialEvidence, Error> {
-        crate::setup_tests::credential_evidence(
-            &self.db.database(),
-            &self.workspace,
-            "agentic",
-            "getPrivateForecast",
-            &account.agent,
-        )
-        .await
-    }
-
-    async fn agent_read(
-        &self,
-        account: &AgentAccount,
-        evidence: &CredentialEvidence,
-    ) -> Result<String, Error> {
-        self.accounts
-            .credentials(
-                &self.workspace,
-                &account.provider,
-                evidence,
-                UnixNanos::new(20),
-            )
-            .await
-            .map(|values| {
-                values
-                    .get(CredentialValues::TOKEN)
-                    .unwrap()
-                    .expose()
-                    .to_owned()
-            })
     }
 }
 
@@ -1418,7 +1431,9 @@ impl Shared {
 #[tokio::test]
 async fn an_agents_account_takes_a_reference_read_for_each_dispatch() {
     let f = shared().await;
-    let account = f.agent_account().await;
+    let account = f
+        .agent_account(f.publish_token_for_callers().await, "agentic")
+        .await;
     let reads = f.store.reads();
 
     let saved = f
@@ -1451,36 +1466,58 @@ async fn an_agents_account_takes_a_reference_read_for_each_dispatch() {
         .account
         .unwrap();
     assert!(view.secret_references.contains_key(CredentialValues::TOKEN));
-    let evidence = f.agent_evidence(&account).await.unwrap();
-    assert_eq!(
-        f.agent_read(&account, &evidence).await.unwrap(),
-        "stored-canary"
-    );
+    let evidence = f
+        .evidence_as(account.namespace, &account.agent)
+        .await
+        .unwrap();
+    let token = || async {
+        f.credentials(&account.provider, &evidence)
+            .await
+            .unwrap()
+            .get(CredentialValues::TOKEN)
+            .unwrap()
+            .expose()
+            .to_owned()
+    };
+    assert_eq!(token().await, "stored-canary");
     f.store.set(PATH, "token", "rotated-canary");
-    assert_eq!(
-        f.agent_read(&account, &evidence).await.unwrap(),
-        "rotated-canary"
-    );
+    assert_eq!(token().await, "rotated-canary");
 }
 
-// Catches: an Agent's removal that keeps its references, or Coral touching the store.
+// Catches: an Agent's removal that keeps its typed values or its references, or
+// Coral touching the store.
 #[tokio::test]
-async fn removing_an_agent_removes_its_references_and_leaves_the_store_alone() {
+async fn removing_an_agent_removes_its_typed_values_and_references_and_leaves_the_store_alone() {
     let f = shared().await;
-    let account = f.agent_account().await;
+    let account = f
+        .agent_account(f.publish_basic_for_callers().await, "agentbasic")
+        .await;
+    let fields = BTreeMap::from([
+        (
+            "email".to_owned(),
+            CredentialField::Value(Secret::new("typed@example.com".into()).unwrap()),
+        ),
+        (
+            "api_token".to_owned(),
+            CredentialField::Reference(
+                SecretReference::new("team".into(), PATH.into(), Some("token".into())).unwrap(),
+            ),
+        ),
+    ]);
     let id = f
         .accounts
-        .submit_fields(
-            &f.owner,
-            &f.workspace,
-            account.started,
-            reference("team", PATH, "token"),
-        )
+        .submit_fields(&f.owner, &f.workspace, account.started, fields)
         .await
         .unwrap()
         .account_id
         .unwrap();
-    let evidence = f.agent_evidence(&account).await.unwrap();
+    let evidence = f
+        .evidence_as(account.namespace, &account.agent)
+        .await
+        .unwrap();
+    let values = f.credentials(&account.provider, &evidence).await.unwrap();
+    assert_eq!(values.get("email").unwrap().expose(), "typed@example.com");
+    assert_eq!(values.get("api_token").unwrap().expose(), "stored-canary");
     let reads = f.store.reads();
 
     coral_administration::AccessLifecycleModule::new(f.db.database(), f.workspaces.clone())
@@ -1489,12 +1526,10 @@ async fn removing_an_agent_removes_its_references_and_leaves_the_store_alone() {
         .unwrap();
 
     assert!(matches!(
-        f.agent_read(&account, &evidence).await,
+        f.credentials(&account.provider, &evidence).await,
         Err(Error::AccountRequired)
     ));
     assert_eq!(f.store.reads(), reads, "cleanup never reaches the store");
-    // The schema refuses a reference on an Account with no typed values, so this
-    // matches only when removal cleared both.
     let scrubbed =
         f.db.execute_fixture_sql(&format!(
             "UPDATE provider_accounts SET secret_references = NULL \
@@ -1503,5 +1538,8 @@ async fn removing_an_agent_removes_its_references_and_leaves_the_store_alone() {
         ))
         .await
         .unwrap();
-    assert_eq!(scrubbed, 1, "removal took the typed values and references");
+    assert_eq!(
+        scrubbed, 1,
+        "removal took the typed value and the reference"
+    );
 }
