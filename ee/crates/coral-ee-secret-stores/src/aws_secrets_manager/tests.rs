@@ -16,6 +16,7 @@ use serde_json::json;
 use wiremock::matchers::{body_json, body_string_contains, header, header_regex, method};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use super::regional_endpoint;
 use crate::AwsSecretsManagerKind;
 
 const ACCOUNT: &str = "111122223333";
@@ -442,6 +443,11 @@ fn settings_are_checked_at_bootstrap_and_name_the_field() {
         ),
         None
     );
+    // An isolated partition's region works only with an endpoint.
+    assert_eq!(
+        rejection("prod-aws", &good.replace("'eu-west-2'", "'us-iso-east-1'")),
+        None
+    );
     let long_name = "a".repeat(59);
     for (name, raw, field) in [
         ("prod-aws", good.replace(ACCOUNT, "1234"), "account_id"),
@@ -468,6 +474,11 @@ fn settings_are_checked_at_bootstrap_and_name_the_field() {
             "secret_key",
         ),
         (long_name.as_str(), good.clone(), "name"),
+        (
+            "prod-aws",
+            format!("account_id = '{ACCOUNT}'\nregion = 'us-iso-east-1'\n"),
+            "endpoint",
+        ),
     ] {
         let error = rejection(name, &raw).expect(&raw);
         assert_eq!(error.field(), field, "{raw}: {error}");
@@ -485,5 +496,55 @@ fn a_rejected_value_is_never_repeated() {
     ] {
         let error = rejection("prod-aws", &raw).expect(&raw).to_string();
         assert!(!error.contains(PASTED), "{raw}: {error}");
+    }
+}
+
+/// Without `endpoint`, a store reads through AWS's endpoint for its region.
+#[test]
+fn a_region_has_aws_s_endpoint_unless_its_partition_is_isolated() {
+    for (region, expected) in [
+        (
+            "eu-west-2",
+            Some("https://secretsmanager.eu-west-2.amazonaws.com/"),
+        ),
+        (
+            "us-gov-west-1",
+            Some("https://secretsmanager.us-gov-west-1.amazonaws.com/"),
+        ),
+        (
+            "cn-north-1",
+            Some("https://secretsmanager.cn-north-1.amazonaws.com.cn/"),
+        ),
+        ("us-iso-east-1", None),
+        ("us-isob-east-1", None),
+        ("eu-isoe-west-1", None),
+    ] {
+        assert_eq!(
+            regional_endpoint(region).map(|address| address.0.to_string()),
+            expected.map(str::to_owned),
+            "{region}"
+        );
+    }
+}
+
+/// A store that is down answers as down, however large its answer.
+#[tokio::test]
+async fn an_unreadable_failure_is_decided_by_its_status() {
+    for (status, expected) in [(503, Error::Unreachable), (403, Error::PermissionDenied)] {
+        let aws = aws().await;
+        Mock::given(method("POST"))
+            .and(header("x-amz-target", "secretsmanager.GetSecretValue"))
+            .respond_with(ResponseTemplate::new(status).set_body_bytes(vec![
+                b' ';
+                crate::store_http::BODY_LIMIT
+                    + 1
+            ]))
+            .mount(&aws)
+            .await;
+        let error = store(&aws, Edition::Enterprise)
+            .read(&reference("team/jira", None))
+            .await
+            .unwrap_err();
+        assert_eq!(error, expected, "{status}");
     }
 }

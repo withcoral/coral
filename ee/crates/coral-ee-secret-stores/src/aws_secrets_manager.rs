@@ -32,8 +32,9 @@ const CURRENT: &str = "AWSCURRENT";
 pub struct SecretsManagerSettings {
     /// The region that holds the secrets, checked by `coral_aws::Settings`.
     pub region: String,
-    /// Where to send reads, in place of AWS's regional endpoint.
-    pub endpoint: Option<StoreAddress>,
+    /// Where to send reads: the `endpoint` setting, or else
+    /// [`regional_endpoint`].
+    pub endpoint: StoreAddress,
     /// The identity that signs each read.
     pub identity: AwsIdentity,
 }
@@ -48,8 +49,7 @@ pub struct SecretsManagerStore {
 }
 
 impl SecretsManagerStore {
-    /// Prepares a store. It reads through AWS's regional endpoint unless
-    /// the settings name another. Nothing is sent until the first read.
+    /// Prepares a store. Nothing is sent until the first read.
     #[must_use]
     pub fn new(
         client: coral_outbound::Client,
@@ -63,7 +63,7 @@ impl SecretsManagerStore {
         } = settings;
         Self {
             client,
-            endpoint: endpoint.map_or_else(|| regional_endpoint(&region), |address| address.0),
+            endpoint: endpoint.0,
             region,
             identity,
             clock,
@@ -146,15 +146,23 @@ impl SecretStore for SecretsManagerStore {
             .await
             .map_err(|_error| Error::Unreachable)?;
         let status = response.status();
-        let error_type = response
-            .headers()
-            .get("x-amzn-errortype")
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let body = read_body(response).await?;
+        if status.is_server_error()
+            || status.is_redirection()
+            || status == StatusCode::TOO_MANY_REQUESTS
+        {
+            return Err(Error::Unreachable);
+        }
         if status != StatusCode::OK {
+            let error_type = response
+                .headers()
+                .get("x-amzn-errortype")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            // The status alone decides when the body is unreadable.
+            let body = read_body(response).await.unwrap_or_default();
             return Err(error(status, error_type.as_deref(), &body));
         }
+        let body = read_body(response).await?;
         let answer: Answer =
             serde_json::from_slice(&body).map_err(|_error| Error::MalformedResponse)?;
         // A binary secret has `SecretBinary` instead.
@@ -175,29 +183,35 @@ impl SecretStore for SecretsManagerStore {
     }
 }
 
-/// AWS's Secrets Manager endpoint for `region`.
-fn regional_endpoint(region: &str) -> Url {
-    let domain = if region.starts_with("cn-") {
+/// AWS's Secrets Manager endpoint for a region `coral_aws::Settings`
+/// checked, in the `aws`, `aws-cn` and `aws-us-gov` partitions. `None` for a
+/// region of an isolated partition, such as `us-iso-east-1`, whose endpoint
+/// has another domain.
+#[must_use]
+pub fn regional_endpoint(region: &str) -> Option<StoreAddress> {
+    let mut parts = region.split('-');
+    let (Some(area), Some(location)) = (parts.next(), parts.next()) else {
+        return None;
+    };
+    if location.starts_with("iso") {
+        return None;
+    }
+    let domain = if area == "cn" {
         "amazonaws.com.cn"
     } else {
         "amazonaws.com"
     };
     Url::parse(&format!("https://{SERVICE}.{region}.{domain}/"))
-        .unwrap_or_else(|_unreachable| unreachable!("a checked region makes a valid host"))
+        .ok()
+        .map(StoreAddress)
 }
 
-/// The port's error for an answer other than 200.
+/// The port's error for a 4xx answer.
 fn error(status: StatusCode, header: Option<&str>, body: &[u8]) -> Error {
     #[derive(Deserialize)]
     struct Failure {
         #[serde(rename = "__type")]
         error_type: Option<String>,
-    }
-    if status.is_server_error()
-        || status.is_redirection()
-        || status == StatusCode::TOO_MANY_REQUESTS
-    {
-        return Error::Unreachable;
     }
     let from_body = serde_json::from_slice::<Failure>(body)
         .ok()

@@ -200,12 +200,16 @@ fn aws_definition(
         raw.role_arn.as_deref(),
     )
     .map_err(aws_error)?;
-    let endpoint = raw
-        .endpoint
-        .as_deref()
-        .map(StoreAddress::parse)
-        .transpose()
-        .map_err(|error| SettingError::new("endpoint", error.to_string()))?;
+    let endpoint = match raw.endpoint.as_deref() {
+        Some(endpoint) => StoreAddress::parse(endpoint)
+            .map_err(|error| SettingError::new("endpoint", error.to_string()))?,
+        None => aws_secrets_manager::regional_endpoint(&raw.region).ok_or_else(|| {
+            SettingError::new(
+                "endpoint",
+                "must be set for a region of an isolated partition",
+            )
+        })?,
+    };
     let identity = coral_aws::AwsIdentity::new(checked, name.as_str(), aws).map_err(aws_error)?;
     Ok(SecretsManagerSettings {
         region: raw.region,

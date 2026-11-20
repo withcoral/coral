@@ -218,10 +218,10 @@ role_arn = "arn:aws:iam::111122223333:role/coral-prod-secrets"
 | `account_id` | The 12-digit AWS account that holds the secrets. Coral reads only when its credentials are in this account.                                      | Yes      | N/A                           |
 | `region`     | The region that holds the secrets, such as `eu-west-2`                                                                                            | Yes      | N/A                           |
 | `profile`    | A profile in the AWS config file to get credentials from                                                                                          | No       | The default credential chain  |
-| `role_arn`   | A role in `account_id` for Coral to assume. Coral names its session `coral-<name>`, so the store's `name` must be 58 characters or fewer.          | No       | None                          |
-| `endpoint`   | Origin of the Secrets Manager API, such as a VPC or FIPS endpoint. Must not include a path.                                                       | No       | AWS's endpoint for `region`   |
+| `role_arn`   | A role in `account_id` for Coral to assume. Its session is `coral-<name>`. With or without a role, the store's `name` must be 58 characters or fewer. | No       | None                          |
+| `endpoint`   | Origin of the Secrets Manager API, such as a VPC or FIPS endpoint. Must not include a path. Required for a region of an isolated partition, such as `us-iso-east-1`. | No       | AWS's endpoint for `region`   |
 
-To find the account of the credentials you have, run `aws sts get-caller-identity` and read `Account`.
+To find the account of the credentials you have, run `aws sts get-caller-identity` and read `Account`. If the store sets `profile`, add `--profile` with the same name.
 
 A workspace owner who chooses an AWS store enters a **Secret name**, such as `prod/jira`, and an optional **JSON key**. Without a key, Coral reads the whole secret string. With a key, the secret string must be a JSON object, and Coral reads that key's string value. Coral always reads the current version, `AWSCURRENT`. Coral refuses an ARN, because an ARN can name another account. To read from another account, add a store whose `role_arn` is in that account. Coral cannot read a binary secret.
 
@@ -285,7 +285,7 @@ When you set `role_arn`, the role must trust the identity that Coral's credentia
 }
 ```
 
-AWS CloudTrail shows each read under the session name `coral-<name>`.
+When you set `role_arn`, AWS CloudTrail shows each read under the session name `coral-<name>`.
 
 #### Limit what each store can read
 
