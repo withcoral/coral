@@ -1,7 +1,8 @@
-//! What the Sub-agent's tools `exec`, `wait` and `cancel` do.
+//! What the Sub-agent's tools `exec`, `wait`, `cancel` and `end_task` do.
 //!
 //! Each tool acts as the lead's caller, in the lead's Task, and answers with
-//! the JSON text the model reads: a Run as it stands, or a failure.
+//! the JSON text the model reads: a Run as it stands, the outcome that
+//! `end_task` records, or a failure.
 
 #[cfg(test)]
 mod tests;
@@ -72,17 +73,13 @@ impl RunTools {
             "exec" => self.exec(caller, arguments).await,
             "wait" => self.wait(caller, arguments).await,
             "cancel" => self.cancel(caller, arguments).await,
+            // The one tool that answers without a Run.
+            "end_task" => return (end_task(caller, arguments).unwrap_or_else(failed), None),
             _ => Err(Failure::unknown_tool(name)),
         };
         let started = outcome.as_ref().ok().filter(|_| name == "exec");
         let started = started.map(|update| update.run_id().clone());
-        let text = match outcome {
-            Ok(update) => run_result(&update),
-            Err(failure) => {
-                coral_telemetry::record_failure(&tracing::Span::current(), failure.code);
-                failure.text()
-            }
-        };
+        let text = outcome.map_or_else(failed, |update| run_result(&update));
         (text, started)
     }
 
@@ -178,6 +175,47 @@ impl RunTools {
             .await
             .map_err(run_failure)
     }
+}
+
+/// What `end_task` answers: the lead's Task and the outcome, in the fields of
+/// core's `end_task`. It ends nothing. The lead owns its Task, and the Turn
+/// ends on the model's next message without a tool call. A model trained on
+/// core's tools calls `end_task` before it answers (ADR 0040).
+fn end_task(caller: &Caller, arguments: &str) -> Result<String, Failure> {
+    let end: EndTaskArguments = parse_arguments("end_task", arguments)?;
+    if end.task_id != caller.task_id.as_str() {
+        return Err(Failure::other_task_to_end(&caller.task_id));
+    }
+    Ok(json!({"task_id": end.task_id, "outcome": end.outcome}).to_string())
+}
+
+/// A failure as the model reads it, recorded on the call's span.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "it is the `unwrap_or_else` of every tool's outcome"
+)]
+fn failed(failure: Failure) -> String {
+    coral_telemetry::record_failure(&tracing::Span::current(), failure.code);
+    failure.text()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EndTaskArguments {
+    task_id: String,
+    outcome: Outcome,
+    /// Accepted as core accepts it. Nothing reads it but a reader of the
+    /// thread.
+    #[serde(rename = "feedback")]
+    _feedback: Option<String>,
+}
+
+/// How the model says its work went.
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Outcome {
+    Success,
+    Failure,
 }
 
 #[derive(Deserialize)]
@@ -297,7 +335,9 @@ impl Failure {
     fn unknown_tool(name: &str) -> Self {
         Self::shown(
             "unknown_tool",
-            format!("There is no tool named {name:?}. Call exec, wait, cancel or search."),
+            format!(
+                "There is no tool named {name:?}. Call exec, wait, cancel, search or end_task."
+            ),
         )
     }
 
@@ -306,6 +346,14 @@ impl Failure {
         Self::shown(
             "wrong_task",
             format!("Nothing ran. Every exec runs in your Task: pass task_id \"{task_id}\"."),
+        )
+    }
+
+    fn other_task_to_end(lead_task: &TaskId) -> Self {
+        let task_id = lead_task.as_str();
+        Self::shown(
+            "wrong_task",
+            format!("Nothing was recorded. Your Task is \"{task_id}\": pass that task_id."),
         )
     }
 
