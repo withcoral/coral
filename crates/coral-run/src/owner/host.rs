@@ -279,7 +279,7 @@ fn begin(
 /// wake gap apart; the periodic precheck covers the outage.
 ///
 /// A Run stream's loop subscribes to nothing of its own: it listens to its
-/// Coral Instance's wake reader, which relays each ring (ADR 0027).
+/// Coral Instance's wake reader, which relays each ring.
 #[derive(Default)]
 struct Subscription {
     task: Option<tokio::task::JoinHandle<()>>,

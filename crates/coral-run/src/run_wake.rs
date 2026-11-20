@@ -1,4 +1,4 @@
-//! The wake-up reader (ADR 0027, Outside requests and the Run's head).
+//! The wake-up reader of a Coral Instance's Run stream loops.
 //!
 //! A writer other than a Run's own loop that commits on a running Run a Run
 //! Executor holds moves the Run's head, and adds nothing else: the receiver

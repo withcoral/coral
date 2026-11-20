@@ -1318,7 +1318,7 @@ async fn with_the_change_listener_down_the_periodic_precheck_still_finds_a_compl
 /// Catches: a Run stream's loop parked on a connection request that learns
 /// of its end only from the periodic precheck. A loop subscribes to no
 /// change signal of its own: its Coral Instance's wake reader relays each
-/// ring (ADR 0027).
+/// ring.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_completed_connection_wakes_a_run_streams_loop_through_its_coral_instance() {
     use coral_run_executor::wire::v1::{invocation_result, run_response};

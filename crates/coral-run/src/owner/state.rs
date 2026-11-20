@@ -460,7 +460,7 @@ pub(crate) struct OwnerState {
     wake: Wake,
 }
 
-/// What a Run stream loop learned from its wake-ups (ADR 0027).
+/// What a Run stream loop learned from its wake-ups.
 #[derive(Debug, Default)]
 struct Wake {
     /// Its read of its Run after a wake.
@@ -1120,7 +1120,7 @@ impl OwnerState {
         }
     }
 
-    /// The loop read its Run after a wake (ADR 0027). Terminal: the loop
+    /// The loop read its Run after a wake. Terminal: the loop
     /// stops as on a chunk that found the Run ended, and the Program hears
     /// the Run's termination. The head it tracks: nothing happened. Moved:
     /// it takes the head the Run row shows when no chunk is in flight (the

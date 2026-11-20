@@ -1,4 +1,4 @@
-//! Outside requests for a Run a Run Executor holds (ADR 0027): the Coral
+//! Outside requests for a Run a Run Executor holds: the Coral
 //! Instance that receives a decision or a cancellation commits it under the
 //! Run's claim and head, and the Run's stream loop, wherever its stream is,
 //! sees the head move and acts on it. On Postgres the request goes to
@@ -455,7 +455,7 @@ async fn a_run_ended_under_the_loops_chunk_terminates_its_program_once() {
 }
 
 /// Catches: a wake-up read that sends a statement for each Run stream's
-/// loop on its Coral Instance, the cost ADR 0027 rejects.
+/// loop on its Coral Instance.
 #[tokio::test]
 async fn a_wake_up_read_of_many_loops_sends_the_statements_of_one() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;

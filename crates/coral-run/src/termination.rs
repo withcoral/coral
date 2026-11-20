@@ -29,7 +29,7 @@ impl RunModule {
     /// Puts a cancellation in the Run's Run Inbox, whichever Coral Instance
     /// owns the Run, waits for its owner to record it and end the Run, and
     /// returns the Run as recorded. A Run a Run Executor holds is ended here
-    /// instead, in one chunk under its claim and head (ADR 0027).
+    /// instead, in one chunk under its claim and head.
     ///
     /// The cancellation is a Run Request identified by the Run: the first
     /// termination wins, and a repeat receives the recorded answer. The owner
@@ -103,9 +103,8 @@ impl RunModule {
 
     /// Ends the Run a Run Executor holds as canceled by `actor`, in one
     /// chunk under its claim and head: the Run's stream loop, whichever Coral
-    /// Instance holds it, sees the Run end and terminates the Program (ADR
-    /// 0027). Every nonterminal Invocation ends, and the open
-    /// Approval Requests close. A Run waiting for a take, or taken and not
+    /// Instance holds it, sees the Run end and terminates the Program. Every
+    /// nonterminal Invocation ends, and the open Approval Requests close. A Run waiting for a take, or taken and not
     /// started, ends at once too. It compares no clock: the head orders it
     /// against a deadline that the loop or the sweeper writes. A Run that
     /// ended, or whose termination is recorded, writes nothing: the record

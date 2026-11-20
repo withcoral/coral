@@ -101,7 +101,7 @@ pub(crate) enum Check {
     Approvals,
 }
 
-/// The Run row as a Run stream's loop reads it on a wake (ADR 0027).
+/// The Run row as a Run stream's loop reads it on a wake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunNow {
     /// The Run is terminal, with the termination it records, if any.
@@ -271,7 +271,7 @@ pub(crate) enum Message {
     /// retires, and the Run stays as it is.
     Detached,
     /// The wake-up reader found a Run stream's Run ended or moved past what
-    /// its loop wrote: another writer committed on it (ADR 0027).
+    /// its loop wrote: another writer committed on it.
     Woken,
     /// The loop's read of its Run after a wake; `None` when the read failed
     /// or found no row, which the next wake reads again.
@@ -484,7 +484,7 @@ struct Shared {
 }
 
 /// What a Run stream's owner publishes for its Coral Instance's wake-up
-/// reader (ADR 0027): its Run's Workspace, and the head it last wrote with
+/// reader: its Run's Workspace, and the head it last wrote with
 /// whether a chunk of its own is in flight.
 struct StreamHead {
     workspace_id: WorkspaceId,

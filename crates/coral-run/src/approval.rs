@@ -14,7 +14,7 @@
 //! in the Run's Run Inbox until the Run's owner, in whichever Coral Instance
 //! holds the Run, records it in its next chunk. On a Run a Run Executor holds,
 //! this Coral Instance records it itself, under the Run's claim and head,
-//! and the Run's stream loop sees the head move (ADR 0027). The first
+//! and the Run's stream loop sees the head move. The first
 //! decision wins, and a repeat receives the recorded answer. The decision
 //! reads no policy: the Policy Enforcement Point judges the approval when the
 //! Invocation dispatches. A request's deadline is the owner's timer: it
@@ -322,7 +322,7 @@ impl ApprovalModule {
     /// Decides one Approval Request and returns the request as recorded. An
     /// owned Run's decision goes through its Run Inbox, whichever Coral
     /// Instance owns the Run; a Run a Run Executor holds has it committed
-    /// here, under its claim and head (ADR 0027).
+    /// here, under its claim and head.
     ///
     /// Authentication supplies current Organization Membership; Workspace supplies
     /// the User's Workspace Membership authority. Comments are limited to 1024 UTF-8 bytes.
@@ -428,8 +428,7 @@ impl ApprovalModule {
 
     /// Commits `decision` on the Run a Run Executor holds, in one chunk under
     /// the Run's claim and head: the Run's stream loop, whichever Coral
-    /// Instance holds it, sees the head move and rereads the request (ADR
-    /// 0027). A
+    /// Instance holds it, sees the head move and rereads the request. A
     /// decline also ends the Invocation. It compares no clock: the decision
     /// is recorded as made, at this instance's time, and counts only if that
     /// is before the request's deadline, which the enforcement point
