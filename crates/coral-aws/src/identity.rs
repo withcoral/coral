@@ -10,12 +10,15 @@ use aws_credential_types::Credentials;
 use aws_credential_types::provider::error::CredentialsError;
 use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvider};
 use aws_sdk_sts::error::SdkError;
+use aws_sdk_sts::operation::assume_role::AssumeRoleError;
 use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign};
 use aws_sigv4::sign::v4;
 use aws_smithy_http_client::proxy::ProxyConfig;
 use aws_smithy_http_client::tls;
 use aws_smithy_runtime_api::client::http::SharedHttpClient;
 use aws_smithy_runtime_api::client::identity::Identity as SigningIdentity;
+use aws_smithy_runtime_api::client::orchestrator::HttpResponse;
+use aws_smithy_runtime_api::client::result::ConnectorError;
 use tokio::sync::Mutex;
 
 use crate::settings::session_name;
@@ -104,8 +107,8 @@ impl AwsIdentity {
     ///
     /// # Errors
     /// Returns [`SettingsError::SessionName`] when `coral-<name>` is not a
-    /// valid role session name, and [`SettingsError::HttpsProxy`] when the
-    /// proxy is not a URL.
+    /// valid role session name, and [`SettingsError::HttpsProxy`] or
+    /// [`SettingsError::AllProxy`] when the proxy is not a URL.
     pub fn new(settings: Settings, name: &str, env: &Environment) -> Result<Self, SettingsError> {
         Ok(Self {
             settings,
@@ -175,7 +178,9 @@ impl AwsIdentity {
         let checked = if let Some(checked) = fresh {
             checked
         } else {
-            // A failed refresh leaves nothing to fall back to.
+            // A failed refresh leaves no earlier credentials to fall back to.
+            // A source may still hand back unexpired ones it cached, which
+            // are good to use until they expire.
             let previous = checked.take();
             let loaded = match loaded {
                 Some(loaded) => loaded,
@@ -262,9 +267,14 @@ impl fmt::Debug for AwsIdentity {
 /// the process environment.
 fn http_client(env: &Environment) -> Result<SharedHttpClient, SettingsError> {
     let proxy = match env.https_proxy() {
-        Some((proxy, bypass)) => {
-            let proxy =
-                ProxyConfig::https(proxy).map_err(|_not_a_url| SettingsError::HttpsProxy)?;
+        Some((variable, proxy, bypass)) => {
+            let proxy = ProxyConfig::https(proxy).map_err(|_not_a_url| {
+                if variable == "ALL_PROXY" {
+                    SettingsError::AllProxy
+                } else {
+                    SettingsError::HttpsProxy
+                }
+            })?;
             match bypass {
                 Some(bypass) => proxy.no_proxy(bypass),
                 None => proxy,
@@ -315,9 +325,35 @@ fn is_throttling(code: Option<&str>) -> bool {
     matches!(code, Some("Throttling" | "ThrottlingException"))
 }
 
+/// Why no credentials came: an outage when a source could not be reached
+/// or STS was down or throttling, and otherwise none to be had, such as a
+/// refusal or a failed `credential_process`.
 fn credentials_error(error: &CredentialsError) -> Error {
-    match error {
-        CredentialsError::ProviderTimedOut(_) => Error::Unreachable,
-        _ => Error::NoCredentials,
+    if matches!(error, CredentialsError::ProviderTimedOut(_)) {
+        return Error::Unreachable;
     }
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(error);
+    while let Some(current) = cause {
+        if current.is::<ConnectorError>() {
+            return Error::Unreachable;
+        }
+        if let Some(SdkError::ServiceError(failure)) =
+            current.downcast_ref::<SdkError<AssumeRoleError, HttpResponse>>()
+        {
+            let status = failure.raw().status();
+            if status.is_server_error()
+                || status.as_u16() == 429
+                || is_throttling(failure.err().meta().code())
+            {
+                return Error::Unreachable;
+            }
+        }
+        if let Some(SdkError::TimeoutError(_) | SdkError::DispatchFailure(_)) =
+            current.downcast_ref::<SdkError<AssumeRoleError, HttpResponse>>()
+        {
+            return Error::Unreachable;
+        }
+        cause = current.source();
+    }
+    Error::NoCredentials
 }

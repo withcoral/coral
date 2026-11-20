@@ -456,8 +456,9 @@ impl DeploymentConfig {
     }
 
     /// The Secret Stores this deployment defines, or the disabled set when it
-    /// turned them off. Reads each store's secret ID from the environment and
-    /// sends nothing; an `env` store keeps the reader for later reads.
+    /// turned them off. Reads each store's secret ID from the environment,
+    /// takes the snapshot of it that AWS credential lookup reads, and sends
+    /// nothing; an `env` store keeps the reader for later reads.
     pub(crate) fn secret_stores(
         &self,
         policy: coral_outbound::DestinationPolicy,

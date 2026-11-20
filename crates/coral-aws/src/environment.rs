@@ -44,18 +44,20 @@ impl Environment {
         ))
     }
 
-    /// The HTTPS proxy, `HTTPS_PROXY` or else `ALL_PROXY`, and the hosts that
-    /// bypass it, `NO_PROXY`. Each name may also be lowercase.
-    pub(crate) fn https_proxy(&self) -> Option<(&str, Option<&str>)> {
+    /// The HTTPS proxy, `HTTPS_PROXY` or else `ALL_PROXY`, with the name of
+    /// the variable it came from, and the hosts that bypass it, `NO_PROXY`.
+    /// Each name may also be lowercase, and an empty value counts as unset.
+    pub(crate) fn https_proxy(&self) -> Option<(&'static str, &str, Option<&str>)> {
         let var = |name: &str| {
-            self.0
-                .get(name)
-                .or_else(|| self.0.get(&name.to_ascii_lowercase()))
+            [name.to_owned(), name.to_ascii_lowercase()]
+                .iter()
+                .find_map(|key| self.0.get(key).filter(|value| !value.is_empty()))
                 .map(String::as_str)
-                .filter(|value| !value.is_empty())
         };
-        let proxy = var("HTTPS_PROXY").or_else(|| var("ALL_PROXY"))?;
-        Some((proxy, var("NO_PROXY")))
+        let (variable, proxy) = var("HTTPS_PROXY")
+            .map(|proxy| ("HTTPS_PROXY", proxy))
+            .or_else(|| var("ALL_PROXY").map(|proxy| ("ALL_PROXY", proxy)))?;
+        Some((variable, proxy, var("NO_PROXY")))
     }
 
     pub(crate) fn to_aws(&self) -> aws_types::os_shim_internal::Env {

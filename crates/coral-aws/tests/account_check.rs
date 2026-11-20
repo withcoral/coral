@@ -96,6 +96,25 @@ fn access_key(request: &http::Request<Vec<u8>>) -> &str {
     credential.split('/').next().unwrap_or_default()
 }
 
+/// An operator may pad the profile's name, and it still names the profile.
+#[tokio::test]
+async fn a_padded_profile_name_finds_its_profile() {
+    let sts = MockServer::start().await;
+    caller_identity(&sts, "AKIDRIGHT", ACCOUNT).await;
+    let profile = Profile::new();
+    profile.issue("AKIDRIGHT");
+    let identity = AwsIdentity::new(
+        Settings::new(ACCOUNT, "eu-west-2", Some(" coral "), None).unwrap(),
+        "prod-aws",
+        &environment(&sts, &[("AWS_CONFIG_FILE", &profile.config())]),
+    )
+    .unwrap();
+
+    let signed = sign(&identity, before_expiry(HOUR)).await.unwrap();
+
+    assert_eq!(access_key(&signed), "AKIDRIGHT");
+}
+
 #[tokio::test]
 async fn credentials_in_the_expected_account_are_checked_once_per_access_key() {
     let sts = MockServer::start().await;
@@ -283,4 +302,48 @@ async fn instance_credentials_are_not_used_past_their_expiry_when_a_refresh_fail
         sign(&identity, expiry() + MINUTE).await.unwrap_err(),
         Error::NoCredentials
     );
+}
+
+/// A credential source that cannot be reached is an outage, and one that
+/// answers with a refusal leaves no credentials.
+#[tokio::test]
+async fn a_credential_source_that_is_down_is_unreachable() {
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}/creds", listener.local_addr().unwrap())
+    };
+    let role = Some("arn:aws:iam::111122223333:role/coral");
+    for (container, role_arn, assume_role_status, expected) in [
+        (Some(closed.as_str()), None, None, Error::Unreachable),
+        (None, role, Some(503), Error::Unreachable),
+        (None, role, Some(403), Error::NoCredentials),
+    ] {
+        let sts = MockServer::start().await;
+        if let Some(status) = assume_role_status {
+            Mock::given(method("POST"))
+                .and(body_string_contains("Action=AssumeRole"))
+                .respond_with(ResponseTemplate::new(status).set_body_string(
+                    "<ErrorResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\">\
+                     <Error><Type>Sender</Type><Code>AccessDenied</Code><Message>m</Message>\
+                     </Error><RequestId>1</RequestId></ErrorResponse>",
+                ))
+                .mount(&sts)
+                .await;
+        }
+        let mut vars = vec![
+            ("AWS_ACCESS_KEY_ID", "AKIDBASE"),
+            ("AWS_SECRET_ACCESS_KEY", "secret"),
+        ];
+        if let Some(uri) = container {
+            vars = vec![("AWS_CONTAINER_CREDENTIALS_FULL_URI", uri)];
+        }
+        let identity = AwsIdentity::new(
+            Settings::new(ACCOUNT, "eu-west-2", None, role_arn).unwrap(),
+            "prod-aws",
+            &environment(&sts, &vars),
+        )
+        .unwrap();
+        let error = sign(&identity, before_expiry(HOUR)).await.unwrap_err();
+        assert_eq!(error, expected, "{container:?} {assume_role_status:?}");
+    }
 }

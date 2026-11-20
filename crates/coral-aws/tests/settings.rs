@@ -14,6 +14,7 @@ fn a_role_in_the_expected_account_is_accepted() {
         "arn:aws:iam::111122223333:role/coral-prod-secrets",
         "arn:aws:iam::111122223333:role/team/coral",
         "arn:aws-us-gov:iam::111122223333:role/coral",
+        "arn:aws:iam::111122223333:role/service-role/coral+=,.@_-1",
     ] {
         settings(Some(role)).unwrap_or_else(|error| panic!("{role}: {error}"));
     }
@@ -21,7 +22,7 @@ fn a_role_in_the_expected_account_is_accepted() {
 
 #[test]
 fn malformed_settings_name_the_field_and_never_the_value() {
-    let cases: [(Result<Settings, SettingsError>, SettingsError, &str); 9] = [
+    let cases: [(Result<Settings, SettingsError>, SettingsError, &str); 14] = [
         (
             settings(Some("arn:aws:iam::444455556666:role/coral")),
             SettingsError::RoleInAnotherAccount,
@@ -34,6 +35,24 @@ fn malformed_settings_name_the_field_and_never_the_value() {
         ),
         (
             settings(Some("arn:aws:iam::111122223333:role/")),
+            SettingsError::RoleArn,
+            "role_arn",
+        ),
+        (
+            settings(Some("arn:aws:iam::111122223333:role/has space")),
+            SettingsError::RoleArn,
+            "role_arn",
+        ),
+        (
+            settings(Some("arn:aws:iam::111122223333:role/a path/coral")),
+            SettingsError::RoleArn,
+            "role_arn",
+        ),
+        (
+            settings(Some(&format!(
+                "arn:aws:iam::111122223333:role/{}",
+                "n".repeat(65)
+            ))),
             SettingsError::RoleArn,
             "role_arn",
         ),
@@ -59,6 +78,16 @@ fn malformed_settings_name_the_field_and_never_the_value() {
         ),
         (
             Settings::new(ACCOUNT, "eu west 2", None, None),
+            SettingsError::Region,
+            "region",
+        ),
+        (
+            Settings::new(ACCOUNT, "---", None, None),
+            SettingsError::Region,
+            "region",
+        ),
+        (
+            Settings::new(ACCOUNT, "euwest2", None, None),
             SettingsError::Region,
             "region",
         ),
@@ -92,10 +121,24 @@ fn a_name_that_makes_no_role_session_name_is_rejected() {
 #[test]
 fn an_https_proxy_that_is_not_a_url_is_rejected_without_repeating_it() {
     let settings = settings(None).unwrap();
-    for name in ["HTTPS_PROXY", "https_proxy", "ALL_PROXY"] {
-        let env = Environment::snapshot([(name.into(), "user:hunter2@not a url".into())]);
+    let bad = "user:hunter2@not a url";
+    for (vars, expected) in [
+        (vec![("HTTPS_PROXY", bad)], SettingsError::HttpsProxy),
+        (vec![("https_proxy", bad)], SettingsError::HttpsProxy),
+        // An empty variable counts as unset, so the lowercase one applies.
+        (
+            vec![("HTTPS_PROXY", ""), ("https_proxy", bad)],
+            SettingsError::HttpsProxy,
+        ),
+        (vec![("ALL_PROXY", bad)], SettingsError::AllProxy),
+    ] {
+        let env = Environment::snapshot(
+            vars.iter()
+                .map(|(name, value)| ((*name).into(), (*value).into())),
+        );
         let error = AwsIdentity::new(settings.clone(), "prod-aws", &env).expect_err("rejected");
-        assert_eq!(error, SettingsError::HttpsProxy, "{name}");
+        assert_eq!(error, expected, "{vars:?}");
+        assert_eq!(error.field(), expected.field());
         assert!(!error.to_string().contains("hunter2"), "{error}");
     }
 }

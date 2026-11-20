@@ -26,9 +26,13 @@ pub enum SettingsError {
         "the name must be at most 58 characters of letters, digits and +=,.@_- to name a role session"
     )]
     SessionName,
-    /// The `HTTPS_PROXY` or `ALL_PROXY` environment variable is not a proxy URL.
-    #[error("the HTTPS proxy must be an http or https URL")]
+    /// The `HTTPS_PROXY` environment variable is not a proxy URL.
+    #[error("HTTPS_PROXY must be an http or https URL")]
     HttpsProxy,
+    /// The `ALL_PROXY` environment variable, used without `HTTPS_PROXY`, is
+    /// not a proxy URL.
+    #[error("ALL_PROXY must be an http or https URL")]
+    AllProxy,
 }
 
 impl SettingsError {
@@ -42,6 +46,7 @@ impl SettingsError {
             Self::RoleArn | Self::RoleInAnotherAccount => "role_arn",
             Self::SessionName => "name",
             Self::HttpsProxy => "HTTPS_PROXY",
+            Self::AllProxy => "ALL_PROXY",
         }
     }
 }
@@ -77,14 +82,11 @@ impl Settings {
         if !is_account_id(aws_account_id) {
             return Err(SettingsError::AccountId);
         }
-        if region.is_empty()
-            || !region
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        {
+        if !is_region(region) {
             return Err(SettingsError::Region);
         }
-        if profile.is_some_and(|profile| profile.trim().is_empty()) {
+        let profile = profile.map(str::trim);
+        if profile.is_some_and(str::is_empty) {
             return Err(SettingsError::Profile);
         }
         if let Some(role_arn) = role_arn
@@ -99,6 +101,32 @@ impl Settings {
             role_arn: role_arn.map(str::to_owned),
         })
     }
+}
+
+/// Whether `value` has a region's shape: lowercase letters and digits in
+/// two or more parts joined by `-`, such as `eu-west-2`.
+fn is_region(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('-').collect();
+    parts.len() >= 2
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        })
+}
+
+/// Whether `value` is an IAM role's path and name: a name of up to 64
+/// letters, digits and `+=,.@_-`, after an optional path of printable ASCII
+/// without spaces.
+fn is_role_path_and_name(value: &str) -> bool {
+    let (path, name) = value.rsplit_once('/').unwrap_or(("", value));
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+=,.@_-".contains(c))
+        && path.chars().all(|c| c.is_ascii_graphic())
 }
 
 fn is_account_id(value: &str) -> bool {
@@ -119,10 +147,8 @@ fn role_account(arn: &str) -> Option<&str> {
         return None;
     };
     let name = resource.strip_prefix("role/")?;
-    let valid = partition.starts_with("aws")
-        && is_account_id(account)
-        && !name.is_empty()
-        && !name.ends_with('/');
+    let valid =
+        partition.starts_with("aws") && is_account_id(account) && is_role_path_and_name(name);
     valid.then_some(account)
 }
 
