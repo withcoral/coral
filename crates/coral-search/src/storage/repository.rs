@@ -206,8 +206,9 @@ pub(super) enum ReuseShape {
 /// Each column is nullable, so that Coral's writes still succeed, and no row
 /// is filled. Reads the catalog first, so a table that has them takes no
 /// lock, and a column or index of another shape changes nothing. On
-/// Postgres a lock wait past five seconds fails the boot, as in a migration,
-/// so the change does not queue every search behind it.
+/// Postgres a lock wait past five seconds fails the boot, as in a migration.
+/// Searches that arrive while the boot waits for the lock, or holds it to
+/// build the index, wait behind it.
 pub(super) async fn add_reuse_columns_and_index(
     transaction: &mut Transaction<'_>,
 ) -> Result<ReuseShape, Error> {

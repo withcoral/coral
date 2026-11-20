@@ -11,8 +11,9 @@
 //! An index write wakes it, so does each reconcile pass, and it drains once
 //! when the model is ready.
 //!
-//! The model runs only for a text that has no vector in the same Workspace.
-//! Each vector row keeps the SHA-256 of the text it was made from. Before
+//! The model runs only for a text that has no reusable vector in the same
+//! Workspace: one of the current Embedder revision whose row keeps the
+//! SHA-256 of the text it was made from, written with its stamp. Before
 //! the model runs on a batch, a row whose own vector was made from its text
 //! keeps that vector and takes the row's new stamp, and a row whose text
 //! another row's vector was made from takes that vector through the same

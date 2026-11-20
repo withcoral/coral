@@ -122,7 +122,7 @@ Semantic search finds the Tools of a Graph-sized Provider (19,830 rows) after ab
 minutes on one M4 core; until then they rank by words. Two Coral Instances that overlap during a rolling update can embed the
 same rows; the write checks staleness, so this costs CPU only.
 
-**Reuse by text.** The model runs only for a text that has no vector in the same Workspace. A new Generation gives
+**Reuse by text.** The model runs only for a text that has no reusable vector in the same Workspace. A new Generation gives
 each Tool a new Search Entity, and a raised indexer revision can give a row a new stamp with the same text; without
 reuse, either one made the vector of every such row again, also when one Tool of many changed or when only the Provider
 Configuration did. Each vector row keeps the SHA-256 of the index text it was made from. A row whose own vector was made
@@ -194,8 +194,9 @@ vectors it reused and those the model made.
 - Search Hits change shape. Programs that read `matched_tags`, `matched_inputs` or the Guidance Snippet get nothing.
 - A new Provider, and each Tool whose text changed, ranks by words for minutes. A new Generation whose Tool texts did
   not change has its vectors without the model when the Embedder reaches it before the reconcile pass removes the
-  replaced Generation; an Embedder busy with other rows can miss that. On a server, Workspaces share the one Embedder
-  thread: ten new Graph-sized Providers take about two hours.
+  replaced Generation; an Embedder busy with other rows can miss that. Vectors written before reuse by text have no
+  digest, so the first new Generation of each Provider after the upgrade embeds all its Tools again. On a server,
+  Workspaces share the one Embedder thread: ten new Graph-sized Providers take about two hours.
 - Vectors cost database memory. On db.t4g.medium (4 GiB) the vectors of about 17 Graph Workspaces stay warm at
   `halfvec(384)` (extrapolated from 10 measured); past that the instance swaps and a query takes 0.8 to 2 s.
 - The Coral process carries the model: about 30 MB of binary, a 133 MB model file, and up to about 360 MiB while it
