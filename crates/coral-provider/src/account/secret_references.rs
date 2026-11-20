@@ -1,8 +1,8 @@
-//! Credential Fields a Secret Store holds (ADR 0036). A Workspace Owner names a
-//! store granted to the Workspace, and Coral reads the value once to check it.
-//! Each dispatch reads it again, outside every lock, and nothing keeps a copy.
-//! Provider setup does the same for its shared Account's fields, and Publication
-//! copies the references.
+//! Credential Fields a Secret Store holds (ADR 0036). On a shared Account or an
+//! Agent's, a Workspace Owner names a store granted to the Workspace, and Coral
+//! reads the value once to check it. Each dispatch reads it again, outside every
+//! lock, and nothing keeps a copy. Provider setup does the same for its shared
+//! Account's fields, and Publication copies the references.
 use std::collections::BTreeMap;
 
 use coral_credentials::{CredentialField, CredentialValues, Secret, SecretReference};
@@ -62,7 +62,7 @@ impl AccountModule {
     /// or a Secret Reference. A reference is checked by reading it outside any
     /// transaction; the value is discarded, and only a passing check saves.
     /// # Errors
-    /// Rejects a reference on anything but a shared Account, a store not granted
+    /// Rejects a reference on a User's own Account, a store not granted
     /// to the Workspace, and a reference the store cannot read, naming the cause.
     /// A rejected submission leaves the Account and its Authorization unchanged.
     pub async fn submit_fields(
@@ -222,8 +222,9 @@ impl AccountModule {
         Ok(Some(row.contract))
     }
 
-    /// A reference fits only a shared Account, on a method with Credential Fields,
-    /// and names a store config defines and the Workspace holds a grant for.
+    /// A reference fits a shared Account or an Agent's, never a User's own, on a
+    /// method with Credential Fields, and names a store config defines and the
+    /// Workspace holds a grant for.
     pub(super) async fn admit_references_in_transaction(
         &self,
         tx: &mut Transaction<'_>,
@@ -235,7 +236,8 @@ impl AccountModule {
         if row.contract.authentication().credential_fields().is_empty() {
             return Err(Error::AccountInput);
         }
-        if row.intent.caller.is_some() {
+        // A User could name a path holding another person's secret.
+        if row.intent.is_user() {
             return Err(Error::SecretReferenceNotAllowed);
         }
         self.admit_stores(tx, owner, references).await

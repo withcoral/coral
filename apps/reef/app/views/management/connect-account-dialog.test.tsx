@@ -301,3 +301,37 @@ it('stops checking and reloads the page when your sign-in lapsed', async () => {
   await act(() => vi.advanceTimersByTimeAsync(6000))
   expect(checked).toBe(after)
 })
+
+// Catches: an agent's account connected in the dialog with no way to name a secret
+// store, a store offered when the authorization offers none, as for your own account,
+// or a saved reference dropped on reconnect after its store lost its grant.
+it('offers a secret store only when the authorization has one to offer', async () => {
+  checks = () => ({
+    view: {
+      ...pending,
+      secretStores: [
+        { name: 'platform', blockers: [], form: { pathLabel: 'Path', key: undefined } },
+      ],
+    },
+  })
+  await render()
+  let popup = within(await open())
+  await popup.findByRole('radio', { name: 'Use a secret store' })
+  await userEvent.click(popup.getByRole('button', { name: 'Close' }))
+
+  checks = () => ({ view: pending })
+  popup = within(await open())
+  await popup.findByLabelText('Token')
+  expect(popup.queryByRole('radio', { name: 'Use a secret store' })).toBeNull()
+  await userEvent.click(popup.getByRole('button', { name: 'Close' }))
+
+  checks = () => ({
+    view: {
+      ...pending,
+      savedReferences: { token: { store: 'platform', path: 'team/forecast', key: 'token' } },
+    },
+  })
+  popup = within(await open())
+  expect(await popup.findByRole('radio', { name: 'Use a secret store' })).toBeChecked()
+  expect(popup.getByDisplayValue('team/forecast')).toBeTruthy()
+})

@@ -64,17 +64,21 @@ export function savedReferenceView(reference: CredentialFieldReference): SavedRe
   }
 }
 
-/** The references a Provider's shared Account holds now, by field name. */
+/**
+ * The references a Provider's Account holds now, by field name: the shared Account, or
+ * the named Agent's Account when `agent` is given.
+ */
 export async function savedSecretReferences(
   api: ManagementApi,
   parent: string,
   provider: string,
+  agent?: string,
 ): Promise<Record<string, SavedReferenceView>> {
   const { account } = await api.accounts.getProviderAccount({
     parent,
     provider,
-    scope: ProviderAccountScope.SHARED,
-    agent: '',
+    scope: agent ? ProviderAccountScope.AGENT : ProviderAccountScope.SHARED,
+    agent: agent ?? '',
   })
   return Object.fromEntries(
     Object.entries(account?.secretReferences ?? {}).map(([name, reference]) => [

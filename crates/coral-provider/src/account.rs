@@ -5,8 +5,8 @@
 //! Disconnect retains the Account identifier and a durable fence.
 //! Token renewal changes material, not authorization.
 //! Setup credentials remain provisional until explicit atomic Publication promotion.
-//! A shared Account's field may hold a Secret Reference, read from its Secret Store
-//! for each dispatch after enforcement permits it, and never stored.
+//! A field of a shared Account or an Agent's may hold a Secret Reference, read from
+//! its Secret Store for each dispatch after enforcement permits it, and never stored.
 //! Repositories own scoped persistence; this module owns authority and transactions.
 use coral_workspace::WorkspaceId;
 
