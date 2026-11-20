@@ -171,7 +171,7 @@ fn entries<'a>(
         }
         if let Some(factory) = store.factory {
             factory
-                .validate(&store.settings, named)
+                .validate(&store.name, &store.settings, named)
                 .map_err(|error| rejected(&store.label, &error))?;
         }
         stores.push(store);
@@ -227,7 +227,7 @@ fn build(
     for entry in entries(named, raw, &kinds)? {
         let store: Arc<dyn SecretStore> = if let Some(factory) = entry.factory {
             factory
-                .build(&entry.settings, environment)
+                .build(&entry.name, &entry.settings, environment)
                 .map_err(|error| rejected(&entry.label, &error))?
         } else {
             tracing::warn!(
@@ -249,7 +249,8 @@ mod tests {
     use coral_outbound::DestinationPolicy;
     use coral_secret_store::{
         BuildEnvironment, Error, NamedVariables, SecretReference, SecretStore, SecretStoreFactory,
-        SecretStoreKind, SecretStoreKinds, SecretStores, SettingError, StoreSettings, StoreStatus,
+        SecretStoreKind, SecretStoreKinds, SecretStoreName, SecretStores, SettingError,
+        StoreSettings, StoreStatus,
     };
     use coral_test_support::InMemorySecretStore;
     use serde::Deserialize;
@@ -276,6 +277,7 @@ mod tests {
         }
         fn validate(
             &self,
+            _name: &SecretStoreName,
             settings: &StoreSettings,
             _named: &NamedVariables,
         ) -> Result<(), SettingError> {
@@ -287,6 +289,7 @@ mod tests {
         }
         fn build(
             &self,
+            _name: &SecretStoreName,
             settings: &StoreSettings,
             environment: &BuildEnvironment,
         ) -> Result<Arc<dyn SecretStore>, SettingError> {

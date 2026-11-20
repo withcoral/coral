@@ -18,9 +18,13 @@ fn main() -> ExitCode {
 
 /// What this binary adds to Coral, each part asking `edition` when used.
 fn extensions(edition: coral_edition::EditionCheck) -> coral_app::Extensions {
-    let secret_store_kinds = coral_secret_store::SecretStoreKinds::default().with(Arc::new(
-        coral_ee_secret_stores::KvV2Kind::new(edition.clone()),
-    ));
+    let secret_store_kinds = coral_secret_store::SecretStoreKinds::default()
+        .with(Arc::new(coral_ee_secret_stores::KvV2Kind::new(
+            edition.clone(),
+        )))
+        .with(Arc::new(
+            coral_ee_secret_stores::AwsSecretsManagerKind::new(edition.clone()),
+        ));
     let enterprise_features = coral_edition::EnterpriseFeatures::default()
         .with(coral_ee_secret_stores::EXTERNAL_SECRET_STORES);
     coral_app::Extensions {

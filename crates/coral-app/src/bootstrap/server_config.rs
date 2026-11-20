@@ -462,13 +462,15 @@ impl DeploymentConfig {
     pub(crate) fn secret_stores(
         &self,
         policy: coral_outbound::DestinationPolicy,
+        clock: std::sync::Arc<dyn coral_db::Clock>,
     ) -> Result<coral_secret_store::SecretStores, AppError> {
         self.secret_stores_from(
             &coral_secret_store::BuildEnvironment::new(
                 policy,
                 std::sync::Arc::new(AppEnvironment::env_var),
             )
-            .with_aws(super::env::aws_environment()),
+            .with_aws(super::env::aws_environment())
+            .with_clock(clock),
         )
     }
 

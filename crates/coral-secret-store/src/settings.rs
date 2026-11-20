@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::fmt;
+use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 
@@ -141,16 +142,20 @@ pub struct BuildEnvironment {
     pub env: EnvReader,
     /// The environment AWS credential lookup reads, as bootstrap saw it.
     pub aws: coral_aws::Environment,
+    /// Bootstrap's clock, for a store that must read the time.
+    pub clock: Arc<dyn coral_db::Clock>,
 }
 
 impl BuildEnvironment {
-    /// An environment whose AWS credential lookup sees no variable.
+    /// An environment whose AWS credential lookup sees no variable, and
+    /// whose clock is the host's.
     #[must_use]
     pub fn new(policy: coral_outbound::DestinationPolicy, env: EnvReader) -> Self {
         Self {
             policy,
             env,
             aws: coral_aws::Environment::default(),
+            clock: Arc::new(coral_db::SystemClock),
         }
     }
 
@@ -158,6 +163,12 @@ impl BuildEnvironment {
     #[must_use]
     pub fn with_aws(self, aws: coral_aws::Environment) -> Self {
         Self { aws, ..self }
+    }
+
+    /// The same environment, with `clock` for the time.
+    #[must_use]
+    pub fn with_clock(self, clock: Arc<dyn coral_db::Clock>) -> Self {
+        Self { clock, ..self }
     }
 
     /// Reads the secret held in the variable `name`, which the setting at

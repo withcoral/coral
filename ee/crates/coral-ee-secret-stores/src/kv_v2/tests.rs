@@ -8,7 +8,8 @@ use serde_json::json;
 use wiremock::matchers::{body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{AppRole, BODY_LIMIT, KvV2Settings, KvV2Store, MountPath, StoreAddress};
+use super::{AppRole, KvV2Settings, KvV2Store, MountPath, StoreAddress};
+use crate::http::BODY_LIMIT;
 use coral_secret_store::{Secret, SecretReference, SecretStore as _};
 
 const LOGIN: &str = "/v1/auth/approle/login";
