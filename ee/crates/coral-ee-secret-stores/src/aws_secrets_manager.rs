@@ -188,7 +188,7 @@ impl SecretStore for SecretsManagerStore {
 /// region of an isolated partition, such as `us-iso-east-1`, whose endpoint
 /// has another domain.
 #[must_use]
-pub fn regional_endpoint(region: &str) -> Option<StoreAddress> {
+pub(crate) fn regional_endpoint(region: &str) -> Option<StoreAddress> {
     let mut parts = region.split('-');
     let (Some(area), Some(location)) = (parts.next(), parts.next()) else {
         return None;

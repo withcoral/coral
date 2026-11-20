@@ -53,9 +53,14 @@ fn caller_identity(account: &str) -> ResponseTemplate {
 
 /// Secrets Manager answers `GetSecretValue` with `status` and `body`.
 async fn answer(aws: &MockServer, status: u16, body: serde_json::Value) {
+    answer_with(aws, ResponseTemplate::new(status).set_body_json(body)).await;
+}
+
+/// Secrets Manager answers `GetSecretValue` with `response`.
+async fn answer_with(aws: &MockServer, response: ResponseTemplate) {
     Mock::given(method("POST"))
         .and(header("x-amz-target", "secretsmanager.GetSecretValue"))
-        .respond_with(ResponseTemplate::new(status).set_body_json(body))
+        .respond_with(response)
         .mount(aws)
         .await;
 }
@@ -259,18 +264,16 @@ async fn each_aws_error_maps_to_what_to_fix() {
 #[tokio::test]
 async fn an_error_type_header_names_the_error() {
     let aws = aws().await;
-    Mock::given(method("POST"))
-        .and(header("x-amz-target", "secretsmanager.GetSecretValue"))
-        .respond_with(
-            ResponseTemplate::new(400)
-                .insert_header(
-                    "x-amzn-ErrorType",
-                    "ResourceNotFoundException:http://internal/",
-                )
-                .set_body_string(""),
-        )
-        .mount(&aws)
-        .await;
+    answer_with(
+        &aws,
+        ResponseTemplate::new(400)
+            .insert_header(
+                "x-amzn-ErrorType",
+                "ResourceNotFoundException:http://internal/",
+            )
+            .set_body_string(""),
+    )
+    .await;
     let error = store(&aws, Edition::Enterprise)
         .read(&reference("team/jira", None))
         .await
@@ -499,7 +502,8 @@ fn a_rejected_value_is_never_repeated() {
     }
 }
 
-/// Without `endpoint`, a store reads through AWS's endpoint for its region.
+/// Without `endpoint`, a store's address is AWS's endpoint for its region.
+/// No test reads through it: that would reach AWS.
 #[test]
 fn a_region_has_aws_s_endpoint_unless_its_partition_is_isolated() {
     for (region, expected) in [
@@ -532,15 +536,12 @@ fn a_region_has_aws_s_endpoint_unless_its_partition_is_isolated() {
 async fn an_unreadable_failure_is_decided_by_its_status() {
     for (status, expected) in [(503, Error::Unreachable), (403, Error::PermissionDenied)] {
         let aws = aws().await;
-        Mock::given(method("POST"))
-            .and(header("x-amz-target", "secretsmanager.GetSecretValue"))
-            .respond_with(ResponseTemplate::new(status).set_body_bytes(vec![
-                b' ';
-                crate::store_http::BODY_LIMIT
-                    + 1
-            ]))
-            .mount(&aws)
-            .await;
+        let oversized = vec![b' '; crate::store_http::BODY_LIMIT + 1];
+        answer_with(
+            &aws,
+            ResponseTemplate::new(status).set_body_bytes(oversized),
+        )
+        .await;
         let error = store(&aws, Edition::Enterprise)
             .read(&reference("team/jira", None))
             .await
