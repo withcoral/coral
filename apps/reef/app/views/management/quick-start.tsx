@@ -256,10 +256,10 @@ export function WorkspaceQuickStart({
   endpoint: string
   /** The workspace's `onboardingPrompt`. */
   prompt: string
-  /** Whether the MCP server needs a sign-in; a local deployment has none. */
-  signIn: boolean
   /** Whether the viewer owns the workspace, so the prompt adds a provider. */
   owner: boolean
+  /** Whether the MCP server needs a sign-in; a local deployment has none. */
+  signIn: boolean
 }) {
   const heading = useId()
   return (

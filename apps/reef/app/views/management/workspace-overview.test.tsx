@@ -108,23 +108,40 @@ it.each([
   }
 })
 
-// Each client shows its own setup, built from this workspace's endpoint.
+// Each client shows its own setup, built from this workspace's connect endpoint.
 // Catches: a sign-in step in a local deployment, whose MCP server has no sign-in, so the
 // client's login command fails with a 404.
-const claudeAdd = [
+const signedIn: Partial<WorkspaceView> = {}
+// A local deployment connects at the workspace URL: its `/mcp` takes agent keys only.
+const local: Partial<WorkspaceView> = {
+  profile: { ...ada, local: true },
+  connectEndpoint: workspace.mcpEndpoint,
+}
+const claudeAdd = (url: string) => [
   'Run in a terminal',
-  `claude mcp add --transport http coral ${workspace.connectEndpoint}`,
+  `claude mcp add --transport http coral ${url}`,
 ]
-const codexAdd = ['Run in a terminal', `codex mcp add coral --url ${workspace.connectEndpoint}`]
-const local = { profile: { ...ada, local: true } }
-it.each<[string, string, Partial<WorkspaceView>, string[][]]>([
-  ['Claude Code', 'signed in', {}, [claudeAdd, ['Then sign in', 'claude mcp login coral']]],
-  ['Claude Code', 'local', local, [claudeAdd]],
-  ['Codex', 'signed in', {}, [codexAdd, ['Then sign in', 'codex mcp login coral']]],
-  ['Codex', 'local', local, [codexAdd]],
-  ['Other', 'signed in', {}, [['MCP URL', workspace.connectEndpoint]]],
-])('quick start shows the %s setup in a %s deployment', async (client, _, ws, steps) => {
+const codexAdd = (url: string) => ['Run in a terminal', `codex mcp add coral --url ${url}`]
+it.each<[string, string, Partial<WorkspaceView>, (url: string) => string[][]]>([
+  [
+    'Claude Code',
+    'signed-in',
+    signedIn,
+    (url) => [claudeAdd(url), ['Then sign in', 'claude mcp login coral']],
+  ],
+  ['Claude Code', 'local', local, (url) => [claudeAdd(url)]],
+  [
+    'Codex',
+    'signed-in',
+    signedIn,
+    (url) => [codexAdd(url), ['Then sign in', 'codex mcp login coral']],
+  ],
+  ['Codex', 'local', local, (url) => [codexAdd(url)]],
+  ['Other', 'signed-in', signedIn, (url) => [['MCP URL', url]]],
+  ['Other', 'local', local, (url) => [['MCP URL', url]]],
+])('quick start shows the %s setup in a %s deployment', async (client, _, ws, stepsFor) => {
   render({ workspace: ws })
+  const steps = stepsFor({ ...workspace, ...ws }.connectEndpoint)
   const card = within(screen.getByRole('region', { name: 'Connect your MCP client' }))
   await userEvent.click(card.getByRole('tab', { name: client }))
   const groups = within(card.getByRole('tabpanel')).getAllByRole('group')
