@@ -1340,21 +1340,6 @@ struct AgentAccount {
 }
 
 impl Shared {
-    /// A Provider on the `caller` route with one token field, published as `agentic`.
-    async fn publish_token_for_callers(&self) -> ProviderId {
-        crate::tests::publish_provider(
-            &self.providers,
-            &self.owner,
-            &self.workspace,
-            CREDENTIAL_REQUIRED_OPENAPI,
-            "agentic",
-            crate::access::CredentialRoute::Caller,
-        )
-        .await
-        .id()
-        .clone()
-    }
-
     /// A Provider on the `caller` route that sends `email` and `api_token` as HTTP Basic,
     /// published as `agentbasic`.
     async fn publish_basic_for_callers(&self) -> ProviderId {
@@ -1432,9 +1417,16 @@ impl Shared {
 #[tokio::test]
 async fn an_agents_account_takes_a_reference_read_for_each_dispatch() {
     let f = shared().await;
-    let account = f
-        .agent_account(f.publish_token_for_callers().await, "agentic")
-        .await;
+    let provider = crate::tests::publish_provider(
+        &f.providers,
+        &f.owner,
+        &f.workspace,
+        CREDENTIAL_REQUIRED_OPENAPI,
+        "agentic",
+        crate::access::CredentialRoute::Caller,
+    )
+    .await;
+    let account = f.agent_account(provider.id().clone(), "agentic").await;
     let reads = f.store.reads();
 
     let saved = f
