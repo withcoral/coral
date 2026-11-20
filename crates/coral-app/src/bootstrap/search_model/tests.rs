@@ -481,7 +481,7 @@ async fn the_model_slot_says_why_no_model_loaded() {
         });
         let (slot, load) = watch::channel(ModelLoad::Pending);
 
-        let _loading = model.load_into(slot);
+        let _loading = model.load_into(slot, std::num::NonZeroUsize::MIN);
 
         assert_eq!(slot_after_pending(load).await, expected, "{case}");
     }
@@ -494,7 +494,7 @@ async fn a_delivery_that_ends_without_a_result_leaves_the_slot_failed() {
     let (state, receiver) = watch::channel(SearchModelState::Looking);
     let model = SearchModel { state: receiver };
     let (slot, load) = watch::channel(ModelLoad::Pending);
-    let _loading = model.load_into(slot);
+    let _loading = model.load_into(slot, std::num::NonZeroUsize::MIN);
 
     drop(state);
 

@@ -104,12 +104,17 @@ indexer revision, so a model change re-embeds every Entity without re-indexing w
 
 ## The Embedder
 
-The Embedder is the third supervised task beside Observer and Reconcile. It owns one OS thread at low priority with
-one intra-op thread. It wakes on every index write, on the reconcile tick and at boot, and drains a predicate, not a
+The Embedder is the third supervised task beside Observer and Reconcile. It runs on OS threads at low priority. It has
+one thread by default, so a user's machine stays responsive, and an operator can give it more. Each thread has a model
+session of its own with one intra-op thread. On the bench texts, eight sessions embed 4.7 to 4.9 times as fast as one.
+Eight intra-op threads in one session embed only 2.0 times as fast. Each session adds a copy of the model in memory
+([#3361](https://github.com/withcoral/coral/issues/3361)). A drain gives its batches to the threads, and each row of a
+read is in one batch only. A query goes before every document that has not started, on any session. The
+Embedder wakes on every index write, on the reconcile tick and at boot, and drains a predicate, not a
 queue table: a vector is stale when it is missing, when its revision differs, or when its source stamp differs from the
 row's `indexed_at`. It takes the oldest Generation first, in small batches, with one write per batch under the
 Workspace's index lock that checks staleness again. A failed batch logs, backs off and retries once. When the retry
-fails in the database, the Embedder skips nothing and stops until the next wake. When it fails in the model, the
+fails in the database, the Embedder skips nothing, starts no other batch, and stops until the next wake. When it fails in the model, the
 Embedder embeds a fixed probe text; if the probe fails too, the model is down, and the Embedder stops the same way.
 Otherwise it tries the batch's rows one by one, and a row that the model still refuses is skipped until its revision or
 source stamp changes or the process restarts. A database failure in those tries stops the drain as above; it skips no
@@ -196,11 +201,11 @@ vectors it reused and those the model made.
   not change has its vectors without the model when the Embedder reaches it before the reconcile pass removes the
   replaced Generation; an Embedder busy with other rows can miss that. Vectors written before reuse by text have no
   digest, so the first new Generation of each Provider after the upgrade embeds all its Tools again. On a server,
-  Workspaces share the one Embedder thread: ten new Graph-sized Providers take about two hours.
+  Workspaces share the Embedder's threads: on one thread, ten new Graph-sized Providers take about two hours.
 - Vectors cost database memory. On db.t4g.medium (4 GiB) the vectors of about 17 Graph Workspaces stay warm at
   `halfvec(384)` (extrapolated from 10 measured); past that the instance swaps and a query takes 0.8 to 2 s.
 - The Coral process carries the model: about 30 MB of binary, a 133 MB model file, and up to about 360 MiB while it
-  embeds.
+  embeds on one thread. Each further thread adds a copy of the model.
 - Self-hosted operators on Postgres install pgvector or turn the setting off.
 - A model change is a code change: a new manifest, a new revision, and every Entity re-embeds. A new dimension recreates
   the vector table.

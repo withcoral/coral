@@ -12,6 +12,7 @@
     reason = "integration targets inherit the library's direct dependency set"
 )]
 
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use coral_embed::{Embed as _, MANIFEST, Model};
@@ -67,7 +68,7 @@ fn assert_matches(label: &str, actual: &[f32], expected: &[f32]) {
 #[test]
 #[ignore = "loads the model; set CORAL_EMBED_MODEL_DIR"]
 fn documents_and_queries_match_the_harness() {
-    let model = Model::load(&model_dir()).expect("the model loads");
+    let model = Model::load(&model_dir(), NonZeroUsize::MIN).expect("the model loads");
     let reference = reference();
     for (index, case) in reference.documents.iter().enumerate() {
         let vector = model
@@ -81,11 +82,33 @@ fn documents_and_queries_match_the_harness() {
     }
 }
 
+/// Each session holds its own copy of the model, so documents that two
+/// threads embed at once on two sessions get the harness's vectors.
+#[test]
+#[ignore = "loads the model; set CORAL_EMBED_MODEL_DIR"]
+fn two_sessions_embed_documents_at_once() {
+    let sessions = NonZeroUsize::new(2).expect("two is not zero");
+    let model = Model::load(&model_dir(), sessions).expect("the model loads");
+    let reference = reference();
+    std::thread::scope(|scope| {
+        for _ in 0..2 {
+            scope.spawn(|| {
+                for (index, case) in reference.documents.iter().enumerate() {
+                    let vector = model
+                        .embed_document(&case.text)
+                        .expect("the document embeds");
+                    assert_matches(&format!("document {index}"), &vector, &case.vector);
+                }
+            });
+        }
+    });
+}
+
 #[test]
 #[ignore = "loads the model; set CORAL_EMBED_MODEL_DIR"]
 fn two_models_load_in_one_process() {
-    let first = Model::load(&model_dir()).expect("the first model loads");
-    let second = Model::load(&model_dir()).expect("the second model loads");
+    let first = Model::load(&model_dir(), NonZeroUsize::MIN).expect("the first model loads");
+    let second = Model::load(&model_dir(), NonZeroUsize::MIN).expect("the second model loads");
     let reference = reference();
     let text = reference.queries.first().expect("the fixture has a query");
     for model in [&first, &second] {
