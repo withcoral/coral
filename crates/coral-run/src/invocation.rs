@@ -2462,6 +2462,37 @@ impl PrecheckBatch {
         self.waits.iter().map(|(serial, _)| *serial).collect()
     }
 
+    /// The parks whose Approval Request is no longer pending on the Run of
+    /// `invoker`, read in `tx`, which this commits.
+    async fn approvals_not_pending(
+        &self,
+        mut tx: Transaction<'_>,
+        invoker: &ToolInvoker,
+    ) -> Result<Vec<u64>, Error> {
+        let run = run_repository::find_exact_in_transaction(
+            &mut tx,
+            &invoker.workspace_id,
+            &invoker.run_id,
+        )
+        .await?;
+        let pending = match &run {
+            Some(run) => crate::approval::pending_for_run(&mut tx, run).await?,
+            None => Vec::new(),
+        };
+        tx.commit().await?;
+        Ok(self
+            .waits
+            .iter()
+            .filter(|(_, target)| match &target.wait {
+                ParkedWait::Approval { approval, .. } => {
+                    !pending.iter().any(|(pending, _)| pending == approval)
+                }
+                ParkedWait::Connection { .. } => false,
+            })
+            .map(|(serial, _)| *serial)
+            .collect())
+    }
+
     /// Reads the waits in one read snapshot with no hold and returns the
     /// serials of the parks it found ended or moot. A connection check reads
     /// each connection request once and finds the ones no longer pending. The
@@ -2470,7 +2501,10 @@ impl PrecheckBatch {
     /// wait it would not keep waiting is found. The Approval Requests and the
     /// Invocation rows are the owner's own (an outside writer touches none
     /// while the Run is nonterminal), so what the owner keeps of them stands:
-    /// a request still pending, no failure recorded.
+    /// a request still pending, no failure recorded. On a Run a Run
+    /// Executor holds, the receiver of a decision and the sweeper write them
+    /// too, and say so with a wake row: the approvals check reads each
+    /// parked wait's Approval Request and finds the ones no longer pending.
     pub(crate) async fn run(&self) -> Result<Vec<u64>, Error> {
         let Some((_, first)) = self.waits.first() else {
             return Ok(Vec::new());
@@ -2478,6 +2512,11 @@ impl PrecheckBatch {
         let invoker = &first.invoker;
         let now = invoker.now()?;
         let mut tx = invoker.database.begin_read_snapshot().await?;
+        // Another writer moved the head of a Run a Run Executor holds: the
+        // waits whose Approval Request it decided or expired.
+        if self.check == Check::Approvals {
+            return self.approvals_not_pending(tx, invoker).await;
+        }
         let mut pending_until = std::collections::HashMap::new();
         for (_, target) in &self.waits {
             if let ParkedWait::Connection { request, .. } = target.wait

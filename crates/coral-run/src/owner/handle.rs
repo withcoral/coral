@@ -95,6 +95,20 @@ pub(crate) enum Check {
     /// The periodic precheck: every parked wait against the Policy Enforcement
     /// Point's facts, for a wait that ended or became moot without a wake-up.
     Periodic,
+    /// After a writer other than the owner moved the head of a Run a Run
+    /// Executor holds: the Approval Requests the parked waits are on, which
+    /// that writer may have decided or expired, and nothing else.
+    Approvals,
+}
+
+/// The Run row as a Run stream's loop reads it on a wake (ADR 0027).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunNow {
+    /// The Run is terminal, with the termination it records, if any.
+    Ended(Option<crate::lifecycle::RunTerminationKind>),
+    /// The Run is running at Run Ledger head `head`, whose row records
+    /// `recorded_total` output bytes.
+    Running { head: u64, recorded_total: usize },
 }
 
 /// What the owner's first chunk started: the package to execute, and the
@@ -256,6 +270,16 @@ pub(crate) enum Message {
     /// The Run stream is gone: the owner records what it applied and
     /// retires, and the Run stays as it is.
     Detached,
+    /// The wake rows' reader handed the Run's wake row to a Run stream's
+    /// loop: another writer committed on the Run (ADR 0027).
+    Woken,
+    /// The loop's read of its Run after a wake; `None` when the read failed
+    /// or found no row, which the next wake reads again.
+    RunRead(Option<RunNow>),
+    /// A Run stream's chunk found its Run ended by another writer, with
+    /// this termination: the reason its `Terminate` gives. Its
+    /// `CommitRejected` follows.
+    EndedOutside(Option<crate::lifecycle::RunTerminationKind>),
     /// A step of the Shutdown Drain for a Run stream owner.
     Drain(DrainStep),
 }
@@ -362,6 +386,9 @@ impl fmt::Debug for Message {
                 .field("recorded_total", recorded_total)
                 .finish(),
             Self::Detached => formatter.write_str("Detached"),
+            Self::Woken => formatter.write_str("Woken"),
+            Self::RunRead(read) => formatter.debug_tuple("RunRead").field(read).finish(),
+            Self::EndedOutside(kind) => formatter.debug_tuple("EndedOutside").field(kind).finish(),
             Self::Drain(step) => formatter.debug_tuple("Drain").field(step).finish(),
         }
     }
@@ -798,6 +825,11 @@ impl Owners {
     /// Whether an owner for `run_id` is live here, whatever its claim.
     pub(crate) fn contains(&self, run_id: &RunId) -> bool {
         self.lock().contains_key(run_id)
+    }
+
+    /// Whether no owner is live here.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.lock().is_empty()
     }
 
     /// Every owner live here now.

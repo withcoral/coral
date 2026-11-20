@@ -161,8 +161,14 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   pull stream and no dispatch is in flight on the stream, or at the drain's
   length, it detaches and ends the stream cleanly. For a Run that no worker
   claim fences, the Run sweeper (#2906) also writes under the claim and the
-  head, as the sweeper section of ADR 0027 states. A stream owner writes its
-  Run only while the row names its Coral Instance as the stream's holder.
+  head, as the sweeper section of ADR 0027 states. So does the Coral Instance
+  that receives a decision or a cancellation for it (#2907): it holds the
+  Run row and commits the request itself. Each such writer raises the Run's
+  wake row in the same transaction. The stream's owner learns of it from the
+  wake row's reader, and from any chunk it rebuilds on a moved head; then it
+  rereads the Run and the Approval Requests its parked waits are on. A
+  stream owner writes its Run only while the row names its Coral Instance as
+  the stream's holder.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of

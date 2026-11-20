@@ -237,6 +237,8 @@ impl RunModule {
         if unless_moved(run_repository::commit_chunk(&mut transaction, chunk).await)?.is_none() {
             return Ok(false);
         }
+        // The Run's loop, wherever its stream is, rereads the request.
+        run_repository::raise_wake(&mut transaction, &run.workspace_id, &run.id, now).await?;
         transaction.commit().await?;
         Ok(true)
     }
@@ -358,10 +360,15 @@ async fn unowned(
 }
 
 /// The one chunk that ends `run`, read in `transaction`: its recorded
-/// termination, else timed out past its deadline, else interrupted.
-/// `false` when another writer moved the Run on first.
-async fn end(transaction: Transaction<'_>, run: &RunRecord, now: i64) -> Result<bool, Error> {
+/// termination, else timed out past its deadline, else interrupted. A
+/// started Run's wake row is raised with it, so its loop, wherever its
+/// stream is, terminates the Program. `false` when another writer moved the
+/// Run on first.
+async fn end(mut transaction: Transaction<'_>, run: &RunRecord, now: i64) -> Result<bool, Error> {
     let now = now.max(run.accepted_at_unix_nanos);
+    if run.execution_started() {
+        run_repository::raise_wake(&mut transaction, &run.workspace_id, &run.id, now).await?;
+    }
     Ok(unless_moved(commit_end(transaction, run, None, None, now).await)?.is_some())
 }
 

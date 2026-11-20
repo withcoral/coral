@@ -64,7 +64,7 @@ use crate::{CoralFailure, Error};
 use super::chunk::{ChunkBuild, ChunkItem, ChunkWork};
 use super::handle::{
     Check, CommitRejection, DecisionRequest, DrainStep, Message, ParkedWait, Reply, RequestKey,
-    StartedExecution, Timer,
+    RunNow, StartedExecution, Timer,
 };
 
 /// The next Run stream request number to apply, and the requests that
@@ -195,6 +195,9 @@ pub(crate) enum Effect {
     /// Read the batch's parked waits in one snapshot, holding nothing; the
     /// findings come back as [`Message::Prechecked`].
     Precheck(PrecheckBatch),
+    /// Read the Run row after a wake, holding nothing; what it shows comes
+    /// back as [`Message::RunRead`].
+    ReadRun,
     /// Settle row work the owner will never commit.
     Abandon(Box<dyn ChunkWork>, Error),
     /// Write the Run's terminal state for the Program's completion, with
@@ -310,6 +313,16 @@ enum Precheck {
     Unarmed,
     Armed,
     Running,
+}
+
+/// A Run stream loop's read of its Run after a wake: one at a time.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum WakeRead {
+    #[default]
+    Idle,
+    Reading,
+    /// Another wake came during the read: read once more after it.
+    Again,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -443,6 +456,20 @@ pub(crate) struct OwnerState {
     pushed: u64,
     /// A Run stream owner's place in the Shutdown Drain.
     draining: Draining,
+    /// What a Run stream loop learned from its Run's wake row.
+    wake: Wake,
+}
+
+/// What a Run stream loop learned from its Run's wake row (ADR 0027).
+#[derive(Debug, Default)]
+struct Wake {
+    /// Its read of its Run after a wake.
+    read: WakeRead,
+    /// A wake row it acted on waits for a chunk to delete it.
+    clears_row: bool,
+    /// The termination of a Run another writer ended: the reason the
+    /// Program's `Terminate` gives.
+    ended_outside: Option<RunTerminationKind>,
 }
 
 impl OwnerState {
@@ -481,6 +508,7 @@ impl OwnerState {
             requests: None,
             pushed: 0,
             draining: Draining::No,
+            wake: Wake::default(),
         }
     }
 
@@ -534,8 +562,18 @@ impl OwnerState {
     }
 
     /// The termination intent the owner applied.
+    #[cfg(test)]
     pub(crate) const fn termination(&self) -> Option<&RequestedTermination> {
         self.termination.as_ref()
+    }
+
+    /// Why the Program terminates: the termination the owner applied, else
+    /// the one of a Run another writer ended.
+    pub(crate) fn terminated_as(&self) -> Option<RunTerminationKind> {
+        self.termination
+            .as_ref()
+            .map(|intent| intent.termination.kind)
+            .or(self.wake.ended_outside)
     }
 
     /// Whether a Run stream's termination is being written: the stream hears
@@ -1043,14 +1081,114 @@ impl OwnerState {
         match check {
             Check::Connections => self.wakeups.connections.running = false,
             Check::Periodic => self.wakeups.precheck = Precheck::Unarmed,
+            // Approvals checks keep no state: two may overlap, and a park is
+            // woken once.
+            Check::Approvals => {}
         }
         let found: BTreeSet<u64> = found.unwrap_or_default().into_iter().collect();
         let mut effects = self.wake(|serial, _| found.contains(&serial));
         match check {
             Check::Connections => effects.extend(self.check_connections()),
             Check::Periodic => effects.extend(self.arm_precheck()),
+            Check::Approvals => {}
         }
         effects
+    }
+
+    /// The wake rows' reader handed this Run stream loop its Run's wake row:
+    /// the loop reads its Run, one read at a time. A Program owner, or a loop
+    /// that commits nothing more, ignores it; the reader hands the row again.
+    fn woken(&mut self) -> Vec<Effect> {
+        if self.requests.is_none() || !matches!(self.phase, Phase::Running | Phase::Ending) {
+            return Vec::new();
+        }
+        if self.wake.read == WakeRead::Idle {
+            self.wake.read = WakeRead::Reading;
+            vec![Effect::ReadRun]
+        } else {
+            self.wake.read = WakeRead::Again;
+            Vec::new()
+        }
+    }
+
+    /// The loop read its Run after a wake (ADR 0027). Terminal: the loop
+    /// stops as on a chunk that found the Run ended, and the Program hears
+    /// the Run's termination. The head it tracks: nothing more, and its next
+    /// chunk deletes the row. Moved: it takes the row's head when no chunk
+    /// is in flight (the one in flight rebuilds itself on it), rereads the
+    /// Approval Requests its parked waits are on, and its next chunk deletes
+    /// the row, asserting the head, so a raise that lands meanwhile fails
+    /// that chunk and is read on its rebuild.
+    fn run_read(&mut self, read: Option<RunNow>) -> Vec<Effect> {
+        let again = self.wake.read == WakeRead::Again;
+        self.wake.read = WakeRead::Idle;
+        let mut effects = match read {
+            // A chunk in flight finds the end too, and its rejection stops
+            // the loop: once is enough.
+            Some(RunNow::Ended(kind))
+                if self.in_flight.is_none()
+                    && matches!(self.phase, Phase::Running | Phase::Ending) =>
+            {
+                self.wake.ended_outside = kind;
+                return self.rejected(CommitRejection::RunEnded);
+            }
+            Some(RunNow::Ended(kind)) if self.in_flight.is_some() => {
+                self.wake.ended_outside = kind;
+                Vec::new()
+            }
+            None | Some(RunNow::Ended(_)) => Vec::new(),
+            Some(RunNow::Running {
+                head,
+                recorded_total,
+            }) => {
+                self.wake.clears_row = true;
+                if head == self.head {
+                    Vec::new()
+                } else {
+                    if self.in_flight.is_none() && head > self.head {
+                        self.head = head;
+                        self.recorded_total = recorded_total;
+                    }
+                    self.check_approvals()
+                }
+            }
+        };
+        if again {
+            effects.extend(self.woken());
+        }
+        effects
+    }
+
+    /// Another writer ended the Run with `kind`: the reason the Program's
+    /// `Terminate` gives.
+    fn ended_outside(&mut self, kind: Option<RunTerminationKind>) -> Vec<Effect> {
+        self.wake.ended_outside = kind;
+        Vec::new()
+    }
+
+    /// The chunk in flight lands on a head another writer moved. That
+    /// writer may have decided or expired an Approval Request a parked wait
+    /// is on, and raised a wake row this rebuilt chunk may delete: the
+    /// requests are read again.
+    fn rebased(&mut self, head: u64, recorded_total: usize) -> Vec<Effect> {
+        self.head = head;
+        self.recorded_total = recorded_total;
+        self.check_approvals()
+    }
+
+    /// Another writer moved the head: the Approval Requests the parked
+    /// waits are on are read in one snapshot, and the waits whose request
+    /// is no longer pending go back to their held rechecks.
+    fn check_approvals(&self) -> Vec<Effect> {
+        PrecheckBatch::of(
+            Check::Approvals,
+            self.parked_waits
+                .iter()
+                .filter(|(_, parked)| matches!(parked.wait(), ParkedWait::Approval { .. })),
+        )
+        .map(Effect::Precheck)
+        .into_iter()
+        .collect()
     }
 
     /// A stop reached the owner, from an outside writer's recorded
@@ -1442,6 +1580,7 @@ impl OwnerState {
     fn commit(&mut self, mut chunk: ChunkBuild) -> Vec<Effect> {
         let output_total = self.recorded_total.saturating_add(chunk.bytes);
         chunk.head = self.head;
+        chunk.clears_wake |= std::mem::take(&mut self.wake.clears_row);
         self.in_flight = Some(InFlight {
             bytes: chunk.bytes,
             enforces: chunk.enforcement.is_some(),
@@ -1956,6 +2095,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         | Message::Parked(_)
         | Message::Changed
         | Message::Prechecked { .. }
+        | Message::RunRead(_)
         | Message::Interrupted(_)
             if state.phase == Phase::Interrupting =>
         {
@@ -2035,12 +2175,11 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         Message::Rebased {
             head,
             recorded_total,
-        } => {
-            state.head = head;
-            state.recorded_total = recorded_total;
-            Vec::new()
-        }
+        } => state.rebased(head, recorded_total),
         Message::Detached => state.detached(),
+        Message::Woken => state.woken(),
+        Message::RunRead(read) => state.run_read(read),
+        Message::EndedOutside(kind) => state.ended_outside(kind),
         Message::Drain(step) => state.drain(step),
     }
 }

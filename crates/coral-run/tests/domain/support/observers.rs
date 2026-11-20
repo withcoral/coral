@@ -170,6 +170,64 @@ impl ExecutionObserver for InboxProbe {
     }
 }
 
+/// Records what started each read in which the wake rows' reader handed a
+/// row to its loop; holds the reader's reads while asked, and the next chunk
+/// commit once armed.
+pub(crate) struct WakeProbe {
+    turns: Mutex<Vec<crate::observation::Turn>>,
+    reads_open: watch::Sender<bool>,
+    commit: Mutex<Option<BlockingGate>>,
+}
+
+impl WakeProbe {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            turns: Mutex::default(),
+            reads_open: watch::channel(true).0,
+            commit: Mutex::default(),
+        })
+    }
+
+    pub(crate) fn turns(&self) -> Vec<crate::observation::Turn> {
+        self.turns.lock().expect("turns lock").clone()
+    }
+
+    /// Holds every read of the wake rows from the next one on.
+    pub(crate) fn hold_reads(&self) {
+        self.reads_open.send_replace(false);
+    }
+
+    /// Holds the next chunk commit until the returned sender is used.
+    pub(crate) fn hold_next_commit(&self) -> oneshot::Sender<()> {
+        let (gate, release) = BlockingGate::new();
+        *self.commit.lock().expect("commit lock") = Some(gate);
+        release
+    }
+
+    /// Whether the held chunk commit reached its hold.
+    pub(crate) fn commit_held(&self) -> bool {
+        self.commit.lock().expect("commit lock").as_ref().is_none()
+    }
+}
+
+#[async_trait]
+impl ExecutionObserver for WakeProbe {
+    async fn before_chunk_commit(&self) {
+        let gate = self.commit.lock().expect("commit lock").take();
+        if let Some(gate) = gate {
+            let _released = gate.hold().await;
+        }
+    }
+
+    fn wake_delivered(&self, turn: crate::observation::Turn) {
+        self.turns.lock().expect("turns lock").push(turn);
+    }
+
+    async fn before_wake_read(&self) {
+        until_released(&self.reads_open).await;
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct EnforcementObservation {
     pub(crate) permit_returned: bool,

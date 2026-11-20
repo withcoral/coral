@@ -1,10 +1,10 @@
 //! The reopen of a started Run's stream. The Coral Instance that lands the
 //! `Open` writes itself as the stream's holder in one chunk under the claim
 //! and the head, which also settles the calls that were in flight on the loop
-//! before, and answers `Committed`. The loop is rebuilt from the ledger: the
-//! head, the output total, the request order after the watermark, and each
-//! open Invocation; the resent requests apply on top, and `Started` goes out
-//! again.
+//! before, deletes the Run's wake row, and answers `Committed`. The loop is
+//! rebuilt from the ledger: the head, the output total, the request order
+//! after the watermark, and each open Invocation; the resent requests apply
+//! on top, and `Started` goes out again.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -307,6 +307,9 @@ impl RunModule {
             &self.instance,
         )
         .await?;
+        // The rebuilt loop reads every open Invocation's requests: a wake
+        // row raised for the loop before it has nothing more to say.
+        run_repository::clear_wake(&mut transaction, &run.workspace_id, &run.id).await?;
         transaction.commit().await?;
         let mut run = run;
         run.chunk_sequence += 1;

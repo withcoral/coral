@@ -105,6 +105,9 @@ pub(crate) struct ChunkBuild {
     /// Which items a Run stream request made, as (item index, number): a
     /// commit that finds another writer committed the request drops its item.
     pub(crate) numbered: Vec<(usize, u64)>,
+    /// The commit deletes the Run's wake row, which the loop acted on. It
+    /// alone does not make a chunk worth committing.
+    pub(crate) clears_wake: bool,
 }
 
 impl ChunkBuild {

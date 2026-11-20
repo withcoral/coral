@@ -50,6 +50,8 @@ async fn a_cancel_sent_to_another_coral_instance_is_recorded_and_ends_the_run() 
         1
     );
     assert_eq!(fixture.inbox_rows(&workspace_id, &run_id).await, 0);
+    // An owned Run's request goes through its Run Inbox, never a wake row.
+    assert_eq!(fixture.wake_rows(&workspace_id, &run_id).await, 0);
 }
 
 /// While no chunk that records a cancel has landed, its row stays: the
@@ -154,6 +156,7 @@ async fn a_decision_sent_to_another_coral_instance_is_recorded() {
         "{events:?}"
     );
     assert_eq!(fixture.inbox_rows(workspace_id, run_id).await, 0);
+    assert_eq!(fixture.wake_rows(workspace_id, run_id).await, 0);
 }
 
 /// The `cancellation.requested` Events of the Run.

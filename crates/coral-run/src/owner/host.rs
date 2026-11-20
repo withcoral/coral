@@ -45,7 +45,9 @@ use crate::types::AcceptedRun;
 use crate::{Error, RunModule, RunTimeout, engine, nanos_duration};
 
 use super::chunk::{ChunkBuild, ChunkItem};
-use super::handle::{CommitRejection, Mailbox, Message, OwnerHandle, OwnerRegistration, Timer};
+use super::handle::{
+    CommitRejection, Mailbox, Message, OwnerHandle, OwnerRegistration, RunNow, Timer,
+};
 use super::state::{Effect, OwnerLimits, OwnerState, Recovered, apply};
 
 /// The wait between two settle attempts while a dispatch is still in flight
@@ -202,7 +204,7 @@ fn terminate_program(handle: &OwnerHandle, start: &OwnerStart, state: &OwnerStat
     if let Some(link) = stream_link(start)
         && !state.ends_stream_first()
     {
-        link.terminate(state.termination().map(|intent| intent.termination.kind));
+        link.terminate(state.terminated_as());
     }
 }
 
@@ -431,6 +433,7 @@ fn run_effect(
             "Run Owner is suspect: no commit succeeded within a lease; \
              Program requests answer once recorded"
         ),
+        Effect::ReadRun => spawn_run_read(module, accepted, handle),
         Effect::Precheck(batch) => spawn_precheck(
             handle,
             batch,
@@ -518,6 +521,38 @@ fn run_effect(
             );
         }
     }
+}
+
+/// Reads the Run row after a wake, holding nothing, and hands what it shows
+/// to the loop.
+fn spawn_run_read(module: &RunModule, accepted: &AcceptedRun, handle: &OwnerHandle) {
+    let database = module.database.clone();
+    let (workspace_id, run_id) = (accepted.workspace_id.clone(), accepted.id.clone());
+    let handle = handle.clone();
+    tokio::spawn(async move {
+        let read = read_run(&database, &workspace_id, &run_id).await;
+        handle.send(Message::RunRead(read));
+    });
+}
+
+/// The Run row as a Run stream's loop reads it, holding nothing; `None` when
+/// the read failed or found no row.
+async fn read_run(
+    database: &coral_db::Database,
+    workspace_id: &coral_workspace::WorkspaceId,
+    run_id: &crate::RunId,
+) -> Option<RunNow> {
+    let run = run_repository::find_exact(database, workspace_id, run_id)
+        .await
+        .ok()??;
+    Some(if run.state.is_terminal() {
+        RunNow::Ended(run.termination.map(|termination| termination.kind))
+    } else {
+        RunNow::Running {
+            head: run.chunk_sequence,
+            recorded_total: run.accumulated_output_bytes,
+        }
+    })
 }
 
 /// Moves the Run's stream in the Shutdown Drain. The answers the detach
@@ -856,6 +891,15 @@ fn spawn_commit(
                 }
                 Message::Committed
             }
+            // Another writer ended a Run stream's Run: its Program hears
+            // why in its `Terminate`.
+            Some(Err(CommitRejection::RunEnded)) if link.is_some() => {
+                let read = read_run(&module.database, &accepted.workspace_id, &accepted.id).await;
+                if let Some(RunNow::Ended(kind)) = read {
+                    handle.send(Message::EndedOutside(kind));
+                }
+                Message::CommitRejected(CommitRejection::RunEnded)
+            }
             Some(Err(rejection)) => Message::CommitRejected(rejection),
             None => return,
         };
@@ -919,6 +963,8 @@ impl Written {
 struct Records {
     termination: Option<crate::lifecycle::RequestedTermination>,
     inbox_rows: Vec<crate::run_inbox::InboxRow>,
+    /// The chunk deletes the Run's wake row.
+    clears_wake: bool,
     output_total: usize,
     /// The highest Run stream request number the chunk commits.
     request_number: Option<u64>,
@@ -973,16 +1019,12 @@ async fn commit_until_answered(
     let chunk_bytes = chunk.bytes;
     let mut bytes = chunk_bytes;
     let mut items = chunk.items;
-    let mut numbers = vec![None; items.len()];
-    for (index, number) in chunk.numbered {
-        if let Some(slot) = numbers.get_mut(index) {
-            *slot = Some(number);
-        }
-    }
+    let mut numbers = request_numbers(items.len(), chunk.numbered);
     let mut enforcement = chunk.enforcement;
     let mut records = Records {
         termination: chunk.termination,
         inbox_rows: chunk.inbox_rows,
+        clears_wake: chunk.clears_wake,
         output_total,
         request_number: chunk.request_number,
     };
@@ -1070,6 +1112,18 @@ async fn commit_until_answered(
         batch.settle(outcome.map_err(CommitRejection::lost));
     }
     Some(outcome.map(|()| written.request_number))
+}
+
+/// Each of `count` items' Run stream request number, from the items that
+/// `numbered` names.
+fn request_numbers(count: usize, numbered: Vec<(usize, u64)>) -> Vec<Option<u64>> {
+    let mut numbers = vec![None; count];
+    for (index, number) in numbered {
+        if let Some(slot) = numbers.get_mut(index) {
+            *slot = Some(number);
+        }
+    }
+    numbers
 }
 
 /// Rebuilds the chunk on the head another writer left on `run`: the items of
@@ -1292,6 +1346,10 @@ async fn commit_once(
                 &records.inbox_rows,
             )
             .await?;
+        // So does the wake row the loop acted on.
+        if records.clears_wake {
+            run_repository::clear_wake(&mut transaction, &run.workspace_id, &run.id).await?;
+        }
         let mut produced_by_work = produced.iter();
         let mut events: Vec<&OwnedEvent> = Vec::new();
         for item in items.iter() {
