@@ -59,6 +59,13 @@ test('Drawer policy shares optimistic state and locks with the table', async (co
           .isDisabled(),
       ).toBe(true)
       await row(page, 'first').getByRole('link', { name: 'first', exact: true }).click()
+      // The closing drawer still shows this tool. Wait for the route to open it
+      // again, so the release and the reload below act on the reopened drawer.
+      await page.waitForURL((url) => url.pathname === opened)
+      await drawer
+        .and(page.locator('[data-open]'))
+        .getByRole('radio', { name: 'Allow', exact: true, checked: true })
+        .waitFor()
       await drawer.getByRole('radio', { name: 'Allow', exact: true, checked: true }).waitFor()
       await expect.poll(() => held.submitted.length).toBe(1)
       held.release()

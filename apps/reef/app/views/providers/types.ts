@@ -199,6 +199,12 @@ export interface ToolCallCounts {
   tools: Readonly<Record<SelectionKey, ToolUsage>>
 }
 
+/** Usage while the summary has not answered, or once it could not: never zero calls. */
+export interface ToolCallsAbsent {
+  days: number
+  state: 'loading' | 'unavailable'
+}
+
 /** Safe progress of one Add or Update attempt; never a navigation URL, secret, or code. */
 /**
  * What Coral sends in one credential header or query parameter: a Credential

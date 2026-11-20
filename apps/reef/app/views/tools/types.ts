@@ -7,6 +7,7 @@ import type {
   ProviderToolDetailView,
   ProviderView,
   ToolCallCounts,
+  ToolCallsAbsent,
   WorkspaceView,
 } from '@/views/providers/types'
 
@@ -129,8 +130,8 @@ export interface ToolsPageProps {
   selectedToolAgent?: string | null
   /** What the drawer shows of `selectedTool`, which `providers` leaves out. */
   selectedToolDetail?: ToolDetailView | null
-  /** Absent when Coral cannot count calls now; the page then shows no counts. */
-  toolCalls?: ToolCallCounts | null
+  /** The Usage column's counts, or why it has none yet. Absent, the page has no Usage column. */
+  toolCalls?: ToolCallCounts | ToolCallsAbsent | null
   form: FormContext
   result?: ActionResult
   pending?: boolean

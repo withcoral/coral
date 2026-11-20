@@ -209,8 +209,9 @@ it('counts calls by provider and Tool Key, and leaves them out when the summary 
     workspace: `workspaces/${workspace}`,
     days: 30,
   })
-  const usage = (key: string) => tree.toolCalls?.tools[selectionKey(providerId, key)]
-  expect(tree.toolCalls?.days).toBe(30)
+  const toolCalls = await tree.toolCalls
+  const usage = (key: string) => toolCalls?.tools[selectionKey(providerId, key)]
+  expect(toolCalls?.days).toBe(30)
   expect([usage('actions/tool0'), usage('actions/tool1')]).toEqual([
     { calls: 5, daily: [1, 0, 4], callers: [] },
     undefined,
@@ -218,8 +219,47 @@ it('counts calls by provider and Tool Key, and leaves them out when the summary 
 
   mocks.summary.mockRejectedValue(new ConnectError('unavailable', Code.Unavailable))
   const unavailable = await loadTree()
-  expect(unavailable.toolCalls).toBeNull()
+  await expect(unavailable.toolCalls).resolves.toBeNull()
   expect(unavailable.providers[0]!.tools).toHaveLength(2)
+
+  // Any other failure streams as a failure, which the page shows as unavailable.
+  mocks.summary.mockRejectedValue(new ConnectError('failed', Code.Internal))
+  const failed = await loadTree()
+  await expect(failed.toolCalls).rejects.toThrow('failed')
+  expect(failed.providers[0]!.tools).toHaveLength(2)
+})
+
+// Catches: a catalog that waits for the usage summary, or a page that counts the
+// tools before every provider's tools arrive.
+it('returns the whole catalog while the summary has not answered', async () => {
+  toolCount = 2
+  let answer!: (summary: object) => void
+  mocks.summary.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+  const tree = await loadTree()
+  expect(tree.providers.map((group: { totalCount: number }) => group.totalCount)).toEqual([2, 0, 0])
+  let settled = false
+  void tree.toolCalls.then(() => (settled = true))
+  await Promise.resolve()
+  expect(settled).toBe(false)
+
+  answer({ tools: [{ tool: toolName('actions/tool0'), calls: 5n, daily: [5n] }] })
+  await expect(tree.toolCalls).resolves.toMatchObject({
+    days: 30,
+    tools: { [selectionKey(providerId, 'actions/tool0')]: { calls: 5 } },
+  })
+})
+
+// Catches: tool reads that wait for your accounts or the summary before they start.
+it("starts each provider's tool reads before your accounts or the summary answer", async () => {
+  let answer!: (accounts: object) => void
+  mocks.userAccounts.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+  mocks.summary.mockReturnValue(new Promise(() => {}))
+  const tree = loadTree()
+  await vi.waitFor(() =>
+    expect(mocks.tools.mock.calls.some(([call]) => call.parent === provider)).toBe(true),
+  )
+  answer({ accounts: [] })
+  expect((await tree).providers[0]!.tools).toHaveLength(TOOL_COUNT)
 })
 
 // Catches: a failed later page displaying a partial catalog.

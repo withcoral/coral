@@ -15,7 +15,13 @@ import {
   workspaceView,
 } from '@/views/providers/fixtures'
 import { selectionKey } from '@/views/providers/selection'
-import type { ToolCallCounts, ToolView, ProviderView, WorkspaceView } from '@/views/providers/types'
+import type {
+  ToolCallCounts,
+  ToolCallsAbsent,
+  ToolView,
+  ProviderView,
+  WorkspaceView,
+} from '@/views/providers/types'
 import { toolPath } from './addresses'
 import { ToolsPage } from './tools-page'
 import type { PublishReviewResult, SharedToolDetailView, ToolDetailView } from './types'
@@ -69,7 +75,7 @@ function renderPage({
   routes?: RouteObject[]
   selectedTool?: ToolView | null
   selectedToolDetail?: ToolDetailView | null
-  toolCalls?: ToolCallCounts | null
+  toolCalls?: ToolCallCounts | ToolCallsAbsent | null
   workspace?: WorkspaceView
 } = {}) {
   const page = (selected: ToolView | null, owner = providerOf(selected, providers)) => (
@@ -143,6 +149,31 @@ test('the drawer shows the prose of the tool the route names', () => {
   const drawer = screen.getByRole('dialog')
   expect(within(drawer).getByText('every').tagName).toBe('STRONG')
   expect(within(drawer).getByText('coral.providers.github.issues.list')).toBeInTheDocument()
+})
+
+// Catches: a drawer that reads a loading summary as no calls.
+test('the drawer shows usage as loading, never as no calls', () => {
+  renderPage({
+    entry: `${github.path}/tools/issues.list`,
+    selectedTool: github.tools[0]!,
+    toolCalls: { days: 30, state: 'loading' },
+  })
+  const usage = within(screen.getByRole('dialog')).getByRole('region', { name: 'Usage' })
+  expect(usage).toHaveTextContent('Loading usage…')
+  expect(usage).toHaveAttribute('aria-busy', 'true')
+  expect(usage.textContent).not.toMatch(/calls/i)
+})
+
+// Catches: a drawer that reads an unavailable summary as no calls, or keeps its section.
+test('the drawer leaves out usage that is unavailable', () => {
+  renderPage({
+    entry: `${github.path}/tools/issues.list`,
+    selectedTool: github.tools[0]!,
+    toolCalls: { days: 30, state: 'unavailable' },
+  })
+  const drawer = within(screen.getByRole('dialog'))
+  expect(drawer.queryByRole('region', { name: 'Usage' })).toBeNull()
+  expect(drawer.queryByText(/usage|\bcalls\b/i)).toBeNull()
 })
 
 // Catches: a drawer that shows another tool's usage, callers left out, or usage
@@ -344,20 +375,46 @@ test.each([
     ['0 calls', '1,234 calls', '0 calls'],
   ],
   ['no count', null, []],
+  // Catches: usage that reads as zero calls, or sorts, before the summary answers or
+  // once it could not.
+  ['a summary still loading', { days: 30, state: 'loading' as const }, ['', '', '']],
+  ['an unavailable summary', { days: 30, state: 'unavailable' as const }, ['', '', '']],
 ])('shows the calls to each tool under the Usage column, given %s', (_, toolCalls, counts) => {
   renderPage({ toolCalls })
   const headers = within(table()).getAllByRole('columnheader')
-  const column = headers.findIndex((header) => header.textContent === 'Usage')
+  const column = headers.findIndex((header) => header.textContent?.startsWith('Usage'))
+  const counted = toolCalls !== null && 'tools' in toolCalls
+  expect(within(table()).queryByRole('button', { name: 'Sort by usage' }) !== null).toBe(counted)
+  expect(within(table()).queryByRole('status')?.textContent ?? null).toBe(
+    toolCalls && 'state' in toolCalls
+      ? toolCalls.state === 'loading'
+        ? 'Loading usage…'
+        : 'Usage unavailable'
+      : null,
+  )
   const cells =
     column < 0
       ? []
       : ['issues.list', 'repos.get', 'getForecast'].map((name) => {
           const row = within(table()).getByRole('link', { name }).closest('[role="row"]')!
-          return within(row as HTMLElement).getAllByRole('cell')[column]!.textContent
+          const rowCells = within(row as HTMLElement).getAllByRole('cell')
+          // A missing cell would move the next one under this heading.
+          expect(rowCells).toHaveLength(headers.length)
+          return rowCells[column]!.textContent
         })
   expect(cells).toEqual(counts)
-  // The busiest tool in the catalog fills its bar, whatever a removed tool called.
+  // Only the heading's status says the usage is unavailable, and it says so once.
+  const unavailable =
+    toolCalls !== null && 'state' in toolCalls && toolCalls.state === 'unavailable'
+  expect(within(table()).queryAllByText('Usage unavailable')).toHaveLength(unavailable ? 1 : 0)
   if (column >= 0) {
+    const heading = within(headers[column]!)
+    // Browsers leave a status out of the heading's name, so the label must stay exposed.
+    expect(heading.getByText('Usage').closest('[aria-hidden]')).toBeNull()
+    if (unavailable) expect(heading.getByRole('status')).toHaveTextContent('Usage unavailable')
+  }
+  // The busiest tool in the catalog fills its bar, whatever a removed tool called.
+  if (counted) {
     const row = within(table()).getByRole('link', { name: 'repos.get' }).closest('[role="row"]')!
     const cell = within(row as HTMLElement).getAllByRole('cell')[column]!
     expect(cell.querySelector('[style]')).toHaveStyle({ width: '100%' })
