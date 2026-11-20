@@ -210,8 +210,9 @@ We will therefore write three things in the Sub-agent's crate: the system prompt
 can call, and the code that writes each tool result, including the wording of each failure. The Sub-agent's model will
 never receive core's MCP instructions or core's MCP tool descriptions, which change to suit outside agents.
 
-The model's tools include core's `end_task`, which Sailfish calls before nearly every answer. It ends nothing, since
-the lead owns the Task, and the lead reads the outcome it records beside the Turn's answer.
+The model's tools include an `end_task` of the Sub-agent's own with core's arguments, which Sailfish calls before nearly
+every answer. It ends nothing, since the lead owns the Task, and the lead reads the outcome it records beside the
+Turn's answer.
 
 When a change in core alters a value that the Sub-agent's crate reads, the crate stops compiling in the same pull
 request. The author then updates it so that the model reads what it read before.

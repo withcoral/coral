@@ -167,7 +167,8 @@ async fn a_task_other_than_the_leads_is_refused_and_starts_nothing() {
 }
 
 // Catches: an `end_task` that answers in other fields than core's, or that
-// ends a Task: the lead owns its Task, and only the lead ends it.
+// ends a Task or records anything on one: the lead owns its Task, and only
+// the lead ends it.
 #[tokio::test]
 async fn end_task_answers_as_cores_does_and_ends_no_task() {
     let harness = Harness::new().await;
@@ -208,6 +209,7 @@ async fn end_task_answers_as_cores_does_and_ends_no_task() {
             .tasks
             .check_open(&caller.principal, &caller.workspace_id, task_id);
         open.await.unwrap();
+        assert_eq!(harness.attempts(task_id).await, 0, "{task_id:?}");
     }
 }
 

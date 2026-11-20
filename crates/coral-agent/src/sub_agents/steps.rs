@@ -128,44 +128,42 @@ pub(crate) struct WaitingAction {
 }
 
 /// The steps of a Turn: each `exec` and `search` call in its messages, an
-/// `exec` with the Run that its result names. A reply's results are the next
-/// message, in the order of its calls, so a call is matched to its result by
-/// its place: a model may give two calls the same id.
+/// `exec` with the Run that its result names.
 pub(super) fn steps(messages: &[Message]) -> Vec<Step> {
-    let mut steps = Vec::new();
-    for (index, reply) in messages.iter().enumerate() {
-        let results = messages
-            .get(index + 1)
-            .map_or(&[][..], |next| &next.content);
-        for (place, call) in reply.tool_calls().enumerate() {
-            let started = match results.get(place) {
-                Some(Block::ToolResult { run_id, .. }) => run_id.as_deref(),
-                _ => None,
-            };
-            steps.extend(step(call, started));
-        }
-    }
-    steps
+    let calls = calls_with_results(messages);
+    let steps = calls.filter_map(|(call, result)| {
+        let started = match result {
+            Some(Block::ToolResult { run_id, .. }) => run_id.as_deref(),
+            _ => None,
+        };
+        step(call, started)
+    });
+    steps.collect()
 }
 
-/// The outcome of the Turn's last `end_task` that recorded one. A call is
-/// matched to its result by its place, as a step is.
+/// The outcome of the Turn's last `end_task` that recorded one.
 pub(super) fn outcome(messages: &[Message]) -> Option<Outcome> {
-    let mut recorded = None;
-    for (index, reply) in messages.iter().enumerate() {
+    let calls = calls_with_results(messages);
+    let ended = calls.filter(|(call, _result)| call.name == "end_task");
+    let recorded = ended.filter_map(|(_call, result)| match result {
+        Some(Block::ToolResult { content, .. }) => recorded_outcome(content),
+        _ => None,
+    });
+    recorded.last()
+}
+
+/// Each tool call in the messages, with its result once stored. A reply's
+/// results are the next message, in the order of its calls, so a call is
+/// matched to its result by its place: a model may give two calls the same
+/// id.
+fn calls_with_results(messages: &[Message]) -> impl Iterator<Item = (&ToolCall, Option<&Block>)> {
+    messages.iter().enumerate().flat_map(move |(index, reply)| {
         let results = messages
             .get(index + 1)
             .map_or(&[][..], |next| &next.content);
-        for (place, call) in reply.tool_calls().enumerate() {
-            if call.name != "end_task" {
-                continue;
-            }
-            if let Some(Block::ToolResult { content, .. }) = results.get(place) {
-                recorded = recorded_outcome(content).or(recorded);
-            }
-        }
-    }
-    recorded
+        let calls = reply.tool_calls().enumerate();
+        calls.map(move |(place, call)| (call, results.get(place)))
+    })
 }
 
 /// The step that `call` is, if it is an `exec` or a `search`. An `exec` shows
