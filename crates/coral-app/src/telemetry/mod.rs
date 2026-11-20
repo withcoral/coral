@@ -487,13 +487,10 @@ pub fn shutdown_tracing() {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use opentelemetry::trace::TraceContextExt as _;
     use opentelemetry::{Key, Value};
     use tracing_opentelemetry::OpenTelemetrySpanExt as _;
     use tracing_subscriber::layer::SubscriberExt as _;
-    use tracing_subscriber::util::SubscriberInitExt as _;
 
     use tracing_subscriber::Layer as _;
 
@@ -701,61 +698,37 @@ mod tests {
         );
     }
 
-    /// Records the level of each `log` record that reaches the subscriber.
-    #[derive(Clone, Default)]
-    struct LogRecordProbe(Arc<Mutex<Vec<tracing::Level>>>);
-
-    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LogRecordProbe {
-        fn on_event(
-            &self,
-            event: &tracing::Event<'_>,
-            _: tracing_subscriber::layer::Context<'_, S>,
-        ) {
-            // The bridge gives each record a `log.target` field.
-            if event.metadata().fields().field("log.target").is_some() {
-                self.0
-                    .lock()
-                    .expect("probe")
-                    .push(*event.metadata().level());
-            }
-        }
-    }
-
-    /// After telemetry starts, a `log` record from a dependency reaches the
-    /// subscriber at debug level and above, but not at trace level.
-    /// `tokenizers` writes several trace records for each character it
-    /// normalizes, and the subscriber's filters walk each record that
+    /// After Coral's telemetry starts with a trace filter that admits a
+    /// dependency at trace level, a `log` record from that dependency
+    /// reaches the subscriber at debug level and above, but not at trace
+    /// level. `tokenizers` writes several trace records for each character
+    /// it normalizes, and the subscriber's filters walk each record that
     /// reaches them (#3375).
     #[test]
     fn only_log_records_at_debug_level_or_above_reach_the_subscriber() {
         in_child_process(
             "telemetry::tests::only_log_records_at_debug_level_or_above_reach_the_subscriber",
             || {
-                let probe = LogRecordProbe::default();
-                tracing_subscriber::Registry::default()
-                    .with(probe.clone())
-                    .try_init()
-                    .expect("the child installs the first subscriber");
-                // The subscriber wants every level, as Coral's default trace
-                // filter does for its own crates. So only the build can stop
-                // a record.
+                let config = crate::bootstrap::telemetry(&format!(
+                    "[otel]\ntrace_filter = \"{DEPENDENCY_TARGET}=trace\"\n"
+                ))
+                .expect("telemetry config");
+                super::init_tracing(&config, "instance", "1.2.3+abc1234")
+                    .expect("telemetry starts");
+                // The checks that each `log` call makes before it sends its
+                // record: the build's level, the bridge's level, and the
+                // subscriber's filters.
+                let reaching = log::Level::iter()
+                    .filter(|&level| log::log_enabled!(target: DEPENDENCY_TARGET, level))
+                    .collect::<Vec<_>>();
                 assert_eq!(
-                    log::max_level(),
-                    log::LevelFilter::Trace,
-                    "the bridge asks for trace records at run time"
-                );
-                for level in log::Level::iter() {
-                    log::log!(target: DEPENDENCY_TARGET, level, "a record");
-                }
-                assert_eq!(
-                    *probe.0.lock().expect("probe"),
+                    reaching,
                     [
-                        tracing::Level::ERROR,
-                        tracing::Level::WARN,
-                        tracing::Level::INFO,
-                        tracing::Level::DEBUG,
-                    ],
-                    "each level but trace reaches the subscriber"
+                        log::Level::Error,
+                        log::Level::Warn,
+                        log::Level::Info,
+                        log::Level::Debug,
+                    ]
                 );
             },
         );
