@@ -17,6 +17,11 @@ axum = { workspace = true, features = ["http1", "tokio"] }
 base64.workspace = true
 etcetera.workspace = true
 jsonwebtoken.workspace = true
+# Removes trace-level `log` calls from every crate in a build that includes
+# coral-app, in dev and release (#3375). `tokenizers` writes several for each
+# character it normalizes. Without this, the tracing bridge sends each one
+# through the subscriber's filters, which then drop it.
+log = { workspace = true, features = ["max_level_debug"] }
 opentelemetry.workspace = true
 opentelemetry-appender-tracing.workspace = true
 opentelemetry-otlp.workspace = true

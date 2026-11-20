@@ -6,6 +6,8 @@
 //! telemetry exporter configuration. Product behavior belongs
 //! to transport-neutral domain crates.
 
+// Coral uses only the `max_level_debug` feature of `log` (see Cargo.toml).
+use log as _;
 #[cfg(test)]
 use tonic_health as _; // Used by the separate listener integration test target.
 
