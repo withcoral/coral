@@ -246,8 +246,10 @@ pub enum VectorStorage {
 
 /// Creates the vector table, or drops and creates it again when the
 /// manifest's dimension changes. A table of the manifest's dimension is
-/// kept with its vectors. On `SQLite` the vector table is two: the key table
-/// and the sqlite-vec table, created and dropped together.
+/// kept with its vectors, and gets the nullable columns and the index of
+/// vector reuse when a Coral older than vector reuse made it without them.
+/// On `SQLite` the vector table is two: the key table and the sqlite-vec
+/// table, created and dropped together.
 ///
 /// The table lives outside the migration chain: a migration that names a
 /// vector type fails on a Postgres without pgvector, where Coral with the
@@ -310,7 +312,14 @@ async fn prepare_vector_table_as(
     repository::lock_vector_table(&mut transaction).await?;
     match repository::vector_table(&mut transaction, dimension).await? {
         VectorTable::SameDimension => {
-            transaction.rollback().await?;
+            if repository::add_reuse_columns_and_index(&mut transaction).await? {
+                tracing::info!(
+                    "added the vector reuse columns and index to the search vector table"
+                );
+                transaction.commit().await?;
+            } else {
+                transaction.rollback().await?;
+            }
             return Ok(());
         }
         VectorTable::OtherDimension => match other_dimension {

@@ -11,6 +11,14 @@
 //! An index write wakes it, so does each reconcile pass, and it drains once
 //! when the model is ready.
 //!
+//! The model runs only for a text that has no vector in the same Workspace.
+//! Each vector row keeps the SHA-256 of the text it was made from. Before
+//! the model runs on a batch, a row whose own vector was made from its text
+//! keeps that vector and takes the row's new stamp, and a row whose text
+//! another row's vector was made from takes that vector through the same
+//! write as a model vector. A new Generation of a Provider whose Tools did
+//! not change, or a row written again with the same text, so runs no model.
+//!
 //! A batch that fails is retried once after a pause. If the database failed,
 //! the drain stops and the next wake tries again. If the model failed, the
 //! Embedder embeds a fixed probe text: when the model fails that too, it is
@@ -30,6 +38,7 @@ use coral_embed::{Embed, EmbedError, MANIFEST};
 use coral_telemetry::metric::{self, EmbedBatchOutcome};
 use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
+use sha2::{Digest as _, Sha256};
 use tokio::sync::{Notify, oneshot, watch};
 use tracing::Instrument as _;
 use tracing::field::Empty;
@@ -38,7 +47,7 @@ use super::SearchIndex;
 use crate::index_text::{IndexTextSource, index_text};
 use crate::indexer::{self, IndexError};
 
-use repository::{EntityText, EntityVector, StaleEntity};
+use repository::{EntityText, EntityVector, StaleEntity, StampMove, TextSha256};
 
 /// The rows one write holds at most.
 const BATCH_ROWS: usize = 32;
@@ -341,6 +350,8 @@ impl SearchIndex {
             "coral.search.embed_batch",
             coral.workspace.id = safe::id(workspace_id),
             coral.search.embedder.rows = Empty,
+            coral.search.embedder.vectors_reused = Empty,
+            coral.search.embedder.vectors_embedded = Empty,
             coral.search.embedder.vectors_written = Empty,
             error.type = Empty,
         );
@@ -404,38 +415,90 @@ impl SearchIndex {
         if rows.is_empty() {
             return Ok(Ok(0));
         }
-        let texts = rows.iter().map(entity_index_text).collect();
-        let vectors = thread.embed(texts).await?;
-        let vectors = match vectors.into_iter().collect::<Result<Vec<_>, _>>() {
+        let texts = rows.iter().map(entity_index_text).collect::<Vec<_>>();
+        let digests = texts
+            .iter()
+            .map(|text| text_sha256(text))
+            .collect::<Vec<_>>();
+        let revision = MANIFEST.embedder_revision();
+        let reusable = self
+            .read_snapshot(async |transaction| {
+                Reusable::read(
+                    transaction,
+                    workspace_id,
+                    revision.as_str(),
+                    &rows,
+                    &digests,
+                )
+                .await
+            })
+            .await;
+        let reusable = match reusable {
+            Ok(reusable) => reusable,
+            Err(error) => return Ok(Err(BatchError::Index(error))),
+        };
+        let BatchPlan {
+            moves,
+            copies,
+            embedded,
+            texts,
+        } = reusable.plan(&rows, texts, &digests);
+        // Counted as planned: the write's staleness check may leave out a
+        // row of either kind.
+        let span = tracing::Span::current();
+        span.record(
+            "coral.search.embedder.vectors_reused",
+            safe::number(moves.len() + copies.len()),
+        );
+        span.record(
+            "coral.search.embedder.vectors_embedded",
+            safe::number(texts.len()),
+        );
+        let model_vectors = thread.embed(texts).await?;
+        let model_vectors = match model_vectors.into_iter().collect::<Result<Vec<_>, _>>() {
             Ok(vectors) if vectors.iter().all(|vector| finite(vector)) => vectors,
             Ok(_) | Err(_) => return Ok(Err(BatchError::Embed)),
         };
-        let vectors = rows
-            .iter()
-            .zip(&vectors)
-            .map(|(row, vector)| EntityVector {
-                doc_id: &row.doc_id,
-                indexed_at: row.indexed_at,
-                vector,
-            })
-            .collect::<Vec<_>>();
-        let revision = MANIFEST.embedder_revision();
+        let mut vectors = copies;
+        vectors.extend(
+            embedded
+                .iter()
+                .zip(&model_vectors)
+                .map(|((row, digest), vector)| EntityVector {
+                    doc_id: &row.doc_id,
+                    indexed_at: row.indexed_at,
+                    text_sha256: digest,
+                    vector,
+                }),
+        );
         let written = self
-            .within_limit(async {
-                let mut transaction = self.database.begin().await?;
-                indexer::lock_workspace(&mut transaction, workspace_id).await?;
-                let written = repository::write_vectors(
-                    &mut transaction,
-                    workspace_id,
-                    revision.as_str(),
-                    &vectors,
-                )
-                .await?;
-                transaction.commit().await?;
-                Ok(written)
-            })
+            .write_batch(workspace_id, revision.as_str(), &moves, &vectors)
             .await;
         Ok(written.map_err(BatchError::Index))
+    }
+
+    /// Writes one batch in one transaction under the Workspace's index lock:
+    /// moves each stamp of `moves` onto its row's own vector, and writes
+    /// `vectors`. Returns the vectors made current.
+    async fn write_batch(
+        &self,
+        workspace_id: &WorkspaceId,
+        revision: &str,
+        moves: &[StampMove<'_>],
+        vectors: &[EntityVector<'_>],
+    ) -> Result<u64, IndexError> {
+        self.within_limit(async {
+            let mut transaction = self.database.begin().await?;
+            indexer::lock_workspace(&mut transaction, workspace_id).await?;
+            let restamped =
+                repository::move_stamps(&mut transaction, workspace_id, revision, moves).await?;
+            let written =
+                repository::write_vectors(&mut transaction, workspace_id, revision, vectors)
+                    .await?;
+            transaction.commit().await?;
+            Ok(restamped + written)
+        })
+        .await
     }
 
     /// The Embedder's work for the backlog observer: the rows that need a
@@ -499,6 +562,124 @@ fn batches(entities: &[StaleEntity]) -> Vec<&[StaleEntity]> {
         rest = after;
     }
     batches
+}
+
+/// What one batch can take from the vectors its Workspace stores.
+struct Reusable {
+    /// The rows, by document id, whose own vector was made from the text
+    /// they hold now.
+    own_matches: HashSet<String>,
+    /// For the other rows, a stored vector of another row made from the
+    /// same text, by the text's digest.
+    by_text: HashMap<TextSha256, Vec<f32>>,
+}
+
+impl Reusable {
+    /// Reads, from the vectors of `revision` in the Workspace, the vectors
+    /// `rows` can reuse. `digests` holds the digest of each row's text.
+    async fn read(
+        transaction: &mut coral_db::Transaction<'_>,
+        workspace_id: &WorkspaceId,
+        revision: &str,
+        rows: &[EntityText],
+        digests: &[TextSha256],
+    ) -> Result<Self, IndexError> {
+        let stored =
+            repository::vectors_of_texts(transaction, workspace_id, revision, digests).await?;
+        let own_matches = rows
+            .iter()
+            .zip(digests)
+            .filter(|(row, digest)| {
+                stored
+                    .iter()
+                    .any(|stored| stored.doc_id == row.doc_id && stored.text_sha256 == **digest)
+            })
+            .map(|(row, _digest)| row.doc_id.clone())
+            .collect::<HashSet<_>>();
+        let wanted = rows
+            .iter()
+            .zip(digests)
+            .filter(|(row, _digest)| !own_matches.contains(&row.doc_id))
+            .map(|(_row, digest)| digest)
+            .collect::<HashSet<_>>();
+        // One source for each text: each vector made from it is the same.
+        let mut sources = HashMap::new();
+        for stored in &stored {
+            if wanted.contains(&stored.text_sha256) {
+                sources
+                    .entry(stored.text_sha256)
+                    .or_insert(stored.doc_id.as_str());
+            }
+        }
+        let doc_ids = sources.values().copied().collect::<Vec<_>>();
+        let mut vectors = repository::stored_vectors(transaction, workspace_id, &doc_ids)
+            .await?
+            .into_iter()
+            .map(|stored| (stored.doc_id, stored.vector))
+            .collect::<HashMap<_, _>>();
+        let by_text = sources
+            .into_iter()
+            .filter_map(|(digest, doc_id)| vectors.remove(doc_id).map(|vector| (digest, vector)))
+            .collect();
+        Ok(Self {
+            own_matches,
+            by_text,
+        })
+    }
+
+    /// Sorts `rows`, whose texts are `texts` and their digests `digests`,
+    /// by where each gets its vector.
+    fn plan<'a>(
+        &'a self,
+        rows: &'a [EntityText],
+        texts: Vec<String>,
+        digests: &'a [TextSha256],
+    ) -> BatchPlan<'a> {
+        let mut plan = BatchPlan {
+            moves: Vec::new(),
+            copies: Vec::new(),
+            embedded: Vec::new(),
+            texts: Vec::new(),
+        };
+        for ((row, text), digest) in rows.iter().zip(texts).zip(digests) {
+            if self.own_matches.contains(&row.doc_id) {
+                plan.moves.push(StampMove {
+                    doc_id: &row.doc_id,
+                    indexed_at: row.indexed_at,
+                    text_sha256: digest,
+                });
+            } else if let Some(vector) = self.by_text.get(digest) {
+                plan.copies.push(EntityVector {
+                    doc_id: &row.doc_id,
+                    indexed_at: row.indexed_at,
+                    text_sha256: digest,
+                    vector,
+                });
+            } else {
+                plan.embedded.push((row, digest));
+                plan.texts.push(text);
+            }
+        }
+        plan
+    }
+}
+
+/// Where each row of one batch gets its vector.
+struct BatchPlan<'a> {
+    /// The rows whose own vector stays and takes the row's stamp.
+    moves: Vec<StampMove<'a>>,
+    /// The rows that take another row's stored vector.
+    copies: Vec<EntityVector<'a>>,
+    /// The rows the model embeds, with their digests, in the order of
+    /// `texts`.
+    embedded: Vec<(&'a EntityText, &'a TextSha256)>,
+    /// The index text of each row of `embedded`, for the model.
+    texts: Vec<String>,
+}
+
+/// The SHA-256 of an index text, as its vector row keeps it.
+fn text_sha256(text: &str) -> TextSha256 {
+    Sha256::digest(text.as_bytes()).into()
 }
 
 fn entity_index_text(row: &EntityText) -> String {

@@ -1,11 +1,17 @@
 //! The Embedder's statements: which Search Entities have no current vector,
-//! their text, the vector write and the orphan sweep.
+//! their text, the vectors they can reuse, the vector write, the stamp move
+//! and the orphan sweep.
 //!
-//! On Postgres one table holds each vector beside its key, revision and
-//! source stamp. On `SQLite` the table of that name holds the key, revision,
-//! stamp and the rowid of the vector in the sqlite-vec table
-//! `search_entity_embedding_vectors`, so the statements that read only
-//! revisions and stamps are the same on both.
+//! On Postgres one table holds each vector beside its key, revision, source
+//! stamp and the digest of its text. On `SQLite` the table of that name holds
+//! the key, revision, stamp, digest and the rowid of the vector in the
+//! sqlite-vec table `search_entity_embedding_vectors`, so the statements
+//! that read only revisions, stamps and digests are the same on both.
+//!
+//! The digest is valid only while `text_sha256_source_indexed_at_unix_nanos`,
+//! written with it, equals the vector's source stamp: a Coral older than
+//! vector reuse writes a vector with the columns it knows and leaves both
+//! as they were.
 //!
 //! Every function joins the caller's transaction; the Embedder owns when
 //! each transaction begins, commits or rolls back.
@@ -41,12 +47,25 @@ pub(super) struct EntityText {
     pub(super) indexed_at: UnixNanos,
 }
 
-/// One vector to write for the row of `doc_id` stamped
-/// `indexed_at`.
+/// The SHA-256 of a Search Entity's index text, before the model's
+/// document prefix.
+pub(super) type TextSha256 = [u8; 32];
+
+/// One vector to write for the row of `doc_id` stamped `indexed_at`, made
+/// from the text whose digest is `text_sha256`.
 pub(super) struct EntityVector<'a> {
     pub(super) doc_id: &'a str,
     pub(super) indexed_at: UnixNanos,
+    pub(super) text_sha256: &'a TextSha256,
     pub(super) vector: &'a [f32],
+}
+
+/// A row whose own vector was made from the text the row holds now: the
+/// row's stamp `indexed_at` moves onto that vector.
+pub(super) struct StampMove<'a> {
+    pub(super) doc_id: &'a str,
+    pub(super) indexed_at: UnixNanos,
+    pub(super) text_sha256: &'a TextSha256,
 }
 
 /// The FROM and WHERE clauses that select, as `s`, the Search Entities
@@ -137,22 +156,16 @@ pub(super) async fn entity_texts(
     workspace_id: &WorkspaceId,
     doc_ids: &[&str],
 ) -> Result<Vec<EntityText>, IndexError> {
-    let mut sql = format!(
+    let sql = format!(
         "SELECT doc_id, kind, qualified_name, title, description, provider_name, field_names, \
          indexed_at_unix_nanos \
          FROM search_entities \
-         WHERE workspace_id = {} AND field_names_fingerprint = fingerprint AND doc_id IN (",
-        bind(transaction, 1)
+         WHERE workspace_id = {} AND field_names_fingerprint = fingerprint AND doc_id IN ({})",
+        bind(transaction, 1),
+        binds(transaction, 2, doc_ids.len())
     );
     let mut values = vec![Value::from(workspace_id.to_string())];
-    for (position, doc_id) in doc_ids.iter().enumerate() {
-        if position > 0 {
-            sql.push_str(", ");
-        }
-        sql.push_str(&bind(transaction, position + 2));
-        values.push((*doc_id).into());
-    }
-    sql.push(')');
+    values.extend(doc_ids.iter().map(|doc_id| Value::from(*doc_id)));
     let rows: Vec<EntityTextRow> = transaction.fetch_all_sql(&sql, Values(values)).await?;
     rows.into_iter()
         .map(
@@ -194,9 +207,11 @@ type EntityTextRow = (
     UnixNanos,
 );
 
-/// Writes each vector of `vectors` with `revision`, when its row still holds
-/// the stamp the vector was made from and the stored vector is still stale.
-/// The filter columns come from the row. Returns the vectors written: a
+/// Writes each vector of `vectors` with `revision` and the digest of its
+/// text, when its row still holds the stamp the vector was made from and the
+/// stored vector is still stale. The filter columns come from the row. A
+/// vector taken from another row takes this write too. Returns the vectors
+/// written: a
 /// vector that another Embedder wrote first, or whose row changed or went,
 /// is not.
 pub(super) async fn write_vectors(
@@ -231,19 +246,28 @@ async fn write_postgres_vectors(
         if position > 0 {
             rows.push_str(", ");
         }
-        write!(rows, "(${first}, ${}, ${})", first + 1, first + 2)
-            .expect("writing to a String does not fail");
+        write!(
+            rows,
+            "(${first}, ${}, ${}, ${})",
+            first + 1,
+            first + 2,
+            first + 3
+        )
+        .expect("writing to a String does not fail");
         values.push(vector.doc_id.into());
         values.push(vector.indexed_at.into());
+        values.push(vector.text_sha256.to_vec().into());
         values.push(vector_literal(vector.vector).into());
     }
     let sql = format!(
         "INSERT INTO search_entity_embeddings (\
             workspace_id, doc_id, kind, provider_id, provider_generation_id, tool_key, \
-            embedder_revision, source_indexed_at_unix_nanos, embedding) \
+            embedder_revision, source_indexed_at_unix_nanos, text_sha256, \
+            text_sha256_source_indexed_at_unix_nanos, embedding) \
          SELECT s.workspace_id, s.doc_id, s.kind, s.provider_id, s.provider_generation_id, \
-            s.tool_key, $2, s.indexed_at_unix_nanos, v.embedding::halfvec \
-         FROM (VALUES {rows}) AS v(doc_id, indexed_at_unix_nanos, embedding) \
+            s.tool_key, $2, s.indexed_at_unix_nanos, v.text_sha256, s.indexed_at_unix_nanos, \
+            v.embedding::halfvec \
+         FROM (VALUES {rows}) AS v(doc_id, indexed_at_unix_nanos, text_sha256, embedding) \
          JOIN search_entities s \
              ON s.workspace_id = $1 \
              AND s.doc_id = v.doc_id \
@@ -255,6 +279,9 @@ async fn write_postgres_vectors(
             tool_key = EXCLUDED.tool_key, \
             embedder_revision = EXCLUDED.embedder_revision, \
             source_indexed_at_unix_nanos = EXCLUDED.source_indexed_at_unix_nanos, \
+            text_sha256 = EXCLUDED.text_sha256, \
+            text_sha256_source_indexed_at_unix_nanos = \
+                EXCLUDED.text_sha256_source_indexed_at_unix_nanos, \
             embedding = EXCLUDED.embedding \
          WHERE search_entity_embeddings.embedder_revision <> EXCLUDED.embedder_revision \
          OR search_entity_embeddings.source_indexed_at_unix_nanos \
@@ -279,13 +306,18 @@ async fn write_sqlite_vectors(
         let keyed: Vec<(i64,)> = transaction
             .fetch_all_sql(
                 "INSERT INTO search_entity_embeddings (\
-                    workspace_id, doc_id, embedder_revision, source_indexed_at_unix_nanos) \
-                 SELECT s.workspace_id, s.doc_id, ?3, s.indexed_at_unix_nanos \
+                    workspace_id, doc_id, embedder_revision, source_indexed_at_unix_nanos, \
+                    text_sha256, text_sha256_source_indexed_at_unix_nanos) \
+                 SELECT s.workspace_id, s.doc_id, ?3, s.indexed_at_unix_nanos, ?5, \
+                    s.indexed_at_unix_nanos \
                  FROM search_entities AS s \
                  WHERE s.workspace_id = ?1 AND s.doc_id = ?2 AND s.indexed_at_unix_nanos = ?4 \
                  ON CONFLICT (workspace_id, doc_id) DO UPDATE SET \
                     embedder_revision = excluded.embedder_revision, \
-                    source_indexed_at_unix_nanos = excluded.source_indexed_at_unix_nanos \
+                    source_indexed_at_unix_nanos = excluded.source_indexed_at_unix_nanos, \
+                    text_sha256 = excluded.text_sha256, \
+                    text_sha256_source_indexed_at_unix_nanos = \
+                        excluded.text_sha256_source_indexed_at_unix_nanos \
                  WHERE search_entity_embeddings.embedder_revision <> excluded.embedder_revision \
                  OR search_entity_embeddings.source_indexed_at_unix_nanos \
                      <> excluded.source_indexed_at_unix_nanos \
@@ -295,6 +327,7 @@ async fn write_sqlite_vectors(
                     vector.doc_id.into(),
                     revision.into(),
                     vector.indexed_at.into(),
+                    vector.text_sha256.to_vec().into(),
                 ]),
             )
             .await?;
@@ -319,6 +352,186 @@ async fn write_sqlite_vectors(
         written += 1;
     }
     Ok(written)
+}
+
+/// A stored vector of the Workspace whose text digest is valid: the document
+/// id of its row and the digest.
+pub(super) struct StoredDigest {
+    pub(super) doc_id: String,
+    pub(super) text_sha256: TextSha256,
+}
+
+/// One row's stored vector.
+pub(super) struct StoredVector {
+    pub(super) doc_id: String,
+    pub(super) vector: Vec<f32>,
+}
+
+/// The Workspace's vectors of `revision` made from a text whose digest is
+/// among `digests`. A digest counts only while its check column equals the
+/// vector's source stamp: a Coral older than vector reuse writes a vector
+/// without the digest, and leaves the digest of the vector before beside it.
+pub(super) async fn vectors_of_texts(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    revision: &str,
+    digests: &[TextSha256],
+) -> Result<Vec<StoredDigest>, IndexError> {
+    if digests.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "SELECT doc_id, text_sha256 FROM search_entity_embeddings \
+         WHERE workspace_id = {} AND embedder_revision = {} \
+         AND text_sha256_source_indexed_at_unix_nanos = source_indexed_at_unix_nanos \
+         AND text_sha256 IN ({})",
+        bind(transaction, 1),
+        bind(transaction, 2),
+        binds(transaction, 3, digests.len())
+    );
+    let mut values = vec![Value::from(workspace_id.to_string()), Value::from(revision)];
+    values.extend(digests.iter().map(|digest| Value::from(digest.to_vec())));
+    let rows: Vec<(String, Vec<u8>)> = transaction.fetch_all_sql(&sql, Values(values)).await?;
+    rows.into_iter()
+        .map(|(doc_id, digest)| {
+            let text_sha256 = TextSha256::try_from(digest)
+                .map_err(|_length| IndexError::Corrupt("search vector text digest"))?;
+            Ok(StoredDigest {
+                doc_id,
+                text_sha256,
+            })
+        })
+        .collect()
+}
+
+/// The Workspace's stored vectors of `doc_ids`.
+pub(super) async fn stored_vectors(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    doc_ids: &[&str],
+) -> Result<Vec<StoredVector>, IndexError> {
+    if doc_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let doc_id_binds = binds(transaction, 2, doc_ids.len());
+    let mut values = vec![Value::from(workspace_id.to_string())];
+    values.extend(doc_ids.iter().map(|doc_id| Value::from(*doc_id)));
+    match transaction.system() {
+        // `halfvec` as text names each value exactly.
+        DatabaseSystem::Postgres => {
+            let rows: Vec<(String, String)> = transaction
+                .fetch_all_sql(
+                    &format!(
+                        "SELECT doc_id, embedding::text FROM search_entity_embeddings \
+                         WHERE workspace_id = $1 AND doc_id IN ({doc_id_binds})"
+                    ),
+                    Values(values),
+                )
+                .await?;
+            rows.into_iter()
+                .map(|(doc_id, vector)| {
+                    Ok(StoredVector {
+                        doc_id,
+                        vector: parse_vector_literal(&vector)?,
+                    })
+                })
+                .collect()
+        }
+        // sqlite-vec gives a `float[]` vector as its little-endian bytes.
+        DatabaseSystem::Sqlite => {
+            let rows: Vec<(String, Vec<u8>)> = transaction
+                .fetch_all_sql(
+                    &format!(
+                        "SELECT k.doc_id, v.embedding FROM search_entity_embeddings AS k \
+                         JOIN search_entity_embedding_vectors AS v ON v.rowid = k.vector_rowid \
+                         WHERE k.workspace_id = ?1 AND k.doc_id IN ({doc_id_binds})"
+                    ),
+                    Values(values),
+                )
+                .await?;
+            rows.into_iter()
+                .map(|(doc_id, bytes)| {
+                    Ok(StoredVector {
+                        doc_id,
+                        vector: float32_vector(&bytes)?,
+                    })
+                })
+                .collect()
+        }
+    }
+}
+
+/// A vector from pgvector's text form, `[0.5,0.25,1]`.
+fn parse_vector_literal(literal: &str) -> Result<Vec<f32>, IndexError> {
+    literal
+        .strip_prefix('[')
+        .and_then(|values| values.strip_suffix(']'))
+        .ok_or(IndexError::Corrupt("search vector text"))?
+        .split(',')
+        .map(|value| {
+            value
+                .parse::<f32>()
+                .map_err(|_error| IndexError::Corrupt("search vector value"))
+        })
+        .collect()
+}
+
+/// A vector from its little-endian `f32` bytes.
+fn float32_vector(bytes: &[u8]) -> Result<Vec<f32>, IndexError> {
+    let (values, remainder) = bytes.as_chunks::<4>();
+    if !remainder.is_empty() {
+        return Err(IndexError::Corrupt("search vector bytes"));
+    }
+    Ok(values
+        .iter()
+        .map(|value| f32::from_le_bytes(*value))
+        .collect())
+}
+
+/// Moves each row's stamp of `moves` onto the row's own vector, when the row
+/// still holds that stamp, and the vector is of `revision`, was made from
+/// the same text and is still stale. Returns the vectors whose stamp moved.
+pub(super) async fn move_stamps(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    revision: &str,
+    moves: &[StampMove<'_>],
+) -> Result<u64, Error> {
+    let [
+        workspace_bind,
+        doc_id_bind,
+        revision_bind,
+        stamp_bind,
+        digest_bind,
+    ] = [1, 2, 3, 4, 5].map(|position| bind(transaction, position));
+    let sql = format!(
+        "UPDATE search_entity_embeddings SET \
+            source_indexed_at_unix_nanos = {stamp_bind}, \
+            text_sha256_source_indexed_at_unix_nanos = {stamp_bind} \
+         WHERE workspace_id = {workspace_bind} AND doc_id = {doc_id_bind} \
+         AND embedder_revision = {revision_bind} AND text_sha256 = {digest_bind} \
+         AND text_sha256_source_indexed_at_unix_nanos = source_indexed_at_unix_nanos \
+         AND source_indexed_at_unix_nanos <> {stamp_bind} \
+         AND EXISTS (SELECT 1 FROM search_entities s \
+             WHERE s.workspace_id = {workspace_bind} AND s.doc_id = {doc_id_bind} \
+             AND s.indexed_at_unix_nanos = {stamp_bind})"
+    );
+    let mut restamped = 0;
+    for stamp_move in moves {
+        restamped += transaction
+            .execute_sql(
+                &sql,
+                Values(vec![
+                    workspace_id.to_string().into(),
+                    stamp_move.doc_id.into(),
+                    revision.into(),
+                    stamp_move.indexed_at.into(),
+                    stamp_move.text_sha256.to_vec().into(),
+                ]),
+            )
+            .await?;
+    }
+    Ok(restamped)
 }
 
 /// Deletes each vector whose Search Entity is gone, with its Workspace or
@@ -367,4 +580,13 @@ fn bind(transaction: &Transaction<'_>, position: usize) -> String {
         DatabaseSystem::Postgres => format!("${position}"),
         DatabaseSystem::Sqlite => format!("?{position}"),
     }
+}
+
+/// The placeholders of `count` binds from `first`, comma-separated, for an
+/// `IN` list.
+fn binds(transaction: &Transaction<'_>, first: usize, count: usize) -> String {
+    (first..first + count)
+        .map(|position| bind(transaction, position))
+        .collect::<Vec<_>>()
+        .join(", ")
 }

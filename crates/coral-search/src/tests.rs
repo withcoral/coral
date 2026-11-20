@@ -4414,6 +4414,19 @@ fn paths(page: &crate::SearchPage) -> Vec<&str> {
         .collect()
 }
 
+/// The keys of an exported span, in order, less the `code.*` and `thread.*`
+/// keys the tracing bridge adds to every span.
+fn exported_keys(span: &opentelemetry_sdk::trace::SpanData) -> Vec<&str> {
+    let mut keys = span
+        .attributes
+        .iter()
+        .map(|attribute| attribute.key.as_str())
+        .filter(|key| !key.starts_with("code.") && !key.starts_with("thread."))
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    keys
+}
+
 async fn organization_user(
     database: std::sync::Arc<coral_db::Database>,
     id: &str,
