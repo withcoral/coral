@@ -8,12 +8,14 @@ use serde::de::IgnoredAny;
 use zeroize::Zeroizing;
 
 use super::env::AppEnvironment;
+use super::mcp_interface::ConfiguredMcpInterface;
 use super::secret_store_config::SecretStoreDefinitions;
 use super::{AppError, is_loopback_ip};
 use crate::auth::{
     AuthListenerSettings, AuthSection, AuthServerError, AuthSettings, CoralAuthorizationServer,
     ResolvedAuthSettings, WebSettings,
 };
+use crate::config_toml::Document;
 use crate::oauth_resource::CanonicalOauthUrl;
 use crate::state::AppStateLayout;
 use crate::telemetry::TelemetryConfig;
@@ -42,10 +44,10 @@ struct ServerConfigFile {
 }
 
 impl ServerConfigFile {
-    /// Decodes the whole document. A failure names the key path and never
-    /// the value.
-    fn decode(raw: &str) -> Result<Self, AppError> {
-        crate::config_toml::decode(raw).map_err(AppError::ConfigDecode)
+    /// Decodes what is left of the document. A failure names the key path
+    /// and never the value.
+    fn decode(document: Document<'_>) -> Result<Self, AppError> {
+        document.decode().map_err(AppError::ConfigDecode)
     }
 
     /// Validates the auth settings: the `[auth]` table, and the auth and web
@@ -88,6 +90,8 @@ pub(crate) struct Launcher {
     pub(crate) usage_environment: Option<coral_usage::SendEnvironment>,
     /// What the launching binary adds to Coral, such as its Edition check.
     pub(crate) extensions: super::runtime::Extensions,
+    /// Builds the tool surface MCP serves in place of core's.
+    pub(crate) mcp_interface_factory: Option<std::sync::Arc<dyn super::McpInterfaceFactory>>,
     /// Compile in this process: a test that starts Coral in its own process.
     pub(crate) compile_in_process: bool,
     /// Where startup reports each database migration step it applies.
@@ -158,7 +162,14 @@ impl LoadedServerConfig {
         launcher: &Launcher,
         grpc_bind: Option<SocketAddr>,
     ) -> Result<DeploymentConfig, AppError> {
-        let mut file = ServerConfigFile::decode(&self.raw)?;
+        let mut document = Document::parse(&self.raw).map_err(AppError::ConfigDecode)?;
+        let mcp_interface = match &launcher.mcp_interface_factory {
+            Some(factory) => ConfiguredMcpInterface::take(factory, &mut document)
+                .map_err(AppError::ConfigDecode)?,
+            None => None,
+        };
+        // A section that no factory took is an unknown field here.
+        let mut file = ServerConfigFile::decode(document)?;
         let auth = file.auth_settings()?;
         let ServerConfigFile {
             listeners,
@@ -177,6 +188,7 @@ impl LoadedServerConfig {
             runtime.local_run_executors(listeners.run_executor.token_env.is_some())?;
         let runtime_limits = runtime.resolve()?;
         let search_reconcile_interval = search.reconcile_interval()?;
+        let embedder_cores = search.embedder_cores()?;
         let credential_key_env = credentials.key_env()?;
         let license = license.map(LicenseSettings::validate).transpose()?;
         let secret_stores = credentials
@@ -239,10 +251,12 @@ impl LoadedServerConfig {
             outbound,
             search_reconcile_interval,
             semantic_search_enabled: search.semantic_search_enabled,
+            embedder_cores,
             update_check: updates.check,
             credential_key_env,
             license,
             secret_stores,
+            mcp_interface,
             session_auth,
             telemetry: TelemetryConfig { otel },
         })
@@ -270,12 +284,14 @@ pub(crate) struct DeploymentConfig {
     outbound: OutboundSettings,
     search_reconcile_interval: std::time::Duration,
     semantic_search_enabled: bool,
+    embedder_cores: std::num::NonZeroUsize,
     update_check: bool,
     credential_key_env: Option<String>,
     /// Where the License is. None without `[license]`.
     license: Option<LicenseSource>,
     /// None when the deployment turned Secret Stores off.
     secret_stores: Option<SecretStoreDefinitions>,
+    mcp_interface: Option<ConfiguredMcpInterface>,
     session_auth: Option<SessionAuthConfig>,
     telemetry: TelemetryConfig,
 }
@@ -366,6 +382,12 @@ impl DeploymentConfig {
     /// vector side on.
     pub(crate) fn semantic_search_enabled(&self) -> bool {
         self.semantic_search_enabled
+    }
+
+    /// How many threads the search Embedder runs, with one model session for
+    /// each: `[search] embedder_cores`.
+    pub(crate) fn embedder_cores(&self) -> std::num::NonZeroUsize {
+        self.embedder_cores
     }
 
     /// Universal Search's vector side: vectors of the model manifest's
@@ -491,6 +513,7 @@ impl DeploymentConfig {
             outbound_policy: self.outbound_policy(defaults),
             mcp_oauth_client_bootstrap: self.mcp_oauth_client_bootstrap(),
             mcp_http: self.mcp_http.clone(),
+            mcp_interface: self.mcp_interface.clone(),
             auth_bind_addr: self.auth_bind_addr,
             session_auth: self.resolve_session_auth()?,
             human_interface: self.human_interface.clone(),
@@ -872,6 +895,11 @@ struct SearchSettings {
     /// Coral needs no pgvector, loads and downloads no model, makes no
     /// vectors, and leaves a vector table from an earlier start as it is.
     semantic_search_enabled: bool,
+    /// How many low-priority threads the Embedder runs, with one model
+    /// session for each. One by default, so a user's machine stays
+    /// responsive. Each session after the first is another copy of the
+    /// model.
+    embedder_cores: usize,
 }
 
 impl Default for SearchSettings {
@@ -879,11 +907,17 @@ impl Default for SearchSettings {
         Self {
             reconcile_interval_seconds: 5 * 60,
             semantic_search_enabled: true,
+            embedder_cores: 1,
         }
     }
 }
 
 impl SearchSettings {
+    fn embedder_cores(&self) -> Result<std::num::NonZeroUsize, AppError> {
+        std::num::NonZeroUsize::new(self.embedder_cores)
+            .ok_or_else(|| refused("search.embedder_cores", "must be greater than 0"))
+    }
+
     fn reconcile_interval(&self) -> Result<std::time::Duration, AppError> {
         if self.reconcile_interval_seconds == 0 {
             return Err(refused(
@@ -1140,6 +1174,7 @@ pub struct ServeSettings {
     outbound_policy: coral_outbound::DestinationPolicy,
     mcp_oauth_client_bootstrap: coral_provider::account::ClientBootstrapPolicy,
     pub(super) mcp_http: McpHttpServeConfig,
+    pub(super) mcp_interface: Option<ConfiguredMcpInterface>,
     auth_bind_addr: SocketAddr,
     pub(super) session_auth: Option<SessionAuthSettings>,
     human_interface: coral_mcp::HumanInterfaceUrl,
@@ -1442,7 +1477,9 @@ pub(super) mod tests {
     /// Decodes `raw` and validates its auth settings as startup does, for
     /// the auth module's tests. A refusal is the message alone.
     pub(crate) fn auth_settings(raw: &str) -> Result<Option<crate::auth::AuthSettings>, String> {
-        super::ServerConfigFile::decode(raw)
+        super::Document::parse(raw)
+            .map_err(AppError::ConfigDecode)
+            .and_then(super::ServerConfigFile::decode)
             .and_then(|mut file| file.auth_settings())
             .map_err(|error| match error {
                 AppError::Auth(error) => error.to_string(),
@@ -1835,6 +1872,22 @@ client_secret = 'test-secret'
     }
 
     #[test]
+    fn the_embedder_runs_on_one_core_unless_the_operator_gives_it_more() {
+        for (raw, expected) in [
+            ("", 1),
+            ("[search]", 1),
+            ("[search]\nembedder_cores = 1", 1),
+            ("[search]\nembedder_cores = 4", 4),
+        ] {
+            assert_eq!(
+                section(raw).expect(raw).embedder_cores().get(),
+                expected,
+                "{raw:?}"
+            );
+        }
+    }
+
+    #[test]
     fn the_release_check_is_off_unless_the_operator_turns_it_on() {
         for (raw, expected) in [
             ("", false),
@@ -2003,6 +2056,14 @@ client_secret = 'test-secret'
             (
                 "[search]\nreconcile_interval_seconds = -1",
                 Refused::Decode("search.reconcile_interval_seconds: "),
+            ),
+            (
+                "[search]\nembedder_cores = 0",
+                Refused::Setting("search.embedder_cores"),
+            ),
+            (
+                "[search]\nembedder_cores = -1",
+                Refused::Decode("search.embedder_cores: "),
             ),
         ] {
             assert_refused(&section(raw).expect_err(raw), expected, raw);

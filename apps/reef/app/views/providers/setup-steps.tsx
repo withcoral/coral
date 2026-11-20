@@ -13,7 +13,7 @@ import { DeviceCodeDialog } from '@/views/accounts/device-code'
 import { oauthFailureMessage } from '@/views/accounts/oauth-failure'
 import { credentialHosts, OAuthApplicationBlock } from './oauth-application'
 
-import { CredentialSource } from '@/views/accounts/credential-source'
+import { CredentialEntry } from '@/views/accounts/credential-source'
 import { CredentialFields } from '@/views/management/credential-fields'
 import { accountLabels } from './account-labels'
 import type {
@@ -76,19 +76,15 @@ export function SetupSecretForm({
       <Fields form={form} intent="secret" />
       <SetupFields setup={setup} extra={extra} />
       <CredentialFields fields={setup.credentialFields}>
-        {(input, field, label) =>
-          secretStores.length > 0 || savedReferences[field] ? (
-            <CredentialSource
-              value={<Inputs.CredentialInput {...input} />}
-              field={field}
-              label={label}
-              stores={secretStores}
-              saved={savedReferences[field]}
-            />
-          ) : (
-            <Inputs.CredentialInput {...input} />
-          )
-        }
+        {(input, field, label) => (
+          <CredentialEntry
+            value={<Inputs.CredentialInput {...input} />}
+            field={field}
+            label={label}
+            stores={secretStores}
+            saved={savedReferences[field]}
+          />
+        )}
       </CredentialFields>
       {hosts.length > 0 && (
         <Typography.BodySmall as="p" variant="tertiary">

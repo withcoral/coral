@@ -47,6 +47,18 @@ A non-empty `required_actions` means the Run waits for a person: for an `invokin
 // list fills the rest, up to EXEC_DESCRIPTION_MAX_BYTES.
 const _: () = assert!(EXEC_TOOL_DESCRIPTION.len() <= 2304);
 
+/// `wait`'s description. A surface that wraps core's reuses it.
+pub const WAIT_TOOL_DESCRIPTION: &str = concat!(
+    "Observe one program run: its authored emissions and logs, current `required_actions`, and `state`. Returns when `required_actions` change, the run ends, or `wait_ms` runs out, with the output that arrived by then. New output alone does not end the wait. Observing consumes nothing, so an earlier cursor reads the same output again.",
+    // What to do when the Run waits on a person: write the link,
+    // then keep waiting. `exec` returns the same Run Update, but
+    // its description keeps the discovery example within its
+    // budget, so it gives the first step and points here.
+    " Human handoff: a non-empty `required_actions` means the run waits for a person. For an entry whose `required_actor` is `invoking_user`, write to the user, as reply text before your next tool call, what is asked (`tool`, `provider`, `kind`), the `url` exactly as given, the `run_id` and the `deadline_at`: tool results and your thinking stay hidden from them. Then keep calling `wait` with `wait_ms` 30000 and the latest `next_cursor` until `required_actions` is empty or the run ends. While it holds, the call can report the link as its progress, and the person's decision on that page resumes the run on its own, so do not ask them to report back. For any other `required_actor`, keep calling `wait` the same way. You cannot decide an entry and must not say you did. A connection happens on that page, so never ask for a token, password or account in the chat. A decline or a missed `deadline_at` reaches the program as `coral.ToolError`, and a run past its own deadline ends `timed_out`: report what happened from the run's output, and do not start the program again unless asked. For `account_connection`, ask only when the entry appears."
+);
+/// `cancel`'s description. A surface that wraps core's reuses it.
+pub const CANCEL_TOOL_DESCRIPTION: &str = "Request cancellation of one program run.";
+
 /// The most UTF-8 bytes `exec`'s description takes with its namespace list.
 /// A client counts characters or UTF-16 units, and neither ever exceeds the
 /// bytes, so the description stays within a 4096-character limit.
@@ -137,7 +149,9 @@ fn namespace_line(provider: &coral_search::SearchableProvider) -> String {
 pub(crate) const DEFAULT_RUN_TIMEOUT_MS: u64 = 900_000;
 pub(crate) const DEFAULT_EXEC_WAIT_MS: u64 = 30_000;
 pub(crate) const DEFAULT_WAIT_MS: u64 = 0;
-pub(crate) const MAX_WAIT_MS: u64 = 30_000;
+/// The longest one tool call waits, in milliseconds. A surface that wraps
+/// core's holds a wait of its own to it.
+pub const MAX_WAIT_MS: u64 = 30_000;
 
 /// Claude Code sends a tool with this `_meta` key in its first request instead
 /// of deferring it behind tool search. Other clients ignore the key.
@@ -356,18 +370,11 @@ static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
             WaitArguments,
             crate::projection::ObservedRun<'_>,
         >(
-            concat!(
-                "Observe one program run: its authored emissions and logs, current `required_actions`, and `state`. Returns when `required_actions` change, the run ends, or `wait_ms` runs out, with the output that arrived by then. New output alone does not end the wait. Observing consumes nothing, so an earlier cursor reads the same output again.",
-                // What to do when the Run waits on a person: write the link,
-                // then keep waiting. `exec` returns the same Run Update, but
-                // its description keeps the discovery example within its
-                // budget, so it gives the first step and points here.
-                " Human handoff: a non-empty `required_actions` means the run waits for a person. For an entry whose `required_actor` is `invoking_user`, write to the user, as reply text before your next tool call, what is asked (`tool`, `provider`, `kind`), the `url` exactly as given, the `run_id` and the `deadline_at`: tool results and your thinking stay hidden from them. Then keep calling `wait` with `wait_ms` 30000 and the latest `next_cursor` until `required_actions` is empty or the run ends. While it holds, the call can report the link as its progress, and the person's decision on that page resumes the run on its own, so do not ask them to report back. For any other `required_actor`, keep calling `wait` the same way. You cannot decide an entry and must not say you did. A connection happens on that page, so never ask for a token, password or account in the chat. A decline or a missed `deadline_at` reaches the program as `coral.ToolError`, and a run past its own deadline ends `timed_out`: report what happened from the run's output, and do not start the program again unless asked. For `account_connection`, ask only when the entry appears."
-            ),
+            WAIT_TOOL_DESCRIPTION,
             read_annotations("Wait for run"),
         ))),
         tool::<CancelArguments, crate::projection::ObservedRun<'_>>(
-            "Request cancellation of one program run.",
+            CANCEL_TOOL_DESCRIPTION,
             mutation_annotations("Cancel run", true, false),
         ),
         always_loaded(tool::<EndTaskArguments, crate::projection::EndedTask>(

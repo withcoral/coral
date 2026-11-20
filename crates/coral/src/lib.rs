@@ -24,6 +24,7 @@
 use std::future::Future;
 use std::net::SocketAddr;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use anyhow::{Context as _, bail};
 use clap::Parser;
@@ -165,6 +166,8 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
     let launch = coral_app::Launch {
         service_version: Some(VERSION),
         extensions,
+        // Every build serves the Sub-agent.
+        mcp_interface_factory: Some(Arc::new(coral_agent::SubAgentFactory)),
         migration_report: Some(print_migrations()),
         ..coral_app::Launch::from_env()
             .map_err(|error| anyhow::anyhow!("invalid launch environment: {error}"))?

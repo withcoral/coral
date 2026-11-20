@@ -113,12 +113,27 @@ const CORAL: &[&str] = &[
     "coral.search.reconcile.workspaces_checked",
     "coral.search.reconcile.workspaces_recounted",
     "coral.search.reconcile.rows_written",
-    // One write of the Embedder: the Search Entities it embedded and the
-    // vectors it wrote.
+    // One write of the Embedder: the Search Entities it embedded, those of
+    // them whose text already had a stored vector, those whose text the
+    // model embedded, and the vectors it wrote.
     "coral.search.embedder.rows",
+    "coral.search.embedder.vectors_reused",
+    "coral.search.embedder.vectors_embedded",
     "coral.search.embedder.vectors_written",
     // The Edition a Coral Instance started as.
     "coral.edition",
+    // A Sub-agent, and how one of its Turns ended, with the Turn's counts of
+    // model calls, tool calls and compactions.
+    "coral.sub_agent.id",
+    "coral.sub_agent.turn.outcome",
+    "coral.sub_agent.turn.model_calls",
+    "coral.sub_agent.turn.tool_calls",
+    "coral.sub_agent.turn.compactions",
+    // A Sub-agent's model call: its retries.
+    "coral.sub_agent.model_call.retries",
+    // A compaction of a Sub-agent's thread: its tokens before and after.
+    "coral.sub_agent.compaction.tokens_before",
+    "coral.sub_agent.compaction.tokens_after",
 ];
 
 /// The standard keys Coral allows. `exception.message` and
@@ -140,6 +155,11 @@ const STANDARD: &[&str] = &[
     "rpc.response.status_code",
     "mcp.method.name",
     "gen_ai.tool.name",
+    "gen_ai.request.model",
+    "gen_ai.response.finish_reasons",
+    "gen_ai.usage.input_tokens",
+    "gen_ai.usage.cache_read.input_tokens",
+    "gen_ai.usage.output_tokens",
     "process.executable.name",
     "process.exit.code",
     "process.pid",

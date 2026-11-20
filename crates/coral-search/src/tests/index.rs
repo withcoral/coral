@@ -1014,6 +1014,76 @@ async fn a_write_that_waited_for_the_writer_still_has_its_whole_limit() {
     );
 }
 
+// Catches: a stop that leaves a notified write running, and a stopped write
+// that records a failure, which the next start would wait out before it
+// retries the Generation.
+#[tokio::test]
+async fn a_stop_ends_a_waiting_write_which_records_nothing() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let entries = world.stored_entries(&world.tracer).await;
+    let mut index = world.index.clone();
+    let probe = index.probe_writes();
+    probe.hold_at(WritePoint::WaitingForWriter);
+
+    notify(&index, &entries);
+    probe.reached(1, WritePoint::WaitingForWriter).await;
+    index.stop();
+    // A liveness bound: only the stop ends the held write.
+    tokio::time::timeout(std::time::Duration::from_secs(30), index.stopped())
+        .await
+        .expect("the stop ends the held write");
+    probe.reached(1, WritePoint::Ended).await;
+    notify(&index, &entries);
+    index.settled().await;
+
+    assert_eq!(world.states().await, []);
+}
+
+// Catches: a stop that returns while a write still builds its rows. The row
+// build runs in `block_in_place`, which gives the worker's other tasks to
+// another thread. A runtime that shuts down meanwhile shuts down its timer
+// too, and the write's poll goes on to its next timer, where Tokio panics.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_stop_waits_for_a_write_that_builds_its_rows() {
+    for notified in [true, false] {
+        let upstream = MockServer::start().await;
+        let mut world = World::publish_tracer(&upstream).await;
+        let hold = world.index.hold_row_building();
+        // A notified write or the reconcile task's first pass indexes the
+        // tracer.
+        let background = if notified {
+            notify(&world.index, &world.stored_entries(&world.tracer).await);
+            None
+        } else {
+            Some(world.index.spawn_reconcile_task())
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), hold.entered())
+            .await
+            .expect("row work starts");
+
+        world.index.stop();
+        let stopped = world.index.stopped();
+        tokio::pin!(stopped);
+        assert!(
+            tokio::time::timeout(std::time::Duration::ZERO, &mut stopped)
+                .await
+                .is_err(),
+            "the stop waits while the rows build (notified: {notified})"
+        );
+        drop(hold);
+        tokio::time::timeout(std::time::Duration::from_secs(30), stopped)
+            .await
+            .expect("the write ends once its rows are built");
+        if let Some(background) = background {
+            assert!(
+                background.await.is_ok(),
+                "the stop ends the reconcile task, which needs no abort"
+            );
+        }
+    }
+}
+
 #[tokio::test]
 async fn a_failed_removal_leaves_the_superseded_generation_and_still_indexes_the_active_one() {
     let upstream = MockServer::start().await;

@@ -3937,12 +3937,21 @@ impl TestModules {
     /// An index whose Embedder embeds with `model`, ready at once, and
     /// retries a failed batch after a short pause.
     fn index_with(&self, model: std::sync::Arc<dyn coral_embed::Embed>) -> crate::SearchIndex {
+        self.index_with_cores(model, std::num::NonZeroUsize::MIN)
+    }
+
+    /// [`Self::index_with`], with the Embedder on `cores` threads.
+    fn index_with_cores(
+        &self,
+        model: std::sync::Arc<dyn coral_embed::Embed>,
+        cores: std::num::NonZeroUsize,
+    ) -> crate::SearchIndex {
         let (_ready, model) = tokio::sync::watch::channel(crate::ModelLoad::Ready(model));
         crate::SearchIndex::new(
             self.search.database.clone(),
             std::time::Duration::from_mins(5),
         )
-        .with_embedder(model)
+        .with_embedder(model, cores)
         .with_embedder_retry_pause(std::time::Duration::from_millis(10))
     }
 
@@ -4412,6 +4421,19 @@ fn paths(page: &crate::SearchPage) -> Vec<&str> {
         .iter()
         .map(|item| item.call_path().as_str())
         .collect()
+}
+
+/// The keys of an exported span, in order, less the `code.*` and `thread.*`
+/// keys the tracing bridge adds to every span.
+fn exported_keys(span: &opentelemetry_sdk::trace::SpanData) -> Vec<&str> {
+    let mut keys = span
+        .attributes
+        .iter()
+        .map(|attribute| attribute.key.as_str())
+        .filter(|key| !key.starts_with("code.") && !key.starts_with("thread."))
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    keys
 }
 
 async fn organization_user(

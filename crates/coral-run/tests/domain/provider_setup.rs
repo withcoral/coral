@@ -1618,6 +1618,59 @@ async fn list_providers_lists_every_provider_without_approval() {
     }
 }
 
+// Catches: a read without a Run that differs from what `coral.listProviders`
+// lists, or that answers a caller outside the Workspace.
+#[tokio::test]
+async fn providers_are_listed_without_a_run_as_list_providers_lists_them() {
+    let scope = AdminScope::new("user:listed-owner").await;
+    let weather = scope.publish_weather().await;
+    scope
+        .fixture
+        .providers
+        .disable_provider(
+            &change(scope.owner_user(), 21, '6'),
+            &scope.workspace_id,
+            weather.id(),
+            &weather.if_match(),
+        )
+        .await
+        .unwrap();
+    let runs = &scope.fixture.runs;
+
+    let run = scope
+        .start(&scope.owner, workspace_call("listProviders", "{}"))
+        .await;
+    let listed = final_value(&scope.terminal(&scope.owner, &run).await);
+    let without_a_run = runs
+        .listed_providers(&scope.owner, &scope.workspace_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        listed.pointer("/data/providers"),
+        Some(&serde_json::to_value(&without_a_run).unwrap())
+    );
+    let call_roots: Vec<_> = without_a_run
+        .iter()
+        .map(|provider| provider.call_root.as_str())
+        .collect();
+    assert_eq!(call_roots, ["coral", "coral.providers.weather"]);
+
+    // Organization Owner authority reaches no Workspace without a Membership.
+    let outsider = organization_user(
+        scope.fixture.database.clone(),
+        "user:listed-outsider",
+        OrganizationRole::Owner,
+    )
+    .await;
+    let refused = runs
+        .listed_providers(&AuthenticatedPrincipal::user(outsider), &scope.workspace_id)
+        .await;
+    assert_eq!(
+        refused.as_ref().err().and_then(Error::workspace_refusal),
+        Some(coral_workspace::AuthorityRefusal::WorkspaceNotFound),
+        "{refused:?}"
+    );
+}
 /// An MCP server that lists one read-only tool to anyone.
 async fn public_mcp_server() -> MockServer {
     let server = MockServer::start().await;

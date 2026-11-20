@@ -25,7 +25,9 @@ use coral_workspace::{AuthenticatedPrincipal, AuthenticatedUser, RequestId, Work
 use opentelemetry_sdk::trace::SpanData;
 use tokio::sync::watch;
 
-use super::{SMALL_TOOL_SOURCE, TestModules, change, eventually, organization_user, paths};
+use super::{
+    SMALL_TOOL_SOURCE, TestModules, change, eventually, exported_keys, organization_user, paths,
+};
 use crate::{
     EntityKind, ModelLoad, SearchHit, SearchLimit, SearchPage, SearchQuery, SearchRequest,
     UniversalSearchModule,
@@ -889,19 +891,6 @@ fn rank<'a>(spans: &'a [SpanData], retriever: &str, case: &str) -> &'a SpanData 
     rank
 }
 
-/// The keys of an exported span, in order, less the `code.*` and `thread.*`
-/// keys the tracing bridge adds to every span.
-fn exported_keys(span: &SpanData) -> Vec<&str> {
-    let mut keys = span
-        .attributes
-        .iter()
-        .map(|attribute| attribute.key.as_str())
-        .filter(|key| !key.starts_with("code.") && !key.starts_with("thread."))
-        .collect::<Vec<_>>();
-    keys.sort_unstable();
-    keys
-}
-
 /// How many Tools the Tool retriever handed the engine for `page`.
 fn tools_returned(page: &SearchPage) -> u64 {
     page.retriever_statuses()
@@ -930,7 +919,8 @@ fn tools_returned(page: &SearchPage) -> u64 {
 async fn the_real_model_finds_a_tool_by_semantic_search() {
     let dir = std::env::var_os("CORAL_EMBED_MODEL_DIR")
         .expect("set CORAL_EMBED_MODEL_DIR to a folder with model.onnx and tokenizer.json");
-    let model = coral_embed::Model::load(std::path::Path::new(&dir)).expect("the model loads");
+    let model = coral_embed::Model::load(std::path::Path::new(&dir), std::num::NonZeroUsize::MIN)
+        .expect("the model loads");
     let world = World::with(Arc::new(model)).await;
 
     let page = world

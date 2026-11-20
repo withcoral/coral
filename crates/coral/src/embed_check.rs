@@ -47,7 +47,7 @@ pub(crate) fn run(args: &EmbedCheckArgs) -> anyhow::Result<()> {
         check_file(&args.model_dir, file)?;
     }
     let started = Instant::now();
-    let model = Model::load(&args.model_dir)
+    let model = Model::load(&args.model_dir, std::num::NonZeroUsize::MIN)
         .with_context(|| format!("load the model from {}", args.model_dir.display()))?;
     println!("load_ms {:.1}", millis(started.elapsed()));
 

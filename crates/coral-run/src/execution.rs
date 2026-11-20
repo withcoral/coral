@@ -136,6 +136,13 @@ pub(crate) trait ExecutionObserver: Send + Sync {
     /// The Run Inbox reader handed one request to its Run's owner.
     fn inbox_delivered(&self) {}
 
+    /// The wake-up reader woke one Run stream's loop, in a read that `turn`
+    /// started.
+    fn wake_delivered(&self, _turn: crate::observation::Turn) {}
+
+    /// The wake-up reader is about to read; a test may hold it here.
+    async fn before_wake_read(&self) {}
+
     /// The owner armed `timer` to fire after `after_nanos` on the host clock.
     fn timer_armed(&self, _timer: &crate::owner::Timer, _after_nanos: i64) {}
 
@@ -216,6 +223,16 @@ impl ExecutionPolicy {
             approval_wait,
             claim_lease: TEST_APPROVAL_LEASE,
             ..Self::testing()
+        }
+    }
+
+    /// Keeps everything else while a test chooses the lease, which also sets
+    /// the owner's idle tick and liveness bounds.
+    #[cfg(test)]
+    pub(crate) const fn with_claim_lease(self, claim_lease: Duration) -> Self {
+        Self {
+            claim_lease,
+            ..self
         }
     }
 

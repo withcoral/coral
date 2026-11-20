@@ -232,7 +232,8 @@ impl From<coral_search::StorageError> for AppError {
             coral_search::StorageError::Database(error) => error.into(),
             coral_search::StorageError::MissingFeature { .. }
             | coral_search::StorageError::UnexpectedVectorTable { .. }
-            | coral_search::StorageError::UnexpectedSqliteVectorTables { .. } => {
+            | coral_search::StorageError::UnexpectedSqliteVectorTables { .. }
+            | coral_search::StorageError::UnexpectedVectorReuseShape { .. } => {
                 Self::SearchStorage(error)
             }
         }
@@ -327,7 +328,7 @@ mod tests {
 
     #[test]
     fn search_storage_failures_an_operator_can_fix_are_preconditions() {
-        let cases: [(StorageError, Expected); 4] = [
+        let cases: [(StorageError, Expected); 5] = [
             (
                 StorageError::MissingFeature {
                     database: "Postgres 17.10".to_string(),
@@ -370,6 +371,17 @@ mod tests {
                         AppError::SearchStorage(StorageError::UnexpectedSqliteVectorTables {
                             expected_dimension: 384,
                         })
+                    )
+                },
+            ),
+            (
+                StorageError::UnexpectedVectorReuseShape {
+                    found: "column text_sha256 of type text".to_string(),
+                },
+                |error| {
+                    matches!(
+                        error,
+                        AppError::SearchStorage(StorageError::UnexpectedVectorReuseShape { .. })
                     )
                 },
             ),

@@ -107,12 +107,18 @@ indexer revision, so a model change re-embeds every Entity without re-indexing w
 
 ## The Embedder
 
-The Embedder is the third supervised task beside Observer and Reconcile. It owns one OS thread at low priority with
-one intra-op thread. It wakes on every index write, on the reconcile tick and at boot, and drains a predicate, not a
+The Embedder is the third supervised task beside Observer and Reconcile. It runs on OS threads at low priority. It has
+one thread by default, so a user's machine stays responsive, and an operator can give it more. Coral loads one model
+session for each thread, each with one intra-op thread, and a call takes any free session. On the bench texts, eight
+sessions embed 4.7 to 4.9 times as fast as one.
+Eight intra-op threads in one session embed only 2.0 times as fast. Each session adds a copy of the model in memory
+([#3361](https://github.com/withcoral/coral/issues/3361)). A drain gives its batches to the threads, and each row of a
+read is in one batch only. A query goes before every document that has not started, on any session. The
+Embedder wakes on every index write, on the reconcile tick and at boot, and drains a predicate, not a
 queue table: a vector is stale when it is missing, when its revision differs, or when its source stamp differs from the
 row's `indexed_at`. It takes the oldest Generation first, in small batches, with one write per batch under the
 Workspace's index lock that checks staleness again. A failed batch logs, backs off and retries once. When the retry
-fails in the database, the Embedder skips nothing and stops until the next wake. When it fails in the model, the
+fails in the database, the Embedder skips nothing, starts no other batch, and stops until the next wake. When it fails in the model, the
 Embedder embeds a fixed probe text; if the probe fails too, the model is down, and the Embedder stops the same way.
 Otherwise it tries the batch's rows one by one, and a row that the model still refuses is skipped until its revision or
 source stamp changes or the process restarts. A database failure in those tries stops the drain as above; it skips no
@@ -125,13 +131,24 @@ Semantic search finds the Tools of a Graph-sized Provider (19,830 rows) after ab
 minutes on one M4 core; until then they rank by words. Two Coral Instances that have the core role, side by side or
 overlapping during a rolling upgrade, can embed the same rows; the write checks staleness, so this costs CPU only.
 
+**Reuse by text.** The model runs only for a text that has no reusable vector in the same Workspace. A new Generation gives
+each Tool a new Search Entity, and a raised indexer revision can give a row a new stamp with the same text; without
+reuse, either one made the vector of every such row again, also when one Tool of many changed or when only the Provider
+Configuration did. Each vector row keeps the SHA-256 of the index text it was made from. A row whose own vector was made
+from its text keeps that vector. Another row's vector of the same text and of the current Embedder revision goes
+through the same write as a model vector. The kind of the Tool plays no part. A digest counts only while the stamp
+written with it equals the vector's source stamp, because an older Coral in a rolling update writes vectors without
+it. The vectors of a replaced Generation are sources until the reconcile pass removes them.
+
 ## Storage
 
 One vector table per backend (on SQLite, the pair of tables below), keyed like the entity table, with the revision and
 source stamp beside each vector.
 Coral creates it at boot from the manifest, before the Embedder starts, and drops and recreates it when the dimension changes. It lives outside
 the migration chain, the one exception to that rule: a migration with a vector column fails on a Postgres without
-pgvector, and Coral with the vector side off must start there.
+pgvector, and Coral with the vector side off must start there. On a table that a Coral older than reuse by text made,
+boot adds what reuse needs as nullable columns and an index, and keeps every row. A row without a digest is no source
+until the Embedder writes its vector again; no backfill runs.
 
 - **Postgres:** `halfvec(384)`, with the filter columns (kind, Provider, Generation, Tool key, Embedder revision) on
   the vector table, so the vector query reads it alone and scans it exactly. At the sandbox RDS shape the
@@ -178,21 +195,29 @@ vector query error) gives that retriever its lexical list alone. It never puts t
 the page says nothing. Telemetry says it ([#2855](https://github.com/withcoral/coral/issues/2855)): the retriever's
 span records whether it merged the two lists or used the lexical list alone, with one reason for each cause above, for
 the setting and for the CPU floor ([#3057](https://github.com/withcoral/coral/issues/3057) names them). A span times
-the query embedding, and the Embedder reports its backlog, batch durations and skipped rows.
+the query embedding, and the Embedder reports its backlog, batch durations and skipped rows, and for each write the
+vectors it reused and those the model made.
 
 ## Consequences
 
 - Search Hits change shape. Programs that read `matched_tags`, `matched_inputs` or the Guidance Snippet get nothing.
-- A new or changed Provider ranks by words for minutes. On a server, Workspaces share the one Embedder thread: ten
-  Graph-sized Providers take about two hours.
+- A new Provider, and each Tool whose text changed, ranks by words for minutes. A new Generation whose Tool texts did
+  not change has its vectors without the model when the Embedder reaches it before the reconcile pass removes the
+  replaced Generation; an Embedder busy with other rows can miss that. Vectors written before reuse by text have no
+  digest, so the first new Generation of each Provider after the upgrade embeds all its Tools again. On a server,
+  Workspaces share the Embedder's threads: on one thread, ten new Graph-sized Providers take about two hours.
 - Vectors cost database memory. On db.t4g.medium (4 GiB) the vectors of about 17 Graph Workspaces stay warm at
   `halfvec(384)` (extrapolated from 10 measured); past that the instance swaps and a query takes 0.8 to 2 s.
 - The Coral process carries the model: about 30 MB of binary, a 133 MB model file, and up to about 360 MiB while it
-  embeds. Where the Instance Roles are separate, each Coral Instance with the core role carries it, and a Coral Instance
-  without the core role loads no model.
+  embeds on one thread. Each further thread adds a copy of the model. Where the Instance Roles are separate, each Coral
+  Instance with the core role carries it, and a Coral Instance without the core role loads no model.
+- On SQLite, the writes of several Embedder threads wait for the one writer. Under heavy publishing, a write can reach
+  the write time limit. The drain then stops until the next wake and skips no row.
 - Self-hosted operators on Postgres install pgvector or turn the setting off.
 - A model change is a code change: a new manifest, a new revision, and every Entity re-embeds. A new dimension recreates
   the vector table.
 - Not decided here: how Workspaces share the Embedder on a busy server, a cap on embedded Workspaces or a larger
   database class, HNSW past a row count, tuning the merge weight on real queries, query text beyond the frozen query
-  (the Task intent, the search `intent` argument), and bench cases for Private and Shared Tools.
+  (the Task intent, the search `intent` argument), bench cases for Private and Shared Tools, and reuse of vectors
+  across Workspaces, which no case needs now and which needs a rule for the timing signal between Workspaces
+  ([#3361](https://github.com/withcoral/coral/issues/3361)).

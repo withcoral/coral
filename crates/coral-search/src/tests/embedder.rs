@@ -11,19 +11,21 @@
 //! nothing the test awaits waits for that pass: on a loaded host it runs
 //! between the test's own steps and indexes a row the test left stale.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use coral_embed::{Embed, EmbedError, MANIFEST};
-use coral_telemetry::testing::{MetricCapture, SpanCapture, attribute};
+use coral_telemetry::testing::{ExportCapture, MetricCapture, SpanCapture, attribute};
 use coral_workspace::{AuthenticatedUser, IfMatch, WorkspaceId};
 use sea_query::{Alias, Expr, ExprTrait as _, Query};
 use tokio::sync::watch;
 use tracing_subscriber::layer::SubscriberExt as _;
 use wiremock::MockServer;
 
-use super::{TestModules, change, organization_user};
+use super::{TestModules, change, exported_keys, organization_user};
+use crate::index::BATCH_ROWS;
 use crate::{ModelLoad, SearchIndex};
 
 const USER: &str = "user:search-embedder";
@@ -201,6 +203,401 @@ async fn a_missing_vector_another_revision_or_a_changed_row_is_embedded_again_an
 }
 
 #[tokio::test]
+async fn a_row_written_again_with_the_same_text_keeps_its_vector_and_the_model_does_not_run() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let model = FixedVectors::default();
+    let index = world.index_with(&model);
+    let _background = Background(index.spawn_embedder());
+    world
+        .index_and_embed(&index, &[&world.tracer, &ledger])
+        .await;
+    let stamps = world.entity_stamps().await;
+    let embeddings = world.embeddings().await;
+    let embedded = model.documents().len();
+
+    // An older indexer revision wrote other words for lexical search. The
+    // current revision writes each row again: new words, so a new stamp,
+    // and the same text for the model.
+    world
+        .execute(
+            "UPDATE search_entities SET searchable_text = 'words of an older indexer'; \
+             UPDATE search_index_states SET indexer_revision = 0 WHERE kind = 'provider_tool'",
+        )
+        .await;
+    index.reconcile().await;
+    index.settled().await;
+    index.embedded().await;
+
+    assert_ne!(
+        world.entity_stamps().await,
+        stamps,
+        "the pass wrote the rows again"
+    );
+    assert_eq!(model.documents().len(), embedded, "the model did not run");
+    assert_eq!(
+        world.embeddings().await,
+        embeddings,
+        "each row keeps its vector"
+    );
+    world.assert_every_vector_current().await;
+}
+
+#[tokio::test]
+async fn a_new_generation_runs_the_model_only_for_the_tools_whose_text_changed() {
+    // Each case publishes a new Generation of the ledger and names the
+    // Tools whose text changed. The model runs for those alone, and every
+    // other Tool keeps its vector.
+    let cases: [(&str, String, &[&str]); 2] = [
+        (
+            "a new server, which no Tool text holds",
+            ledger_on_another_server(),
+            &[],
+        ),
+        (
+            "one Tool of three changed",
+            LEDGER.replace("List ledger entries", "List every entry"),
+            &["listEntries"],
+        ),
+    ];
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let model = FixedVectors::default();
+    let index = world.index_with(&model);
+    let _background = Background(index.spawn_embedder());
+    world
+        .index_and_embed(&index, &[&world.tracer, &ledger])
+        .await;
+    for (at, (case, document, changed)) in (61..).zip(cases) {
+        let before = world.tool_embeddings(&ledger).await;
+        let embedded = model.documents().len();
+
+        world
+            .publish_generation(&index, &ledger, &document, at)
+            .await;
+
+        assert_eq!(
+            model.documents().len() - embedded,
+            changed.len(),
+            "{case}: model runs"
+        );
+        // The pass removes the replaced Generation's rows and vectors.
+        index.reconcile().await;
+        index.embedded().await;
+        world.assert_every_vector_current().await;
+        let after = world.tool_embeddings(&ledger).await;
+        assert_eq!(
+            after.keys().collect::<Vec<_>>(),
+            before.keys().collect::<Vec<_>>(),
+            "{case}"
+        );
+        for (tool, (generation, vector)) in after {
+            let (old_generation, old_vector) = before.get(&tool).expect("the Tool before");
+            assert_ne!(&generation, old_generation, "{case}: a new Generation");
+            assert_eq!(
+                &vector != old_vector,
+                changed.contains(&tool.as_str()),
+                "{case}: {tool} has a new vector exactly when its text changed"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_vector_is_a_source_only_of_the_current_revision_and_with_its_digest_written_beside_it() {
+    // Each case changes the vectors of a replaced Generation whose rows are
+    // gone, and names how many of the new Generation's three Tools, with
+    // the same text, run the model. A digest beside a vector of another
+    // stamp has its own test: an older Coral's write.
+    let cases = [
+        ("a vector of a replaced Generation", None, 0),
+        (
+            "a vector of another Embedder revision",
+            Some("embedder_revision = 'older'"),
+            3,
+        ),
+        (
+            "a vector an older Coral wrote without a digest",
+            Some("text_sha256 = NULL, text_sha256_source_indexed_at_unix_nanos = NULL"),
+            3,
+        ),
+    ];
+    for (case, change, embedded_again) in cases {
+        let upstream = MockServer::start().await;
+        let world = World::publish_tracer(&upstream).await;
+        let ledger = world.publish_ledger().await;
+        let model = FixedVectors::default();
+        let index = world.index_with(&model);
+        let _background = Background(index.spawn_embedder());
+        world
+            .index_and_embed(&index, &[&world.tracer, &ledger])
+            .await;
+        let replaced = world.vectors_of(&ledger).await;
+        world
+            .execute(&format!(
+                "DELETE FROM search_entities WHERE provider_id = '{ledger}'"
+            ))
+            .await;
+        if let Some(change) = change {
+            world
+                .execute(&format!(
+                    "UPDATE search_entity_embeddings SET {change} WHERE doc_id IN ('{}')",
+                    replaced.join("', '")
+                ))
+                .await;
+        }
+        let embedded = model.documents().len();
+
+        world
+            .publish_generation(&index, &ledger, &ledger_on_another_server(), 61)
+            .await;
+
+        assert_eq!(
+            model.documents().len() - embedded,
+            embedded_again,
+            "{case}: model runs"
+        );
+        index.reconcile().await;
+        index.embedded().await;
+        world.assert_every_vector_current().await;
+    }
+}
+
+#[tokio::test]
+async fn a_vector_an_older_coral_writes_with_its_column_list_is_kept_and_is_no_source() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let model = FixedVectors::default();
+    let index = world.index_with(&model);
+    let _background = Background(index.spawn_embedder());
+    world
+        .index_and_embed(&index, &[&world.tracer, &ledger])
+        .await;
+    let list_entries = world.newest_doc_id_titled("List ledger entries").await;
+
+    // During a rolling update, an older Coral writes other text for the
+    // Tool and the vector of that text, with the column list it knows. The
+    // digest of the text before stays on the vector row.
+    world
+        .execute(&format!(
+            "UPDATE search_entities SET description = 'Words of an older Coral', \
+             indexed_at_unix_nanos = indexed_at_unix_nanos + 1 WHERE doc_id = '{list_entries}'"
+        ))
+        .await;
+    world
+        .write_as_an_older_coral(
+            &list_entries,
+            &FixedVectors::vector("Words of an older Coral"),
+        )
+        .await;
+    world.assert_every_vector_current().await;
+    let embedded = model.documents().len();
+
+    // The new Generation's Tool has the text that stale digest names.
+    world
+        .publish_generation(&index, &ledger, &ledger_on_another_server(), 61)
+        .await;
+
+    assert_eq!(
+        model.documents().len() - embedded,
+        1,
+        "the older Coral's vector is no source; the other two Tools reuse theirs"
+    );
+}
+
+#[tokio::test]
+async fn a_reused_vector_does_not_reach_a_row_that_changed_or_went_before_the_write() {
+    // In each case one batch holds the ledger's three rows: the model holds
+    // the one whose text changed, and the other two reuse a vector. Before
+    // the write, one of those two changes and the other goes.
+    for case in ["a copy of another row's vector", "a row's own vector"] {
+        let upstream = MockServer::start().await;
+        let world = World::publish_tracer(&upstream).await;
+        let ledger = world.publish_ledger().await;
+        {
+            let index = world.index_with(&FixedVectors::default());
+            let _background = Background(index.spawn_embedder());
+            world
+                .index_and_embed(&index, &[&world.tracer, &ledger])
+                .await;
+        }
+        let held = Arc::new(std::sync::Barrier::new(2));
+        let model = FixedVectors::default().holding_first_text_at(&held);
+        let spans = SpanCapture::default();
+        let _traced = tracing::subscriber::set_default(spans.subscriber());
+        let index = world.index_with(&model);
+        let _background = Background(index.spawn_embedder());
+        if case == "a copy of another row's vector" {
+            world
+                .regenerate(
+                    &ledger,
+                    &LEDGER.replace("List ledger entries", "List every entry"),
+                    61,
+                )
+                .await;
+            index.index_active_generation(world.workspace.clone(), ledger.clone());
+            index.settled().await;
+        } else {
+            // New words for lexical search give each row a new stamp; one
+            // row gets new text too.
+            world
+                .execute(&format!(
+                    "UPDATE search_entities SET searchable_text = 'new words', \
+                     indexed_at_unix_nanos = indexed_at_unix_nanos + 1 \
+                     WHERE provider_id = '{ledger}'; \
+                     UPDATE search_entities SET description = 'List every entry' \
+                     WHERE title = 'List ledger entries'"
+                ))
+                .await;
+            index.reconcile().await;
+        }
+        meet(&held).await;
+        let changed = world.newest_doc_id_titled("Record a ledger entry").await;
+        let gone = world.newest_doc_id_titled("Delete a ledger entry").await;
+        let gone_vector = world.vectors().await.get(&gone).cloned();
+
+        world
+            .execute(&format!(
+                "UPDATE search_entities SET description = 'Changed while the model ran', \
+                 indexed_at_unix_nanos = indexed_at_unix_nanos + 1 WHERE doc_id = '{changed}'; \
+                 DELETE FROM search_entities WHERE doc_id = '{gone}'"
+            ))
+            .await;
+        meet(&held).await;
+        index.embedded().await;
+
+        let documents = model.documents();
+        let [changed_text] = documents
+            .iter()
+            .filter(|text| text.contains("Changed while the model ran"))
+            .collect::<Vec<_>>()[..]
+        else {
+            panic!("{case}: the model embeds the changed row's new text once");
+        };
+        assert_eq!(
+            world.embeddings().await.get(&changed),
+            Some(&FixedVectors::vector(changed_text)),
+            "{case}: the changed row's vector is of its new text"
+        );
+        assert_eq!(
+            world.vectors().await.get(&changed).map(|(_, stamp)| *stamp),
+            world.entity_stamps().await.get(&changed).copied(),
+            "{case}: the changed row's vector is current"
+        );
+        assert_eq!(
+            world.vectors().await.get(&gone).cloned(),
+            gone_vector,
+            "{case}: no write touched the vector row of the row that went"
+        );
+        let reused = spans
+            .finished()
+            .iter()
+            .filter(|span| span.name == "coral.search.embed_batch")
+            .map(|span| attribute(span, "coral.search.embedder.vectors_reused"))
+            .collect::<Vec<_>>();
+        assert!(
+            !reused.is_empty() && reused.iter().all(|count| count.as_deref() == Some("0")),
+            "{case}: no write reports a reused vector it did not write: {reused:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn each_write_exports_the_vectors_it_reused_and_those_the_model_made() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let exported = ExportCapture::default();
+    let spans = SpanCapture::exporting_to(&exported);
+    let _traced = tracing::subscriber::set_default(spans.subscriber());
+    let index = world.index_with(&FixedVectors::default());
+    let _background = Background(index.spawn_embedder());
+    world
+        .index_and_embed(&index, &[&world.tracer, &ledger])
+        .await;
+    let before = exported.spans().len();
+
+    world
+        .publish_generation(
+            &index,
+            &ledger,
+            &LEDGER.replace("List ledger entries", "List every entry"),
+            61,
+        )
+        .await;
+
+    let batches = exported
+        .spans()
+        .into_iter()
+        .skip(before)
+        .filter(|span| span.name == "coral.search.embed_batch")
+        .collect::<Vec<_>>();
+    let [batch] = &batches[..] else {
+        panic!("one write of the new Generation: {batches:#?}");
+    };
+    assert_eq!(
+        exported_keys(batch),
+        [
+            "coral.search.embedder.rows",
+            "coral.search.embedder.vectors_embedded",
+            "coral.search.embedder.vectors_reused",
+            "coral.search.embedder.vectors_written",
+            "coral.workspace.id",
+        ],
+        "no text and no digest leaves the host"
+    );
+    let count = |key: &str| attribute(batch, key);
+    assert_eq!(
+        [
+            count("coral.search.embedder.rows"),
+            count("coral.search.embedder.vectors_reused"),
+            count("coral.search.embedder.vectors_embedded"),
+            count("coral.search.embedder.vectors_written"),
+        ],
+        [3, 2, 1, 3].map(|count: u8| Some(count.to_string())),
+        "rows, reused, embedded, written"
+    );
+}
+
+#[tokio::test]
+async fn the_same_text_in_another_workspace_runs_the_model() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let ledger = world.publish_ledger().await;
+    let other = world.modules.create_workspace(&world.user).await;
+    let model = FixedVectors::default();
+    let index = world.index_with(&model);
+    let _background = Background(index.spawn_embedder());
+    world
+        .index_and_embed(&index, &[&world.tracer, &ledger])
+        .await;
+    let embedded = model.documents();
+
+    let other_ledger = world
+        .modules
+        .publish_openapi(&world.user, &other, LEDGER, "ledger", 50)
+        .await;
+    index.index_active_generation(other.clone(), other_ledger);
+    index.settled().await;
+    index.embedded().await;
+
+    let added = model.documents().split_off(embedded.len());
+    assert_eq!(
+        added.len(),
+        3,
+        "the model ran for each of the ledger's Tools"
+    );
+    assert!(
+        added.iter().all(|text| embedded.contains(text)),
+        "each text has a vector in the first Workspace: {added:?}"
+    );
+    assert_eq!(world.vectors_in(&other).await.len(), 3);
+}
+
+#[tokio::test]
 async fn two_embedders_on_the_same_rows_write_each_vector_once() {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
@@ -279,24 +676,35 @@ async fn a_reconcile_pass_removes_the_vectors_of_a_deleted_provider_and_keeps_th
 #[tokio::test]
 async fn a_batch_that_fails_with_the_model_or_the_database_down_skips_nothing_and_the_next_pass_embeds_it()
  {
-    for down in ["the model", "the database"] {
+    // With four cores, four batches fail at once.
+    for (down, cores) in [
+        ("the model", 1),
+        ("the database", 1),
+        ("the model", 4),
+        ("the database", 4),
+    ] {
         let upstream = MockServer::start().await;
         let world = World::publish_tracer(&upstream).await;
         let ledger = world.publish_ledger().await;
+        let many = world.publish_many(4 * BATCH_ROWS).await;
         let model = FixedVectors::default();
         if down == "the model" {
             model.fail_texts_with("");
         } else {
             world.refuse_vector_writes(true).await;
         }
-        let index = world.index_with(&model);
+        let index = world.index_with_cores(&model, cores);
         let _background = Background(index.spawn_embedder());
-        for provider in [&world.tracer, &ledger] {
+        for provider in [&world.tracer, &ledger, &many] {
             index.index_active_generation(world.workspace.clone(), provider.clone());
         }
         index.settled().await;
         index.embedded().await;
-        assert_eq!(world.vectors().await, BTreeMap::new(), "{down} is down");
+        assert_eq!(
+            world.vectors().await,
+            BTreeMap::new(),
+            "{down} is down, {cores} cores"
+        );
 
         model.fail_texts_with_nothing();
         world.refuse_vector_writes(false).await;
@@ -312,10 +720,7 @@ async fn a_row_that_always_fails_is_skipped_until_its_row_changes_and_holds_back
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     // More Tools than one batch holds; the first in document order fails.
-    let many = world
-        .modules
-        .publish_openapi(&world.user, &world.workspace, &many_tools(40), "many", 60)
-        .await;
+    let many = world.publish_many(40).await;
     let model = FixedVectors::default();
     model.fail_texts_with(BROKEN);
     let index = world.index_with(&model);
@@ -352,13 +757,73 @@ async fn a_row_that_always_fails_is_skipped_until_its_row_changes_and_holds_back
     world.assert_every_vector_current().await;
 }
 
+/// Four batches, one for each core: each core's first text waits until the
+/// other three are in the model too. With fewer texts at once, the first
+/// ones wait forever, the drain never ends, and the test runner ends the
+/// test. No timer of the test's own races the database writes.
+#[tokio::test]
+async fn four_cores_embed_four_texts_at_once_and_each_search_entity_once() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let many = world.publish_many(4 * BATCH_ROWS).await;
+    world.index_without_vectors(&[&many]).await;
+    let four_texts = Arc::new(std::sync::Barrier::new(4));
+    let model = FixedVectors::default().meeting_at(&four_texts, 4);
+    let index = world.index_with_cores(&model, 4);
+    let _background = Background(index.spawn_embedder());
+
+    index.embedded().await;
+
+    world.assert_every_vector_current().await;
+    let documents = model.documents();
+    assert_eq!(
+        documents.len(),
+        world.entity_stamps().await.len(),
+        "the model got as many texts as there are Search Entities"
+    );
+    assert_eq!(
+        documents.iter().collect::<BTreeSet<_>>().len(),
+        documents.len(),
+        "the model got each text once"
+    );
+}
+
+#[tokio::test]
+async fn four_cores_write_the_vectors_one_core_writes() {
+    let upstream = MockServer::start().await;
+    let world = World::publish_tracer(&upstream).await;
+    let many = world.publish_many(4 * BATCH_ROWS).await;
+    world.index_without_vectors(&[&world.tracer, &many]).await;
+    let mut written = Vec::new();
+
+    for cores in [1, 4] {
+        let index = world.index_with_cores(&FixedVectors::default(), cores);
+        let _background = Background(index.spawn_embedder());
+        index.embedded().await;
+        world.assert_every_vector_current().await;
+        written.push(world.stored_vectors().await);
+        world
+            .execute("UPDATE search_entity_embeddings SET embedder_revision = 'older'")
+            .await;
+    }
+
+    let [one, four] = <[_; 2]>::try_from(written).unwrap();
+    assert_eq!(four, one);
+}
+
 #[tokio::test]
 async fn the_backlog_goes_to_zero_once_the_embedder_drains_a_provider() {
+    for cores in [1, 4] {
+        assert_the_backlog_goes_to_zero_on(cores).await;
+    }
+}
+
+async fn assert_the_backlog_goes_to_zero_on(cores: usize) {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
     let metrics = MetricCapture::default();
     let _measured = tracing::subscriber::set_default(metrics.subscriber());
-    let (model, index) = world.index_waiting_for_model();
+    let (model, index) = world.index_waiting_for_model(cores);
     let _background = Background(index.spawn_reconcile_task());
     index.index_active_generation(world.workspace.clone(), world.tracer.clone());
     index.settled().await;
@@ -369,29 +834,32 @@ async fn the_backlog_goes_to_zero_once_the_embedder_drains_a_provider() {
     assert_eq!(
         backlog(),
         Some(f64::from(u32::try_from(entities).unwrap())),
-        "each row waits for its vector while the model is pending"
+        "{cores} cores: each row waits for its vector while the model is pending"
     );
 
     model.send_replace(ModelLoad::Ready(Arc::new(FixedVectors::default())));
     index.embedded().await;
     index.observe_backlog().await;
 
-    assert_eq!(backlog(), Some(0.0));
+    assert_eq!(backlog(), Some(0.0), "{cores} cores");
 }
 
 #[tokio::test]
 async fn a_row_on_the_skip_list_shows_in_the_skipped_rows_and_its_batch_as_failed() {
+    for cores in [1, 4] {
+        assert_a_skipped_row_shows_in_the_metrics_on(cores).await;
+    }
+}
+
+async fn assert_a_skipped_row_shows_in_the_metrics_on(cores: usize) {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
-    let many = world
-        .modules
-        .publish_openapi(&world.user, &world.workspace, &many_tools(40), "many", 60)
-        .await;
+    let many = world.publish_many(40).await;
     let metrics = MetricCapture::default();
     let _measured = tracing::subscriber::set_default(metrics.subscriber());
     let model = FixedVectors::default();
     model.fail_texts_with(BROKEN);
-    let index = world.index_with(&model);
+    let index = world.index_with_cores(&model, cores);
     let _background = Background(index.spawn_reconcile_task());
 
     index.index_active_generation(world.workspace.clone(), many);
@@ -399,19 +867,36 @@ async fn a_row_on_the_skip_list_shows_in_the_skipped_rows_and_its_batch_as_faile
     index.embedded().await;
     index.observe_backlog().await;
 
-    assert_eq!(gauge(&metrics, "coral.search.embed.skipped"), Some(1.0));
-    assert_eq!(gauge(&metrics, "coral.search.embed.backlog"), Some(1.0));
+    assert_eq!(
+        gauge(&metrics, "coral.search.embed.skipped"),
+        Some(1.0),
+        "{cores} cores"
+    );
+    assert_eq!(
+        gauge(&metrics, "coral.search.embed.backlog"),
+        Some(1.0),
+        "{cores} cores"
+    );
     assert_eq!(
         batch_outcomes(&metrics),
         ["failed".to_owned(), "ok".to_owned()].into(),
-        "the batch with the broken row failed, the rows tried alone after it were written"
+        "{cores} cores: the batch with the broken row failed, the rows tried alone after it were written"
     );
 }
 
+/// With four cores, the other batches end on their threads, and new threads
+/// embed the rest.
 #[tokio::test]
 async fn a_model_panic_fails_its_batch_and_a_new_thread_embeds_the_rows() {
+    for cores in [1, 4] {
+        assert_a_model_panic_fails_one_batch_on(cores).await;
+    }
+}
+
+async fn assert_a_model_panic_fails_one_batch_on(cores: usize) {
     let upstream = MockServer::start().await;
     let world = World::publish_tracer(&upstream).await;
+    let many = world.publish_many(4 * BATCH_ROWS).await;
     let metrics = MetricCapture::default();
     let spans = SpanCapture::default();
     let _measured = tracing::subscriber::set_default(
@@ -419,15 +904,15 @@ async fn a_model_panic_fails_its_batch_and_a_new_thread_embeds_the_rows() {
             .with(metrics.layer())
             .with(spans.layer()),
     );
-    let index = world.index_with(&FixedVectors::default().panicking_once());
+    let index = world.index_with_cores(&FixedVectors::default().panicking_once(), cores);
     let _background = Background(index.spawn_reconcile_task());
 
-    world.index_and_embed(&index, &[&world.tracer]).await;
+    world.index_and_embed(&index, &[&world.tracer, &many]).await;
 
     assert_eq!(
         batch_outcomes(&metrics),
         ["failed".to_owned(), "ok".to_owned()].into(),
-        "the batch the model panicked in failed, the new thread's batch was written"
+        "{cores} cores: the batch the model panicked in failed, the other batches were written"
     );
     let failed = metrics
         .named("coral.search.embed.batch.duration")
@@ -435,14 +920,28 @@ async fn a_model_panic_fails_its_batch_and_a_new_thread_embeds_the_rows() {
         .filter(|point| point.attributes.get("outcome").map(String::as_str) == Some("failed"))
         .map(|point| point.count)
         .sum::<u64>();
-    assert_eq!(failed, 1, "one batch failed: the one the model panicked in");
+    assert_eq!(
+        failed, 1,
+        "{cores} cores: one batch failed, the one the model panicked in"
+    );
     let failures = spans
         .finished()
         .iter()
         .filter(|span| span.name == "coral.search.embed_batch")
-        .filter_map(|span| attribute(span, "error.type"))
+        .filter_map(|span| {
+            attribute(span, "error.type").map(|failure| {
+                (
+                    failure,
+                    attribute(span, "coral.search.embedder.vectors_embedded"),
+                )
+            })
+        })
         .collect::<Vec<_>>();
-    assert_eq!(failures, ["thread_gone"]);
+    assert_eq!(
+        failures,
+        [("thread_gone".to_owned(), None)],
+        "{cores} cores: the batch the model panicked in reports no vector the model made"
+    );
 }
 
 /// The outcomes of the Embedder's batches.
@@ -568,6 +1067,12 @@ enum Staleness {
     ChangedRows,
 }
 
+/// [`LEDGER`] on another server: a new Generation whose Tool texts, which
+/// name no server, stay the same.
+fn ledger_on_another_server() -> String {
+    LEDGER.replace("https://ledger.example", "https://books.example")
+}
+
 /// A Provider with three Tools, one with parameters.
 const LEDGER: &str = r#"{
   "openapi": "3.1.0",
@@ -612,33 +1117,56 @@ const LEDGER: &str = r#"{
   }
 }"#;
 
-/// A barrier and how many times the first text waits at it.
-type FirstTextWait = (Arc<std::sync::Barrier>, usize);
+/// A barrier that the first texts wait at.
+struct Meeting {
+    barrier: Arc<std::sync::Barrier>,
+    /// How many more texts wait at it.
+    texts: usize,
+    /// How many times each of them waits.
+    times: usize,
+}
 
 /// A model that gives each text a fixed vector and records each text it
 /// embeds.
 #[derive(Clone, Default)]
 struct FixedVectors {
     documents: Arc<Mutex<Vec<String>>>,
-    /// A barrier the first text waits at, and how many times.
-    first_text: Arc<Mutex<Option<FirstTextWait>>>,
+    /// A barrier the first texts wait at.
+    meeting: Arc<Mutex<Option<Meeting>>>,
     /// Texts that hold this fail; `None` fails none.
     failing: Arc<Mutex<Option<String>>>,
-    /// The next text panics, which ends the Embedder's thread.
+    /// The next text panics, which ends the Embedder thread that embeds it.
     panic_next: Arc<AtomicBool>,
 }
 
 impl FixedVectors {
     /// This model waits at `barrier` once, before its first text.
     fn waiting_once_at(self, barrier: &Arc<std::sync::Barrier>) -> Self {
-        *self.first_text.lock().unwrap() = Some((barrier.clone(), 1));
-        self
+        self.meeting_at_times(barrier, 1, 1)
+    }
+
+    /// Each of this model's first `texts` texts waits at `barrier` once.
+    fn meeting_at(self, barrier: &Arc<std::sync::Barrier>, texts: usize) -> Self {
+        self.meeting_at_times(barrier, texts, 1)
     }
 
     /// This model meets the test at `barrier` when its first text starts,
     /// and again before it embeds that text.
     fn holding_first_text_at(self, barrier: &Arc<std::sync::Barrier>) -> Self {
-        *self.first_text.lock().unwrap() = Some((barrier.clone(), 2));
+        self.meeting_at_times(barrier, 1, 2)
+    }
+
+    fn meeting_at_times(
+        self,
+        barrier: &Arc<std::sync::Barrier>,
+        texts: usize,
+        times: usize,
+    ) -> Self {
+        *self.meeting.lock().unwrap() = Some(Meeting {
+            barrier: barrier.clone(),
+            texts,
+            times,
+        });
         self
     }
 
@@ -670,11 +1198,19 @@ impl FixedVectors {
         self.documents.lock().unwrap().clone()
     }
 
+    /// A vector of two slots that a hash of the whole text picks, so two
+    /// texts of a test rarely share one. Both values are exact in `halfvec`.
     fn vector(text: &str) -> Vec<f32> {
         let mut vector = vec![0.0; MANIFEST.dimension];
-        let slot = text.len() % MANIFEST.dimension;
-        if let Some(value) = vector.get_mut(slot) {
-            *value = 1.0;
+        let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+        let dimension = u64::try_from(MANIFEST.dimension).unwrap();
+        for (bits, value) in [(hash, 1.0), (hash >> 32, 0.5)] {
+            let slot = usize::try_from(bits % dimension).unwrap();
+            if let Some(slot) = vector.get_mut(slot) {
+                *slot += value;
+            }
         }
         vector
     }
@@ -687,15 +1223,21 @@ impl Embed for FixedVectors {
 
     #[expect(
         clippy::panic_in_result_fn,
-        reason = "the model panics on purpose, to end the Embedder's thread"
+        reason = "the model panics on purpose, to end an Embedder thread"
     )]
     fn embed_document(&self, text: &str) -> Result<Vec<f32>, EmbedError> {
         assert!(
             !self.panic_next.swap(false, Ordering::SeqCst),
             "injected model panic"
         );
-        let barrier = lock(&self.first_text).take();
-        if let Some((barrier, times)) = barrier {
+        let wait = lock(&self.meeting)
+            .as_mut()
+            .filter(|meeting| meeting.texts > 0)
+            .map(|meeting| {
+                meeting.texts -= 1;
+                (meeting.barrier.clone(), meeting.times)
+            });
+        if let Some((barrier, times)) = wait {
             for _ in 0..times {
                 barrier.wait();
             }
@@ -707,6 +1249,11 @@ impl Embed for FixedVectors {
         }
         Ok(Self::vector(text))
     }
+}
+
+/// `count` as a count of cores, which is never zero.
+fn nonzero(count: usize) -> NonZeroUsize {
+    NonZeroUsize::new(count).expect("an Embedder has at least one core")
 }
 
 /// Locks `mutex`, poisoned or not: a test's assertion fails first.
@@ -748,6 +1295,13 @@ impl World {
             tracer,
             user,
         }
+    }
+
+    /// Publishes [`many_tools`] with `count` Tools.
+    async fn publish_many(&self, count: usize) -> coral_provider::ProviderId {
+        self.modules
+            .publish_openapi(&self.user, &self.workspace, &many_tools(count), "many", 60)
+            .await
     }
 
     /// Publishes [`LEDGER`].
@@ -848,6 +1402,53 @@ impl World {
         rows.into_iter().map(|(doc_id,)| doc_id).collect()
     }
 
+    /// Publishes `document` as `provider`'s new Generation at `at`, indexes
+    /// it, and waits for the Embedder.
+    async fn publish_generation(
+        &self,
+        index: &SearchIndex,
+        provider: &coral_provider::ProviderId,
+        document: &str,
+        at: i64,
+    ) {
+        self.regenerate(provider, document, at).await;
+        index.index_active_generation(self.workspace.clone(), provider.clone());
+        index.settled().await;
+        index.embedded().await;
+    }
+
+    /// Publishes `document` as `provider`'s new Generation, at `at`.
+    async fn regenerate(&self, provider: &coral_provider::ProviderId, document: &str, at: i64) {
+        self.modules
+            .regenerate_workspace_provider(
+                &change(self.user.clone(), at, '6'),
+                &self.workspace,
+                provider,
+                &serde_json::from_str(document).expect("an OpenAPI document"),
+            )
+            .await;
+    }
+
+    /// The vector of each of `provider`'s Tools, with the Generation of its
+    /// row, by Tool Key.
+    async fn tool_embeddings(
+        &self,
+        provider: &coral_provider::ProviderId,
+    ) -> BTreeMap<String, (String, Vec<f32>)> {
+        let tools = self.vectors_of(provider).await;
+        self.embeddings()
+            .await
+            .into_iter()
+            .filter(|(doc_id, _)| tools.contains(doc_id))
+            .map(|(doc_id, vector)| {
+                let (generation, tool) = doc_id
+                    .split_once(':')
+                    .expect("a Provider Tool's document id");
+                (tool.to_owned(), (generation.to_owned(), vector))
+            })
+            .collect()
+    }
+
     /// Renames `provider` to `display_name` in the catalog.
     async fn rename(&self, provider: &coral_provider::ProviderId, display_name: &str) {
         self.modules
@@ -884,6 +1485,79 @@ impl World {
             panic!("one broken row: {rows:?}");
         };
         doc_id.clone()
+    }
+
+    /// The document id of the Workspace's newest row titled `title`.
+    async fn newest_doc_id_titled(&self, title: &str) -> String {
+        let rows: Vec<(String,)> = self
+            .modules
+            .search
+            .database
+            .fetch_all(
+                Query::select()
+                    .column(Alias::new("doc_id"))
+                    .from(Alias::new("search_entities"))
+                    .and_where(Expr::col(Alias::new("workspace_id")).eq(self.workspace.to_string()))
+                    .and_where(Expr::col(Alias::new("title")).eq(title))
+                    .order_by(Alias::new("indexed_at_unix_nanos"), sea_query::Order::Desc)
+                    .to_owned(),
+            )
+            .await
+            .expect("read the rows by title");
+        rows.into_iter()
+            .next()
+            .map_or_else(|| panic!("a row titled {title:?}"), |(doc_id,)| doc_id)
+    }
+
+    /// Writes `vector` for the row of `doc_id` as a Coral older than vector
+    /// reuse writes it: its statements, with the columns it knows.
+    async fn write_as_an_older_coral(&self, doc_id: &str, vector: &[f32]) {
+        let workspace = &self.workspace;
+        let revision = MANIFEST.embedder_revision();
+        let vector = crate::storage::vector_literal(vector);
+        let sql = match self.modules.search.database.system() {
+            coral_db::DatabaseSystem::Postgres => format!(
+                "INSERT INTO search_entity_embeddings (\
+                    workspace_id, doc_id, kind, provider_id, provider_generation_id, tool_key, \
+                    embedder_revision, source_indexed_at_unix_nanos, embedding) \
+                 SELECT s.workspace_id, s.doc_id, s.kind, s.provider_id, \
+                    s.provider_generation_id, s.tool_key, '{revision}', \
+                    s.indexed_at_unix_nanos, '{vector}'::halfvec \
+                 FROM search_entities s \
+                 WHERE s.workspace_id = '{workspace}' AND s.doc_id = '{doc_id}' \
+                 ON CONFLICT (workspace_id, doc_id) DO UPDATE SET \
+                    kind = EXCLUDED.kind, \
+                    provider_id = EXCLUDED.provider_id, \
+                    provider_generation_id = EXCLUDED.provider_generation_id, \
+                    tool_key = EXCLUDED.tool_key, \
+                    embedder_revision = EXCLUDED.embedder_revision, \
+                    source_indexed_at_unix_nanos = EXCLUDED.source_indexed_at_unix_nanos, \
+                    embedding = EXCLUDED.embedding \
+                 WHERE search_entity_embeddings.embedder_revision <> EXCLUDED.embedder_revision \
+                 OR search_entity_embeddings.source_indexed_at_unix_nanos \
+                     <> EXCLUDED.source_indexed_at_unix_nanos"
+            ),
+            coral_db::DatabaseSystem::Sqlite => format!(
+                "INSERT INTO search_entity_embeddings (\
+                    workspace_id, doc_id, embedder_revision, source_indexed_at_unix_nanos) \
+                 SELECT s.workspace_id, s.doc_id, '{revision}', s.indexed_at_unix_nanos \
+                 FROM search_entities AS s \
+                 WHERE s.workspace_id = '{workspace}' AND s.doc_id = '{doc_id}' \
+                 ON CONFLICT (workspace_id, doc_id) DO UPDATE SET \
+                    embedder_revision = excluded.embedder_revision, \
+                    source_indexed_at_unix_nanos = excluded.source_indexed_at_unix_nanos \
+                 WHERE search_entity_embeddings.embedder_revision <> excluded.embedder_revision \
+                 OR search_entity_embeddings.source_indexed_at_unix_nanos \
+                     <> excluded.source_indexed_at_unix_nanos; \
+                 DELETE FROM search_entity_embedding_vectors WHERE rowid = (\
+                     SELECT vector_rowid FROM search_entity_embeddings \
+                     WHERE workspace_id = '{workspace}' AND doc_id = '{doc_id}'); \
+                 INSERT INTO search_entity_embedding_vectors (rowid, embedding) VALUES ((\
+                     SELECT vector_rowid FROM search_entity_embeddings \
+                     WHERE workspace_id = '{workspace}' AND doc_id = '{doc_id}'), '{vector}')"
+            ),
+        };
+        self.execute(&sql).await;
     }
 
     /// Makes each vector write fail while `refuse`, and lets them through
@@ -939,15 +1613,47 @@ impl World {
 
     /// An index whose Embedder embeds with `model`, ready at once.
     fn index_with(&self, model: &(impl Embed + Clone + 'static)) -> SearchIndex {
-        self.modules.index_with(Arc::new(model.clone()))
+        self.index_with_cores(model, 1)
     }
 
-    /// An index whose Embedder waits until the test sends it a model.
-    fn index_waiting_for_model(&self) -> (watch::Sender<ModelLoad>, SearchIndex) {
+    /// An index whose Embedder embeds with `model` on `cores` threads,
+    /// ready at once.
+    fn index_with_cores(
+        &self,
+        model: &(impl Embed + Clone + 'static),
+        cores: usize,
+    ) -> SearchIndex {
+        self.modules
+            .index_with_cores(Arc::new(model.clone()), nonzero(cores))
+    }
+
+    /// An index whose Embedder, on `cores` threads, waits until the test
+    /// sends it a model.
+    fn index_waiting_for_model(&self, cores: usize) -> (watch::Sender<ModelLoad>, SearchIndex) {
         let (model, slot) = watch::channel(ModelLoad::Pending);
         let index = SearchIndex::new(self.modules.search.database.clone(), RECONCILE_INTERVAL)
-            .with_embedder(slot);
+            .with_embedder(slot, nonzero(cores));
         (model, index)
+    }
+
+    /// Each stored vector of the Workspace, as the database prints it.
+    async fn stored_vectors(&self) -> BTreeMap<String, String> {
+        let sql = match self.modules.search.database.system() {
+            coral_db::DatabaseSystem::Postgres => {
+                "SELECT doc_id, embedding::text FROM search_entity_embeddings \
+                 WHERE workspace_id = $1"
+            }
+            coral_db::DatabaseSystem::Sqlite => {
+                "SELECT k.doc_id, hex(v.embedding) \
+                 FROM search_entity_embeddings AS k \
+                 JOIN search_entity_embedding_vectors AS v ON v.rowid = k.vector_rowid \
+                 WHERE k.workspace_id = ?1"
+            }
+        };
+        let rows: Vec<(String, String)> = self
+            .read(sql, vec![self.workspace.to_string().into()])
+            .await;
+        rows.into_iter().collect()
     }
 
     /// Each Search Entity of the Workspace with its source stamp.
@@ -994,6 +1700,36 @@ impl World {
             self.read(sql, vec![workspace.to_string().into()]).await;
         rows.into_iter()
             .map(|(doc_id, revision, stamp)| (doc_id, (revision, stamp)))
+            .collect()
+    }
+
+    /// Each vector of the Workspace, by document id.
+    async fn embeddings(&self) -> BTreeMap<String, Vec<f32>> {
+        let sql = match self.modules.search.database.system() {
+            coral_db::DatabaseSystem::Postgres => {
+                "SELECT doc_id, embedding::text FROM search_entity_embeddings \
+                 WHERE workspace_id = $1"
+            }
+            coral_db::DatabaseSystem::Sqlite => {
+                "SELECT k.doc_id, vec_to_json(v.embedding) \
+                 FROM search_entity_embeddings AS k \
+                 JOIN search_entity_embedding_vectors AS v ON v.rowid = k.vector_rowid \
+                 WHERE k.workspace_id = ?1"
+            }
+        };
+        let rows: Vec<(String, String)> = self
+            .read(sql, vec![self.workspace.to_string().into()])
+            .await;
+        rows.into_iter()
+            .map(|(doc_id, vector)| {
+                let values = vector
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .split(',')
+                    .map(|value| value.parse::<f32>().expect("a vector value"))
+                    .collect();
+                (doc_id, values)
+            })
             .collect()
     }
 

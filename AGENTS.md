@@ -161,15 +161,22 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   pull stream and no dispatch is in flight on the stream, or at the drain's
   length, it detaches and ends the stream cleanly. For a Run that no worker
   claim fences, the Run sweeper (#2906) also writes under the claim and the
-  head, as the sweeper section of ADR 0027 states. A stream owner writes its
-  Run only while the row names its Coral Instance as the stream's holder.
+  head, as the sweeper section of ADR 0027 states. So does the Coral Instance
+  that receives a decision or a cancellation for it (#2907), and it compares
+  no clock: only the loop and the sweeper do. Every writer of such a Run, its
+  owner included, takes its rows in one order: the Invocation and Approval
+  Request rows, then the Run row; none holds the Run row first. A stream
+  owner learns of another writer only from the Run's head, so give such a
+  writer no side table to tell it. A stream owner writes its Run only while
+  the row names its Coral Instance as the stream's holder.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of
   [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md)). A
   wake-up is a hint; the held recheck decides.
 - A nonterminal Run's row and Events are written only through its Run
-  Owner: the Program paths (Emissions, Logs, Invocation admission, held
+  Owner (a Run that a Run Executor holds follows the Run stream exception
+  above instead): the Program paths (Emissions, Logs, Invocation admission, held
   rechecks, the Policy Enforcement Point, Invocation completion), the outside
   requests (an approval decision, a cancellation) and the owner's timers
   (the Run deadline, each Approval Request's and connection request's
@@ -277,7 +284,14 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   `[search] semantic_search_enabled` is on, boot needs pgvector on Postgres
   and sqlite-vec on SQLite, and `coral_search::prepare_vector_table` creates
   the table at boot and recreates it only when the manifest's dimension
-  changes: an existing table keeps any other change to its shape.
+  changes. On a table of that dimension, boot adds the nullable columns and
+  the index of vector reuse when they are missing: the one place where
+  Coral probes for a column. It refuses a reuse column or index of another
+  shape, and keeps the rows and any other change to the key table. An older
+  Coral writes that table with the columns it knows and leaves the digest
+  stale, so the digest counts only while the stamp written with it equals
+  the vector's source stamp, as `field_names_fingerprint` does on
+  `search_entities`.
   `scripts/check-migrations.sh` rejects a migration that names pgvector.
 - Run shared repository behavior tests against SQLite and Postgres. Use
   `make postgres-tests` for Rust repository tests. For Reel's Postgres product

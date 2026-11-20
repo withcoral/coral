@@ -29,7 +29,7 @@ use crate::owner::ChunkWork as _;
 use crate::run_repository::{self, Chunk, HeldRun, UndecodableRun};
 use crate::termination::commit_end;
 use crate::types::HeldRunId;
-use crate::{Error, RunId, RunModule, RunState};
+use crate::{Error, RunId, RunModule};
 
 /// How long one election holds: three passes of 15 s, so another Coral
 /// Instance takes over once the holder missed two.
@@ -191,7 +191,7 @@ impl RunModule {
     async fn end_on_deadline(&self, held: &HeldRun, now: i64) -> Result<bool, Error> {
         let mut transaction = self.database.begin().await?;
         match unowned(&mut transaction, &held.workspace_id, &held.run_id).await? {
-            Some(run) if run.deadline_passed(now) => end(transaction, &run, now).await,
+            Some(run) if run.deadline_passed(now) => self.end(transaction, &run, now).await,
             _ => Ok(false),
         }
     }
@@ -238,6 +238,7 @@ impl RunModule {
             return Ok(false);
         }
         transaction.commit().await?;
+        self.wakes.wake_for(&run.id);
         Ok(true)
     }
 
@@ -331,7 +332,7 @@ impl RunModule {
             _ => return Ok(Released::Skipped),
         };
         let written = if run.execution_started() {
-            end(transaction, &run, now)
+            self.end(transaction, &run, now)
                 .await?
                 .then_some(Released::Ended)
         } else {
@@ -340,6 +341,26 @@ impl RunModule {
                 .then_some(Released::PutBack)
         };
         Ok(written.unwrap_or(Released::Skipped))
+    }
+}
+
+impl RunModule {
+    /// The one chunk that ends `run`, read in `transaction`: its recorded
+    /// termination, else timed out past its deadline, else interrupted. Its
+    /// loop, wherever its stream is, sees the Run end and terminates the
+    /// Program. `false` when another writer moved the Run on first.
+    async fn end(
+        &self,
+        transaction: Transaction<'_>,
+        run: &RunRecord,
+        now: i64,
+    ) -> Result<bool, Error> {
+        let now = now.max(run.accepted_at_unix_nanos);
+        let ended = unless_moved(commit_end(transaction, run, None, None, now).await)?;
+        if ended.is_some() {
+            self.wakes.wake_for(&run.id);
+        }
+        Ok(ended.is_some())
     }
 }
 
@@ -353,16 +374,8 @@ async fn unowned(
     Ok(
         run_repository::find_exact_in_transaction(transaction, workspace_id, run_id)
             .await?
-            .filter(|run| run.state == RunState::Running && run.worker_claim_id.is_none()),
+            .filter(RunRecord::runs_on_run_executor),
     )
-}
-
-/// The one chunk that ends `run`, read in `transaction`: its recorded
-/// termination, else timed out past its deadline, else interrupted.
-/// `false` when another writer moved the Run on first.
-async fn end(transaction: Transaction<'_>, run: &RunRecord, now: i64) -> Result<bool, Error> {
-    let now = now.max(run.accepted_at_unix_nanos);
-    Ok(unless_moved(commit_end(transaction, run, None, None, now).await)?.is_some())
 }
 
 /// Puts `held` back in `transaction` and commits, logging the Run Executor

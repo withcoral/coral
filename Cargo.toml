@@ -70,6 +70,7 @@ jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_r
 # The one bundled SQLite that rusqlite and sqlx share; coral-sqlite-vec hands
 # it sqlite-vec.
 libsqlite3-sys = { version = "0.37", features = ["bundled"] }
+log = "0.4.35"
 mime = "0.3"
 oxc_allocator = "0.156"
 oxc_ast = "0.156"
@@ -144,6 +145,7 @@ zeroize = "1.9"
 
 coral = { path = "crates/coral" }
 coral-administration = { path = "crates/coral-administration" }
+coral-agent = { path = "crates/coral-agent" }
 coral-app = { path = "crates/coral-app" }
 coral-auth = { path = "crates/coral-auth" }
 coral-catalog = { path = "crates/coral-catalog" }

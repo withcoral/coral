@@ -9,7 +9,7 @@ Deploy Coral in your Kubernetes cluster. This guide assumes that your cluster ha
 
 The [configuration reference](/reference/configuration) describes the configuration options.
 
-The `coral` image holds the model for [semantic search](/getting-started/self-host#semantic-search), so the pod needs no network access to get it. If you set a memory limit on the `coral` container, add about 360 MiB for semantic search.
+The `coral` image holds the model for [semantic search](/getting-started/self-host#semantic-search), so the pod needs no network access to get it. If you set a memory limit on the `coral` container, add about 360 MiB for semantic search. If you set [`embedder_cores`](/reference/configuration#search) above 1, add about 200 MiB for each thread after the first.
 
 ## Common setup
 

@@ -32,6 +32,7 @@ mod run_inbox;
 mod run_stream_drain;
 mod run_stream_reconnect;
 mod run_streams;
+mod run_wakes;
 mod scoping;
 mod search;
 mod secret_stores;

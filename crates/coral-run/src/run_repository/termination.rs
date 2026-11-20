@@ -178,16 +178,24 @@ pub(crate) async fn interrupt_run(
     // A Run that never started has no execution claim to take over: its row
     // pairs the execution claim with the start mark, and the released worker
     // claim is all the fence a late start mark needs. Its holder stays the
-    // Coral Instance that accepted it.
-    if let (Some(takeover), Some(_started)) = (takeover, run.execution_claim_id.as_deref()) {
-        values.push((
+    // Coral Instance that accepted it. A taken Run that never started keeps
+    // no claim once it has ended, so a late `Open` or start finds none.
+    match (takeover, run.execution_claim_id.as_deref()) {
+        (_, Some(_)) if !run.execution_started() => values.push((
             ProgramRunRecords::ExecutionClaimId,
-            Expr::val(takeover.claim_id),
-        ));
-        values.push((
-            ProgramRunRecords::HolderInstanceId,
-            Expr::val(takeover.instance.as_str()),
-        ));
+            Expr::val(None::<String>),
+        )),
+        (Some(takeover), Some(_)) => {
+            values.push((
+                ProgramRunRecords::ExecutionClaimId,
+                Expr::val(takeover.claim_id),
+            ));
+            values.push((
+                ProgramRunRecords::HolderInstanceId,
+                Expr::val(takeover.instance.as_str()),
+            ));
+        }
+        _ => {}
     }
     finish_terminal_run(
         transaction,

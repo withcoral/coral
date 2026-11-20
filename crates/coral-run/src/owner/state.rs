@@ -57,7 +57,7 @@ use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::invocation::{EnforcementBatch, EnforcementRequest, ParkedInvocation, PrecheckBatch};
 use crate::lifecycle::{RequestedTermination, RunTerminationKind};
 use crate::run_inbox::InboxRow;
-use crate::run_repository::{OwnedEvent, OwnedEventKind};
+use crate::run_repository::{OwnedEvent, OwnedEventKind, RunHead};
 use crate::termination::ShutdownAction;
 use crate::{CoralFailure, Error};
 
@@ -443,6 +443,9 @@ pub(crate) struct OwnerState {
     pushed: u64,
     /// A Run stream owner's place in the Shutdown Drain.
     draining: Draining,
+    /// The termination of a Run another writer ended: the reason the
+    /// Program's `Terminate` gives.
+    ended_outside: Option<RunTerminationKind>,
 }
 
 impl OwnerState {
@@ -481,6 +484,7 @@ impl OwnerState {
             requests: None,
             pushed: 0,
             draining: Draining::No,
+            ended_outside: None,
         }
     }
 
@@ -528,14 +532,35 @@ impl OwnerState {
     }
 
     /// The Run Ledger head the owner tracks.
-    #[cfg(test)]
     pub(crate) const fn head(&self) -> u64 {
         self.head
     }
 
+    /// Whether a chunk of the owner's is being committed.
+    pub(crate) const fn chunk_in_flight(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    /// Whether a Run stream's owner acts on a wake-up: its Program runs and
+    /// it ends its Run in no write of its own.
+    pub(crate) const fn listens(&self) -> bool {
+        matches!(self.phase, Phase::Running) && !self.stop_requested && self.stream_end.is_none()
+    }
+
     /// The termination intent the owner applied.
+    #[cfg(test)]
     pub(crate) const fn termination(&self) -> Option<&RequestedTermination> {
         self.termination.as_ref()
+    }
+
+    /// Why the Program terminates: the termination of a Run another writer
+    /// ended, as its row records it, else the one the owner applied.
+    pub(crate) fn terminated_as(&self) -> Option<RunTerminationKind> {
+        self.ended_outside.or_else(|| {
+            self.termination
+                .as_ref()
+                .map(|intent| intent.termination.kind)
+        })
     }
 
     /// Whether a Run stream's termination is being written: the stream hears
@@ -1043,14 +1068,82 @@ impl OwnerState {
         match check {
             Check::Connections => self.wakeups.connections.running = false,
             Check::Periodic => self.wakeups.precheck = Precheck::Unarmed,
+            // Approvals checks keep no state: two may overlap, and a park is
+            // woken once.
+            Check::Approvals => {}
         }
         let found: BTreeSet<u64> = found.unwrap_or_default().into_iter().collect();
         let mut effects = self.wake(|serial, _| found.contains(&serial));
         match check {
             Check::Connections => effects.extend(self.check_connections()),
             Check::Periodic => effects.extend(self.arm_precheck()),
+            Check::Approvals => {}
         }
         effects
+    }
+
+    /// The wake-up reader found this Run stream loop's Run ended or moved
+    /// past what the loop wrote, as `run` shows the Run row. Terminal: the
+    /// loop stops as on a chunk that found the Run ended, and the Program
+    /// hears the Run's termination. A head no newer than the one it tracks:
+    /// nothing happened. Moved: it takes the row's head when no chunk is in
+    /// flight (the one in flight rebuilds itself on it, and rereads them
+    /// then), and rereads the Approval Requests its parked waits are on. A
+    /// Program owner, or a loop that commits nothing more, ignores it.
+    fn woken(&mut self, run: RunHead) -> Vec<Effect> {
+        if self.requests.is_none() || !matches!(self.phase, Phase::Running | Phase::Ending) {
+            return Vec::new();
+        }
+        if !run.running {
+            // The Program stops at once. A chunk in flight may have landed
+            // before the end: its answer still settles its waiters, and a
+            // chunk that did not finds the end and stops the loop.
+            self.ended_outside = run.termination;
+            if self.in_flight.is_none() {
+                return self.rejected(CommitRejection::RunEnded);
+            }
+            self.stop_requested = true;
+            return vec![Effect::TerminateProgram];
+        }
+        if run.head <= self.head {
+            return Vec::new();
+        }
+        if self.in_flight.is_none() {
+            self.head = run.head;
+            self.recorded_total = run.recorded_total;
+        }
+        self.check_approvals()
+    }
+
+    /// Another writer ended the Run with `kind`: the reason the Program's
+    /// `Terminate` gives.
+    fn ended_outside(&mut self, kind: Option<RunTerminationKind>) -> Vec<Effect> {
+        self.ended_outside = kind;
+        Vec::new()
+    }
+
+    /// The chunk in flight lands on a head another writer moved. That
+    /// writer may have decided or expired an Approval Request a parked wait
+    /// is on: the requests are read again.
+    fn rebased(&mut self, head: u64, recorded_total: usize) -> Vec<Effect> {
+        self.head = head;
+        self.recorded_total = recorded_total;
+        self.check_approvals()
+    }
+
+    /// Another writer moved the head: the Approval Requests the parked
+    /// waits are on are read in one snapshot, and the waits whose request
+    /// is no longer pending go back to their held rechecks.
+    fn check_approvals(&self) -> Vec<Effect> {
+        PrecheckBatch::of(
+            Check::Approvals,
+            self.parked_waits
+                .iter()
+                .filter(|(_, parked)| matches!(parked.wait(), ParkedWait::Approval { .. })),
+        )
+        .map(Effect::Precheck)
+        .into_iter()
+        .collect()
     }
 
     /// A stop reached the owner, from an outside writer's recorded
@@ -1956,6 +2049,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         | Message::Parked(_)
         | Message::Changed
         | Message::Prechecked { .. }
+        | Message::Woken(_)
         | Message::Interrupted(_)
             if state.phase == Phase::Interrupting =>
         {
@@ -2035,12 +2129,10 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         Message::Rebased {
             head,
             recorded_total,
-        } => {
-            state.head = head;
-            state.recorded_total = recorded_total;
-            Vec::new()
-        }
+        } => state.rebased(head, recorded_total),
         Message::Detached => state.detached(),
+        Message::Woken(run) => state.woken(run),
+        Message::EndedOutside(kind) => state.ended_outside(kind),
         Message::Drain(step) => state.drain(step),
     }
 }

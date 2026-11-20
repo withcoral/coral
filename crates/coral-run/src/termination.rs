@@ -1,4 +1,5 @@
-//! Run termination: a cancellation through the Run Inbox, the settle
+//! Run termination: a cancellation through the Run Inbox, or committed
+//! directly for a Run a Run Executor holds, the settle
 //! of a recorded termination (the terminal chunk that ends every nonterminal
 //! Invocation and the Run), and the Interrupted record.
 
@@ -27,7 +28,8 @@ pub(crate) const SETTLE_MARGIN: Duration = Duration::from_secs(1);
 impl RunModule {
     /// Puts a cancellation in the Run's Run Inbox, whichever Coral Instance
     /// owns the Run, waits for its owner to record it and end the Run, and
-    /// returns the Run as recorded.
+    /// returns the Run as recorded. A Run a Run Executor holds is ended here
+    /// instead, in one chunk under its claim and head.
     ///
     /// The cancellation is a Run Request identified by the Run: the first
     /// termination wins, and a repeat receives the recorded answer. The owner
@@ -41,8 +43,8 @@ impl RunModule {
     /// # Errors
     ///
     /// Applies the same concealment and cursor rules as [`Self::observe`].
-    /// [`Error::RunRequestNotYetRecorded`] when the owner has not recorded
-    /// the cancellation within the wait: retry.
+    /// [`Error::RunRequestNotYetRecorded`] when an owned Run's owner has not
+    /// recorded the cancellation within the wait: retry.
     pub async fn cancel(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -67,7 +69,10 @@ impl RunModule {
         // The caller may see the Run: this request links to its trace once,
         // whether or not the owner records it within the wait.
         crate::trace::link_request(run.trace.as_ref());
-        if !run.state.is_terminal() {
+        if run.runs_on_run_executor() {
+            self.cancel_on_run_executor(actor, workspace_id, run_id)
+                .await?;
+        } else if !run.state.is_terminal() {
             // The caller's access is read again in the transaction that
             // inserts the row, which holds no Run row.
             let mut transaction = self.database.begin().await?;
@@ -94,6 +99,57 @@ impl RunModule {
         }
         self.observe_linking(actor, workspace_id, run_id, observation, false)
             .await
+    }
+
+    /// Ends the Run a Run Executor holds as canceled by `actor`, in one
+    /// chunk under its claim and head: the Run's stream loop, whichever Coral
+    /// Instance holds it, sees the Run end and terminates the Program. Every
+    /// nonterminal Invocation ends, and the open Approval Requests close. A Run waiting for a take, or taken and not
+    /// started, ends at once too. It compares no clock: the head orders it
+    /// against a deadline that the loop or the sweeper writes. A Run that
+    /// ended, or whose termination is recorded, writes nothing: the record
+    /// answers.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RunRequestNotYetRecorded`] when other writers moved the Run
+    /// under every attempt.
+    async fn cancel_on_run_executor(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        run_id: &RunId,
+    ) -> Result<(), Error> {
+        crate::run_wake::until_written(|| self.cancel_once(actor, workspace_id, run_id)).await
+    }
+
+    /// One attempt of [`Self::cancel_on_run_executor`]. It reads the Run
+    /// without a hold, as the loop's chunk does, so both take their rows in
+    /// one order: the Invocation and Approval Request rows, then the Run row.
+    async fn cancel_once(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        run_id: &RunId,
+    ) -> Result<(), Error> {
+        let mut transaction = self.database.begin().await?;
+        let run = self
+            .visible_run_in_transaction(&mut transaction, actor, workspace_id, run_id)
+            .await?;
+        if run.state.is_terminal() || run.termination.is_some() {
+            transaction.commit().await?;
+            return Ok(());
+        }
+        let now = self.now()?.max(run.accepted_at_unix_nanos);
+        let cancellation = RequestedTermination::new(
+            RunTerminationKind::Canceled,
+            Some(actor.principal().clone()),
+            now,
+            run.shutdown_grace_nanos,
+        )?;
+        commit_end(transaction, &run, Some(cancellation), None, now).await?;
+        self.wakes.wake_for(run_id);
+        Ok(())
     }
 
     /// The Run as `actor` may see it, read in `transaction`.
@@ -431,7 +487,7 @@ pub(crate) enum Interrupter {
 }
 
 /// [`end_in_one_chunk`] with no Events of the caller's, committed, and the
-/// Run's end traced.
+/// Run's end traced (a Run that never started as unstarted).
 pub(crate) async fn commit_end(
     mut transaction: Transaction<'_>,
     run: &RunRecord,
@@ -449,14 +505,16 @@ pub(crate) async fn commit_end(
     )
     .await?;
     transaction.commit().await?;
-    crate::trace::record_run_end(
-        run,
-        &RunEnd::Stopped {
-            outcome: &kind.outcome(),
+    let outcome = kind.outcome();
+    let end = if run.execution_started() {
+        RunEnd::Stopped {
+            outcome: &outcome,
             reason: kind,
-        },
-        ended_at,
-    );
+        }
+    } else {
+        RunEnd::Unstarted(&outcome)
+    };
+    crate::trace::record_run_end(run, &end, ended_at);
     Ok(())
 }
 

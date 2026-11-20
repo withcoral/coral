@@ -9,6 +9,11 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# `McpCaller::fixture`, for another crate's tests of a tool surface.
+# Dev-dependencies enable this; production crates never do.
+test-fixtures = []
+
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true

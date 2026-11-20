@@ -8,6 +8,7 @@ mod arguments;
 mod authentication;
 mod http;
 mod instructions;
+mod interface;
 mod projection;
 mod server;
 mod urls;
@@ -20,18 +21,22 @@ use {
 };
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use coral_run::RunModule;
 use coral_search::UniversalSearchModule;
 use coral_task::{TaskCommands, TaskModule};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceModule};
 
+pub use arguments::{CANCEL_TOOL_DESCRIPTION, MAX_WAIT_MS, WAIT_TOOL_DESCRIPTION};
 pub use authentication::{AuthenticationError, OauthProtectedResource, WorkspaceAuthenticator};
 pub use coral_run::{HumanInterfaceUrl, HumanInterfaceUrlError};
 pub use http::{
     McpHttpConfig, McpHttpError, ReadinessProbe, RunningMcpHttpServer, start_authenticated,
     start_local,
 };
+pub use interface::{McpCaller, McpInterface, Progress, ToolCallError};
+pub use projection::ToolFailure;
 pub use server::SUPPORTED_PROTOCOL_VERSIONS;
 pub use urls::{
     McpEndpoint, ORGANIZATION_MCP_ROUTE, WORKSPACE_MCP_ROUTE, parse_workspace_mcp_path,
@@ -47,14 +52,20 @@ const RUN_UPDATE_PAGE_BYTES: NonZeroUsize =
 /// people to act, and the Run Update page target.
 #[derive(Clone)]
 pub struct McpModules {
-    pub(crate) workspaces: WorkspaceModule,
-    pub(crate) tasks: TaskModule,
-    pub(crate) commands: TaskCommands,
-    pub(crate) runs: RunModule,
+    /// Checks each request's authority in its Workspace.
+    pub workspaces: WorkspaceModule,
+    /// Ends Tasks.
+    pub tasks: TaskModule,
+    /// Starts Runs in Tasks.
+    pub commands: TaskCommands,
+    /// Observes and cancels Runs.
+    pub runs: RunModule,
     /// Lists the namespaces `exec`'s description names for each caller.
-    pub(crate) search: UniversalSearchModule,
+    pub search: UniversalSearchModule,
     pub(crate) human_interface: HumanInterfaceUrl,
     pub(crate) run_update_page_bytes: NonZeroUsize,
+    /// Served in place of core's tool surface.
+    interface: Option<Arc<dyn McpInterface>>,
 }
 impl McpModules {
     /// Receives initialized Modules, including Task commands assembled by bootstrap.
@@ -75,6 +86,7 @@ impl McpModules {
             search,
             human_interface,
             run_update_page_bytes: RUN_UPDATE_PAGE_BYTES,
+            interface: None,
         }
     }
 
@@ -85,6 +97,34 @@ impl McpModules {
     pub const fn with_run_update_page_bytes(mut self, bytes: NonZeroUsize) -> Self {
         self.run_update_page_bytes = bytes;
         self
+    }
+
+    /// Where projections send people to act, for a surface that wraps core's.
+    #[must_use]
+    pub const fn human_interface(&self) -> &HumanInterfaceUrl {
+        &self.human_interface
+    }
+
+    /// Core's tool surface over these modules, for a surface that wraps it.
+    #[must_use]
+    pub fn core_interface(&self) -> Arc<dyn McpInterface> {
+        Arc::new(server::CoreInterface::new(self.clone()))
+    }
+
+    /// Serves `interface` in place of core's tool surface.
+    #[must_use]
+    pub fn with_interface(mut self, interface: Arc<dyn McpInterface>) -> Self {
+        self.interface = Some(interface);
+        self
+    }
+
+    /// The tool surface MCP serves: the one [`Self::with_interface`] was
+    /// given, otherwise core's.
+    pub(crate) fn served_interface(&self) -> Arc<dyn McpInterface> {
+        match &self.interface {
+            Some(interface) => Arc::clone(interface),
+            None => self.core_interface(),
+        }
     }
 }
 

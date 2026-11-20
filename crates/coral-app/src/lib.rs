@@ -6,6 +6,8 @@
 //! telemetry exporter configuration. Product behavior belongs
 //! to transport-neutral domain crates.
 
+// Coral uses only the `max_level_debug` feature of `log` (see Cargo.toml).
+use log as _;
 #[cfg(test)]
 use tonic_health as _; // Used by the separate listener integration test target.
 
@@ -24,9 +26,10 @@ pub use auth::{
 };
 pub use bootstrap::{
     AppError, Extensions, LOCAL_OUTBOUND_DEFAULTS, Launch, ListenerReadiness, McpHttpServeConfig,
-    McpStartError, MigrationProgress, MigrationReport, PreparedServerBuilder, RunningRuntime,
-    RunningServer, RuntimeError, SearchModel, SearchModelState, SearchModelStop, ServeSettings,
-    ServerBuilder, ServerMode, SessionAuthSettings, ShutdownFailures, StateRefusal, start_runtime,
+    McpInterfaceDependencies, McpInterfaceFactory, McpStartError, MigrationProgress,
+    MigrationReport, PreparedServerBuilder, RunningRuntime, RunningServer, RuntimeError,
+    SearchModel, SearchModelState, SearchModelStop, ServeSettings, ServerBuilder, ServerMode,
+    SessionAuthSettings, ShutdownFailures, StateRefusal, start_runtime,
 };
 pub use config_toml::ConfigDecodeError;
 pub use oauth_resource::{CanonicalOauthUrl, OauthUrlError};

@@ -15,7 +15,7 @@ one stream per Run; the Coral Instance that holds that stream commits them in ch
 head. There is no Run Owner: this ADR supersedes [ADR 0018](0018-run-owner-coordinates-each-run.md), whose Run Ledger,
 head, chunk predicate, budgets, enforcement point and contract it keeps, and
 [ADR 0025](0025-outside-run-requests-reach-the-run-owner-through-the-run-inbox.md), whose Run Inbox it replaces with a
-wake row. [Map #2629](https://github.com/withcoral/coral/issues/2629) holds the reasoning and the options not chosen for
+direct commit under the Run's head. [Map #2629](https://github.com/withcoral/coral/issues/2629) holds the reasoning and the options not chosen for
 each part, and its tickets hold the limits and names. A proof of concept on a second process, measured by ADR 0018's
 load harness, kept the Run Owner's burst performance before the owner was removed.
 
@@ -221,27 +221,28 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   their lease. On SQLite the boot pass ends the Runs that local children held, since the one Coral Instance is their
   parent.
 
-## Outside requests and the wake row
+## Outside requests and the Run's head
 
 - **Whoever receives an outside request commits it.** A decision on an Approval Request or a cancellation is written
-  by the Coral Instance that receives it, under the Run's head, and is Recorded at that commit. There is no Run Inbox.
-- **The same transaction writes one wake row, keyed by the Run, with no payload.** Every commit on a `running` Run by a
-  transaction that is not the Run's own loop raises it: a decision, a cancellation, the sweep's writes. The loop's own
-  chunks raise none, and the put-back of an unstarted Run raises none. There is at most one per Run. It is a hint, never
-  evidence.
+  by the Coral Instance that receives it, under the Run's head, and is Recorded at that commit. It compares no clock:
+  a decision is recorded as made, and a cancellation ends the Run canceled. There is no Run Inbox.
+- **The head tells the loop.** Every commit on a Run moves its head, so an outside writer adds nothing to its commit.
+  Each loop publishes the head it last wrote, and whether a chunk of its own is in flight.
 - **One reader per Coral Instance.** It subscribes once to the content-free change signal and, on each ring, with a read
-  gap and a backstop, reads the wake rows whose Run records this Coral Instance as the stream's holder and hands each to
-  the loop registered for that Run. A row whose loop is not registered is left where it is. A writer on the same Coral
-  Instance wakes the reader at once. The per-Run loops never subscribe to the signal.
+  gap and a backstop, reads the head and state of every Run whose loop is registered on this Coral Instance, in one
+  statement per batch of Runs. It wakes each loop whose Run ended or moved past what that loop wrote, counting the loop's chunk in flight;
+  a loop that stopped, or ends its Run itself, takes no wake-up.
+  A writer on the same Coral Instance wakes the reader at once. It relays each ring to the loops parked on a connection
+  request. The per-Run loops never subscribe to the signal.
 - **What the loop does on a wake.** It reads the Run row. If the head is what it last wrote, nothing happened. If the row
   is terminal, it sends Terminate. Otherwise it rereads the Approval Requests it holds parked waits for, matched by
   their Invocation: an approved one moves its Invocation to the enforcement queue; a declined one has its Invocation
-  already ended, and the waiter reports it to the Program. The loop deletes the wake row in its next chunk commit, which
-  asserts the head, so a write that lands in between fails it and no raise is lost. The reconnect's write deletes the
-  Run's wake row too.
-- **The other waiters keep the content-free signal**: the take loop, the compile relay and a parked connection request,
-  one subscription each per Coral Instance. The content-free signal stays the only signal in `coral-db`: no table name,
-  row identity or payload crosses it.
+  already ended, and the waiter reports it to the Program. When another write moves the head under a chunk the loop is
+  committing, the loop rebuilds that chunk on the new head and rereads those Approval Requests then too. The head is durable, so no outside
+  write goes unseen.
+- **The other waiters keep the content-free signal**: the take loop and the compile relay, one subscription each per
+  Coral Instance. The content-free signal stays the only signal in `coral-db`: no table name, row identity or payload
+  crosses it.
 
 ## Compiling
 
@@ -394,9 +395,12 @@ Coral exports and amends this ADR.
   no arithmetic on both sides.
 - **A Retiring message.** Coral cannot tell a full Run Executor from a retiring one, and does not need to.
 - **The Run Inbox, forwarding to the owner's instance, or a message broker.** With no owner, whoever receives an outside
-  request commits it; a wake row is enough.
-- **Every loop rereading its Run row on the content-free signal**, and **a signal that names the Run**: one costs a read
-  per held Run per gap, the other carries a row identity across the boundary the content-free signal keeps.
+  request commits it, and the Run's head tells the loop.
+- **A wake row per Run, raised with each outside commit.** It adds a table, and a write to every outside commit, for a
+  hint the head already carries.
+- **Every loop rereading its Run row on the content-free signal**, and **a signal that names the Run**: one costs a
+  statement per held Run per gap, the other carries a row identity across the boundary the content-free signal keeps.
+  The one reader per Coral Instance reads every held Run's head in one statement per batch of Runs instead.
 - **A Postgres advisory lock to elect the sweeper.** A holder whose node vanishes keeps the lock until Postgres notices
   the dead peer; the lease row's bound is Coral's own.
 - **A reconnect window of the Run Executor's own**, or ending a Program because a lease lapsed. The Run's deadline is

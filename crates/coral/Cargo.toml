@@ -24,6 +24,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true
 
+coral-agent.workspace = true
 coral-app.workspace = true
 coral-edition.workspace = true
 coral-embed.workspace = true

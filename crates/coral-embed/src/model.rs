@@ -1,5 +1,6 @@
 //! The model in an ONNX Runtime session, behind the text-to-vector interface.
 
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
@@ -75,12 +76,13 @@ pub enum LoadError {
     },
 }
 
-/// The manifest's model, loaded from its files.
+/// The manifest's model, loaded from its files into one or more sessions.
 ///
-/// Calls take turns on one session, each on the calling thread: the session
-/// has one intra-op thread, so the caller's thread priority applies. A query
-/// goes before every document that has not started, so it waits for at most
-/// the one document that runs. Documents wait while queries keep coming.
+/// Each call runs on one session, on the calling thread: a session has one
+/// intra-op thread, so the caller's thread priority applies. Calls run at
+/// once on as many sessions as there are. A query goes before every
+/// document that has not started, so it waits for at most the first running
+/// document to end. Documents wait while queries keep coming.
 pub struct Model {
     inference: QueryFirst<Inference>,
 }
@@ -99,14 +101,15 @@ impl std::fmt::Debug for Model {
 
 impl Model {
     /// Loads the manifest's files from `dir`, where they have the
-    /// manifest's names. It does not check their digests; the caller that
-    /// found the files does.
+    /// manifest's names, into `sessions` sessions. Each session holds its
+    /// own copy of the model. It does not check the files' digests; the
+    /// caller that found the files does.
     ///
     /// # Errors
     ///
     /// [`LoadError::CpuTooOld`] below the CPU floor, before any file is
     /// read; otherwise the file that did not load.
-    pub fn load(dir: &Path) -> Result<Self, LoadError> {
+    pub fn load(dir: &Path, sessions: NonZeroUsize) -> Result<Self, LoadError> {
         check_cpu()?;
         let path = dir.join(MANIFEST.tokenizer_file.name);
         let tokenizer = load_tokenizer(&path).map_err(|source| LoadError::Tokenizer {
@@ -114,22 +117,27 @@ impl Model {
             source,
         })?;
         let path = dir.join(MANIFEST.model_file.name);
-        let session = session_builder()
-            .and_then(|mut builder| builder.commit_from_file(&path))
-            .map_err(|source| LoadError::Session {
-                path: path.clone(),
-                source,
-            })?;
-        let takes_token_type_ids = session
-            .inputs()
-            .iter()
-            .any(|input| input.name() == "token_type_ids");
+        let inferences = (0..sessions.get())
+            .map(|_| {
+                let session = session_builder()
+                    .and_then(|mut builder| builder.commit_from_file(&path))
+                    .map_err(|source| LoadError::Session {
+                        path: path.clone(),
+                        source,
+                    })?;
+                let takes_token_type_ids = session
+                    .inputs()
+                    .iter()
+                    .any(|input| input.name() == "token_type_ids");
+                Ok(Inference {
+                    tokenizer: tokenizer.clone(),
+                    session,
+                    takes_token_type_ids,
+                })
+            })
+            .collect::<Result<Vec<_>, LoadError>>()?;
         Ok(Self {
-            inference: QueryFirst::new(Inference {
-                tokenizer,
-                session,
-                takes_token_type_ids,
-            }),
+            inference: QueryFirst::new(inferences),
         })
     }
 }

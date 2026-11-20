@@ -16,8 +16,8 @@ mod tests;
 
 use coral_db::{Database, DatabaseSystem};
 
-use repository::VectorTable;
 pub(crate) use repository::vector_literal;
+use repository::{ReuseShape, VectorTable};
 
 /// A failure to prepare Universal Search's storage at boot.
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +58,17 @@ pub enum StorageError {
     UnexpectedSqliteVectorTables {
         /// The manifest's vector length.
         expected_dimension: usize,
+    },
+    /// The vector table has a column of vector reuse of another type, or
+    /// one that refuses NULL, or the reuse index's name on other columns or
+    /// another table. Boot keeps the table as it is.
+    #[error(
+        "search vector table search_entity_embeddings has {found}, which vector reuse cannot \
+         use; drop the vector tables and the next boot creates them again"
+    )]
+    UnexpectedVectorReuseShape {
+        /// What the table has, by column or index name and type.
+        found: String,
     },
     /// Database access failed.
     #[error(transparent)]
@@ -246,8 +257,10 @@ pub enum VectorStorage {
 
 /// Creates the vector table, or drops and creates it again when the
 /// manifest's dimension changes. A table of the manifest's dimension is
-/// kept with its vectors. On `SQLite` the vector table is two: the key table
-/// and the sqlite-vec table, created and dropped together.
+/// kept with its vectors, and gets the nullable columns and the index of
+/// vector reuse when a Coral older than vector reuse made it without them.
+/// On `SQLite` the vector table is two: the key table and the sqlite-vec
+/// table, created and dropped together.
 ///
 /// The table lives outside the migration chain: a migration that names a
 /// vector type fails on a Postgres without pgvector, where Coral with the
@@ -261,7 +274,8 @@ pub enum VectorStorage {
 /// its `embedding` column is missing or is not a `halfvec` of a fixed
 /// dimension, [`StorageError::UnexpectedSqliteVectorTables`] and keeps them
 /// when one `SQLite` table is alone or the sqlite-vec table is not Coral's,
-/// and
+/// [`StorageError::UnexpectedVectorReuseShape`] and keeps the table when a
+/// column or the index of vector reuse has another shape, and
 /// [`StorageError::Database`] when the table cannot be read, dropped or
 /// created.
 pub async fn prepare_vector_table(
@@ -310,7 +324,19 @@ async fn prepare_vector_table_as(
     repository::lock_vector_table(&mut transaction).await?;
     match repository::vector_table(&mut transaction, dimension).await? {
         VectorTable::SameDimension => {
-            transaction.rollback().await?;
+            match repository::add_reuse_columns_and_index(&mut transaction).await? {
+                ReuseShape::Ready => transaction.rollback().await?,
+                ReuseShape::Added => {
+                    tracing::info!(
+                        "added the vector reuse columns and index to the search vector table"
+                    );
+                    transaction.commit().await?;
+                }
+                ReuseShape::Unexpected(found) => {
+                    transaction.rollback().await?;
+                    return Err(StorageError::UnexpectedVectorReuseShape { found });
+                }
+            }
             return Ok(());
         }
         VectorTable::OtherDimension => match other_dimension {

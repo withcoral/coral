@@ -116,21 +116,24 @@ pub(super) fn only_answer(read: &[run_response::Message], number: u64) -> &Invoc
 }
 
 /// Approves `waiting` from another Coral Instance while no loop holds its
-/// Run's stream: the decision waits in the Run Inbox, which this returns
-/// once it holds it.
-async fn decide_in_the_inbox(
+/// Run's stream: the decision is recorded at once, and the reopened loop
+/// finds it in the rows.
+async fn decide_without_a_loop(
     fixture: &TestModules,
     tool: &ToolFixture,
     run_id: &crate::RunId,
     waiting: crate::approval::ApprovalId,
-) -> tokio::task::JoinHandle<Result<crate::approval::ApprovalRequest, Error>> {
-    let decided = {
-        let (runs, principal) = (fixture.next_process(), tool.principal.clone());
-        let workspace_id = tool.workspace_id.clone();
-        tokio::spawn(approve(runs, principal, workspace_id, waiting))
-    };
-    wait_until_async(async || fixture.inbox_rows(&tool.workspace_id, run_id).await == 1).await;
-    decided
+) {
+    let decided = approve(
+        fixture.next_process(),
+        tool.principal.clone(),
+        tool.workspace_id.clone(),
+        waiting,
+    )
+    .await
+    .expect("the decision is recorded");
+    assert_eq!(decided.state, crate::approval::ApprovalState::Approved);
+    assert_eq!(fixture.inbox_rows(&tool.workspace_id, run_id).await, 0);
 }
 
 /// Each Invocation of `run_id`, in admission order, by its result kind.
@@ -277,7 +280,7 @@ async fn a_run_stream_that_moves_mid_run_lands_each_request_and_result_once() {
     drop(stream);
 
     // Decided while no loop holds the Run's stream.
-    let decided = decide_in_the_inbox(fixture, tool, run_id, waiting).await;
+    decide_without_a_loop(fixture, tool, run_id, waiting).await;
 
     // The Run Executor saw `Committed(3)`, waits on 2 and 3, and resends 4.
     let mut stream = reopen(&moving, &[(2, 0), (3, 0)]);
@@ -316,10 +319,6 @@ async fn a_run_stream_that_moves_mid_run_lands_each_request_and_result_once() {
         answers(&rest, 2).is_empty() && answers(&rest, 3).is_empty(),
         "{rest:?}"
     );
-    decided
-        .await
-        .expect("the decision's task")
-        .expect("the decision is recorded");
 
     let terminal =
         wait_for_terminal(&moving.second, &tool.principal, &tool.workspace_id, run_id).await;
@@ -712,7 +711,7 @@ async fn a_perform_waiting_for_its_approval_is_permitted_after_a_reopen() {
     };
     stream.until(|read| read.contains(&committed(1))).await;
     drop(stream);
-    let decided = decide_in_the_inbox(
+    decide_without_a_loop(
         &moving.fixture,
         &moving.tool,
         &moving.run_id,
@@ -736,10 +735,6 @@ async fn a_perform_waiting_for_its_approval_is_permitted_after_a_reopen() {
     stream
         .until(|read| read.contains(&ended(WireEnd::Succeeded)))
         .await;
-    decided
-        .await
-        .expect("the decision's task")
-        .expect("the decision is recorded");
 }
 
 #[tokio::test(flavor = "multi_thread")]

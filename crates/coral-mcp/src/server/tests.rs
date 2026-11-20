@@ -39,11 +39,11 @@ fn server_on(
     runs: RunModule,
     principal: AuthenticatedPrincipal,
     workspace: WorkspaceId,
-) -> McpServer {
+) -> CoreTools {
     let tasks = TaskModule::new(database.clone(), workspaces.clone());
     let search = UniversalSearchModule::new(database.clone(), workspaces.clone());
     let commands = TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
-    McpServer::new(
+    CoreTools::new(
         McpRuntime {
             modules: crate::McpModules::new(
                 workspaces,
@@ -61,7 +61,7 @@ fn server_on(
 }
 
 /// The local owner's MCP server on a new Workspace.
-async fn workspace_server() -> (TestDatabase, McpServer) {
+async fn workspace_server() -> (TestDatabase, CoreTools) {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
     let user = local_organization_owner();
@@ -85,7 +85,7 @@ async fn workspace_server() -> (TestDatabase, McpServer) {
     (fixture, server)
 }
 
-async fn accepted_unlaunched_run() -> (TestDatabase, McpServer, RunId) {
+async fn accepted_unlaunched_run() -> (TestDatabase, CoreTools, RunId) {
     let (fixture, server) = workspace_server().await;
     let runs = &server.runtime.modules.runs;
     // Commit acceptance without launching execution. There can be no authored output,
@@ -147,7 +147,7 @@ async fn a_caller_that_lost_the_workspace_is_refused_the_tool_list() {
 }
 
 /// Calls `wait` on `run_id` and returns its structured update.
-async fn wait(server: &McpServer, run_id: &RunId, wait_ms: Option<Value>) -> Value {
+async fn wait(server: &CoreTools, run_id: &RunId, wait_ms: Option<Value>) -> Value {
     let mut arguments = json!({"run_id": run_id.to_string()});
     if let Some(wait_ms) = wait_ms {
         arguments
@@ -208,7 +208,7 @@ async fn omitted_null_and_zero_wait_observe_immediately_but_positive_wait_waits(
 
 /// Calls `tool` and returns its structured result, or its failure's code.
 async fn call(
-    server: &McpServer,
+    server: &CoreTools,
     tool: &'static str,
     arguments: &Value,
 ) -> Result<Value, &'static str> {
@@ -220,8 +220,8 @@ async fn call(
             Ok(result.structured_content.unwrap())
         }
         Ok(_) => panic!("{tool} completes"),
-        Err(super::DispatchError::Protocol(error)) => panic!("{tool} was refused: {error:?}"),
-        Err(super::DispatchError::Tool(failure)) => Err(failure.code()),
+        Err(super::ToolCallError::Protocol(error)) => panic!("{tool} was refused: {error:?}"),
+        Err(super::ToolCallError::Tool(failure)) => Err(failure.code()),
     }
 }
 
@@ -556,7 +556,7 @@ fn each_domain_error_projects_one_code_and_a_message() {
         cases.push((label, super::search_failure(error), code));
     }
     for (label, error, code) in cases {
-        let super::DispatchError::Tool(failure) = error else {
+        let super::ToolCallError::Tool(failure) = error else {
             panic!("{label}: a tool failure, not a protocol error");
         };
         let projected = crate::projection::failure(&failure, &TraceId::current_or_new())
@@ -655,7 +655,7 @@ fn a_workspace_refusal_projects_one_code_and_message_through_every_wrapper() {
     for (wrap, wrapper) in workspace_error_wrappers() {
         for (error, refusal) in refusals {
             let label = format!("{wrapper} {refusal:?}");
-            let super::DispatchError::Tool(failure) = super::task_failure(wrap(error())) else {
+            let super::ToolCallError::Tool(failure) = super::task_failure(wrap(error())) else {
                 panic!("{label}: a tool failure, not a protocol error");
             };
             let projected = crate::projection::failure(&failure, &TraceId::current_or_new())
@@ -681,7 +681,7 @@ fn a_workspace_refusal_projects_one_code_and_message_through_every_wrapper() {
 #[test]
 fn a_failure_after_goal_started_its_task_names_the_task() {
     let task = TaskId::parse("alpha-bravo-charlie-delta").unwrap();
-    let super::DispatchError::Tool(failure) = super::started_task_failure(
+    let super::ToolCallError::Tool(failure) = super::started_task_failure(
         super::task_failure(coral_task::Error::Run(coral_run::Error::CorruptData(
             "unreadable Run".into(),
         ))),
@@ -722,7 +722,7 @@ fn a_failure_after_exec_accepted_its_run_names_the_run_and_the_started_task() {
         ),
     ];
     for (started, message) in cases {
-        let super::DispatchError::Tool(failure) =
+        let super::ToolCallError::Tool(failure) =
             super::accepted_run_failure(ToolFailure::internal(), &run, started)
         else {
             panic!("a tool failure, not a protocol error");

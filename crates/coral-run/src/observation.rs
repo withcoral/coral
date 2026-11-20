@@ -14,11 +14,6 @@ use crate::{
     tool_result_shape,
 };
 
-/// Minimum spacing between one waiter's rereads.
-const OBSERVE_MIN_REREAD_GAP: Duration = Duration::from_millis(50);
-/// Reread cadence for a waiter whose change notifications are unavailable.
-const OBSERVE_FALLBACK_POLL: Duration = Duration::from_millis(500);
-
 /// Reads `settled` again after every ring of the change signal, at most once
 /// per reread gap, until it holds or `until` passes, as [`RunModule::observe`]
 /// waits: without the signal it reads again at the fallback poll.
@@ -30,23 +25,15 @@ pub(crate) async fn read_until<Read>(
 where
     Read: Future<Output = Result<bool, Error>>,
 {
-    let mut changes = database.subscribe_changes().ok();
+    let mut wait = database.wait_for_changes(until);
     loop {
         let read_at = tokio::time::Instant::now();
         if settled().await? {
             return Ok(true);
         }
-        if read_at >= until {
+        if !wait.pause(read_at).await {
             return Ok(false);
         }
-        match &mut changes {
-            Some(subscription) => tokio::select! {
-                result = subscription.changed() => if result.is_err() { changes = None },
-                () = tokio::time::sleep_until(until) => {}
-            },
-            None => tokio::time::sleep_until(until.min(read_at + OBSERVE_FALLBACK_POLL)).await,
-        }
-        tokio::time::sleep_until(until.min(read_at + OBSERVE_MIN_REREAD_GAP)).await;
     }
 }
 
@@ -88,14 +75,8 @@ impl RunModule {
     ) -> Result<RunUpdate, Error> {
         validate_cursor(run_id, observation)?;
         let deadline = tokio::time::Instant::now() + observation.wait();
-        // Subscribe before the first snapshot so a commit during it still wakes this wait.
-        // A wake-up is only a hint: the database stays authoritative, so an unavailable
-        // notification path degrades to slow polling instead of failing the wait.
-        let mut changes = if observation.wait().is_zero() {
-            None
-        } else {
-            self.database.subscribe_changes().ok()
-        };
+        // Start the wait before the first snapshot, so a commit during it still wakes this wait.
+        let mut wait = self.database.wait_for_changes(deadline);
         let mut seen_sequence = None;
         loop {
             let update = self
@@ -108,20 +89,9 @@ impl RunModule {
             }
             let seen_sequence =
                 *seen_sequence.get_or_insert_with(|| observation.seen_sequence(&update));
-            if observation.is_ready(&update, seen_sequence) || read_at >= deadline {
+            if observation.is_ready(&update, seen_sequence) || !wait.pause(read_at).await {
                 return Ok(update);
             }
-            match &mut changes {
-                Some(subscription) => tokio::select! {
-                    result = subscription.changed() => if result.is_err() { changes = None },
-                    () = tokio::time::sleep_until(deadline) => {}
-                },
-                None => {
-                    tokio::time::sleep_until(deadline.min(read_at + OBSERVE_FALLBACK_POLL)).await;
-                }
-            }
-            // Busy Runs commit often. Coalesce their wake-ups into bounded rereads.
-            tokio::time::sleep_until(deadline.min(read_at + OBSERVE_MIN_REREAD_GAP)).await;
         }
     }
 
@@ -236,5 +206,82 @@ pub(crate) async fn rung(changes: &mut Option<ChangeSubscription>) {
             let _rang_or_lost = changes.changed().await;
         }
         None => std::future::pending().await,
+    }
+}
+
+/// The shortest gap between two reads of a reader that follows the change
+/// signal: the Run Inbox's and the wake-up reader's.
+const READ_GAP: Duration = Duration::from_millis(250);
+/// The longest gap between two such reads: the backstop for a change signal
+/// that does not ring.
+const BACKSTOP: Duration = Duration::from_secs(15);
+
+/// A request that reaches its Run's owner later than this after it was
+/// written is logged, so a slow delivery can be told from a slow owner.
+const LATE_DELIVERY: Duration = Duration::from_secs(1);
+
+/// How late, in milliseconds, something written at `written_at_unix_nanos`
+/// reaches its Run's owner at `now_unix_nanos`, when later than
+/// [`LATE_DELIVERY`]. Between hosts the gap also holds their clocks'
+/// difference.
+pub(crate) fn late_delivery_ms(now_unix_nanos: i64, written_at_unix_nanos: i64) -> Option<i64> {
+    let delay_ms = now_unix_nanos.saturating_sub(written_at_unix_nanos) / 1_000_000;
+    (delay_ms > i64::try_from(LATE_DELIVERY.as_millis()).unwrap_or(i64::MAX)).then_some(delay_ms)
+}
+
+/// What started one read of a [`Cadence`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Turn {
+    /// The reader's first read.
+    First,
+    /// The change signal rang, or an outage of it began.
+    Rang,
+    /// A writer in this Coral Instance woke the reader.
+    Woken,
+    /// The backstop.
+    Backstop,
+}
+
+/// When a reader reads: on subscribe; after a ring of the change signal
+/// (the first after an outage included), at most once per gap; at once on
+/// a wake; and at the backstop.
+#[derive(Default)]
+pub(crate) struct Cadence {
+    changes: Option<ChangeSubscription>,
+    last_read: Option<tokio::time::Instant>,
+    /// The change signal rang (or an outage of it began) before the last
+    /// read, whatever started it.
+    rang: bool,
+}
+
+impl Cadence {
+    /// Waits for the next read and says what started it. A ring that comes
+    /// within the read gap is kept when a wake starts the read first.
+    pub(crate) async fn turn(&mut self, database: &Database, woken: &tokio::sync::Notify) -> Turn {
+        let mut turn = Turn::First;
+        let mut rang = false;
+        if let Some(last_read) = self.last_read {
+            let changes = &mut self.changes;
+            turn = loop {
+                tokio::select! {
+                    () = rung(changes), if !rang => rang = true,
+                    () = tokio::time::sleep_until(last_read + READ_GAP), if rang => break Turn::Rang,
+                    () = woken.notified() => break Turn::Woken,
+                    () = tokio::time::sleep_until(last_read + BACKSTOP) => break Turn::Backstop,
+                }
+            };
+        }
+        if self.changes.is_none() {
+            self.changes = database.subscribe_changes().ok();
+        }
+        self.rang = rang;
+        self.last_read = Some(tokio::time::Instant::now());
+        turn
+    }
+
+    /// Whether the change signal rang before the last read, whichever turn
+    /// started it.
+    pub(crate) const fn rang(&self) -> bool {
+        self.rang
     }
 }

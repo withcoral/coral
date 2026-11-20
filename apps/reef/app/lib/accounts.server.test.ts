@@ -9,6 +9,7 @@ import { Code, ConnectError } from '@connectrpc/connect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AccountConnectionState,
+  ProviderAccountScope,
   ProviderAccountState,
 } from '@/generated/coral/management/v1/account_pb'
 import {
@@ -880,7 +881,7 @@ const connected = (state: ProviderAccountState, canManage = false) => ({
   },
 })
 
-describe('secret references on a shared account', () => {
+describe('secret references on a shared or agent account', () => {
   const loadPending = (target: object, search = '') => {
     mocks.getProviderAccountAuthorization.mockResolvedValue({
       name: authorizationResource,
@@ -982,6 +983,33 @@ describe('secret references on a shared account', () => {
       name: 'token',
       label: 'Token',
       reference: token,
+    })
+  })
+
+  // Catches: an agent's account offered no store, or opened with the shared account's
+  // references instead of its own.
+  it("offers an agent's account the stores and opens with its own saved references", async () => {
+    mocks.getProviderAccount.mockResolvedValue({
+      account: {
+        secretReferences: {
+          token: { secretStore: 'secretStores/platform', path: 'agents/nightly', key: 'token' },
+        },
+      },
+    })
+    const view = await loadPending({
+      case: 'agentAccount',
+      value: {
+        provider: `workspaces/${workspace}/providers/${providerId}`,
+        agent: `workspaces/${workspace}/agents/${agentId}`,
+      },
+    })
+    expect(view.secretStores).toEqual(offered)
+    expect(view.savedReferences).toEqual({
+      token: { store: 'platform', path: 'agents/nightly', key: 'token' },
+    })
+    expect(mocks.getProviderAccount.mock.lastCall?.[0]).toMatchObject({
+      scope: ProviderAccountScope.AGENT,
+      agent: `workspaces/${workspace}/agents/${agentId}`,
     })
   })
 

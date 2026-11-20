@@ -3104,3 +3104,35 @@ fn a_run_streams_deadline_is_written_after_its_chunks_and_a_cancel_past_it_is_a_
         "{effects:?}"
     );
 }
+
+/// Catches: a Run stream's `Terminate` that names the owner's own applied
+/// intent once another writer ended the Run with another termination: the
+/// end the Run records comes first.
+#[test]
+fn a_run_streams_terminate_names_the_end_its_run_records() {
+    use crate::lifecycle::RunTerminationKind;
+
+    let mut state = OwnerState::for_run_stream(LIMITS, 1, (0, 0));
+    deliver(apply_without_tick(&mut state, Message::Launch, 1));
+    deliver(apply_without_tick(
+        &mut state,
+        Message::Started(Ok(Some(StartedExecution {
+            package: ProgramPackage::scripted("x"),
+            head: 1,
+            deadline_at_unix_nanos: LIMITS.deadline_at_unix_nanos,
+        }))),
+        2,
+    ));
+    // A cancellation an older release left in the Run Inbox is applied.
+    deliver(cancel(&mut state, "inbox", 3));
+    assert_eq!(state.terminated_as(), Some(RunTerminationKind::Canceled));
+
+    // The sweeper ended the Run first, at its deadline.
+    deliver(apply_without_tick(
+        &mut state,
+        Message::EndedOutside(Some(RunTerminationKind::TimedOut)),
+        4,
+    ));
+
+    assert_eq!(state.terminated_as(), Some(RunTerminationKind::TimedOut));
+}

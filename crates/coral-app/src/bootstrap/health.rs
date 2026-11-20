@@ -5,7 +5,6 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -54,7 +53,7 @@ pub struct EngineReadiness {
     in_flight: Arc<Mutex<Option<watch::Receiver<Option<bool>>>>>,
     /// The process is shutting down: its Shutdown Drain lets the live Runs
     /// end while the orchestrator routes new traffic elsewhere.
-    stopping: Arc<AtomicBool>,
+    stopping: Arc<watch::Sender<bool>>,
 }
 
 impl EngineReadiness {
@@ -63,14 +62,19 @@ impl EngineReadiness {
             probe,
             cached: Arc::new(Mutex::new(None)),
             in_flight: Arc::new(Mutex::new(None)),
-            stopping: Arc::new(AtomicBool::new(false)),
+            stopping: Arc::new(watch::Sender::new(false)),
         }
     }
 
     /// Reports not ready from now on, on every listener that shares this
     /// readiness: the process is shutting down.
     pub(crate) fn stop_serving(&self) {
-        self.stopping.store(true, Ordering::SeqCst);
+        self.stopping.send_replace(true);
+    }
+
+    /// True once the process begins to shut down, before its Shutdown Drain.
+    pub(crate) fn stopping(&self) -> watch::Receiver<bool> {
+        self.stopping.subscribe()
     }
 
     /// Reports readiness from one round trip to the database this server serves
@@ -118,7 +122,7 @@ impl EngineReadiness {
     /// from nothing every time, and a database slower than the deadline could
     /// never report ready at all.
     pub async fn is_ready(&self) -> bool {
-        if self.stopping.load(Ordering::SeqCst) {
+        if *self.stopping.borrow() {
             return false;
         }
         if let Some(ready) = self.fresh_answer() {
@@ -139,7 +143,7 @@ impl EngineReadiness {
         });
         // Shutdown may have begun while the probe ran: a draining instance
         // never answers ready.
-        settled.await.unwrap_or(false) && !self.stopping.load(Ordering::SeqCst)
+        settled.await.unwrap_or(false) && !*self.stopping.borrow()
     }
 
     /// Subscribes to the running probe, starting one if none is running.

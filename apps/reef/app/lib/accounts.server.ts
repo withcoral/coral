@@ -217,14 +217,16 @@ export async function loadAuthorization(
   const oauth =
     value.userCode !== undefined || Boolean(value.consentNavigation) || value.consentRejected
   const problem = new URL(request.url).searchParams.get('secretStoreProblem')
-  // Only a shared Account's secret entry takes a reference. Reconnect starts from the saved ones.
-  const takesReferences = scope === 'shared' && !oauth && state === 'pending'
+  // A shared or agent account's secret entry takes a reference; your own does not.
+  // Reconnect starts from the saved ones.
+  const takesReferences = scope !== 'user' && !oauth && state === 'pending'
   const parent = workspaceName(params.workspace)
   const offered = takesReferences ? await offeredSecretStores(api, parent) : []
-  const savedReferences =
-    takesReferences && target.case === 'sharedProvider'
-      ? await savedSecretReferences(api, parent, target.value)
-      : {}
+  const savedReferences = !takesReferences
+    ? {}
+    : target.case === 'agentAccount'
+      ? await savedSecretReferences(api, parent, target.value.provider, target.value.agent)
+      : await savedSecretReferences(api, parent, target.value)
   return {
     ...accountNavigation(returnTo, path, workspaceName(params.workspace)),
     secretStores: offered,

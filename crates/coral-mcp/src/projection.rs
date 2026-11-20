@@ -38,7 +38,7 @@ pub(crate) fn failure(error: &ToolFailure, trace: &TraceId) -> CallToolResult {
 
 /// Why Coral could not complete a tool call. Its result names the call's
 /// trace beside it, never inside caller-influenced text.
-pub(crate) struct ToolFailure {
+pub struct ToolFailure {
     code: &'static str,
     message: String,
 }
@@ -59,21 +59,28 @@ impl ToolFailure {
         self.code
     }
 
-    pub(crate) fn stable(code: &'static str, message: &'static str) -> Self {
+    /// A failure whose code and message Coral's own code fixes.
+    #[must_use]
+    pub fn stable(code: &'static str, message: &'static str) -> Self {
         Self {
             code,
             message: message.to_string(),
         }
     }
 
-    pub(crate) fn safe(code: &'static str, message: impl AsRef<str>) -> Self {
+    /// A failure whose message a module marks safe to show, cut to 4 KiB.
+    #[must_use]
+    pub fn safe(code: &'static str, message: impl AsRef<str>) -> Self {
         Self {
             code,
             message: bounded_message(message.as_ref()),
         }
     }
 
-    pub(crate) fn internal() -> Self {
+    /// The failure of a call that Coral could not complete, for a reason
+    /// the caller cannot act on.
+    #[must_use]
+    pub fn internal() -> Self {
         Self::stable("internal_error", "Coral could not complete the tool call")
     }
 

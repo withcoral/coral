@@ -12,6 +12,8 @@ use super::{
     ServerBuilder, start_prepared, with_local_launch_defaults,
 };
 
+mod mcp_interface;
+
 const WEB: &str = "\n[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n";
 
 async fn start(builder: ServerBuilder) -> Result<RunningRuntime, RuntimeError> {
@@ -348,13 +350,21 @@ async fn serve_with_mcp_client(
     coral_workspace::WorkspaceId,
     rmcp::service::RunningService<rmcp::RoleClient, ()>,
 ) {
-    let server = start(
-        ServerBuilder::new()
-            .with_config_dir(dir)
-            .with_in_process_compiler(),
-    )
-    .await
-    .expect("start composed server");
+    serve_extended_with_mcp_client(dir, ServerBuilder::new()).await
+}
+
+/// As [`serve_with_mcp_client`], in the launch that `builder` describes.
+async fn serve_extended_with_mcp_client(
+    dir: &std::path::Path,
+    builder: ServerBuilder,
+) -> (
+    RunningRuntime,
+    coral_workspace::WorkspaceId,
+    rmcp::service::RunningService<rmcp::RoleClient, ()>,
+) {
+    let server = start(builder.with_config_dir(dir).with_in_process_compiler())
+        .await
+        .expect("start composed server");
     let workspace = WorkspaceModule::new(server.grpc.database())
         .create(
             &ChangeContext::new(

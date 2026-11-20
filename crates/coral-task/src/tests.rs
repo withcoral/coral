@@ -4,7 +4,7 @@ use coral_test_support::change;
 use coral_test_support::{TestDatabase, provision_user as organization_user};
 use coral_workspace::AuthenticatedPrincipal;
 use coral_workspace::{
-    OrganizationRole, RequestId, WorkspaceDisplayName, WorkspaceModule, WorkspaceRole,
+    IfMatch, OrganizationRole, RequestId, WorkspaceDisplayName, WorkspaceModule, WorkspaceRole,
 };
 
 #[tokio::test]
@@ -449,6 +449,129 @@ async fn task_visibility_preserves_user_privacy_and_owner_agent_oversight() {
     }
 }
 
+// Catches: a hold on a Task its caller did not start, a refusal that tells a
+// caller outside the Workspace that the Task exists, or a hold that changes it.
+#[tokio::test]
+async fn only_the_open_task_its_caller_started_is_held_open() {
+    let (_database, workspaces, tasks) = test_modules().await;
+    let (workspaces, tasks) = (&workspaces, &tasks);
+    let database = tasks.database.clone();
+    let owner_user = organization_user(
+        database.clone(),
+        "user:hold-owner",
+        OrganizationRole::Member,
+    )
+    .await;
+    let outsider_user =
+        organization_user(database, "user:hold-outsider", OrganizationRole::Member).await;
+    let workspace = workspaces
+        .create(
+            &change(owner_user.clone(), 10, '1'),
+            WorkspaceDisplayName::parse("Held Tasks").expect("display name"),
+        )
+        .await
+        .expect("create Workspace");
+    let issued = workspaces
+        .create_agent(
+            &change(owner_user.clone(), 20, '4'),
+            &RequestId::generate(),
+            workspace.id(),
+            coral_workspace::AgentDisplayName::parse("Worker").expect("Agent name"),
+            None,
+        )
+        .await
+        .expect("create Agent");
+    let agent = workspaces
+        .authenticate_agent(
+            workspace.id(),
+            issued.credential.expose(),
+            UnixNanos::new(21),
+        )
+        .await
+        .expect("authenticate Agent");
+    let owner = AuthenticatedPrincipal::user(owner_user);
+    let outsider = AuthenticatedPrincipal::user(outsider_user);
+    let task = start(tasks, &agent, workspace.id(), "Agent work", 32).await;
+    let before = retained(tasks, &task).await;
+
+    let mut transaction = tasks.database.begin().await.expect("transaction");
+    let (held, authority) = tasks
+        .hold_open_in_transaction(&mut transaction, &agent, workspace.id(), task.id())
+        .await
+        .expect("an Agent holds its own open Task");
+    assert_eq!(held, task);
+    assert_eq!(authority.workspace().id(), workspace.id());
+    transaction.commit().await.expect("commit");
+
+    // The Owner may read the Agent's Task but did not start it.
+    for actor in [&owner, &outsider] {
+        let mut transaction = tasks.database.begin().await.expect("transaction");
+        let refused = tasks
+            .hold_open_in_transaction(&mut transaction, actor, workspace.id(), task.id())
+            .await;
+        assert!(
+            matches!(refused, Err(Error::TaskNotFound)),
+            "{actor:?}: {refused:?}"
+        );
+        transaction.commit().await.expect("commit");
+    }
+    assert_eq!(
+        retained(tasks, &task).await,
+        before,
+        "a hold changes nothing"
+    );
+}
+
+// Catches: a check that waits behind a writer that holds the Task, or that
+// passes a caller who lost access to it.
+#[tokio::test]
+async fn check_open_holds_nothing_and_refuses_a_caller_who_lost_access() {
+    let (_database, workspaces, tasks) = test_modules().await;
+    let database = tasks.database.clone();
+    let user = organization_user(database.clone(), "user:a", OrganizationRole::Owner).await;
+    let other = organization_user(database.clone(), "user:b", OrganizationRole::Owner).await;
+    let name = WorkspaceDisplayName::parse("Checked").expect("display name");
+    let workspace = workspaces
+        .create(&change(user.clone(), 10, '1'), name)
+        .await;
+    let workspace_id = workspace.expect("create Workspace").id().clone();
+    let actor = AuthenticatedPrincipal::user(user.clone());
+    let task = start(&tasks, &actor, &workspace_id, "Open", 20).await;
+
+    let mut holder = database.begin().await.expect("transaction");
+    let held = tasks.hold_open_in_transaction(&mut holder, &actor, &workspace_id, task.id());
+    held.await.expect("hold the Task");
+    let while_held = tasks.check_open(&actor, &workspace_id, task.id()).await;
+    holder.commit().await.expect("commit");
+    coral_workspace::OrganizationModule::new(database)
+        .set_enabled(
+            &change(other, 30, '2'),
+            user.user_id(),
+            &IfMatch::any(),
+            false,
+        )
+        .await
+        .expect("disable the User");
+    let without_access = tasks.check_open(&actor, &workspace_id, task.id()).await;
+
+    assert!(while_held.is_ok(), "{while_held:?}");
+    assert!(
+        matches!(without_access, Err(Error::TaskNotFound)),
+        "{without_access:?}"
+    );
+}
+
+/// The Task as persistence retains it, with its last activity.
+async fn retained(tasks: &TaskModule, task: &crate::Task) -> (crate::Task, UnixNanos) {
+    let mut transaction = tasks.database.begin().await.expect("transaction");
+    let retained =
+        crate::repository::retention_group(&mut transaction, task.workspace_id(), task.id())
+            .await
+            .expect("read the Task")
+            .expect("the Task is retained");
+    transaction.rollback().await.expect("roll back");
+    retained
+}
 async fn assert_task_visible(
     tasks: &TaskModule,
     principal: &AuthenticatedPrincipal,

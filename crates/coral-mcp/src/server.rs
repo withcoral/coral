@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 use std::time::Duration;
 
 use coral_run::{RUN_EVENT_PAGE_MAX, RunCursor, RunId, RunObservation};
@@ -8,18 +9,19 @@ use coral_workspace::WorkspaceId;
 use rmcp::model::{
     CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
     ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-    ProgressNotificationParam, ProgressToken, ProtocolVersion, ReadResourceRequestParams,
-    ReadResourceResponse, ServerCapabilities, ServerConfig, Tool,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
+    ServerConfig, Tool,
 };
-use rmcp::service::{MaybeSendFuture, Peer, RequestContext, RoleServer};
+use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler};
 
-use crate::McpRuntime;
 use crate::arguments::{
     self, CancelArguments, EndTaskArguments, ExecArguments, TaskOutcomeArgument, ToolArguments,
     WaitArguments,
 };
+use crate::interface::{McpCaller, McpInterface, Progress, ToolCallError};
 use crate::projection::{self, Reporter, ToolFailure};
+use crate::{McpModules, McpRuntime};
 
 #[cfg(test)]
 mod tests;
@@ -48,18 +50,20 @@ fn fallback_protocol_version() -> ProtocolVersion {
         .clone()
 }
 
+/// The MCP server of one request: the protocol, and the span for each tool
+/// call. It asks `interface` for the instructions, the tools and each call.
 #[derive(Clone)]
 pub(crate) struct McpServer {
-    runtime: McpRuntime,
-    workspace_id: WorkspaceId,
+    interface: Arc<dyn McpInterface>,
+    caller: McpCaller,
     title: Option<String>,
 }
 
 impl McpServer {
-    pub(crate) const fn new(runtime: McpRuntime, workspace_id: WorkspaceId) -> Self {
+    pub(crate) const fn new(interface: Arc<dyn McpInterface>, caller: McpCaller) -> Self {
         Self {
-            runtime,
-            workspace_id,
+            interface,
+            caller,
             title: None,
         }
     }
@@ -72,6 +76,171 @@ impl McpServer {
         let name = display_name.chars().take(NAME_CHARS).collect::<String>();
         self.title = Some(format!("Coral · {name}"));
         self
+    }
+}
+
+impl ServerHandler for McpServer {
+    fn get_info(&self) -> ServerConfig {
+        // Embedded output blocks are `resource` content, and the spec asks servers
+        // that send them to declare resources. Nothing is listed or readable.
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_extensions_with(crate::app::extensions())
+                .build(),
+        )
+        .with_protocol_version(fallback_protocol_version())
+        .with_server_info({
+            let implementation = Implementation::new("Coral", env!("CARGO_PKG_VERSION"));
+            match &self.title {
+                Some(title) => implementation.with_title(title),
+                None => implementation,
+            }
+        })
+        .with_instructions(self.interface.instructions())
+    }
+
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let parts = context.extensions.get::<axum::http::request::Parts>();
+        if let Some(parts) = parts {
+            // Each tool call records its request's duration under its tool.
+            coral_telemetry::name_request_operation(
+                &parts.extensions,
+                "tools/call",
+                crate::arguments::served_name(request.name.as_ref()),
+            );
+        }
+        let carrier = parts.and_then(|parts| coral_telemetry::request_span(&parts.extensions));
+        let call = ToolCall::open(
+            request.name.as_ref(),
+            carrier,
+            self.caller.workspace_id(),
+            self.caller.principal(),
+        );
+        let progress = context.meta.get_progress_token().map(|token| Progress {
+            token,
+            peer: context.peer.clone(),
+        });
+        let called = self.interface.call(&self.caller, request, progress);
+        call.run(called).await
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        let tools = self.interface.tools(&self.caller).await?;
+        // Protocol 2026-07-28 (SEP-2549) requires cache hints on list results
+        // and Claude Code rejects a tools/list result that omits them. Older
+        // versions ignore the extra fields, so the hints are not version-gated.
+        // The list is this caller's, never shared.
+        Ok(ListToolsResult::with_all_items(tools)
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private))
+    }
+
+    // Embedded output URIs label one result's blocks; they are never listed or read.
+    fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + MaybeSendFuture + '_ {
+        std::future::ready(Ok(ListResourcesResult::with_all_items(Vec::new())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)))
+    }
+
+    fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + MaybeSendFuture + '_ {
+        // The app that shows a Run's Required Action is the one readable
+        // resource; an embedded output block's URI stays unreadable.
+        std::future::ready(if request.uri == crate::app::RESOURCE_URI {
+            Ok(crate::app::resource().into())
+        } else {
+            Err(ErrorData::resource_not_found("Resource not found", None))
+        })
+    }
+
+    fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListResourceTemplatesResult, ErrorData>> + MaybeSendFuture + '_
+    {
+        std::future::ready(Ok(ListResourceTemplatesResult::with_all_items(Vec::new())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)))
+    }
+}
+
+/// Core's tool surface: `exec`, `wait`, `cancel` and `end_task`.
+pub(crate) struct CoreInterface {
+    modules: McpModules,
+}
+
+#[async_trait::async_trait]
+impl McpInterface for CoreInterface {
+    fn instructions(&self) -> &str {
+        crate::instructions::INSTRUCTIONS
+    }
+
+    async fn tools(&self, caller: &McpCaller) -> Result<Vec<Tool>, ErrorData> {
+        self.for_caller(caller).listed_tools().await
+    }
+
+    async fn call(
+        &self,
+        caller: &McpCaller,
+        request: CallToolRequestParams,
+        progress: Option<Progress>,
+    ) -> Result<CallToolResponse, ToolCallError> {
+        self.for_caller(caller).dispatch(request, progress).await
+    }
+}
+
+impl CoreInterface {
+    pub(crate) const fn new(modules: McpModules) -> Self {
+        Self { modules }
+    }
+
+    /// Core's tools as `caller` is served them.
+    fn for_caller(&self, caller: &McpCaller) -> CoreTools {
+        CoreTools::new(
+            McpRuntime {
+                modules: self.modules.clone(),
+                principal: caller.principal().clone(),
+                now: caller.now(),
+            },
+            caller.workspace_id().clone(),
+        )
+    }
+}
+
+/// Core's tools for one caller.
+struct CoreTools {
+    runtime: McpRuntime,
+    workspace_id: WorkspaceId,
+}
+
+impl CoreTools {
+    const fn new(runtime: McpRuntime, workspace_id: WorkspaceId) -> Self {
+        Self {
+            runtime,
+            workspace_id,
+        }
     }
 
     /// The tools this caller is served. `exec` names the namespaces the
@@ -108,7 +277,7 @@ impl McpServer {
         &self,
         request: CallToolRequestParams,
         progress: Option<Progress>,
-    ) -> Result<CallToolResponse, DispatchError> {
+    ) -> Result<CallToolResponse, ToolCallError> {
         // Coral asks a client no in-band question, so no call is a retry that
         // answers one: a Run that waits on a person reports it in the Run
         // Update, and the person decides on the page its link opens.
@@ -135,7 +304,7 @@ impl McpServer {
                 let arguments = arguments::parse::<EndTaskArguments>(request.arguments)?;
                 self.end_task(arguments).await
             }
-            _ => Err(DispatchError::Protocol(ErrorData::invalid_params(
+            _ => Err(ToolCallError::Protocol(ErrorData::invalid_params(
                 "tool not found",
                 None,
             ))),
@@ -143,7 +312,7 @@ impl McpServer {
         complete.map(Into::into)
     }
 
-    async fn exec(&self, arguments: ExecArguments) -> Result<CallToolResponse, DispatchError> {
+    async fn exec(&self, arguments: ExecArguments) -> Result<CallToolResponse, ToolCallError> {
         // A later call that still carries its Task's `goal` continues the Task:
         // refusing it would only cost the agent a turn to send it again.
         let target = match (&arguments.task_id, &arguments.goal) {
@@ -237,7 +406,7 @@ impl McpServer {
         &self,
         arguments: WaitArguments,
         progress: Option<Progress>,
-    ) -> Result<CallToolResponse, DispatchError> {
+    ) -> Result<CallToolResponse, ToolCallError> {
         let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
         let cursor = arguments
             .cursor
@@ -278,14 +447,14 @@ impl McpServer {
         run_id: &RunId,
         observation: &RunObservation,
         reporter: Reporter<'_>,
-    ) -> Result<CallToolResponse, DispatchError> {
+    ) -> Result<CallToolResponse, ToolCallError> {
         let update = self
             .observe(run_id, observation)
             .await
             .map_err(run_failure)?;
         self.run_update(&update, reporter)
             .map(Into::into)
-            .map_err(DispatchError::Tool)
+            .map_err(ToolCallError::Tool)
     }
 
     async fn observe(
@@ -305,7 +474,7 @@ impl McpServer {
             .await
     }
 
-    async fn cancel(&self, arguments: CancelArguments) -> Result<CallToolResult, DispatchError> {
+    async fn cancel(&self, arguments: CancelArguments) -> Result<CallToolResult, ToolCallError> {
         let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
         let cursor = arguments
             .cursor
@@ -328,10 +497,10 @@ impl McpServer {
             .await
             .map_err(run_failure)?;
         self.run_update(&update, Reporter::Observer)
-            .map_err(DispatchError::Tool)
+            .map_err(ToolCallError::Tool)
     }
 
-    async fn end_task(&self, arguments: EndTaskArguments) -> Result<CallToolResult, DispatchError> {
+    async fn end_task(&self, arguments: EndTaskArguments) -> Result<CallToolResult, ToolCallError> {
         let task_id = TaskId::parse(&arguments.task_id).map_err(invalid_input)?;
         let outcome = match arguments.outcome {
             TaskOutcomeArgument::Success => TaskOutcome::Success,
@@ -354,12 +523,12 @@ impl McpServer {
         tool_call::record_task(task.telemetry_id());
         let durable_outcome = task
             .outcome()
-            .ok_or_else(|| DispatchError::Tool(ToolFailure::internal()))?;
+            .ok_or_else(|| ToolCallError::Tool(ToolFailure::internal()))?;
         projection::success(projection::EndedTask {
             task_id: task.id().to_string(),
             outcome: durable_outcome.into(),
         })
-        .map_err(DispatchError::Tool)
+        .map_err(ToolCallError::Tool)
     }
 
     fn run_update(
@@ -380,7 +549,7 @@ impl McpServer {
         &self,
         task_id: &str,
         intent: &str,
-    ) -> Result<coral_task::AttributedCommand, DispatchError> {
+    ) -> Result<coral_task::AttributedCommand, ToolCallError> {
         let task_id = TaskId::parse(task_id).map_err(invalid_input)?;
         Ok(coral_task::AttributedCommand::new(
             self.runtime.principal.clone(),
@@ -391,114 +560,7 @@ impl McpServer {
     }
 }
 
-impl ServerHandler for McpServer {
-    fn get_info(&self) -> ServerConfig {
-        // Embedded output blocks are `resource` content, and the spec asks servers
-        // that send them to declare resources. Nothing is listed or readable.
-        ServerConfig::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .enable_resources()
-                .enable_extensions_with(crate::app::extensions())
-                .build(),
-        )
-        .with_protocol_version(fallback_protocol_version())
-        .with_server_info({
-            let implementation = Implementation::new("Coral", env!("CARGO_PKG_VERSION"));
-            match &self.title {
-                Some(title) => implementation.with_title(title),
-                None => implementation,
-            }
-        })
-        .with_instructions(crate::instructions::INSTRUCTIONS)
-    }
-
-    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
-        Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
-    }
-
-    async fn call_tool(
-        &self,
-        request: CallToolRequestParams,
-        context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResponse, ErrorData> {
-        let parts = context.extensions.get::<axum::http::request::Parts>();
-        if let Some(parts) = parts {
-            // Each tool call records its request's duration under its tool.
-            coral_telemetry::name_request_operation(
-                &parts.extensions,
-                "tools/call",
-                crate::arguments::served_name(request.name.as_ref()),
-            );
-        }
-        let carrier = parts.and_then(|parts| coral_telemetry::request_span(&parts.extensions));
-        let call = ToolCall::open(
-            request.name.as_ref(),
-            carrier,
-            &self.workspace_id,
-            &self.runtime.principal,
-        );
-        let progress = context.meta.get_progress_token().map(|token| Progress {
-            token,
-            peer: context.peer.clone(),
-        });
-        let dispatched = Box::pin(self.dispatch(request, progress));
-        call.run(dispatched).await
-    }
-
-    async fn list_tools(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, ErrorData> {
-        let tools = self.listed_tools().await?;
-        // Protocol 2026-07-28 (SEP-2549) requires cache hints on list results
-        // and Claude Code rejects a tools/list result that omits them. Older
-        // versions ignore the extra fields, so the hints are not version-gated.
-        // The list is this caller's, never shared.
-        Ok(ListToolsResult::with_all_items(tools)
-            .with_ttl_ms(0)
-            .with_cache_scope(CacheScope::Private))
-    }
-
-    // Embedded output URIs label one result's blocks; they are never listed or read.
-    fn list_resources(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ListResourcesResult, ErrorData>> + MaybeSendFuture + '_ {
-        std::future::ready(Ok(ListResourcesResult::with_all_items(Vec::new())
-            .with_ttl_ms(0)
-            .with_cache_scope(CacheScope::Private)))
-    }
-
-    fn read_resource(
-        &self,
-        request: ReadResourceRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + MaybeSendFuture + '_ {
-        // The app that shows a Run's Required Action is the one readable
-        // resource; an embedded output block's URI stays unreadable.
-        std::future::ready(if request.uri == crate::app::RESOURCE_URI {
-            Ok(crate::app::resource().into())
-        } else {
-            Err(ErrorData::resource_not_found("Resource not found", None))
-        })
-    }
-
-    fn list_resource_templates(
-        &self,
-        _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<ListResourceTemplatesResult, ErrorData>> + MaybeSendFuture + '_
-    {
-        std::future::ready(Ok(ListResourceTemplatesResult::with_all_items(Vec::new())
-            .with_ttl_ms(0)
-            .with_cache_scope(CacheScope::Private)))
-    }
-}
-
-fn validated_wait(wait_ms: u64) -> Result<u64, DispatchError> {
+fn validated_wait(wait_ms: u64) -> Result<u64, ToolCallError> {
     if wait_ms > arguments::MAX_WAIT_MS {
         return Err(invalid_input_message(format!(
             "wait_ms must be at most {}",
@@ -508,15 +570,15 @@ fn validated_wait(wait_ms: u64) -> Result<u64, DispatchError> {
     Ok(wait_ms)
 }
 
-fn invalid_input(error: impl std::fmt::Display) -> DispatchError {
+fn invalid_input(error: impl std::fmt::Display) -> ToolCallError {
     invalid_input_message(error.to_string())
 }
 
-fn invalid_input_message(message: String) -> DispatchError {
-    DispatchError::Protocol(ErrorData::invalid_params(message, None))
+fn invalid_input_message(message: String) -> ToolCallError {
+    ToolCallError::Protocol(ErrorData::invalid_params(message, None))
 }
 
-fn task_failure(error: coral_task::Error) -> DispatchError {
+fn task_failure(error: coral_task::Error) -> ToolCallError {
     let failure = match error {
         coral_task::Error::InvalidInput(message) => ToolFailure::safe("invalid_input", message),
         coral_task::Error::TaskNotFound => {
@@ -549,16 +611,16 @@ fn task_failure(error: coral_task::Error) -> DispatchError {
         | coral_task::Error::CorruptData(_)
         | coral_task::Error::Database(_) => ToolFailure::internal(),
     };
-    DispatchError::Tool(failure)
+    ToolCallError::Tool(failure)
 }
 
 /// A failure after an `exec` with `goal` started its Task. It names the Task,
 /// so the agent continues it with `task_id` instead of starting another with
 /// `goal`.
-fn started_task_failure(error: DispatchError, task: &TaskId) -> DispatchError {
+fn started_task_failure(error: ToolCallError, task: &TaskId) -> ToolCallError {
     match error {
-        DispatchError::Tool(failure) => DispatchError::Tool(failure.naming_started_task(task)),
-        protocol @ DispatchError::Protocol(_) => protocol,
+        ToolCallError::Tool(failure) => ToolCallError::Tool(failure.naming_started_task(task)),
+        protocol @ ToolCallError::Protocol(_) => protocol,
     }
 }
 
@@ -569,9 +631,9 @@ fn accepted_run_failure(
     failure: ToolFailure,
     run: &RunId,
     started: Option<&TaskId>,
-) -> DispatchError {
+) -> ToolCallError {
     let failure = failure.naming_accepted_run(run);
-    DispatchError::Tool(match started {
+    ToolCallError::Tool(match started {
         Some(task) => failure.naming_started_task(task),
         None => failure,
     })
@@ -596,9 +658,9 @@ const fn lookup_error_kind(error: &coral_search::Error) -> &'static str {
     }
 }
 
-fn search_failure(error: coral_search::Error) -> DispatchError {
+fn search_failure(error: coral_search::Error) -> ToolCallError {
     if let Some((code, message)) = error.safe_rejection() {
-        return DispatchError::Tool(ToolFailure::safe(code, message));
+        return ToolCallError::Tool(ToolFailure::safe(code, message));
     }
     let failure = match error {
         coral_search::Error::PermissionDenied(_) => {
@@ -619,13 +681,13 @@ fn search_failure(error: coral_search::Error) -> DispatchError {
         | coral_search::Error::Policy(_)
         | coral_search::Error::Database(_) => ToolFailure::internal(),
     };
-    DispatchError::Tool(failure)
+    ToolCallError::Tool(failure)
 }
 
-fn tools_failure(error: coral_tools::Error) -> DispatchError {
+fn tools_failure(error: coral_tools::Error) -> ToolCallError {
     use coral_tools::Error;
     if let Some((code, message)) = error.safe_rejection() {
-        return DispatchError::Tool(ToolFailure::safe(code, message));
+        return ToolCallError::Tool(ToolFailure::safe(code, message));
     }
     let failure = match error {
         Error::Workspace(error) => workspace_tool_failure(error),
@@ -653,12 +715,12 @@ fn tools_failure(error: coral_tools::Error) -> DispatchError {
         | Error::CorruptData(_)
         | Error::Database(_) => ToolFailure::internal(),
     };
-    DispatchError::Tool(failure)
+    ToolCallError::Tool(failure)
 }
 
-fn run_failure(error: coral_run::Error) -> DispatchError {
+fn run_failure(error: coral_run::Error) -> ToolCallError {
     if let Some((code, message)) = error.safe_rejection() {
-        return DispatchError::Tool(ToolFailure::safe(code, message));
+        return ToolCallError::Tool(ToolFailure::safe(code, message));
     }
     let failure = match error {
         coral_run::Error::RunNotFound => {
@@ -713,7 +775,7 @@ fn run_failure(error: coral_run::Error) -> DispatchError {
         | coral_run::Error::CorruptData(_)
         | coral_run::Error::Database(_) => ToolFailure::internal(),
     };
-    DispatchError::Tool(failure)
+    ToolCallError::Tool(failure)
 }
 
 /// A refusal reports the same code and message whichever module's error
@@ -766,35 +828,4 @@ fn workspace_tool_failure(error: coral_workspace::Error) -> ToolFailure {
 enum ExecTarget {
     Task(coral_task::AttributedCommand),
     Goal(coral_task::NewTaskCommand),
-}
-
-/// The progress the client asked for with this request, if it sent a token.
-struct Progress {
-    token: ProgressToken,
-    peer: Peer<RoleServer>,
-}
-
-impl Progress {
-    /// Sends one progress message on this call's own response stream. A
-    /// client that cannot take it loses nothing the Run Update does not carry.
-    async fn report(self, message: String) {
-        let sent = self
-            .peer
-            .notify_progress(ProgressNotificationParam::new(self.token, 1.0).with_message(message))
-            .await;
-        if sent.is_err() {
-            tracing::debug!("progress notification not delivered");
-        }
-    }
-}
-
-enum DispatchError {
-    Protocol(ErrorData),
-    Tool(ToolFailure),
-}
-
-impl From<ErrorData> for DispatchError {
-    fn from(error: ErrorData) -> Self {
-        Self::Protocol(error)
-    }
 }

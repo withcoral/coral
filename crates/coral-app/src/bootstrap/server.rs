@@ -201,6 +201,16 @@ impl ServerBuilder {
         self
     }
 
+    /// Registers the factory of the tool surface MCP serves in place of core's.
+    #[must_use]
+    pub fn with_mcp_interface_factory(
+        mut self,
+        factory: Arc<dyn super::McpInterfaceFactory>,
+    ) -> Self {
+        self.launcher.mcp_interface_factory = Some(factory);
+        self
+    }
+
     /// Compiles in this process instead of on Run Executors, for a test
     /// that starts Coral in its own process: its binary is no `coral`, so
     /// it cannot start a local child.
@@ -350,13 +360,14 @@ impl PreparedServerBuilder {
     /// initialization or gRPC startup fails.
     pub async fn start(self) -> Result<RunningServer, AppError> {
         let session_auth = self.serve_settings()?.take_session_auth();
+        // Boxed, so that the future of a caller stays small.
         let Composition {
             engine,
             private_listeners,
             authorization_server,
             workspace_authentication: _,
             clock: _,
-        } = self.compose(session_auth).await?;
+        } = Box::pin(self.compose(session_auth)).await?;
         private_listeners
             .holding(authorization_server)
             .serve(engine)
@@ -392,7 +403,7 @@ impl PreparedServerBuilder {
             deployment_config.credential_key_env(),
             state.credential_key_path(),
         )?;
-        let search_model = search_model_delivery(&deployment_config, state.state_dir(), policy)?;
+        let search = search_parts(&deployment_config, state.state_dir(), policy)?;
         let (database, state_lock) = state.into_parts();
         let run_executor_listener =
             deployment_config.run_executor_listener(&AppEnvironment::required_env_var)?;
@@ -452,10 +463,7 @@ impl PreparedServerBuilder {
                 client_id_metadata_document,
                 client_bootstrap_policy: deployment_config.mcp_oauth_client_bootstrap(),
             },
-            search: SearchParts {
-                reconcile_interval: deployment_config.search_reconcile_interval(),
-                model: search_model,
-            },
+            search,
             run_executors: RunExecutorParts {
                 listener: run_executor_listener,
                 local_children,
@@ -576,23 +584,29 @@ impl PrivateListeners {
     }
 }
 
-/// How the search model's files arrive. With `[search]
-/// semantic_search_enabled` off there is none: nothing looks for the files and
-/// nothing downloads them.
-fn search_model_delivery(
+/// Universal Search's settings, with how the search model's files arrive.
+/// With `[search] semantic_search_enabled` off no files arrive: nothing looks
+/// for them and nothing downloads them.
+fn search_parts(
     config: &DeploymentConfig,
     state_dir: &Path,
     policy: coral_outbound::DestinationPolicy,
-) -> Result<Option<Delivery>, AppError> {
-    if !config.semantic_search_enabled() {
-        return Ok(None);
-    }
-    coral_outbound::Client::new(policy, super::search_model::CONNECT_TIMEOUT)
-        .map(|client| Some(Delivery::coral(state_dir, client)))
-        .map_err(|source| AppError::HttpClient {
-            purpose: "search model download",
-            source,
-        })
+) -> Result<SearchParts, AppError> {
+    let model = if config.semantic_search_enabled() {
+        let client = coral_outbound::Client::new(policy, super::search_model::CONNECT_TIMEOUT)
+            .map_err(|source| AppError::HttpClient {
+                purpose: "search model download",
+                source,
+            })?;
+        Some(Delivery::coral(state_dir, client))
+    } else {
+        None
+    };
+    Ok(SearchParts {
+        reconcile_interval: config.search_reconcile_interval(),
+        model,
+        embedder_cores: config.embedder_cores(),
+    })
 }
 
 /// The release check, while `[updates] check` is on.

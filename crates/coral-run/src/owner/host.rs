@@ -116,7 +116,7 @@ pub(crate) async fn host(
                         timers.arm(&handle, timer, after_nanos);
                     }
                 }
-                Effect::Subscribe => subscription.subscribe(&module, &handle),
+                Effect::Subscribe => subscription.subscribe(&module, &handle, &start),
                 Effect::Unsubscribe => subscription.unsubscribe(),
                 Effect::Interrupt {
                     last_commit_age_nanos,
@@ -188,10 +188,27 @@ pub(crate) async fn host(
             effects.extend(apply(&mut state, next, now));
         }
         effects.extend(apply(&mut state, Message::Drained, now));
+        // After the batch and before its effects run: a chunk the batch
+        // started is published in flight before it can land.
+        publish_head(&module, &accepted, &handle, &state);
     }
     drop(timers);
     drop(subscription);
     drop(registration);
+}
+
+/// Publishes what the wake-up reader compares with the Run row. A loop that
+/// begins listening has the reader read at once: a writer may have moved or
+/// ended its Run before it registered.
+fn publish_head(
+    module: &RunModule,
+    accepted: &AcceptedRun,
+    handle: &OwnerHandle,
+    state: &OwnerState,
+) {
+    if handle.publish_head(state.head(), state.chunk_in_flight(), state.listens()) {
+        module.wakes.wake_for(&accepted.id);
+    }
 }
 
 /// Terminates the Program and wakes every stop-aware wait; a Run Executor
@@ -202,7 +219,7 @@ fn terminate_program(handle: &OwnerHandle, start: &OwnerStart, state: &OwnerStat
     if let Some(link) = stream_link(start)
         && !state.ends_stream_first()
     {
-        link.terminate(state.termination().map(|intent| intent.termination.kind));
+        link.terminate(state.terminated_as());
     }
 }
 
@@ -271,16 +288,27 @@ fn begin(
 /// the signal keeps a change that came meanwhile. During a notification
 /// outage it rings nothing and subscribes again once the signal is back, a
 /// wake gap apart; the periodic precheck covers the outage.
+///
+/// A Run stream's loop subscribes to nothing of its own: it listens to its
+/// Coral Instance's wake reader, which relays each ring.
 #[derive(Default)]
-struct Subscription(Option<tokio::task::JoinHandle<()>>);
+struct Subscription {
+    task: Option<tokio::task::JoinHandle<()>>,
+    listening: Option<(crate::run_wake::RunWakes, OwnerHandle)>,
+}
 
 impl Subscription {
-    fn subscribe(&mut self, module: &RunModule, handle: &OwnerHandle) {
+    fn subscribe(&mut self, module: &RunModule, handle: &OwnerHandle, start: &OwnerStart) {
         self.unsubscribe();
+        if stream_link(start).is_some() {
+            module.wakes.listen(handle);
+            self.listening = Some((module.wakes.clone(), handle.clone()));
+            return;
+        }
         let database = module.database.clone();
         let gap = module.execution_policy.wake_gap();
         let handle = handle.clone();
-        self.0 = Some(tokio::spawn(async move {
+        self.task = Some(tokio::spawn(async move {
             loop {
                 if let Ok(mut changes) = database.subscribe_changes() {
                     loop {
@@ -297,8 +325,11 @@ impl Subscription {
     }
 
     fn unsubscribe(&mut self) {
-        if let Some(task) = self.0.take() {
+        if let Some(task) = self.task.take() {
             task.abort();
+        }
+        if let Some((wakes, handle)) = self.listening.take() {
+            wakes.unlisten(&handle);
         }
     }
 }
@@ -856,6 +887,23 @@ fn spawn_commit(
                 }
                 Message::Committed
             }
+            // Another writer ended a Run stream's Run: its Program hears
+            // why in its `Terminate`.
+            Some(Err(CommitRejection::RunEnded)) if link.is_some() => {
+                let read = run_repository::find_exact(
+                    &module.database,
+                    &accepted.workspace_id,
+                    &accepted.id,
+                )
+                .await;
+                if let Ok(Some(run)) = read
+                    && run.state.is_terminal()
+                {
+                    let kind = run.termination.map(|termination| termination.kind);
+                    handle.send(Message::EndedOutside(kind));
+                }
+                Message::CommitRejected(CommitRejection::RunEnded)
+            }
             Some(Err(rejection)) => Message::CommitRejected(rejection),
             None => return,
         };
@@ -973,12 +1021,7 @@ async fn commit_until_answered(
     let chunk_bytes = chunk.bytes;
     let mut bytes = chunk_bytes;
     let mut items = chunk.items;
-    let mut numbers = vec![None; items.len()];
-    for (index, number) in chunk.numbered {
-        if let Some(slot) = numbers.get_mut(index) {
-            *slot = Some(number);
-        }
-    }
+    let mut numbers = request_numbers(items.len(), chunk.numbered);
     let mut enforcement = chunk.enforcement;
     let mut records = Records {
         termination: chunk.termination,
@@ -1070,6 +1113,18 @@ async fn commit_until_answered(
         batch.settle(outcome.map_err(CommitRejection::lost));
     }
     Some(outcome.map(|()| written.request_number))
+}
+
+/// Each of `count` items' Run stream request number, from the items that
+/// `numbered` names.
+fn request_numbers(count: usize, numbered: Vec<(usize, u64)>) -> Vec<Option<u64>> {
+    let mut numbers = vec![None; count];
+    for (index, number) in numbered {
+        if let Some(slot) = numbers.get_mut(index) {
+            *slot = Some(number);
+        }
+    }
+    numbers
 }
 
 /// Rebuilds the chunk on the head another writer left on `run`: the items of

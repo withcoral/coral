@@ -662,4 +662,75 @@ mod tests {
             Some(Value::from("6f1c2b0e-instance"))
         );
     }
+
+    /// The module of `tokenizers` that writes trace records for each
+    /// character it normalizes.
+    const DEPENDENCY_TARGET: &str = "tokenizers::tokenizer::normalizer";
+    /// Names the one test that a child process of [`in_child_process`] runs.
+    const CHILD_TEST: &str = "CORAL_APP_LOG_BRIDGE_CHILD_TEST";
+
+    /// A process can install the `log` bridge and a global subscriber only
+    /// once, and other tests here start telemetry. So the calling test,
+    /// `test`, runs again in a child process, where `check` runs alone.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the child reads the test that its parent named"
+    )]
+    fn in_child_process(test: &str, check: impl FnOnce()) {
+        if std::env::var_os(CHILD_TEST).is_some_and(|name| name == test) {
+            check();
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", test, "--nocapture"])
+            .env(CHILD_TEST, test)
+            .output()
+            .expect("child process");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("1 passed"),
+            "the child ran no test named {test}:\n{stdout}"
+        );
+    }
+
+    /// After Coral's telemetry starts with a trace filter that admits a
+    /// dependency at trace level, a `log` record from that dependency
+    /// reaches the subscriber at debug level and above, but not at trace
+    /// level. `tokenizers` writes several trace records for each character
+    /// it normalizes, and the subscriber's filters walk each record that
+    /// reaches them (#3375).
+    #[test]
+    fn only_log_records_at_debug_level_or_above_reach_the_subscriber() {
+        in_child_process(
+            "telemetry::tests::only_log_records_at_debug_level_or_above_reach_the_subscriber",
+            || {
+                let config = crate::bootstrap::telemetry(&format!(
+                    "[otel]\ntrace_filter = \"{DEPENDENCY_TARGET}=trace\"\n"
+                ))
+                .expect("telemetry config");
+                super::init_tracing(&config, "instance", "1.2.3+abc1234")
+                    .expect("telemetry starts");
+                // The checks that each `log` call makes before it sends its
+                // record: the build's level, the bridge's level, and the
+                // subscriber's filters.
+                let reaching = log::Level::iter()
+                    .filter(|&level| log::log_enabled!(target: DEPENDENCY_TARGET, level))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    reaching,
+                    [
+                        log::Level::Error,
+                        log::Level::Warn,
+                        log::Level::Info,
+                        log::Level::Debug,
+                    ]
+                );
+            },
+        );
+    }
 }

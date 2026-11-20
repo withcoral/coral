@@ -5,8 +5,8 @@ status: superseded
 # Outside Run Requests reach the Run Owner through the Run Inbox
 
 Superseded by [ADR 0027](0027-run-executors-compile-and-execute-programs.md) on 2026-11-03. With no Run Owner, the
-Coral Instance that receives an outside Run Request commits it directly, under the Run's head, and raises a wake row for
-the Coral Instance that holds the Run's stream. The Run Inbox is gone. The text below is kept as history.
+Coral Instance that receives an outside Run Request commits it directly, under the Run's head, and the Coral Instance
+that holds the Run's stream sees the head move. The Run Inbox is gone. The text below is kept as history.
 
 A decision on an Approval Request or a cancellation can arrive at any Coral Instance, but a Run's Run Owner runs only in
 the Coral Instance that holds its claim ([ADR 0018](0018-run-owner-coordinates-each-run.md)). The others used to answer

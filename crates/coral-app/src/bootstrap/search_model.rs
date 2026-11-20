@@ -179,11 +179,15 @@ impl SearchModel {
         }
     }
 
-    /// Loads the model into `slot` once its files are ready, on a blocking
-    /// thread. When the files never arrive, the CPU is below the floor or
-    /// the model does not load, the slot says so, and search matches by
-    /// words alone.
-    pub(crate) fn load_into(&self, slot: watch::Sender<ModelLoad>) -> JoinHandle<()> {
+    /// Loads the model into `slot`, in `sessions` sessions, once its files
+    /// are ready, on a blocking thread. When the files never arrive, the CPU
+    /// is below the floor or the model does not load, the slot says so, and
+    /// search matches by words alone.
+    pub(crate) fn load_into(
+        &self,
+        slot: watch::Sender<ModelLoad>,
+        sessions: std::num::NonZeroUsize,
+    ) -> JoinHandle<()> {
         let files = self.clone();
         tokio::spawn(async move {
             let dir = match files.ended().await {
@@ -198,7 +202,8 @@ impl SearchModel {
                     return;
                 }
             };
-            let load = match tokio::task::spawn_blocking(move || Model::load(&dir)).await {
+            let load = match tokio::task::spawn_blocking(move || Model::load(&dir, sessions)).await
+            {
                 Ok(Ok(model)) => {
                     let model: Arc<dyn Embed> = Arc::new(model);
                     ModelLoad::Ready(model)
