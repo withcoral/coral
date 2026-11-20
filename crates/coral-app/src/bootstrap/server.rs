@@ -435,7 +435,7 @@ impl PreparedServerBuilder {
         let releases = release_check(&deployment_config, policy)?;
         let usage =
             UsageReporting::new(&database, &launcher, authorization_server.is_some(), policy)?;
-        let secret_stores = deployment_config.secret_stores(policy)?;
+        let secret_stores = deployment_config.secret_stores(policy, clock.clone())?;
         // This start's Coral Instance, recorded on the Runs it claims. The
         // first start in a process also names it in exported telemetry.
         let instance = coral_run::CoralInstanceId::generate();

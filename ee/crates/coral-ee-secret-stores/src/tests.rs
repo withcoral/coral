@@ -7,7 +7,7 @@ use coral_edition::{Edition, EditionCheck};
 use coral_outbound::{DestinationPolicy, NetworkAccess};
 use coral_secret_store::{
     BuildEnvironment, Error, KeyField, NamedVariables, ReferenceForm, SecretReference, SecretStore,
-    SecretStoreFactory as _, SettingError, StoreSettings, StoreStatus,
+    SecretStoreFactory as _, SecretStoreName, SettingError, StoreSettings, StoreStatus,
 };
 use serde_json::json;
 use wiremock::matchers::{method, path};
@@ -21,8 +21,12 @@ fn settings(raw: &str) -> StoreSettings {
     StoreSettings::new(toml::from_str(raw).unwrap())
 }
 
+fn store_name() -> SecretStoreName {
+    SecretStoreName::parse("vault").unwrap()
+}
+
 fn validate(kind: &KvV2Kind, raw: &str) -> Result<(), SettingError> {
-    kind.validate(&settings(raw), &NamedVariables::default())
+    kind.validate(&store_name(), &settings(raw), &NamedVariables::default())
 }
 
 fn good(address: &str) -> String {
@@ -44,10 +48,12 @@ fn build(
     let secret_id = secret_id.map(str::to_owned);
     let env = move |name: &str| Ok(secret_id.clone().filter(|_| name == "SECRET_ID"));
     kind.build(
+        &store_name(),
         &settings(raw),
         &BuildEnvironment::new(
             DestinationPolicy::new(NetworkAccess::HttpAndHttps, NetworkAccess::Deny),
             Arc::new(env),
+            Arc::new(coral_test_support::ManualClock::starting_now()),
         ),
     )
 }

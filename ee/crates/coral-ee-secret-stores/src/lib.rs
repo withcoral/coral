@@ -2,22 +2,26 @@
 
 //! Secret Store kinds that need the Enterprise Edition (ADR 0036).
 //!
-//! [`KvV2Kind`] builds `HashiCorp` Vault and `OpenBao` KV version 2 stores. Each
-//! store asks the Edition on every read: while it is Community, the read fails
-//! with [`Error::NeedsEnterprise`] before anything is sent, and nothing is
-//! deleted.
+//! [`KvV2Kind`] builds `HashiCorp` Vault and `OpenBao` KV version 2 stores, and
+//! [`AwsSecretsManagerKind`] AWS Secrets Manager stores. Each store asks the
+//! Edition on every read: while it is Community, the read fails with
+//! [`Error::NeedsEnterprise`] before anything is sent, and nothing is deleted.
 
 use std::sync::Arc;
 
 use coral_edition::EditionCheck;
 use coral_secret_store::{
     BuildEnvironment, Error, NamedVariables, ReferenceForm, Secret, SecretReference, SecretStore,
-    SecretStoreFactory, SecretStoreKind, SettingError, StoreSettings, StoreStatus, env_var_name,
+    SecretStoreFactory, SecretStoreKind, SecretStoreName, SettingError, StoreSettings, StoreStatus,
+    env_var_name,
 };
 use serde::Deserialize;
 
+pub mod aws_secrets_manager;
 pub mod kv_v2;
+mod store_http;
 
+use aws_secrets_manager::{SecretsManagerSettings, SecretsManagerStore};
 use kv_v2::{AppRole, KvV2Settings, KvV2Store, MountPath, StoreAddress};
 
 /// The Enterprise Feature every kind here is part of: reading credentials
@@ -116,6 +120,7 @@ impl SecretStoreFactory for KvV2Kind {
 
     fn validate(
         &self,
+        _name: &SecretStoreName,
         settings: &StoreSettings,
         _named: &NamedVariables,
     ) -> Result<(), SettingError> {
@@ -124,13 +129,13 @@ impl SecretStoreFactory for KvV2Kind {
 
     fn build(
         &self,
+        _name: &SecretStoreName,
         settings: &StoreSettings,
         environment: &BuildEnvironment,
     ) -> Result<Arc<dyn SecretStore>, SettingError> {
         let store = definition(settings)?;
         let secret_id = environment.secret("auth.secret_id_env", &store.secret_id_env)?;
-        let client = coral_outbound::Client::new(environment.policy, kv_v2::REQUEST_TIMEOUT)
-            .map_err(|_error| SettingError::new("", "secret store client initialization failed"))?;
+        let client = store_http::client(environment.policy)?;
         Ok(Arc::new(EnterpriseOnly {
             edition: self.edition.clone(),
             store: KvV2Store::new(
@@ -144,6 +149,103 @@ impl SecretStoreFactory for KvV2Kind {
                         secret_id,
                     },
                 },
+            ),
+        }))
+    }
+}
+
+/// The `aws-secrets-manager` store kind.
+pub struct AwsSecretsManagerKind {
+    kind: SecretStoreKind,
+    edition: EditionCheck,
+}
+
+impl AwsSecretsManagerKind {
+    /// Builds stores that work only while `edition` says Enterprise.
+    ///
+    /// # Panics
+    /// Never: the kind's name is a valid token.
+    #[must_use]
+    pub fn new(edition: EditionCheck) -> Self {
+        Self {
+            kind: SecretStoreKind::new("aws-secrets-manager", "AWS Secrets Manager")
+                .expect("a valid kind name"),
+            edition,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAwsSettings {
+    account_id: String,
+    region: String,
+    profile: Option<String>,
+    role_arn: Option<String>,
+    endpoint: Option<String>,
+}
+
+fn aws_definition(
+    name: &SecretStoreName,
+    settings: &StoreSettings,
+    aws: &coral_aws::Environment,
+) -> Result<SecretsManagerSettings, SettingError> {
+    let raw: RawAwsSettings = settings.decode()?;
+    let aws_error =
+        |error: coral_aws::SettingsError| SettingError::new(error.field(), error.to_string());
+    let checked = coral_aws::Settings::new(
+        &raw.account_id,
+        &raw.region,
+        raw.profile.as_deref(),
+        raw.role_arn.as_deref(),
+    )
+    .map_err(aws_error)?;
+    let endpoint = match raw.endpoint.as_deref() {
+        Some(endpoint) => StoreAddress::parse(endpoint)
+            .map_err(|error| SettingError::new("endpoint", error.to_string()))?,
+        None => aws_secrets_manager::regional_endpoint(&raw.region).ok_or_else(|| {
+            SettingError::new(
+                "endpoint",
+                "must be set for a region of an isolated partition",
+            )
+        })?,
+    };
+    let identity = coral_aws::AwsIdentity::new(checked, name.as_str(), aws).map_err(aws_error)?;
+    Ok(SecretsManagerSettings {
+        region: raw.region,
+        endpoint,
+        identity,
+    })
+}
+
+impl SecretStoreFactory for AwsSecretsManagerKind {
+    fn kind(&self) -> &SecretStoreKind {
+        &self.kind
+    }
+
+    /// Builds the identity too, which reads nothing and sends nothing, so
+    /// that a name too long for a role session fails here.
+    fn validate(
+        &self,
+        name: &SecretStoreName,
+        settings: &StoreSettings,
+        _named: &NamedVariables,
+    ) -> Result<(), SettingError> {
+        aws_definition(name, settings, &coral_aws::Environment::default()).map(drop)
+    }
+
+    fn build(
+        &self,
+        name: &SecretStoreName,
+        settings: &StoreSettings,
+        environment: &BuildEnvironment,
+    ) -> Result<Arc<dyn SecretStore>, SettingError> {
+        Ok(Arc::new(EnterpriseOnly {
+            edition: self.edition.clone(),
+            store: SecretsManagerStore::new(
+                store_http::client(environment.policy)?,
+                aws_definition(name, settings, &environment.aws)?,
+                Arc::clone(&environment.clock),
             ),
         }))
     }

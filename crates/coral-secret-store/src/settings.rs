@@ -5,6 +5,7 @@
 
 use std::borrow::Cow;
 use std::fmt;
+use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 
@@ -141,16 +142,24 @@ pub struct BuildEnvironment {
     pub env: EnvReader,
     /// The environment AWS credential lookup reads, as bootstrap saw it.
     pub aws: coral_aws::Environment,
+    /// Bootstrap's clock, for a store that must read the time.
+    pub clock: Arc<dyn coral_db::Clock>,
 }
 
 impl BuildEnvironment {
-    /// An environment whose AWS credential lookup sees no variable.
+    /// An environment whose AWS credential lookup sees no variable. `clock`
+    /// is bootstrap's.
     #[must_use]
-    pub fn new(policy: coral_outbound::DestinationPolicy, env: EnvReader) -> Self {
+    pub fn new(
+        policy: coral_outbound::DestinationPolicy,
+        env: EnvReader,
+        clock: Arc<dyn coral_db::Clock>,
+    ) -> Self {
         Self {
             policy,
             env,
             aws: coral_aws::Environment::default(),
+            clock,
         }
     }
 
@@ -269,8 +278,11 @@ mod tests {
                 _ => Ok(None),
             }
         };
-        let environment =
-            BuildEnvironment::new(coral_outbound::DestinationPolicy::default(), Arc::new(env));
+        let environment = BuildEnvironment::new(
+            coral_outbound::DestinationPolicy::default(),
+            Arc::new(env),
+            Arc::new(coral_db::SystemClock),
+        );
         assert_eq!(environment.secret("f", "SET").unwrap().expose(), "value");
         for (name, reason) in [
             (SECRET, "environment variable is not set"),

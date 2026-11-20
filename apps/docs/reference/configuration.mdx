@@ -201,6 +201,93 @@ A grant of an `env` store to a workspace covers every variable under its prefix.
 
 Coral compares names without regard to case.
 
+#### Read from AWS Secrets Manager
+
+The `aws-secrets-manager` kind reads secrets from AWS Secrets Manager. It needs the Enterprise Edition, as `kv-v2` does. One store covers one AWS account in one region. Add a store for each account and region you read from.
+
+```toml
+[[secret_stores]]
+name = "prod-aws"
+kind = "aws-secrets-manager"
+account_id = "111122223333"
+region = "eu-west-2"
+role_arn = "arn:aws:iam::111122223333:role/coral-prod-secrets"
+```
+
+| Key          | Description                                                                                                                                       | Required | Default                       |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ----------------------------- |
+| `account_id` | The 12-digit AWS account that holds the secrets. Coral reads only when its credentials are in this account.                                      | Yes      | N/A                           |
+| `region`     | The region that holds the secrets, such as `eu-west-2`                                                                                            | Yes      | N/A                           |
+| `profile`    | A profile in the AWS config file to get credentials from                                                                                          | No       | The default credential chain  |
+| `role_arn`   | A role in `account_id` for Coral to assume. Its session is `coral-<name>`. With or without a role, the store's `name` must be 58 characters or fewer. | No       | None                          |
+| `endpoint`   | Origin of the Secrets Manager API, such as a VPC or FIPS endpoint. Must not include a path. Required for a region of an isolated partition, such as `us-iso-east-1`. | No       | AWS's endpoint for `region`   |
+
+To find the account of the credentials you have, run `aws sts get-caller-identity` and read `Account`. If the store sets `profile`, add `--profile` with the same name.
+
+A workspace owner who chooses an AWS store enters a **Secret name**, such as `prod/jira`, and an optional **JSON key**. Without a key, Coral reads the whole secret string. With a key, the secret string must be a JSON object, and Coral reads that key's string value. Coral always reads the current version, `AWSCURRENT`. Coral refuses an ARN, because an ARN can name another account. To read from another account, add a store whose `role_arn` is in that account. Coral cannot read a binary secret.
+
+Coral stops at boot if a setting is malformed. It gets credentials when it first reads, and checks with AWS STS that they are in `account_id`. If they are not, every read fails as permission denied. Coral gets new credentials five minutes before the old ones expire, and never uses expired credentials.
+
+##### Give Coral AWS credentials
+
+Coral finds credentials the way the AWS CLI does, from its environment, its config files and the platform it runs on. Use the first option that fits:
+
+| Where Coral runs | What to set up |
+| --- | --- |
+| EC2 | An instance profile with a role |
+| ECS or Fargate | A task role |
+| EKS | EKS Pod Identity, or IAM roles for service accounts (IRSA) |
+| Outside AWS, with an OIDC identity provider, such as GitHub Actions or another Kubernetes cluster | Web identity: set `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` |
+| Outside AWS, with an X.509 certificate | IAM Roles Anywhere: a `profile` whose `credential_process` runs `aws_signing_helper credential-process` |
+| None of the above | Static keys in `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Use these only as a last resort, and rotate them. |
+
+Coral gets credentials and calls STS outside the `[outbound]` policy, because AWS sets those addresses, not a provider. On EC2, ECS and EKS Pod Identity, credentials come from link-local addresses that `[outbound]` never allows. Coral honors `HTTPS_PROXY` and `NO_PROXY` for these calls. The read itself goes through `[outbound]`, like any other store traffic.
+
+##### Give the role least privilege
+
+**A grant of the store to a workspace covers every secret its role can read.** So list the secrets one by one, or by a name prefix. AWS adds six random characters to each secret's ARN, so end a single secret's ARN with `-??????`:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "arn:aws:secretsmanager:eu-west-2:111122223333:secret:coral/prod/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "arn:aws:kms:eu-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
+      "Condition": {
+        "StringEquals": { "kms:ViaService": "secretsmanager.eu-west-2.amazonaws.com" }
+      }
+    }
+  ]
+}
+```
+
+Add the `kms:Decrypt` statement only when a secret uses a customer managed key. Coral needs no `ListSecrets`, `DescribeSecret` or write access.
+
+When you set `role_arn`, the role must trust the identity that Coral's credentials belong to. For example, to let an EC2 instance role assume it:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::111122223333:role/coral-instance" },
+      "Action": "sts:AssumeRole",
+      "Condition": { "StringEquals": { "sts:RoleSessionName": "coral-prod-aws" } }
+    }
+  ]
+}
+```
+
+When you set `role_arn`, AWS CloudTrail shows each read under the session name `coral-<name>`.
+
 #### Limit what each store can read
 
 The store's own policy is the security boundary, and Coral adds no check of its own. **A grant of a store to a workspace covers everything that store's role can read.** So give each store its own read-only role, with the least access that works. Use separate stores for workspaces that must not see each other's secrets.
@@ -217,7 +304,7 @@ Coral needs no `list`, `create`, `update` or `delete` access. Also keep Vault's 
 
 #### Allow Coral to reach the store
 
-The `[outbound]` policy applies to all store traffic. Without the setting a store needs, Coral reports the store as unreachable.
+The `[outbound]` policy applies to all store traffic. Without the setting a store needs, Coral reports the store as unreachable. An AWS store's regional endpoint is a public https address, so it needs no setting. For a VPC endpoint, set `private_networks = "https"`.
 
 | Where the store is | Setting |
 | --- | --- |

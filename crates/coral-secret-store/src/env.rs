@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use crate::{
     BuildEnvironment, Error, NamedVariables, ReferenceForm, Secret, SecretReference, SecretStore,
-    SecretStoreFactory, SecretStoreKind, SettingError, StoreSettings,
+    SecretStoreFactory, SecretStoreKind, SecretStoreName, SettingError, StoreSettings,
 };
 
 /// Reads one process environment variable.
@@ -50,6 +50,7 @@ impl SecretStoreFactory for EnvKind {
 
     fn validate(
         &self,
+        _name: &SecretStoreName,
         settings: &StoreSettings,
         named: &NamedVariables,
     ) -> Result<(), SettingError> {
@@ -58,6 +59,7 @@ impl SecretStoreFactory for EnvKind {
 
     fn build(
         &self,
+        _name: &SecretStoreName,
         settings: &StoreSettings,
         _environment: &BuildEnvironment,
     ) -> Result<Arc<dyn SecretStore>, SettingError> {
@@ -189,14 +191,20 @@ mod tests {
         StoreSettings::new(toml::from_str(raw).unwrap())
     }
 
+    fn store_name() -> SecretStoreName {
+        SecretStoreName::parse("env").unwrap()
+    }
+
     fn store(kind: &EnvKind, prefix: &str) -> Arc<dyn SecretStore> {
         let no_env =
             |_: &str| -> Result<Option<String>, VarError> { panic!("build reads no variable") };
         kind.build(
+            &store_name(),
             &settings(&format!("prefix = '{prefix}'")),
             &BuildEnvironment::new(
                 coral_outbound::DestinationPolicy::default(),
                 Arc::new(no_env),
+                Arc::new(coral_db::SystemClock),
             ),
         )
         .unwrap()
@@ -315,13 +323,21 @@ mod tests {
             ),
         ] {
             let error = kind
-                .validate(&settings(&format!("prefix = '{prefix}'")), &named)
+                .validate(
+                    &store_name(),
+                    &settings(&format!("prefix = '{prefix}'")),
+                    &named,
+                )
                 .expect_err(prefix);
             assert_eq!(error.to_string(), expected, "{prefix}");
         }
         for prefix in ["MYCO_API_", "VAULT_SECRET_ID_", "ACME_"] {
-            kind.validate(&settings(&format!("prefix = '{prefix}'")), &named)
-                .expect(prefix);
+            kind.validate(
+                &store_name(),
+                &settings(&format!("prefix = '{prefix}'")),
+                &named,
+            )
+            .expect(prefix);
         }
     }
 }

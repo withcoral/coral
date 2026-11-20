@@ -116,7 +116,11 @@ impl Section {
             return Err(SettingError::new("reasoning_effort", "must not be empty"));
         }
         let policy = dependencies.outbound_policy;
-        let environment = BuildEnvironment::new(policy, Arc::clone(&dependencies.env));
+        let environment = BuildEnvironment::new(
+            policy,
+            Arc::clone(&dependencies.env),
+            Arc::clone(&dependencies.clock),
+        );
         let api_key = match &self.api_key_env {
             Some(name) => {
                 let name = env_var_name("api_key_env", name)?;
