@@ -68,7 +68,7 @@ impl Lead {
                 started_runs: Mutex::default(),
             },
         };
-        let results = Message::tool_results(vec![call.result(result, run)]);
+        let results = Message::tool_results(vec![call.result(result, false, run)]);
         let call = Message {
             role: Role::Assistant,
             content: vec![Block::ToolUse(call)],

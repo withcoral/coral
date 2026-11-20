@@ -1,11 +1,19 @@
-//! The Sub-agent's model, reached through an OpenAI-compatible Chat Completions endpoint.
-//! A conversation is kept in Coral's own block format and converted here on every call.
+//! The Sub-agent's model, reached through Chat Completions, `OpenAI` Responses,
+//! or Anthropic Messages endpoints over Coral's guarded outbound client. A
+//! conversation is kept in Coral's own block format and converted here on every
+//! call.
+
+mod anthropic;
+mod chat_completions;
+mod openai_responses;
+mod refusal;
 
 use std::time::Duration;
 
 use coral_credentials::Secret;
 use coral_outbound::{FetchError, OutboundUrlPolicyError};
 use coral_run::RunId;
+use refusal::Refusal;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,13 +23,35 @@ use url::Url;
 use crate::prompt::ToolText;
 use crate::telemetry::ModelCallTrace;
 
-mod refusal;
-use refusal::Refusal;
+/// The wire protocol a configured model endpoint speaks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Protocol {
+    /// OpenAI-compatible Chat Completions (`/chat/completions`).
+    #[default]
+    ChatCompletions,
+    /// `OpenAI` Responses API (`/responses`), stateless with encrypted reasoning.
+    #[serde(rename = "openai_responses")]
+    OpenAiResponses,
+    /// Anthropic Messages API (`/messages`), with prompt caching and thinking blocks.
+    Anthropic,
+}
 
-/// A model behind an OpenAI-compatible Chat Completions endpoint.
+impl Protocol {
+    const fn path_suffix(self) -> &'static str {
+        match self {
+            Self::ChatCompletions => "chat/completions",
+            Self::OpenAiResponses => "responses",
+            Self::Anthropic => "messages",
+        }
+    }
+}
+
+/// A model behind a Chat Completions, `OpenAI` Responses, or Anthropic Messages endpoint.
 pub(crate) struct ModelClient {
     http: coral_outbound::Client,
-    completions_url: String,
+    protocol: Protocol,
+    endpoint_url: String,
     model: String,
     api_key: Option<Secret>,
     context_window: Option<u32>,
@@ -31,22 +61,22 @@ pub(crate) struct ModelClient {
 }
 
 impl ModelClient {
-    /// Reaches `model` under `base_url`, such as `https://host/v1`, through `http`.
+    /// Reaches `model` under `base_url`, such as `https://host/v1`, speaking `protocol` through `http`.
     #[must_use]
     pub(crate) fn new(
         http: coral_outbound::Client,
+        protocol: Protocol,
         base_url: &Url,
         model: String,
         api_key: Option<Secret>,
         context_window: Option<u32>,
         reasoning_effort: Option<String>,
     ) -> Self {
+        let base = base_url.as_str().trim_end_matches('/');
         Self {
             http,
-            completions_url: format!(
-                "{}/chat/completions",
-                base_url.as_str().trim_end_matches('/')
-            ),
+            protocol,
+            endpoint_url: format!("{base}/{}", protocol.path_suffix()),
             model,
             api_key,
             context_window,
@@ -69,14 +99,8 @@ impl ModelClient {
         conversation: &[Message],
         tools: &[ToolText],
     ) -> Result<Reply, ModelError> {
-        let request = CompletionRequest {
-            model: &self.model,
-            messages: chat_messages(system, conversation, &self.model),
-            tools: tools.iter().map(ChatTool::from).collect(),
-            max_completion_tokens: None,
-            reasoning_effort: self.reasoning_effort.as_deref(),
-        };
-        self.complete(&request).await
+        let body = self.encode_request(system, conversation, tools, None)?;
+        self.complete(&body).await
     }
 
     /// Sends `system` and the conversation without tools, for a reply of at most `max_tokens`.
@@ -88,40 +112,89 @@ impl ModelClient {
         conversation: &[Message],
         max_tokens: u32,
     ) -> Result<Reply, ModelError> {
-        let request = CompletionRequest {
-            model: &self.model,
-            messages: chat_messages(system, conversation, &self.model),
-            tools: Vec::new(),
-            max_completion_tokens: Some(max_tokens),
-            reasoning_effort: self.reasoning_effort.as_deref(),
-        };
-        self.complete(&request).await
+        let body = self.encode_request(system, conversation, &[], Some(max_tokens))?;
+        self.complete(&body).await
     }
 
-    async fn complete(&self, request: &CompletionRequest<'_>) -> Result<Reply, ModelError> {
-        let mut call = ModelCallTrace::open(&self.model, &self.completions_url);
-        let mut result = self.send(request).await;
+    fn encode_request(
+        &self,
+        system: &str,
+        conversation: &[Message],
+        tools: &[ToolText],
+        max_tokens: Option<u32>,
+    ) -> Result<Vec<u8>, ModelError> {
+        let effort = self.reasoning_effort.as_deref();
+        match self.protocol {
+            Protocol::ChatCompletions => chat_completions::request_body(
+                &self.model,
+                system,
+                conversation,
+                tools,
+                max_tokens,
+                effort,
+            ),
+            Protocol::OpenAiResponses => openai_responses::request_body(
+                &self.model,
+                system,
+                conversation,
+                tools,
+                max_tokens,
+                effort,
+            ),
+            Protocol::Anthropic => anthropic::request_body(
+                &self.model,
+                system,
+                conversation,
+                tools,
+                max_tokens,
+                effort,
+            ),
+        }
+    }
+
+    fn decode_reply(&self, body: &[u8], latency: Duration) -> Result<Reply, ModelError> {
+        match self.protocol {
+            Protocol::ChatCompletions => chat_completions::parse_reply(body, &self.model, latency),
+            Protocol::OpenAiResponses => openai_responses::parse_reply(body, &self.model, latency),
+            Protocol::Anthropic => anthropic::parse_reply(body, &self.model, latency),
+        }
+    }
+
+    async fn complete(&self, request_body: &[u8]) -> Result<Reply, ModelError> {
+        let mut call = ModelCallTrace::open(&self.model, &self.endpoint_url);
+        let mut result = self.send(request_body).await;
         for wait in self.retry_waits {
             if !matches!(result, Err(ModelError::Unavailable(_))) {
                 break;
             }
             tokio::time::sleep(wait).await;
             call.retried();
-            result = self.send(request).await;
+            result = self.send(request_body).await;
         }
         call.ended(&result);
         result
     }
 
-    async fn send(&self, request: &CompletionRequest<'_>) -> Result<Reply, ModelError> {
+    async fn send(&self, request_body: &[u8]) -> Result<Reply, ModelError> {
         let sent_at = Instant::now();
         let mut builder = self
             .http
-            .post(&self.completions_url)
+            .post(&self.endpoint_url)
             .map_err(|_rejected| ModelError::Misconfigured)?
-            .json(request);
-        if let Some(key) = &self.api_key {
-            builder = builder.bearer_auth(key.expose());
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(request_body.to_vec());
+        match self.protocol {
+            Protocol::ChatCompletions | Protocol::OpenAiResponses => {
+                if let Some(key) = &self.api_key {
+                    builder = builder.bearer_auth(key.expose());
+                }
+            }
+            Protocol::Anthropic => {
+                builder = builder.header("anthropic-version", anthropic::VERSION);
+                if let Some(key) = &self.api_key {
+                    builder = builder.header("x-api-key", key.expose());
+                }
+            }
         }
         let response = builder
             .send()
@@ -152,20 +225,27 @@ impl ModelClient {
                 _ => ModelError::Unavailable(None),
             })?;
         let latency = sent_at.elapsed();
-        let completion: Completion =
-            serde_json::from_slice(&body).map_err(|_error| ModelError::Misconfigured)?;
-        let choice = completion.choices.into_iter().next();
-        let choice = choice.ok_or(ModelError::Misconfigured)?;
-        Ok(Reply {
-            message: choice.message.into_message(&self.model),
-            finish_reason: choice.finish_reason,
-            call: ModelCall {
-                model: completion.model.unwrap_or_else(|| self.model.clone()),
-                latency,
-                usage: completion.usage.map(Usage::from),
-            },
-        })
+        self.decode_reply(&body, latency)
     }
+}
+
+/// Parses a tool's static JSON schema string into a [`Value`].
+fn tool_parameters(tool: &ToolText) -> Value {
+    serde_json::from_str(tool.parameters)
+        .expect("a tool's parameters are JSON, as the prompt's tests check")
+}
+
+/// Whether a stored reasoning block written by `writer` under `stored_protocol`
+/// may be replayed to `expected_model` over `expected_protocol`. Legacy rows
+/// with no recorded protocol belong to Chat Completions.
+fn reasoning_matches(
+    writer: &str,
+    stored_protocol: Option<Protocol>,
+    expected_protocol: Protocol,
+    expected_model: &str,
+) -> bool {
+    writer == expected_model
+        && stored_protocol.unwrap_or(Protocol::ChatCompletions) == expected_protocol
 }
 
 /// One message of a conversation, in Coral's own block format.
@@ -214,20 +294,6 @@ impl Message {
             | Block::Summary { .. } => None,
         })
     }
-
-    /// The reasoning in this message if `model` wrote it: a model reads back only its own.
-    fn reasoning_by(&self, model: &str) -> Option<&str> {
-        self.content.iter().find_map(|block| match block {
-            Block::Reasoning {
-                text,
-                model: writer,
-            } => (writer == model).then_some(text.as_str()),
-            Block::Text { .. }
-            | Block::ToolUse(_)
-            | Block::ToolResult { .. }
-            | Block::Summary { .. } => None,
-        })
-    }
 }
 
 /// Who wrote a message: the lead or a tool's result is the user.
@@ -244,15 +310,27 @@ pub(crate) enum Block {
     Text {
         text: String,
     },
-    /// What the model reasoned before it replied, and the configured `model` that wrote it.
+    /// What the model reasoned before it replied, and the configured `model`
+    /// (and `protocol`) that wrote it.
     Reasoning {
         text: String,
         model: String,
+        /// The protocol that wrote this block; absent in older Chat Completions rows.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        protocol: Option<Protocol>,
+        /// Opaque protocol payload needed to replay this reasoning verbatim
+        /// (e.g. `OpenAI` Responses `encrypted_content`, Anthropic thinking
+        /// signature or `redacted_thinking` data).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        opaque: Option<Value>,
     },
     ToolUse(ToolCall),
     ToolResult {
         tool_use_id: String,
         content: String,
+        /// Whether the tool call returned an error rather than a normal result.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        is_error: bool,
         /// The Run that an `exec` started.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         run_id: Option<String>,
@@ -275,11 +353,12 @@ pub(crate) struct ToolCall {
 }
 
 impl ToolCall {
-    /// The block that answers this call with `content`, and the Run it started.
-    pub(crate) fn result(&self, content: String, run_id: Option<RunId>) -> Block {
+    /// The block that answers this call with `content`, whether it errored, and the Run it started.
+    pub(crate) fn result(&self, content: String, is_error: bool, run_id: Option<RunId>) -> Block {
         Block::ToolResult {
             tool_use_id: self.id.clone(),
             content,
+            is_error,
             run_id: run_id.map(|run_id| run_id.as_str().to_owned()),
         }
     }
@@ -290,7 +369,7 @@ impl ToolCall {
 pub(crate) struct Reply {
     pub(crate) message: Message,
     pub(crate) call: ModelCall,
-    /// Why the model stopped, as the server wrote it.
+    /// Why the model stopped, as the server wrote it (or normalized for telemetry).
     pub(crate) finish_reason: Option<String>,
 }
 
@@ -329,8 +408,8 @@ pub(crate) enum ModelError {
     /// The server refused the request because it does not fit the model's context window.
     #[error("the conversation is too long for the model: start a new agent with a narrower brief")]
     ContextTooLong(StatusCode),
-    /// The destination policy forbids the server, or its answer is not a chat completion.
-    #[error("the model settings do not lead to a Chat Completions endpoint Coral may use")]
+    /// The destination policy forbids the server, or its answer could not be read for the configured protocol.
+    #[error("the model settings do not lead to a model endpoint Coral may use")]
     Misconfigured,
 }
 
@@ -346,224 +425,6 @@ const BODY_LIMIT: usize = 4 << 20;
 
 /// The most of a refusal that Coral reads to learn whether the request was too long.
 const REFUSAL_BODY_LIMIT: usize = 64 << 10;
-
-#[derive(Serialize)]
-struct CompletionRequest<'a> {
-    model: &'a str,
-    messages: Vec<ChatMessage<'a>>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    tools: Vec<ChatTool<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    max_completion_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<&'a str>,
-}
-
-/// The conversation as Chat Completions messages: a user's text as content parts, an assistant
-/// message with only tool calls as `null` content, and an empty assistant message left out.
-fn chat_messages<'a>(
-    system: &'a str,
-    conversation: &'a [Message],
-    model: &str,
-) -> Vec<ChatMessage<'a>> {
-    let mut messages = vec![ChatMessage::System { content: system }];
-    for message in conversation {
-        match message.role {
-            Role::User => {
-                let mut parts = Vec::new();
-                for block in &message.content {
-                    match block {
-                        Block::Text { text } => parts.push(TextPart { text }),
-                        Block::ToolResult {
-                            tool_use_id,
-                            content,
-                            ..
-                        } => messages.push(ChatMessage::Tool {
-                            tool_call_id: tool_use_id,
-                            content,
-                        }),
-                        Block::Reasoning { .. } | Block::ToolUse(_) | Block::Summary { .. } => {}
-                    }
-                }
-                if !parts.is_empty() {
-                    messages.push(ChatMessage::User { content: parts });
-                }
-            }
-            Role::Assistant => {
-                let text = message.text();
-                let tool_calls: Vec<_> = message.tool_calls().map(ChatToolCall::from).collect();
-                if !text.is_empty() || !tool_calls.is_empty() {
-                    let content = (!text.is_empty()).then_some(text);
-                    messages.push(ChatMessage::Assistant {
-                        content,
-                        reasoning: message.reasoning_by(model),
-                        tool_calls,
-                    });
-                }
-            }
-        }
-    }
-    messages
-}
-
-#[derive(Serialize)]
-#[serde(tag = "role", rename_all = "lowercase")]
-enum ChatMessage<'a> {
-    System {
-        content: &'a str,
-    },
-    User {
-        content: Vec<TextPart<'a>>,
-    },
-    Assistant {
-        content: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reasoning: Option<&'a str>,
-        #[serde(skip_serializing_if = "Vec::is_empty")]
-        tool_calls: Vec<ChatToolCall<&'a str>>,
-    },
-    Tool {
-        tool_call_id: &'a str,
-        content: &'a str,
-    },
-}
-
-#[derive(Serialize)]
-#[serde(tag = "type", rename = "text")]
-struct TextPart<'a> {
-    text: &'a str,
-}
-
-/// A tool call as Chat Completions writes it: borrowed in a request, owned in a reply.
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "type", rename = "function")]
-struct ChatToolCall<S> {
-    id: S,
-    function: FunctionCall<S>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct FunctionCall<S> {
-    name: S,
-    arguments: S,
-}
-
-impl<'a> From<&'a ToolCall> for ChatToolCall<&'a str> {
-    fn from(call: &'a ToolCall) -> Self {
-        Self {
-            id: &call.id,
-            function: FunctionCall {
-                name: &call.name,
-                arguments: &call.arguments,
-            },
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(tag = "type", rename = "function")]
-struct ChatTool<'a> {
-    function: FunctionDeclaration<'a>,
-}
-
-#[derive(Serialize)]
-struct FunctionDeclaration<'a> {
-    name: &'a str,
-    description: &'a str,
-    parameters: Value,
-    strict: bool,
-}
-
-impl<'a> From<&'a ToolText> for ChatTool<'a> {
-    fn from(tool: &'a ToolText) -> Self {
-        Self {
-            function: FunctionDeclaration {
-                name: tool.name,
-                description: tool.description,
-                parameters: serde_json::from_str(tool.parameters)
-                    .expect("a tool's parameters are JSON, as the prompt's tests check"),
-                strict: false,
-            },
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct Completion {
-    model: Option<String>,
-    choices: Vec<Choice>,
-    usage: Option<CompletionUsage>,
-}
-
-#[derive(Deserialize)]
-struct Choice {
-    message: ChoiceMessage,
-    finish_reason: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ChoiceMessage {
-    /// `null` when the model wrote no text.
-    content: Option<String>,
-    /// vLLM's name for the reasoning; other servers write `reasoning_content`.
-    reasoning: Option<String>,
-    reasoning_content: Option<String>,
-    /// Absent or `null` when the model called no tool.
-    tool_calls: Option<Vec<ChatToolCall<String>>>,
-}
-
-impl ChoiceMessage {
-    /// The reply as blocks, its reasoning marked as written by `model`.
-    fn into_message(self, model: &str) -> Message {
-        let reasoning = [self.reasoning, self.reasoning_content]
-            .into_iter()
-            .flatten()
-            .find(|text| !text.is_empty())
-            .map(|text| Block::Reasoning {
-                text,
-                model: model.to_owned(),
-            });
-        let text = self.content.filter(|text| !text.is_empty());
-        let calls = self.tool_calls.unwrap_or_default().into_iter().map(|call| {
-            Block::ToolUse(ToolCall {
-                id: call.id,
-                name: call.function.name,
-                arguments: call.function.arguments,
-            })
-        });
-        let text = text.map(|text| Block::Text { text });
-        Message {
-            role: Role::Assistant,
-            content: reasoning.into_iter().chain(text).chain(calls).collect(),
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct CompletionUsage {
-    prompt_tokens: i64,
-    completion_tokens: i64,
-    prompt_tokens_details: Option<PromptTokensDetails>,
-}
-
-#[derive(Deserialize)]
-struct PromptTokensDetails {
-    cached_tokens: Option<i64>,
-}
-
-impl From<CompletionUsage> for Usage {
-    fn from(usage: CompletionUsage) -> Self {
-        let cached = usage
-            .prompt_tokens_details
-            .and_then(|details| details.cached_tokens)
-            .unwrap_or_default();
-        Self {
-            input_tokens: usage.prompt_tokens.saturating_sub(cached),
-            cache_read_input_tokens: cached,
-            output_tokens: usage.completion_tokens,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests;

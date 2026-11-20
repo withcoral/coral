@@ -273,8 +273,8 @@ impl SubAgents {
                     &call.name,
                     &call.arguments,
                 );
-                let (content, run_id) = turn.trace.tool_call(&call.name, result).await;
-                call.result(content, run_id)
+                let output = turn.trace.tool_call(&call.name, result).await;
+                call.result(output.content, output.is_error, output.run_id)
             }));
             let results = Message::tool_results(results.await);
             self.add(turn, &mut thread, results, None).await?;

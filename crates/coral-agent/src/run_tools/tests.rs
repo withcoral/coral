@@ -78,7 +78,10 @@ impl Harness {
 
     async fn call(&self, name: &str, arguments: &Value) -> String {
         let arguments = arguments.to_string();
-        self.tools.call(&self.caller, name, &arguments).await.0
+        self.tools
+            .call(&self.caller, name, &arguments)
+            .await
+            .content
     }
 
     /// How many attempts `task_id` has recorded: one for each `exec` that
