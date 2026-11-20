@@ -57,14 +57,14 @@ use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::invocation::{EnforcementBatch, EnforcementRequest, ParkedInvocation, PrecheckBatch};
 use crate::lifecycle::{RequestedTermination, RunTerminationKind};
 use crate::run_inbox::InboxRow;
-use crate::run_repository::{OwnedEvent, OwnedEventKind};
+use crate::run_repository::{OwnedEvent, OwnedEventKind, RunHead};
 use crate::termination::ShutdownAction;
 use crate::{CoralFailure, Error};
 
 use super::chunk::{ChunkBuild, ChunkItem, ChunkWork};
 use super::handle::{
     Check, CommitRejection, DecisionRequest, DrainStep, Message, ParkedWait, Reply, RequestKey,
-    RunNow, StartedExecution, Timer,
+    StartedExecution, Timer,
 };
 
 /// The next Run stream request number to apply, and the requests that
@@ -1083,42 +1083,36 @@ impl OwnerState {
     }
 
     /// The wake-up reader found this Run stream loop's Run ended or moved
-    /// past what the loop wrote, as `now` shows the Run row. Terminal: the
+    /// past what the loop wrote, as `run` shows the Run row. Terminal: the
     /// loop stops as on a chunk that found the Run ended, and the Program
-    /// hears the Run's termination. The head it tracks: nothing happened.
-    /// Moved: it takes the row's head when no chunk is in flight (the one in
-    /// flight rebuilds itself on it, and rereads them then), and rereads the
-    /// Approval Requests its parked waits are on. A Program owner, or a loop
-    /// that commits nothing more, ignores it.
-    fn woken(&mut self, now: RunNow) -> Vec<Effect> {
+    /// hears the Run's termination. A head no newer than the one it tracks:
+    /// nothing happened. Moved: it takes the row's head when no chunk is in
+    /// flight (the one in flight rebuilds itself on it, and rereads them
+    /// then), and rereads the Approval Requests its parked waits are on. A
+    /// Program owner, or a loop that commits nothing more, ignores it.
+    fn woken(&mut self, run: RunHead) -> Vec<Effect> {
         if self.requests.is_none() || !matches!(self.phase, Phase::Running | Phase::Ending) {
             return Vec::new();
         }
-        match now {
+        if !run.running {
             // The Program stops at once. A chunk in flight may have landed
             // before the end: its answer still settles its waiters, and a
             // chunk that did not finds the end and stops the loop.
-            RunNow::Ended(kind) => {
-                self.ended_outside = kind;
-                if self.in_flight.is_none() {
-                    return self.rejected(CommitRejection::RunEnded);
-                }
-                self.stop_requested = true;
-                vec![Effect::TerminateProgram]
+            self.ended_outside = run.termination;
+            if self.in_flight.is_none() {
+                return self.rejected(CommitRejection::RunEnded);
             }
-            // A read no newer than the head the loop tracks says nothing new.
-            RunNow::Running { head, .. } if head <= self.head => Vec::new(),
-            RunNow::Running {
-                head,
-                recorded_total,
-            } => {
-                if self.in_flight.is_none() {
-                    self.head = head;
-                    self.recorded_total = recorded_total;
-                }
-                self.check_approvals()
-            }
+            self.stop_requested = true;
+            return vec![Effect::TerminateProgram];
         }
+        if run.head <= self.head {
+            return Vec::new();
+        }
+        if self.in_flight.is_none() {
+            self.head = run.head;
+            self.recorded_total = run.recorded_total;
+        }
+        self.check_approvals()
     }
 
     /// Another writer ended the Run with `kind`: the reason the Program's
@@ -2137,7 +2131,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
             recorded_total,
         } => state.rebased(head, recorded_total),
         Message::Detached => state.detached(),
-        Message::Woken(now) => state.woken(now),
+        Message::Woken(run) => state.woken(run),
         Message::EndedOutside(kind) => state.ended_outside(kind),
         Message::Drain(step) => state.drain(step),
     }

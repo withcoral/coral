@@ -101,17 +101,6 @@ pub(crate) enum Check {
     Approvals,
 }
 
-/// The Run row as a Run stream's loop learns it: on a wake-up, or when its
-/// chunk finds the Run ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RunNow {
-    /// The Run is terminal, with the termination it records, if any.
-    Ended(Option<crate::lifecycle::RunTerminationKind>),
-    /// The Run is running at Run Ledger head `head`, whose row records
-    /// `recorded_total` output bytes.
-    Running { head: u64, recorded_total: usize },
-}
-
 /// What the owner's first chunk started: the package to execute, and the
 /// Run Ledger head after the execution-start mark, which the owner tracks
 /// from here on.
@@ -274,7 +263,7 @@ pub(crate) enum Message {
     /// The wake-up reader found a Run stream's Run ended or moved past what
     /// its loop wrote, as the Run row shows it: another writer committed on
     /// it.
-    Woken(RunNow),
+    Woken(crate::run_repository::RunHead),
     /// A Run stream's chunk found its Run ended by another writer, with
     /// this termination: the reason its `Terminate` gives. Its
     /// `CommitRejected` follows.
@@ -385,7 +374,7 @@ impl fmt::Debug for Message {
                 .field("recorded_total", recorded_total)
                 .finish(),
             Self::Detached => formatter.write_str("Detached"),
-            Self::Woken(now) => formatter.debug_tuple("Woken").field(now).finish(),
+            Self::Woken(run) => formatter.debug_tuple("Woken").field(run).finish(),
             Self::EndedOutside(kind) => formatter.debug_tuple("EndedOutside").field(kind).finish(),
             Self::Drain(step) => formatter.debug_tuple("Drain").field(step).finish(),
         }

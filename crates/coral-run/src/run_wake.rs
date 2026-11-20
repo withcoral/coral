@@ -20,7 +20,7 @@ use coral_telemetry::safe;
 use tokio::sync::Notify;
 
 use crate::observation::{Cadence, Turn};
-use crate::owner::{Message, OwnerHandle, Owners, RunNow};
+use crate::owner::{Message, OwnerHandle, Owners};
 use crate::{Error, RunId, run_repository};
 
 /// How many times the receiver of a decision or a cancellation for a Run a
@@ -190,7 +190,7 @@ impl Reader {
                     if let Some(run) = heads.get(owner.run_id())
                         && owner.behind(run.head, run.running)
                     {
-                        owner.send(Message::Woken(run_now(run)));
+                        owner.send(Message::Woken(*run));
                         #[cfg(test)]
                         observer.wake_delivered(turn);
                     }
@@ -201,18 +201,6 @@ impl Reader {
             task,
             owners: registered,
         }
-    }
-}
-
-/// What a loop decides on, as the reader read the Run row.
-fn run_now(run: &run_repository::RunHead) -> RunNow {
-    if run.running {
-        RunNow::Running {
-            head: run.head,
-            recorded_total: run.recorded_total,
-        }
-    } else {
-        RunNow::Ended(run.termination)
     }
 }
 

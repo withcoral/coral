@@ -45,9 +45,7 @@ use crate::types::AcceptedRun;
 use crate::{Error, RunModule, RunTimeout, engine, nanos_duration};
 
 use super::chunk::{ChunkBuild, ChunkItem};
-use super::handle::{
-    CommitRejection, Mailbox, Message, OwnerHandle, OwnerRegistration, RunNow, Timer,
-};
+use super::handle::{CommitRejection, Mailbox, Message, OwnerHandle, OwnerRegistration, Timer};
 use super::state::{Effect, OwnerLimits, OwnerState, Recovered, apply};
 
 /// The wait between two settle attempts while a dispatch is still in flight
@@ -553,26 +551,6 @@ fn run_effect(
     }
 }
 
-/// The Run row as a Run stream's loop reads it, holding nothing; `None` when
-/// the read failed or found no row.
-async fn read_run(
-    database: &coral_db::Database,
-    workspace_id: &coral_workspace::WorkspaceId,
-    run_id: &crate::RunId,
-) -> Option<RunNow> {
-    let run = run_repository::find_exact(database, workspace_id, run_id)
-        .await
-        .ok()??;
-    Some(if run.state.is_terminal() {
-        RunNow::Ended(run.termination.map(|termination| termination.kind))
-    } else {
-        RunNow::Running {
-            head: run.chunk_sequence,
-            recorded_total: run.accumulated_output_bytes,
-        }
-    })
-}
-
 /// Moves the Run's stream in the Shutdown Drain. The answers the detach
 /// releases never reach the Program: the Coral Instance the stream reopens
 /// on answers what it waits on.
@@ -912,8 +890,16 @@ fn spawn_commit(
             // Another writer ended a Run stream's Run: its Program hears
             // why in its `Terminate`.
             Some(Err(CommitRejection::RunEnded)) if link.is_some() => {
-                let read = read_run(&module.database, &accepted.workspace_id, &accepted.id).await;
-                if let Some(RunNow::Ended(kind)) = read {
+                let read = run_repository::find_exact(
+                    &module.database,
+                    &accepted.workspace_id,
+                    &accepted.id,
+                )
+                .await;
+                if let Ok(Some(run)) = read
+                    && run.state.is_terminal()
+                {
+                    let kind = run.termination.map(|termination| termination.kind);
                     handle.send(Message::EndedOutside(kind));
                 }
                 Message::CommitRejected(CommitRejection::RunEnded)
