@@ -41,11 +41,11 @@ options not chosen for each part, and its tickets hold the names, the limits and
   operator has nothing more to deploy.
 - **Only the sweeper is elected.** The sweeper is the pass that covers what no Run stream covers. It ends a Run that is
   past its deadline, expires an Approval Request that is past its deadline, puts a taken Run that never started back to
-  waiting, and interrupts the Runs of a Run Executor whose lease has lapsed. The section "The clock, the leases and the
-  sweeper" of [ADR 0027](0027-run-executors-compile-and-execute-programs.md) defines it. A lease row elects one Coral
-  Instance with the core role to run it at a time. Every Coral Instance with the core role runs each other pass and each
-  search task, and each of them stays correct when two Coral Instances run it at the same time. A new periodic pass gets
-  an election only when a second run costs or breaks something.
+  waiting, and interrupts the started Runs of a Run Executor whose lease has lapsed. The section "The clock, the leases
+  and the sweeper" of [ADR 0027](0027-run-executors-compile-and-execute-programs.md) defines it. A lease row elects one
+  Coral Instance with the core role to run it at a time. Every Coral Instance with the core role runs each other pass
+  and each search task, and each of them stays correct when two Coral Instances run it at the same time. A new periodic
+  pass gets an election only when a second run costs or breaks something.
 
 [Name the Instance Roles and what each one serves](https://github.com/withcoral/coral/issues/3145#issuecomment-6912697006),
 [Decide what the Run Executor role does in a process without the core role](https://github.com/withcoral/coral/issues/3149#issuecomment-6942562345),
