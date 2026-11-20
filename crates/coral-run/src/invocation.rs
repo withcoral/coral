@@ -2510,13 +2510,14 @@ impl PrecheckBatch {
             return Ok(Vec::new());
         };
         let invoker = &first.invoker;
-        let now = invoker.now()?;
-        let mut tx = invoker.database.begin_read_snapshot().await?;
         // Another writer moved the head of a Run a Run Executor holds: the
         // waits whose Approval Request it decided or expired.
         if self.check == Check::Approvals {
+            let tx = invoker.database.begin_read_snapshot().await?;
             return self.approvals_not_pending(tx, invoker).await;
         }
+        let now = invoker.now()?;
+        let mut tx = invoker.database.begin_read_snapshot().await?;
         let mut pending_until = std::collections::HashMap::new();
         for (_, target) in &self.waits {
             if let ParkedWait::Connection { request, .. } = target.wait

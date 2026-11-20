@@ -123,7 +123,24 @@ pub(super) fn committed(number: u64) -> run_response::Message {
 
 /// Takes the oldest waiting Run as a Run Executor would, and returns its claim.
 pub(super) async fn take(runs: &RunModule) -> String {
-    take_for(
+    take_any(runs).await.expect("a waiting Run")
+}
+
+/// Takes the oldest waiting Run for `taker` at `taken_at_unix_nanos`, and
+/// returns its claim.
+pub(super) async fn take_for(
+    runs: &RunModule,
+    taker: &Taker<'_>,
+    taken_at_unix_nanos: i64,
+) -> String {
+    try_take_for(runs, taker, taken_at_unix_nanos)
+        .await
+        .expect("a waiting Run")
+}
+
+/// [`take`], or `None` when no Run waits.
+pub(super) async fn take_any(runs: &RunModule) -> Option<String> {
+    try_take_for(
         runs,
         &Taker {
             run_executor_id: "6f0c2a59-55a7-4e0b-9a2e-7c1d4f3b8e21",
@@ -134,19 +151,17 @@ pub(super) async fn take(runs: &RunModule) -> String {
     .await
 }
 
-/// Takes the oldest waiting Run for `taker` at `taken_at_unix_nanos`, and
-/// returns its claim.
-pub(super) async fn take_for(
+async fn try_take_for(
     runs: &RunModule,
     taker: &Taker<'_>,
     taken_at_unix_nanos: i64,
-) -> String {
+) -> Option<String> {
     let mut transaction = runs.database.begin().await.expect("begin the take");
     let claimed = run_repository::take_oldest(&mut transaction, 1, taker, taken_at_unix_nanos)
         .await
         .expect("take a waiting Run");
     transaction.commit().await.expect("commit the take");
-    claimed.into_iter().next().expect("a waiting Run").claim_id
+    claimed.into_iter().next().map(|claimed| claimed.claim_id)
 }
 
 /// What a Run's Events say, without identities and times.

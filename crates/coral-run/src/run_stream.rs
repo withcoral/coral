@@ -69,6 +69,8 @@ pub(crate) struct StreamLink {
     watermark: AtomicU64,
     /// The Program's `Finish` arrived: no `Terminate` follows it.
     finished: AtomicBool,
+    /// A `Terminate` went out: a stream sends one.
+    terminated: AtomicBool,
     /// The Run Executor broke the protocol.
     violated: AtomicBool,
     /// The Shutdown Drain moves the stream ([`Self::start_moving`]).
@@ -83,6 +85,7 @@ impl StreamLink {
             responses,
             watermark: AtomicU64::new(0),
             finished: AtomicBool::new(false),
+            terminated: AtomicBool::new(false),
             violated: AtomicBool::new(false),
             moving: AtomicBool::new(false),
             retired: watch::Sender::new(false),
@@ -125,9 +128,10 @@ impl StreamLink {
         }));
     }
 
-    /// The owner terminates the Program for `kind`, unless it finished.
+    /// The owner terminates the Program for `kind`, unless it finished or
+    /// was terminated already.
     pub(crate) fn terminate(&self, kind: Option<RunTerminationKind>) {
-        if self.finished.load(Ordering::SeqCst) {
+        if self.finished.load(Ordering::SeqCst) || self.terminated.swap(true, Ordering::SeqCst) {
             return;
         }
         let reason = match kind {
@@ -616,11 +620,15 @@ impl RunModule {
         };
         let (handle, mailbox): (OwnerHandle, _) =
             OwnerHandle::for_stream(accepted.held_id(), claim_id);
-        // Decisions and cancellations reach it through the Run Inbox until
-        // the receiver commits them itself (#2907).
+        // Decisions and cancellations reach it from their receiver through
+        // the Run's wake row; one an older release put in the Run Inbox
+        // reaches it there.
         let registration = self.register_stream_owner(&handle);
         drop(admitted);
         handle.send(Message::Started(Ok(Some(started))));
+        // A writer may have ended the Run, and its wake row gone with the
+        // Run's end, before the owner registered: it reads the Run once.
+        handle.send(Message::Woken);
         let stream = Arc::new(StreamRun {
             actor,
             link: link.clone(),

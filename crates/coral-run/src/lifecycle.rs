@@ -140,6 +140,13 @@ impl RunRecord {
             .map_or(at_unix_nanos, |deadline| deadline.min(at_unix_nanos))
     }
 
+    /// Whether a Run Executor waits for, has taken or holds the Run: it is
+    /// running with no worker claim. A Run Owner's Run holds one until it
+    /// ends.
+    pub(crate) fn runs_on_run_executor(&self) -> bool {
+        self.state == RunState::Running && self.worker_claim_id.is_none()
+    }
+
     pub(crate) const fn execution_started(&self) -> bool {
         self.execution_started_at_unix_nanos.is_some()
     }

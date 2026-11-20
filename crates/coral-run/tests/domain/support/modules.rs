@@ -518,7 +518,7 @@ impl TestModules {
                     .to_owned(),
             )
             .await
-            .expect("read the Run's rows");
+            .unwrap_or_else(|error| panic!("read the Run's rows in {table}: {error}"));
         rows.len()
     }
 

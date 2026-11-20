@@ -118,7 +118,7 @@ pub(crate) async fn host(
                         timers.arm(&handle, timer, after_nanos);
                     }
                 }
-                Effect::Subscribe => subscription.subscribe(&module, &handle),
+                Effect::Subscribe => subscription.subscribe(&module, &handle, &start),
                 Effect::Unsubscribe => subscription.unsubscribe(),
                 Effect::Interrupt {
                     last_commit_age_nanos,
@@ -273,16 +273,27 @@ fn begin(
 /// the signal keeps a change that came meanwhile. During a notification
 /// outage it rings nothing and subscribes again once the signal is back, a
 /// wake gap apart; the periodic precheck covers the outage.
+///
+/// A Run stream's loop subscribes to nothing of its own: it listens to its
+/// Coral Instance's wake reader, which relays each ring (ADR 0027).
 #[derive(Default)]
-struct Subscription(Option<tokio::task::JoinHandle<()>>);
+struct Subscription {
+    task: Option<tokio::task::JoinHandle<()>>,
+    listening: Option<(crate::run_wake::RunWakes, OwnerHandle)>,
+}
 
 impl Subscription {
-    fn subscribe(&mut self, module: &RunModule, handle: &OwnerHandle) {
+    fn subscribe(&mut self, module: &RunModule, handle: &OwnerHandle, start: &OwnerStart) {
         self.unsubscribe();
+        if stream_link(start).is_some() {
+            module.wakes.listen(handle);
+            self.listening = Some((module.wakes.clone(), handle.clone()));
+            return;
+        }
         let database = module.database.clone();
         let gap = module.execution_policy.wake_gap();
         let handle = handle.clone();
-        self.0 = Some(tokio::spawn(async move {
+        self.task = Some(tokio::spawn(async move {
             loop {
                 if let Ok(mut changes) = database.subscribe_changes() {
                     loop {
@@ -299,8 +310,11 @@ impl Subscription {
     }
 
     fn unsubscribe(&mut self) {
-        if let Some(task) = self.0.take() {
+        if let Some(task) = self.task.take() {
             task.abort();
+        }
+        if let Some((wakes, handle)) = self.listening.take() {
+            wakes.unlisten(&handle);
         }
     }
 }
@@ -1346,10 +1360,6 @@ async fn commit_once(
                 &records.inbox_rows,
             )
             .await?;
-        // So does the wake row the loop acted on.
-        if records.clears_wake {
-            run_repository::clear_wake(&mut transaction, &run.workspace_id, &run.id).await?;
-        }
         let mut produced_by_work = produced.iter();
         let mut events: Vec<&OwnedEvent> = Vec::new();
         for item in items.iter() {
@@ -1363,6 +1373,11 @@ async fn commit_once(
             .output_bytes(records.output_total)
             .termination(records.termination.as_ref());
         run_repository::commit_chunk(&mut transaction, chunk).await?;
+        // So does the wake row the loop acted on, after the Run row: every
+        // writer takes the two in that order.
+        if records.clears_wake {
+            run_repository::clear_wake(&mut transaction, &run.workspace_id, &run.id).await?;
+        }
         transaction.commit().await.map_err(Error::from)?;
         #[cfg(test)]
         if module.execution_observer.chunk_commit_answer_lost().await {

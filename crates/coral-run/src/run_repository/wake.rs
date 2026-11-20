@@ -3,11 +3,13 @@
 //! transaction of its commit on the running Run; the loop deletes it in a
 //! chunk commit, and a reopen of the Run's stream deletes it.
 
-use coral_db::{Database, Transaction};
+use coral_db::{Database, Transaction, UnixNanos};
 use coral_workspace::WorkspaceId;
 use sea_query::{Condition, Expr, ExprTrait as _, Iden, OnConflict, Query};
 
 use super::ProgramRunRecords;
+use super::run_row::UndecodableRun;
+use crate::types::HeldRunId;
 use crate::{CoralInstanceId, Error, RunId, RunState};
 
 #[derive(Iden)]
@@ -24,7 +26,7 @@ pub(crate) async fn raise_wake(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     run_id: &RunId,
-    raised_at_unix_nanos: i64,
+    raised_at_unix_nanos: UnixNanos,
 ) -> Result<(), Error> {
     let insert = Query::insert()
         .into_table(ProgramRunWakes::Table)
@@ -72,19 +74,20 @@ pub(crate) async fn clear_wake(
 pub(crate) struct HeldWake {
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) run_id: RunId,
-    pub(crate) raised_at_unix_nanos: i64,
+    pub(crate) raised_at_unix_nanos: UnixNanos,
     /// The Run is terminal.
     pub(crate) ended: bool,
 }
 
 /// The wake rows of the Runs whose row names `instance` as their stream's
-/// holder. A row whose stored identity does not decode is left out. The read
-/// starts from the small wake table and looks each Run up by its key.
+/// holder, each decoded on its own: one that does not decode names its Run
+/// when its stored id does. The read starts from the small wake table and
+/// looks each Run up by its key.
 pub(crate) async fn wakes_held_by(
     database: &Database,
     instance: &CoralInstanceId,
-) -> Result<Vec<HeldWake>, Error> {
-    let rows: Vec<(String, String, i64, String)> = database
+) -> Result<Vec<Result<HeldWake, UndecodableRun>>, Error> {
+    let rows: Vec<(String, String, UnixNanos, String)> = database
         .fetch_all(
             Query::select()
                 .column((ProgramRunWakes::Table, ProgramRunWakes::WorkspaceId))
@@ -116,12 +119,21 @@ pub(crate) async fn wakes_held_by(
         .await?;
     Ok(rows
         .into_iter()
-        .filter_map(|(workspace_id, run_id, raised_at_unix_nanos, state)| {
-            Some(HeldWake {
-                workspace_id: WorkspaceId::parse(&workspace_id).ok()?,
-                run_id: RunId::parse(&run_id).ok()?,
+        .map(|(workspace_id, run_id, raised_at_unix_nanos, state)| {
+            let parsed = RunId::parse(&run_id).ok();
+            let undecodable = |error: Error| UndecodableRun {
+                id: parsed.clone().map(HeldRunId::of_held_row),
+                error: Box::new(error),
+            };
+            let invalid =
+                || undecodable(Error::CorruptData("wake row has invalid identity".into()));
+            Ok(HeldWake {
+                workspace_id: WorkspaceId::parse(&workspace_id).map_err(|_error| invalid())?,
+                run_id: parsed.clone().ok_or_else(invalid)?,
                 raised_at_unix_nanos,
-                ended: RunState::from_storage_str(&state).ok()?.is_terminal(),
+                ended: RunState::from_storage_str(&state)
+                    .map_err(undecodable)?
+                    .is_terminal(),
             })
         })
         .collect())

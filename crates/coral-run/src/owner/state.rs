@@ -567,13 +567,14 @@ impl OwnerState {
         self.termination.as_ref()
     }
 
-    /// Why the Program terminates: the termination the owner applied, else
-    /// the one of a Run another writer ended.
+    /// Why the Program terminates: the termination of a Run another writer
+    /// ended, as its row records it, else the one the owner applied.
     pub(crate) fn terminated_as(&self) -> Option<RunTerminationKind> {
-        self.termination
-            .as_ref()
-            .map(|intent| intent.termination.kind)
-            .or(self.wake.ended_outside)
+        self.wake.ended_outside.or_else(|| {
+            self.termination
+                .as_ref()
+                .map(|intent| intent.termination.kind)
+        })
     }
 
     /// Whether a Run stream's termination is being written: the stream hears
@@ -1123,18 +1124,16 @@ impl OwnerState {
         let again = self.wake.read == WakeRead::Again;
         self.wake.read = WakeRead::Idle;
         let mut effects = match read {
-            // A chunk in flight finds the end too, and its rejection stops
-            // the loop: once is enough.
-            Some(RunNow::Ended(kind))
-                if self.in_flight.is_none()
-                    && matches!(self.phase, Phase::Running | Phase::Ending) =>
-            {
+            // The Program stops at once. A chunk in flight may have landed
+            // before the end: its answer still settles its waiters, and a
+            // chunk that did not finds the end and stops the loop.
+            Some(RunNow::Ended(kind)) if matches!(self.phase, Phase::Running | Phase::Ending) => {
                 self.wake.ended_outside = kind;
-                return self.rejected(CommitRejection::RunEnded);
-            }
-            Some(RunNow::Ended(kind)) if self.in_flight.is_some() => {
-                self.wake.ended_outside = kind;
-                Vec::new()
+                if self.in_flight.is_none() {
+                    return self.rejected(CommitRejection::RunEnded);
+                }
+                self.stop_requested = true;
+                return vec![Effect::TerminateProgram];
             }
             None | Some(RunNow::Ended(_)) => Vec::new(),
             Some(RunNow::Running {

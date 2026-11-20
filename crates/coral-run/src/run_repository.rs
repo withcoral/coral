@@ -118,29 +118,6 @@ pub(crate) async fn find_exact_in_transaction(
     row.map(RunRow::decode).transpose()
 }
 
-/// Holds the Run row with [`coral_db::RowLock::Exclusive`] for the rest of
-/// `transaction` and returns the Run as held: the outside writer of a Run a
-/// Run Executor holds, which goes on to write it. The held Run carries no
-/// `last_event_sequence`: the statement reads no Event rows.
-pub(crate) async fn hold_exact_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    run_id: &RunId,
-) -> Result<Option<RunRecord>, Error> {
-    let row: Option<RunRow> = transaction
-        .fetch_optional_locked(
-            Query::select()
-                .columns(RUN_COLUMNS)
-                .from(ProgramRunRecords::Table)
-                .and_where(Expr::col(ProgramRunRecords::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(ProgramRunRecords::Id).eq(run_id.to_string()))
-                .to_owned(),
-            coral_db::RowLock::Exclusive,
-        )
-        .await?;
-    row.map(RunRow::decode).transpose()
-}
-
 /// Every `running` Run whose lease lapsed at `now_unix_nanos`, as the
 /// expired-lease sweep reads them in one snapshot, in acceptance order. A Run
 /// with no lease is never one: a waiting Run has none until it is taken.

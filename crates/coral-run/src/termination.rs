@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use coral_db::Transaction;
+use coral_db::{Transaction, UnixNanos};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use tokio::time::Instant;
 
@@ -69,8 +69,7 @@ impl RunModule {
         // The caller may see the Run: this request links to its trace once,
         // whether or not the owner records it within the wait.
         crate::trace::link_request(run.trace.as_ref());
-        // A Run with no worker claim is a Run Executor's.
-        if !run.state.is_terminal() && run.worker_claim_id.is_none() {
+        if run.runs_on_run_executor() {
             self.cancel_on_run_executor(actor, workspace_id, run_id)
                 .await?;
         } else if !run.state.is_terminal() {
@@ -105,44 +104,64 @@ impl RunModule {
     /// Ends the Run a Run Executor holds as canceled by `actor`, in one
     /// chunk under its claim and head, with its wake row when it started: the
     /// Run's stream loop, whichever Coral Instance holds it, terminates the
-    /// Program (ADR 0027). The Run row is held, so the loop's chunk waits and
-    /// then finds the Run ended. Every nonterminal Invocation ends, and the
-    /// open Approval Requests close. Past its deadline the Run times out, as
-    /// its loop and the sweeper decide. A Run waiting for a take, or taken
-    /// and not started, ends at once too. A Run that ended, or whose
-    /// termination is recorded, writes nothing: the record answers.
+    /// Program (ADR 0027). Every nonterminal Invocation ends, and the open
+    /// Approval Requests close. A Run waiting for a take, or taken and not
+    /// started, ends at once too. It compares no clock: the head orders it
+    /// against a deadline that the loop or the sweeper writes. A Run that
+    /// ended, or whose termination is recorded, writes nothing: the record
+    /// answers.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RunRequestNotYetRecorded`] when other writers moved the Run
+    /// under every attempt.
     async fn cancel_on_run_executor(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace_id: &WorkspaceId,
         run_id: &RunId,
     ) -> Result<(), Error> {
+        crate::run_wake::until_written(|| self.cancel_once(actor, workspace_id, run_id)).await
+    }
+
+    /// One attempt of [`Self::cancel_on_run_executor`]. It reads the Run
+    /// without a hold, as the loop's chunk does, so both take their rows in
+    /// one order: the Invocation and Approval Request rows, then the Run row,
+    /// then the wake row.
+    async fn cancel_once(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        run_id: &RunId,
+    ) -> Result<(), Error> {
         let mut transaction = self.database.begin().await?;
-        self.visible_run_in_transaction(&mut transaction, actor, workspace_id, run_id)
+        let run = self
+            .visible_run_in_transaction(&mut transaction, actor, workspace_id, run_id)
             .await?;
-        let run = run_repository::hold_exact_in_transaction(&mut transaction, workspace_id, run_id)
-            .await?
-            .ok_or(Error::RunNotFound)?;
         if run.state.is_terminal() || run.termination.is_some() {
             transaction.commit().await?;
             return Ok(());
         }
         let now = self.now()?.max(run.accepted_at_unix_nanos);
-        let cancellation = if run.deadline_passed(now) {
-            None
-        } else {
-            Some(RequestedTermination::new(
-                RunTerminationKind::Canceled,
-                Some(actor.principal().clone()),
-                now,
-                run.shutdown_grace_nanos,
-            )?)
-        };
+        let cancellation = RequestedTermination::new(
+            RunTerminationKind::Canceled,
+            Some(actor.principal().clone()),
+            now,
+            run.shutdown_grace_nanos,
+        )?;
+        let (kind, ended_at) = end_in_one_chunk(
+            &mut transaction,
+            &run,
+            Some(cancellation),
+            Vec::new(),
+            None,
+            now,
+        )
+        .await?;
         if run.execution_started() {
-            run_repository::raise_wake(&mut transaction, workspace_id, run_id, now).await?;
+            run_repository::raise_wake(&mut transaction, workspace_id, run_id, UnixNanos::new(now))
+                .await?;
         }
-        let (kind, ended_at) =
-            end_in_one_chunk(&mut transaction, &run, cancellation, Vec::new(), None, now).await?;
         transaction.commit().await?;
         let outcome = kind.outcome();
         let end = if run.execution_started() {
@@ -369,9 +388,7 @@ impl RunModule {
         }
         let now = self.now()?.max(run.accepted_at_unix_nanos);
         // A loop of the Run's stream elsewhere learns that the Run ended.
-        if by == Interrupter::Reopen && run.on_run_executor && run.execution_started() {
-            run_repository::raise_wake(&mut transaction, &run.workspace_id, &run.id, now).await?;
-        }
+        let wakes = by == Interrupter::Reopen && run.on_run_executor && run.execution_started();
         commit_end(
             transaction,
             &run,
@@ -381,6 +398,7 @@ impl RunModule {
                 instance: &self.instance,
             }),
             now,
+            wakes,
         )
         .await
     }
@@ -497,13 +515,15 @@ pub(crate) enum Interrupter {
 }
 
 /// [`end_in_one_chunk`] with no Events of the caller's, committed, and the
-/// Run's end traced.
+/// Run's end traced. With `wakes`, the Run's wake row is raised after the
+/// Run row is written, the order every writer keeps.
 pub(crate) async fn commit_end(
     mut transaction: Transaction<'_>,
     run: &RunRecord,
     cancellation: Option<RequestedTermination>,
     takeover: Option<run_repository::Takeover<'_>>,
     now_unix_nanos: i64,
+    wakes: bool,
 ) -> Result<(), Error> {
     let (kind, ended_at) = end_in_one_chunk(
         &mut transaction,
@@ -514,6 +534,15 @@ pub(crate) async fn commit_end(
         now_unix_nanos,
     )
     .await?;
+    if wakes {
+        run_repository::raise_wake(
+            &mut transaction,
+            &run.workspace_id,
+            &run.id,
+            UnixNanos::new(now_unix_nanos),
+        )
+        .await?;
+    }
     transaction.commit().await?;
     crate::trace::record_run_end(
         run,

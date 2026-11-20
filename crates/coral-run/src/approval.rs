@@ -10,15 +10,18 @@
 //! its own clock sample, from the decision the held gate recorded: an approval
 //! never changes once made.
 //!
-//! A decision is authorized and concealed here, then waits in the Run's Run
-//! Inbox until the Run's owner, in whichever Coral Instance holds the Run,
-//! records it in its next chunk; the first decision wins, and a repeat
-//! receives the recorded answer. The decision reads no policy: the Policy
-//! Enforcement Point judges the approval when the Invocation dispatches. A
-//! request's deadline is the owner's timer: it expires the request in a chunk
-//! of its own, in mailbox order with the decisions that race it, and only the
-//! owner records an expiry. The first terminal transition and its safe
-//! lifecycle event commit together; a lost response can be recovered by reading
+//! A decision is authorized and concealed here. On an owned Run it then waits
+//! in the Run's Run Inbox until the Run's owner, in whichever Coral Instance
+//! holds the Run, records it in its next chunk. On a Run a Run Executor holds,
+//! this Coral Instance records it itself, under the Run's claim and head, and
+//! raises the Run's wake row for its stream's loop (ADR 0027). The first
+//! decision wins, and a repeat receives the recorded answer. The decision
+//! reads no policy: the Policy Enforcement Point judges the approval when the
+//! Invocation dispatches. A request's deadline is the owner's timer: it
+//! expires the request in a chunk of its own, in mailbox order with the
+//! decisions that race it. Only the owner records an expiry, or, for a Run a
+//! Run Executor holds, its stream's loop or the sweeper. The first terminal
+//! transition and its safe lifecycle event commit together; a lost response can be recovered by reading
 //! or deciding again. Invocation owns live gate ordering and Promise
 //! settlement. Approval owns only request validity, decisions and evidence,
 //! not required-action projections or UI.
@@ -393,9 +396,8 @@ impl ApprovalModule {
             comment: comment.map(str::to_owned),
             trace: trace.clone(),
         };
-        // A Run with no worker claim is a Run Executor's.
-        if run.worker_claim_id.is_none() {
-            self.decide_on_run_executor(actor, workspace, &run.id, decision)
+        if run.runs_on_run_executor() {
+            self.decide_on_run_executor(actor, workspace, &run.id, &decision)
                 .await?;
             return self.get(actor, workspace, id).await;
         }
@@ -426,37 +428,49 @@ impl ApprovalModule {
 
     /// Commits `decision` on the Run a Run Executor holds, in one chunk under
     /// the Run's claim and head, with its wake row: the Run's stream loop,
-    /// whichever Coral Instance holds it, rereads the request (ADR 0027).
-    /// The Run row is held, so the loop's chunk waits and rebuilds itself on
-    /// this one. The decision follows the owner's rules: past the request's
-    /// deadline it expires instead; once the Run records a termination or
-    /// its deadline passed, it closes the request; a decline ends the
-    /// Invocation. A request decided already, or a Run that ended, writes
-    /// nothing: the record answers.
+    /// whichever Coral Instance holds it, rereads the request (ADR 0027). A
+    /// decline also ends the Invocation. It compares no clock: the decision
+    /// is recorded as made, at this instance's time, and counts only if that
+    /// is before the request's deadline, which the enforcement point
+    /// compares. Once the Run records a termination, it closes the request.
+    /// A request decided already, or a Run that ended, writes nothing: the
+    /// record answers.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RunRequestNotYetRecorded`] when other writers moved the Run
+    /// under every attempt.
     async fn decide_on_run_executor(
         &self,
         actor: &AuthenticatedPrincipal,
         workspace: &WorkspaceId,
         run_id: &RunId,
-        decision: DecisionRequest,
+        decision: &DecisionRequest,
+    ) -> Result<(), Error> {
+        crate::run_wake::until_written(|| self.decide_once(actor, workspace, run_id, decision))
+            .await
+    }
+
+    /// One attempt of [`Self::decide_on_run_executor`]. It reads the Run
+    /// without a hold, as the loop's chunk does, so both take their rows in
+    /// one order: the Approval Request and Invocation rows, then the Run row,
+    /// then the wake row.
+    async fn decide_once(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace: &WorkspaceId,
+        run_id: &RunId,
+        decision: &DecisionRequest,
     ) -> Result<(), Error> {
         let mut tx = self.database.begin().await?;
-        self.visible_run(&mut tx, actor, workspace, run_id).await?;
-        let run = run_repository::hold_exact_in_transaction(&mut tx, workspace, run_id)
-            .await?
-            .ok_or(Error::ApprovalNotFound)?;
+        let run = self.visible_run(&mut tx, actor, workspace, run_id).await?;
         let row = approval_repository::load(&mut tx, workspace, &decision.approval).await?;
         if run.state.is_terminal() || row.state != ApprovalState::Pending {
             tx.commit().await?;
             return Ok(());
         }
         let now = self.now()?.max(run.accepted_at_unix_nanos);
-        let mut work = if now >= row.deadline_at_unix_nanos {
-            DecideWork::expiry(decision.approval)
-        } else {
-            let accepts = run.termination.is_none() && !run.deadline_passed(now);
-            DecideWork::decision(decision, accepts, now)
-        };
+        let mut work = DecideWork::decision(decision.clone(), run.termination.is_none(), now);
         let events = work.run(&mut tx, &run, now).await?;
         let chunk = run_repository::Chunk::new(
             &run,
@@ -465,7 +479,8 @@ impl ApprovalModule {
         )
         .owned_events(&events);
         run_repository::commit_chunk(&mut tx, chunk).await?;
-        run_repository::raise_wake(&mut tx, workspace, run_id, now).await?;
+        run_repository::raise_wake(&mut tx, workspace, run_id, coral_db::UnixNanos::new(now))
+            .await?;
         tx.commit().await?;
         self.wakes.wake_for(run_id);
         Ok(())

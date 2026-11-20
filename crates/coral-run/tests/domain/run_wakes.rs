@@ -7,10 +7,9 @@ use super::*;
 use coral_run_executor::wire::v1::{RunEnd as WireEnd, TerminateReason, run_response};
 
 use super::run_stream_reconnect::{answers, failed_with, finish_with, forecast, only_answer};
-use super::run_streams::{Scripted, emit, ended, take};
+use super::run_streams::{Scripted, emit, ended, take, take_any};
 use crate::approval::{ApprovalDecision, ApprovalState};
 use crate::observation::Turn;
-use crate::run_repository;
 
 /// A Run started on a scripted stream from `runs`, and `other`, the module
 /// an outside request goes to.
@@ -27,7 +26,10 @@ impl Held {
     /// A Run whose weather Tool waits for approval, answering through
     /// `upstream`, with `observer` on the stream's module. Only a wake row
     /// tells the loop of an outside decision: the periodic precheck stays
-    /// out, and an Approval Request's deadline comes before the Run's.
+    /// out, and no real timer fires before a test's wait for an answer runs
+    /// out (an Approval Request's deadline is 120 s away, the Run's 150 s);
+    /// tests move the test clock instead. Neither jump reaches the owner's
+    /// self-interrupt bound, three 60 s leases.
     async fn new(
         upstream: Arc<dyn UpstreamSender>,
         observer: Arc<dyn ExecutionObserver>,
@@ -41,7 +43,7 @@ impl Held {
         )
         .await;
         fixture.runs.execution_policy =
-            crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(30))
+            crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(120))
                 .with_wakeups(Duration::from_secs(3600), Duration::from_millis(50));
         let tool = fixture.user_tool("user:wakes", "Wake rows").await;
         if approval {
@@ -58,7 +60,14 @@ impl Held {
             runs.clone()
         };
         let accepted = runs
-            .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
+            .start(
+                &tool.principal,
+                &tool.workspace_id,
+                RunSubmission::new(
+                    ProgramSource::parse("return 1;").expect("Program source"),
+                    RunTimeout::from_millis(150_000).expect("Run timeout"),
+                ),
+            )
             .await
             .expect("accept a Run");
         let run_id = accepted.run_id().clone();
@@ -105,15 +114,12 @@ impl Held {
             .expect("the decision is recorded at once")
     }
 
-    /// Reads to the answer to request `number`, well before its Approval
-    /// Request's own timer (30 s) would answer it.
-    async fn answered_before_its_timer(&mut self, number: u64) -> Vec<run_response::Message> {
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            self.stream.until(|read| !answers(read, number).is_empty()),
-        )
-        .await
-        .expect("answered before the request's timer")
+    /// Reads to the answer to request `number`. No real timer answers it
+    /// during a test: only a wake does.
+    async fn answered(&mut self, number: u64) -> Vec<run_response::Message> {
+        self.stream
+            .until(|read| !answers(read, number).is_empty())
+            .await
     }
 
     async fn wake_rows(&self) -> usize {
@@ -153,27 +159,35 @@ fn answering() -> Arc<SequencedUpstream> {
 
 /// Catches: a decision on a Run a Run Executor holds that waits for a Run
 /// Owner, answers "not yet recorded", or reaches the Program only through
-/// the periodic precheck; and a wake row left after the Run ended.
+/// the periodic precheck; a receiver that judges a late approval by its own
+/// clock; and a wake row left after the Run ended.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_decision_received_elsewhere_reaches_the_program_through_the_streams_loop() {
-    for decision in [ApprovalDecision::Approve, ApprovalDecision::Decline] {
+    use ApprovalDecision::{Approve, Decline};
+    // The decision, whether it comes past the request's deadline, the state
+    // it is recorded in, and the answer the Program gets ("result": the
+    // call went upstream).
+    let cases = [
+        (Approve, false, ApprovalState::Approved, "result"),
+        (Decline, false, ApprovalState::Declined, "approval_declined"),
+        // Recorded as made; the enforcement point refuses it.
+        (Approve, true, ApprovalState::Approved, "approval_expired"),
+    ];
+    for (decision, late, recorded, answer) in cases {
         let mut held = Held::new(answering(), Arc::new(NoopExecutionObserver), true).await;
         held.stream.request(1, forecast(None));
         let request = held.approval_request().await;
+        if late {
+            held.fixture
+                .clock
+                .next
+                .store(request.deadline_at_unix_nanos + 1, Ordering::SeqCst);
+        }
 
         let decided = held.decide(&held.other, &request.id, decision).await;
 
-        let answer = match decision {
-            ApprovalDecision::Approve => {
-                assert_eq!(decided.state, ApprovalState::Approved);
-                "result"
-            }
-            ApprovalDecision::Decline => {
-                assert_eq!(decided.state, ApprovalState::Declined);
-                "approval_declined"
-            }
-        };
-        let read = held.answered_before_its_timer(1).await;
+        assert_eq!(decided.state, recorded);
+        let read = held.answered(1).await;
         let answered = only_answer(&read, 1);
         if answer == "result" {
             assert!(dispatched(answered), "{read:?}");
@@ -195,7 +209,8 @@ async fn a_decision_received_elsewhere_reaches_the_program_through_the_streams_l
 }
 
 /// Catches: a decision received on the Coral Instance whose loop holds the
-/// stream that reaches the loop only after the change signal's read gap.
+/// stream that waits for the reader's backstop. The local wake and a ring
+/// race for the read; either reads at once.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_decision_on_the_instance_with_the_stream_wakes_its_reader_at_once() {
     let probe = WakeProbe::new();
@@ -206,9 +221,13 @@ async fn a_decision_on_the_instance_with_the_stream_wakes_its_reader_at_once() {
     held.decide(&held.runs, &request.id, ApprovalDecision::Approve)
         .await;
 
-    let read = held.answered_before_its_timer(1).await;
+    let read = held.answered(1).await;
     assert!(dispatched(only_answer(&read, 1)), "{read:?}");
-    assert_eq!(probe.turns().first(), Some(&Turn::Woken));
+    assert!(
+        matches!(probe.turns().first(), Some(Turn::Woken | Turn::Rang)),
+        "{:?}",
+        probe.turns()
+    );
 }
 
 /// Catches: a decision that lands while the loop's chunk is being written,
@@ -229,7 +248,7 @@ async fn a_decision_under_the_loops_chunk_reaches_its_waiter_through_the_rebuild
         .await;
     release.send(()).expect("release the chunk");
 
-    let read = held.answered_before_its_timer(1).await;
+    let read = held.answered(1).await;
     assert!(dispatched(only_answer(&read, 1)), "{read:?}");
     assert!(probe.turns().is_empty(), "the reader handed nothing");
 }
@@ -279,13 +298,10 @@ async fn a_cancellation_received_elsewhere_ends_the_run_with_its_invocations() {
             .await
             .expect("the cancellation is recorded at once");
 
-        let (state, reason) = if past_deadline {
-            (RunState::TimedOut, TerminateReason::TimedOut)
-        } else {
-            (RunState::Canceled, TerminateReason::Canceled)
-        };
-        assert_eq!(canceled.state(), state);
-        assert_eq!(held.terminated().await, reason);
+        // The receiver compares no clock: past the deadline too, the
+        // cancellation that lands first decides.
+        assert_eq!(canceled.state(), RunState::Canceled);
+        assert_eq!(held.terminated().await, TerminateReason::Canceled);
         let rows = held
             .fixture
             .invocation_rows(&held.tool.workspace_id, &held.run_id)
@@ -310,7 +326,7 @@ async fn a_cancellation_received_elsewhere_ends_the_run_with_its_invocations() {
         .iter()
         .filter(|event| matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
         .count();
-        assert_eq!(cancellations, usize::from(!past_deadline));
+        assert_eq!(cancellations, 1);
         assert_eq!(
             held.fixture
                 .inbox_rows(&held.tool.workspace_id, &held.run_id)
@@ -355,19 +371,7 @@ async fn a_cancellation_ends_a_run_executors_run_that_has_not_started_at_once() 
             let mut late = Scripted::open(&runs, &run_id.to_string(), &claim);
             assert_eq!(late.next().await, ended(WireEnd::NotHeld));
         } else {
-            let mut transaction = runs.database.begin().await.expect("begin a take");
-            let claimed = run_repository::take_oldest(
-                &mut transaction,
-                1,
-                &run_repository::Taker {
-                    run_executor_id: "6f0c2a59-55a7-4e0b-9a2e-7c1d4f3b8e21",
-                    run_executor_kind: coral_run_executor::Kind::Dialed,
-                },
-                1,
-            )
-            .await
-            .expect("a take");
-            assert!(claimed.is_empty(), "the canceled Run is not taken");
+            assert_eq!(take_any(&runs).await, None, "the canceled Run is not taken");
         }
     }
 }

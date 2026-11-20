@@ -1314,3 +1314,56 @@ async fn with_the_change_listener_down_the_periodic_precheck_still_finds_a_compl
         "no change wake-up found it: {prechecks:?}"
     );
 }
+
+/// Catches: a Run stream's loop parked on a connection request that learns
+/// of its end only from the periodic precheck. A loop subscribes to no
+/// change signal of its own: its Coral Instance's wake reader relays each
+/// ring (ADR 0027).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_completed_connection_wakes_a_run_streams_loop_through_its_coral_instance() {
+    use coral_run_executor::wire::v1::{invocation_result, run_response};
+
+    let server = MockServer::start().await;
+    forecast_once(&server, "stream-canary").await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let tool = fixture
+        .user_tool_at(
+            "user:stream-connecting",
+            "Stream caller wait",
+            &server.uri(),
+        )
+        .await;
+    let (_directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
+    let mut runs = fixture.live_runs(Some(accounts.clone())).with_run_streams();
+    // An hour keeps the periodic precheck out of this test.
+    runs.execution_policy = runs
+        .execution_policy
+        .with_wakeups(Duration::from_secs(3600), Duration::from_millis(50));
+    let accepted = runs
+        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
+        .await
+        .expect("accept a Run");
+    let claim = super::run_streams::take(&runs).await;
+    let mut stream =
+        super::run_streams::Scripted::open(&runs, &accepted.run_id().to_string(), &claim);
+    stream.start().await;
+    stream.request(1, super::run_streams::invoke_forecast());
+    wait_for_connection(&accounts, &tool).await;
+
+    connect_caller(&accounts, &tool, "stream-canary").await;
+
+    let answer = loop {
+        if let run_response::Message::InvocationResult(answer) = stream.next().await
+            && answer.number == 1
+        {
+            break answer;
+        }
+    };
+    assert!(
+        matches!(
+            answer.outcome,
+            Some(invocation_result::Outcome::ResultJson(_))
+        ),
+        "{answer:?}"
+    );
+}

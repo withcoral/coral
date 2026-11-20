@@ -555,6 +555,11 @@ impl OwnerHandle {
         self.shared.run_id.run_id()
     }
 
+    /// Whether `other` is a handle on this very owner.
+    pub(crate) fn is(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
     /// The Run's ID as a span field.
     pub(crate) fn held_id(&self) -> &HeldRunId {
         &self.shared.run_id
@@ -850,7 +855,7 @@ impl Owners {
         // same claim.
         if owners
             .get(handle.run_id())
-            .is_some_and(|registered| Arc::ptr_eq(&registered.shared, &handle.shared))
+            .is_some_and(|registered| registered.is(handle))
         {
             owners.remove(handle.run_id());
             self.live.send_replace(owners.len());
