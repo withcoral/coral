@@ -16,8 +16,8 @@ mod tests;
 
 use coral_db::{Database, DatabaseSystem};
 
-use repository::VectorTable;
 pub(crate) use repository::vector_literal;
+use repository::{ReuseShape, VectorTable};
 
 /// A failure to prepare Universal Search's storage at boot.
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +58,17 @@ pub enum StorageError {
     UnexpectedSqliteVectorTables {
         /// The manifest's vector length.
         expected_dimension: usize,
+    },
+    /// The vector table has a column of vector reuse of another type, or
+    /// one that refuses NULL, or the reuse index's name on other columns or
+    /// another table. Boot keeps the table as it is.
+    #[error(
+        "search vector table search_entity_embeddings has {found}, which vector reuse cannot \
+         use; drop the vector tables and the next boot creates them again"
+    )]
+    UnexpectedVectorReuseShape {
+        /// What the table has, by column or index name and type.
+        found: String,
     },
     /// Database access failed.
     #[error(transparent)]
@@ -263,7 +274,8 @@ pub enum VectorStorage {
 /// its `embedding` column is missing or is not a `halfvec` of a fixed
 /// dimension, [`StorageError::UnexpectedSqliteVectorTables`] and keeps them
 /// when one `SQLite` table is alone or the sqlite-vec table is not Coral's,
-/// and
+/// [`StorageError::UnexpectedVectorReuseShape`] and keeps the table when a
+/// column or the index of vector reuse has another shape, and
 /// [`StorageError::Database`] when the table cannot be read, dropped or
 /// created.
 pub async fn prepare_vector_table(
@@ -312,13 +324,18 @@ async fn prepare_vector_table_as(
     repository::lock_vector_table(&mut transaction).await?;
     match repository::vector_table(&mut transaction, dimension).await? {
         VectorTable::SameDimension => {
-            if repository::add_reuse_columns_and_index(&mut transaction).await? {
-                tracing::info!(
-                    "added the vector reuse columns and index to the search vector table"
-                );
-                transaction.commit().await?;
-            } else {
-                transaction.rollback().await?;
+            match repository::add_reuse_columns_and_index(&mut transaction).await? {
+                ReuseShape::Ready => transaction.rollback().await?,
+                ReuseShape::Added => {
+                    tracing::info!(
+                        "added the vector reuse columns and index to the search vector table"
+                    );
+                    transaction.commit().await?;
+                }
+                ReuseShape::Unexpected(found) => {
+                    transaction.rollback().await?;
+                    return Err(StorageError::UnexpectedVectorReuseShape { found });
+                }
             }
             return Ok(());
         }

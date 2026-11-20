@@ -424,6 +424,8 @@ async fn a_reused_vector_does_not_reach_a_row_that_changed_or_went_before_the_wr
         }
         let held = Arc::new(std::sync::Barrier::new(2));
         let model = FixedVectors::default().holding_first_text_at(&held);
+        let spans = SpanCapture::default();
+        let _traced = tracing::subscriber::set_default(spans.subscriber());
         let index = world.index_with(&model);
         let _background = Background(index.spawn_embedder());
         if case == "a copy of another row's vector" {
@@ -487,6 +489,16 @@ async fn a_reused_vector_does_not_reach_a_row_that_changed_or_went_before_the_wr
             world.vectors().await.get(&gone).cloned(),
             gone_vector,
             "{case}: no write touched the vector row of the row that went"
+        );
+        let reused = spans
+            .finished()
+            .iter()
+            .filter(|span| span.name == "coral.search.embed_batch")
+            .map(|span| attribute(span, "coral.search.embedder.vectors_reused"))
+            .collect::<Vec<_>>();
+        assert!(
+            !reused.is_empty() && reused.iter().all(|count| count.as_deref() == Some("0")),
+            "{case}: no write reports a reused vector it did not write: {reused:?}"
         );
     }
 }
@@ -823,9 +835,20 @@ async fn a_model_panic_fails_its_batch_and_a_new_thread_embeds_the_rows() {
         .finished()
         .iter()
         .filter(|span| span.name == "coral.search.embed_batch")
-        .filter_map(|span| attribute(span, "error.type"))
+        .filter_map(|span| {
+            attribute(span, "error.type").map(|failure| {
+                (
+                    failure,
+                    attribute(span, "coral.search.embedder.vectors_embedded"),
+                )
+            })
+        })
         .collect::<Vec<_>>();
-    assert_eq!(failures, ["thread_gone"]);
+    assert_eq!(
+        failures,
+        [("thread_gone".to_owned(), None)],
+        "the batch the model panicked in reports no vector the model made"
+    );
 }
 
 /// The outcomes of the Embedder's batches.

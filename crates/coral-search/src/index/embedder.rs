@@ -443,60 +443,72 @@ impl SearchIndex {
             embedded,
             texts,
         } = reusable.plan(&rows, texts, &digests);
-        // Counted as planned: the write's staleness check may leave out a
-        // row of either kind.
-        let span = tracing::Span::current();
-        span.record(
-            "coral.search.embedder.vectors_reused",
-            safe::number(moves.len() + copies.len()),
-        );
-        span.record(
-            "coral.search.embedder.vectors_embedded",
-            safe::number(texts.len()),
-        );
         let model_vectors = thread.embed(texts).await?;
         let model_vectors = match model_vectors.into_iter().collect::<Result<Vec<_>, _>>() {
             Ok(vectors) if vectors.iter().all(|vector| finite(vector)) => vectors,
             Ok(_) | Err(_) => return Ok(Err(BatchError::Embed)),
         };
-        let mut vectors = copies;
-        vectors.extend(
-            embedded
-                .iter()
-                .zip(&model_vectors)
-                .map(|((row, digest), vector)| EntityVector {
-                    doc_id: &row.doc_id,
-                    indexed_at: row.indexed_at,
-                    text_sha256: digest,
-                    vector,
-                }),
+        let span = tracing::Span::current();
+        span.record(
+            "coral.search.embedder.vectors_embedded",
+            safe::number(model_vectors.len()),
         );
+        let model_vectors = embedded
+            .iter()
+            .zip(&model_vectors)
+            .map(|((row, digest), vector)| EntityVector {
+                doc_id: &row.doc_id,
+                indexed_at: row.indexed_at,
+                text_sha256: digest,
+                vector,
+            })
+            .collect::<Vec<_>>();
         let written = self
-            .write_batch(workspace_id, revision.as_str(), &moves, &vectors)
+            .write_batch(
+                workspace_id,
+                revision.as_str(),
+                &moves,
+                &copies,
+                &model_vectors,
+            )
             .await;
-        Ok(written.map_err(BatchError::Index))
+        Ok(written
+            .map(|written| {
+                span.record(
+                    "coral.search.embedder.vectors_reused",
+                    safe::number(written.reused),
+                );
+                written.reused + written.embedded
+            })
+            .map_err(BatchError::Index))
     }
 
     /// Writes one batch in one transaction under the Workspace's index lock:
     /// moves each stamp of `moves` onto its row's own vector, and writes
-    /// `vectors`. Returns the vectors made current.
+    /// `copies` and `model_vectors`.
     async fn write_batch(
         &self,
         workspace_id: &WorkspaceId,
         revision: &str,
         moves: &[StampMove<'_>],
-        vectors: &[EntityVector<'_>],
-    ) -> Result<u64, IndexError> {
+        copies: &[EntityVector<'_>],
+        model_vectors: &[EntityVector<'_>],
+    ) -> Result<BatchWritten, IndexError> {
         self.within_limit(async {
             let mut transaction = self.database.begin().await?;
             indexer::lock_workspace(&mut transaction, workspace_id).await?;
             let restamped =
                 repository::move_stamps(&mut transaction, workspace_id, revision, moves).await?;
-            let written =
-                repository::write_vectors(&mut transaction, workspace_id, revision, vectors)
+            let taken =
+                repository::write_vectors(&mut transaction, workspace_id, revision, copies).await?;
+            let embedded =
+                repository::write_vectors(&mut transaction, workspace_id, revision, model_vectors)
                     .await?;
             transaction.commit().await?;
-            Ok(restamped + written)
+            Ok(BatchWritten {
+                reused: restamped + taken,
+                embedded,
+            })
         })
         .await
     }
@@ -675,6 +687,14 @@ struct BatchPlan<'a> {
     embedded: Vec<(&'a EntityText, &'a TextSha256)>,
     /// The index text of each row of `embedded`, for the model.
     texts: Vec<String>,
+}
+
+/// The vectors one batch's write made current.
+struct BatchWritten {
+    /// Stored vectors: moved stamps and copies of another row's vector.
+    reused: u64,
+    /// Vectors the model made.
+    embedded: u64,
 }
 
 /// The SHA-256 of an index text, as its vector row keeps it.

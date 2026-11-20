@@ -131,9 +131,6 @@ through the same write as a model vector. The kind of the Tool plays no part. A 
 written with it equals the vector's source stamp, because an older Coral in a rolling update writes vectors without
 it. The vectors of a replaced Generation are sources until the reconcile pass removes them.
 
-Rejected ([#3361](https://github.com/withcoral/coral/issues/3361)): a map of vectors in the Embedder's memory, empty
-after each restart and kept once per Coral Instance, and a separate table of vectors by digest.
-
 ## Storage
 
 One vector table per backend (on SQLite, the pair of tables below), keyed like the entity table, with the revision and
@@ -195,9 +192,10 @@ vectors it reused and those the model made.
 ## Consequences
 
 - Search Hits change shape. Programs that read `matched_tags`, `matched_inputs` or the Guidance Snippet get nothing.
-- A new Provider, and each Tool whose text changed, ranks by words for minutes; a new Generation whose Tool texts did
-  not change has its vectors without the model. On a server, Workspaces share the one Embedder thread: ten new
-  Graph-sized Providers take about two hours.
+- A new Provider, and each Tool whose text changed, ranks by words for minutes. A new Generation whose Tool texts did
+  not change has its vectors without the model when the Embedder reaches it before the reconcile pass removes the
+  replaced Generation; an Embedder busy with other rows can miss that. On a server, Workspaces share the one Embedder
+  thread: ten new Graph-sized Providers take about two hours.
 - Vectors cost database memory. On db.t4g.medium (4 GiB) the vectors of about 17 Graph Workspaces stay warm at
   `halfvec(384)` (extrapolated from 10 measured); past that the instance swaps and a query takes 0.8 to 2 s.
 - The Coral process carries the model: about 30 MB of binary, a 133 MB model file, and up to about 360 MiB while it
