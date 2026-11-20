@@ -736,6 +736,7 @@ dependencies = [
  "coral-workspace",
  "etcetera",
  "jsonwebtoken",
+ "log",
  "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
