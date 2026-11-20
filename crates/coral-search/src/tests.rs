@@ -3937,12 +3937,21 @@ impl TestModules {
     /// An index whose Embedder embeds with `model`, ready at once, and
     /// retries a failed batch after a short pause.
     fn index_with(&self, model: std::sync::Arc<dyn coral_embed::Embed>) -> crate::SearchIndex {
+        self.index_with_cores(model, std::num::NonZeroUsize::MIN)
+    }
+
+    /// [`Self::index_with`], with the Embedder on `cores` threads.
+    fn index_with_cores(
+        &self,
+        model: std::sync::Arc<dyn coral_embed::Embed>,
+        cores: std::num::NonZeroUsize,
+    ) -> crate::SearchIndex {
         let (_ready, model) = tokio::sync::watch::channel(crate::ModelLoad::Ready(model));
         crate::SearchIndex::new(
             self.search.database.clone(),
             std::time::Duration::from_mins(5),
         )
-        .with_embedder(model)
+        .with_embedder(model, cores)
         .with_embedder_retry_pause(std::time::Duration::from_millis(10))
     }
 

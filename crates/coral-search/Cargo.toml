@@ -23,6 +23,7 @@ coral-provider.workspace = true
 coral-telemetry.workspace = true
 coral-tools.workspace = true
 coral-workspace.workspace = true
+futures-util.workspace = true
 oxc_allocator.workspace = true
 oxc_ast.workspace = true
 oxc_parser.workspace = true

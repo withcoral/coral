@@ -919,7 +919,8 @@ fn tools_returned(page: &SearchPage) -> u64 {
 async fn the_real_model_finds_a_tool_by_semantic_search() {
     let dir = std::env::var_os("CORAL_EMBED_MODEL_DIR")
         .expect("set CORAL_EMBED_MODEL_DIR to a folder with model.onnx and tokenizer.json");
-    let model = coral_embed::Model::load(std::path::Path::new(&dir)).expect("the model loads");
+    let model = coral_embed::Model::load(std::path::Path::new(&dir), std::num::NonZeroUsize::MIN)
+        .expect("the model loads");
     let world = World::with(Arc::new(model)).await;
 
     let page = world

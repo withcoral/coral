@@ -107,6 +107,8 @@ pub(crate) struct SearchParts {
     /// How the search model's files arrive; none while the vector side is
     /// off, and then nothing looks for them.
     pub(crate) model: Option<Delivery>,
+    /// How many threads the Embedder runs, with one model session for each.
+    pub(crate) embedder_cores: std::num::NonZeroUsize,
 }
 
 impl SearchParts {
@@ -140,7 +142,7 @@ impl SearchParts {
         // Embedder; the model fills the slot once the delivery finds the files.
         let (slot, model) = watch::channel(coral_search::ModelLoad::Pending);
         (
-            index.with_embedder(model.clone()),
+            index.with_embedder(model.clone(), self.embedder_cores),
             module.with_model(model),
             Some(slot),
         )
@@ -335,6 +337,8 @@ pub(crate) struct BootedEngine {
     search_model: Option<Delivery>,
     /// Where the search model loads for the Embedder.
     embedder_slot: Option<watch::Sender<coral_search::ModelLoad>>,
+    /// How many sessions the search model loads into.
+    embedder_cores: std::num::NonZeroUsize,
     state_lock: StateLock,
 }
 
@@ -353,6 +357,7 @@ impl BootedEngine {
             usage_reporting,
             search_model,
             embedder_slot,
+            embedder_cores,
             state_lock,
         } = self;
         let mut passes = Passes::default();
@@ -370,7 +375,7 @@ impl BootedEngine {
         let search_model_load = search_model
             .as_ref()
             .zip(embedder_slot)
-            .map(|(files, slot)| files.load_into(slot));
+            .map(|(files, slot)| files.load_into(slot, embedder_cores));
         Engine {
             modules,
             passes,
@@ -510,6 +515,7 @@ impl Engine {
             usage_reporting: usage,
             search_model: search.model,
             embedder_slot,
+            embedder_cores: search.embedder_cores,
             state_lock,
         };
         Ok((booted, link))

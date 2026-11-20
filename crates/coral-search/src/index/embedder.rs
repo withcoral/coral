@@ -5,11 +5,12 @@
 //! It drains a predicate, not a queue: a Search Entity needs a vector when it
 //! has none, or one of another Embedder revision, or one made from another
 //! source stamp than its row's. A drain reads such rows oldest write first,
-//! embeds them in batches on one low-priority OS thread, and writes each batch
-//! in one transaction under the Workspace's index lock. The write checks
-//! staleness again, so two Embedders on the same rows write each vector once.
-//! An index write wakes it, so does each reconcile pass, and it drains once
-//! when the model is ready.
+//! cuts them into batches, and gives each batch to one of its low-priority OS
+//! threads, one for each of `[search] embedder_cores`. Each row of a read is
+//! in one batch only. Each batch is written in one transaction under the
+//! Workspace's index lock. The write checks staleness again, so two Embedders
+//! on the same rows write each vector once. An index write wakes it, so does
+//! each reconcile pass, and it drains once when the model is ready.
 //!
 //! The model runs only for a text that has no reusable vector in the same
 //! Workspace: one of the current Embedder revision whose row keeps the
@@ -21,16 +22,18 @@
 //! not change, or a row written again with the same text, so runs no model.
 //!
 //! A batch that fails is retried once after a pause. If the database failed,
-//! the drain stops and the next wake tries again. If the model failed, the
-//! Embedder embeds a fixed probe text: when the model fails that too, it is
-//! down, and the drain stops. Otherwise each row of the batch is tried alone,
-//! and a row whose text the model still refuses goes on an in-memory skip list
-//! until its row's stamp changes or the process restarts, so it does not hold
-//! back the rows behind it.
+//! the drain starts no other batch, lets the running ones end, and the next
+//! wake tries again. If the model failed, the Embedder embeds a fixed probe
+//! text: when the model fails that too, it is down, and the drain stops the
+//! same way. Otherwise each row of the batch is tried alone, and a row whose
+//! text the model still refuses goes on an in-memory skip list until its
+//! row's stamp changes or the process restarts, so it does not hold back the
+//! rows behind it.
 
 mod repository;
 
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroUsize;
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -39,6 +42,7 @@ use coral_embed::{Embed, EmbedError, MANIFEST};
 use coral_telemetry::metric::{self, EmbedBatchOutcome};
 use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
+use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use sha2::{Digest as _, Sha256};
 use tokio::sync::{Notify, oneshot, watch};
 use tracing::Instrument as _;
@@ -51,11 +55,20 @@ use crate::indexer::{self, IndexError};
 use repository::{EntityText, EntityVector, StaleEntity, StampMove, TextSha256};
 
 /// The rows one write holds at most.
-const BATCH_ROWS: usize = 32;
+pub(crate) const BATCH_ROWS: usize = 32;
 
-/// The stale rows one read of a drain takes, beside the rows the last read
-/// returned that the drain leaves out.
-const READ_ROWS: usize = BATCH_ROWS * 32;
+/// The batches one read of a drain holds at least.
+const READ_BATCHES: usize = 32;
+
+/// The batches one read of a drain holds for each thread at least, so that
+/// few threads wait for the last batches of a read.
+const READ_BATCHES_PER_THREAD: usize = 8;
+
+/// The stale rows one read of a drain takes for `cores` threads, beside the
+/// rows the last read returned that the drain leaves out.
+fn read_rows(cores: NonZeroUsize) -> usize {
+    BATCH_ROWS * READ_BATCHES.max(READ_BATCHES_PER_THREAD.saturating_mul(cores.get()))
+}
 
 /// The pause before a failed batch's retry.
 pub(super) const RETRY_PAUSE: Duration = Duration::from_secs(5);
@@ -71,6 +84,8 @@ pub(crate) type EmbedderModel = watch::Receiver<crate::ModelLoad>;
 /// with the index writes that wake it.
 pub(super) struct EmbedderState {
     model: EmbedderModel,
+    /// How many threads embed, each one batch at a time.
+    cores: NonZeroUsize,
     wake: Notify,
     /// How many times something woke the Embedder, boot counting as one.
     requested: watch::Sender<u64>,
@@ -84,9 +99,10 @@ pub(super) struct EmbedderState {
 }
 
 impl EmbedderState {
-    pub(super) fn new(model: EmbedderModel) -> Self {
+    pub(super) fn new(model: EmbedderModel, cores: NonZeroUsize) -> Self {
         Self {
             model,
+            cores,
             wake: Notify::new(),
             // The drain at boot answers the first wake.
             requested: watch::Sender::new(1),
@@ -190,26 +206,26 @@ impl EntityKey {
 
 impl SearchIndex {
     /// Runs the Embedder until the caller aborts it: waits for the model,
-    /// then drains once and again after each wake. Returns when its OS
-    /// thread is gone, so its supervisor starts it again with a new one.
+    /// then drains once and again after each wake. Returns when one of its
+    /// OS threads is gone, so its supervisor starts it again with new ones.
     pub(super) async fn embed_loop(&self, state: Arc<EmbedderState>) {
         let model = state.ready_model().await;
-        let thread = match EmbedThread::spawn(model) {
-            Ok(thread) => thread,
+        let threads = match EmbedThreads::spawn(&model, state.cores) {
+            Ok(threads) => threads,
             Err(error) => {
                 tracing::error!(
                     error.type = safe::kind(io_error_kind(&error)),
-                    "failed to start the search Embedder's thread"
+                    "failed to start the search Embedder's threads"
                 );
                 return;
             }
         };
         loop {
             let target = *state.requested.borrow();
-            if self.drain(&state, &thread).await.is_err() {
+            if self.drain(&state, &threads).await.is_err() {
                 tracing::error!(
                     error.type = safe::kind("thread_gone"),
-                    "the search Embedder's thread stopped"
+                    "a search Embedder thread stopped"
                 );
                 return;
             }
@@ -241,14 +257,14 @@ impl SearchIndex {
 
     /// Embeds every stale row the skip list leaves, until none is left or a
     /// batch finds the database or the model down.
-    async fn drain(&self, state: &EmbedderState, thread: &EmbedThread) -> Result<(), ThreadGone> {
+    async fn drain(&self, state: &EmbedderState, threads: &EmbedThreads) -> Result<(), ThreadGone> {
         let revision = MANIFEST.embedder_revision();
         let mut attempted = HashSet::new();
         // A written row leaves the stale rows, so the next read takes only
         // as many more rows as this read returned and left out.
         let mut passed_over = 0;
         loop {
-            let limit = READ_ROWS + passed_over;
+            let limit = read_rows(state.cores) + passed_over;
             let found = self
                 .read_snapshot(async |transaction| {
                     repository::stale_entities(transaction, revision.as_str(), limit).await
@@ -279,12 +295,46 @@ impl SearchIndex {
                 // Every row read is one to leave out: read past them.
                 continue;
             }
-            for batch in batches(&pending) {
-                attempted.extend(batch.iter().cloned());
-                match self.embed_batch(thread, batch).await? {
-                    BatchOutcome::Written { refused } => state.skip(refused),
-                    BatchOutcome::Down => return Ok(()),
+            attempted.extend(pending.iter().cloned());
+            match self
+                .embed_batches(state, threads, batches(&pending))
+                .await?
+            {
+                Drain::Continue => {}
+                Drain::Stop => return Ok(()),
+            }
+        }
+    }
+
+    /// Embeds and writes `batches`, oldest first, as many at once as the
+    /// Embedder has threads. Once a batch finds the database or the model
+    /// down, or its thread gone, starts no other batch, and answers when the
+    /// running ones have ended.
+    async fn embed_batches(
+        &self,
+        state: &EmbedderState,
+        threads: &EmbedThreads,
+        batches: Vec<&[StaleEntity]>,
+    ) -> Result<Drain, ThreadGone> {
+        let mut waiting = batches.into_iter();
+        let mut running = FuturesUnordered::new();
+        let mut stopped = None;
+        loop {
+            while stopped.is_none() && running.len() < state.cores.get() {
+                let Some(batch) = waiting.next() else {
+                    break;
+                };
+                running.push(self.embed_batch(threads, batch));
+            }
+            let Some(outcome) = running.next().await else {
+                return stopped.unwrap_or(Ok(Drain::Continue));
+            };
+            match outcome {
+                Ok(BatchOutcome::Written { refused }) => state.skip(refused),
+                Ok(BatchOutcome::Down) => {
+                    stopped.get_or_insert(Ok(Drain::Stop));
                 }
+                Err(gone) => stopped = Some(Err(gone)),
             }
         }
     }
@@ -294,22 +344,22 @@ impl SearchIndex {
     /// alone and answers the rows whose text the model refuses.
     async fn embed_batch(
         &self,
-        thread: &EmbedThread,
+        threads: &EmbedThreads,
         batch: &[StaleEntity],
     ) -> Result<BatchOutcome, ThreadGone> {
         let written = Ok(BatchOutcome::Written {
             refused: Vec::new(),
         });
-        if self.embed_rows(thread, batch).await?.is_ok() {
+        if self.embed_rows(threads, batch).await?.is_ok() {
             return written;
         }
         tokio::time::sleep(self.embedder_retry_pause).await;
-        match self.embed_rows(thread, batch).await? {
+        match self.embed_rows(threads, batch).await? {
             Ok(()) => return written,
             Err(BatchError::Index(_)) => return Ok(BatchOutcome::Down),
             Err(BatchError::Embed) => {}
         }
-        let probe = thread.embed(vec![PROBE_TEXT.to_owned()]).await?;
+        let probe = threads.embed(vec![PROBE_TEXT.to_owned()]).await?;
         if !probe
             .iter()
             .all(|vector| vector.as_deref().is_ok_and(finite))
@@ -323,7 +373,7 @@ impl SearchIndex {
         let mut refused = Vec::new();
         for entity in batch {
             match self
-                .embed_rows(thread, std::slice::from_ref(entity))
+                .embed_rows(threads, std::slice::from_ref(entity))
                 .await?
             {
                 Ok(()) => {}
@@ -340,7 +390,7 @@ impl SearchIndex {
     /// drain read it is embedded as it stands, or left out.
     async fn embed_rows(
         &self,
-        thread: &EmbedThread,
+        threads: &EmbedThreads,
         entities: &[StaleEntity],
     ) -> Result<Result<(), BatchError>, ThreadGone> {
         let Some(workspace_id) = entities.first().map(|entity| &entity.workspace_id) else {
@@ -358,7 +408,7 @@ impl SearchIndex {
         );
         let started = Instant::now();
         let written = self
-            .embed_rows_in_span(thread, workspace_id, entities)
+            .embed_rows_in_span(threads, workspace_id, entities)
             .instrument(span.clone())
             .await;
         metric::embed_batch_ended(
@@ -395,7 +445,7 @@ impl SearchIndex {
 
     async fn embed_rows_in_span(
         &self,
-        thread: &EmbedThread,
+        threads: &EmbedThreads,
         workspace_id: &WorkspaceId,
         entities: &[StaleEntity],
     ) -> Result<Result<u64, BatchError>, ThreadGone> {
@@ -444,7 +494,7 @@ impl SearchIndex {
             embedded,
             texts,
         } = reusable.plan(&rows, texts, &digests);
-        let model_vectors = thread.embed(texts).await?;
+        let model_vectors = threads.embed(texts).await?;
         let model_vectors = match model_vectors.into_iter().collect::<Result<Vec<_>, _>>() {
             Ok(vectors) if vectors.iter().all(|vector| finite(vector)) => vectors,
             Ok(_) | Err(_) => return Ok(Err(BatchError::Embed)),
@@ -744,13 +794,21 @@ impl BatchError {
     }
 }
 
-/// The Embedder's OS thread is gone, and its jobs with it.
+/// What a drain does after the batches of one read.
+enum Drain {
+    /// Read again: each batch was written but for the rows on the skip list.
+    Continue,
+    /// End: a batch found the database or the model down.
+    Stop,
+}
+
+/// An Embedder's OS thread is gone, and its job with it.
 #[derive(Debug)]
 struct ThreadGone;
 
-/// The OS thread that runs the model for the Embedder, at low priority. It
-/// stops when the Embedder drops this handle.
-struct EmbedThread {
+/// The OS threads that run the model for the Embedder, at low priority,
+/// each one batch at a time. They stop when the Embedder drops this handle.
+struct EmbedThreads {
     jobs: std::sync::mpsc::Sender<EmbedJob>,
 }
 
@@ -759,26 +817,35 @@ struct EmbedJob {
     vectors: oneshot::Sender<Vec<Result<Vec<f32>, EmbedError>>>,
 }
 
-impl EmbedThread {
-    fn spawn(model: Arc<dyn Embed>) -> std::io::Result<Self> {
+/// The queue that the Embedder's threads take their jobs from.
+type EmbedJobs = std::sync::Mutex<std::sync::mpsc::Receiver<EmbedJob>>;
+
+impl EmbedThreads {
+    fn spawn(model: &Arc<dyn Embed>, count: NonZeroUsize) -> std::io::Result<Self> {
         let (jobs, receiver) = std::sync::mpsc::channel::<EmbedJob>();
+        let receiver = Arc::new(EmbedJobs::new(receiver));
         let dispatch = tracing::dispatcher::get_default(Clone::clone);
-        std::thread::Builder::new()
-            .name("coral-search-embedder".to_owned())
-            .spawn(move || {
-                tracing::dispatcher::with_default(&dispatch, || {
-                    lower_priority();
-                    for job in receiver {
-                        let vectors = job
-                            .texts
-                            .iter()
-                            .map(|text| model.embed_document(text))
-                            .collect();
-                        // The drain that sent the job may be gone.
-                        drop(job.vectors.send(vectors));
-                    }
-                });
-            })?;
+        for _ in 0..count.get() {
+            let model = Arc::clone(model);
+            let receiver = Arc::clone(&receiver);
+            let dispatch = dispatch.clone();
+            std::thread::Builder::new()
+                .name("coral-search-embedder".to_owned())
+                .spawn(move || {
+                    tracing::dispatcher::with_default(&dispatch, || {
+                        lower_priority();
+                        while let Some(job) = next_job(&receiver) {
+                            let vectors = job
+                                .texts
+                                .iter()
+                                .map(|text| model.embed_document(text))
+                                .collect();
+                            // The drain that sent the job may be gone.
+                            drop(job.vectors.send(vectors));
+                        }
+                    });
+                })?;
+        }
         Ok(Self { jobs })
     }
 
@@ -792,6 +859,17 @@ impl EmbedThread {
             .map_err(|_closed| ThreadGone)?;
         answer.await.map_err(|_closed| ThreadGone)
     }
+}
+
+/// The next job from `jobs`, or `None` once the Embedder dropped its
+/// handle. One thread waits for a job while the others embed.
+fn next_job(jobs: &EmbedJobs) -> Option<EmbedJob> {
+    // A thread holds the lock only while it waits for a job, so no panic
+    // of the model poisons it.
+    jobs.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .recv()
+        .ok()
 }
 
 /// Lowers the calling thread's priority to the lowest its scheduling policy
@@ -809,5 +887,23 @@ fn io_error_kind(error: &std::io::Error) -> &'static str {
     match error.kind() {
         std::io::ErrorKind::OutOfMemory => "out_of_memory",
         _ => "io",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A read gives each thread a batch at least, so no value of
+    /// `[search] embedder_cores` leaves a thread without work.
+    #[test]
+    fn a_read_holds_a_batch_for_each_thread() {
+        for cores in [1, 4, 32, 33, 64, 1_000] {
+            let cores = NonZeroUsize::new(cores).unwrap();
+            assert!(
+                read_rows(cores) / BATCH_ROWS >= cores.get(),
+                "{cores} cores"
+            );
+        }
     }
 }

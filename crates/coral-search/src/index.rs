@@ -22,6 +22,8 @@ use crate::indexer::authored_tools::{self, AuthoredToolIndexer, AuthoredToolSync
 use crate::indexer::tools::{self, AttemptedGeneration, ToolIndexer, ToolRemoval};
 use crate::indexer::{self, EntityIndexer, IndexError};
 
+#[cfg(test)]
+pub(crate) use embedder::BATCH_ROWS;
 pub(crate) use embedder::EmbedderModel;
 use embedder::EmbedderState;
 
@@ -198,13 +200,17 @@ impl SearchIndex {
     }
 
     /// Turns the vector side on: the Embedder runs beside the reconcile
-    /// task, embeds with `model` once it holds one, and the reconcile task
-    /// removes vectors whose Search Entity is gone. Saving or publishing a
-    /// source never calls the model: only the Embedder does, in the
-    /// background.
+    /// task, embeds with `model` once it holds one, on `cores` low-priority
+    /// threads, and the reconcile task removes vectors whose Search Entity is
+    /// gone. Saving or publishing a source never calls the model: only the
+    /// Embedder does, in the background.
     #[must_use]
-    pub fn with_embedder(mut self, model: tokio::sync::watch::Receiver<crate::ModelLoad>) -> Self {
-        self.embedder = Some(Arc::new(EmbedderState::new(model)));
+    pub fn with_embedder(
+        mut self,
+        model: tokio::sync::watch::Receiver<crate::ModelLoad>,
+        cores: std::num::NonZeroUsize,
+    ) -> Self {
+        self.embedder = Some(Arc::new(EmbedderState::new(model, cores)));
         self
     }
 
