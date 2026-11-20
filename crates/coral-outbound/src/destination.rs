@@ -157,6 +157,8 @@ mod tests {
             for host in [
                 "a.localhost",
                 "169.254.169.254",
+                "[fd00:ec2::254]",
+                "[fd00:ec2::23]",
                 "100.64.0.1",
                 "[fe80::1]",
                 "[::ffff:10.0.0.1]",
@@ -206,6 +208,8 @@ mod tests {
             ("::ffff:127.0.0.1", Loopback),
             ("169.254.169.254", LinkLocal),
             ("fe80::1", LinkLocal),
+            ("fd00:ec2::254", Special),
+            ("fd00:ec2::23", Special),
             ("100.64.0.1", Special),
             ("::ffff:100.64.0.1", Special),
             ("0.0.0.0", Special),
@@ -267,11 +271,21 @@ pub fn classify_address(ip: std::net::IpAddr) -> AddressClass {
     match ip {
         IpAddr::V4(ip) if ip.is_link_local() => AddressClass::LinkLocal,
         IpAddr::V6(ip) if ip.is_unicast_link_local() => AddressClass::LinkLocal,
+        IpAddr::V6(ip) if is_unique_local_metadata_ipv6(ip) => AddressClass::Special,
         IpAddr::V4(ip) if ip.is_private() => AddressClass::Private,
         IpAddr::V6(ip) if ip.is_unique_local() => AddressClass::Private,
         ip if crate::public_metadata_ip_is_blocked(ip) => AddressClass::Special,
         _ => AddressClass::Public,
     }
+}
+
+/// Cloud metadata and credential endpoints that live inside IPv6 unique-local
+/// (`fc00::/7`) space and must never be admitted as ordinary private networks.
+const fn is_unique_local_metadata_ipv6(ip: std::net::Ipv6Addr) -> bool {
+    matches!(
+        ip.segments(),
+        [0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254 | 0x0023]
+    )
 }
 
 /// Classifies one DNS answer for a reachability assessment, judging an
