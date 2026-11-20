@@ -1104,9 +1104,9 @@ impl OwnerState {
         effects
     }
 
-    /// The wake rows' reader handed this Run stream loop its Run's wake row:
-    /// the loop reads its Run, one read at a time. A Program owner, or a loop
-    /// that commits nothing more, ignores it; the reader hands the row again.
+    /// The wake-up reader found this Run stream loop's Run ended or moved
+    /// past what the loop wrote: the loop reads its Run, one read at a time.
+    /// A Program owner, or a loop that commits nothing more, ignores it.
     fn woken(&mut self) -> Vec<Effect> {
         if self.requests.is_none() || !matches!(self.phase, Phase::Running | Phase::Ending) {
             return Vec::new();
@@ -1123,9 +1123,9 @@ impl OwnerState {
     /// The loop read its Run after a wake (ADR 0027). Terminal: the loop
     /// stops as on a chunk that found the Run ended, and the Program hears
     /// the Run's termination. The head it tracks: nothing happened. Moved:
-    /// it takes the row's head when no chunk is in flight (the one in flight
-    /// rebuilds itself on it, and rereads them then), and rereads the
-    /// Approval Requests its parked waits are on.
+    /// it takes the head the Run row shows when no chunk is in flight (the
+    /// one in flight rebuilds itself on it, and rereads them then), and
+    /// rereads the Approval Requests its parked waits are on.
     fn run_read(&mut self, read: Option<RunNow>) -> Vec<Effect> {
         let again = self.wake.read == WakeRead::Again;
         self.wake.read = WakeRead::Idle;
@@ -1172,8 +1172,7 @@ impl OwnerState {
 
     /// The chunk in flight lands on a head another writer moved. That
     /// writer may have decided or expired an Approval Request a parked wait
-    /// is on, and raised a wake row this rebuilt chunk may delete: the
-    /// requests are read again.
+    /// is on: the requests are read again.
     fn rebased(&mut self, head: u64, recorded_total: usize) -> Vec<Effect> {
         self.head = head;
         self.recorded_total = recorded_total;

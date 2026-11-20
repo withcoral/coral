@@ -221,16 +221,16 @@ above it, in order. A repeat carries the same number and lands once; an Emission
 - **The head tells the loop.** Every commit on a Run moves its head, so an outside writer adds nothing to its commit.
   Each loop publishes the head it last wrote, and whether a chunk of its own is in flight.
 - **One reader per Coral Instance.** It subscribes once to the content-free change signal and, on each ring, with a read
-  gap and a backstop, reads in one statement the head and state of every Run whose loop is registered on this Coral
-  Instance. It wakes each loop whose Run ended or moved past what that loop wrote, counting the loop's chunk in flight;
+  gap and a backstop, reads the head and state of every Run whose loop is registered on this Coral Instance, in one
+  statement per batch of Runs. It wakes each loop whose Run ended or moved past what that loop wrote, counting the loop's chunk in flight;
   a loop that stopped, or ends its Run itself, takes no wake-up.
   A writer on the same Coral Instance wakes the reader at once. It relays each ring to the loops parked on a connection
   request. The per-Run loops never subscribe to the signal.
 - **What the loop does on a wake.** It reads the Run row. If the head is what it last wrote, nothing happened. If the row
   is terminal, it sends Terminate. Otherwise it rereads the Approval Requests it holds parked waits for, matched by
   their Invocation: an approved one moves its Invocation to the enforcement queue; a declined one has its Invocation
-  already ended, and the waiter reports it to the Program. A chunk of the loop's that finds the head moved under it is
-  rebuilt on the new head, and the loop rereads those Approval Requests then too. The head is durable, so no outside
+  already ended, and the waiter reports it to the Program. When another write moves the head under a chunk the loop is
+  committing, the loop rebuilds that chunk on the new head and rereads those Approval Requests then too. The head is durable, so no outside
   write goes unseen.
 - **The other waiters keep the content-free signal**: the take loop and the compile relay, one subscription each per
   Coral Instance. The content-free signal stays the only signal in `coral-db`: no table name, row identity or payload
@@ -392,7 +392,7 @@ Coral exports and amends this ADR.
   hint the head already carries.
 - **Every loop rereading its Run row on the content-free signal**, and **a signal that names the Run**: one costs a
   statement per held Run per gap, the other carries a row identity across the boundary the content-free signal keeps.
-  The one reader per Coral Instance reads every held Run's head in one statement instead.
+  The one reader per Coral Instance reads every held Run's head in one statement per batch of Runs instead.
 - **A Postgres advisory lock to elect the sweeper.** A holder whose node vanishes keeps the lock until Postgres notices
   the dead peer; the lease row's bound is Coral's own.
 - **A reconnect window of the Run Executor's own**, or ending a Program because a lease lapsed. The Run's deadline is
