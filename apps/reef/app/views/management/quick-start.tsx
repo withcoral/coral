@@ -86,8 +86,23 @@ export function agentSteps(client: Client, endpoint: string, key?: string): Code
   return list.map((step) => ({ ...step, shown: mask(step.snippet) }))
 }
 
-/** Each client's setup for a person, who signs in with Coral instead of sending a key. */
-export function personSteps(client: Client, endpoint: string): CodeStep[] {
+/**
+ * Each client's setup for a person, who sends no key. With `signIn`, the client signs in
+ * with Coral; without it, the MCP server serves the local user and has no sign-in, so a
+ * client's login command fails.
+ */
+export function personSteps(client: Client, endpoint: string, signIn: boolean): CodeStep[] {
+  const login = (name: string, snippet: string): Omit<CodeStep, 'shown'>[] =>
+    signIn
+      ? [
+          {
+            label: 'Then sign in',
+            copy: `Copy ${name} sign-in command`,
+            snippet,
+            hint: 'Sign in with Coral when your browser opens.',
+          },
+        ]
+      : []
   const list: Omit<CodeStep, 'shown'>[] = (() => {
     switch (client) {
       case 'claude':
@@ -97,12 +112,7 @@ export function personSteps(client: Client, endpoint: string): CodeStep[] {
             copy: 'Copy Claude Code command',
             snippet: `claude mcp add --transport http coral ${endpoint}`,
           },
-          {
-            label: 'Then sign in',
-            copy: 'Copy Claude Code sign-in command',
-            snippet: 'claude mcp login coral',
-            hint: 'Sign in with Coral when your browser opens.',
-          },
+          ...login('Claude Code', 'claude mcp login coral'),
         ]
       case 'codex':
         return [
@@ -111,12 +121,7 @@ export function personSteps(client: Client, endpoint: string): CodeStep[] {
             copy: 'Copy Codex command',
             snippet: `codex mcp add coral --url ${endpoint}`,
           },
-          {
-            label: 'Then sign in',
-            copy: 'Copy Codex sign-in command',
-            snippet: 'codex mcp login coral',
-            hint: 'Sign in with Coral when your browser opens.',
-          },
+          ...login('Codex', 'codex mcp login coral'),
         ]
       case 'other':
         return [
@@ -246,10 +251,13 @@ export function WorkspaceQuickStart({
   endpoint,
   prompt,
   owner,
+  signIn,
 }: {
   endpoint: string
   /** The workspace's `onboardingPrompt`. */
   prompt: string
+  /** Whether the MCP server needs a sign-in; a local deployment has none. */
+  signIn: boolean
   /** Whether the viewer owns the workspace, so the prompt adds a provider. */
   owner: boolean
 }) {
@@ -261,7 +269,7 @@ export function WorkspaceQuickStart({
       </Typography.HeadingSmall>
       <Typography.BodySmall as="p">Add this workspace to your MCP client.</Typography.BodySmall>
       <ClientSetup
-        steps={(client) => personSteps(client, endpoint)}
+        steps={(client) => personSteps(client, endpoint, signIn)}
         prompt={{
           text: prompt,
           hint: owner
