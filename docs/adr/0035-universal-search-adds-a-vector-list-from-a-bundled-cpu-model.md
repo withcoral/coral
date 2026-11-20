@@ -122,13 +122,24 @@ Semantic search finds the Tools of a Graph-sized Provider (19,830 rows) after ab
 minutes on one M4 core; until then they rank by words. Two Coral Instances that overlap during a rolling update can embed the
 same rows; the write checks staleness, so this costs CPU only.
 
+**Reuse by text.** The model runs only for a text that has no reusable vector in the same Workspace. A new Generation gives
+each Tool a new Search Entity, and a raised indexer revision can give a row a new stamp with the same text; without
+reuse, either one made the vector of every such row again, also when one Tool of many changed or when only the Provider
+Configuration did. Each vector row keeps the SHA-256 of the index text it was made from. A row whose own vector was made
+from its text keeps that vector. Another row's vector of the same text and of the current Embedder revision goes
+through the same write as a model vector. The kind of the Tool plays no part. A digest counts only while the stamp
+written with it equals the vector's source stamp, because an older Coral in a rolling update writes vectors without
+it. The vectors of a replaced Generation are sources until the reconcile pass removes them.
+
 ## Storage
 
 One vector table per backend (on SQLite, the pair of tables below), keyed like the entity table, with the revision and
 source stamp beside each vector.
 Coral creates it at boot from the manifest, before the Embedder starts, and drops and recreates it when the dimension changes. It lives outside
 the migration chain, the one exception to that rule: a migration with a vector column fails on a Postgres without
-pgvector, and Coral with the vector side off must start there.
+pgvector, and Coral with the vector side off must start there. On a table that a Coral older than reuse by text made,
+boot adds what reuse needs as nullable columns and an index, and keeps every row. A row without a digest is no source
+until the Embedder writes its vector again; no backfill runs.
 
 - **Postgres:** `halfvec(384)`, with the filter columns (kind, Provider, Generation, Tool key, Embedder revision) on
   the vector table, so the vector query reads it alone and scans it exactly. At the sandbox RDS shape the
@@ -175,13 +186,17 @@ vector query error) gives that retriever its lexical list alone. It never puts t
 the page says nothing. Telemetry says it ([#2855](https://github.com/withcoral/coral/issues/2855)): the retriever's
 span records whether it merged the two lists or used the lexical list alone, with one reason for each cause above, for
 the setting and for the CPU floor ([#3057](https://github.com/withcoral/coral/issues/3057) names them). A span times
-the query embedding, and the Embedder reports its backlog, batch durations and skipped rows.
+the query embedding, and the Embedder reports its backlog, batch durations and skipped rows, and for each write the
+vectors it reused and those the model made.
 
 ## Consequences
 
 - Search Hits change shape. Programs that read `matched_tags`, `matched_inputs` or the Guidance Snippet get nothing.
-- A new or changed Provider ranks by words for minutes. On a server, Workspaces share the one Embedder thread: ten
-  Graph-sized Providers take about two hours.
+- A new Provider, and each Tool whose text changed, ranks by words for minutes. A new Generation whose Tool texts did
+  not change has its vectors without the model when the Embedder reaches it before the reconcile pass removes the
+  replaced Generation; an Embedder busy with other rows can miss that. Vectors written before reuse by text have no
+  digest, so the first new Generation of each Provider after the upgrade embeds all its Tools again. On a server,
+  Workspaces share the one Embedder thread: ten new Graph-sized Providers take about two hours.
 - Vectors cost database memory. On db.t4g.medium (4 GiB) the vectors of about 17 Graph Workspaces stay warm at
   `halfvec(384)` (extrapolated from 10 measured); past that the instance swaps and a query takes 0.8 to 2 s.
 - The Coral process carries the model: about 30 MB of binary, a 133 MB model file, and up to about 360 MiB while it
@@ -191,4 +206,6 @@ the query embedding, and the Embedder reports its backlog, batch durations and s
   the vector table.
 - Not decided here: how Workspaces share the Embedder on a busy server, a cap on embedded Workspaces or a larger
   database class, HNSW past a row count, tuning the merge weight on real queries, query text beyond the frozen query
-  (the Task intent, the search `intent` argument), and bench cases for Private and Shared Tools.
+  (the Task intent, the search `intent` argument), bench cases for Private and Shared Tools, and reuse of vectors
+  across Workspaces, which no case needs now and which needs a rule for the timing signal between Workspaces
+  ([#3361](https://github.com/withcoral/coral/issues/3361)).

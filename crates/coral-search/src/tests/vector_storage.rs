@@ -204,6 +204,177 @@ async fn a_table_of_the_manifests_dimension_keeps_any_other_change_to_its_shape(
 }
 
 #[tokio::test]
+async fn boot_adds_the_reuse_columns_and_index_to_a_postgres_table_an_older_coral_made() {
+    coral_test_support::database_only!(Postgres);
+    assert_boot_adds_the_reuse_columns_and_index(older_vector_tables(DatabaseSystem::Postgres))
+        .await;
+}
+
+#[tokio::test]
+async fn boot_adds_the_reuse_columns_and_index_to_sqlite_tables_an_older_coral_made() {
+    coral_test_support::database_only!(Sqlite);
+    assert_boot_adds_the_reuse_columns_and_index(older_vector_tables(DatabaseSystem::Sqlite)).await;
+}
+
+#[tokio::test]
+async fn reuse_columns_or_an_index_of_another_shape_stop_the_boot_and_stay() {
+    let stamp_type = match coral_test_support::selected_database().unwrap() {
+        DatabaseSystem::Postgres => "BIGINT",
+        DatabaseSystem::Sqlite => "INTEGER",
+    };
+    // Each case changes the tables an older Coral made as no Coral does.
+    let cases = [
+        (
+            "a digest column of another type",
+            "ALTER TABLE search_entity_embeddings ADD COLUMN text_sha256 TEXT".to_owned(),
+        ),
+        (
+            "a stamp column that refuses NULL",
+            format!(
+                "ALTER TABLE search_entity_embeddings \
+                 ADD COLUMN text_sha256_source_indexed_at_unix_nanos {stamp_type} NOT NULL DEFAULT 0"
+            ),
+        ),
+        (
+            "the index's name on other columns",
+            "CREATE INDEX search_entity_embeddings_text_sha256 ON search_entity_embeddings (doc_id)"
+                .to_owned(),
+        ),
+    ];
+    for (case, change) in cases {
+        let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+        let database = fixture.database();
+        fixture
+            .execute_fixture_sql(older_vector_tables(database.system()))
+            .await
+            .expect("create the tables an older Coral made");
+        store_vector(&fixture, "[0.5,0.25,1]").await;
+        fixture
+            .execute_fixture_sql(&change)
+            .await
+            .expect("change the tables");
+        let shape = reuse_shape(&database).await;
+        let stored = stored_vectors(&database).await;
+
+        let refused = prepare_vector_table(&database, VectorStorage::On { dimension: 3 }).await;
+
+        let Err(StorageError::UnexpectedVectorReuseShape { found }) = refused else {
+            panic!("{case} must stop the boot: {refused:?}");
+        };
+        assert!(found.contains("text_sha256"), "{case}: {found}");
+        assert_eq!(reuse_shape(&database).await, shape, "{case}: the shape");
+        assert_eq!(stored_vectors(&database).await, stored, "{case}: the rows");
+    }
+}
+
+/// The vector tables, for vectors of 3 dimensions, as a Coral older than
+/// vector reuse created them.
+fn older_vector_tables(system: DatabaseSystem) -> &'static str {
+    match system {
+        DatabaseSystem::Postgres => {
+            "CREATE TABLE search_entity_embeddings (\
+                workspace_id TEXT NOT NULL, \
+                doc_id TEXT NOT NULL, \
+                kind TEXT NOT NULL, \
+                provider_id TEXT, \
+                provider_generation_id TEXT, \
+                tool_key TEXT, \
+                embedder_revision TEXT NOT NULL, \
+                source_indexed_at_unix_nanos BIGINT NOT NULL, \
+                embedding halfvec(3) NOT NULL, \
+                CONSTRAINT search_entity_embeddings_pk PRIMARY KEY (workspace_id, doc_id))"
+        }
+        DatabaseSystem::Sqlite => {
+            "CREATE TABLE search_entity_embeddings (\
+                vector_rowid INTEGER PRIMARY KEY, \
+                workspace_id TEXT NOT NULL, \
+                doc_id TEXT NOT NULL, \
+                embedder_revision TEXT NOT NULL, \
+                source_indexed_at_unix_nanos INTEGER NOT NULL, \
+                CONSTRAINT search_entity_embeddings_key UNIQUE (workspace_id, doc_id)); \
+             CREATE VIRTUAL TABLE search_entity_embedding_vectors \
+                USING vec0(embedding float[3] distance_metric=cosine)"
+        }
+    }
+}
+
+/// Boots on the vector tables that `older_tables` creates, as a Coral older
+/// than vector reuse made them, and asserts that boot gives them the shape
+/// of tables it creates and keeps their vectors.
+async fn assert_boot_adds_the_reuse_columns_and_index(older_tables: &str) {
+    let created = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    prepare_vector_table(&created.database(), VectorStorage::On { dimension: 3 })
+        .await
+        .expect("create the vector table");
+    let expected = reuse_shape(&created.database()).await;
+    assert_eq!(
+        expected.0,
+        ["text_sha256", "text_sha256_source_indexed_at_unix_nanos"],
+        "a new table has both columns"
+    );
+    assert!(
+        expected
+            .1
+            .as_deref()
+            .is_some_and(|index| index.contains("(workspace_id, text_sha256)")),
+        "a new table has the index of the lookup by Workspace and digest: {expected:?}"
+    );
+    let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let database = fixture.database();
+    fixture
+        .execute_fixture_sql(older_tables)
+        .await
+        .expect("create the tables an older Coral made");
+    store_vector(&fixture, "[0.5,0.25,1]").await;
+    let stored = stored_vectors(&database).await;
+    assert_eq!(reuse_shape(&database).await, (Vec::new(), None));
+
+    for boot in ["the first boot", "a second boot"] {
+        prepare_vector_table(&database, VectorStorage::On { dimension: 3 })
+            .await
+            .unwrap_or_else(|error| panic!("{boot}: {error}"));
+
+        assert_eq!(reuse_shape(&database).await, expected, "{boot}");
+        assert_eq!(stored_vectors(&database).await, stored, "{boot}");
+    }
+}
+
+/// The vector table's columns whose names start with `text_sha256`, and
+/// the statement or definition of its index for vector reuse.
+async fn reuse_shape(database: &Database) -> (Vec<String>, Option<String>) {
+    let (columns, index) = match database.system() {
+        DatabaseSystem::Postgres => (
+            "SELECT a.attname::text FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = current_schema() AND c.relname = 'search_entity_embeddings' \
+             AND a.attname LIKE 'text_sha256%' AND NOT a.attisdropped ORDER BY 1",
+            "SELECT replace(indexdef, current_schema() || '.', '') FROM pg_catalog.pg_indexes \
+             WHERE schemaname = current_schema() \
+             AND indexname = 'search_entity_embeddings_text_sha256'",
+        ),
+        DatabaseSystem::Sqlite => (
+            "SELECT name FROM pragma_table_info('search_entity_embeddings') \
+             WHERE name LIKE 'text_sha256%' ORDER BY 1",
+            "SELECT sql FROM sqlite_schema \
+             WHERE type = 'index' AND name = 'search_entity_embeddings_text_sha256'",
+        ),
+    };
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    let columns: Vec<(String,)> = transaction
+        .fetch_all_sql(columns, sea_query::Values(Vec::new()))
+        .await
+        .expect("read the columns");
+    let index: Vec<(String,)> = transaction
+        .fetch_all_sql(index, sea_query::Values(Vec::new()))
+        .await
+        .expect("read the index");
+    transaction.rollback().await.unwrap();
+    let index = index.into_iter().next().map(|(index,)| index);
+    (columns.into_iter().map(|(column,)| column).collect(), index)
+}
+
+#[tokio::test]
 async fn coral_instances_that_boot_at_once_all_start() {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let peer = fixture.connect_peer().await.expect("open a second pool");

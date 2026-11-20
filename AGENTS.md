@@ -320,7 +320,14 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   `[search] semantic_search_enabled` is on, boot needs pgvector on Postgres
   and sqlite-vec on SQLite, and `coral_search::prepare_vector_table` creates
   the table at boot and recreates it only when the manifest's dimension
-  changes: an existing table keeps any other change to its shape.
+  changes. On a table of that dimension, boot adds the nullable columns and
+  the index of vector reuse when they are missing: the one place where
+  Coral probes for a column. It refuses a reuse column or index of another
+  shape, and keeps the rows and any other change to the key table. An older
+  Coral writes that table with the columns it knows and leaves the digest
+  stale, so the digest counts only while the stamp written with it equals
+  the vector's source stamp, as `field_names_fingerprint` does on
+  `search_entities`.
   `scripts/check-migrations.sh` rejects a migration that names pgvector.
 - Run shared repository behavior tests against SQLite and Postgres. Use
   `make postgres-tests` for Rust repository tests. For Reel's Postgres product

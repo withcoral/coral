@@ -98,12 +98,19 @@ pub(super) enum VectorTable {
 /// `search_entities` and gives `vec0` the rowids. `vector_rowid` is an
 /// `INTEGER PRIMARY KEY`, so `VACUUM` keeps it; `search_entities` has none.
 /// No foreign key: the reconcile pass removes orphans, as on Postgres.
+///
+/// `text_sha256` is the SHA-256 of the text the vector was made from, and
+/// `text_sha256_source_indexed_at_unix_nanos` the source stamp it was
+/// written with. Both are nullable: a Coral older than vector reuse writes
+/// a vector without them.
 const SQLITE_KEY_TABLE: &str = "CREATE TABLE search_entity_embeddings (\
     vector_rowid INTEGER PRIMARY KEY, \
     workspace_id TEXT NOT NULL, \
     doc_id TEXT NOT NULL, \
     embedder_revision TEXT NOT NULL, \
     source_indexed_at_unix_nanos INTEGER NOT NULL, \
+    text_sha256 BLOB, \
+    text_sha256_source_indexed_at_unix_nanos INTEGER, \
     CONSTRAINT search_entity_embeddings_key UNIQUE (workspace_id, doc_id)\
 )";
 
@@ -135,7 +142,8 @@ fn sqlite_vector_dimension(statement: &str) -> Option<usize> {
 /// The statement that creates the vector table for vectors of `dimension`.
 ///
 /// The table is keyed like `search_entities` and carries the columns the
-/// vector query filters on, so that query reads this table alone. It has no
+/// vector query filters on, so that query reads this table alone, and the
+/// digest columns of vector reuse, as on `SQLite`. It has no
 /// foreign key, not even to `workspace_records`: the Embedder's reconcile
 /// pass (#3055) will remove vectors whose Search Entity or Workspace is gone.
 /// The ADR "Universal Search adds a vector list from a bundled CPU model"
@@ -151,10 +159,153 @@ fn vector_table_statement(dimension: usize) -> String {
             tool_key TEXT, \
             embedder_revision TEXT NOT NULL, \
             source_indexed_at_unix_nanos BIGINT NOT NULL, \
+            text_sha256 BYTEA, \
+            text_sha256_source_indexed_at_unix_nanos BIGINT, \
             embedding halfvec({dimension}) NOT NULL, \
             CONSTRAINT search_entity_embeddings_pk PRIMARY KEY (workspace_id, doc_id)\
         )"
     )
+}
+
+/// The columns vector reuse reads, with their Postgres and `SQLite` types,
+/// for a vector table a Coral older than vector reuse made.
+const REUSE_COLUMNS: [(&str, &str, &str); 2] = [
+    ("text_sha256", "BYTEA", "BLOB"),
+    (
+        "text_sha256_source_indexed_at_unix_nanos",
+        "BIGINT",
+        "INTEGER",
+    ),
+];
+
+/// The index that finds a Workspace's vectors by the digest of their text.
+const REUSE_INDEX_NAME: &str = "search_entity_embeddings_text_sha256";
+
+/// The statement that creates [`REUSE_INDEX_NAME`].
+fn reuse_index_statement() -> String {
+    format!("CREATE INDEX {REUSE_INDEX_NAME} ON search_entity_embeddings ({REUSE_INDEX_COLUMNS})")
+}
+
+/// The columns of the reuse index, in order, as the catalog reads keep them.
+const REUSE_INDEX_COLUMNS: &str = "workspace_id, text_sha256";
+
+/// What boot found of vector reuse on an existing vector table.
+pub(super) enum ReuseShape {
+    /// The table had both columns and the index.
+    Ready,
+    /// Boot added what the table lacked.
+    Added,
+    /// The table has a reuse column of another type or one that refuses
+    /// NULL, or the index's name on other columns or another table: what,
+    /// by name and type.
+    Unexpected(String),
+}
+
+/// Adds to the vector table each of the reuse columns and the reuse index
+/// that it lacks: a Coral older than vector reuse made it without them.
+/// Each column is nullable, so that Coral's writes still succeed, and no row
+/// is filled. Reads the catalog first, so a table that has them takes no
+/// lock, and a column or index of another shape changes nothing. On
+/// Postgres a lock wait past five seconds fails the boot, as in a migration.
+/// Searches that arrive while the boot waits for the lock, or holds it to
+/// build the index, wait behind it.
+pub(super) async fn add_reuse_columns_and_index(
+    transaction: &mut Transaction<'_>,
+) -> Result<ReuseShape, Error> {
+    let (column_sql, index_sql) = match transaction.system() {
+        DatabaseSystem::Postgres => (
+            "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod), a.attnotnull \
+             FROM pg_catalog.pg_attribute a \
+             JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = current_schema() AND c.relname = 'search_entity_embeddings' \
+             AND a.attnum > 0 AND NOT a.attisdropped"
+                .to_owned(),
+            "SELECT t.relname::text, (\
+                 SELECT string_agg(a.attname::text, ', ' ORDER BY k.position) \
+                 FROM unnest(x.indkey::int2[]) WITH ORDINALITY AS k(attnum, position) \
+                 JOIN pg_catalog.pg_attribute a \
+                     ON a.attrelid = x.indrelid AND a.attnum = k.attnum) \
+             FROM pg_catalog.pg_class i \
+             JOIN pg_catalog.pg_namespace n ON n.oid = i.relnamespace \
+             JOIN pg_catalog.pg_index x ON x.indexrelid = i.oid \
+             JOIN pg_catalog.pg_class t ON t.oid = x.indrelid \
+             WHERE n.nspname = current_schema() AND i.relname = $1"
+                .to_owned(),
+        ),
+        DatabaseSystem::Sqlite => (
+            "SELECT name, type, \"notnull\" <> 0 \
+             FROM pragma_table_info('search_entity_embeddings')"
+                .to_owned(),
+            format!(
+                "SELECT tbl_name, (\
+                     SELECT group_concat(name, ', ') FROM (\
+                         SELECT name FROM pragma_index_info('{REUSE_INDEX_NAME}') \
+                         ORDER BY seqno)) \
+                 FROM sqlite_schema WHERE type = 'index' AND name = ?1"
+            ),
+        ),
+    };
+    let columns: Vec<(String, String, bool)> = transaction
+        .fetch_all_sql(&column_sql, sea_query::Values(Vec::new()))
+        .await?;
+    let index: Vec<(String, Option<String>)> = transaction
+        .fetch_all_sql(&index_sql, sea_query::Values(vec![REUSE_INDEX_NAME.into()]))
+        .await?;
+    let mut missing_columns = Vec::new();
+    for (column, postgres_type, sqlite_type) in REUSE_COLUMNS {
+        let expected_type = match transaction.system() {
+            DatabaseSystem::Postgres => postgres_type,
+            DatabaseSystem::Sqlite => sqlite_type,
+        };
+        match columns.iter().find(|(present, _, _)| present == column) {
+            None => missing_columns.push((column, expected_type)),
+            Some((_, found_type, _)) if !found_type.eq_ignore_ascii_case(expected_type) => {
+                return Ok(ReuseShape::Unexpected(format!(
+                    "column {column} of type {found_type}"
+                )));
+            }
+            Some((_, _, true)) => {
+                return Ok(ReuseShape::Unexpected(format!(
+                    "column {column} that refuses NULL"
+                )));
+            }
+            Some(_) => {}
+        }
+    }
+    let index_missing = match index.first() {
+        None => true,
+        Some((table, Some(columns)))
+            if table == "search_entity_embeddings" && columns == REUSE_INDEX_COLUMNS =>
+        {
+            false
+        }
+        Some((table, columns)) => {
+            return Ok(ReuseShape::Unexpected(format!(
+                "index {REUSE_INDEX_NAME} on {table} ({})",
+                columns.as_deref().unwrap_or("expressions")
+            )));
+        }
+    };
+    if missing_columns.is_empty() && !index_missing {
+        return Ok(ReuseShape::Ready);
+    }
+    if transaction.system() == DatabaseSystem::Postgres {
+        transaction
+            .execute_script("SET LOCAL lock_timeout = '5s'")
+            .await?;
+    }
+    for (column, column_type) in missing_columns {
+        transaction
+            .execute_script(&format!(
+                "ALTER TABLE search_entity_embeddings ADD COLUMN {column} {column_type}"
+            ))
+            .await?;
+    }
+    if index_missing {
+        transaction.execute_script(&reuse_index_statement()).await?;
+    }
+    Ok(ReuseShape::Added)
 }
 
 /// Holds, until the transaction ends, the lock that makes concurrent boots
@@ -224,8 +375,8 @@ async fn postgres_vector_table(
 /// Reads the two `SQLite` vector tables. The sqlite-vec table decides, as
 /// the `embedding` column does on Postgres: one that Coral created has the
 /// same or another dimension, and any other is unexpected. A key table
-/// beside it keeps any other change to its shape. One of the two alone is
-/// unexpected.
+/// beside it keeps any change to its shape; boot adds the reuse columns
+/// later. One of the two alone is unexpected.
 async fn sqlite_vector_tables(
     transaction: &mut Transaction<'_>,
     dimension: usize,
@@ -277,15 +428,16 @@ pub(super) async fn create_vector_table(
         DatabaseSystem::Postgres => {
             transaction
                 .execute_script(&vector_table_statement(dimension))
-                .await
+                .await?;
         }
         DatabaseSystem::Sqlite => {
             transaction.execute_script(SQLITE_KEY_TABLE).await?;
             transaction
                 .execute_script(&sqlite_vector_table_statement(dimension))
-                .await
+                .await?;
         }
     }
+    transaction.execute_script(&reuse_index_statement()).await
 }
 
 pub(super) async fn sqlite_version(transaction: &mut Transaction<'_>) -> Result<String, Error> {
