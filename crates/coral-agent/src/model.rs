@@ -395,6 +395,18 @@ pub(crate) struct Usage {
     pub(crate) output_tokens: i64,
 }
 
+impl Usage {
+    /// Total tokens reported for one model call, or `None` when zero.
+    pub(crate) fn context_tokens(self) -> Option<usize> {
+        let total = self
+            .input_tokens
+            .max(0)
+            .saturating_add(self.cache_read_input_tokens.max(0))
+            .saturating_add(self.output_tokens.max(0));
+        usize::try_from(total).ok().filter(|&tokens| tokens > 0)
+    }
+}
+
 /// Why the model gave no reply. The text never holds the server's answer, the key or the conversation.
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum ModelError {
