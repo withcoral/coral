@@ -9,7 +9,8 @@ use serde_json::{Map, Value, json};
 use crate::prompt::ToolText;
 
 use super::{
-    Block, Message, ModelCall, ModelError, Protocol, Reply, Role, ToolCall, Usage, tool_parameters,
+    Block, Message, ModelCall, ModelError, Protocol, Reply, Role, ToolCall, Usage,
+    reasoning_matches, tool_parameters,
 };
 
 /// The `anthropic-version` header required by the Messages API.
@@ -220,9 +221,9 @@ fn push_assistant_message(messages: &mut Vec<AnthropicMessage>, content: &[Block
             Block::Reasoning {
                 text,
                 model: writer,
-                protocol: Some(Protocol::Anthropic),
+                protocol,
                 opaque: Some(opaque),
-            } if writer == model => {
+            } if reasoning_matches(writer, *protocol, Protocol::Anthropic, model) => {
                 if let Some(replayed) = replay_thinking_block(text, opaque) {
                     thinking_blocks.push(replayed);
                 }

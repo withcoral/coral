@@ -9,7 +9,8 @@ use serde_json::{Map, Value, json};
 use crate::prompt::ToolText;
 
 use super::{
-    Block, Message, ModelCall, ModelError, Protocol, Reply, Role, ToolCall, Usage, tool_parameters,
+    Block, Message, ModelCall, ModelError, Protocol, Reply, Role, ToolCall, Usage,
+    reasoning_matches, tool_parameters,
 };
 
 /// Serializes an `OpenAI` Responses API request body.
@@ -133,10 +134,16 @@ fn input_items(conversation: &[Message], model: &str) -> Vec<Value> {
                     match block {
                         Block::Reasoning {
                             model: writer,
-                            protocol: Some(Protocol::OpenAiResponses),
+                            protocol,
                             opaque: Some(item),
                             ..
-                        } if writer == model => {
+                        } if reasoning_matches(
+                            writer,
+                            *protocol,
+                            Protocol::OpenAiResponses,
+                            model,
+                        ) =>
+                        {
                             flush_assistant_text(&mut items, &mut text_parts);
                             items.push(item.clone());
                         }

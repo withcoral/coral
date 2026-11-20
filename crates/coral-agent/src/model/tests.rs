@@ -668,11 +668,21 @@ async fn anthropic_encodes_caching_error_flags_merged_turns_and_replays_thinking
 // and stop_reason normalization (`max_tokens`, `refusal`).
 #[tokio::test]
 async fn anthropic_maps_reasoning_effort_variants_and_stop_reasons() {
-    for (effort, max_tokens, expected_thinking, expected_output_config, expected_max) in [
-        (None, None, None, None, 16_384),
+    for (
+        effort,
+        max_tokens,
+        stop_reason,
+        expected_finish,
+        expected_thinking,
+        expected_output_config,
+        expected_max,
+    ) in [
+        (None, None, "max_tokens", "length", None, None, 16_384),
         (
             Some("none"),
             None,
+            "refusal",
+            "content_filter",
             Some(json!({"type": "disabled"})),
             None,
             16_384,
@@ -680,6 +690,8 @@ async fn anthropic_maps_reasoning_effort_variants_and_stop_reasons() {
         (
             Some("high"),
             None,
+            "max_tokens",
+            "length",
             Some(json!({"type": "adaptive"})),
             Some(json!({"effort": "high"})),
             16_384,
@@ -687,6 +699,8 @@ async fn anthropic_maps_reasoning_effort_variants_and_stop_reasons() {
         (
             Some("20000"),
             None,
+            "max_tokens",
+            "length",
             Some(json!({"type": "enabled", "budget_tokens": 20_000})),
             None,
             24_096,
@@ -694,6 +708,8 @@ async fn anthropic_maps_reasoning_effort_variants_and_stop_reasons() {
         (
             Some("8000"),
             Some(4096),
+            "max_tokens",
+            "length",
             Some(json!({"type": "enabled", "budget_tokens": 8_000})),
             None,
             12_096,
@@ -704,7 +720,7 @@ async fn anthropic_maps_reasoning_effort_variants_and_stop_reasons() {
             .and(path("/v1/messages"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "model": MODEL,
-                "stop_reason": "max_tokens",
+                "stop_reason": stop_reason,
                 "content": [{"type": "text", "text": "Cut."}],
             })))
             .mount(&server)
@@ -719,7 +735,7 @@ async fn anthropic_maps_reasoning_effort_variants_and_stop_reasons() {
             None => client.reply("Be brief.", &hello, &TOOLS).await.unwrap(),
         };
 
-        assert_eq!(reply.finish_reason.as_deref(), Some("length"));
+        assert_eq!(reply.finish_reason.as_deref(), Some(expected_finish));
         let body: Value = received(&server).await.pop().unwrap().body_json().unwrap();
         assert_eq!(
             body.get("thinking"),

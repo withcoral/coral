@@ -164,10 +164,12 @@ fn size(thread: &[Message]) -> usize {
 fn tokens(message: &Message) -> usize {
     let bytes = message.content.iter().map(|block| match block {
         Block::Text { text } | Block::Summary { text, .. } => text.len(),
-        Block::Reasoning { text, .. } if !text.is_empty() => text.len(),
-        Block::Reasoning { opaque, .. } => opaque
-            .as_ref()
-            .map_or(0, |value| value.to_string().len() / 2),
+        Block::Reasoning { text, opaque, .. } => {
+            let opaque_bytes = opaque
+                .as_ref()
+                .map_or(0, |value| value.to_string().len() / 2);
+            text.len().max(opaque_bytes)
+        }
         Block::ToolUse(call) => call.name.len() + call.arguments.len(),
         Block::ToolResult { content, .. } => content.len(),
     });
@@ -380,5 +382,30 @@ mod tests {
             "opaque reasoning must count"
         );
         assert_eq!(transcript(&opaque_message), ["[Agent]: Done."]);
+
+        let summary_with_opaque = Block::Reasoning {
+            text: "Short summary.".to_owned(),
+            model: "gpt-5.4".to_owned(),
+            protocol: Some(crate::model::Protocol::OpenAiResponses),
+            opaque: Some(serde_json::json!({
+                "type": "reasoning",
+                "encrypted_content": "a".repeat(600),
+                "summary": [{"type": "summary_text", "text": "Short summary."}],
+            })),
+        };
+        let mixed_message = Message {
+            role: Role::Assistant,
+            content: vec![
+                summary_with_opaque,
+                Block::Text {
+                    text: "Done.".to_owned(),
+                },
+            ],
+        };
+        assert!(
+            tokens(&mixed_message) >= 100,
+            "opaque payload must still count alongside a short summary"
+        );
+        assert_eq!(transcript(&mixed_message), ["[Agent]: Done."]);
     }
 }

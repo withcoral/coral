@@ -235,6 +235,19 @@ fn tool_parameters(tool: &ToolText) -> Value {
         .expect("a tool's parameters are JSON, as the prompt's tests check")
 }
 
+/// Whether a stored reasoning block written by `writer` under `stored_protocol`
+/// may be replayed to `expected_model` over `expected_protocol`. Legacy rows
+/// with no recorded protocol belong to Chat Completions.
+fn reasoning_matches(
+    writer: &str,
+    stored_protocol: Option<Protocol>,
+    expected_protocol: Protocol,
+    expected_model: &str,
+) -> bool {
+    writer == expected_model
+        && stored_protocol.unwrap_or(Protocol::ChatCompletions) == expected_protocol
+}
+
 /// One message of a conversation, in Coral's own block format.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Message {
@@ -300,7 +313,6 @@ pub(crate) enum Block {
     /// What the model reasoned before it replied, and the configured `model`
     /// (and `protocol`) that wrote it.
     Reasoning {
-        #[serde(default)]
         text: String,
         model: String,
         /// The protocol that wrote this block; absent in older Chat Completions rows.

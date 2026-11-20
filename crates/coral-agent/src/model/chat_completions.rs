@@ -8,7 +8,8 @@ use serde_json::Value;
 use crate::prompt::ToolText;
 
 use super::{
-    Block, Message, ModelCall, ModelError, Protocol, Reply, Role, ToolCall, Usage, tool_parameters,
+    Block, Message, ModelCall, ModelError, Protocol, Reply, Role, ToolCall, Usage,
+    reasoning_matches, tool_parameters,
 };
 
 /// Serializes a Chat Completions request body.
@@ -121,8 +122,7 @@ fn reasoning_by<'a>(message: &'a Message, model: &str) -> Option<&'a str> {
             model: writer,
             protocol,
             ..
-        } if writer == model
-            && protocol.unwrap_or(Protocol::ChatCompletions) == Protocol::ChatCompletions
+        } if reasoning_matches(writer, *protocol, Protocol::ChatCompletions, model)
             && !text.is_empty() =>
         {
             Some(text.as_str())
