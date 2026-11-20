@@ -1,5 +1,6 @@
 //! What `agent`, `wait` and `cancel` return for a Sub-agent: its latest Turn,
-//! the steps it took, and what its Runs wait for from a person.
+//! the steps it took, the outcome it recorded, and what its Runs wait for from
+//! a person.
 
 use coral_mcp::HumanInterfaceUrl;
 use coral_run::{RequiredActionRequest, RequiredActor, RunId};
@@ -9,7 +10,8 @@ use serde_json::{Map, Value, json};
 use crate::sub_agents::{TurnPage, TurnState, WaitingAction};
 
 /// The Turn's fields, after the fields that name the Sub-agent. A running
-/// Turn whose Runs wait for a person is `needs_action`.
+/// Turn whose Runs wait for a person is `needs_action`. `outcome` appears once
+/// the model has recorded one.
 pub(super) fn turn_fields(
     page: &TurnPage,
     human_interface: &HumanInterfaceUrl,
@@ -34,6 +36,9 @@ pub(super) fn turn_fields(
     let mut fields = Map::new();
     fields.insert("state".to_owned(), json!(state));
     fields.extend(detail.map(|(name, value)| (name.to_owned(), value)));
+    if let Some(outcome) = page.outcome {
+        fields.insert("outcome".to_owned(), json!(outcome));
+    }
     fields.insert("steps".to_owned(), json!(steps.collect::<Vec<_>>()));
     fields.insert("next_cursor".to_owned(), json!(page.cursor()));
     fields

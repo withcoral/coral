@@ -215,7 +215,7 @@ struct AgentArguments {
 }
 
 const SUB_AGENT_ID_DESCRIPTION: &str = "The sub_agent_id from agent, in place of run_id.";
-const WAIT_BY_SUB_AGENT_ID: &str = "With `sub_agent_id` in place of `run_id`, observe that Sub-agent; pass the latest `next_cursor` from `agent` or `wait` on it as `cursor`. The call returns when its turn ends, it newly needs a person, or `wait_ms` runs out. It returns its `state`, its `steps`, its `answer` once `completed` and its `failure` once `failed`. `needs_action` means that the run of a step waits for a person: handle its `required_actions` as a run's. `interrupted` means that Coral stopped before the Sub-agent answered: call `agent` again with its `sub_agent_id`.";
+const WAIT_BY_SUB_AGENT_ID: &str = "With `sub_agent_id` in place of `run_id`, observe that Sub-agent; pass the latest `next_cursor` from `agent` or `wait` on it as `cursor`. The call returns when its turn ends, it newly needs a person, or `wait_ms` runs out. It returns its `state`, its `steps`, its `answer` once `completed`, the `outcome` it recorded for its work if it recorded one, and its `failure` once `failed`. `needs_action` means that the run of a step waits for a person: handle its `required_actions` as a run's. `interrupted` means that Coral stopped before the Sub-agent answered: call `agent` again with its `sub_agent_id`.";
 const WAIT_TAKES: &str = "with `sub_agent_id`, wait takes only `cursor` and `wait_ms` beside it";
 
 #[derive(Deserialize)]

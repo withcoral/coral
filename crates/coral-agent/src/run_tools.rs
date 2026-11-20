@@ -178,15 +178,27 @@ impl RunTools {
 }
 
 /// What `end_task` answers: the lead's Task and the outcome, in the fields of
-/// core's `end_task`. It ends nothing. The lead owns its Task, and the Turn
-/// ends on the model's next message without a tool call. A model trained on
-/// core's tools calls `end_task` before it answers (ADR 0040).
+/// core's `end_task`. The thread keeps that answer, and the lead reads the
+/// outcome beside the Turn's answer. It ends nothing: the lead owns its Task,
+/// and the Turn ends on the model's next message without a tool call. A model
+/// trained on core's tools calls `end_task` before it answers (ADR 0040).
 fn end_task(caller: &Caller, arguments: &str) -> Result<String, Failure> {
     let end: EndTaskArguments = parse_arguments("end_task", arguments)?;
     if end.task_id != caller.task_id.as_str() {
         return Err(Failure::other_task_to_end(&caller.task_id));
     }
     Ok(json!({"task_id": end.task_id, "outcome": end.outcome}).to_string())
+}
+
+/// The outcome that `end_task` recorded, read from what it answered. A refused
+/// call answers with an error, and recorded nothing.
+pub(crate) fn recorded_outcome(answered: &str) -> Option<Outcome> {
+    #[derive(Deserialize)]
+    struct Recorded {
+        outcome: Outcome,
+    }
+    let recorded: Recorded = serde_json::from_str(answered).ok()?;
+    Some(recorded.outcome)
 }
 
 /// A failure as the model reads it, recorded on the call's span.
@@ -211,9 +223,9 @@ struct EndTaskArguments {
 }
 
 /// How the model says its work went.
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum Outcome {
+pub(crate) enum Outcome {
     Success,
     Failure,
 }
