@@ -694,3 +694,29 @@ const fn wire_end(state: RunState) -> WireEnd {
         RunState::Interrupted => WireEnd::Interrupted,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Catches: a stream that sends a second `Terminate` when two
+    /// termination paths reach it, such as an outside end a wake read found
+    /// and the rejection of the chunk that was in flight.
+    #[test]
+    fn a_stream_sends_one_terminate() {
+        let (responses, mut sent) = mpsc::unbounded_channel();
+        let link = StreamLink::new(responses);
+
+        link.terminate(Some(RunTerminationKind::Canceled));
+        link.terminate(Some(RunTerminationKind::TimedOut));
+
+        let mut terminates = Vec::new();
+        while let Ok(Ok(RunResponse {
+            message: Some(run_response::Message::Terminate(terminate)),
+        })) = sent.try_recv()
+        {
+            terminates.push(terminate.reason());
+        }
+        assert_eq!(terminates, [TerminateReason::Canceled]);
+    }
+}

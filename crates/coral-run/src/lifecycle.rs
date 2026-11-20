@@ -141,10 +141,13 @@ impl RunRecord {
     }
 
     /// Whether a Run Executor waits for, has taken or holds the Run: it is
-    /// running with no worker claim. A Run Owner's Run holds one until it
-    /// ends.
+    /// running with no worker claim, and started only if a take gave it to a
+    /// Run Executor. A Run Owner's Run holds a worker claim until it ends,
+    /// unless an earlier release released it with its recorded interruption.
     pub(crate) fn runs_on_run_executor(&self) -> bool {
-        self.state == RunState::Running && self.worker_claim_id.is_none()
+        self.state == RunState::Running
+            && self.worker_claim_id.is_none()
+            && (!self.execution_started() || self.on_run_executor)
     }
 
     pub(crate) const fn execution_started(&self) -> bool {

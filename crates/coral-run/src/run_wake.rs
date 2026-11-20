@@ -23,7 +23,7 @@ use coral_telemetry::safe;
 use tokio::sync::Notify;
 
 use crate::engine::Clock;
-use crate::observation::{Cadence, late_delivery_ms};
+use crate::observation::{Cadence, Turn, late_delivery_ms};
 use crate::owner::{Message, OwnerHandle, Owners};
 use crate::run_repository::{self, HeldWake};
 use crate::{CoralInstanceId, Error, RunId};
@@ -171,11 +171,10 @@ impl Reader {
             // its id decodes: each is logged once while it stays.
             let mut skipped = HashSet::new();
             loop {
-                #[cfg_attr(not(test), expect(unused_variables, reason = "tests observe it"))]
                 let turn = cadence.turn(&database, &woken).await;
-                // A ring may come before a local wake that wins the turn:
-                // every turn is relayed, and a loop's check is a hint.
-                {
+                // A ring that a local wake beat to the turn is relayed too,
+                // and the backstop stands in for a ring that never came.
+                if cadence.rang() || turn == Turn::Backstop {
                     let listeners = listeners
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);

@@ -250,27 +250,39 @@ pub(crate) enum Turn {
 pub(crate) struct Cadence {
     changes: Option<ChangeSubscription>,
     last_read: Option<tokio::time::Instant>,
+    /// The change signal rang (or an outage of it began) before the last
+    /// read, whatever started it.
+    rang: bool,
 }
 
 impl Cadence {
-    /// Waits for the next read and says what started it.
+    /// Waits for the next read and says what started it. A ring that comes
+    /// within the read gap is kept when a wake starts the read first.
     pub(crate) async fn turn(&mut self, database: &Database, woken: &tokio::sync::Notify) -> Turn {
         let mut turn = Turn::First;
+        let mut rang = false;
         if let Some(last_read) = self.last_read {
             let changes = &mut self.changes;
-            turn = tokio::select! {
-                () = async {
-                    rung(changes).await;
-                    tokio::time::sleep_until(last_read + READ_GAP).await;
-                } => Turn::Rang,
-                () = woken.notified() => Turn::Woken,
-                () = tokio::time::sleep_until(last_read + BACKSTOP) => Turn::Backstop,
+            turn = loop {
+                tokio::select! {
+                    () = rung(changes), if !rang => rang = true,
+                    () = tokio::time::sleep_until(last_read + READ_GAP), if rang => break Turn::Rang,
+                    () = woken.notified() => break Turn::Woken,
+                    () = tokio::time::sleep_until(last_read + BACKSTOP) => break Turn::Backstop,
+                }
             };
         }
         if self.changes.is_none() {
             self.changes = database.subscribe_changes().ok();
         }
+        self.rang = rang;
         self.last_read = Some(tokio::time::Instant::now());
         turn
+    }
+
+    /// Whether the change signal rang before the last read, whichever turn
+    /// started it.
+    pub(crate) const fn rang(&self) -> bool {
+        self.rang
     }
 }

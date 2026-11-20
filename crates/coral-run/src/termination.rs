@@ -149,30 +149,8 @@ impl RunModule {
             now,
             run.shutdown_grace_nanos,
         )?;
-        let (kind, ended_at) = end_in_one_chunk(
-            &mut transaction,
-            &run,
-            Some(cancellation),
-            Vec::new(),
-            None,
-            now,
-        )
-        .await?;
-        if run.execution_started() {
-            run_repository::raise_wake(&mut transaction, workspace_id, run_id, UnixNanos::new(now))
-                .await?;
-        }
-        transaction.commit().await?;
-        let outcome = kind.outcome();
-        let end = if run.execution_started() {
-            RunEnd::Stopped {
-                outcome: &outcome,
-                reason: kind,
-            }
-        } else {
-            RunEnd::Unstarted(&outcome)
-        };
-        crate::trace::record_run_end(&run, &end, ended_at);
+        let wakes = run.execution_started();
+        commit_end(transaction, &run, Some(cancellation), None, now, wakes).await?;
         self.wakes.wake_for(run_id);
         Ok(())
     }
@@ -515,8 +493,9 @@ pub(crate) enum Interrupter {
 }
 
 /// [`end_in_one_chunk`] with no Events of the caller's, committed, and the
-/// Run's end traced. With `wakes`, the Run's wake row is raised after the
-/// Run row is written, the order every writer keeps.
+/// Run's end traced (a Run that never started as unstarted). With `wakes`,
+/// the Run's wake row is raised after the Run row is written, the order
+/// every writer keeps.
 pub(crate) async fn commit_end(
     mut transaction: Transaction<'_>,
     run: &RunRecord,
@@ -544,14 +523,16 @@ pub(crate) async fn commit_end(
         .await?;
     }
     transaction.commit().await?;
-    crate::trace::record_run_end(
-        run,
-        &RunEnd::Stopped {
-            outcome: &kind.outcome(),
+    let outcome = kind.outcome();
+    let end = if run.execution_started() {
+        RunEnd::Stopped {
+            outcome: &outcome,
             reason: kind,
-        },
-        ended_at,
-    );
+        }
+    } else {
+        RunEnd::Unstarted(&outcome)
+    };
+    crate::trace::record_run_end(run, &end, ended_at);
     Ok(())
 }
 

@@ -255,7 +255,8 @@ async fn a_decision_under_the_loops_chunk_reaches_its_waiter_through_the_rebuild
 
 /// Catches: a cancellation of a Run a Run Executor holds that waits for a
 /// Run Owner, leaves an Invocation open, or never reaches the Program; and
-/// one past the Run's deadline that ends it anything but timed out.
+/// a receiver that judges one past the Run's deadline by its own clock: it
+/// ends Canceled, as the first write under the head decides.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cancellation_received_elsewhere_ends_the_run_with_its_invocations() {
     for past_deadline in [false, true] {
@@ -420,4 +421,44 @@ async fn the_sweepers_writes_reach_the_streams_loop() {
         }
         wait_until_async(async || held.wake_rows().await == 0).await;
     }
+}
+
+/// Catches: a Program that runs on while its loop's chunk is in flight after
+/// another writer ended the Run, and a second `Terminate` once that chunk
+/// finds the end.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_ended_under_the_loops_chunk_terminates_its_program_once() {
+    let probe = WakeProbe::new();
+    let mut held = Held::new(answering(), probe.clone(), false).await;
+    let release = probe.hold_next_commit();
+    held.stream
+        .request(1, emit(&serde_json::json!({"step": 1})));
+    wait_until(|| probe.commit_held()).await;
+
+    let canceled = held
+        .other
+        .cancel(
+            &held.tool.principal,
+            &held.tool.workspace_id,
+            &held.run_id,
+            &immediate(None, 100),
+        )
+        .await
+        .expect("the cancellation is recorded at once");
+
+    assert_eq!(canceled.state(), RunState::Canceled);
+    // The chunk is still held: the wake stopped the Program.
+    assert_eq!(held.terminated().await, TerminateReason::Canceled);
+    release.send(()).expect("release the chunk");
+    held.stream.request(2, finish_with("1"));
+    let rest = held
+        .stream
+        .until(|read| read.contains(&ended(WireEnd::Canceled)))
+        .await;
+    assert!(
+        !rest
+            .iter()
+            .any(|message| matches!(message, run_response::Message::Terminate(_))),
+        "one Terminate: {rest:?}"
+    );
 }
