@@ -1,12 +1,13 @@
-use sea_query::{Alias, Condition, Expr, ExprTrait as _, Iden, OnConflict, Order, Query};
+use sea_query::{Alias, Condition, Expr, ExprTrait as _, Iden, Order, Query};
 use sqlx::FromRow;
 
 use coral_db::{Database, QueryExecutor, Transaction, UnixNanos, Version};
 
+use crate::management_repository::{changed_at_version, row_metadata};
 use crate::{
     AdministrativeLifecycleEvent, AuthoritySource, Error, LifecycleAction, LifecycleOutcome,
-    LifecycleTargetKind, TraceId, UserId, Workspace, WorkspaceDisplayName, WorkspaceId,
-    WorkspaceMembership, WorkspaceRole, WorkspaceState,
+    LifecycleTargetKind, ResourceMetadata, TraceId, UserId, Workspace, WorkspaceDisplayName,
+    WorkspaceId, WorkspaceMembership, WorkspaceRole, WorkspaceState,
 };
 
 #[derive(Iden)]
@@ -53,6 +54,8 @@ struct AuthorityRow {
     display_name: String,
     state: String,
     lifecycle_version: i64,
+    created_at_unix_nanos: UnixNanos,
+    updated_at_unix_nanos: UnixNanos,
     membership_role: Option<String>,
 }
 
@@ -79,7 +82,14 @@ impl AuthorityRow {
             .map(WorkspaceRole::from_storage_str)
             .transpose()?;
         Ok((
-            Workspace::new(workspace_id, display_name, state, version),
+            Workspace::new(
+                workspace_id,
+                display_name,
+                state,
+                version,
+                self.created_at_unix_nanos,
+                self.updated_at_unix_nanos,
+            ),
             role,
         ))
     }
@@ -91,6 +101,8 @@ struct WorkspaceRow {
     display_name: String,
     state: String,
     lifecycle_version: i64,
+    created_at_unix_nanos: UnixNanos,
+    updated_at_unix_nanos: UnixNanos,
 }
 
 impl WorkspaceRow {
@@ -100,6 +112,8 @@ impl WorkspaceRow {
             display_name: self.display_name,
             state: self.state,
             lifecycle_version: self.lifecycle_version,
+            created_at_unix_nanos: self.created_at_unix_nanos,
+            updated_at_unix_nanos: self.updated_at_unix_nanos,
             membership_role: None,
         }
         .decode()
@@ -112,10 +126,13 @@ struct MembershipRow {
     workspace_id: String,
     user_id: String,
     role: String,
+    version: i64,
+    created_at_unix_nanos: UnixNanos,
+    updated_at_unix_nanos: UnixNanos,
 }
 
 impl MembershipRow {
-    fn decode(self) -> Result<WorkspaceMembership, Error> {
+    fn decode(self) -> Result<(WorkspaceMembership, ResourceMetadata), Error> {
         let workspace_id = WorkspaceId::parse(&self.workspace_id).map_err(|_parse_error| {
             Error::CorruptData(format!(
                 "Workspace Membership row has invalid Workspace identity '{}'",
@@ -126,7 +143,15 @@ impl MembershipRow {
             Error::CorruptData("Workspace Membership row has invalid User identity".to_string())
         })?;
         let role = WorkspaceRole::from_storage_str(&self.role)?;
-        Ok(WorkspaceMembership::new(workspace_id, user_id, role))
+        let metadata = row_metadata(
+            self.version,
+            Some(self.created_at_unix_nanos),
+            Some(self.updated_at_unix_nanos),
+        )?;
+        Ok((
+            WorkspaceMembership::new(workspace_id, user_id, role),
+            metadata,
+        ))
     }
 }
 
@@ -185,14 +210,19 @@ pub(super) async fn find_workspace(
     row.map(WorkspaceRow::decode).transpose()
 }
 
+/// The columns a [`WorkspaceRow`] reads.
+const WORKSPACE_COLUMNS: [WorkspaceRecords; 6] = [
+    WorkspaceRecords::Id,
+    WorkspaceRecords::DisplayName,
+    WorkspaceRecords::State,
+    WorkspaceRecords::LifecycleVersion,
+    WorkspaceRecords::CreatedAtUnixNanos,
+    WorkspaceRecords::UpdatedAtUnixNanos,
+];
+
 fn workspace_statement(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
     Query::select()
-        .columns([
-            WorkspaceRecords::Id,
-            WorkspaceRecords::DisplayName,
-            WorkspaceRecords::State,
-            WorkspaceRecords::LifecycleVersion,
-        ])
+        .columns(WORKSPACE_COLUMNS)
         .from(WorkspaceRecords::Table)
         .and_where(Expr::col(WorkspaceRecords::Id).eq(workspace_id.to_string()))
         .to_owned()
@@ -211,12 +241,7 @@ pub(super) async fn authority(
 
 fn authority_statement(workspace_id: &WorkspaceId, user_id: &UserId) -> sea_query::SelectStatement {
     Query::select()
-        .columns([
-            (WorkspaceRecords::Table, WorkspaceRecords::Id),
-            (WorkspaceRecords::Table, WorkspaceRecords::DisplayName),
-            (WorkspaceRecords::Table, WorkspaceRecords::State),
-            (WorkspaceRecords::Table, WorkspaceRecords::LifecycleVersion),
-        ])
+        .columns(WORKSPACE_COLUMNS.map(|column| (WorkspaceRecords::Table, column)))
         .expr_as(
             Expr::col((WorkspaceMemberships::Table, WorkspaceMemberships::Role)),
             Alias::new("membership_role"),
@@ -285,7 +310,6 @@ async fn workspace_held(
 pub(super) async fn insert_workspace(
     transaction: &mut Transaction<'_>,
     workspace: &Workspace,
-    occurred_at: UnixNanos,
 ) -> Result<(), Error> {
     let statement = Query::insert()
         .into_table(WorkspaceRecords::Table)
@@ -302,39 +326,25 @@ pub(super) async fn insert_workspace(
             Expr::val(workspace.display_name().as_str()),
             Expr::val(workspace.state().as_storage_str()),
             Expr::val(workspace.version().get()),
-            Expr::val(occurred_at),
-            Expr::val(occurred_at),
+            Expr::val(workspace.created_at()),
+            Expr::val(workspace.updated_at()),
         ])
         .to_owned();
     transaction.execute(statement).await?;
     Ok(())
 }
 
-/// The current version of one Workspace, or `None` when it does not exist.
-pub(super) async fn workspace_version(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-) -> Result<Option<Version>, Error> {
-    let statement = Query::select()
-        .column(WorkspaceRecords::LifecycleVersion)
-        .from(WorkspaceRecords::Table)
-        .and_where(Expr::col(WorkspaceRecords::Id).eq(workspace_id.to_string()))
-        .to_owned();
-    let stored: Option<(i64,)> = transaction.fetch_optional(statement).await?;
-    stored.map(|(version,)| row_version(version)).transpose()
-}
-
-/// The version a row holds. A version that is not positive is corrupt.
-fn row_version(stored: i64) -> Result<Version, Error> {
-    Version::new(stored)
-        .ok_or_else(|| Error::CorruptData("resource row has nonpositive version".to_string()))
-}
-
-/// Renames the Workspace and raises its version by one.
+/// Renames the Workspace that is at version `expected`, and raises its
+/// version by one.
+///
+/// # Errors
+///
+/// Returns [`Error::EtagMismatch`] for a Workspace that is not at `expected`.
 pub(super) async fn update_display_name(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     display_name: &WorkspaceDisplayName,
+    expected: Version,
     updated_at: UnixNanos,
 ) -> Result<(), Error> {
     let statement = Query::update()
@@ -351,68 +361,96 @@ pub(super) async fn update_display_name(
             (WorkspaceRecords::UpdatedAtUnixNanos, Expr::val(updated_at)),
         ])
         .and_where(Expr::col(WorkspaceRecords::Id).eq(workspace_id.to_string()))
+        .and_where(Expr::col(WorkspaceRecords::LifecycleVersion).eq(expected.get()))
         .to_owned();
-    transaction.execute(statement).await?;
-    Ok(())
+    changed_at_version(transaction.execute(statement).await?)
 }
 
+/// Moves the Workspace that is at version `expected` to `state`, and raises
+/// its version by one.
+///
+/// # Errors
+///
+/// Returns [`Error::EtagMismatch`] for a Workspace that is not at `expected`.
 pub(super) async fn update_lifecycle(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     state: WorkspaceState,
-    version: Version,
+    expected: Version,
     updated_at: UnixNanos,
 ) -> Result<(), Error> {
     let statement = Query::update()
         .table(WorkspaceRecords::Table)
         .values([
             (WorkspaceRecords::State, Expr::val(state.as_storage_str())),
-            (WorkspaceRecords::LifecycleVersion, Expr::val(version.get())),
+            (
+                WorkspaceRecords::LifecycleVersion,
+                Expr::col(WorkspaceRecords::LifecycleVersion).add(1_i64),
+            ),
             (WorkspaceRecords::UpdatedAtUnixNanos, Expr::val(updated_at)),
         ])
         .and_where(Expr::col(WorkspaceRecords::Id).eq(workspace_id.to_string()))
+        .and_where(Expr::col(WorkspaceRecords::LifecycleVersion).eq(expected.get()))
         .to_owned();
-    transaction.execute(statement).await?;
-    Ok(())
+    changed_at_version(transaction.execute(statement).await?)
 }
 
-pub(super) async fn membership_role_in_transaction(
+/// The role one User holds in one Workspace, with the concurrency metadata of
+/// that Membership, or `None` when the User holds none there.
+pub(super) async fn membership_in_transaction(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     user_id: &UserId,
-) -> Result<Option<WorkspaceRole>, Error> {
-    let statement = Query::select()
-        .column(WorkspaceMemberships::Role)
-        .from(WorkspaceMemberships::Table)
+) -> Result<Option<(WorkspaceRole, ResourceMetadata)>, Error> {
+    let statement = memberships()
         .and_where(Expr::col(WorkspaceMemberships::WorkspaceId).eq(workspace_id.to_string()))
         .and_where(Expr::col(WorkspaceMemberships::UserId).eq(user_id.as_str()))
         .to_owned();
-    let stored: Option<(String,)> = transaction.fetch_optional(statement).await?;
-    stored
-        .map(|(role,)| WorkspaceRole::from_storage_str(&role))
-        .transpose()
+    let row: Option<MembershipRow> = transaction.fetch_optional(statement).await?;
+    row.map(|row| {
+        let (membership, metadata) = row.decode()?;
+        Ok((membership.role(), metadata))
+    })
+    .transpose()
 }
 
-/// The current version of one Workspace Membership, or `None` when the User
-/// holds none there.
-pub(super) async fn membership_version(
+/// Writes the role a User takes in a Workspace. The caller holds the
+/// Workspace and passes the version of the Membership it read there, or
+/// `None` where it found none. A Membership that was absent is created at the
+/// first version. One that was read has its role changed and its version
+/// raised by one.
+///
+/// # Errors
+///
+/// Returns [`Error::EtagMismatch`] for a Membership that is not at the
+/// version read, or that is gone.
+pub(super) async fn write_membership_role(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
-    user_id: &str,
-) -> Result<Option<Version>, Error> {
-    let statement = Query::select()
-        .column(WorkspaceMemberships::Version)
-        .from(WorkspaceMemberships::Table)
-        .and_where(Expr::col(WorkspaceMemberships::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(WorkspaceMemberships::UserId).eq(user_id))
-        .to_owned();
-    let stored: Option<(i64,)> = transaction.fetch_optional(statement).await?;
-    stored.map(|(version,)| row_version(version)).transpose()
+    user_id: &UserId,
+    role: WorkspaceRole,
+    read: Option<Version>,
+    occurred_at: UnixNanos,
+) -> Result<(), Error> {
+    match read {
+        None => insert_membership(transaction, workspace_id, user_id, role, occurred_at).await,
+        Some(expected) => {
+            update_membership_role(
+                transaction,
+                workspace_id,
+                user_id,
+                role,
+                expected,
+                occurred_at,
+            )
+            .await
+        }
+    }
 }
 
-/// Creates the Membership at the first version, or changes its role and
-/// raises its version by one.
-pub(super) async fn upsert_membership(
+/// Creates the Membership at the first version. The caller holds the
+/// Workspace and has found that the User holds no Membership there.
+pub(super) async fn insert_membership(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     user_id: &UserId,
@@ -425,6 +463,7 @@ pub(super) async fn upsert_membership(
             WorkspaceMemberships::WorkspaceId,
             WorkspaceMemberships::UserId,
             WorkspaceMemberships::Role,
+            WorkspaceMemberships::Version,
             WorkspaceMemberships::CreatedAtUnixNanos,
             WorkspaceMemberships::UpdatedAtUnixNanos,
         ])
@@ -432,30 +471,52 @@ pub(super) async fn upsert_membership(
             Expr::val(workspace_id.to_string()),
             Expr::val(user_id.as_str()),
             Expr::val(role.as_storage_str()),
+            Expr::val(Version::FIRST.get()),
             Expr::val(occurred_at),
             Expr::val(occurred_at),
         ])
-        .on_conflict(
-            OnConflict::columns([
-                WorkspaceMemberships::WorkspaceId,
-                WorkspaceMemberships::UserId,
-            ])
-            .update_columns([
-                WorkspaceMemberships::Role,
-                WorkspaceMemberships::UpdatedAtUnixNanos,
-            ])
-            // The stored row's version, not the proposed row's.
-            .value(
-                WorkspaceMemberships::Version,
-                Expr::col((WorkspaceMemberships::Table, WorkspaceMemberships::Version)).add(1_i64),
-            )
-            .to_owned(),
-        )
         .to_owned();
     transaction.execute(statement).await?;
     Ok(())
 }
 
+/// Changes the role of the Membership that is at version `expected`, and
+/// raises its version by one.
+///
+/// # Errors
+///
+/// Returns [`Error::EtagMismatch`] for a Membership that is not at
+/// `expected`, or that is gone.
+async fn update_membership_role(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    user_id: &UserId,
+    role: WorkspaceRole,
+    expected: Version,
+    occurred_at: UnixNanos,
+) -> Result<(), Error> {
+    let statement = Query::update()
+        .table(WorkspaceMemberships::Table)
+        .values([
+            (WorkspaceMemberships::Role, Expr::val(role.as_storage_str())),
+            (
+                WorkspaceMemberships::Version,
+                Expr::col(WorkspaceMemberships::Version).add(1_i64),
+            ),
+            (
+                WorkspaceMemberships::UpdatedAtUnixNanos,
+                Expr::val(occurred_at),
+            ),
+        ])
+        .and_where(Expr::col(WorkspaceMemberships::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(WorkspaceMemberships::UserId).eq(user_id.as_str()))
+        .and_where(Expr::col(WorkspaceMemberships::Version).eq(expected.get()))
+        .to_owned();
+    changed_at_version(transaction.execute(statement).await?)
+}
+
+/// Removes the Membership the User holds in the Workspace, at whatever
+/// version it is. Returns whether the User held one.
 pub(super) async fn delete_membership(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -469,10 +530,33 @@ pub(super) async fn delete_membership(
     Ok(transaction.execute(statement).await? == 1)
 }
 
+/// Removes the Membership that is at version `expected`.
+///
+/// # Errors
+///
+/// Returns [`Error::EtagMismatch`] for a Membership that is not at
+/// `expected`, or that is gone.
+pub(super) async fn delete_membership_at_version(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    user_id: &UserId,
+    expected: Version,
+) -> Result<(), Error> {
+    let statement = Query::delete()
+        .from_table(WorkspaceMemberships::Table)
+        .and_where(Expr::col(WorkspaceMemberships::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(WorkspaceMemberships::UserId).eq(user_id.as_str()))
+        .and_where(Expr::col(WorkspaceMemberships::Version).eq(expected.get()))
+        .to_owned();
+    changed_at_version(transaction.execute(statement).await?)
+}
+
+/// The Memberships of one Workspace, each with its concurrency metadata,
+/// ordered by User.
 pub(super) async fn list_memberships(
     database: impl QueryExecutor,
     workspace_id: &WorkspaceId,
-) -> Result<Vec<WorkspaceMembership>, Error> {
+) -> Result<Vec<(WorkspaceMembership, ResourceMetadata)>, Error> {
     let statement = memberships()
         .and_where(Expr::col(WorkspaceMemberships::WorkspaceId).eq(workspace_id.to_string()))
         .to_owned();
@@ -492,7 +576,11 @@ pub(super) async fn list_owner_memberships(
         statement
             .and_where(Expr::col(WorkspaceMemberships::WorkspaceId).eq(workspace_id.to_string()));
     }
-    fetch_memberships(database, statement).await
+    Ok(fetch_memberships(database, statement)
+        .await?
+        .into_iter()
+        .map(|(membership, _metadata)| membership)
+        .collect())
 }
 
 fn memberships() -> sea_query::SelectStatement {
@@ -501,6 +589,9 @@ fn memberships() -> sea_query::SelectStatement {
             WorkspaceMemberships::WorkspaceId,
             WorkspaceMemberships::UserId,
             WorkspaceMemberships::Role,
+            WorkspaceMemberships::Version,
+            WorkspaceMemberships::CreatedAtUnixNanos,
+            WorkspaceMemberships::UpdatedAtUnixNanos,
         ])
         .from(WorkspaceMemberships::Table)
         .to_owned()
@@ -509,13 +600,13 @@ fn memberships() -> sea_query::SelectStatement {
 async fn fetch_memberships(
     database: impl QueryExecutor,
     statement: sea_query::SelectStatement,
-) -> Result<Vec<WorkspaceMembership>, Error> {
+) -> Result<Vec<(WorkspaceMembership, ResourceMetadata)>, Error> {
     let rows: Vec<MembershipRow> = database.fetch_all(statement).await?;
     let mut memberships = rows
         .into_iter()
         .map(MembershipRow::decode)
         .collect::<Result<Vec<_>, Error>>()?;
-    memberships.sort_by(|left, right| left.user_id().cmp(right.user_id()));
+    memberships.sort_by(|(left, _), (right, _)| left.user_id().cmp(right.user_id()));
     Ok(memberships)
 }
 
@@ -539,24 +630,6 @@ pub(super) fn membership_user_ids(
     statement
 }
 
-/// Selects the ids of the Workspaces where one User holds a Membership, in
-/// one column.
-pub(super) fn membership_workspace_ids_of(user_id: &UserId) -> sea_query::SelectStatement {
-    Query::select()
-        .column(WorkspaceMemberships::WorkspaceId)
-        .from(WorkspaceMemberships::Table)
-        .and_where(Expr::col(WorkspaceMemberships::UserId).eq(user_id.as_str()))
-        .to_owned()
-}
-
-/// Selects the id of every Workspace, in one column.
-pub(super) fn every_workspace_id() -> sea_query::SelectStatement {
-    Query::select()
-        .column(WorkspaceRecords::Id)
-        .from(WorkspaceRecords::Table)
-        .to_owned()
-}
-
 /// Each Workspace where the User holds a Membership, with that Membership's role.
 pub(super) async fn list_workspaces(
     database: impl QueryExecutor,
@@ -564,12 +637,7 @@ pub(super) async fn list_workspaces(
 ) -> Result<Vec<(Workspace, WorkspaceRole)>, Error> {
     let mut statement = Query::select();
     statement
-        .columns([
-            (WorkspaceRecords::Table, WorkspaceRecords::Id),
-            (WorkspaceRecords::Table, WorkspaceRecords::DisplayName),
-            (WorkspaceRecords::Table, WorkspaceRecords::State),
-            (WorkspaceRecords::Table, WorkspaceRecords::LifecycleVersion),
-        ])
+        .columns(WORKSPACE_COLUMNS.map(|column| (WorkspaceRecords::Table, column)))
         .expr_as(
             Expr::col((WorkspaceMemberships::Table, WorkspaceMemberships::Role)),
             Alias::new("membership_role"),
@@ -668,12 +736,7 @@ pub(super) async fn all_workspaces(
     let rows: Vec<WorkspaceRow> = transaction
         .fetch_all(
             Query::select()
-                .columns([
-                    WorkspaceRecords::Id,
-                    WorkspaceRecords::DisplayName,
-                    WorkspaceRecords::State,
-                    WorkspaceRecords::LifecycleVersion,
-                ])
+                .columns(WORKSPACE_COLUMNS)
                 .from(WorkspaceRecords::Table)
                 .order_by(WorkspaceRecords::Id, Order::Asc)
                 .to_owned(),

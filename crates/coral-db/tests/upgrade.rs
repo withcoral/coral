@@ -614,9 +614,9 @@ const ROWS_BEFORE_RESOURCE_VERSIONS: &str = r"
 /// A database from before each row kept its own version: the upgrade gives
 /// every Membership, Agent and Registration the first version, and gives each
 /// Agent and each Registration the times that its own concurrency metadata
-/// holds. It keeps the metadata, which Coral still shows. An Agent that a
-/// Coral from before the step creates afterwards, with its own column list,
-/// takes the first version and no times.
+/// holds. It keeps the metadata, which the Coral that added the step still
+/// showed. An Agent that a Coral from before the step creates afterwards,
+/// with its own column list, takes the first version and no times.
 // Catches: an upgrade that leaves the times off the rows, so that the release
 // which reads them from the row shows none; one that takes them from another
 // kind's or another Workspace's metadata; one that fails on a row without
@@ -631,8 +631,12 @@ async fn upgrade_gives_each_row_the_first_version_and_the_times_its_metadata_hol
         .unwrap();
     let database = fixture.database();
 
+    // The step alone: a later one copies the times again, and would hide a
+    // row that this one left without them.
     database
-        .migrate(coral_db::migration_plan())
+        .migrate(&coral_test_support::migration_plan_before(
+            RESOURCE_TIMES_REPAIR,
+        ))
         .await
         .expect("apply the upgrade");
 
@@ -646,42 +650,32 @@ async fn upgrade_gives_each_row_the_first_version_and_the_times_its_metadata_hol
         )
         .await
         .expect("a Coral from before the step still creates an Agent");
-    let times = "COALESCE(CAST(created_at_unix_nanos AS TEXT), 'none') || ':' || \
-                 COALESCE(CAST(updated_at_unix_nanos AS TEXT), 'none')";
-    let agent = |id: &str| {
-        format!("SELECT id, CAST(version AS TEXT), {times} FROM workspace_agents WHERE id = '{id}'")
-    };
-    let registration = |id: &str| {
-        format!(
-            "SELECT id, CAST(version AS TEXT), {times} FROM agent_registrations WHERE id = '{id}'"
-        )
-    };
     let mut transaction = database.begin_read_snapshot().await.unwrap();
     assert_each_row(
         &mut transaction,
         [
             (
-                agent("agent:current").as_str(),
+                agent_row("agent:current").as_str(),
                 ["agent:current", "1", "10:30"],
             ),
             (
-                agent("agent:deleted").as_str(),
+                agent_row("agent:deleted").as_str(),
                 ["agent:deleted", "1", "11:40"],
             ),
             (
-                agent("agent:bare").as_str(),
+                agent_row("agent:bare").as_str(),
                 ["agent:bare", "1", "none:none"],
             ),
             (
-                agent("agent:peer").as_str(),
+                agent_row("agent:peer").as_str(),
                 ["agent:peer", "1", "none:none"],
             ),
             (
-                registration("registration").as_str(),
+                registration_row("registration").as_str(),
                 ["registration", "1", "10:20"],
             ),
             (
-                registration("peer-registration").as_str(),
+                registration_row("peer-registration").as_str(),
                 ["peer-registration", "1", "none:none"],
             ),
             (
@@ -716,6 +710,177 @@ async fn upgrade_gives_each_row_the_first_version_and_the_times_its_metadata_hol
             .await
             .expect_err("a version that is not positive is refused");
     }
+}
+
+/// The step that brings each Agent and Agent Registration row up to the times
+/// that its concurrency metadata holds.
+const RESOURCE_TIMES_REPAIR: i64 = 78;
+
+/// Agents and Registrations on the schema of the resource version step, as
+/// two Corals that served side by side left them. A Coral with that step
+/// writes a row and its concurrency metadata with one instant. A Coral from
+/// before it writes only the metadata.
+///
+/// - `agent:current` and its Registration: the Coral with the step wrote
+///   them last, so the row and the metadata hold the same times.
+/// - `agent:older` and its Registration, and the deleted Agent: the older
+///   Coral created them, so the rows hold no times.
+/// - `agent:changed`: the older Coral created it, and the Coral with the
+///   step changed it and dated that on the row.
+/// - `agent:stale` and its Registration: the rows hold the times that the
+///   resource version step copied, and the older Coral changed them since,
+///   so the metadata holds a later time of change.
+/// - `agent:newer` and its Registration: the rows hold a later time of change
+///   than the metadata. No Coral leaves a row so by its own writes. The rows
+///   stand for what the repair reads when a change commits while it waits
+///   for the row: the changed row, and the metadata from before the change.
+///   The Registration also holds another creation time than its metadata, to
+///   show that the repair fills a creation time and replaces none.
+/// - `agent:bare` and `agent:unrecorded` have no metadata. The second holds
+///   times.
+///
+/// Beside them is metadata that the repair must not read for them: the same
+/// target under another kind, and in another Workspace.
+const ROWS_BEFORE_RESOURCE_TIMES_REPAIR: &str = r"
+    INSERT INTO workspace_records
+        (id, display_name, state, lifecycle_version, created_at_unix_nanos, updated_at_unix_nanos)
+    VALUES ('workspace', 'Repair', 'active', 1, 1, 1), ('other', 'Other', 'active', 1, 2, 2);
+    INSERT INTO workspace_agents
+        (id, workspace_id, display_name, created_by, deleted, state, version,
+         created_at_unix_nanos, updated_at_unix_nanos)
+    VALUES ('agent:current', 'workspace', 'Current', 'user:repair', 0, 'enabled', 3, 10, 30),
+        ('agent:older', 'workspace', 'Older', 'user:repair', 0, 'enabled', 1, NULL, NULL),
+        ('agent:deleted', 'workspace', 'Deleted', 'user:repair', 1, 'disabled', 1, NULL, NULL),
+        ('agent:changed', 'workspace', 'Changed', 'user:repair', 0, 'disabled', 2, NULL, 60),
+        ('agent:stale', 'workspace', 'Stale', 'user:repair', 0, 'disabled', 1, 10, 30),
+        ('agent:newer', 'workspace', 'Newer', 'user:repair', 0, 'disabled', 5, 10, 90),
+        ('agent:bare', 'workspace', 'No metadata', 'user:repair', 0, 'enabled', 1, NULL, NULL),
+        ('agent:unrecorded', 'workspace', 'Times alone', 'user:repair', 0, 'enabled', 2, 12, 34);
+    INSERT INTO agent_registrations
+        (id, workspace_id, agent_id, enabled, expires_at_unix_nanos, credential_verifier, version,
+         created_at_unix_nanos, updated_at_unix_nanos)
+    VALUES ('current-registration', 'workspace', 'agent:current', 1, NULL, 'current', 4, 10, 20),
+        ('older-registration', 'workspace', 'agent:older', 1, NULL, 'older', 1, NULL, NULL),
+        ('stale-registration', 'workspace', 'agent:stale', 0, NULL, 'stale', 1, 10, 20),
+        ('newer-registration', 'workspace', 'agent:newer', 0, NULL, 'newer', 6, 11, 95),
+        ('unrecorded-registration', 'workspace', 'agent:unrecorded', 1, NULL, 'alone', 2, 12, 35);
+    INSERT INTO workspace_resource_metadata
+        (workspace_id, kind, target_id, etag, created_at, updated_at)
+    VALUES ('workspace', 'agent', 'agent:current', 'etag-current', 10, 30),
+        ('workspace', 'agent', 'agent:older', 'etag-older', 50, 55),
+        ('workspace', 'agent', 'agent:deleted', 'etag-deleted', 52, 58),
+        ('workspace', 'agent', 'agent:changed', 'etag-changed', 51, 60),
+        ('workspace', 'agent', 'agent:stale', 'etag-stale', 10, 70),
+        ('workspace', 'agent', 'agent:newer', 'etag-newer', 10, 80),
+        ('workspace', 'agent_registration', 'current-registration', 'etag-current', 10, 20),
+        ('workspace', 'agent_registration', 'older-registration', 'etag-registration', 50, 57),
+        ('workspace', 'agent_registration', 'stale-registration', 'etag-stale', 10, 75),
+        ('workspace', 'agent_registration', 'newer-registration', 'etag-newer', 10, 85),
+        ('workspace', 'agent_registration', 'agent:older', 'etag-other-kind', 71, 72),
+        ('workspace', 'agent', 'older-registration', 'etag-other-kind', 73, 74),
+        ('workspace', 'agent_registration', 'agent:unrecorded', 'etag-other-kind', 75, 76),
+        ('other', 'agent', 'agent:older', 'etag-other-workspace', 81, 82),
+        ('other', 'agent_registration', 'older-registration', 'etag-other-workspace', 83, 84),
+        ('other', 'agent', 'agent:unrecorded', 'etag-other-workspace', 85, 86);
+";
+
+/// A database where a Coral from before the resource version step served
+/// beside one that had it: the upgrade gives each Agent and each Registration
+/// row the times that its own concurrency metadata holds, where the row holds
+/// none or an earlier time of change. That fills a row which the older Coral
+/// created, and corrects one which it changed last. It leaves a row that
+/// holds a later time of change than its metadata, a row that has no
+/// metadata, each version, and the metadata.
+// Catches: a release that reads the times from the row and shows none for an
+// Agent that the older Coral created, or an earlier time of change than the
+// one it showed before for a resource that the older Coral changed; a repair
+// that replaces a row's later time of change with the metadata's earlier
+// one; and one that takes the times from another kind's or another
+// Workspace's metadata, sets the times of a row without metadata to NULL, or
+// moves a version.
+//
+// This runs the repair alone, on rows that are at rest. It pins the rule
+// that a time only moves forward, not the race that the rule is for: a
+// change that commits while the repair waits for its row. That race was
+// reproduced by hand on Postgres with two sessions.
+#[tokio::test]
+async fn upgrade_gives_each_row_the_times_its_metadata_holds_after_an_older_corals_writes() {
+    let before = coral_test_support::migration_plan_before(RESOURCE_TIMES_REPAIR);
+    let fixture = TestDatabase::new(&before).await.unwrap();
+    fixture
+        .execute_fixture_sql(ROWS_BEFORE_RESOURCE_TIMES_REPAIR)
+        .await
+        .unwrap();
+    let database = fixture.database();
+
+    database
+        .migrate(coral_db::migration_plan())
+        .await
+        .expect("apply the upgrade");
+
+    let agents = [
+        ["agent:current", "3", "10:30"],
+        ["agent:older", "1", "50:55"],
+        ["agent:deleted", "1", "52:58"],
+        ["agent:changed", "2", "51:60"],
+        ["agent:stale", "1", "10:70"],
+        ["agent:newer", "5", "10:90"],
+        ["agent:bare", "1", "none:none"],
+        ["agent:unrecorded", "2", "12:34"],
+    ];
+    let registrations = [
+        ["current-registration", "4", "10:20"],
+        ["older-registration", "1", "50:57"],
+        ["stale-registration", "1", "10:75"],
+        ["newer-registration", "6", "11:95"],
+        ["unrecorded-registration", "2", "12:35"],
+    ];
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    for expected in agents {
+        assert_each_row(
+            &mut transaction,
+            [(agent_row(expected[0]).as_str(), expected)],
+        )
+        .await;
+    }
+    for expected in registrations {
+        assert_each_row(
+            &mut transaction,
+            [(registration_row(expected[0]).as_str(), expected)],
+        )
+        .await;
+    }
+    assert_each_row(
+        &mut transaction,
+        [(
+            "SELECT etag, CAST(created_at AS TEXT), CAST(updated_at AS TEXT) \
+             FROM workspace_resource_metadata \
+             WHERE workspace_id = 'workspace' AND kind = 'agent' \
+                 AND target_id = 'agent:stale'",
+            ["etag-stale", "10", "70"],
+        )],
+    )
+    .await;
+    transaction.commit().await.unwrap();
+}
+
+/// The two times of a row as one text column, `created:updated`, with `none`
+/// for a time that the row does not hold.
+const ROW_TIMES: &str = "COALESCE(CAST(created_at_unix_nanos AS TEXT), 'none') || ':' || \
+                         COALESCE(CAST(updated_at_unix_nanos AS TEXT), 'none')";
+
+/// The query that reads one Agent's id, version and times for
+/// [`assert_each_row`].
+fn agent_row(id: &str) -> String {
+    format!("SELECT id, CAST(version AS TEXT), {ROW_TIMES} FROM workspace_agents WHERE id = '{id}'")
+}
+
+/// The query that reads one Agent Registration's id, version and times for
+/// [`assert_each_row`].
+fn registration_row(id: &str) -> String {
+    format!(
+        "SELECT id, CAST(version AS TEXT), {ROW_TIMES} FROM agent_registrations WHERE id = '{id}'"
+    )
 }
 
 /// Asserts that each query reads back exactly one row of three text columns.

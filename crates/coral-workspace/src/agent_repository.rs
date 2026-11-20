@@ -2,9 +2,10 @@ use coral_db::{QueryExecutor, Transaction, UnixNanos, Version};
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 use sqlx::FromRow;
 
+use crate::management_repository::{changed_at_version, row_metadata};
 use crate::{
     Agent, AgentDisplayName, AgentRegistration, AgentRegistrationId, AgentState, Error, Principal,
-    PrincipalId, PrincipalKind, UserId, WorkspaceId,
+    PrincipalId, PrincipalKind, ResourceMetadata, UserId, WorkspaceId,
 };
 
 #[derive(Iden)]
@@ -61,17 +62,29 @@ struct AgentRow {
     display_name: String,
     created_by: String,
     state: String,
+    version: i64,
+    created_at_unix_nanos: Option<UnixNanos>,
+    updated_at_unix_nanos: Option<UnixNanos>,
 }
 
 impl AgentRow {
-    fn decode(self) -> Result<Agent, Error> {
-        Ok(Agent {
+    /// The Agent with the concurrency metadata its row holds. The row of an
+    /// Agent that a Coral from before the row kept its times created has
+    /// none.
+    fn decode(self) -> Result<(Agent, ResourceMetadata), Error> {
+        let metadata = row_metadata(
+            self.version,
+            self.created_at_unix_nanos,
+            self.updated_at_unix_nanos,
+        )?;
+        let agent = Agent {
             principal: Principal::from_parts(PrincipalId::parse(&self.id)?, PrincipalKind::Agent),
             workspace_id: WorkspaceId::parse(&self.workspace_id)?,
             display_name: AgentDisplayName::parse(&self.display_name)?,
             created_by: UserId::parse(&self.created_by)?,
             state: AgentState::from_storage_str(&self.state)?,
-        })
+        };
+        Ok((agent, metadata))
     }
 }
 
@@ -82,11 +95,21 @@ struct RegistrationRow {
     agent_id: String,
     enabled: i64,
     expires_at_unix_nanos: Option<UnixNanos>,
+    version: i64,
+    created_at_unix_nanos: Option<UnixNanos>,
+    updated_at_unix_nanos: Option<UnixNanos>,
 }
 
 impl RegistrationRow {
-    fn decode(self) -> Result<AgentRegistration, Error> {
-        Ok(AgentRegistration {
+    /// The Registration with the concurrency metadata its row holds, which
+    /// has no times where a Coral from before the row kept them created it.
+    fn decode(self) -> Result<(AgentRegistration, ResourceMetadata), Error> {
+        let metadata = row_metadata(
+            self.version,
+            self.created_at_unix_nanos,
+            self.updated_at_unix_nanos,
+        )?;
+        let registration = AgentRegistration {
             id: AgentRegistrationId::parse(&self.id)?,
             workspace_id: WorkspaceId::parse(&self.workspace_id)?,
             agent_id: PrincipalId::parse(&self.agent_id)?,
@@ -96,7 +119,13 @@ impl RegistrationRow {
                 _ => return Err(Error::CorruptData("invalid Registration state".to_string())),
             },
             expires_at: self.expires_at_unix_nanos,
-        })
+        };
+        Ok((registration, metadata))
+    }
+
+    /// The Registration alone, for a reader that takes no part in a change.
+    fn registration(self) -> Result<AgentRegistration, Error> {
+        self.decode().map(|(registration, _metadata)| registration)
     }
 }
 
@@ -172,6 +201,9 @@ fn agents(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
             WorkspaceAgents::DisplayName,
             WorkspaceAgents::CreatedBy,
             WorkspaceAgents::State,
+            WorkspaceAgents::Version,
+            WorkspaceAgents::CreatedAtUnixNanos,
+            WorkspaceAgents::UpdatedAtUnixNanos,
         ])
         .from(WorkspaceAgents::Table)
         .and_where(Expr::col(WorkspaceAgents::Deleted).eq(0))
@@ -179,33 +211,25 @@ fn agents(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
         .to_owned()
 }
 
+/// The Agents of one Workspace that are not deleted, each with its
+/// concurrency metadata.
 pub(super) async fn list(
     executor: impl QueryExecutor,
     workspace_id: &WorkspaceId,
-) -> Result<Vec<Agent>, Error> {
+) -> Result<Vec<(Agent, ResourceMetadata)>, Error> {
     let rows: Vec<AgentRow> = executor.fetch_all(agents(workspace_id)).await?;
     rows.into_iter().map(AgentRow::decode).collect()
-}
-
-/// Selects one column of the Agents of one Workspace that are not deleted.
-fn agent_column(workspace_id: &WorkspaceId, column: WorkspaceAgents) -> sea_query::SelectStatement {
-    Query::select()
-        .column(column)
-        .from(WorkspaceAgents::Table)
-        .and_where(Expr::col(WorkspaceAgents::Deleted).eq(0))
-        .and_where(Expr::col(WorkspaceAgents::WorkspaceId).eq(workspace_id.to_string()))
-        .to_owned()
-}
-
-/// Selects the ids of the Agents [`list`] returns, in one column.
-pub(super) fn agent_ids(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
-    agent_column(workspace_id, WorkspaceAgents::Id)
 }
 
 /// Selects the ids of the Users who created the Agents [`list`] returns, in
 /// one column.
 pub(super) fn creator_ids(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
-    agent_column(workspace_id, WorkspaceAgents::CreatedBy)
+    Query::select()
+        .column(WorkspaceAgents::CreatedBy)
+        .from(WorkspaceAgents::Table)
+        .and_where(Expr::col(WorkspaceAgents::Deleted).eq(0))
+        .and_where(Expr::col(WorkspaceAgents::WorkspaceId).eq(workspace_id.to_string()))
+        .to_owned()
 }
 
 pub(super) async fn find(
@@ -213,6 +237,17 @@ pub(super) async fn find(
     workspace_id: &WorkspaceId,
     agent_id: &PrincipalId,
 ) -> Result<Agent, Error> {
+    find_with_metadata(executor, workspace_id, agent_id)
+        .await
+        .map(|(agent, _metadata)| agent)
+}
+
+/// One Agent that is not deleted, with its concurrency metadata.
+pub(super) async fn find_with_metadata(
+    executor: impl QueryExecutor,
+    workspace_id: &WorkspaceId,
+    agent_id: &PrincipalId,
+) -> Result<(Agent, ResourceMetadata), Error> {
     let row: Option<AgentRow> = executor
         .fetch_optional(
             agents(workspace_id)
@@ -221,49 +256,6 @@ pub(super) async fn find(
         )
         .await?;
     row.ok_or(Error::AgentNotFound)?.decode()
-}
-
-/// The current version of one Agent that is not deleted, or `None` when the
-/// Workspace has no such Agent.
-pub(super) async fn agent_version(
-    tx: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    agent: &str,
-) -> Result<Option<Version>, Error> {
-    let stored: Option<(i64,)> = tx
-        .fetch_optional(
-            agent_column(workspace, WorkspaceAgents::Version)
-                .and_where(Expr::col(WorkspaceAgents::Id).eq(agent))
-                .to_owned(),
-        )
-        .await?;
-    stored.map(|(version,)| row_version(version)).transpose()
-}
-
-/// The current version of one Registration, or `None` when the Workspace has
-/// no such Registration.
-pub(super) async fn registration_version(
-    tx: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    registration: &str,
-) -> Result<Option<Version>, Error> {
-    let stored: Option<(i64,)> = tx
-        .fetch_optional(
-            Query::select()
-                .column(AgentRegistrations::Version)
-                .from(AgentRegistrations::Table)
-                .and_where(Expr::col(AgentRegistrations::WorkspaceId).eq(workspace.to_string()))
-                .and_where(Expr::col(AgentRegistrations::Id).eq(registration))
-                .to_owned(),
-        )
-        .await?;
-    stored.map(|(version,)| row_version(version)).transpose()
-}
-
-/// The version a row holds. A version that is not positive is corrupt.
-fn row_version(stored: i64) -> Result<Version, Error> {
-    Version::new(stored)
-        .ok_or_else(|| Error::CorruptData("resource row has nonpositive version".to_string()))
 }
 
 pub(super) async fn history(
@@ -310,28 +302,22 @@ fn any_workspace_registrations() -> sea_query::SelectStatement {
             AgentRegistrations::AgentId,
             AgentRegistrations::Enabled,
             AgentRegistrations::ExpiresAtUnixNanos,
+            AgentRegistrations::Version,
+            AgentRegistrations::CreatedAtUnixNanos,
+            AgentRegistrations::UpdatedAtUnixNanos,
         ])
         .from(AgentRegistrations::Table)
         .to_owned()
 }
 
-/// The Registration of every Agent of one Workspace. A deleted Agent has none.
+/// The Registration of every Agent of one Workspace, each with its
+/// concurrency metadata. A deleted Agent has none.
 pub(super) async fn list_registrations(
     executor: impl QueryExecutor,
     workspace_id: &WorkspaceId,
-) -> Result<Vec<AgentRegistration>, Error> {
+) -> Result<Vec<(AgentRegistration, ResourceMetadata)>, Error> {
     let rows: Vec<RegistrationRow> = executor.fetch_all(registrations(workspace_id)).await?;
     rows.into_iter().map(RegistrationRow::decode).collect()
-}
-
-/// Selects the ids of the Registrations [`list_registrations`] returns, in
-/// one column.
-pub(super) fn registration_ids(workspace_id: &WorkspaceId) -> sea_query::SelectStatement {
-    Query::select()
-        .column(AgentRegistrations::Id)
-        .from(AgentRegistrations::Table)
-        .and_where(Expr::col(AgentRegistrations::WorkspaceId).eq(workspace_id.to_string()))
-        .to_owned()
 }
 
 pub(super) async fn registration(
@@ -339,6 +325,17 @@ pub(super) async fn registration(
     workspace_id: &WorkspaceId,
     agent_id: &PrincipalId,
 ) -> Result<AgentRegistration, Error> {
+    registration_with_metadata(executor, workspace_id, agent_id)
+        .await
+        .map(|(registration, _metadata)| registration)
+}
+
+/// The Registration of one Agent, with its concurrency metadata.
+pub(super) async fn registration_with_metadata(
+    executor: impl QueryExecutor,
+    workspace_id: &WorkspaceId,
+    agent_id: &PrincipalId,
+) -> Result<(AgentRegistration, ResourceMetadata), Error> {
     let row: Option<RegistrationRow> = executor
         .fetch_optional(
             registrations(workspace_id)
@@ -354,6 +351,17 @@ pub(super) async fn registration_by_id(
     workspace_id: &WorkspaceId,
     id: &AgentRegistrationId,
 ) -> Result<AgentRegistration, Error> {
+    registration_by_id_with_metadata(executor, workspace_id, id)
+        .await
+        .map(|(registration, _metadata)| registration)
+}
+
+/// One Registration, with its concurrency metadata.
+pub(super) async fn registration_by_id_with_metadata(
+    executor: impl QueryExecutor,
+    workspace_id: &WorkspaceId,
+    id: &AgentRegistrationId,
+) -> Result<(AgentRegistration, ResourceMetadata), Error> {
     let row: Option<RegistrationRow> = executor
         .fetch_optional(
             registrations(workspace_id)
@@ -364,25 +372,23 @@ pub(super) async fn registration_by_id(
     row.ok_or(Error::AgentNotFound)?.decode()
 }
 
-/// Deletes the Agent's Registration and marks the Agent deleted, which raises
-/// the Agent's version by one.
+/// Marks the Agent that is at version `expected` deleted, which raises its
+/// version by one, and deletes its Registration.
+///
+/// # Errors
+///
+/// Returns [`Error::EtagMismatch`] for an Agent that is not at `expected`.
 pub(super) async fn delete_current(
     transaction: &mut Transaction<'_>,
     workspace: &WorkspaceId,
     agent: &PrincipalId,
+    expected: Version,
     deleted_at: UnixNanos,
 ) -> Result<(), Error> {
-    transaction
-        .execute(
-            Query::delete()
-                .from_table(AgentRegistrations::Table)
-                .and_where(Expr::col(AgentRegistrations::WorkspaceId).eq(workspace.to_string()))
-                .and_where(Expr::col(AgentRegistrations::AgentId).eq(agent.as_str()))
-                .to_owned(),
-        )
-        .await?;
-    // The retained row is attribution only; no current Agent interface can restore it.
-    transaction
+    // The Agent's row stays, so the Registration that refers to it can go
+    // after the Agent is checked and marked. The retained row is attribution
+    // only; no current Agent interface can restore it.
+    let marked = transaction
         .execute(
             Query::update()
                 .table(WorkspaceAgents::Table)
@@ -398,21 +404,39 @@ pub(super) async fn delete_current(
                 .value(WorkspaceAgents::UpdatedAtUnixNanos, deleted_at)
                 .and_where(Expr::col(WorkspaceAgents::WorkspaceId).eq(workspace.to_string()))
                 .and_where(Expr::col(WorkspaceAgents::Id).eq(agent.as_str()))
+                .and_where(Expr::col(WorkspaceAgents::Version).eq(expected.get()))
+                .to_owned(),
+        )
+        .await?;
+    changed_at_version(marked)?;
+    transaction
+        .execute(
+            Query::delete()
+                .from_table(AgentRegistrations::Table)
+                .and_where(Expr::col(AgentRegistrations::WorkspaceId).eq(workspace.to_string()))
+                .and_where(Expr::col(AgentRegistrations::AgentId).eq(agent.as_str()))
                 .to_owned(),
         )
         .await?;
     Ok(())
 }
 
-/// Replaces the Registration's verifier and raises its version by one.
+/// Replaces the verifier of the Registration that is at version `expected`,
+/// and raises its version by one.
+///
+/// # Errors
+///
+/// Returns [`Error::EtagMismatch`] for a Registration that is not at
+/// `expected`.
 pub(super) async fn update_verifier(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     id: &AgentRegistrationId,
     verifier: &str,
+    expected: Version,
     updated_at: UnixNanos,
 ) -> Result<(), Error> {
-    transaction
+    let changed = transaction
         .execute(
             Query::update()
                 .table(AgentRegistrations::Table)
@@ -424,20 +448,27 @@ pub(super) async fn update_verifier(
                 .value(AgentRegistrations::UpdatedAtUnixNanos, updated_at)
                 .and_where(Expr::col(AgentRegistrations::WorkspaceId).eq(workspace_id.to_string()))
                 .and_where(Expr::col(AgentRegistrations::Id).eq(id.to_string()))
+                .and_where(Expr::col(AgentRegistrations::Version).eq(expected.get()))
                 .to_owned(),
         )
         .await?;
-    Ok(())
+    changed_at_version(changed)
 }
 
-/// Replaces the Registration's enabled state and expiration, and raises its
-/// version by one.
+/// Replaces the enabled state and expiration of the Registration that is at
+/// version `expected`, and raises its version by one.
+///
+/// # Errors
+///
+/// Returns [`Error::EtagMismatch`] for a Registration that is not at
+/// `expected`.
 pub(super) async fn update_registration(
     transaction: &mut Transaction<'_>,
     registration: &AgentRegistration,
+    expected: Version,
     updated_at: UnixNanos,
 ) -> Result<(), Error> {
-    transaction
+    let changed = transaction
         .execute(
             Query::update()
                 .table(AgentRegistrations::Table)
@@ -459,19 +490,26 @@ pub(super) async fn update_registration(
                         .eq(registration.workspace_id().to_string()),
                 )
                 .and_where(Expr::col(AgentRegistrations::Id).eq(registration.id().to_string()))
+                .and_where(Expr::col(AgentRegistrations::Version).eq(expected.get()))
                 .to_owned(),
         )
         .await?;
-    Ok(())
+    changed_at_version(changed)
 }
 
-/// Replaces the Agent's state and raises its version by one.
+/// Replaces the state of the Agent that is at version `expected`, and raises
+/// its version by one.
+///
+/// # Errors
+///
+/// Returns [`Error::EtagMismatch`] for an Agent that is not at `expected`.
 pub(super) async fn update_state(
     transaction: &mut Transaction<'_>,
     agent: &Agent,
+    expected: Version,
     updated_at: UnixNanos,
 ) -> Result<(), Error> {
-    transaction
+    let changed = transaction
         .execute(
             Query::update()
                 .table(WorkspaceAgents::Table)
@@ -485,10 +523,11 @@ pub(super) async fn update_state(
                     Expr::col(WorkspaceAgents::WorkspaceId).eq(agent.workspace_id().to_string()),
                 )
                 .and_where(Expr::col(WorkspaceAgents::Id).eq(agent.principal().id().as_str()))
+                .and_where(Expr::col(WorkspaceAgents::Version).eq(expected.get()))
                 .to_owned(),
         )
         .await?;
-    Ok(())
+    changed_at_version(changed)
 }
 
 pub(super) async fn registration_by_verifier(
@@ -503,7 +542,7 @@ pub(super) async fn registration_by_verifier(
                 .to_owned(),
         )
         .await?;
-    row.ok_or(Error::InvalidAgentCredential)?.decode()
+    row.ok_or(Error::InvalidAgentCredential)?.registration()
 }
 
 /// Finds a Registration by its credential verifier in any Workspace. The
@@ -520,7 +559,7 @@ pub(super) async fn registration_by_verifier_alone(
                 .to_owned(),
         )
         .await?;
-    row.ok_or(Error::InvalidAgentCredential)?.decode()
+    row.ok_or(Error::InvalidAgentCredential)?.registration()
 }
 
 /// Counts the Agents not deleted, in every Workspace.

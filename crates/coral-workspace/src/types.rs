@@ -207,6 +207,8 @@ pub struct Workspace {
     display_name: WorkspaceDisplayName,
     state: WorkspaceState,
     version: Version,
+    created_at: UnixNanos,
+    updated_at: UnixNanos,
 }
 
 impl Workspace {
@@ -215,13 +217,38 @@ impl Workspace {
         display_name: WorkspaceDisplayName,
         state: WorkspaceState,
         version: Version,
+        created_at: UnixNanos,
+        updated_at: UnixNanos,
     ) -> Self {
         Self {
             id,
             display_name,
             state,
             version,
+            created_at,
+            updated_at,
         }
+    }
+
+    /// The Workspace as one accepted change at `changed_at` leaves it: at the
+    /// next version, with the name and the state the change gives it.
+    pub(crate) fn changed(
+        &self,
+        display_name: WorkspaceDisplayName,
+        state: WorkspaceState,
+        changed_at: UnixNanos,
+    ) -> Result<Self, Error> {
+        let version = self.version.next().ok_or_else(|| {
+            Error::CorruptData("Workspace lifecycle version overflowed".to_string())
+        })?;
+        Ok(Self {
+            id: self.id.clone(),
+            display_name,
+            state,
+            version,
+            created_at: self.created_at,
+            updated_at: changed_at,
+        })
     }
 
     /// Returns the stable identity.
@@ -261,6 +288,28 @@ impl Workspace {
     #[must_use]
     pub const fn version(&self) -> Version {
         self.version
+    }
+
+    /// Returns the time the Workspace was created.
+    #[must_use]
+    pub const fn created_at(&self) -> UnixNanos {
+        self.created_at
+    }
+
+    /// Returns the time of the last accepted change to the Workspace's
+    /// display name or lifecycle state.
+    #[must_use]
+    pub const fn updated_at(&self) -> UnixNanos {
+        self.updated_at
+    }
+
+    /// The Workspace's concurrency metadata: its version and its times.
+    pub(crate) const fn metadata(&self) -> crate::ResourceMetadata {
+        crate::ResourceMetadata {
+            version: self.version,
+            created_at: Some(self.created_at),
+            updated_at: Some(self.updated_at),
+        }
     }
 }
 
@@ -496,15 +545,17 @@ impl WorkspaceEvidence {
 /// check out.
 ///
 /// An etag is the text of a resource's version, or a UUID. A Workspace, a
-/// Workspace Membership, an Agent and an Agent Registration each keep a
-/// [`Version`] on their row. A Provider's etag is a UUID, and so is the etag
-/// that Coral still shows for those four resources.
+/// Workspace Membership, an Agent, an Agent Registration and an Organization
+/// Membership each keep a [`Version`] on their row, and its text is their
+/// etag. A Provider's etag is a UUID. The four Workspace resources showed a
+/// UUID before their rows kept a version: one that a client still holds is
+/// well formed, and no version meets it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IfMatch(Precondition);
 
 /// What an [`IfMatch`] holds the resource to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Precondition {
+enum Precondition {
     /// The version of the resource's row.
     Version(Version),
     /// A UUID etag.
@@ -572,12 +623,6 @@ impl IfMatch {
             #[cfg(any(test, feature = "test-fixtures"))]
             Precondition::Any => true,
         }
-    }
-
-    /// What the precondition holds the resource to, for the check that must
-    /// choose the record to read.
-    pub(crate) const fn precondition(&self) -> Precondition {
-        self.0
     }
 }
 
