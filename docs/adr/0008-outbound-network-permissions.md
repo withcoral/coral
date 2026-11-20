@@ -14,7 +14,8 @@ authentication a hidden network-policy switch.
 
 The guard runs at connection time against every DNS answer and every redirect, so a name that later resolves elsewhere
 is still checked. Private means RFC 1918 and unique-local IPv6, never metadata, link-local or CGNAT ranges. Loopback
-means explicit `localhost` or a literal, not any name that resolves there.
+means explicit `localhost` or a literal, not any name that resolves there. Coral's own AWS credential lookup is not
+Provider traffic and sits outside these settings (ADR 0041).
 
 Enabling a category trusts Provider administrators and imported Provider documents with that reach. Address
 classification is not network isolation: private HTTP can be intercepted, and a public address can host an internal

@@ -527,7 +527,7 @@ but `env` is part of External Secret Stores.
 _Avoid_: vault, credential vault, external credential store
 
 **Secret Reference**: The address of one Credential Field's value in a Secret Store granted to the Account's Workspace:
-the store, a path, and a key where the store has keys. The value stays in the store and Coral never stores a copy.
+the store, a path, and a key where the entry has keys. The value stays in the store and Coral never stores a copy.
 _Avoid_: vault path, secret pointer, linked secret
 
 **Credential Route**: The Provider setting that determines whether Invocations use no credentials (`none`), its single
