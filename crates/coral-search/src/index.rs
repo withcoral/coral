@@ -57,9 +57,10 @@ const WRITER_WAIT_LIMIT: Duration = Duration::from_mins(1);
 /// and a reconcile pass takes it for one item at a time. A write that runs
 /// past its limit is rolled back and counts as failed. On Postgres, a write
 /// counts no ranking statistics: once it commits, it schedules its Workspace's
-/// recount, as the `statistics` module describes. Cloning is cheap; every
-/// clone shares the database handle, the order, the mutex, and the reconcile
-/// interval.
+/// recount, as the `statistics` module describes. [`Self::stop`] ends every
+/// task the index runs, and [`Self::stopped`] waits for them. Cloning is
+/// cheap; every clone shares the database handle, the order, the mutex, the
+/// reconcile interval and the stop.
 #[derive(Clone)]
 pub struct SearchIndex {
     database: Arc<Database>,
@@ -70,6 +71,12 @@ pub struct SearchIndex {
     /// The last notified write; the next one waits for it.
     last_write: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
     in_flight: Arc<watch::Sender<usize>>,
+    /// Set once by [`Self::stop`].
+    stop: Arc<watch::Sender<bool>>,
+    /// Counts each task the index runs until the task ends: every notified
+    /// write, recount and visibility observation, and the reconcile task
+    /// and each of its lanes.
+    running: Arc<watch::Sender<usize>>,
     /// The Workspaces whose statistics recount is due.
     recounts: Arc<statistics::PendingRecounts>,
     recount_delay: Duration,
@@ -159,6 +166,8 @@ impl SearchIndex {
             reconcile_interval,
             last_write: Arc::new(std::sync::Mutex::new(None)),
             in_flight: Arc::new(watch::Sender::new(0)),
+            stop: Arc::new(watch::Sender::new(false)),
+            running: Arc::new(watch::Sender::new(0)),
             recounts: Arc::new(statistics::PendingRecounts::default()),
             recount_delay: statistics::RECOUNT_DELAY,
             schedules_recounts: true,
@@ -539,6 +548,53 @@ impl SearchIndex {
         drop(in_flight.wait_for(|writes| *writes == 0).await);
     }
 
+    /// Stops the index for good: a later notification starts no write, and
+    /// each task the index runs ends at its next await. A write that ends
+    /// there rolls back its open transaction and records no failure; the
+    /// reconcile pass after the next start indexes what it would have
+    /// written (ADR 0017). Returns at once; [`Self::stopped`] waits for the
+    /// tasks to end.
+    pub fn stop(&self) {
+        self.stop.send_replace(true);
+    }
+
+    /// Waits until no task of the index runs. Call it after [`Self::stop`],
+    /// before the Tokio runtime shuts down.
+    ///
+    /// An index write builds its rows in `tokio::task::block_in_place`,
+    /// which hands the worker's other tasks to a new thread. A runtime that
+    /// shuts down meanwhile also shuts down its timer, and the write's poll
+    /// still runs on to its next timer, where Tokio panics. This wait ends
+    /// only after each task has stopped polling.
+    pub async fn stopped(&self) {
+        let mut running = self.running.subscribe();
+        // This index holds the sender, so the channel stays open while this
+        // waits and the wait cannot fail.
+        drop(running.wait_for(|tasks| *tasks == 0).await);
+    }
+
+    /// Runs `work` until it ends or the index stops, whichever is first.
+    /// The task that runs it counts as running from this call until `work`
+    /// is dropped. Every task the index spawns runs its work through this,
+    /// so that [`Self::stopped`] waits for it.
+    fn until_stopped<W: Future<Output = ()>>(&self, work: W) -> impl Future<Output = ()> + use<W> {
+        // Counted before the task exists, so a stop never sees it missing.
+        self.running.send_modify(|tasks| *tasks += 1);
+        let running = InFlightWork(self.running.clone());
+        let mut stop = self.stop.subscribe();
+        async move {
+            let _running = running;
+            tokio::select! {
+                // A stopped index starts no more work, even work that is ready.
+                biased;
+                // The work holds a clone of the index, so the sender outlives
+                // this wait.
+                _stopped = stop.wait_for(|stopped| *stopped) => {}
+                () = work => {}
+            }
+        }
+    }
+
     /// Runs one write in the background after the previously notified one,
     /// counted until it finishes. The write logs to the caller's subscriber
     /// and runs in `span`, the root of a trace of its own that links to the
@@ -557,6 +613,9 @@ impl SearchIndex {
         if self.inert {
             return;
         }
+        if *self.stop.borrow() {
+            return;
+        }
         // The write outlives the notifier's span, so it runs in a root span
         // of its own and links back.
         coral_telemetry::link_to_current(&span);
@@ -569,17 +628,15 @@ impl SearchIndex {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let previous = last_write.take();
-        *last_write = Some(tokio::spawn(
-            async move {
-                let _in_flight = in_flight;
-                if let Some(previous) = previous {
-                    // A predecessor that panicked has finished all the same.
-                    drop(previous.await);
-                }
-                drop(in_write_span(span, WriteTrigger::Notified, write).await);
+        let write = self.until_stopped(async move {
+            let _in_flight = in_flight;
+            if let Some(previous) = previous {
+                // A predecessor that panicked has finished all the same.
+                drop(previous.await);
             }
-            .with_current_subscriber(),
-        ));
+            drop(in_write_span(span, WriteTrigger::Notified, write).await);
+        });
+        *last_write = Some(tokio::spawn(write.with_current_subscriber()));
     }
 
     /// Replaces both default limits of each index write, the two-minute
@@ -893,7 +950,10 @@ impl SearchIndex {
                 indexer::IndexEffect::Updated => {}
             }
         };
-        let _observation = tokio::spawn(observe.instrument(span).with_current_subscriber());
+        let _observation = tokio::spawn(
+            self.until_stopped(observe.instrument(span))
+                .with_current_subscriber(),
+        );
     }
 
     /// Removes what `removal` names in a transaction of its own, then
@@ -1129,8 +1189,8 @@ fn millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-/// Counts one write or visibility observation as in flight until dropped, so a write that
-/// panics still stops counting.
+/// Counts one piece of work in its counter until dropped, so work that
+/// panics or is dropped still stops counting.
 struct InFlightWork(Arc<watch::Sender<usize>>);
 
 impl Drop for InFlightWork {

@@ -659,10 +659,14 @@ impl Engine {
         self.modules.runs.shutdown().await;
     }
 
-    /// Stops the background work and releases the device authorization
-    /// leases. Call it after [`Self::drain_runs`].
+    /// Stops the background work, waits for the search index's tasks to end
+    /// and releases the device authorization leases. Call it after
+    /// [`Self::drain_runs`].
     pub(crate) async fn stop(&self) {
         self.stop_background();
+        // An index write still running when the runtime shuts down panics
+        // at its next timer, so the runtime must outlive every one.
+        self.modules.search_index.stopped().await;
         if let Err(error) = self.modules.accounts.stop_device_authorizations().await {
             // Workers are already stopped; unreleased leases expire on their own.
             tracing::warn!(
@@ -679,6 +683,7 @@ impl Engine {
             supervisor.stop();
         }
         self.passes.stop();
+        self.modules.search_index.stop();
         self.search_reconcile.abort();
         if let Some(delivery) = &self.search_model_delivery {
             delivery.abort();

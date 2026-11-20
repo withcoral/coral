@@ -373,6 +373,12 @@ impl RunningRuntime {
     /// run one after the other, so an orchestrator's termination grace must
     /// exceed their sum.
     ///
+    /// After the drain, the stop waits for the search index's writes, and the
+    /// listeners keep serving meanwhile. A write that builds its rows holds
+    /// the stop until they are built, with no bound: the row build cannot
+    /// stop part way, and the Tokio runtime waits for it before the process
+    /// exits in any case.
+    ///
     /// # Errors
     ///
     /// Returns every listener that failed to stop.

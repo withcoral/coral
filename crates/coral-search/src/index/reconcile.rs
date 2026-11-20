@@ -57,10 +57,10 @@ const RESTART_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
 impl SearchIndex {
     /// Spawns the reconcile task: one pass at once, then one pass at the start
     /// of each interval. A pass that runs past the next start is followed by
-    /// the next pass at once. The task runs until the caller aborts it; an
-    /// abort during a pass rolls back the pass's open transaction, and later
-    /// passes finish the work. While the vector side is on, the same task
-    /// supervises the Embedder.
+    /// the next pass at once. The task runs until the caller aborts it or the
+    /// index stops; either during a pass rolls back the pass's open
+    /// transaction, and later passes finish the work. While the vector side
+    /// is on, the same task supervises the Embedder.
     ///
     /// # Panics
     ///
@@ -104,14 +104,16 @@ impl SearchIndex {
             }
             // Dropping the set aborts every child when the caller shuts down.
         };
-        tokio::spawn(supervise.with_current_subscriber())
+        tokio::spawn(self.until_stopped(supervise).with_current_subscriber())
     }
 
     fn spawn_background_task(&self, tasks: &mut JoinSet<()>, role: BackgroundTask) -> Id {
         let index = self.clone();
         tasks
             .spawn(
-                async move {
+                // An aborted set does not wait for its children, so each one
+                // counts for the index's stop on its own.
+                self.until_stopped(async move {
                     match role {
                         BackgroundTask::Observer => index.observe_backlog_loop().await,
                         BackgroundTask::Reconcile => {
@@ -128,7 +130,7 @@ impl SearchIndex {
                             }
                         }
                     }
-                }
+                })
                 .with_current_subscriber(),
             )
             .id()

@@ -31,7 +31,8 @@ impl Runtime {
         Self::start_with(state_root, stop_on_stdin_close, |_command| {})
     }
 
-    /// [`Self::start`] with `configure` applied to the command first.
+    /// [`Self::start`] with `configure` applied to the command first. Stderr
+    /// goes nowhere unless `configure` sends it somewhere.
     fn start_with(
         state_root: &Path,
         stop_on_stdin_close: bool,
@@ -41,11 +42,11 @@ impl Runtime {
         if stop_on_stdin_close {
             command.env("CORAL_STOP_ON_STDIN_CLOSE", "1");
         }
+        command.stderr(Stdio::null());
         configure(&mut command);
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
             .spawn()
             .expect("spawn runtime");
         let stdout = child.stdout.take().expect("runtime stdout");
@@ -271,6 +272,34 @@ fn runtime_stops_gracefully_when_stdin_closes_only_when_its_launcher_opts_in() {
             assert_eq!(runtime.exit_within(Duration::from_secs(2)), None);
             assert!(runtime.ready(), "runtime keeps serving after stdin closes");
         }
+    }
+}
+
+/// Catches: a stop that lets the Tokio runtime shut down under a search
+/// index write. A new Workspace starts index writes, and a write that still
+/// runs then panics at its next timer. The panic leaves the exit status at
+/// 0, so the test reads stderr. Not every stop lands in a write, so the test
+/// stops three times.
+#[test]
+fn a_runtime_stopped_while_it_indexes_a_new_workspace_does_not_panic() {
+    for _ in 0..3 {
+        let temp = tempfile::tempdir().expect("temp dir");
+        // Outside the state root, which must hold only the config.
+        let stderr_path = temp.path().join("stderr.log");
+        let stderr = std::fs::File::create(&stderr_path).expect("create the stderr log");
+        let mut runtime = Runtime::start_with(&local_state_root(&temp), true, |command| {
+            command.stderr(stderr);
+        });
+
+        workspace_mcp_url(&runtime);
+        runtime.close_stdin();
+
+        let status = runtime
+            .exit_within(EXIT_TIMEOUT)
+            .expect("runtime stops after stdin closes");
+        assert_eq!(status.code(), Some(0), "{status}");
+        let stderr = std::fs::read_to_string(&stderr_path).expect("read the stderr log");
+        assert!(!stderr.contains("panicked"), "{stderr}");
     }
 }
 
