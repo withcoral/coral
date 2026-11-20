@@ -125,7 +125,7 @@ impl SecretStoreFactory for KvV2Kind {
     fn build(
         &self,
         settings: &StoreSettings,
-        environment: &BuildEnvironment<'_>,
+        environment: &BuildEnvironment,
     ) -> Result<Arc<dyn SecretStore>, SettingError> {
         let store = definition(settings)?;
         let secret_id = environment.secret("auth.secret_id_env", &store.secret_id_env)?;

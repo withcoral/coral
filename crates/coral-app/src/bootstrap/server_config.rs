@@ -465,25 +465,28 @@ impl DeploymentConfig {
     }
 
     /// The Secret Stores this deployment defines, or the disabled set when it
-    /// turned them off. Reads each store's secret ID from the environment and
-    /// sends nothing; an `env` store keeps the reader for later reads.
+    /// turned them off. Reads each store's secret ID from the environment,
+    /// takes the snapshot of it that AWS credential lookup reads, and sends
+    /// nothing; an `env` store keeps the reader for later reads.
     pub(crate) fn secret_stores(
         &self,
         policy: coral_outbound::DestinationPolicy,
     ) -> Result<coral_secret_store::SecretStores, AppError> {
         self.secret_stores_from(
-            policy,
-            &(std::sync::Arc::new(AppEnvironment::env_var) as coral_secret_store::EnvReader),
+            &coral_secret_store::BuildEnvironment::new(
+                policy,
+                std::sync::Arc::new(AppEnvironment::env_var),
+            )
+            .with_aws(super::env::aws_environment()),
         )
     }
 
     pub(super) fn secret_stores_from(
         &self,
-        policy: coral_outbound::DestinationPolicy,
-        env: &coral_secret_store::EnvReader,
+        environment: &coral_secret_store::BuildEnvironment,
     ) -> Result<coral_secret_store::SecretStores, AppError> {
         match &self.secret_stores {
-            Some(defined) => defined.build(policy, env),
+            Some(defined) => defined.build(environment),
             None => Ok(coral_secret_store::SecretStores::disabled()),
         }
     }
@@ -2194,10 +2197,10 @@ client_secret = 'test-secret'
         ] {
             let stores = section(raw)
                 .expect(raw)
-                .secret_stores_from(
+                .secret_stores_from(&coral_secret_store::BuildEnvironment::new(
                     coral_outbound::DestinationPolicy::default(),
-                    &(std::sync::Arc::new(|_: &str| Ok(None)) as coral_secret_store::EnvReader),
-                )
+                    std::sync::Arc::new(|_: &str| Ok(None)),
+                ))
                 .expect(raw);
             assert_eq!(stores.is_disabled(), disabled, "{raw:?}");
             assert_eq!(stores.list().count(), 0, "{raw:?}");
