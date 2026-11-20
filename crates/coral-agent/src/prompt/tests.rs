@@ -94,6 +94,41 @@ fn each_schema_is_json_and_names_the_arguments_the_tools_read() {
     }
 }
 
+// Catches: an identifier's pattern or length in a schema that drifts from the
+// identifiers Coral issues and accepts. The schemas copy `coral-identifier`'s
+// rules as the model reads them.
+#[test]
+fn each_identifier_in_a_schema_follows_coral_identifier() {
+    let max_length = u64::try_from(coral_identifier::MAX_LENGTH).ok();
+    let mut checked = Vec::new();
+    for tool in &TOOLS {
+        let schema: Schema = serde_json::from_str(tool.parameters).expect("JSON");
+        for (argument, property) in &schema.properties {
+            let Some(pattern) = property.get("pattern") else {
+                continue;
+            };
+            let at = format!("{}.{argument}", tool.name);
+            assert_eq!(
+                pattern.as_str(),
+                Some(coral_identifier::SCHEMA_PATTERN),
+                "{at}"
+            );
+            let length = property.get("maxLength").and_then(Value::as_u64);
+            assert_eq!(length, max_length, "{at}");
+            checked.push(at);
+        }
+    }
+    assert_eq!(
+        checked,
+        [
+            "exec.task_id",
+            "wait.run_id",
+            "cancel.run_id",
+            "end_task.task_id"
+        ]
+    );
+}
+
 /// The parts of a tool's argument schema that name its arguments.
 #[derive(Deserialize)]
 struct Schema {
