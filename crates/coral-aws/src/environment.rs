@@ -2,13 +2,16 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fmt;
 use std::sync::Arc;
 
 /// A snapshot of the variables AWS credential lookup reads: every `AWS_*`
 /// variable, those that locate the home directory, where the AWS config files
 /// live, and the HTTPS proxy settings. Bootstrap takes it once; nothing here
 /// reads the process environment.
-#[derive(Clone, Debug, Default)]
+///
+/// It holds credentials, so its `Debug` shows only the variables' names.
+#[derive(Clone, Default)]
 pub struct Environment(Arc<HashMap<String, String>>);
 
 /// The variables outside `AWS_*` that the snapshot keeps: those `aws-config`
@@ -57,5 +60,13 @@ impl Environment {
 
     pub(crate) fn to_aws(&self) -> aws_types::os_shim_internal::Env {
         aws_types::os_shim_internal::Env::from((*self.0).clone())
+    }
+}
+
+impl fmt::Debug for Environment {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut names: Vec<&str> = self.0.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        f.debug_tuple("Environment").field(&names).finish()
     }
 }

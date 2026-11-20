@@ -10,5 +10,5 @@ mod identity;
 mod settings;
 
 pub use environment::Environment;
-pub use identity::{Error, Identity};
+pub use identity::{AwsIdentity, Error};
 pub use settings::{Settings, SettingsError};

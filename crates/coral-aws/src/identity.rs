@@ -67,7 +67,7 @@ impl Error {
 /// It loads its credentials through `aws-config` on first use, never at
 /// construction, and keeps them until they near expiry. After each load it
 /// asks STS which account they belong to.
-pub struct Identity {
+pub struct AwsIdentity {
     settings: Settings,
     session_name: String,
     http_client: SharedHttpClient,
@@ -94,7 +94,7 @@ struct Checked {
     in_account: bool,
 }
 
-impl Identity {
+impl AwsIdentity {
     /// An identity called `name`: if the settings have a role, its session is
     /// `coral-<name>`. Nothing is read or sent until the first use.
     ///
@@ -186,6 +186,11 @@ impl Identity {
                 .provide_credentials()
                 .await
                 .map_err(|error| credentials_error(&error))?;
+            // When a refresh fails, the EC2 instance metadata provider hands
+            // back the credentials it last fetched rather than an error.
+            if credentials.expiry().is_some_and(|expiry| expiry <= now) {
+                return Err(Error::NoCredentials);
+            }
             // An access key belongs to one account, so a provider that hands
             // back the same key near its expiry needs no second check.
             let in_account = match previous {
@@ -196,7 +201,7 @@ impl Identity {
                 }
                 _ => {
                     caller_account(&loaded.config, credentials.clone()).await?
-                        == self.settings.account_id
+                        == self.settings.aws_account_id
                 }
             };
             checked.insert(Checked {
@@ -244,9 +249,9 @@ impl Identity {
     }
 }
 
-impl fmt::Debug for Identity {
+impl fmt::Debug for AwsIdentity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Identity")
+        f.debug_struct("AwsIdentity")
             .field("settings", &self.settings)
             .field("session_name", &self.session_name)
             .finish_non_exhaustive()

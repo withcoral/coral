@@ -5,9 +5,9 @@ mod support;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use coral_aws::{Error, Identity, Settings};
+use coral_aws::{AwsIdentity, Error, Settings};
 use support::{ACCOUNT, OTHER_ACCOUNT, caller_identity, environment, identity_checks, request};
-use wiremock::matchers::{body_string_contains, method};
+use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// When every credential in these tests expires.
@@ -67,8 +67,8 @@ impl Profile {
         std::fs::remove_file(self.creds().join("creds")).expect("a removed file");
     }
 
-    fn identity(&self, sts: &MockServer) -> Identity {
-        Identity::new(
+    fn identity(&self, sts: &MockServer) -> AwsIdentity {
+        AwsIdentity::new(
             Settings::new(ACCOUNT, "eu-west-2", Some("coral"), None).expect("valid settings"),
             "prod-aws",
             &environment(sts, &[("AWS_CONFIG_FILE", &self.config())]),
@@ -77,7 +77,7 @@ impl Profile {
     }
 }
 
-async fn sign(identity: &Identity, now: SystemTime) -> Result<http::Request<Vec<u8>>, Error> {
+async fn sign(identity: &AwsIdentity, now: SystemTime) -> Result<http::Request<Vec<u8>>, Error> {
     let mut request = request("POST", "https://secretsmanager.eu-west-2.amazonaws.com/");
     identity
         .sign(&mut request, "secretsmanager", "eu-west-2", now)
@@ -97,14 +97,19 @@ fn access_key(request: &http::Request<Vec<u8>>) -> &str {
 }
 
 #[tokio::test]
-async fn credentials_in_the_expected_account_sign_and_are_checked_once() {
+async fn credentials_in_the_expected_account_are_checked_once_per_access_key() {
     let sts = MockServer::start().await;
     caller_identity(&sts, "AKIDRIGHT", ACCOUNT).await;
     let profile = Profile::new();
     profile.issue("AKIDRIGHT");
     let identity = profile.identity(&sts);
 
-    for now in [before_expiry(2 * HOUR), before_expiry(HOUR)] {
+    // The last use is near expiry, so it refreshes, and gets the same key.
+    for now in [
+        before_expiry(2 * HOUR),
+        before_expiry(HOUR),
+        before_expiry(MINUTE),
+    ] {
         let signed = sign(&identity, now).await.unwrap();
         assert_eq!(access_key(&signed), "AKIDRIGHT");
     }
@@ -198,7 +203,7 @@ async fn a_role_is_assumed_with_a_session_named_for_the_identity_and_then_checke
         .mount(&sts)
         .await;
     caller_identity(&sts, "AKIDROLE", ACCOUNT).await;
-    let identity = Identity::new(
+    let identity = AwsIdentity::new(
         Settings::new(
             ACCOUNT,
             "eu-west-2",
@@ -223,17 +228,59 @@ async fn a_role_is_assumed_with_a_session_named_for_the_identity_and_then_checke
     assert_eq!(identity_checks(&sts).await, 1);
 }
 
+/// An instance metadata service that gives the instance role `coral` the
+/// credentials with access key `key`.
+async fn instance_role(imds: &MockServer, key: &str) {
+    Mock::given(method("PUT"))
+        .and(path("/latest/api/token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("x-aws-ec2-metadata-token-ttl-seconds", "21600")
+                .set_body_string("imds-token"),
+        )
+        .mount(imds)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/latest/meta-data/iam/security-credentials/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("coral"))
+        .mount(imds)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/latest/meta-data/iam/security-credentials/coral"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"Code":"Success","LastUpdated":"2026-01-01T00:00:00Z","Type":"AWS-HMAC","AccessKeyId":"{key}","SecretAccessKey":"secret","Token":"token","Expiration":"{EXPIRY}"}}"#
+        )))
+        .mount(imds)
+        .await;
+}
+
 #[tokio::test]
-async fn a_refresh_that_returns_the_same_access_key_is_not_checked_again() {
+async fn instance_credentials_are_not_used_past_their_expiry_when_a_refresh_fails() {
     let sts = MockServer::start().await;
-    caller_identity(&sts, "AKIDRIGHT", ACCOUNT).await;
-    let profile = Profile::new();
-    profile.issue("AKIDRIGHT");
-    let identity = profile.identity(&sts);
+    caller_identity(&sts, "AKIDINSTANCE", ACCOUNT).await;
+    let imds = MockServer::start().await;
+    instance_role(&imds, "AKIDINSTANCE").await;
+    let identity = AwsIdentity::new(
+        Settings::new(ACCOUNT, "eu-west-2", None, None).unwrap(),
+        "prod-aws",
+        &environment(
+            &sts,
+            &[
+                ("AWS_EC2_METADATA_DISABLED", "false"),
+                ("AWS_EC2_METADATA_SERVICE_ENDPOINT", &imds.uri()),
+            ],
+        ),
+    )
+    .unwrap();
+    let signed = sign(&identity, before_expiry(HOUR)).await.unwrap();
+    assert_eq!(access_key(&signed), "AKIDINSTANCE");
 
-    for now in [before_expiry(HOUR), before_expiry(MINUTE)] {
-        sign(&identity, now).await.unwrap();
-    }
+    // The instance metadata service stops answering. `aws-config` then hands
+    // back the credentials it last fetched instead of an error.
+    imds.reset().await;
 
-    assert_eq!(identity_checks(&sts).await, 1);
+    assert_eq!(
+        sign(&identity, expiry() + MINUTE).await.unwrap_err(),
+        Error::NoCredentials
+    );
 }

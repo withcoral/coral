@@ -2,7 +2,7 @@
 
 mod support;
 
-use coral_aws::{Identity, Settings};
+use coral_aws::{AwsIdentity, Settings};
 use support::{ACCOUNT, caller_identity, environment, request, vector_time};
 use wiremock::MockServer;
 
@@ -114,36 +114,30 @@ const VECTORS: [Vector; 8] = [
     },
 ];
 
+/// An identity with the vectors' static credentials, and their session
+/// token if `token`.
+fn static_identity(sts: &MockServer, token: bool) -> AwsIdentity {
+    let mut vars = vec![
+        ("AWS_ACCESS_KEY_ID", KEY),
+        ("AWS_SECRET_ACCESS_KEY", SECRET),
+    ];
+    if token {
+        vars.push(("AWS_SESSION_TOKEN", TOKEN));
+    }
+    AwsIdentity::new(
+        Settings::new(ACCOUNT, "us-east-1", None, None).expect("valid settings"),
+        "vectors",
+        &environment(sts, &vars),
+    )
+    .expect("a valid name")
+}
+
 #[tokio::test]
 async fn signing_matches_the_published_sigv4_test_vectors() {
     let sts = MockServer::start().await;
     caller_identity(&sts, KEY, ACCOUNT).await;
-    let settings = Settings::new(ACCOUNT, "us-east-1", None, None).unwrap();
-    let with_token = Identity::new(
-        settings.clone(),
-        "vectors",
-        &environment(
-            &sts,
-            &[
-                ("AWS_ACCESS_KEY_ID", KEY),
-                ("AWS_SECRET_ACCESS_KEY", SECRET),
-                ("AWS_SESSION_TOKEN", TOKEN),
-            ],
-        ),
-    )
-    .unwrap();
-    let without_token = Identity::new(
-        settings,
-        "vectors",
-        &environment(
-            &sts,
-            &[
-                ("AWS_ACCESS_KEY_ID", KEY),
-                ("AWS_SECRET_ACCESS_KEY", SECRET),
-            ],
-        ),
-    )
-    .unwrap();
+    let with_token = static_identity(&sts, true);
+    let without_token = static_identity(&sts, false);
 
     for vector in VECTORS {
         let mut request = request(
@@ -197,4 +191,55 @@ async fn signing_matches_the_published_sigv4_test_vectors() {
             vector.name
         );
     }
+}
+
+/// Vault's AWS IAM login: Coral signs an `sts:GetCallerIdentity` request and
+/// hands its method, URL, body and headers to Vault, which sends it to STS.
+#[tokio::test]
+async fn a_request_signed_to_hand_on_carries_everything_its_receiver_sends() {
+    const URL: &str = "https://sts.us-east-1.amazonaws.com/";
+    const BODY: &str = "Action=GetCallerIdentity&Version=2011-06-15";
+    let sts = MockServer::start().await;
+    caller_identity(&sts, KEY, ACCOUNT).await;
+    let mut request = request("POST", URL);
+    request.headers_mut().insert(
+        "content-type",
+        "application/x-www-form-urlencoded; charset=utf-8"
+            .parse()
+            .unwrap(),
+    );
+    request.headers_mut().insert(
+        "x-vault-aws-iam-server-id",
+        "vault.example.com".parse().unwrap(),
+    );
+    *request.body_mut() = BODY.as_bytes().to_vec();
+
+    static_identity(&sts, true)
+        .sign(&mut request, "sts", "us-east-1", vector_time())
+        .await
+        .unwrap();
+
+    // The URL and body go to Vault as they were signed.
+    assert_eq!(request.uri(), URL);
+    assert_eq!(request.body(), BODY.as_bytes());
+    let authorization = request.headers()["authorization"].to_str().unwrap();
+    assert!(
+        authorization.starts_with(
+            "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/sts/aws4_request, \
+             SignedHeaders=content-type;host;x-amz-date;x-amz-security-token;x-vault-aws-iam-server-id, \
+             Signature="
+        ),
+        "{authorization}"
+    );
+    // Every signed header but `host`, which the receiver takes from the URL,
+    // is in the headers it is handed.
+    for name in [
+        "content-type",
+        "x-amz-date",
+        "x-amz-security-token",
+        "x-vault-aws-iam-server-id",
+    ] {
+        assert!(request.headers().contains_key(name), "{name}");
+    }
+    assert_eq!(request.headers()["x-amz-security-token"], TOKEN);
 }

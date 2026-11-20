@@ -1,6 +1,6 @@
 //! An identity's settings are checked before boot goes on.
 
-use coral_aws::{Environment, Identity, Settings, SettingsError};
+use coral_aws::{AwsIdentity, Environment, Settings, SettingsError};
 
 const ACCOUNT: &str = "111122223333";
 
@@ -82,11 +82,11 @@ fn malformed_settings_name_the_field_and_never_the_value() {
 fn a_name_that_makes_no_role_session_name_is_rejected() {
     let settings = settings(Some("arn:aws:iam::111122223333:role/coral")).unwrap();
     for name in ["", "has space", &"n".repeat(59)] {
-        let error =
-            Identity::new(settings.clone(), name, &Environment::default()).expect_err("rejected");
+        let error = AwsIdentity::new(settings.clone(), name, &Environment::default())
+            .expect_err("rejected");
         assert_eq!(error, SettingsError::SessionName);
     }
-    Identity::new(settings, &"n".repeat(58), &Environment::default()).unwrap();
+    AwsIdentity::new(settings, &"n".repeat(58), &Environment::default()).unwrap();
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn an_https_proxy_that_is_not_a_url_is_rejected_without_repeating_it() {
     let settings = settings(None).unwrap();
     for name in ["HTTPS_PROXY", "https_proxy", "ALL_PROXY"] {
         let env = Environment::snapshot([(name.into(), "user:hunter2@not a url".into())]);
-        let error = Identity::new(settings.clone(), "prod-aws", &env).expect_err("rejected");
+        let error = AwsIdentity::new(settings.clone(), "prod-aws", &env).expect_err("rejected");
         assert_eq!(error, SettingsError::HttpsProxy, "{name}");
         assert!(!error.to_string().contains("hunter2"), "{error}");
     }

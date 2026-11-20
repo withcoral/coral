@@ -49,7 +49,7 @@ impl SettingsError {
 /// One identity's checked settings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
-    pub(crate) account_id: String,
+    pub(crate) aws_account_id: String,
     pub(crate) region: String,
     pub(crate) profile: Option<String>,
     pub(crate) role_arn: Option<String>,
@@ -58,22 +58,23 @@ pub struct Settings {
 impl Settings {
     /// Checks the settings.
     ///
-    /// - `account_id`: the account Coral expects its credentials to be in.
+    /// - `aws_account_id`: the account Coral expects its credentials to be
+    ///   in, which the `account_id` setting names.
     /// - `region`: the region to sign for and to reach STS in.
     /// - `profile`: a profile in the AWS config file. Without one, the
     ///   default chain finds the credentials.
     /// - `role_arn`: a role to assume on top of those credentials. It must be
-    ///   in `account_id`.
+    ///   in `aws_account_id`.
     ///
     /// # Errors
     /// Returns the first unusable setting.
     pub fn new(
-        account_id: &str,
+        aws_account_id: &str,
         region: &str,
         profile: Option<&str>,
         role_arn: Option<&str>,
     ) -> Result<Self, SettingsError> {
-        if !is_account_id(account_id) {
+        if !is_account_id(aws_account_id) {
             return Err(SettingsError::AccountId);
         }
         if region.is_empty()
@@ -87,12 +88,12 @@ impl Settings {
             return Err(SettingsError::Profile);
         }
         if let Some(role_arn) = role_arn
-            && role_account(role_arn).ok_or(SettingsError::RoleArn)? != account_id
+            && role_account(role_arn).ok_or(SettingsError::RoleArn)? != aws_account_id
         {
             return Err(SettingsError::RoleInAnotherAccount);
         }
         Ok(Self {
-            account_id: account_id.to_owned(),
+            aws_account_id: aws_account_id.to_owned(),
             region: region.to_owned(),
             profile: profile.map(str::to_owned),
             role_arn: role_arn.map(str::to_owned),

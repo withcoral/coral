@@ -116,12 +116,7 @@ impl Section {
             return Err(SettingError::new("reasoning_effort", "must not be empty"));
         }
         let policy = dependencies.outbound_policy;
-        let environment = BuildEnvironment {
-            policy,
-            env: &*dependencies.env,
-            // A model client signs no AWS request.
-            aws: &coral_aws::Environment::default(),
-        };
+        let environment = BuildEnvironment::new(policy, Arc::clone(&dependencies.env));
         let api_key = match &self.api_key_env {
             Some(name) => {
                 let name = env_var_name("api_key_env", name)?;

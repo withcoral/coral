@@ -59,7 +59,7 @@ impl SecretStoreFactory for EnvKind {
     fn build(
         &self,
         settings: &StoreSettings,
-        _environment: &BuildEnvironment<'_>,
+        _environment: &BuildEnvironment,
     ) -> Result<Arc<dyn SecretStore>, SettingError> {
         // Bootstrap validated the prefix against the rest of config; the rules
         // that need no config hold here too.
@@ -194,11 +194,10 @@ mod tests {
             |_: &str| -> Result<Option<String>, VarError> { panic!("build reads no variable") };
         kind.build(
             &settings(&format!("prefix = '{prefix}'")),
-            &BuildEnvironment {
-                policy: coral_outbound::DestinationPolicy::default(),
-                env: &no_env,
-                aws: &coral_aws::Environment::default(),
-            },
+            &BuildEnvironment::new(
+                coral_outbound::DestinationPolicy::default(),
+                Arc::new(no_env),
+            ),
         )
         .unwrap()
     }

@@ -208,7 +208,7 @@ pub trait SecretStoreFactory: Send + Sync {
     fn build(
         &self,
         settings: &StoreSettings,
-        environment: &BuildEnvironment<'_>,
+        environment: &BuildEnvironment,
     ) -> Result<Arc<dyn SecretStore>, SettingError>;
 }
 
@@ -537,7 +537,7 @@ mod tests {
         fn build(
             &self,
             _settings: &StoreSettings,
-            _environment: &BuildEnvironment<'_>,
+            _environment: &BuildEnvironment,
         ) -> Result<Arc<dyn SecretStore>, SettingError> {
             Ok(Arc::new(Refusing))
         }

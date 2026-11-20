@@ -41,14 +41,14 @@ fn build(
     raw: &str,
     secret_id: Option<&str>,
 ) -> Result<Arc<dyn SecretStore>, SettingError> {
-    let env = |name: &str| Ok(secret_id.filter(|_| name == "SECRET_ID").map(str::to_owned));
+    let secret_id = secret_id.map(str::to_owned);
+    let env = move |name: &str| Ok(secret_id.clone().filter(|_| name == "SECRET_ID"));
     kind.build(
         &settings(raw),
-        &BuildEnvironment {
-            policy: DestinationPolicy::new(NetworkAccess::HttpAndHttps, NetworkAccess::Deny),
-            env: &env,
-            aws: &coral_aws::Environment::default(),
-        },
+        &BuildEnvironment::new(
+            DestinationPolicy::new(NetworkAccess::HttpAndHttps, NetworkAccess::Deny),
+            Arc::new(env),
+        ),
     )
 }
 

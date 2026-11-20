@@ -4,12 +4,11 @@
 //! rejected value: errors name the field and the reason only.
 
 use std::borrow::Cow;
-use std::env::VarError;
 use std::fmt;
 
 use serde::de::DeserializeOwned;
 
-use crate::Secret;
+use crate::{EnvReader, Secret};
 
 /// Serde messages that quote the value they reject.
 const VALUE_BEARING_MESSAGES: [&str; 3] = ["invalid type: ", "invalid value: ", "unknown variant "];
@@ -134,17 +133,33 @@ impl NamedVariables {
 }
 
 /// What bootstrap gives a store kind to build a store.
-pub struct BuildEnvironment<'a> {
+pub struct BuildEnvironment {
     /// The destination policy every request to the store goes through.
     pub policy: coral_outbound::DestinationPolicy,
     /// Reads one process environment variable. Bootstrap owns the environment,
     /// so a store kind reads it only through this.
-    pub env: &'a dyn Fn(&str) -> Result<Option<String>, VarError>,
+    pub env: EnvReader,
     /// The environment AWS credential lookup reads, as bootstrap saw it.
-    pub aws: &'a coral_aws::Environment,
+    pub aws: coral_aws::Environment,
 }
 
-impl BuildEnvironment<'_> {
+impl BuildEnvironment {
+    /// An environment whose AWS credential lookup sees no variable.
+    #[must_use]
+    pub fn new(policy: coral_outbound::DestinationPolicy, env: EnvReader) -> Self {
+        Self {
+            policy,
+            env,
+            aws: coral_aws::Environment::default(),
+        }
+    }
+
+    /// The same environment, with `aws` for AWS credential lookup.
+    #[must_use]
+    pub fn with_aws(self, aws: coral_aws::Environment) -> Self {
+        Self { aws, ..self }
+    }
+
     /// Reads the secret held in the variable `name`, which the setting at
     /// `field` names.
     ///
@@ -165,6 +180,9 @@ impl BuildEnvironment<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::env::VarError;
+    use std::sync::Arc;
+
     use serde::Deserialize;
 
     use super::*;
@@ -251,11 +269,8 @@ mod tests {
                 _ => Ok(None),
             }
         };
-        let environment = BuildEnvironment {
-            policy: coral_outbound::DestinationPolicy::default(),
-            env: &env,
-            aws: &coral_aws::Environment::default(),
-        };
+        let environment =
+            BuildEnvironment::new(coral_outbound::DestinationPolicy::default(), Arc::new(env));
         assert_eq!(environment.secret("f", "SET").unwrap().expose(), "value");
         for (name, reason) in [
             (SECRET, "environment variable is not set"),

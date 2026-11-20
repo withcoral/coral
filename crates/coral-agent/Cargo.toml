@@ -14,7 +14,6 @@ workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 coral-app.workspace = true
-coral-aws.workspace = true
 coral-catalog.workspace = true
 coral-credentials.workspace = true
 coral-db.workspace = true
