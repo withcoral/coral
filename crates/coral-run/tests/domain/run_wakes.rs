@@ -461,4 +461,5 @@ async fn a_run_ended_under_the_loops_chunk_terminates_its_program_once() {
             .any(|message| matches!(message, run_response::Message::Terminate(_))),
         "one Terminate: {rest:?}"
     );
+    wait_until_async(async || held.wake_rows().await == 0).await;
 }
