@@ -202,12 +202,12 @@ Coral compares names without regard to case.
 
 #### Read from AWS Secrets Manager
 
-The `aws_secrets_manager` kind reads secrets from AWS Secrets Manager. It needs the Enterprise Edition, as `kv-v2` does. One store covers one AWS account in one region. Add a store for each account and region you read from.
+The `aws-secrets-manager` kind reads secrets from AWS Secrets Manager. It needs the Enterprise Edition, as `kv-v2` does. One store covers one AWS account in one region. Add a store for each account and region you read from.
 
 ```toml
 [[secret_stores]]
 name = "prod-aws"
-kind = "aws_secrets_manager"
+kind = "aws-secrets-manager"
 account_id = "111122223333"
 region = "eu-west-2"
 role_arn = "arn:aws:iam::111122223333:role/coral-prod-secrets"

@@ -154,7 +154,7 @@ impl SecretStoreFactory for KvV2Kind {
     }
 }
 
-/// The `aws_secrets_manager` store kind.
+/// The `aws-secrets-manager` store kind.
 pub struct AwsSecretsManagerKind {
     kind: SecretStoreKind,
     edition: EditionCheck,
@@ -168,7 +168,7 @@ impl AwsSecretsManagerKind {
     #[must_use]
     pub fn new(edition: EditionCheck) -> Self {
         Self {
-            kind: SecretStoreKind::new("aws_secrets_manager", "AWS Secrets Manager")
+            kind: SecretStoreKind::new("aws-secrets-manager", "AWS Secrets Manager")
                 .expect("a valid kind name"),
             edition,
         }

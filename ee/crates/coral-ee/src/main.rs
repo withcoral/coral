@@ -40,7 +40,7 @@ mod tests {
     #[test]
     fn registers_its_secret_store_kinds() {
         let extensions = extensions(EditionCheck::new(Arc::new(Edition::Community)));
-        for kind in ["kv-v2", "aws_secrets_manager"] {
+        for kind in ["kv-v2", "aws-secrets-manager"] {
             assert!(extensions.secret_store_kinds.get(kind).is_some(), "{kind}");
         }
     }
