@@ -69,12 +69,13 @@ export async function savedSecretReferences(
   api: ManagementApi,
   parent: string,
   provider: string,
+  agent?: string,
 ): Promise<Record<string, SavedReferenceView>> {
   const { account } = await api.accounts.getProviderAccount({
     parent,
     provider,
-    scope: ProviderAccountScope.SHARED,
-    agent: '',
+    scope: agent ? ProviderAccountScope.AGENT : ProviderAccountScope.SHARED,
+    agent: agent ?? '',
   })
   return Object.fromEntries(
     Object.entries(account?.secretReferences ?? {}).map(([name, reference]) => [

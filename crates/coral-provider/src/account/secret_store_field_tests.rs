@@ -1,4 +1,4 @@
-//! A shared Account whose Credential Fields a Secret Store holds.
+//! A shared Account or an Agent's whose Credential Fields a Secret Store holds.
 use coral_db::UnixNanos;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -1314,4 +1314,194 @@ async fn updating_a_provider_moves_the_setups_references_to_its_shared_account()
     let view = f.view().await.account.unwrap();
     assert!(view.secret_references.contains_key(CredentialValues::TOKEN));
     assert_eq!(f.read(&f.evidence().await).await.unwrap(), "stored-canary");
+}
+
+/// An Agent's `caller` Account in the `shared()` Workspace, with an initial
+/// connection the Workspace Owner has started and not yet completed.
+struct AgentAccount {
+    provider: ProviderId,
+    agent: coral_workspace::Principal,
+    started: AuthorizationId,
+}
+
+impl Shared {
+    async fn agent_account(&self) -> AgentAccount {
+        let provider = crate::tests::publish_provider(
+            &self.providers,
+            &self.owner,
+            &self.workspace,
+            CREDENTIAL_REQUIRED_OPENAPI,
+            "agentic",
+            crate::access::CredentialRoute::Caller,
+        )
+        .await;
+        let issued = self
+            .workspaces
+            .create_agent(
+                &self.owner,
+                &RequestId::generate(),
+                &self.workspace,
+                coral_workspace::AgentDisplayName::parse("Worker").unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let agent = self
+            .workspaces
+            .authenticate_agent(
+                &self.workspace,
+                issued.credential.expose(),
+                UnixNanos::new(11),
+            )
+            .await
+            .unwrap()
+            .principal()
+            .clone();
+        let started = self
+            .accounts
+            .start_agent_authorization(
+                &self.owner,
+                &self.workspace,
+                agent.id(),
+                provider.id(),
+                authorization_request(),
+                None,
+            )
+            .await
+            .unwrap()
+            .id;
+        AgentAccount {
+            provider: provider.id().clone(),
+            agent,
+            started,
+        }
+    }
+
+    async fn agent_evidence(&self, account: &AgentAccount) -> Result<CredentialEvidence, Error> {
+        crate::setup_tests::credential_evidence(
+            &self.db.database(),
+            &self.workspace,
+            "agentic",
+            "getPrivateForecast",
+            &account.agent,
+        )
+        .await
+    }
+
+    async fn agent_read(
+        &self,
+        account: &AgentAccount,
+        evidence: &CredentialEvidence,
+    ) -> Result<String, Error> {
+        self.accounts
+            .credentials(
+                &self.workspace,
+                &account.provider,
+                evidence,
+                UnixNanos::new(20),
+            )
+            .await
+            .map(|values| {
+                values
+                    .get(CredentialValues::TOKEN)
+                    .unwrap()
+                    .expose()
+                    .to_owned()
+            })
+    }
+}
+
+// Catches: an Agent's Account refusing a reference as a User's own does, a save
+// that skips the check, or a value kept instead of read when the Agent's own
+// Account is selected. How a read fails is the same for every Account, and the
+// shared Account's tests own it.
+#[tokio::test]
+async fn an_agents_account_takes_a_reference_read_for_each_dispatch() {
+    let f = shared().await;
+    let account = f.agent_account().await;
+    let reads = f.store.reads();
+
+    let saved = f
+        .accounts
+        .submit_fields(
+            &f.owner,
+            &f.workspace,
+            account.started,
+            reference("team", PATH, "token"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(saved.state, AuthorizationState::Succeeded);
+    assert_eq!(
+        f.store.reads(),
+        reads + 1,
+        "saving reads the reference once"
+    );
+    let view = f
+        .accounts
+        .get_account(
+            &f.owner,
+            &f.workspace,
+            &account.provider,
+            &AccountScope::Agent(account.agent.id().clone()),
+        )
+        .await
+        .unwrap()
+        .account
+        .unwrap();
+    assert!(view.secret_references.contains_key(CredentialValues::TOKEN));
+    let evidence = f.agent_evidence(&account).await.unwrap();
+    assert_eq!(
+        f.agent_read(&account, &evidence).await.unwrap(),
+        "stored-canary"
+    );
+    f.store.set(PATH, "token", "rotated-canary");
+    assert_eq!(
+        f.agent_read(&account, &evidence).await.unwrap(),
+        "rotated-canary"
+    );
+}
+
+// Catches: an Agent's removal that keeps its references, or Coral touching the store.
+#[tokio::test]
+async fn removing_an_agent_removes_its_references_and_leaves_the_store_alone() {
+    let f = shared().await;
+    let account = f.agent_account().await;
+    let id = f
+        .accounts
+        .submit_fields(
+            &f.owner,
+            &f.workspace,
+            account.started,
+            reference("team", PATH, "token"),
+        )
+        .await
+        .unwrap()
+        .account_id
+        .unwrap();
+    let evidence = f.agent_evidence(&account).await.unwrap();
+    let reads = f.store.reads();
+
+    coral_administration::AccessLifecycleModule::new(f.db.database(), f.workspaces.clone())
+        .delete_agent(&f.owner, &f.workspace, account.agent.id(), &IfMatch::any())
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        f.agent_read(&account, &evidence).await,
+        Err(Error::AccountRequired)
+    ));
+    assert_eq!(f.store.reads(), reads, "cleanup never reaches the store");
+    // The schema refuses a reference on an Account with no typed values, so this
+    // matches only when removal cleared both.
+    let scrubbed =
+        f.db.execute_fixture_sql(&format!(
+            "UPDATE provider_accounts SET secret_references = NULL \
+             WHERE id = '{id}' AND secret_references IS NULL \
+             AND encrypted_credentials = ''"
+        ))
+        .await
+        .unwrap();
+    assert_eq!(scrubbed, 1, "removal took the typed values and references");
 }

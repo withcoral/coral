@@ -14,7 +14,7 @@ const SOURCES = [
 ] as const
 
 /**
- * One Credential Field on a shared account: a typed value, or a reference to a secret
+ * One Credential Field on a shared or agent account: a typed value, or a reference to a secret
  * store entry. The chosen store says what the reference holds: a path and a key, or
  * one variable name. Only the chosen inputs are in the form.
  */
