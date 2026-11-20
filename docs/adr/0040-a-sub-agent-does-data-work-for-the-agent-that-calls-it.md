@@ -225,7 +225,8 @@ request. The author then updates it so that the model reads what it read before.
 - **A checked-in file of hashes of that text, verified in CI.** It would only report a change, and the quickest way to
   satisfy such a check is to update the file.
 - **Tell the model, and not give it `end_task`, that a message without a tool call is its answer.** The system prompt
-  already says so, and briefs that repeated it still left most Turns starting Runs that only returned the answer.
+  already says so, and briefs that repeated it still left most Turns ending on a Run or a `wait`, some of them Runs
+  that only returned the answer.
 - **An `answer` tool that ends the Turn.** No model has been trained on it, while Sailfish calls `end_task` before
   nearly every answer.
 
