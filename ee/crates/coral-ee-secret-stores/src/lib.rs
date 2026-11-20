@@ -3,9 +3,9 @@
 //! Secret Store kinds that need the Enterprise Edition (ADR 0036).
 //!
 //! [`KvV2Kind`] builds `HashiCorp` Vault and `OpenBao` KV version 2 stores, and
-//! [`AwsSecretsManagerKind`] AWS Secrets Manager stores. Each store asks the Edition on every read: while it is Community, the read fails
-//! with [`Error::NeedsEnterprise`] before anything is sent, and nothing is
-//! deleted.
+//! [`AwsSecretsManagerKind`] AWS Secrets Manager stores. Each store asks the
+//! Edition on every read: while it is Community, the read fails with
+//! [`Error::NeedsEnterprise`] before anything is sent, and nothing is deleted.
 
 use std::sync::Arc;
 
@@ -18,10 +18,10 @@ use coral_secret_store::{
 use serde::Deserialize;
 
 pub mod aws_secrets_manager;
-mod http;
 pub mod kv_v2;
+mod store_http;
 
-use aws_secrets_manager::SecretsManagerStore;
+use aws_secrets_manager::{SecretsManagerSettings, SecretsManagerStore};
 use kv_v2::{AppRole, KvV2Settings, KvV2Store, MountPath, StoreAddress};
 
 /// The Enterprise Feature every kind here is part of: reading credentials
@@ -135,8 +135,7 @@ impl SecretStoreFactory for KvV2Kind {
     ) -> Result<Arc<dyn SecretStore>, SettingError> {
         let store = definition(settings)?;
         let secret_id = environment.secret("auth.secret_id_env", &store.secret_id_env)?;
-        let client = coral_outbound::Client::new(environment.policy, kv_v2::REQUEST_TIMEOUT)
-            .map_err(|_error| SettingError::new("", "secret store client initialization failed"))?;
+        let client = store_http::client(environment.policy)?;
         Ok(Arc::new(EnterpriseOnly {
             edition: self.edition.clone(),
             store: KvV2Store::new(
@@ -186,18 +185,11 @@ struct RawAwsSettings {
     endpoint: Option<String>,
 }
 
-/// One AWS store's checked settings, and the identity it reads as.
-struct AwsDefinition {
-    region: String,
-    endpoint: Option<StoreAddress>,
-    identity: coral_aws::AwsIdentity,
-}
-
 fn aws_definition(
     name: &SecretStoreName,
     settings: &StoreSettings,
     aws: &coral_aws::Environment,
-) -> Result<AwsDefinition, SettingError> {
+) -> Result<SecretsManagerSettings, SettingError> {
     let raw: RawAwsSettings = settings.decode()?;
     let aws_error =
         |error: coral_aws::SettingsError| SettingError::new(error.field(), error.to_string());
@@ -215,7 +207,7 @@ fn aws_definition(
         .transpose()
         .map_err(|error| SettingError::new("endpoint", error.to_string()))?;
     let identity = coral_aws::AwsIdentity::new(checked, name.as_str(), aws).map_err(aws_error)?;
-    Ok(AwsDefinition {
+    Ok(SecretsManagerSettings {
         region: raw.region,
         endpoint,
         identity,
@@ -244,19 +236,11 @@ impl SecretStoreFactory for AwsSecretsManagerKind {
         settings: &StoreSettings,
         environment: &BuildEnvironment,
     ) -> Result<Arc<dyn SecretStore>, SettingError> {
-        let store = aws_definition(name, settings, &environment.aws)?;
-        let client = coral_outbound::Client::new(
-            environment.policy,
-            aws_secrets_manager::REQUEST_TIMEOUT,
-        )
-        .map_err(|_error| SettingError::new("", "secret store client initialization failed"))?;
         Ok(Arc::new(EnterpriseOnly {
             edition: self.edition.clone(),
             store: SecretsManagerStore::new(
-                client,
-                &store.region,
-                store.endpoint,
-                store.identity,
+                store_http::client(environment.policy)?,
+                aws_definition(name, settings, &environment.aws)?,
                 Arc::clone(&environment.clock),
             ),
         }))

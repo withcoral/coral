@@ -204,6 +204,7 @@ mod tests {
             &BuildEnvironment::new(
                 coral_outbound::DestinationPolicy::default(),
                 Arc::new(no_env),
+                Arc::new(coral_db::SystemClock),
             ),
         )
         .unwrap()

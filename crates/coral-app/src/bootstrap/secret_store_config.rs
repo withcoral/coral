@@ -327,6 +327,7 @@ mod tests {
         validated_with(raw, kinds)?.secret_stores_from(&BuildEnvironment::new(
             DestinationPolicy::default(),
             Arc::new(move |name: &str| Ok(env(name))),
+            Arc::new(coral_test_support::ManualClock::starting_now()),
         ))
     }
 

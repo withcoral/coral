@@ -7,7 +7,6 @@
 //! `coral-outbound`, because config sets its address.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use coral_aws::AwsIdentity;
@@ -19,10 +18,7 @@ use serde_json::Value;
 use url::Url;
 use zeroize::Zeroizing;
 
-use crate::http::{Fields, StoreAddress, read_body};
-
-/// How long one request to Secrets Manager may take.
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::store_http::{Fields, StoreAddress, read_body};
 
 const SERVICE: &str = "secretsmanager";
 const TARGET: &str = "secretsmanager.GetSecretValue";
@@ -31,6 +27,16 @@ const SECURITY_TOKEN: &str = "x-amz-security-token";
 
 /// The version Coral reads: always the current one.
 const CURRENT: &str = "AWSCURRENT";
+
+/// Where and as whom to read one account's secrets in one region.
+pub struct SecretsManagerSettings {
+    /// The region that holds the secrets, checked by `coral_aws::Settings`.
+    pub region: String,
+    /// Where to send reads, in place of AWS's regional endpoint.
+    pub endpoint: Option<StoreAddress>,
+    /// The identity that signs each read.
+    pub identity: AwsIdentity,
+}
 
 /// One account's secrets in one region, read as one AWS identity.
 pub struct SecretsManagerStore {
@@ -42,20 +48,23 @@ pub struct SecretsManagerStore {
 }
 
 impl SecretsManagerStore {
-    /// Prepares a store that reads in `region` through `endpoint`, or AWS's
-    /// regional endpoint without one. Nothing is sent until the first read.
+    /// Prepares a store. It reads through AWS's regional endpoint unless
+    /// the settings name another. Nothing is sent until the first read.
     #[must_use]
     pub fn new(
         client: coral_outbound::Client,
-        region: &str,
-        endpoint: Option<StoreAddress>,
-        identity: AwsIdentity,
+        settings: SecretsManagerSettings,
         clock: Arc<dyn coral_db::Clock>,
     ) -> Self {
+        let SecretsManagerSettings {
+            region,
+            endpoint,
+            identity,
+        } = settings;
         Self {
             client,
-            endpoint: endpoint.map_or_else(|| regional_endpoint(region), |address| address.0),
-            region: region.to_owned(),
+            endpoint: endpoint.map_or_else(|| regional_endpoint(&region), |address| address.0),
+            region,
             identity,
             clock,
         }
@@ -73,7 +82,8 @@ impl SecretsManagerStore {
             secret_id: name,
             version_stage: CURRENT,
         })
-        .map_err(|_error| Error::EntryNotFound)?;
+        // Serializing two strings cannot fail.
+        .map_err(|_error| Error::Unreachable)?;
         let mut request = http::Request::post(self.endpoint.as_str())
             .header(CONTENT_TYPE, CONTENT)
             .header("x-amz-target", TARGET)
@@ -202,7 +212,8 @@ fn error(status: StatusCode, header: Option<&str>, body: &[u8]) -> Error {
         Some(
             "ResourceNotFoundException" | "InvalidRequestException" | "InvalidParameterException",
         ) => Error::EntryNotFound,
-        // `DecryptionFailure` is KMS refusing to decrypt the secret.
+        // KMS answers `DecryptionFailure` when its key is disabled or Coral may
+        // not use it, and `AccessDeniedException` without `kms:Decrypt`.
         Some(
             "AccessDeniedException"
             | "DecryptionFailure"

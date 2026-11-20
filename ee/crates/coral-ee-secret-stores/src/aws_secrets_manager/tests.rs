@@ -11,6 +11,7 @@ use coral_secret_store::{
     SecretStore, SecretStoreFactory as _, SecretStoreName, SettingError, StoreSettings,
     StoreStatus,
 };
+use coral_test_support::ManualClock;
 use serde_json::json;
 use wiremock::matchers::{body_json, body_string_contains, header, header_regex, method};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -24,19 +25,29 @@ const ACCESS_KEY: &str = "AKIDCORALTEST";
 /// credentials are in [`ACCOUNT`], and Secrets Manager answers as each test
 /// mounts.
 async fn aws() -> MockServer {
+    aws_whose_sts_answers(caller_identity(ACCOUNT)).await
+}
+
+/// AWS whose STS answers `GetCallerIdentity` with `sts`.
+async fn aws_whose_sts_answers(sts: ResponseTemplate) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(body_string_contains("Action=GetCallerIdentity"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-            "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\">\
-             <GetCallerIdentityResult><Arn>arn:aws:iam::{ACCOUNT}:user/coral</Arn>\
-             <UserId>AIDACORAL</UserId><Account>{ACCOUNT}</Account></GetCallerIdentityResult>\
-             <ResponseMetadata><RequestId>1</RequestId></ResponseMetadata>\
-             </GetCallerIdentityResponse>"
-        )))
+        .respond_with(sts)
         .mount(&server)
         .await;
     server
+}
+
+/// STS's answer that the caller is in `account`.
+fn caller_identity(account: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_string(format!(
+        "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\">\
+         <GetCallerIdentityResult><Arn>arn:aws:iam::{account}:user/coral</Arn>\
+         <UserId>AIDACORAL</UserId><Account>{account}</Account></GetCallerIdentityResult>\
+         <ResponseMetadata><RequestId>1</RequestId></ResponseMetadata>\
+         </GetCallerIdentityResponse>"
+    ))
 }
 
 /// Secrets Manager answers `GetSecretValue` with `status` and `body`.
@@ -60,9 +71,26 @@ fn settings(endpoint: &str) -> StoreSettings {
 /// An environment with static keys, whose STS is `aws`, that reads no AWS
 /// file or instance metadata of the machine running the test.
 fn environment(aws: &MockServer) -> BuildEnvironment {
-    let vars = [
+    environment_with(aws, Keys::Static)
+}
+
+/// Whether the environment holds credentials.
+#[derive(Clone, Copy, Debug)]
+enum Keys {
+    Static,
+    None,
+}
+
+fn environment_with(aws: &MockServer, keys: Keys) -> BuildEnvironment {
+    let static_keys = [
         ("AWS_ACCESS_KEY_ID", ACCESS_KEY.to_owned()),
         ("AWS_SECRET_ACCESS_KEY", "secret-access-key".to_owned()),
+    ];
+    let keys = match keys {
+        Keys::Static => &static_keys[..],
+        Keys::None => &[],
+    };
+    let vars = [
         ("AWS_ENDPOINT_URL_STS", aws.uri()),
         ("AWS_CONFIG_FILE", "/nonexistent/aws/config".to_owned()),
         (
@@ -74,10 +102,14 @@ fn environment(aws: &MockServer) -> BuildEnvironment {
     BuildEnvironment::new(
         DestinationPolicy::new(NetworkAccess::HttpAndHttps, NetworkAccess::Deny),
         Arc::new(|_name: &str| Ok(None)),
+        Arc::new(ManualClock::starting_now()),
     )
-    .with_aws(coral_aws::Environment::snapshot(vars.into_iter().map(
-        |(name, value)| (OsString::from(name), OsString::from(value)),
-    )))
+    .with_aws(coral_aws::Environment::snapshot(
+        keys.iter()
+            .cloned()
+            .chain(vars)
+            .map(|(name, value)| (OsString::from(name), OsString::from(value))),
+    ))
 }
 
 fn store(aws: &MockServer, edition: Edition) -> Arc<dyn SecretStore> {
@@ -261,28 +293,45 @@ async fn an_arn_is_not_a_secret_name() {
     assert!(aws.received_requests().await.unwrap().is_empty());
 }
 
-/// Credentials in another account fail as a denial, and no read is sent.
+/// When Coral has no usable credentials in the store's account, the read
+/// fails as the identity's failure says, and nothing goes to Secrets Manager.
 #[tokio::test]
-async fn credentials_in_another_account_are_denied() {
-    let aws = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(body_string_contains("Action=GetCallerIdentity"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<GetCallerIdentityResponse xmlns=\"https://sts.amazonaws.com/doc/2011-06-15/\">\
-             <GetCallerIdentityResult><Arn>arn:aws:iam::444455556666:user/coral</Arn>\
-             <UserId>AIDACORAL</UserId><Account>444455556666</Account></GetCallerIdentityResult>\
-             <ResponseMetadata><RequestId>1</RequestId></ResponseMetadata>\
-             </GetCallerIdentityResponse>",
-        ))
-        .mount(&aws)
-        .await;
-    answer(&aws, 200, json!({ "SecretString": "v" })).await;
-    let error = store(&aws, Edition::Enterprise)
-        .read(&reference("team/jira", None))
-        .await
-        .unwrap_err();
-    assert_eq!(error, Error::PermissionDenied);
-    assert_eq!(secrets_manager_calls(&aws).await, 0);
+async fn a_read_needs_credentials_in_the_account() {
+    let cases = [
+        (
+            caller_identity("444455556666"),
+            Keys::Static,
+            Error::PermissionDenied,
+        ),
+        (
+            ResponseTemplate::new(403).set_body_string(
+                "<ErrorResponse><Error><Type>Sender</Type><Code>InvalidClientTokenId</Code>\
+                 <Message>m</Message></Error><RequestId>1</RequestId></ErrorResponse>",
+            ),
+            Keys::Static,
+            Error::PermissionDenied,
+        ),
+        (ResponseTemplate::new(503), Keys::Static, Error::Unreachable),
+        (
+            caller_identity(ACCOUNT),
+            Keys::None,
+            Error::PermissionDenied,
+        ),
+    ];
+    for (sts, keys, expected) in cases {
+        let aws = aws_whose_sts_answers(sts).await;
+        answer(&aws, 200, json!({ "SecretString": "v" })).await;
+        let store = AwsSecretsManagerKind::new(EditionCheck::new(Arc::new(Edition::Enterprise)))
+            .build(
+                &store_name(),
+                &settings(&aws.uri()),
+                &environment_with(&aws, keys),
+            )
+            .unwrap();
+        let error = store.read(&reference("team/jira", None)).await.unwrap_err();
+        assert_eq!(error, expected, "{keys:?}");
+        assert_eq!(secrets_manager_calls(&aws).await, 0, "{keys:?}");
+    }
 }
 
 /// A destination outside the outbound policy is unreachable, and nothing

@@ -3,13 +3,17 @@
 //! What every kind here needs to read from a store over HTTP.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use coral_outbound::OutboundUrlPolicyError;
-use coral_secret_store::{Error, InvalidSetting};
+use coral_secret_store::{Error, InvalidSetting, SettingError};
 use serde::Deserialize;
 use serde_json::Value;
 use url::Url;
 use zeroize::{Zeroize as _, Zeroizing};
+
+/// How long one request to a store may take.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The largest answer Coral reads from a store.
 pub(crate) const BODY_LIMIT: usize = 1 << 20;
@@ -38,6 +42,14 @@ impl StoreAddress {
                 "must be an http or https origin, without a path, query or credentials",
             ))
     }
+}
+
+/// The client every request to a store goes through, under `policy`.
+pub(crate) fn client(
+    policy: coral_outbound::DestinationPolicy,
+) -> Result<coral_outbound::Client, SettingError> {
+    coral_outbound::Client::new(policy, REQUEST_TIMEOUT)
+        .map_err(|_error| SettingError::new("", "secret store client initialization failed"))
 }
 
 /// The answer's body, wiped when dropped, up to [`BODY_LIMIT`].

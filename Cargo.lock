@@ -1323,6 +1323,7 @@ dependencies = [
  "coral-edition",
  "coral-outbound",
  "coral-secret-store",
+ "coral-test-support",
  "http 1.5.0",
  "reqwest",
  "serde",

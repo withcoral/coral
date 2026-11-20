@@ -147,15 +147,19 @@ pub struct BuildEnvironment {
 }
 
 impl BuildEnvironment {
-    /// An environment whose AWS credential lookup sees no variable, and
-    /// whose clock is the host's.
+    /// An environment whose AWS credential lookup sees no variable. `clock`
+    /// is bootstrap's.
     #[must_use]
-    pub fn new(policy: coral_outbound::DestinationPolicy, env: EnvReader) -> Self {
+    pub fn new(
+        policy: coral_outbound::DestinationPolicy,
+        env: EnvReader,
+        clock: Arc<dyn coral_db::Clock>,
+    ) -> Self {
         Self {
             policy,
             env,
             aws: coral_aws::Environment::default(),
-            clock: Arc::new(coral_db::SystemClock),
+            clock,
         }
     }
 
@@ -163,12 +167,6 @@ impl BuildEnvironment {
     #[must_use]
     pub fn with_aws(self, aws: coral_aws::Environment) -> Self {
         Self { aws, ..self }
-    }
-
-    /// The same environment, with `clock` for the time.
-    #[must_use]
-    pub fn with_clock(self, clock: Arc<dyn coral_db::Clock>) -> Self {
-        Self { clock, ..self }
     }
 
     /// Reads the secret held in the variable `name`, which the setting at
@@ -280,8 +278,11 @@ mod tests {
                 _ => Ok(None),
             }
         };
-        let environment =
-            BuildEnvironment::new(coral_outbound::DestinationPolicy::default(), Arc::new(env));
+        let environment = BuildEnvironment::new(
+            coral_outbound::DestinationPolicy::default(),
+            Arc::new(env),
+            Arc::new(coral_db::SystemClock),
+        );
         assert_eq!(environment.secret("f", "SET").unwrap().expose(), "value");
         for (name, reason) in [
             (SECRET, "environment variable is not set"),

@@ -18,11 +18,8 @@ use coral_secret_store::{
     Error, InvalidSetting, KeyField, ReferenceForm, Secret, SecretReference, SecretStore,
 };
 
-pub use crate::http::StoreAddress;
-use crate::http::{Fields, read_body};
-
-/// How long one request to a store may take.
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+use crate::store_http::{Fields, read_body};
+pub use crate::store_http::{REQUEST_TIMEOUT, StoreAddress};
 
 /// How long reads share a failed login or renewal instead of each trying their own.
 const RETRY_AFTER: Duration = Duration::from_secs(5);

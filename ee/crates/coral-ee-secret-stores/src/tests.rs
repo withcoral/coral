@@ -53,6 +53,7 @@ fn build(
         &BuildEnvironment::new(
             DestinationPolicy::new(NetworkAccess::HttpAndHttps, NetworkAccess::Deny),
             Arc::new(env),
+            Arc::new(coral_test_support::ManualClock::starting_now()),
         ),
     )
 }

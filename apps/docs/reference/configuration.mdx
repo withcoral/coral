@@ -244,7 +244,7 @@ Coral gets credentials and calls STS outside the `[outbound]` policy, because AW
 
 ##### Give the role least privilege
 
-**A grant of the store to a workspace covers every secret its role can read.** So list the secrets one by one, or by a name prefix:
+**A grant of the store to a workspace covers every secret its role can read.** So list the secrets one by one, or by a name prefix. AWS adds six random characters to each secret's ARN, so end a single secret's ARN with `-??????`:
 
 ```json
 {
@@ -303,7 +303,7 @@ Coral needs no `list`, `create`, `update` or `delete` access. Also keep Vault's 
 
 #### Allow Coral to reach the store
 
-The `[outbound]` policy applies to all store traffic. Without the setting a store needs, Coral reports the store as unreachable. An AWS store's regional endpoint is a public https address, so it needs no setting. A VPC endpoint is on a private network.
+The `[outbound]` policy applies to all store traffic. Without the setting a store needs, Coral reports the store as unreachable. An AWS store's regional endpoint is a public https address, so it needs no setting. For a VPC endpoint, set `private_networks = "https"`.
 
 | Where the store is | Setting |
 | --- | --- |

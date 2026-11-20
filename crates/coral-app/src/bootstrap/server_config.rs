@@ -468,9 +468,9 @@ impl DeploymentConfig {
             &coral_secret_store::BuildEnvironment::new(
                 policy,
                 std::sync::Arc::new(AppEnvironment::env_var),
+                clock,
             )
-            .with_aws(super::env::aws_environment())
-            .with_clock(clock),
+            .with_aws(super::env::aws_environment()),
         )
     }
 
@@ -2158,6 +2158,7 @@ client_secret = 'test-secret'
                 .secret_stores_from(&coral_secret_store::BuildEnvironment::new(
                     coral_outbound::DestinationPolicy::default(),
                     std::sync::Arc::new(|_: &str| Ok(None)),
+                    std::sync::Arc::new(coral_test_support::ManualClock::starting_now()),
                 ))
                 .expect(raw);
             assert_eq!(stores.is_disabled(), disabled, "{raw:?}");
