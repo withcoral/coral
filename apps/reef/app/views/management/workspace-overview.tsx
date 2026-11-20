@@ -76,13 +76,14 @@ export function WorkspaceOverview({
   const [created, setCreated] = useState<ActionResult>()
   const [createOpen, setCreateOpen] = useState(false)
   const createTrigger = useRef<HTMLButtonElement>(null)
-  // The prompt for the quick start's last tab. Coral serves the implicit local user only
-  // when it runs without authentication, and that same runtime setting serves its MCP
-  // server with no sign-in.
+  // Coral serves the implicit local user only when it runs without authentication, and
+  // that same runtime setting serves its MCP server with no sign-in.
+  const signIn = !w.profile.local
+  // The prompt for the quick start's last tab.
   const prompt = onboardingPrompt({
     displayName: w.displayName,
     endpoint: w.mcpEndpoint,
-    signIn: !w.profile.local,
+    signIn,
     owner,
     clientsWithAvailablePlugins,
   })
@@ -127,7 +128,12 @@ export function WorkspaceOverview({
         onClose={() => setCreated(undefined)}
       />
       {active && w.connectEndpoint && (
-        <WorkspaceQuickStart endpoint={w.connectEndpoint} prompt={prompt} owner={owner} />
+        <WorkspaceQuickStart
+          endpoint={w.connectEndpoint}
+          prompt={prompt}
+          owner={owner}
+          signIn={signIn}
+        />
       )}
       <div className={styles.cards}>
         <Card.Container className={styles.panel}>
