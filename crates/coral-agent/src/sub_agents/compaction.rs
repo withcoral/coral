@@ -52,7 +52,7 @@ impl SubAgents {
     ) -> Result<bool, TurnFailure> {
         let before = context_tokens(system, tools, thread);
         let (length, compaction) = (thread.len(), turn.trace.compaction(before));
-        let summarized = self.summarize_older(turn, thread, window);
+        let summarized = self.summarize_older(turn, system, tools, thread, window);
         let summarized = summarized.instrument(compaction.span()).await;
         let compacted = thread.len() > length;
         compaction.ended(compacted, context_tokens(system, tools, thread));
@@ -65,6 +65,8 @@ impl SubAgents {
     async fn summarize_older(
         &self,
         turn: &RunningTurn,
+        system: &str,
+        tools: &[ToolText],
         thread: &mut Vec<ThreadEntry>,
         window: u32,
     ) -> Result<(), TurnFailure> {
@@ -73,7 +75,8 @@ impl SubAgents {
             .rev()
             .find_map(|entry| summary_in(&entry.message));
         let start = previous.map_or(1, |(_, kept_from)| kept_from);
-        let Some(kept_from) = cut(thread, start) else {
+        let keep_budget = keep_recent_budget(system, tools, thread, window);
+        let Some(kept_from) = cut(thread, start, keep_budget) else {
             return Ok(());
         };
         let older = thread.get(start..kept_from).unwrap_or_default();
@@ -160,16 +163,14 @@ fn is_near(system: &str, tools: &[ToolText], thread: &[ThreadEntry], window: u32
     context_tokens(system, tools, thread) + RESERVE_TOKENS > window as usize
 }
 
-/// The next request's size in tokens for `system`, `tools`, and `thread`.
-/// Anchors on the last post-summary assistant reply's reported usage plus a
-/// byte estimate of trailing messages; falls back to estimating the full model
-/// view when no post-summary usage is available.
-fn context_tokens(system: &str, tools: &[ToolText], thread: &[ThreadEntry]) -> usize {
+/// The most recent post-summary assistant reply that carries non-zero reported
+/// token usage, and its index in `thread`.
+fn usage_anchor(thread: &[ThreadEntry]) -> Option<(usize, usize)> {
     let after_summary = thread
         .iter()
         .rposition(|entry| summary_in(&entry.message).is_some())
         .map_or(0, |index| index + 1);
-    let anchor = thread
+    thread
         .get(after_summary..)
         .unwrap_or_default()
         .iter()
@@ -180,8 +181,24 @@ fn context_tokens(system: &str, tools: &[ToolText], thread: &[ThreadEntry]) -> u
                 .then(|| entry.usage.and_then(Usage::context_tokens))
                 .flatten()
                 .map(|tokens| (after_summary + offset, tokens))
-        });
-    if let Some((index, reported)) = anchor {
+        })
+}
+
+/// The next request's size in tokens, estimated from bytes alone.
+fn estimated_tokens(system: &str, tools: &[ToolText], thread: &[ThreadEntry]) -> usize {
+    let tools = tools
+        .iter()
+        .map(|tool| tool.name.len() + tool.description.len() + tool.parameters.len());
+    let fixed = (system.len() + tools.sum::<usize>()).div_ceil(BYTES_PER_TOKEN);
+    fixed + for_model(thread).iter().map(tokens).sum::<usize>()
+}
+
+/// The next request's size in tokens for `system`, `tools`, and `thread`.
+/// Anchors on the last post-summary assistant reply's reported usage plus a
+/// byte estimate of trailing messages; falls back to estimating the full model
+/// view when no post-summary usage is available.
+fn context_tokens(system: &str, tools: &[ToolText], thread: &[ThreadEntry]) -> usize {
+    if let Some((index, reported)) = usage_anchor(thread) {
         let trailing: usize = thread
             .get(index + 1..)
             .unwrap_or_default()
@@ -190,11 +207,29 @@ fn context_tokens(system: &str, tools: &[ToolText], thread: &[ThreadEntry]) -> u
             .sum();
         return reported.saturating_add(trailing);
     }
-    let tools = tools
-        .iter()
-        .map(|tool| tool.name.len() + tool.description.len() + tool.parameters.len());
-    let fixed = (system.len() + tools.sum::<usize>()).div_ceil(BYTES_PER_TOKEN);
-    fixed + for_model(thread).iter().map(tokens).sum::<usize>()
+    estimated_tokens(system, tools, thread)
+}
+
+/// The `bytes / 3` budget that [`cut`] keeps whole: capped at half the usable
+/// window (`window - RESERVE_TOKENS`) so small windows retain room to grow,
+/// and scaled down by `estimated / reported` when the model's tokenizer runs
+/// denser than `bytes / 3`.
+fn keep_recent_budget(
+    system: &str,
+    tools: &[ToolText],
+    thread: &[ThreadEntry],
+    window: u32,
+) -> usize {
+    let target = KEEP_RECENT_TOKENS.min((window as usize).saturating_sub(RESERVE_TOKENS) / 2);
+    let Some((index, reported)) = usage_anchor(thread) else {
+        return target;
+    };
+    let estimated = estimated_tokens(system, tools, thread.get(..=index).unwrap_or(thread));
+    if reported > estimated && estimated > 0 {
+        target.saturating_mul(estimated) / reported
+    } else {
+        target
+    }
 }
 
 /// A message's size in tokens, estimated from its bytes.
@@ -214,15 +249,15 @@ fn tokens(message: &Message) -> usize {
 }
 
 /// Where the messages left whole start: walking back from the newest while
-/// fewer than [`KEEP_RECENT_TOKENS`] are kept, the earliest message that
-/// answers no call. The newest results stay with the reply that called for
-/// them, however large they are: the model has not read them yet. `None`
+/// fewer than `keep_budget` estimated tokens are kept, the earliest message
+/// that answers no call. The newest results stay with the reply that called
+/// for them, however large they are: the model has not read them yet. `None`
 /// when nothing before the cut is left to summarize.
-fn cut(thread: &[ThreadEntry], start: usize) -> Option<usize> {
+fn cut(thread: &[ThreadEntry], start: usize, keep_budget: usize) -> Option<usize> {
     let mut kept = 0;
     let mut cut = thread.len();
     for (index, entry) in thread.iter().enumerate().skip(start).rev() {
-        if kept >= KEEP_RECENT_TOKENS && cut < thread.len() {
+        if kept >= keep_budget && cut < thread.len() {
             break;
         }
         if summary_in(&entry.message).is_some() {
@@ -322,7 +357,7 @@ mod tests {
             }));
             thread.push(ThreadEntry::plain(Message::tool_results(results.collect())));
         }
-        let kept_from = cut(&thread, 1).unwrap();
+        let kept_from = cut(&thread, 1, KEEP_RECENT_TOKENS).unwrap();
         let text = "Two rounds are done.".to_owned();
         thread.push(ThreadEntry::plain(Message {
             role: Role::User,
@@ -375,9 +410,60 @@ mod tests {
         let thread = [vec![brief], round(1).to_vec(), round(3).to_vec()].concat();
 
         assert_eq!(
-            cut(&thread, 1),
+            cut(&thread, 1, KEEP_RECENT_TOKENS),
             Some(3),
             "the reply that made the three calls"
+        );
+    }
+
+    // Catches: a tokenizer denser than 3 bytes/token (such as Claude on JSON
+    // tool results) keeping too many real tokens at a 48K window so the
+    // compacted prompt lands back over the compaction threshold.
+    #[test]
+    fn keep_recent_budget_caps_small_windows_and_scales_for_dense_tokenizers() {
+        let mut thread = vec![ThreadEntry::plain(Message::user("brief".to_owned()))];
+        for round in 0..6 {
+            let call = ToolCall {
+                id: format!("call_{round}"),
+                name: "exec".to_owned(),
+                arguments: "{}".to_owned(),
+            };
+            let result = call.result("x".repeat(12_000), false, None);
+            let usage = (round == 5).then_some(Usage {
+                // ~24K estimated tokens at bytes/3, ~32.4K real tokens at 2.3 bytes/token.
+                input_tokens: 31_400,
+                cache_read_input_tokens: 0,
+                output_tokens: 1_000,
+            });
+            thread.push(ThreadEntry {
+                message: Message {
+                    role: Role::Assistant,
+                    content: vec![Block::ToolUse(call)],
+                },
+                usage,
+            });
+            thread.push(ThreadEntry::plain(Message::tool_results(vec![result])));
+        }
+
+        let budget_48k = keep_recent_budget("system", &[], &thread, 48_000);
+        let budget_200k = keep_recent_budget("system", &[], &thread, 200_000);
+        // 48K target is 15,808, scaled down by ~20K / 32.4K (~9,700 est tokens).
+        assert!(budget_48k < 12_000, "{budget_48k}");
+        assert!(budget_200k < KEEP_RECENT_TOKENS, "{budget_200k}");
+        assert!(budget_48k < budget_200k, "{budget_48k} vs {budget_200k}");
+
+        let kept_from = cut(&thread, 1, budget_48k).unwrap();
+        let kept_est: usize = thread
+            .get(kept_from..)
+            .unwrap_or_default()
+            .iter()
+            .map(|entry| tokens(&entry.message))
+            .sum();
+        // At 2.3 bytes/token (~1.3x bytes/3), the kept tail stays well under the 31,616 trigger.
+        let kept_real = kept_est * 30 / 23;
+        assert!(
+            kept_real < 20_000,
+            "kept_est={kept_est}, kept_real={kept_real}"
         );
     }
 

@@ -260,3 +260,64 @@ async fn missing_usage_falls_back_to_byte_estimate() {
         ["step", "step", "step", "summary", "step"]
     );
 }
+
+/// Stub that reports token usage at ~2.3 bytes per token (matching Claude on
+/// JSON tool results) so end-to-end compaction tests exercise dense tokenizers.
+struct DenseTokenizerStub {
+    step: std::sync::atomic::AtomicUsize,
+    calls: usize,
+}
+
+impl Respond for DenseTokenizerStub {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let prompt_tokens = i64::try_from(request.body.len() * 10 / 23).unwrap_or(i64::MAX);
+        let body = String::from_utf8_lossy(&request.body);
+        if body.contains("max_completion_tokens") {
+            let summary = json!({"role": "assistant", "content": SUMMARY});
+            return completion_with_usage(&summary, prompt_tokens, 0, 2_000);
+        }
+        let step = self.step.fetch_add(1, Ordering::Relaxed) + 1;
+        let message = if step <= self.calls {
+            let arguments = json!({"program": "x".repeat(12_000)});
+            tool_calls_message(&[tool_call(&format!("call_{step}"), "search", &arguments)])
+        } else {
+            json!({"role": "assistant", "content": ANSWER})
+        };
+        let completion_tokens =
+            i64::try_from(message.to_string().len() * 10 / 23).unwrap_or(i64::MAX);
+        completion_with_usage(&message, prompt_tokens, 0, completion_tokens)
+    }
+}
+
+// Catches: a dense tokenizer (~2.3 bytes/token) at a 48K window looping into
+// compaction on every call because `cut` keeps too many real tokens.
+#[tokio::test]
+async fn dense_tokenizer_at_48k_does_not_compact_on_every_call() {
+    let lead = Lead::new().await;
+    let section = format!(
+        "base_url = '{}'\nmodel = '{MODEL}'\ncontext_window = 48000",
+        lead.base_url()
+    );
+    let factory = SubAgentFactory;
+    let tools = factory
+        .build(&toml::from_str(&section).unwrap(), lead.dependencies())
+        .unwrap();
+    lead.model_answers(DenseTokenizerStub {
+        step: std::sync::atomic::AtomicUsize::new(0),
+        calls: 8,
+    })
+    .await;
+
+    let (_, waited) = lead.turn(&*tools, &lead.task().await).await;
+
+    assert_eq!(waited.get("answer"), Some(&json!(ANSWER)), "{waited}");
+    let kinds = requests(&lead).await;
+    let summaries = kinds.iter().filter(|&&kind| kind == "summary").count();
+    assert!(summaries >= 1, "expected compaction to fire: {kinds:?}");
+    assert!(
+        !kinds
+            .windows(3)
+            .any(|w| w == ["summary", "step", "summary"]),
+        "compacted on consecutive calls: {kinds:?}"
+    );
+}
