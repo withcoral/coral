@@ -82,11 +82,12 @@ fn documents_and_queries_match_the_harness() {
     }
 }
 
-/// Each session holds its own copy of the model, so documents that two
-/// threads embed at once on two sessions get the harness's vectors.
+/// Two threads embed the documents on a model of two sessions, and each
+/// gets the harness's vectors. That the two calls can run at once is the
+/// gate's rule, tested beside it.
 #[test]
 #[ignore = "loads the model; set CORAL_EMBED_MODEL_DIR"]
-fn two_sessions_embed_documents_at_once() {
+fn two_threads_on_two_sessions_get_the_harness_vectors() {
     let sessions = NonZeroUsize::new(2).expect("two is not zero");
     let model = Model::load(&model_dir(), sessions).expect("the model loads");
     let reference = reference();

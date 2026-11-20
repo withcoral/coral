@@ -107,8 +107,7 @@ pub(crate) struct SearchParts {
     /// How the search model's files arrive; none while the vector side is
     /// off, and then nothing looks for them.
     pub(crate) model: Option<Delivery>,
-    /// How many model sessions the Embedder runs, each on a thread of its
-    /// own.
+    /// How many threads the Embedder runs, with one model session for each.
     pub(crate) embedder_cores: std::num::NonZeroUsize,
 }
 

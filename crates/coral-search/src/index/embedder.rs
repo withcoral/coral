@@ -57,9 +57,18 @@ use repository::{EntityText, EntityVector, StaleEntity, StampMove, TextSha256};
 /// The rows one write holds at most.
 pub(crate) const BATCH_ROWS: usize = 32;
 
-/// The stale rows one read of a drain takes, beside the rows the last read
-/// returned that the drain leaves out.
-const READ_ROWS: usize = BATCH_ROWS * 32;
+/// The batches one read of a drain holds at least.
+const READ_BATCHES: usize = 32;
+
+/// The batches one read of a drain holds for each thread at least, so that
+/// few threads wait for the last batches of a read.
+const READ_BATCHES_PER_THREAD: usize = 8;
+
+/// The stale rows one read of a drain takes for `cores` threads, beside the
+/// rows the last read returned that the drain leaves out.
+fn read_rows(cores: NonZeroUsize) -> usize {
+    BATCH_ROWS * READ_BATCHES.max(READ_BATCHES_PER_THREAD.saturating_mul(cores.get()))
+}
 
 /// The pause before a failed batch's retry.
 pub(super) const RETRY_PAUSE: Duration = Duration::from_secs(5);
@@ -255,7 +264,7 @@ impl SearchIndex {
         // as many more rows as this read returned and left out.
         let mut passed_over = 0;
         loop {
-            let limit = READ_ROWS + passed_over;
+            let limit = read_rows(state.cores) + passed_over;
             let found = self
                 .read_snapshot(async |transaction| {
                     repository::stale_entities(transaction, revision.as_str(), limit).await
@@ -878,5 +887,23 @@ fn io_error_kind(error: &std::io::Error) -> &'static str {
     match error.kind() {
         std::io::ErrorKind::OutOfMemory => "out_of_memory",
         _ => "io",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A read gives each thread a batch at least, so no value of
+    /// `[search] embedder_cores` leaves a thread without work.
+    #[test]
+    fn a_read_holds_a_batch_for_each_thread() {
+        for cores in [1, 4, 32, 33, 64, 1_000] {
+            let cores = NonZeroUsize::new(cores).unwrap();
+            assert!(
+                read_rows(cores) / BATCH_ROWS >= cores.get(),
+                "{cores} cores"
+            );
+        }
     }
 }

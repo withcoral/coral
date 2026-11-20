@@ -759,7 +759,8 @@ async fn a_row_that_always_fails_is_skipped_until_its_row_changes_and_holds_back
 
 /// Four batches, one for each core: each core's first text waits until the
 /// other three are in the model too. With fewer texts at once, the first
-/// ones wait forever and the drain never ends.
+/// ones wait forever, the drain never ends, and the test runner ends the
+/// test. No timer of the test's own races the database writes.
 #[tokio::test]
 async fn four_cores_embed_four_texts_at_once_and_each_search_entity_once() {
     let upstream = MockServer::start().await;
@@ -771,9 +772,7 @@ async fn four_cores_embed_four_texts_at_once_and_each_search_entity_once() {
     let index = world.index_with_cores(&model, 4);
     let _background = Background(index.spawn_embedder());
 
-    tokio::time::timeout(std::time::Duration::from_secs(30), index.embedded())
-        .await
-        .expect("four texts were in the model at once");
+    index.embedded().await;
 
     world.assert_every_vector_current().await;
     let documents = model.documents();

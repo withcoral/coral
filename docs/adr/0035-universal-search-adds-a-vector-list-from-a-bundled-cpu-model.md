@@ -105,8 +105,9 @@ indexer revision, so a model change re-embeds every Entity without re-indexing w
 ## The Embedder
 
 The Embedder is the third supervised task beside Observer and Reconcile. It runs on OS threads at low priority. It has
-one thread by default, so a user's machine stays responsive, and an operator can give it more. Each thread has a model
-session of its own with one intra-op thread. On the bench texts, eight sessions embed 4.7 to 4.9 times as fast as one.
+one thread by default, so a user's machine stays responsive, and an operator can give it more. Coral loads one model
+session for each thread, each with one intra-op thread, and a call takes any free session. On the bench texts, eight
+sessions embed 4.7 to 4.9 times as fast as one.
 Eight intra-op threads in one session embed only 2.0 times as fast. Each session adds a copy of the model in memory
 ([#3361](https://github.com/withcoral/coral/issues/3361)). A drain gives its batches to the threads, and each row of a
 read is in one batch only. A query goes before every document that has not started, on any session. The

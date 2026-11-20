@@ -384,8 +384,8 @@ impl DeploymentConfig {
         self.semantic_search_enabled
     }
 
-    /// How many model sessions the search Embedder runs, each on a thread of
-    /// its own: `[search] embedder_cores`.
+    /// How many threads the search Embedder runs, with one model session for
+    /// each: `[search] embedder_cores`.
     pub(crate) fn embedder_cores(&self) -> std::num::NonZeroUsize {
         self.embedder_cores
     }
@@ -895,9 +895,9 @@ struct SearchSettings {
     /// Coral needs no pgvector, loads and downloads no model, makes no
     /// vectors, and leaves a vector table from an earlier start as it is.
     semantic_search_enabled: bool,
-    /// How many model sessions the Embedder runs, each on a low-priority
-    /// thread of its own. One by default, so a user's machine stays
-    /// responsive. Each session after the first holds another copy of the
+    /// How many low-priority threads the Embedder runs, with one model
+    /// session for each. One by default, so a user's machine stays
+    /// responsive. Each session after the first is another copy of the
     /// model.
     embedder_cores: usize,
 }

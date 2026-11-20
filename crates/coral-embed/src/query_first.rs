@@ -1,5 +1,6 @@
 //! Turns on a set of values, where a query goes before a document.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 
 /// Calls take turns on a set of values, one call on each value at a time. A
@@ -11,6 +12,10 @@ use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 /// Embedder's work, which can wait.
 pub(crate) struct QueryFirst<T> {
     turns: Mutex<Turns<T>>,
+    /// The queries that wait for a value or run on one. A document starts
+    /// only while there is none. A query takes itself off while it holds
+    /// `turns`, so a document that saw it cannot miss `turn_ended`.
+    queries: AtomicUsize,
     /// A call signals it each time it gives its value back.
     turn_ended: Condvar,
 }
@@ -18,9 +23,6 @@ pub(crate) struct QueryFirst<T> {
 struct Turns<T> {
     /// The values that no call holds.
     free: Vec<T>,
-    /// The queries that wait for a value or run on one. A document starts
-    /// only while there is none.
-    queries: usize,
     /// The calls that wait for their turn, so a test knows when one waits.
     #[cfg(test)]
     waiting: usize,
@@ -37,20 +39,22 @@ impl<T> QueryFirst<T> {
         Self {
             turns: Mutex::new(Turns {
                 free: values,
-                queries: 0,
                 #[cfg(test)]
                 waiting: 0,
             }),
+            queries: AtomicUsize::new(0),
             turn_ended: Condvar::new(),
         }
     }
 
     /// Runs `work` on a value before every document that has not started.
     pub(crate) fn query<R>(&self, work: impl FnOnce(&mut T) -> R) -> R {
-        let mut turns = self.turns();
-        turns.queries += 1;
+        // Counted before the lock: a call that gives its value back holds the
+        // lock, and the next document could take it first.
+        self.queries.fetch_add(1, Ordering::SeqCst);
+        let turns = self.turns();
         let mut turn = Turn {
-            value: Some(self.take(turns, |_| true)),
+            value: Some(self.take(turns, || true)),
             gate: self,
             query: true,
         };
@@ -60,7 +64,7 @@ impl<T> QueryFirst<T> {
     /// Runs `work` on a value when no query waits or runs.
     pub(crate) fn document<R>(&self, work: impl FnOnce(&mut T) -> R) -> R {
         let mut turn = Turn {
-            value: Some(self.take(self.turns(), |turns| turns.queries == 0)),
+            value: Some(self.take(self.turns(), || self.queries.load(Ordering::SeqCst) == 0)),
             gate: self,
             query: false,
         };
@@ -70,9 +74,9 @@ impl<T> QueryFirst<T> {
     /// Takes a free value once `may_start` allows it. Checks again after
     /// each wake-up: a `Condvar` may wake a caller at any time, and a query
     /// can come while a document waits.
-    fn take(&self, mut turns: MutexGuard<'_, Turns<T>>, may_start: fn(&Turns<T>) -> bool) -> T {
+    fn take(&self, mut turns: MutexGuard<'_, Turns<T>>, may_start: impl Fn() -> bool) -> T {
         loop {
-            if may_start(&turns)
+            if may_start()
                 && let Some(value) = turns.free.pop()
             {
                 return value;
@@ -124,7 +128,7 @@ impl<T> Drop for Turn<'_, T> {
             turns.free.push(value);
         }
         if self.query {
-            turns.queries -= 1;
+            self.gate.queries.fetch_sub(1, Ordering::SeqCst);
         }
         drop(turns);
         self.gate.turn_ended.notify_all();
@@ -136,7 +140,7 @@ mod tests {
     use std::sync::mpsc;
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::*;
 
@@ -164,7 +168,7 @@ mod tests {
             let gate = Arc::clone(&gate);
             move || gate.query(|log| log.push("query"))
         });
-        while gate.turns().queries == 0 {
+        while gate.queries.load(Ordering::SeqCst) == 0 {
             thread::yield_now();
         }
         release.send(()).unwrap();
@@ -175,6 +179,34 @@ mod tests {
             gate.turns().free,
             [["document 1", "query", "document 2", "document 3"]]
         );
+    }
+
+    /// A call that gives its value back holds the lock for a moment, and the
+    /// next document can take the lock first. A query that comes in that
+    /// moment counts itself before it waits for the lock, so the next
+    /// document sees it and waits.
+    #[test]
+    fn a_query_that_waits_for_the_lock_goes_before_the_next_document() {
+        let gate = Arc::new(QueryFirst::new(vec![Vec::new()]));
+        let held = gate.turns();
+        let query = thread::spawn({
+            let gate = Arc::clone(&gate);
+            move || gate.query(|log| log.push("query"))
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while gate.queries.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the query counts itself before it waits for the lock"
+            );
+            thread::yield_now();
+        }
+        drop(held);
+
+        gate.document(|log| log.push("document"));
+        query.join().unwrap();
+
+        assert_eq!(gate.turns().free, [["query", "document"]]);
     }
 
     /// Each value runs one document. With two values, a second document
@@ -248,7 +280,7 @@ mod tests {
             let order = Arc::clone(&order);
             move || gate.query(|()| order.lock().unwrap().push("query"))
         });
-        while gate.turns().queries == 0 {
+        while gate.queries.load(Ordering::SeqCst) == 0 {
             thread::yield_now();
         }
 
@@ -300,7 +332,7 @@ mod tests {
         })
         .join()
         .expect_err("the document panics");
-        gate.turns().queries += 1;
+        gate.queries.fetch_add(1, Ordering::SeqCst);
         let (done, document_done) = mpsc::channel();
         thread::spawn({
             let gate = Arc::clone(&gate);
@@ -319,8 +351,11 @@ mod tests {
             "the document ran while a query waited"
         );
 
-        // As a query does when it ends.
-        gate.turns().queries -= 1;
+        // As a query does when it ends: off the count while it holds the lock.
+        {
+            let _held = gate.turns();
+            gate.queries.fetch_sub(1, Ordering::SeqCst);
+        }
         gate.turn_ended.notify_all();
         document_done
             .recv_timeout(Duration::from_secs(10))
