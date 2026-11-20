@@ -10,15 +10,18 @@
 //! its own clock sample, from the decision the held gate recorded: an approval
 //! never changes once made.
 //!
-//! A decision is authorized and concealed here, then waits in the Run's Run
-//! Inbox until the Run's owner, in whichever Coral Instance holds the Run,
-//! records it in its next chunk; the first decision wins, and a repeat
-//! receives the recorded answer. The decision reads no policy: the Policy
-//! Enforcement Point judges the approval when the Invocation dispatches. A
-//! request's deadline is the owner's timer: it expires the request in a chunk
-//! of its own, in mailbox order with the decisions that race it, and only the
-//! owner records an expiry. The first terminal transition and its safe
-//! lifecycle event commit together; a lost response can be recovered by reading
+//! A decision is authorized and concealed here. On an owned Run it then waits
+//! in the Run's Run Inbox until the Run's owner, in whichever Coral Instance
+//! holds the Run, records it in its next chunk. On a Run a Run Executor holds,
+//! this Coral Instance records it itself, under the Run's claim and head,
+//! and the Run's stream loop sees the head move. The first
+//! decision wins, and a repeat receives the recorded answer. The decision
+//! reads no policy: the Policy Enforcement Point judges the approval when the
+//! Invocation dispatches. A request's deadline is the owner's timer: it
+//! expires the request in a chunk of its own, in mailbox order with the
+//! decisions that race it. Only the owner records an expiry, or, for a Run a
+//! Run Executor holds, its stream's loop or the sweeper. The first terminal
+//! transition and its safe lifecycle event commit together; a lost response can be recovered by reading
 //! or deciding again. Invocation owns live gate ordering and Promise
 //! settlement. Approval owns only request validity, decisions and evidence,
 //! not required-action projections or UI.
@@ -46,6 +49,7 @@ use crate::invocation::AdmittedInvocation;
 use crate::owner::{ChunkWork, DecisionRequest};
 use crate::run_inbox::{InboxRequest, OutsideRequest, RunInbox};
 use crate::run_repository::OwnedEvent;
+use crate::run_wake::RunWakes;
 use crate::{CoralFailure, Error, InvocationId, RunId, invocation_repository, run_repository};
 
 /// How long a decision waits for its Run Owner to record it (ADR 0025).
@@ -201,21 +205,26 @@ pub struct ApprovalModule {
     clock: Arc<dyn Clock>,
     /// Where a decision waits for its Run's owner.
     inbox: RunInbox,
+    /// The wake-up reader a decision on a Run a Run Executor holds wakes.
+    wakes: RunWakes,
 }
 impl ApprovalModule {
     /// Builds the Approval module against the Run domain's migrated database,
-    /// deciding through `inbox`.
+    /// deciding through `inbox` for an owned Run, and raising `wakes` for a
+    /// Run a Run Executor holds.
     #[must_use]
     pub(crate) fn new(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
         inbox: RunInbox,
+        wakes: RunWakes,
     ) -> Self {
         Self {
             database,
             workspaces,
             clock: Arc::new(SystemClock),
             inbox,
+            wakes,
         }
     }
 
@@ -310,8 +319,10 @@ impl ApprovalModule {
         Ok(request)
     }
 
-    /// Decides one Approval Request through its Run's Run Inbox, whichever
-    /// Coral Instance owns the Run, and returns the request as recorded.
+    /// Decides one Approval Request and returns the request as recorded. An
+    /// owned Run's decision goes through its Run Inbox, whichever Coral
+    /// Instance owns the Run; a Run a Run Executor holds has it committed
+    /// here, under its claim and head.
     ///
     /// Authentication supplies current Organization Membership; Workspace supplies
     /// the User's Workspace Membership authority. Comments are limited to 1024 UTF-8 bytes.
@@ -324,8 +335,8 @@ impl ApprovalModule {
     /// answers.
     /// # Errors
     /// Conceals unauthorized targets; rejects invalid comments and persistence faults.
-    /// [`Error::RunRequestNotYetRecorded`] when the owner has not recorded
-    /// the decision within the wait: retry.
+    /// [`Error::RunRequestNotYetRecorded`] when an owned Run's owner has not
+    /// recorded the decision within the wait: retry.
     pub async fn decide(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -377,17 +388,23 @@ impl ApprovalModule {
         if request.state != ApprovalState::Pending || run.state.is_terminal() {
             return Ok(request);
         }
+        let decision = DecisionRequest {
+            approval: id.clone(),
+            deadline_at_unix_nanos: request.deadline_at_unix_nanos,
+            decision,
+            actor: actor.principal().clone(),
+            comment: comment.map(str::to_owned),
+            trace: trace.clone(),
+        };
+        if run.runs_on_run_executor() {
+            self.decide_on_run_executor(actor, workspace, &run.id, &decision)
+                .await?;
+            return self.get(actor, workspace, id).await;
+        }
         let inbox_request = InboxRequest {
             workspace_id: workspace.clone(),
             run_id: run.id.clone(),
-            request: OutsideRequest::Decide(DecisionRequest {
-                approval: id.clone(),
-                deadline_at_unix_nanos: request.deadline_at_unix_nanos,
-                decision,
-                actor: actor.principal().clone(),
-                comment: comment.map(str::to_owned),
-                trace: trace.clone(),
-            }),
+            request: OutsideRequest::Decide(decision),
         };
         // The Run's visibility to the caller is read again in the transaction
         // that inserts the row, which holds no Run row. The snapshot's
@@ -407,6 +424,63 @@ impl ApprovalModule {
             return Err(Error::RunRequestNotYetRecorded);
         }
         self.get(actor, workspace, id).await
+    }
+
+    /// Commits `decision` on the Run a Run Executor holds, in one chunk under
+    /// the Run's claim and head: the Run's stream loop, whichever Coral
+    /// Instance holds it, sees the head move and rereads the request. A
+    /// decline also ends the Invocation. It compares no clock: the decision
+    /// is recorded as made, at this instance's time, and counts only if that
+    /// is before the request's deadline, which the enforcement point
+    /// compares. Once the Run records a termination, it closes the request.
+    /// A request decided already, or a Run that ended, writes nothing: the
+    /// record answers.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RunRequestNotYetRecorded`] when other writers moved the Run
+    /// under every attempt.
+    async fn decide_on_run_executor(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace: &WorkspaceId,
+        run_id: &RunId,
+        decision: &DecisionRequest,
+    ) -> Result<(), Error> {
+        crate::run_wake::until_written(|| self.decide_once(actor, workspace, run_id, decision))
+            .await
+    }
+
+    /// One attempt of [`Self::decide_on_run_executor`]. It reads the Run
+    /// without a hold, as the loop's chunk does, so both take their rows in
+    /// one order: the Approval Request and Invocation rows, then the Run row.
+    async fn decide_once(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace: &WorkspaceId,
+        run_id: &RunId,
+        decision: &DecisionRequest,
+    ) -> Result<(), Error> {
+        let mut tx = self.database.begin().await?;
+        let run = self.visible_run(&mut tx, actor, workspace, run_id).await?;
+        let row = approval_repository::load(&mut tx, workspace, &decision.approval).await?;
+        if run.state.is_terminal() || row.state != ApprovalState::Pending {
+            tx.commit().await?;
+            return Ok(());
+        }
+        let now = self.now()?.max(run.accepted_at_unix_nanos);
+        let mut work = DecideWork::decision(decision.clone(), run.termination.is_none(), now);
+        let events = work.run(&mut tx, &run, now).await?;
+        let chunk = run_repository::Chunk::new(
+            &run,
+            run.execution_claim_id.as_deref(),
+            run.commit_mark(now),
+        )
+        .owned_events(&events);
+        run_repository::commit_chunk(&mut tx, chunk).await?;
+        tx.commit().await?;
+        self.wakes.wake_for(run_id);
+        Ok(())
     }
 
     /// Lists safe evidence through the same human-only visibility as request detail.
@@ -763,7 +837,7 @@ pub(crate) async fn undecided_past(
 }
 
 // Safe summary only: Agents observing their own Runs must not load approval detail.
-pub(super) async fn pending_for_run(
+pub(crate) async fn pending_for_run(
     tx: &mut Transaction<'_>,
     run: &RunRecord,
 ) -> Result<Vec<(ApprovalId, i64)>, Error> {

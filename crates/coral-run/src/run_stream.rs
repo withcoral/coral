@@ -69,6 +69,8 @@ pub(crate) struct StreamLink {
     watermark: AtomicU64,
     /// The Program's `Finish` arrived: no `Terminate` follows it.
     finished: AtomicBool,
+    /// A `Terminate` went out: a stream sends one.
+    terminated: AtomicBool,
     /// The Run Executor broke the protocol.
     violated: AtomicBool,
     /// The Shutdown Drain moves the stream ([`Self::start_moving`]).
@@ -83,6 +85,7 @@ impl StreamLink {
             responses,
             watermark: AtomicU64::new(0),
             finished: AtomicBool::new(false),
+            terminated: AtomicBool::new(false),
             violated: AtomicBool::new(false),
             moving: AtomicBool::new(false),
             retired: watch::Sender::new(false),
@@ -125,9 +128,10 @@ impl StreamLink {
         }));
     }
 
-    /// The owner terminates the Program for `kind`, unless it finished.
+    /// The owner terminates the Program for `kind`, unless it finished or
+    /// was terminated already.
     pub(crate) fn terminate(&self, kind: Option<RunTerminationKind>) {
-        if self.finished.load(Ordering::SeqCst) {
+        if self.finished.load(Ordering::SeqCst) || self.terminated.swap(true, Ordering::SeqCst) {
             return;
         }
         let reason = match kind {
@@ -615,9 +619,10 @@ impl RunModule {
             time_limit_nanos: run.time_limit_nanos,
         };
         let (handle, mailbox): (OwnerHandle, _) =
-            OwnerHandle::for_stream(accepted.held_id(), claim_id);
-        // Decisions and cancellations reach it through the Run Inbox until
-        // the receiver commits them itself (#2907).
+            OwnerHandle::for_stream(accepted.held_id(), claim_id, accepted.workspace_id.clone());
+        // Decisions and cancellations reach it from their receiver through
+        // the Run's head; one an older release put in the Run Inbox reaches
+        // it there.
         let registration = self.register_stream_owner(&handle);
         drop(admitted);
         handle.send(Message::Started(Ok(Some(started))));
@@ -684,5 +689,31 @@ const fn wire_end(state: RunState) -> WireEnd {
         RunState::Canceled => WireEnd::Canceled,
         RunState::TimedOut => WireEnd::TimedOut,
         RunState::Interrupted => WireEnd::Interrupted,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Catches: a stream that sends a second `Terminate` when two
+    /// termination paths reach it, such as an outside end a wake read found
+    /// and the rejection of the chunk that was in flight.
+    #[test]
+    fn a_stream_sends_one_terminate() {
+        let (responses, mut sent) = mpsc::unbounded_channel();
+        let link = StreamLink::new(responses);
+
+        link.terminate(Some(RunTerminationKind::Canceled));
+        link.terminate(Some(RunTerminationKind::TimedOut));
+
+        let mut terminates = Vec::new();
+        while let Ok(Ok(RunResponse {
+            message: Some(run_response::Message::Terminate(terminate)),
+        })) = sent.try_recv()
+        {
+            terminates.push(terminate.reason());
+        }
+        assert_eq!(terminates, [TerminateReason::Canceled]);
     }
 }

@@ -2,6 +2,8 @@
 //! bounded waiting on committed changes. A deadline wakes nothing by itself:
 //! the Run Owner's record of a timeout or an expiry is a committed change.
 
+use std::time::Duration;
+
 use coral_db::{ChangeSubscription, Database, Transaction};
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
@@ -204,5 +206,82 @@ pub(crate) async fn rung(changes: &mut Option<ChangeSubscription>) {
             let _rang_or_lost = changes.changed().await;
         }
         None => std::future::pending().await,
+    }
+}
+
+/// The shortest gap between two reads of a reader that follows the change
+/// signal: the Run Inbox's and the wake-up reader's.
+const READ_GAP: Duration = Duration::from_millis(250);
+/// The longest gap between two such reads: the backstop for a change signal
+/// that does not ring.
+const BACKSTOP: Duration = Duration::from_secs(15);
+
+/// A request that reaches its Run's owner later than this after it was
+/// written is logged, so a slow delivery can be told from a slow owner.
+const LATE_DELIVERY: Duration = Duration::from_secs(1);
+
+/// How late, in milliseconds, something written at `written_at_unix_nanos`
+/// reaches its Run's owner at `now_unix_nanos`, when later than
+/// [`LATE_DELIVERY`]. Between hosts the gap also holds their clocks'
+/// difference.
+pub(crate) fn late_delivery_ms(now_unix_nanos: i64, written_at_unix_nanos: i64) -> Option<i64> {
+    let delay_ms = now_unix_nanos.saturating_sub(written_at_unix_nanos) / 1_000_000;
+    (delay_ms > i64::try_from(LATE_DELIVERY.as_millis()).unwrap_or(i64::MAX)).then_some(delay_ms)
+}
+
+/// What started one read of a [`Cadence`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Turn {
+    /// The reader's first read.
+    First,
+    /// The change signal rang, or an outage of it began.
+    Rang,
+    /// A writer in this Coral Instance woke the reader.
+    Woken,
+    /// The backstop.
+    Backstop,
+}
+
+/// When a reader reads: on subscribe; after a ring of the change signal
+/// (the first after an outage included), at most once per gap; at once on
+/// a wake; and at the backstop.
+#[derive(Default)]
+pub(crate) struct Cadence {
+    changes: Option<ChangeSubscription>,
+    last_read: Option<tokio::time::Instant>,
+    /// The change signal rang (or an outage of it began) before the last
+    /// read, whatever started it.
+    rang: bool,
+}
+
+impl Cadence {
+    /// Waits for the next read and says what started it. A ring that comes
+    /// within the read gap is kept when a wake starts the read first.
+    pub(crate) async fn turn(&mut self, database: &Database, woken: &tokio::sync::Notify) -> Turn {
+        let mut turn = Turn::First;
+        let mut rang = false;
+        if let Some(last_read) = self.last_read {
+            let changes = &mut self.changes;
+            turn = loop {
+                tokio::select! {
+                    () = rung(changes), if !rang => rang = true,
+                    () = tokio::time::sleep_until(last_read + READ_GAP), if rang => break Turn::Rang,
+                    () = woken.notified() => break Turn::Woken,
+                    () = tokio::time::sleep_until(last_read + BACKSTOP) => break Turn::Backstop,
+                }
+            };
+        }
+        if self.changes.is_none() {
+            self.changes = database.subscribe_changes().ok();
+        }
+        self.rang = rang;
+        self.last_read = Some(tokio::time::Instant::now());
+        turn
+    }
+
+    /// Whether the change signal rang before the last read, whichever turn
+    /// started it.
+    pub(crate) const fn rang(&self) -> bool {
+        self.rang
     }
 }

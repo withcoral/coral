@@ -20,29 +20,19 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
 
 use async_trait::async_trait;
-use coral_db::{ChangeSubscription, Database, Transaction};
+use coral_db::{Database, Transaction};
 use coral_telemetry::safe;
 use coral_workspace::{Principal, WorkspaceId};
 use tokio::sync::{Mutex, Notify};
-use tokio::time::{Instant, sleep_until};
+use tokio::time::Instant;
 
 use crate::engine::Clock;
-use crate::observation::{read_until, rung};
+use crate::observation::{Cadence, late_delivery_ms, read_until};
 use crate::owner::{DecisionRequest, Message, Owners};
 use crate::types::HeldRunId;
 use crate::{CoralInstanceId, Error, RunId, run_repository};
-
-/// The shortest gap between two reads of the Run Inbox.
-const READ_GAP: Duration = Duration::from_millis(250);
-/// The longest gap between two reads: the backstop for a change signal
-/// that does not ring.
-const BACKSTOP: Duration = Duration::from_secs(15);
-/// A request that reaches its Run Owner later than this after it was
-/// submitted is logged, so a slow delivery can be told from a slow owner.
-const LATE_DELIVERY: Duration = Duration::from_secs(1);
 
 /// One outside Run Request as the Run Inbox carries it, addressed to its Run.
 #[derive(Debug, Clone)]
@@ -337,35 +327,6 @@ struct TableInbox {
     cadence: Mutex<Cadence>,
 }
 
-/// When the stream reads: on subscribe; after a ring of the change signal
-/// (the first after an outage included), at most once per gap; at once on
-/// a wake; and at the backstop.
-#[derive(Default)]
-struct Cadence {
-    changes: Option<ChangeSubscription>,
-    last_read: Option<Instant>,
-}
-
-impl Cadence {
-    async fn turn(&mut self, database: &Database, woken: &Notify) {
-        if let Some(last_read) = self.last_read {
-            let changes = &mut self.changes;
-            tokio::select! {
-                () = async {
-                    rung(changes).await;
-                    sleep_until(last_read + READ_GAP).await;
-                } => {}
-                () = woken.notified() => {}
-                () = sleep_until(last_read + BACKSTOP) => {}
-            }
-        }
-        if self.changes.is_none() {
-            self.changes = database.subscribe_changes().ok();
-        }
-        self.last_read = Some(Instant::now());
-    }
-}
-
 #[async_trait]
 impl Inbox for TableInbox {
     async fn submit(
@@ -390,7 +351,7 @@ impl Inbox for TableInbox {
     async fn receive(&self, instance: &CoralInstanceId) -> Vec<Delivery> {
         let mut cadence = self.cadence.lock().await;
         loop {
-            cadence.turn(&self.database, &self.woken).await;
+            let _turn = cadence.turn(&self.database, &self.woken).await;
             match run_repository::held_by(&self.database, instance).await {
                 Ok(deliveries) => return deliveries,
                 Err(error) => {
@@ -427,22 +388,20 @@ impl Inbox for TableInbox {
     }
 }
 
-/// Logs a request that reached its Run Owner later than [`LATE_DELIVERY`]
-/// after it was submitted. Its requester waits a few seconds for the record;
+/// Logs a request that reached its Run Owner late after it was submitted
+/// ([`late_delivery_ms`]). Its requester waits a few seconds for the record;
 /// this tells a slow delivery from a slow owner when that wait runs out.
-/// Between hosts the gap also holds their clocks' difference.
 /// `true` when it logged one. The expired-lease sweep calls it too, for the
 /// requests a recreated owner finds waiting.
 pub(crate) fn warn_if_late(now_unix_nanos: i64, run: &HeldRunId, delivery: &Delivery) -> bool {
-    let delay_ms = now_unix_nanos.saturating_sub(delivery.submitted_at_unix_nanos) / 1_000_000;
-    let late = delay_ms > i64::try_from(LATE_DELIVERY.as_millis()).unwrap_or(i64::MAX);
-    if late {
-        tracing::warn!(
-            coral.run.id = safe::id(run),
-            coral.run.request.kind = safe::kind(delivery.request.request.kind()),
-            coral.run.request.delay_ms = safe::number(delay_ms),
-            "Run Inbox delivered a request to its Run Owner late"
-        );
-    }
-    late
+    let Some(delay_ms) = late_delivery_ms(now_unix_nanos, delivery.submitted_at_unix_nanos) else {
+        return false;
+    };
+    tracing::warn!(
+        coral.run.id = safe::id(run),
+        coral.run.request.kind = safe::kind(delivery.request.request.kind()),
+        coral.run.request.delay_ms = safe::number(delay_ms),
+        "Run Inbox delivered a request to its Run Owner late"
+    );
+    true
 }

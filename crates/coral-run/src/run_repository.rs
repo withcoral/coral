@@ -40,7 +40,7 @@ pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention_activity};
 use run_row::RunRow;
 pub(crate) use run_row::UndecodableRun;
-pub(crate) use stream::{find_taken, linked_tools, reopen_taken, start_taken};
+pub(crate) use stream::{RunHead, find_taken, heads, linked_tools, reopen_taken, start_taken};
 pub(crate) use sweep::{
     HeldRun, elect_sweeper, held_by_run_executor, names_run_executor, past_deadline, put_back,
     unstarted_takes,

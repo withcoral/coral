@@ -33,7 +33,10 @@
 //!   owns the Run: the owner terminates active execution at once and records
 //!   the intent in its next chunk. The call waits up to the shutdown grace and
 //!   a settle margin for the owner to record it and end the Run, then returns
-//!   the state recorded by then, or answers that it is not yet recorded.
+//!   the state recorded by then, or answers that it is not yet recorded. A
+//!   Run a Run Executor holds is ended by the Coral Instance that receives
+//!   the cancellation, in one chunk under its claim and head, and its stream's
+//!   loop learns of it from the Run's head (see the `run_wake` module).
 //! - [`RunModule::listed_providers`] reads what `coral.listProviders` returns, without a Run.
 //! - [`RunModule::activity_entries`] reads bounded chronological child summaries.
 //!   Exact Event/Invocation anchors retain their identities. Upper owners can join
@@ -122,7 +125,10 @@
 //! Events: approval decisions and cancellation reach the owner as requests,
 //! and the Run and Approval Request deadlines are its own timers, applied in
 //! mailbox order with them (see the `owner` module). Both reach it from any
-//! Coral Instance through the Run Inbox (see the `run_inbox` module). The
+//! Coral Instance through the Run Inbox (see the `run_inbox` module). A Run a
+//! Run Executor holds has them committed by the Coral Instance that receives
+//! them, and its stream's loop sees its head move (see the `run_wake`
+//! module). The
 //! worker lease is ownership between processes: a Run whose lease lapsed with
 //! no owner here is the expired-lease sweep's, which recreates its owner, and a
 //! Run whose live lease another process holds is never touched. The clock
@@ -185,6 +191,7 @@ mod required_actions;
 mod required_actions_repository;
 pub mod retention;
 mod run_inbox;
+mod run_wake;
 pub mod usage_repository;
 pub use run_inbox::RunInbox;
 mod run_repository;
@@ -286,6 +293,8 @@ pub struct RunModule {
     instance: CoralInstanceId,
     /// Where outside Run Requests wait for the Run Owner of their Run.
     inbox: RunInbox,
+    /// The wake-up reader of the Run streams' loops on this Coral Instance.
+    wakes: run_wake::RunWakes,
     /// Accepted Runs wait for a take and a Run stream instead of a Run Owner
     /// (ADR 0027). Only tests set it until production switches over.
     run_streams: bool,
@@ -353,6 +362,7 @@ impl RunModule {
         instance: CoralInstanceId,
         inbox: RunInbox,
     ) -> Result<Self, Error> {
+        let wakes = run_wake::RunWakes::new(database.clone());
         Ok(Self {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
@@ -375,6 +385,7 @@ impl RunModule {
             compilation_timeout: limits.compilation_timeout(),
             instance,
             inbox,
+            wakes,
             run_streams: false,
             pull_streams: None,
             owners: Owners::default(),
@@ -398,6 +409,7 @@ impl RunModule {
         observers: TestObservers,
     ) -> Self {
         let inbox = RunInbox::table(database.clone());
+        let wakes = run_wake::RunWakes::new(database.clone());
         Self {
             providers,
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
@@ -420,6 +432,7 @@ impl RunModule {
             compilation_timeout: coral_test_support::TEST_COMPILATION_TIMEOUT,
             instance: CoralInstanceId::generate(),
             inbox,
+            wakes,
             run_streams: false,
             pull_streams: None,
             owners: Owners::default(),

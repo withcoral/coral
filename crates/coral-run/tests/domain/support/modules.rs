@@ -487,18 +487,28 @@ impl TestModules {
         workspace_id: &coral_workspace::WorkspaceId,
         run_id: &crate::RunId,
     ) -> usize {
+        self.rows_of_run("program_run_inbox", workspace_id, run_id)
+            .await
+    }
+
+    async fn rows_of_run(
+        &self,
+        table: &str,
+        workspace_id: &coral_workspace::WorkspaceId,
+        run_id: &crate::RunId,
+    ) -> usize {
         let rows: Vec<(String,)> = self
             .database
             .fetch_all(
                 Query::select()
-                    .column(Alias::new("id"))
-                    .from(Alias::new("program_run_inbox"))
+                    .column(Alias::new("run_id"))
+                    .from(Alias::new(table))
                     .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace_id.to_string()))
                     .and_where(Expr::col(Alias::new("run_id")).eq(run_id.as_str()))
                     .to_owned(),
             )
             .await
-            .expect("read the Run Inbox");
+            .unwrap_or_else(|error| panic!("read the Run's rows in {table}: {error}"));
         rows.len()
     }
 

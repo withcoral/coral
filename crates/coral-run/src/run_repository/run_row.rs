@@ -90,7 +90,7 @@ impl RunTerminationKind {
         }
     }
 
-    fn from_storage_str(value: &str) -> Result<Self, Error> {
+    pub(super) fn from_storage_str(value: &str) -> Result<Self, Error> {
         match value {
             "canceled" => Ok(Self::Canceled),
             "timed_out" => Ok(Self::TimedOut),
