@@ -1,5 +1,5 @@
 //! Run record persistence. Children own the package, claim, take, Run Ledger,
-//! termination, Event, Run Inbox, wake row, and retention statements; callers reach all of them
+//! termination, Event, Run Inbox, and retention statements; callers reach all of them
 //! through this module.
 
 #[cfg(test)]
@@ -23,7 +23,6 @@ mod sweep;
 mod take;
 mod termination;
 mod usage;
-mod wake;
 
 pub(crate) use acceptance::{insert_acceptance, load_package_in_transaction};
 #[cfg(test)]
@@ -41,7 +40,7 @@ pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention_activity};
 use run_row::RunRow;
 pub(crate) use run_row::UndecodableRun;
-pub(crate) use stream::{find_taken, linked_tools, reopen_taken, start_taken};
+pub(crate) use stream::{find_taken, heads, linked_tools, reopen_taken, start_taken};
 pub(crate) use sweep::{
     HeldRun, elect_sweeper, held_by_run_executor, names_run_executor, past_deadline, put_back,
     unstarted_takes,
@@ -52,7 +51,6 @@ pub(crate) use termination::{
     interrupt_run, request_termination,
 };
 pub(crate) use usage::{first_success_before, private_tool_calls, run_endings, shared_tool_calls};
-pub(crate) use wake::{HeldWake, clear_ended_wakes, clear_wake, raise_wake, wakes_held_by};
 
 #[derive(Iden, Clone, Copy)]
 enum ProgramRunRecords {

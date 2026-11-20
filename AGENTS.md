@@ -163,12 +163,12 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   claim fences, the Run sweeper (#2906) also writes under the claim and the
   head, as the sweeper section of ADR 0027 states. So does the Coral Instance
   that receives a decision or a cancellation for it (#2907), and it compares
-  no clock: only the loop and the sweeper do. Each such writer raises the
-  Run's wake row in the same transaction. Every writer of such a Run, its
+  no clock: only the loop and the sweeper do. Every writer of such a Run, its
   owner included, takes its rows in one order: the Invocation and Approval
-  Request rows, then the Run row, then the wake row; none holds the Run row
-  first. A stream owner writes its Run only while the row names its Coral
-  Instance as the stream's holder.
+  Request rows, then the Run row; none holds the Run row first. A stream
+  owner learns of another writer only from the Run's head, so give such a
+  writer no side table to tell it. A stream owner writes its Run only while
+  the row names its Coral Instance as the stream's holder.
 - A waiting Invocation parks with its Run Owner and never polls or
   subscribes to the change signal itself; the owner wakes it (the
   Wake-ups bullet of

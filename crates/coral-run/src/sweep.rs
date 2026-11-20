@@ -237,14 +237,6 @@ impl RunModule {
         if unless_moved(run_repository::commit_chunk(&mut transaction, chunk).await)?.is_none() {
             return Ok(false);
         }
-        // The Run's loop, wherever its stream is, rereads the request.
-        run_repository::raise_wake(
-            &mut transaction,
-            &run.workspace_id,
-            &run.id,
-            UnixNanos::new(now),
-        )
-        .await?;
         transaction.commit().await?;
         self.wakes.wake_for(&run.id);
         Ok(true)
@@ -354,10 +346,9 @@ impl RunModule {
 
 impl RunModule {
     /// The one chunk that ends `run`, read in `transaction`: its recorded
-    /// termination, else timed out past its deadline, else interrupted. A
-    /// started Run's wake row is raised with it, so its loop, wherever its
-    /// stream is, terminates the Program. `false` when another writer moved
-    /// the Run on first.
+    /// termination, else timed out past its deadline, else interrupted. Its
+    /// loop, wherever its stream is, sees the Run end and terminates the
+    /// Program. `false` when another writer moved the Run on first.
     async fn end(
         &self,
         transaction: Transaction<'_>,
@@ -365,9 +356,8 @@ impl RunModule {
         now: i64,
     ) -> Result<bool, Error> {
         let now = now.max(run.accepted_at_unix_nanos);
-        let wakes = run.execution_started();
-        let ended = unless_moved(commit_end(transaction, run, None, None, now, wakes).await)?;
-        if ended.is_some() && wakes {
+        let ended = unless_moved(commit_end(transaction, run, None, None, now).await)?;
+        if ended.is_some() {
             self.wakes.wake_for(&run.id);
         }
         Ok(ended.is_some())

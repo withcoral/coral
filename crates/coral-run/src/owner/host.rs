@@ -190,6 +190,10 @@ pub(crate) async fn host(
             effects.extend(apply(&mut state, next, now));
         }
         effects.extend(apply(&mut state, Message::Drained, now));
+        // What the wake-up reader compares with the Run row, after the batch
+        // and before the effects run: a chunk the batch started is published
+        // in flight before it can land.
+        handle.publish_head(state.head(), state.chunk_in_flight(), state.listens());
     }
     drop(timers);
     drop(subscription);
@@ -977,8 +981,6 @@ impl Written {
 struct Records {
     termination: Option<crate::lifecycle::RequestedTermination>,
     inbox_rows: Vec<crate::run_inbox::InboxRow>,
-    /// The chunk deletes the Run's wake row.
-    clears_wake: bool,
     output_total: usize,
     /// The highest Run stream request number the chunk commits.
     request_number: Option<u64>,
@@ -1038,7 +1040,6 @@ async fn commit_until_answered(
     let mut records = Records {
         termination: chunk.termination,
         inbox_rows: chunk.inbox_rows,
-        clears_wake: chunk.clears_wake,
         output_total,
         request_number: chunk.request_number,
     };
@@ -1373,11 +1374,6 @@ async fn commit_once(
             .output_bytes(records.output_total)
             .termination(records.termination.as_ref());
         run_repository::commit_chunk(&mut transaction, chunk).await?;
-        // So does the wake row the loop acted on, after the Run row: every
-        // writer takes the two in that order.
-        if records.clears_wake {
-            run_repository::clear_wake(&mut transaction, &run.workspace_id, &run.id).await?;
-        }
         transaction.commit().await.map_err(Error::from)?;
         #[cfg(test)]
         if module.execution_observer.chunk_commit_answer_lost().await {

@@ -210,15 +210,14 @@ pub(crate) async fn rung(changes: &mut Option<ChangeSubscription>) {
 }
 
 /// The shortest gap between two reads of a reader that follows the change
-/// signal: the Run Inbox's and the wake rows'.
+/// signal: the Run Inbox's and the wake-up reader's.
 const READ_GAP: Duration = Duration::from_millis(250);
 /// The longest gap between two such reads: the backstop for a change signal
 /// that does not ring.
 const BACKSTOP: Duration = Duration::from_secs(15);
 
-/// A request or a wake row that reaches its Run's owner later than this
-/// after it was written is logged, so a slow delivery can be told from a
-/// slow owner.
+/// A request that reaches its Run's owner later than this after it was
+/// written is logged, so a slow delivery can be told from a slow owner.
 const LATE_DELIVERY: Duration = Duration::from_secs(1);
 
 /// How late, in milliseconds, something written at `written_at_unix_nanos`

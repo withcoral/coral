@@ -170,8 +170,8 @@ impl ExecutionObserver for InboxProbe {
     }
 }
 
-/// Records what started each read in which the wake rows' reader handed a
-/// row to its loop; holds the reader's reads while asked, and the next chunk
+/// Records what started each read in which the wake-up reader woke a Run
+/// stream's loop; holds the reader's reads while asked, and the next chunk
 /// commit once armed.
 pub(crate) struct WakeProbe {
     turns: Mutex<Vec<crate::observation::Turn>>,
@@ -192,7 +192,7 @@ impl WakeProbe {
         self.turns.lock().expect("turns lock").clone()
     }
 
-    /// Holds every read of the wake rows from the next one on.
+    /// Holds every read of the wake-up reader from the next one on.
     pub(crate) fn hold_reads(&self) {
         self.reads_open.send_replace(false);
     }

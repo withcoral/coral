@@ -491,16 +491,6 @@ impl TestModules {
             .await
     }
 
-    /// The Run's wake rows: none, or its one (ADR 0027).
-    pub(crate) async fn wake_rows(
-        &self,
-        workspace_id: &coral_workspace::WorkspaceId,
-        run_id: &crate::RunId,
-    ) -> usize {
-        self.rows_of_run("program_run_wakes", workspace_id, run_id)
-            .await
-    }
-
     async fn rows_of_run(
         &self,
         table: &str,

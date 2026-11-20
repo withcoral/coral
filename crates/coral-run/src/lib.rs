@@ -36,7 +36,7 @@
 //!   the state recorded by then, or answers that it is not yet recorded. A
 //!   Run a Run Executor holds is ended by the Coral Instance that receives
 //!   the cancellation, in one chunk under its claim and head, and its stream's
-//!   loop learns of it from the Run's wake row (see the `run_wake` module).
+//!   loop learns of it from the Run's head (see the `run_wake` module).
 //! - [`RunModule::listed_providers`] reads what `coral.listProviders` returns, without a Run.
 //! - [`RunModule::activity_entries`] reads bounded chronological child summaries.
 //!   Exact Event/Invocation anchors retain their identities. Upper owners can join
@@ -127,7 +127,8 @@
 //! mailbox order with them (see the `owner` module). Both reach it from any
 //! Coral Instance through the Run Inbox (see the `run_inbox` module). A Run a
 //! Run Executor holds has them committed by the Coral Instance that receives
-//! them, with a wake row (see the `run_wake` module). The
+//! them, and its stream's loop sees its head move (see the `run_wake`
+//! module). The
 //! worker lease is ownership between processes: a Run whose lease lapsed with
 //! no owner here is the expired-lease sweep's, which recreates its owner, and a
 //! Run whose live lease another process holds is never touched. The clock
@@ -292,7 +293,7 @@ pub struct RunModule {
     instance: CoralInstanceId,
     /// Where outside Run Requests wait for the Run Owner of their Run.
     inbox: RunInbox,
-    /// The wake rows of the Runs whose stream this Coral Instance holds.
+    /// The wake-up reader of the Run streams' loops on this Coral Instance.
     wakes: run_wake::RunWakes,
     /// Accepted Runs wait for a take and a Run stream instead of a Run Owner
     /// (ADR 0027). Only tests set it until production switches over.

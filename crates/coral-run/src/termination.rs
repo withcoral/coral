@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use coral_db::{Transaction, UnixNanos};
+use coral_db::Transaction;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use tokio::time::Instant;
 
@@ -102,9 +102,9 @@ impl RunModule {
     }
 
     /// Ends the Run a Run Executor holds as canceled by `actor`, in one
-    /// chunk under its claim and head, with its wake row when it started: the
-    /// Run's stream loop, whichever Coral Instance holds it, terminates the
-    /// Program (ADR 0027). Every nonterminal Invocation ends, and the open
+    /// chunk under its claim and head: the Run's stream loop, whichever Coral
+    /// Instance holds it, sees the Run end and terminates the Program (ADR
+    /// 0027). Every nonterminal Invocation ends, and the open
     /// Approval Requests close. A Run waiting for a take, or taken and not
     /// started, ends at once too. It compares no clock: the head orders it
     /// against a deadline that the loop or the sweeper writes. A Run that
@@ -126,8 +126,7 @@ impl RunModule {
 
     /// One attempt of [`Self::cancel_on_run_executor`]. It reads the Run
     /// without a hold, as the loop's chunk does, so both take their rows in
-    /// one order: the Invocation and Approval Request rows, then the Run row,
-    /// then the wake row.
+    /// one order: the Invocation and Approval Request rows, then the Run row.
     async fn cancel_once(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -149,8 +148,7 @@ impl RunModule {
             now,
             run.shutdown_grace_nanos,
         )?;
-        let wakes = run.execution_started();
-        commit_end(transaction, &run, Some(cancellation), None, now, wakes).await?;
+        commit_end(transaction, &run, Some(cancellation), None, now).await?;
         self.wakes.wake_for(run_id);
         Ok(())
     }
@@ -365,8 +363,6 @@ impl RunModule {
             return Err(Error::ClaimMismatch);
         }
         let now = self.now()?.max(run.accepted_at_unix_nanos);
-        // A loop of the Run's stream elsewhere learns that the Run ended.
-        let wakes = by == Interrupter::Reopen && run.on_run_executor && run.execution_started();
         commit_end(
             transaction,
             &run,
@@ -376,7 +372,6 @@ impl RunModule {
                 instance: &self.instance,
             }),
             now,
-            wakes,
         )
         .await
     }
@@ -493,16 +488,13 @@ pub(crate) enum Interrupter {
 }
 
 /// [`end_in_one_chunk`] with no Events of the caller's, committed, and the
-/// Run's end traced (a Run that never started as unstarted). With `wakes`,
-/// the Run's wake row is raised after the Run row is written, the order
-/// every writer keeps.
+/// Run's end traced (a Run that never started as unstarted).
 pub(crate) async fn commit_end(
     mut transaction: Transaction<'_>,
     run: &RunRecord,
     cancellation: Option<RequestedTermination>,
     takeover: Option<run_repository::Takeover<'_>>,
     now_unix_nanos: i64,
-    wakes: bool,
 ) -> Result<(), Error> {
     let (kind, ended_at) = end_in_one_chunk(
         &mut transaction,
@@ -513,15 +505,6 @@ pub(crate) async fn commit_end(
         now_unix_nanos,
     )
     .await?;
-    if wakes {
-        run_repository::raise_wake(
-            &mut transaction,
-            &run.workspace_id,
-            &run.id,
-            UnixNanos::new(now_unix_nanos),
-        )
-        .await?;
-    }
     transaction.commit().await?;
     let outcome = kind.outcome();
     let end = if run.execution_started() {

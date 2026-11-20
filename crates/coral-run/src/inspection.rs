@@ -138,8 +138,8 @@ impl RunModule {
         self.approvals().get(actor, workspace, id).await
     }
     /// The Approval Module that decides through this module's Run Inbox, or
-    /// its wake rows for a Run a Run Executor holds, on its clock, whichever
-    /// Coral Instance owns the Run.
+    /// directly for a Run a Run Executor holds, on its clock, whichever Coral
+    /// Instance owns the Run.
     #[must_use]
     pub fn approvals(&self) -> crate::approval::ApprovalModule {
         crate::approval::ApprovalModule::new(

@@ -1,6 +1,7 @@
 //! What a Run stream's loop reads and writes on its own: the Run its `Open`
 //! names, the Tools the Run linked, the start chunk, and the chunk that
-//! reopens a started Run's stream.
+//! reopens a started Run's stream; and the heads of the Runs whose loops a
+//! Coral Instance holds, which its wake-up reader compares.
 
 use std::collections::HashMap;
 
@@ -20,7 +21,7 @@ use super::{ProgramRunRecords, RUN_COLUMNS, RunRow};
 use crate::engine::ProgramPackage;
 use crate::lifecycle::RunRecord;
 use crate::types::LinkedTool;
-use crate::{CoralInstanceId, Error, RunId};
+use crate::{CoralInstanceId, Error, RunId, RunState};
 
 #[derive(FromRow)]
 struct TakenRow {
@@ -193,4 +194,76 @@ pub(crate) async fn reopen_taken(
         )],
     )
     .await
+}
+
+/// How many Runs one statement of [`heads`] reads at most, so its
+/// parameters stay within what both databases take.
+const HEADS_PER_STATEMENT: usize = 200;
+
+/// One Run's head as [`heads`] reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RunHead {
+    pub(crate) head: u64,
+    pub(crate) running: bool,
+}
+
+/// The Run Ledger head of each of `runs` that has a row, and whether it is
+/// still running, by Run: one statement for up to
+/// [`HEADS_PER_STATEMENT`] Runs, each matched by its Workspace and id. A
+/// row whose state does not decode is left out: its loop's own reads report
+/// it.
+pub(crate) async fn heads(
+    database: &Database,
+    runs: &[(WorkspaceId, RunId)],
+) -> Result<HashMap<RunId, RunHead>, Error> {
+    let mut heads = HashMap::with_capacity(runs.len());
+    for batch in runs.chunks(HEADS_PER_STATEMENT) {
+        let mut by_workspace: HashMap<&WorkspaceId, Vec<&str>> = HashMap::new();
+        for (workspace, run) in batch {
+            by_workspace
+                .entry(workspace)
+                .or_default()
+                .push(run.as_str());
+        }
+        let named = by_workspace.into_iter().fold(
+            sea_query::Condition::any(),
+            |named, (workspace, ids)| {
+                named.add(
+                    sea_query::Condition::all()
+                        .add(Expr::col(ProgramRunRecords::WorkspaceId).eq(workspace.to_string()))
+                        .add(Expr::col(ProgramRunRecords::Id).is_in(ids)),
+                )
+            },
+        );
+        let rows: Vec<(String, i64, String)> = database
+            .fetch_all(
+                Query::select()
+                    .columns([
+                        ProgramRunRecords::Id,
+                        ProgramRunRecords::ChunkSequence,
+                        ProgramRunRecords::State,
+                    ])
+                    .from(ProgramRunRecords::Table)
+                    .cond_where(named)
+                    .to_owned(),
+            )
+            .await?;
+        for (id, head, state) in rows {
+            let (Ok(id), Ok(head), Ok(state)) = (
+                RunId::parse(&id),
+                u64::try_from(head),
+                RunState::from_storage_str(&state),
+            ) else {
+                continue;
+            };
+            heads.insert(
+                id,
+                RunHead {
+                    head,
+                    running: !state.is_terminal(),
+                },
+            );
+        }
+    }
+    Ok(heads)
 }

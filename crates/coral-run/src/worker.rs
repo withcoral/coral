@@ -73,8 +73,6 @@ impl RunModule {
         let registration = self.registered(self.owners.register_stream(handle.clone()));
         self.wakes.loop_registered(
             &self.owners,
-            &self.instance,
-            &self.clock,
             #[cfg(test)]
             &self.execution_observer,
         );

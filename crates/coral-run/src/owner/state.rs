@@ -456,17 +456,15 @@ pub(crate) struct OwnerState {
     pushed: u64,
     /// A Run stream owner's place in the Shutdown Drain.
     draining: Draining,
-    /// What a Run stream loop learned from its Run's wake row.
+    /// What a Run stream loop learned from its wake-ups.
     wake: Wake,
 }
 
-/// What a Run stream loop learned from its Run's wake row (ADR 0027).
+/// What a Run stream loop learned from its wake-ups (ADR 0027).
 #[derive(Debug, Default)]
 struct Wake {
     /// Its read of its Run after a wake.
     read: WakeRead,
-    /// A wake row it acted on waits for a chunk to delete it.
-    clears_row: bool,
     /// The termination of a Run another writer ended: the reason the
     /// Program's `Terminate` gives.
     ended_outside: Option<RunTerminationKind>,
@@ -556,9 +554,19 @@ impl OwnerState {
     }
 
     /// The Run Ledger head the owner tracks.
-    #[cfg(test)]
     pub(crate) const fn head(&self) -> u64 {
         self.head
+    }
+
+    /// Whether a chunk of the owner's is being committed.
+    pub(crate) const fn chunk_in_flight(&self) -> bool {
+        self.in_flight.is_some()
+    }
+
+    /// Whether a Run stream's owner acts on a wake-up: its Program runs and
+    /// it ends its Run in no write of its own.
+    pub(crate) const fn listens(&self) -> bool {
+        matches!(self.phase, Phase::Running) && !self.stop_requested && self.stream_end.is_none()
     }
 
     /// The termination intent the owner applied.
@@ -1114,12 +1122,10 @@ impl OwnerState {
 
     /// The loop read its Run after a wake (ADR 0027). Terminal: the loop
     /// stops as on a chunk that found the Run ended, and the Program hears
-    /// the Run's termination. The head it tracks: nothing more, and its next
-    /// chunk deletes the row. Moved: it takes the row's head when no chunk
-    /// is in flight (the one in flight rebuilds itself on it), rereads the
-    /// Approval Requests its parked waits are on, and its next chunk deletes
-    /// the row, asserting the head, so a raise that lands meanwhile fails
-    /// that chunk and is read on its rebuild.
+    /// the Run's termination. The head it tracks: nothing happened. Moved:
+    /// it takes the row's head when no chunk is in flight (the one in flight
+    /// rebuilds itself on it, and rereads them then), and rereads the
+    /// Approval Requests its parked waits are on.
     fn run_read(&mut self, read: Option<RunNow>) -> Vec<Effect> {
         let again = self.wake.read == WakeRead::Again;
         self.wake.read = WakeRead::Idle;
@@ -1140,7 +1146,6 @@ impl OwnerState {
                 head,
                 recorded_total,
             }) => {
-                self.wake.clears_row = true;
                 if head == self.head {
                     Vec::new()
                 } else {
@@ -1579,7 +1584,6 @@ impl OwnerState {
     fn commit(&mut self, mut chunk: ChunkBuild) -> Vec<Effect> {
         let output_total = self.recorded_total.saturating_add(chunk.bytes);
         chunk.head = self.head;
-        chunk.clears_wake |= std::mem::take(&mut self.wake.clears_row);
         self.in_flight = Some(InFlight {
             bytes: chunk.bytes,
             enforces: chunk.enforcement.is_some(),

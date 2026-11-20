@@ -1,32 +1,27 @@
-//! The wake rows' reader (ADR 0027, Outside requests and the wake row).
+//! The wake-up reader (ADR 0027, Outside requests and the Run's head).
 //!
 //! A writer other than a Run's own loop that commits on a running Run a Run
-//! Executor holds raises the Run's wake row in the same transaction: the
-//! receiver of a decision or a cancellation, and the sweeper. One reader per
-//! Coral Instance reads the wake rows of the Runs whose stream this instance
-//! holds, after the content-free change signal rang, and hands each to the
-//! loop registered here for its Run. The loop rereads its Run and deletes the
-//! row in its next chunk commit. A row whose Run has no loop here stays: a
-//! reopen of the Run's stream deletes it. After each read, the reader deletes
-//! the rows it read of Runs that ended: no write follows a Run's end. While
-//! no owner is registered here it reads nothing, and a row left then goes
-//! with its Run's retention. Per-Run loops never subscribe to the signal: a
-//! loop parked on a connection request hears its rings through the reader.
-//! A Run Owner of an owned Run keeps a subscription of its own until the
-//! owner path goes (#2911).
+//! Executor holds moves the Run's head, and adds nothing else: the receiver
+//! of a decision or a cancellation, and the sweeper. Each Run stream's loop
+//! publishes the head it last wrote. One reader per Coral Instance, after the
+//! content-free change signal rang, reads in one statement the heads of the
+//! Runs whose loops are registered here, and wakes each loop whose Run ended
+//! or moved past what it wrote. The loop rereads its Run. While no Run
+//! stream's loop is registered here it reads nothing. Per-Run loops never
+//! subscribe to the signal: a loop parked on a connection request hears its
+//! rings through the reader. A Run Owner of an owned Run keeps a
+//! subscription of its own until the owner path goes (#2911).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use coral_db::Database;
 use coral_telemetry::safe;
 use tokio::sync::Notify;
 
-use crate::engine::Clock;
-use crate::observation::{Cadence, Turn, late_delivery_ms};
+use crate::observation::{Cadence, Turn};
 use crate::owner::{Message, OwnerHandle, Owners};
-use crate::run_repository::{self, HeldWake};
-use crate::{CoralInstanceId, Error, RunId};
+use crate::{Error, RunId, run_repository};
 
 /// How many times the receiver of a decision or a cancellation for a Run a
 /// Run Executor holds reads the Run again after another writer moved it
@@ -57,7 +52,7 @@ where
     Err(Error::RunRequestNotYetRecorded)
 }
 
-/// This Coral Instance's wake rows and their reader.
+/// This Coral Instance's wake-up reader, and the loops that listen to it.
 #[derive(Clone)]
 pub(crate) struct RunWakes {
     database: Arc<Database>,
@@ -108,13 +103,10 @@ impl RunWakes {
     }
 
     /// A Run stream's loop registered in `owners`: starts this Coral
-    /// Instance's reader on the first, and has it read at once, for a row
-    /// raised before the loop was here.
+    /// Instance's reader on the first, and has it read at once.
     pub(crate) fn loop_registered(
         &self,
         owners: &Owners,
-        instance: &CoralInstanceId,
-        clock: &Arc<dyn Clock>,
         #[cfg(test)] observer: &Arc<dyn crate::execution::ExecutionObserver>,
     ) {
         self.reader.get_or_init(|| {
@@ -123,8 +115,6 @@ impl RunWakes {
                 self.woken.clone(),
                 self.listeners.clone(),
                 owners.clone(),
-                instance.clone(),
-                clock.clone(),
                 #[cfg(test)]
                 observer.clone(),
             )
@@ -133,7 +123,8 @@ impl RunWakes {
     }
 
     /// Wakes this Coral Instance's reader when the loop of `run_id` is
-    /// here: a row just raised reaches it without waiting for the signal.
+    /// here: a write just committed reaches it without waiting for the
+    /// signal.
     pub(crate) fn wake_for(&self, run_id: &RunId) {
         if self
             .reader
@@ -157,19 +148,11 @@ impl Reader {
         woken: Arc<Notify>,
         listeners: Listeners,
         owners: Owners,
-        instance: CoralInstanceId,
-        clock: Arc<dyn Clock>,
         #[cfg(test)] observer: Arc<dyn crate::execution::ExecutionObserver>,
     ) -> Self {
         let registered = owners.clone();
         let task = tokio::spawn(async move {
             let mut cadence = Cadence::default();
-            // The rows already logged as late: a row is handed again on
-            // every read until its loop deletes it, and is logged once.
-            let mut logged = HashSet::new();
-            // The wake rows already logged as undecodable, by their Run when
-            // its id decodes: each is logged once while it stays.
-            let mut skipped = HashSet::new();
             loop {
                 let turn = cadence.turn(&database, &woken).await;
                 // A ring that a local wake beat to the turn is relayed too,
@@ -184,48 +167,34 @@ impl Reader {
                 }
                 #[cfg(test)]
                 observer.before_wake_read().await;
+                let loops = owners.streams();
                 // A registration wakes the next read.
-                if owners.is_empty() {
+                if loops.is_empty() {
                     continue;
                 }
-                let wakes = match run_repository::wakes_held_by(&database, &instance).await {
-                    Ok(wakes) => {
-                        let (wakes, undecodable): (Vec<_>, Vec<_>) =
-                            wakes.into_iter().partition(Result::is_ok);
-                        log_undecodable(&mut skipped, undecodable);
-                        wakes.into_iter().filter_map(Result::ok).collect::<Vec<_>>()
-                    }
+                let runs: Vec<_> = loops
+                    .iter()
+                    .map(|(workspace, owner)| (workspace.clone(), owner.run_id().clone()))
+                    .collect();
+                let heads = match run_repository::heads(&database, &runs).await {
+                    Ok(heads) => heads,
                     Err(error) => {
                         tracing::warn!(
                             error.type = safe::kind(error.code()),
-                            "wake row read failed; the next read tries again"
+                            "the wake-up reader's read of its Runs' heads failed; the next read tries again"
                         );
                         continue;
                     }
                 };
-                let now = clock.now_unix_nanos().ok();
-                let read: HashSet<&RunId> = wakes.iter().map(|wake| &wake.run_id).collect();
-                logged.retain(|run: &RunId| read.contains(run));
-                for wake in &wakes {
-                    let Some(owner) = owners.get(&wake.run_id) else {
-                        continue;
-                    };
-                    if let Some(now) = now
-                        && !logged.contains(&wake.run_id)
-                        && warn_if_late(now, owner.held_id(), wake)
+                for (_, owner) in &loops {
+                    if heads
+                        .get(owner.run_id())
+                        .is_some_and(|run| owner.behind(run.head, run.running))
                     {
-                        logged.insert(wake.run_id.clone());
+                        owner.send(Message::Woken);
+                        #[cfg(test)]
+                        observer.wake_delivered(turn);
                     }
-                    owner.send(Message::Woken);
-                    #[cfg(test)]
-                    observer.wake_delivered(turn);
-                }
-                let ended: Vec<HeldWake> = wakes.into_iter().filter(|wake| wake.ended).collect();
-                if let Err(error) = run_repository::clear_ended_wakes(&database, &ended).await {
-                    tracing::warn!(
-                        error.type = safe::kind(error.code()),
-                        "ended Runs' wake rows were not deleted; the next read tries again"
-                    );
                 }
             }
         });
@@ -240,42 +209,4 @@ impl Drop for Reader {
     fn drop(&mut self) {
         self.task.abort();
     }
-}
-
-/// Logs each wake row in `undecodable` whose Run's stored row does not
-/// decode, once while it stays: `skipped` holds the ones logged, and forgets
-/// the ones this read did not find. The next read reads them again.
-fn log_undecodable(
-    skipped: &mut HashSet<Option<RunId>>,
-    undecodable: Vec<Result<HeldWake, run_repository::UndecodableRun>>,
-) {
-    let undecodable: Vec<_> = undecodable.into_iter().filter_map(Result::err).collect();
-    let read: HashSet<Option<RunId>> = undecodable
-        .iter()
-        .map(|row| row.id.as_ref().map(|id| id.run_id().clone()))
-        .collect();
-    skipped.retain(|run| read.contains(run));
-    for row in undecodable {
-        if skipped.insert(row.id.as_ref().map(|id| id.run_id().clone())) {
-            tracing::warn!(
-                coral.run.id = row.id.as_ref().map(safe::id),
-                error.type = safe::kind(row.error.code()),
-                "the wake reader skips a wake row whose Run's stored row does not decode"
-            );
-        }
-    }
-}
-
-/// Logs a wake row handed to its loop late after it was raised
-/// ([`late_delivery_ms`]); `true` when it logged one.
-fn warn_if_late(now_unix_nanos: i64, run: &crate::types::HeldRunId, wake: &HeldWake) -> bool {
-    let Some(delay_ms) = late_delivery_ms(now_unix_nanos, wake.raised_at_unix_nanos.get()) else {
-        return false;
-    };
-    tracing::warn!(
-        coral.run.id = safe::id(run),
-        coral.run.request.delay_ms = safe::number(delay_ms),
-        "wake row reached its Run's loop late"
-    );
-    true
 }

@@ -116,8 +116,8 @@ pub(super) fn only_answer(read: &[run_response::Message], number: u64) -> &Invoc
 }
 
 /// Approves `waiting` from another Coral Instance while no loop holds its
-/// Run's stream: the decision is recorded at once, and its wake row stays,
-/// with no loop to take it, until the reopen deletes it.
+/// Run's stream: the decision is recorded at once, and the reopened loop
+/// finds it in the rows.
 async fn decide_without_a_loop(
     fixture: &TestModules,
     tool: &ToolFixture,
@@ -134,7 +134,6 @@ async fn decide_without_a_loop(
     .expect("the decision is recorded");
     assert_eq!(decided.state, crate::approval::ApprovalState::Approved);
     assert_eq!(fixture.inbox_rows(&tool.workspace_id, run_id).await, 0);
-    assert_eq!(fixture.wake_rows(&tool.workspace_id, run_id).await, 1);
 }
 
 /// Each Invocation of `run_id`, in admission order, by its result kind.
@@ -290,7 +289,6 @@ async fn a_run_stream_that_moves_mid_run_lands_each_request_and_result_once() {
         reopened == committed(3) || reopened == committed(4),
         "{reopened:?}"
     );
-    assert_eq!(fixture.wake_rows(&tool.workspace_id, run_id).await, 0);
     stream.request(4, emit(&serde_json::json!({"step": 4})));
     upstream.release_all();
     let read = stream

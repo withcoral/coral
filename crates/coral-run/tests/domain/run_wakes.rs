@@ -1,7 +1,7 @@
 //! Outside requests for a Run a Run Executor holds (ADR 0027): the Coral
 //! Instance that receives a decision or a cancellation commits it under the
-//! Run's claim and head and raises the Run's wake row, and the Run's stream
-//! loop, wherever its stream is, acts on it. On Postgres the request goes to
+//! Run's claim and head, and the Run's stream loop, wherever its stream is,
+//! sees the head move and acts on it. On Postgres the request goes to
 //! another Coral Instance; on SQLite, which has one, to the same.
 use super::*;
 use coral_run_executor::wire::v1::{RunEnd as WireEnd, TerminateReason, run_response};
@@ -24,12 +24,12 @@ struct Held {
 
 impl Held {
     /// A Run whose weather Tool waits for approval, answering through
-    /// `upstream`, with `observer` on the stream's module. Only a wake row
-    /// tells the loop of an outside decision: the periodic precheck stays
+    /// `upstream`, with `observer` on the stream's module. Only the wake-up
+    /// reader tells the loop of an outside decision: the periodic precheck stays
     /// out, and no real timer fires before a test's wait for an answer runs
-    /// out (an Approval Request's deadline is 120 s away, the Run's 150 s);
-    /// tests move the test clock instead. Neither jump reaches the owner's
-    /// self-interrupt bound, three 60 s leases.
+    /// out (an Approval Request's deadline is 120 s away, the Run's 150 s,
+    /// the idle tick's 30 min); tests move the test clock instead. Neither
+    /// jump reaches the owner's self-interrupt bound, three one-hour leases.
     async fn new(
         upstream: Arc<dyn UpstreamSender>,
         observer: Arc<dyn ExecutionObserver>,
@@ -44,6 +44,7 @@ impl Held {
         .await;
         fixture.runs.execution_policy =
             crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(120))
+                .with_claim_lease(Duration::from_secs(3600))
                 .with_wakeups(Duration::from_secs(3600), Duration::from_millis(50));
         let tool = fixture.user_tool("user:wakes", "Wake rows").await;
         if approval {
@@ -122,12 +123,6 @@ impl Held {
             .await
     }
 
-    async fn wake_rows(&self) -> usize {
-        self.fixture
-            .wake_rows(&self.tool.workspace_id, &self.run_id)
-            .await
-    }
-
     /// Reads the stream to its `Terminate`, with the Run written before it.
     async fn terminated(&mut self) -> TerminateReason {
         loop {
@@ -160,7 +155,7 @@ fn answering() -> Arc<SequencedUpstream> {
 /// Catches: a decision on a Run a Run Executor holds that waits for a Run
 /// Owner, answers "not yet recorded", or reaches the Program only through
 /// the periodic precheck; a receiver that judges a late approval by its own
-/// clock; and a wake row left after the Run ended.
+/// clock.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_decision_received_elsewhere_reaches_the_program_through_the_streams_loop() {
     use ApprovalDecision::{Approve, Decline};
@@ -204,7 +199,6 @@ async fn a_decision_received_elsewhere_reaches_the_program_through_the_streams_l
         held.stream
             .until(|read| read.contains(&ended(WireEnd::Succeeded)))
             .await;
-        wait_until_async(async || held.wake_rows().await == 0).await;
     }
 }
 
@@ -231,7 +225,7 @@ async fn a_decision_on_the_instance_with_the_stream_wakes_its_reader_at_once() {
 }
 
 /// Catches: a decision that lands while the loop's chunk is being written,
-/// whose waiter learns of it only from a wake row the reader has not read.
+/// whose waiter learns of it only from a wake-up the reader has not sent.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_decision_under_the_loops_chunk_reaches_its_waiter_through_the_rebuild() {
     let probe = WakeProbe::new();
@@ -334,7 +328,6 @@ async fn a_cancellation_received_elsewhere_ends_the_run_with_its_invocations() {
                 .await,
             0
         );
-        wait_until_async(async || held.wake_rows().await == 0).await;
     }
 }
 
@@ -366,7 +359,6 @@ async fn a_cancellation_ends_a_run_executors_run_that_has_not_started_at_once() 
         assert_eq!(canceled.state(), RunState::Canceled);
         let run = fixture.run_record(&tool.workspace_id, &run_id).await;
         assert_eq!(run.execution_claim_id, None);
-        assert_eq!(fixture.wake_rows(&tool.workspace_id, &run_id).await, 0);
         if let Some(claim) = claim {
             // The end released the take's claim: no stream opens on it.
             let mut late = Scripted::open(&runs, &run_id.to_string(), &claim);
@@ -419,7 +411,6 @@ async fn the_sweepers_writes_reach_the_streams_loop() {
                 .until(|read| read.contains(&ended(WireEnd::Succeeded)))
                 .await;
         }
-        wait_until_async(async || held.wake_rows().await == 0).await;
     }
 }
 
@@ -461,5 +452,37 @@ async fn a_run_ended_under_the_loops_chunk_terminates_its_program_once() {
             .any(|message| matches!(message, run_response::Message::Terminate(_))),
         "one Terminate: {rest:?}"
     );
-    wait_until_async(async || held.wake_rows().await == 0).await;
+}
+
+/// Catches: a wake-up read that sends a statement for each Run stream's
+/// loop on its Coral Instance, the cost ADR 0027 rejects.
+#[tokio::test]
+async fn a_wake_up_read_of_many_loops_sends_the_statements_of_one() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    // A peer handle counts only its own statements.
+    let reads = fixture.test_database.connect_peer().await.unwrap();
+    let workspace = coral_workspace::WorkspaceId::parse(&uuid::Uuid::new_v4().to_string())
+        .expect("a Workspace id");
+    let runs = |count: usize| {
+        (0..count)
+            .map(|_| {
+                (
+                    workspace.clone(),
+                    crate::RunId::generate().expect("a Run id"),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut sent = Vec::new();
+    for count in [1, 150] {
+        let before = reads.statements_sent();
+        crate::run_repository::heads(&reads, &runs(count))
+            .await
+            .expect("read the heads");
+        sent.push(reads.statements_sent() - before);
+    }
+    assert!(
+        matches!(sent.as_slice(), [one, many] if one == many),
+        "{sent:?}"
+    );
 }

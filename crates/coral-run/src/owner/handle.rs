@@ -2,11 +2,11 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use coral_provider::account::ConnectionRequestId;
-use coral_workspace::{Principal, TraceId};
+use coral_workspace::{Principal, TraceId, WorkspaceId};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::approval::{ApprovalDecision, ApprovalId};
@@ -270,8 +270,8 @@ pub(crate) enum Message {
     /// The Run stream is gone: the owner records what it applied and
     /// retires, and the Run stays as it is.
     Detached,
-    /// The wake rows' reader handed the Run's wake row to a Run stream's
-    /// loop: another writer committed on the Run (ADR 0027).
+    /// The wake-up reader found a Run stream's Run ended or moved past what
+    /// its loop wrote: another writer committed on it (ADR 0027).
     Woken,
     /// The loop's read of its Run after a wake; `None` when the read failed
     /// or found no row, which the next wake reads again.
@@ -476,12 +476,29 @@ struct Shared {
     /// replaced it: the Run goes on without it.
     detached: AtomicBool,
     /// It hosts a Run stream: the Shutdown Drain moves its stream instead
-    /// of stopping it.
-    stream: bool,
+    /// of stopping it, and the wake-up reader compares its head.
+    stream: Option<StreamHead>,
     /// The number of the Run stream request being handed to the Program's
     /// host, until the call it makes takes it.
     request: std::sync::Mutex<Option<u64>>,
 }
+
+/// What a Run stream's owner publishes for its Coral Instance's wake-up
+/// reader (ADR 0027): its Run's Workspace, and the head it last wrote with
+/// whether a chunk of its own is in flight.
+struct StreamHead {
+    workspace_id: WorkspaceId,
+    /// The head shifted left by two, with [`IN_FLIGHT`] set while a chunk
+    /// is in flight and [`LISTENING`] while the owner acts on a wake-up:
+    /// one value, read whole.
+    published: AtomicU64,
+}
+
+/// [`StreamHead::published`]: a chunk of the owner's is in flight.
+const IN_FLIGHT: u64 = 1;
+/// [`StreamHead::published`]: the owner acts on a wake-up. Clear before
+/// its first publish, once it stopped, and while it ends its Run itself.
+const LISTENING: u64 = 2;
 
 /// The number of one Run stream request until its message reaches the
 /// owner. Dropped first, it tells the owner the request leaves nothing to
@@ -526,15 +543,28 @@ pub(crate) struct OwnerHandle {
 
 impl OwnerHandle {
     pub(crate) fn new(run_id: HeldRunId, claim_id: String) -> (Self, Mailbox) {
-        Self::with_stream(run_id, claim_id, false)
+        Self::with_stream(run_id, claim_id, None)
     }
 
-    /// The handle on the owner that hosts a Run stream's Run.
-    pub(crate) fn for_stream(run_id: HeldRunId, claim_id: String) -> (Self, Mailbox) {
-        Self::with_stream(run_id, claim_id, true)
+    /// The handle on the owner that hosts a Run stream's Run, which the
+    /// Workspace `workspace_id` owns.
+    pub(crate) fn for_stream(
+        run_id: HeldRunId,
+        claim_id: String,
+        workspace_id: WorkspaceId,
+    ) -> (Self, Mailbox) {
+        let stream = StreamHead {
+            workspace_id,
+            published: AtomicU64::new(0),
+        };
+        Self::with_stream(run_id, claim_id, Some(stream))
     }
 
-    fn with_stream(run_id: HeldRunId, claim_id: String, stream: bool) -> (Self, Mailbox) {
+    fn with_stream(
+        run_id: HeldRunId,
+        claim_id: String,
+        stream: Option<StreamHead>,
+    ) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::unbounded_channel();
         let handle = Self {
             shared: Arc::new(Shared {
@@ -553,6 +583,38 @@ impl OwnerHandle {
 
     pub(crate) fn run_id(&self) -> &RunId {
         self.shared.run_id.run_id()
+    }
+
+    /// A Run stream owner's Run's Workspace; `None` for any other owner.
+    pub(crate) fn stream_workspace(&self) -> Option<&WorkspaceId> {
+        self.shared
+            .stream
+            .as_ref()
+            .map(|stream| &stream.workspace_id)
+    }
+
+    /// A Run stream owner publishes `head`, the one it last wrote, whether
+    /// a chunk of its own is `in_flight`, and whether it is `listening`:
+    /// acting on a wake-up.
+    pub(crate) fn publish_head(&self, head: u64, in_flight: bool, listening: bool) {
+        if let Some(stream) = &self.shared.stream {
+            let flags =
+                if in_flight { IN_FLIGHT } else { 0 } | if listening { LISTENING } else { 0 };
+            stream.published.store(head << 2 | flags, Ordering::SeqCst);
+        }
+    }
+
+    /// Whether a Run row at `head` that is still `running` shows a write
+    /// this listening Run stream owner has not seen: the Run ended, or its
+    /// head moved past the one the owner wrote, its chunk in flight counted.
+    /// `false` for any other owner.
+    pub(crate) fn behind(&self, head: u64, running: bool) -> bool {
+        let Some(stream) = &self.shared.stream else {
+            return false;
+        };
+        let published = stream.published.load(Ordering::SeqCst);
+        let written = (published >> 2) + (published & IN_FLIGHT);
+        published & LISTENING != 0 && (!running || head > written)
     }
 
     /// Whether `other` is a handle on this very owner.
@@ -607,7 +669,7 @@ impl OwnerHandle {
     /// the stream; another is stopped once the drain is out, which
     /// interrupts its Run.
     pub(crate) fn drain(&self, step: DrainStep) {
-        if self.shared.stream {
+        if self.shared.stream.is_some() {
             self.send(Message::Drain(step));
         } else if step == DrainStep::MoveNow {
             self.request_stop();
@@ -832,14 +894,17 @@ impl Owners {
         self.lock().contains_key(run_id)
     }
 
-    /// Whether no owner is live here.
-    pub(crate) fn is_empty(&self) -> bool {
-        self.lock().is_empty()
-    }
-
     /// Every owner live here now.
     pub(crate) fn live(&self) -> Vec<OwnerHandle> {
         self.lock().values().cloned().collect()
+    }
+
+    /// Every Run stream's owner live here now, with its Run's Workspace.
+    pub(crate) fn streams(&self) -> Vec<(WorkspaceId, OwnerHandle)> {
+        self.lock()
+            .values()
+            .filter_map(|owner| Some((owner.stream_workspace()?.clone(), owner.clone())))
+            .collect()
     }
 
     /// Returns once no owner is live here.

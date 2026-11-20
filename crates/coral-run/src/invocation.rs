@@ -2503,8 +2503,8 @@ impl PrecheckBatch {
     /// while the Run is nonterminal), so what the owner keeps of them stands:
     /// a request still pending, no failure recorded. On a Run a Run
     /// Executor holds, the receiver of a decision and the sweeper write them
-    /// too, and say so with a wake row: the approvals check reads each
-    /// parked wait's Approval Request and finds the ones no longer pending.
+    /// too, and move its head: the approvals check reads each parked wait's
+    /// Approval Request and finds the ones no longer pending.
     pub(crate) async fn run(&self) -> Result<Vec<u64>, Error> {
         let Some((_, first)) = self.waits.first() else {
             return Ok(Vec::new());

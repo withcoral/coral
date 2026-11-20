@@ -13,8 +13,8 @@
 //! A decision is authorized and concealed here. On an owned Run it then waits
 //! in the Run's Run Inbox until the Run's owner, in whichever Coral Instance
 //! holds the Run, records it in its next chunk. On a Run a Run Executor holds,
-//! this Coral Instance records it itself, under the Run's claim and head, and
-//! raises the Run's wake row for its stream's loop (ADR 0027). The first
+//! this Coral Instance records it itself, under the Run's claim and head,
+//! and the Run's stream loop sees the head move (ADR 0027). The first
 //! decision wins, and a repeat receives the recorded answer. The decision
 //! reads no policy: the Policy Enforcement Point judges the approval when the
 //! Invocation dispatches. A request's deadline is the owner's timer: it
@@ -205,7 +205,7 @@ pub struct ApprovalModule {
     clock: Arc<dyn Clock>,
     /// Where a decision waits for its Run's owner.
     inbox: RunInbox,
-    /// The wake rows a decision on a Run a Run Executor holds raises.
+    /// The wake-up reader a decision on a Run a Run Executor holds wakes.
     wakes: RunWakes,
 }
 impl ApprovalModule {
@@ -427,8 +427,9 @@ impl ApprovalModule {
     }
 
     /// Commits `decision` on the Run a Run Executor holds, in one chunk under
-    /// the Run's claim and head, with its wake row: the Run's stream loop,
-    /// whichever Coral Instance holds it, rereads the request (ADR 0027). A
+    /// the Run's claim and head: the Run's stream loop, whichever Coral
+    /// Instance holds it, sees the head move and rereads the request (ADR
+    /// 0027). A
     /// decline also ends the Invocation. It compares no clock: the decision
     /// is recorded as made, at this instance's time, and counts only if that
     /// is before the request's deadline, which the enforcement point
@@ -453,8 +454,7 @@ impl ApprovalModule {
 
     /// One attempt of [`Self::decide_on_run_executor`]. It reads the Run
     /// without a hold, as the loop's chunk does, so both take their rows in
-    /// one order: the Approval Request and Invocation rows, then the Run row,
-    /// then the wake row.
+    /// one order: the Approval Request and Invocation rows, then the Run row.
     async fn decide_once(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -479,8 +479,6 @@ impl ApprovalModule {
         )
         .owned_events(&events);
         run_repository::commit_chunk(&mut tx, chunk).await?;
-        run_repository::raise_wake(&mut tx, workspace, run_id, coral_db::UnixNanos::new(now))
-            .await?;
         tx.commit().await?;
         self.wakes.wake_for(run_id);
         Ok(())

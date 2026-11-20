@@ -619,15 +619,15 @@ impl RunModule {
             time_limit_nanos: run.time_limit_nanos,
         };
         let (handle, mailbox): (OwnerHandle, _) =
-            OwnerHandle::for_stream(accepted.held_id(), claim_id);
+            OwnerHandle::for_stream(accepted.held_id(), claim_id, accepted.workspace_id.clone());
         // Decisions and cancellations reach it from their receiver through
-        // the Run's wake row; one an older release put in the Run Inbox
-        // reaches it there.
+        // the Run's head; one an older release put in the Run Inbox reaches
+        // it there.
         let registration = self.register_stream_owner(&handle);
         drop(admitted);
         handle.send(Message::Started(Ok(Some(started))));
-        // A writer may have ended the Run, and its wake row gone with the
-        // Run's end, before the owner registered: it reads the Run once.
+        // A writer may have moved or ended the Run before the owner
+        // registered: it reads the Run once.
         handle.send(Message::Woken);
         let stream = Arc::new(StreamRun {
             actor,
