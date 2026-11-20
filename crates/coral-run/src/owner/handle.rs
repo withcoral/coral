@@ -101,7 +101,8 @@ pub(crate) enum Check {
     Approvals,
 }
 
-/// The Run row as a Run stream's loop reads it on a wake.
+/// The Run row as a Run stream's loop learns it: on a wake-up, or when its
+/// chunk finds the Run ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RunNow {
     /// The Run is terminal, with the termination it records, if any.
@@ -271,11 +272,9 @@ pub(crate) enum Message {
     /// retires, and the Run stays as it is.
     Detached,
     /// The wake-up reader found a Run stream's Run ended or moved past what
-    /// its loop wrote: another writer committed on it.
-    Woken,
-    /// The loop's read of its Run after a wake; `None` when the read failed
-    /// or found no row, which the next wake reads again.
-    RunRead(Option<RunNow>),
+    /// its loop wrote, as the Run row shows it: another writer committed on
+    /// it.
+    Woken(RunNow),
     /// A Run stream's chunk found its Run ended by another writer, with
     /// this termination: the reason its `Terminate` gives. Its
     /// `CommitRejected` follows.
@@ -386,8 +385,7 @@ impl fmt::Debug for Message {
                 .field("recorded_total", recorded_total)
                 .finish(),
             Self::Detached => formatter.write_str("Detached"),
-            Self::Woken => formatter.write_str("Woken"),
-            Self::RunRead(read) => formatter.debug_tuple("RunRead").field(read).finish(),
+            Self::Woken(now) => formatter.debug_tuple("Woken").field(now).finish(),
             Self::EndedOutside(kind) => formatter.debug_tuple("EndedOutside").field(kind).finish(),
             Self::Drain(step) => formatter.debug_tuple("Drain").field(step).finish(),
         }
@@ -595,13 +593,15 @@ impl OwnerHandle {
 
     /// A Run stream owner publishes `head`, the one it last wrote, whether
     /// a chunk of its own is `in_flight`, and whether it is `listening`:
-    /// acting on a wake-up.
-    pub(crate) fn publish_head(&self, head: u64, in_flight: bool, listening: bool) {
-        if let Some(stream) = &self.shared.stream {
-            let flags =
-                if in_flight { IN_FLIGHT } else { 0 } | if listening { LISTENING } else { 0 };
-            stream.published.store(head << 2 | flags, Ordering::SeqCst);
-        }
+    /// acting on a wake-up. `true` when it began listening with this
+    /// publish.
+    pub(crate) fn publish_head(&self, head: u64, in_flight: bool, listening: bool) -> bool {
+        let Some(stream) = &self.shared.stream else {
+            return false;
+        };
+        let flags = if in_flight { IN_FLIGHT } else { 0 } | if listening { LISTENING } else { 0 };
+        let before = stream.published.swap(head << 2 | flags, Ordering::SeqCst);
+        listening && before & LISTENING == 0
     }
 
     /// Whether a Run row at `head` that is still `running` shows a write

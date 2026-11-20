@@ -19,7 +19,7 @@ use super::events::OwnedEvent;
 use super::ledger::{Chunk, commit_chunk_with};
 use super::{ProgramRunRecords, RUN_COLUMNS, RunRow};
 use crate::engine::ProgramPackage;
-use crate::lifecycle::RunRecord;
+use crate::lifecycle::{RunRecord, RunTerminationKind};
 use crate::types::LinkedTool;
 use crate::{CoralInstanceId, Error, RunId, RunState};
 
@@ -200,18 +200,23 @@ pub(crate) async fn reopen_taken(
 /// parameters stay within what both databases take.
 const HEADS_PER_STATEMENT: usize = 200;
 
-/// One Run's head as [`heads`] reads it.
+/// One Run's head as [`heads`] reads it: what its stream's loop decides
+/// on after a wake-up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RunHead {
     pub(crate) head: u64,
+    /// The Run Output Budget total the row records.
+    pub(crate) recorded_total: usize,
     pub(crate) running: bool,
+    /// The termination the row records, if any.
+    pub(crate) termination: Option<RunTerminationKind>,
 }
 
-/// The Run Ledger head of each of `runs` that has a row, and whether it is
-/// still running, by Run: one statement for up to
-/// [`HEADS_PER_STATEMENT`] Runs, each matched by its Workspace and id. A
-/// row whose state does not decode is left out: its loop's own reads report
-/// it.
+/// The Run Ledger head of each of `runs` that has a row, its recorded
+/// output total, whether it is still running and the termination it
+/// records, by Run: one statement for up to [`HEADS_PER_STATEMENT`] Runs,
+/// each matched by its Workspace and id. A row that does not decode is left
+/// out: its loop's own reads report it.
 pub(crate) async fn heads(
     database: &Database,
     runs: &[(WorkspaceId, RunId)],
@@ -235,24 +240,31 @@ pub(crate) async fn heads(
                 )
             },
         );
-        let rows: Vec<(String, i64, String)> = database
+        let rows: Vec<(String, i64, i64, String, Option<String>)> = database
             .fetch_all(
                 Query::select()
                     .columns([
                         ProgramRunRecords::Id,
                         ProgramRunRecords::ChunkSequence,
+                        ProgramRunRecords::AccumulatedOutputBytes,
                         ProgramRunRecords::State,
+                        ProgramRunRecords::TerminationKind,
                     ])
                     .from(ProgramRunRecords::Table)
                     .cond_where(named)
                     .to_owned(),
             )
             .await?;
-        for (id, head, state) in rows {
-            let (Ok(id), Ok(head), Ok(state)) = (
+        for (id, head, recorded_total, state, termination) in rows {
+            let (Ok(id), Ok(head), Ok(recorded_total), Ok(state), Ok(termination)) = (
                 RunId::parse(&id),
                 u64::try_from(head),
+                usize::try_from(recorded_total),
                 RunState::from_storage_str(&state),
+                termination
+                    .as_deref()
+                    .map(RunTerminationKind::from_storage_str)
+                    .transpose(),
             ) else {
                 continue;
             };
@@ -260,7 +272,9 @@ pub(crate) async fn heads(
                 id,
                 RunHead {
                     head,
+                    recorded_total,
                     running: !state.is_terminal(),
+                    termination,
                 },
             );
         }

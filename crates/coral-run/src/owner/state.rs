@@ -195,9 +195,6 @@ pub(crate) enum Effect {
     /// Read the batch's parked waits in one snapshot, holding nothing; the
     /// findings come back as [`Message::Prechecked`].
     Precheck(PrecheckBatch),
-    /// Read the Run row after a wake, holding nothing; what it shows comes
-    /// back as [`Message::RunRead`].
-    ReadRun,
     /// Settle row work the owner will never commit.
     Abandon(Box<dyn ChunkWork>, Error),
     /// Write the Run's terminal state for the Program's completion, with
@@ -313,16 +310,6 @@ enum Precheck {
     Unarmed,
     Armed,
     Running,
-}
-
-/// A Run stream loop's read of its Run after a wake: one at a time.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-enum WakeRead {
-    #[default]
-    Idle,
-    Reading,
-    /// Another wake came during the read: read once more after it.
-    Again,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -456,15 +443,6 @@ pub(crate) struct OwnerState {
     pushed: u64,
     /// A Run stream owner's place in the Shutdown Drain.
     draining: Draining,
-    /// What a Run stream loop learned from its wake-ups.
-    wake: Wake,
-}
-
-/// What a Run stream loop learned from its wake-ups.
-#[derive(Debug, Default)]
-struct Wake {
-    /// Its read of its Run after a wake.
-    read: WakeRead,
     /// The termination of a Run another writer ended: the reason the
     /// Program's `Terminate` gives.
     ended_outside: Option<RunTerminationKind>,
@@ -506,7 +484,7 @@ impl OwnerState {
             requests: None,
             pushed: 0,
             draining: Draining::No,
-            wake: Wake::default(),
+            ended_outside: None,
         }
     }
 
@@ -578,7 +556,7 @@ impl OwnerState {
     /// Why the Program terminates: the termination of a Run another writer
     /// ended, as its row records it, else the one the owner applied.
     pub(crate) fn terminated_as(&self) -> Option<RunTerminationKind> {
-        self.wake.ended_outside.or_else(|| {
+        self.ended_outside.or_else(|| {
             self.termination
                 .as_ref()
                 .map(|intent| intent.termination.kind)
@@ -1105,68 +1083,48 @@ impl OwnerState {
     }
 
     /// The wake-up reader found this Run stream loop's Run ended or moved
-    /// past what the loop wrote: the loop reads its Run, one read at a time.
-    /// A Program owner, or a loop that commits nothing more, ignores it.
-    fn woken(&mut self) -> Vec<Effect> {
+    /// past what the loop wrote, as `now` shows the Run row. Terminal: the
+    /// loop stops as on a chunk that found the Run ended, and the Program
+    /// hears the Run's termination. The head it tracks: nothing happened.
+    /// Moved: it takes the row's head when no chunk is in flight (the one in
+    /// flight rebuilds itself on it, and rereads them then), and rereads the
+    /// Approval Requests its parked waits are on. A Program owner, or a loop
+    /// that commits nothing more, ignores it.
+    fn woken(&mut self, now: RunNow) -> Vec<Effect> {
         if self.requests.is_none() || !matches!(self.phase, Phase::Running | Phase::Ending) {
             return Vec::new();
         }
-        if self.wake.read == WakeRead::Idle {
-            self.wake.read = WakeRead::Reading;
-            vec![Effect::ReadRun]
-        } else {
-            self.wake.read = WakeRead::Again;
-            Vec::new()
-        }
-    }
-
-    /// The loop read its Run after a wake. Terminal: the loop
-    /// stops as on a chunk that found the Run ended, and the Program hears
-    /// the Run's termination. The head it tracks: nothing happened. Moved:
-    /// it takes the head the Run row shows when no chunk is in flight (the
-    /// one in flight rebuilds itself on it, and rereads them then), and
-    /// rereads the Approval Requests its parked waits are on.
-    fn run_read(&mut self, read: Option<RunNow>) -> Vec<Effect> {
-        let again = self.wake.read == WakeRead::Again;
-        self.wake.read = WakeRead::Idle;
-        let mut effects = match read {
+        match now {
             // The Program stops at once. A chunk in flight may have landed
             // before the end: its answer still settles its waiters, and a
             // chunk that did not finds the end and stops the loop.
-            Some(RunNow::Ended(kind)) if matches!(self.phase, Phase::Running | Phase::Ending) => {
-                self.wake.ended_outside = kind;
+            RunNow::Ended(kind) => {
+                self.ended_outside = kind;
                 if self.in_flight.is_none() {
                     return self.rejected(CommitRejection::RunEnded);
                 }
                 self.stop_requested = true;
-                return vec![Effect::TerminateProgram];
+                vec![Effect::TerminateProgram]
             }
-            None | Some(RunNow::Ended(_)) => Vec::new(),
-            Some(RunNow::Running {
+            // A read no newer than the head the loop tracks says nothing new.
+            RunNow::Running { head, .. } if head <= self.head => Vec::new(),
+            RunNow::Running {
                 head,
                 recorded_total,
-            }) => {
-                if head == self.head {
-                    Vec::new()
-                } else {
-                    if self.in_flight.is_none() && head > self.head {
-                        self.head = head;
-                        self.recorded_total = recorded_total;
-                    }
-                    self.check_approvals()
+            } => {
+                if self.in_flight.is_none() {
+                    self.head = head;
+                    self.recorded_total = recorded_total;
                 }
+                self.check_approvals()
             }
-        };
-        if again {
-            effects.extend(self.woken());
         }
-        effects
     }
 
     /// Another writer ended the Run with `kind`: the reason the Program's
     /// `Terminate` gives.
     fn ended_outside(&mut self, kind: Option<RunTerminationKind>) -> Vec<Effect> {
-        self.wake.ended_outside = kind;
+        self.ended_outside = kind;
         Vec::new()
     }
 
@@ -2097,7 +2055,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         | Message::Parked(_)
         | Message::Changed
         | Message::Prechecked { .. }
-        | Message::RunRead(_)
+        | Message::Woken(_)
         | Message::Interrupted(_)
             if state.phase == Phase::Interrupting =>
         {
@@ -2179,8 +2137,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
             recorded_total,
         } => state.rebased(head, recorded_total),
         Message::Detached => state.detached(),
-        Message::Woken => state.woken(),
-        Message::RunRead(read) => state.run_read(read),
+        Message::Woken(now) => state.woken(now),
         Message::EndedOutside(kind) => state.ended_outside(kind),
         Message::Drain(step) => state.drain(step),
     }

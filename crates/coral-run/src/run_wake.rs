@@ -6,7 +6,7 @@
 //! publishes the head it last wrote. One reader per Coral Instance, after the
 //! content-free change signal rang, reads in one statement the heads of the
 //! Runs whose loops are registered here, and wakes each loop whose Run ended
-//! or moved past what it wrote. The loop rereads its Run. While no Run
+//! or moved past what it wrote, with what the row shows. While no Run
 //! stream's loop is registered here it reads nothing. Per-Run loops never
 //! subscribe to the signal: a loop parked on a connection request hears its
 //! rings through the reader. A Run Owner of an owned Run keeps a
@@ -20,7 +20,7 @@ use coral_telemetry::safe;
 use tokio::sync::Notify;
 
 use crate::observation::{Cadence, Turn};
-use crate::owner::{Message, OwnerHandle, Owners};
+use crate::owner::{Message, OwnerHandle, Owners, RunNow};
 use crate::{Error, RunId, run_repository};
 
 /// How many times the receiver of a decision or a cancellation for a Run a
@@ -187,11 +187,10 @@ impl Reader {
                     }
                 };
                 for (_, owner) in &loops {
-                    if heads
-                        .get(owner.run_id())
-                        .is_some_and(|run| owner.behind(run.head, run.running))
+                    if let Some(run) = heads.get(owner.run_id())
+                        && owner.behind(run.head, run.running)
                     {
-                        owner.send(Message::Woken);
+                        owner.send(Message::Woken(run_now(run)));
                         #[cfg(test)]
                         observer.wake_delivered(turn);
                     }
@@ -202,6 +201,18 @@ impl Reader {
             task,
             owners: registered,
         }
+    }
+}
+
+/// What a loop decides on, as the reader read the Run row.
+fn run_now(run: &run_repository::RunHead) -> RunNow {
+    if run.running {
+        RunNow::Running {
+            head: run.head,
+            recorded_total: run.recorded_total,
+        }
+    } else {
+        RunNow::Ended(run.termination)
     }
 }
 

@@ -626,9 +626,6 @@ impl RunModule {
         let registration = self.register_stream_owner(&handle);
         drop(admitted);
         handle.send(Message::Started(Ok(Some(started))));
-        // A writer may have moved or ended the Run before the owner
-        // registered: it reads the Run once.
-        handle.send(Message::Woken);
         let stream = Arc::new(StreamRun {
             actor,
             link: link.clone(),

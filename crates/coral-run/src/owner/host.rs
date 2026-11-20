@@ -190,14 +190,27 @@ pub(crate) async fn host(
             effects.extend(apply(&mut state, next, now));
         }
         effects.extend(apply(&mut state, Message::Drained, now));
-        // What the wake-up reader compares with the Run row, after the batch
-        // and before the effects run: a chunk the batch started is published
-        // in flight before it can land.
-        handle.publish_head(state.head(), state.chunk_in_flight(), state.listens());
+        // After the batch and before its effects run: a chunk the batch
+        // started is published in flight before it can land.
+        publish_head(&module, &accepted, &handle, &state);
     }
     drop(timers);
     drop(subscription);
     drop(registration);
+}
+
+/// Publishes what the wake-up reader compares with the Run row. A loop that
+/// begins listening has the reader read at once: a writer may have moved or
+/// ended its Run before it registered.
+fn publish_head(
+    module: &RunModule,
+    accepted: &AcceptedRun,
+    handle: &OwnerHandle,
+    state: &OwnerState,
+) {
+    if handle.publish_head(state.head(), state.chunk_in_flight(), state.listens()) {
+        module.wakes.wake_for(&accepted.id);
+    }
 }
 
 /// Terminates the Program and wakes every stop-aware wait; a Run Executor
@@ -451,7 +464,6 @@ fn run_effect(
             "Run Owner is suspect: no commit succeeded within a lease; \
              Program requests answer once recorded"
         ),
-        Effect::ReadRun => spawn_run_read(module, accepted, handle),
         Effect::Precheck(batch) => spawn_precheck(
             handle,
             batch,
@@ -539,18 +551,6 @@ fn run_effect(
             );
         }
     }
-}
-
-/// Reads the Run row after a wake, holding nothing, and hands what it shows
-/// to the loop.
-fn spawn_run_read(module: &RunModule, accepted: &AcceptedRun, handle: &OwnerHandle) {
-    let database = module.database.clone();
-    let (workspace_id, run_id) = (accepted.workspace_id.clone(), accepted.id.clone());
-    let handle = handle.clone();
-    tokio::spawn(async move {
-        let read = read_run(&database, &workspace_id, &run_id).await;
-        handle.send(Message::RunRead(read));
-    });
 }
 
 /// The Run row as a Run stream's loop reads it, holding nothing; `None` when
