@@ -40,9 +40,21 @@ fn tool_calls_message(calls: &[ToolCall]) -> Value {
 /// The stub writes a summary, with reasoning, when asked for one. Otherwise
 /// it makes `calls` failed searches of about 11,000 tokens each, then answers.
 pub(super) async fn stub(lead: &Lead, calls: usize) {
+    stub_steps(lead, calls, true).await;
+}
+
+async fn stub_steps(lead: &Lead, calls: usize, include_usage: bool) {
     let summary = json!({"role": "assistant", "content": SUMMARY, "reasoning": "It is long."});
+    let summary_response = if include_usage {
+        completion(&summary)
+    } else {
+        ResponseTemplate::new(200).set_body_json(json!({
+            "model": MODEL,
+            "choices": [{"message": summary}],
+        }))
+    };
     Mock::given(body_string_contains("max_completion_tokens"))
-        .respond_with(completion(&summary))
+        .respond_with(summary_response)
         .with_priority(1)
         .mount(&lead.model)
         .await;
@@ -50,9 +62,17 @@ pub(super) async fn stub(lead: &Lead, calls: usize) {
         let arguments = json!({"program": "x".repeat(33_000)});
         let message =
             tool_calls_message(&[tool_call(&format!("call_{call}"), "search", &arguments)]);
-        let prompt_tokens = 1_000 + i64::try_from(call - 1).unwrap() * 11_000;
+        let response = if include_usage {
+            let prompt_tokens = 1_000 + i64::try_from(call - 1).unwrap() * 11_000;
+            completion_with_usage(&message, prompt_tokens, 0, 11_000)
+        } else {
+            ResponseTemplate::new(200).set_body_json(json!({
+                "model": MODEL,
+                "choices": [{"message": message}],
+            }))
+        };
         Mock::given(any())
-            .respond_with(completion_with_usage(&message, prompt_tokens, 0, 11_000))
+            .respond_with(response)
             .up_to_n_times(1)
             .mount(&lead.model)
             .await;
@@ -228,29 +248,7 @@ async fn missing_usage_falls_back_to_byte_estimate() {
     let tools = factory
         .build(&toml::from_str(&section).unwrap(), lead.dependencies())
         .unwrap();
-    let summary = json!({"role": "assistant", "content": SUMMARY});
-    Mock::given(body_string_contains("max_completion_tokens"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "model": MODEL,
-            "choices": [{"message": summary}],
-        })))
-        .with_priority(1)
-        .mount(&lead.model)
-        .await;
-    for call in 1..=3 {
-        let arguments = json!({"program": "x".repeat(33_000)});
-        let message =
-            tool_calls_message(&[tool_call(&format!("call_{call}"), "search", &arguments)]);
-        Mock::given(any())
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "model": MODEL,
-                "choices": [{"message": message}],
-            })))
-            .up_to_n_times(1)
-            .mount(&lead.model)
-            .await;
-    }
-    lead.model_answers(reply(ANSWER)).await;
+    stub_steps(&lead, 3, false).await;
 
     let (_, waited) = lead.turn(&*tools, &lead.task().await).await;
 
