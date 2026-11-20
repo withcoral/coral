@@ -7,9 +7,9 @@ import { addToast } from '@/wax/components/toast'
 import { oauthFailureMessage } from '@/views/accounts/oauth-failure'
 import type { AuthorizationView } from '@/views/accounts/types'
 import { DeviceCodePanel } from '@/views/accounts/device-code'
-import { CredentialSource } from '@/views/accounts/credential-source'
-import { CredentialFields } from './credential-fields'
 import { DocumentSubmitButton } from '@/components/document-submit-button'
+import { CredentialEntry } from '@/views/accounts/credential-source'
+import { CredentialFields } from './credential-fields'
 import { Fields } from './forms'
 import type { FormContext } from './types'
 import * as styles from './management.css'
@@ -300,19 +300,15 @@ function AuthorizationStep({
       <form id={formId} method="post" action={v.path} className={styles.section}>
         <Fields form={v.form} intent="secret" />
         <CredentialFields fields={v.credentialFields}>
-          {(input, field, label) =>
-            v.secretStores.length > 0 || v.savedReferences[field] ? (
-              <CredentialSource
-                value={<Inputs.CredentialInput {...input} />}
-                field={field}
-                label={label}
-                stores={v.secretStores}
-                saved={v.savedReferences[field]}
-              />
-            ) : (
-              <Inputs.CredentialInput {...input} />
-            )
-          }
+          {(input, field, label) => (
+            <CredentialEntry
+              value={<Inputs.CredentialInput {...input} />}
+              field={field}
+              label={label}
+              stores={v.secretStores}
+              saved={v.savedReferences[field]}
+            />
+          )}
         </CredentialFields>
         <Typography.BodySmall as="p" variant="tertiary">
           Enter the credentials from {v.providerName}.

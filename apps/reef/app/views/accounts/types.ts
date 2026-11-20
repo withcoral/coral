@@ -62,7 +62,7 @@ export interface AuthorizationView {
   grantedScope: string
   /** The Credential Fields to enter for secret entry, in name order. */
   credentialFields: CredentialFieldView[]
-  /** The secret stores a field can name. Empty unless this is a shared account's secret entry. */
+  /** The secret stores a field can name. Empty for your own account and outside secret entry. */
   secretStores: OfferedSecretStore[]
   /** The references saved on the Account being replaced, by field name. */
   savedReferences: Record<string, SavedReferenceView>

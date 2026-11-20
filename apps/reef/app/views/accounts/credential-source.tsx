@@ -14,11 +14,28 @@ const SOURCES = [
 ] as const
 
 /**
+ * One Credential Field's entry: the typed value alone, or the choice of a value or a
+ * secret store when a store is on offer or the field holds a reference. The caller
+ * passes the value's input, so it stays inside the caller's document form.
+ */
+export function CredentialEntry(props: {
+  /** The typed value's input, which the page's document form holds. */
+  value: ReactNode
+  field: string
+  label: string
+  stores: OfferedSecretStore[]
+  /** The reference this field holds now, which opens filled in. */
+  saved?: SavedReferenceView
+}) {
+  return props.stores.length > 0 || props.saved ? <CredentialSource {...props} /> : props.value
+}
+
+/**
  * One Credential Field on a shared or agent account: a typed value, or a reference to a secret
  * store entry. The chosen store says what the reference holds: a path and a key, or
  * one variable name. Only the chosen inputs are in the form.
  */
-export function CredentialSource({
+function CredentialSource({
   value,
   field,
   label,

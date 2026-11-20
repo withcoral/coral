@@ -1329,8 +1329,9 @@ async fn updating_a_provider_moves_the_setups_references_to_its_shared_account()
     assert_eq!(f.read(&f.evidence().await).await.unwrap(), "stored-canary");
 }
 
-/// An Agent's `caller` Account in the `shared()` Workspace, with an initial
-/// connection the Workspace Owner has started and not yet completed.
+/// An Agent's Account on a Provider with the `caller` Credential Route, in the
+/// `shared()` Workspace, with an initial connection the Workspace Owner has
+/// started and not yet completed.
 struct AgentAccount {
     provider: ProviderId,
     namespace: &'static str,
@@ -1339,7 +1340,7 @@ struct AgentAccount {
 }
 
 impl Shared {
-    /// A `caller` Provider with one token field, published as `agentic`.
+    /// A Provider on the `caller` route with one token field, published as `agentic`.
     async fn publish_token_for_callers(&self) -> ProviderId {
         crate::tests::publish_provider(
             &self.providers,
@@ -1354,7 +1355,7 @@ impl Shared {
         .clone()
     }
 
-    /// A `caller` Provider that sends `email` and `api_token` as HTTP Basic,
+    /// A Provider on the `caller` route that sends `email` and `api_token` as HTTP Basic,
     /// published as `agentbasic`.
     async fn publish_basic_for_callers(&self) -> ProviderId {
         let (setup, _) = basic_setup(self).await;
