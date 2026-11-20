@@ -207,6 +207,8 @@ vectors it reused and those the model made.
   `halfvec(384)` (extrapolated from 10 measured); past that the instance swaps and a query takes 0.8 to 2 s.
 - The Coral process carries the model: about 30 MB of binary, a 133 MB model file, and up to about 360 MiB while it
   embeds on one thread. Each further thread adds a copy of the model.
+- On SQLite, the writes of several Embedder threads wait for the one writer. Under heavy publishing, a write can reach
+  the write time limit. The drain then stops until the next wake and skips no row.
 - Self-hosted operators on Postgres install pgvector or turn the setting off.
 - A model change is a code change: a new manifest, a new revision, and every Entity re-embeds. A new dimension recreates
   the vector table.
