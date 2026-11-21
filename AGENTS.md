@@ -271,43 +271,7 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   earlier `main` must keep booting.
   `scripts/check-migrations.sh` checks this.
   Keep the fence that rejects state written by Coral 0.x.
-- A rolling upgrade runs two Coral releases on one database: the newer one
-  migrates at boot while the older one still serves. Two rules follow.
-  - The previous release keeps working on the schema that a new migration
-    leaves. Keep a migration additive: a new table, a new index, a new column
-    that is nullable or has a default. A new column changes no query that
-    names its columns, so name them: no `SELECT *`, and no `INSERT` without a
-    column list. To drop, rename, retype or tighten what a release uses,
-    stagger the change across releases. One release adds the new shape and
-    still writes the old one, because the release before it reads the old
-    one. A later release, which follows one that no longer uses the old
-    shape, migrates it away. Stored values follow the same rule: a release
-    reads a new value, such as a new `kind`, before any release writes it,
-    and no migration rewrites rows into a form the previous release cannot
-    read.
-  - A newer release never runs on an older schema. Coral applies its whole
-    plan before it serves, and code relies on that schema: do not probe for a
-    table or a column, and do not keep a path for a database that lacks a
-    migration.
-
-  `scripts/check-migrations.sh` names each statement in a new migration that
-  can break an older release, and says how to declare one that does not. It
-  reads SQL text in the shared files and the Postgres halves, not stored
-  values: keep the values rule yourself.
-
-  A deployment may run any build of `main`, and two builds between two
-  releases have one version. So a removal names a step, not a release: the
-  migration of the change that stopped using what it removes. Give that
-  change a migration. If it needs none, add a marker, a migration that holds
-  only a comment. Coral acts on the name (`crates/coral-db/src/upgrade.rs`).
-  On Postgres it applies the removal only where the named step is applied
-  already, so an upgrade cannot skip the build that stopped. On both
-  databases, no Coral whose plan lacks the named step starts afterwards. The
-  check accepts a named step only when a release has it, because a release
-  user upgrades from one release to the next. The removal also names the
-  first release that has the step. Coral decides nothing by it: a refusal
-  tells the operator to reach that release, one version at a time. The check
-  prints the release to write.
+- A migration also follows the schema rules under Rolling upgrades.
 - Keep schemas portable across SQLite and Postgres and fail on schema drift;
   do not use `IF NOT EXISTS` to hide unexpected state.
 - When a migration needs a database feature whose availability it cannot
@@ -333,6 +297,74 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   `make postgres-tests` for Rust repository tests. For Reel's Postgres product
   evidence, use the E2E scope and cadence under Validation.
   Both own disposable databases through `scripts/postgres.ts`.
+
+### Rolling upgrades
+
+[ADR 0041](docs/adr/0041-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)
+has the reasons.
+
+- A rolling upgrade runs two versions of Coral on one Postgres database (on
+  SQLite, one process serves the database), and Coral names no window of
+  versions. So make a change compatible: a Coral without it keeps working
+  beside a Coral that has it, however old the first one is. Stagger a change
+  that cannot be compatible across releases. One release makes every Coral
+  able to do without the old thing or to read the new one, and a later release
+  makes the break. The rules below apply this to each kind of change.
+- The schema. The newer Coral migrates at boot while the older one still
+  serves. Two rules follow.
+  - The previous release keeps working on the schema that a new migration
+    leaves. Keep a migration additive: a new table, a new index, a new column
+    that is nullable or has a default. A new column changes no query that
+    names its columns, so name them: no `SELECT *`, and no `INSERT` without a
+    column list. To drop, rename, retype or tighten what a release uses,
+    stagger the change across releases. One release adds the new shape and
+    still writes the old one, because the release before it reads the old
+    one. A later release, which follows one that no longer uses the old
+    shape, migrates it away.
+  - A newer release never runs on an older schema. Coral applies its whole
+    plan before it serves, and code relies on that schema: do not probe for a
+    table or a column, and do not keep a path for a database that lacks a
+    migration.
+
+  `scripts/check-migrations.sh` names each statement in a new migration that
+  can break an older release, and says how to declare one that does not. It
+  reads SQL text in the shared files and the Postgres halves, not stored
+  values.
+
+  A deployment may run any build of `main`, and two builds between two
+  releases have one version. So a removal names a step, not a release: the
+  migration of the change that stopped using what it removes. Give that
+  change a migration. If it needs none, add a marker, a migration that holds
+  only a comment. Coral acts on the name (`crates/coral-db/src/upgrade.rs`).
+  On Postgres it applies the removal only where the named step is applied
+  already, so an upgrade cannot skip the build that stopped. On both
+  databases, no Coral whose plan lacks the named step starts afterwards. The
+  check accepts a named step only when a release has it, so that no release
+  holds both halves of a stagger. The removal also names the first release
+  that has the step. Coral decides nothing by it: a refusal names it, so
+  that the operator knows which version to start first. The check prints the
+  release to write.
+- A stored value. A release reads a new value, such as a new `kind`, before
+  any release writes it, and no migration rewrites rows into a form the
+  previous release cannot read. The migration check does not read stored
+  values: keep this rule yourself.
+- An encoding that two versions both read, such as the sealed sign-in cookie
+  (`sealed_handshake`), an access token, a page token or a stored encoding. A
+  release reads both forms before any release writes the new one. No check
+  runs an older Coral against the new form: keep this rule yourself.
+- The gRPC API. Change `coral.management.v1` only as protobuf allows: add a
+  method, a field or an enum value, and never change the number or the type
+  of a field. To remove a method or a field, mark it `deprecated` in one
+  release and stop calling it from `coral-web`. Delete it in a later
+  release, and reserve its number and its name. The Run Executor link
+  follows the protocol level of
+  [ADR 0027](docs/adr/0027-run-executors-compile-and-execute-programs.md).
+- A setting. Give a new setting a default, so that a config without it
+  starts every version. Remove a setting in one release: Coral refuses a key
+  that it does not know, so that release does not start on a config that
+  still holds the key. Name the key in the release notes.
+- Search rows. A change to how Coral indexes or embeds needs no stagger and
+  no migration: search rows are derived, and any Coral builds them again.
 
 ### Reef and Desktop
 
