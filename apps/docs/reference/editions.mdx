@@ -3,7 +3,7 @@ title: "Editions"
 description: "Compare the Community Edition and the Enterprise Edition of Coral, and turn on the Enterprise Edition with a License."
 ---
 
-import { EnterpriseBadge } from '/snippets/enterprise-badge.jsx'
+import { EnterpriseBadge } from "/snippets/enterprise-badge.jsx";
 
 Coral has two editions: the Community Edition and the Enterprise Edition. The container image contains both. It runs as the Community Edition until you add a License.
 
@@ -51,7 +51,7 @@ A License is a Commercial License or an Evaluation License. Each kind has an exp
 
 ### Commercial License
 
-A Commercial License covers each Coral build released on or before its expiry date. Coral does not compare the expiry date with the clock.
+A Commercial License covers each Coral build released on or before its expiry date, regardless of the current date.
 
 - After the expiry date, the builds that the License covers keep the Enterprise Edition.
 - A build released after the expiry date does not start with the License. Renew the License before you upgrade to that build.
@@ -62,7 +62,7 @@ From 60 days before the expiry date, Coral logs a warning at each startup.
 
 An Evaluation License is for a trial. It sets the Enterprise Edition until the end of its expiry date, in UTC.
 
-- After the expiry date, Coral stops within a minute, on each server at the same time. It does not start again with the License.
+- After the expiry date, each server stops within a minute. It does not start again with the License.
 - A build released after the expiry date does not start with the License.
 - To keep the Enterprise Edition, add a Commercial License before the expiry date. To run as the Community Edition, remove the `[license]` table.
 
