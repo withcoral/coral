@@ -1,5 +1,44 @@
 # Changelog
 
+## [1.11.0](https://github.com/withcoral/coral/compare/v1.10.0...v1.11.0) (2026-11-21)
+
+
+### Features
+
+* **credentials:** let an Agent's Account take Secret References ([#3374](https://github.com/withcoral/coral/issues/3374)) ([6fb153d](https://github.com/withcoral/coral/commit/6fb153dcb95fba24c1ed966e6664949d583245b3))
+* **run:** commit outside requests for a Run Executor's Run and wake its stream ([#3372](https://github.com/withcoral/coral/issues/3372)) ([21b499f](https://github.com/withcoral/coral/commit/21b499f2ed72c82e1cbcd2c37d073dc9e8a947ff))
+* **run:** sweep the Runs that Run Executors hold ([#3352](https://github.com/withcoral/coral/issues/3352)) ([9550af1](https://github.com/withcoral/coral/commit/9550af1fcfa04158e4d922103dcb9ff97bf8ecf4))
+* **search:** run the Embedder on more than one core with `[search] embedder_cores` ([#3389](https://github.com/withcoral/coral/issues/3389)) ([540f1bd](https://github.com/withcoral/coral/commit/540f1bdf0e086d923e5ded7393afc3fae1973438))
+* **secret-store:** read Credential Fields from AWS Secrets Manager ([#3387](https://github.com/withcoral/coral/issues/3387)) ([ff83d7e](https://github.com/withcoral/coral/commit/ff83d7e8140c58cecfffddba4908739f87d5c633))
+* **sub-agent:** answer a lead's agent call with one model call ([#3332](https://github.com/withcoral/coral/issues/3332)) ([b8c3934](https://github.com/withcoral/coral/commit/b8c3934ad3700992dfb6c6b744e8cfa638c5d33d))
+* **sub-agent:** compact a thread that nears the model's context window ([#3338](https://github.com/withcoral/coral/issues/3338)) ([40a529a](https://github.com/withcoral/coral/commit/40a529a447cd0ae3c0dda0ba760d29752b9c9125))
+* **sub-agent:** give the Sub-agent its own search tool ([#3336](https://github.com/withcoral/coral/issues/3336)) ([8bf968a](https://github.com/withcoral/coral/commit/8bf968addf1241e80cea287dd0ef940d61693011))
+* **sub-agent:** interrupt a Turn whose Coral Instance stops ([#3335](https://github.com/withcoral/coral/issues/3335)) ([95cfc0c](https://github.com/withcoral/coral/commit/95cfc0c79d8e33efc320c87deb86274afabbde10))
+* **sub-agent:** keep a model's reasoning and give it back to the same model ([#3337](https://github.com/withcoral/coral/issues/3337)) ([048e389](https://github.com/withcoral/coral/commit/048e38993299b0a2e118b0732e8f7b4f5eb2a1fb))
+* **sub-agent:** let the operator set reasoning_effort for the Sub-agent's model ([#3356](https://github.com/withcoral/coral/issues/3356)) ([e9508dd](https://github.com/withcoral/coral/commit/e9508dd77c7ef23f021e1c00085da40ecb91acd5))
+* **sub-agent:** let the Sub-agent's model run Programs with exec, wait and cancel ([#3334](https://github.com/withcoral/coral/issues/3334)) ([2dabb77](https://github.com/withcoral/coral/commit/2dabb77ef95006e54ab1e834e73c1f708d84ba6e))
+* **sub-agent:** record when each Turn starts and ends ([#3349](https://github.com/withcoral/coral/issues/3349)) ([03b6d08](https://github.com/withcoral/coral/commit/03b6d08386f5fdd511fec66ef6a4e0f1168a4fff))
+* **sub-agent:** show the lead a Sub-agent's steps and let it reply ([#3342](https://github.com/withcoral/coral/issues/3342)) ([6d05587](https://github.com/withcoral/coral/commit/6d05587241b21996e183410e0134922bfa32433d))
+* **sub-agent:** stop a Sub-agent when its Task ends, and cancel its Runs when it is canceled ([#3348](https://github.com/withcoral/coral/issues/3348)) ([086737a](https://github.com/withcoral/coral/commit/086737a0746c01d61783e09352bf8d354f3d6762))
+* **sub-agent:** support OpenAI Responses and Anthropic Messages protocols ([#3369](https://github.com/withcoral/coral/issues/3369)) ([0f3d0c3](https://github.com/withcoral/coral/commit/0f3d0c3aec8235ce03bb04c45c35f33ad6b61be4))
+* **sub-agent:** trace each Turn and count Turns, model calls, tokens and compactions ([#3340](https://github.com/withcoral/coral/issues/3340)) ([a1c6513](https://github.com/withcoral/coral/commit/a1c6513bb875a95b6baf37318ea54777291dbf8a))
+
+
+### Bug Fixes
+
+* **search:** stop search index writes before the runtime shuts down ([#3363](https://github.com/withcoral/coral/issues/3363)) ([8d039b1](https://github.com/withcoral/coral/commit/8d039b19ceab11a58084d02a64288e6baf02d0e4))
+* **sub-agent:** give the Sub-agent end_task, and show the lead the outcome it records ([#3382](https://github.com/withcoral/coral/issues/3382)) ([0191ff8](https://github.com/withcoral/coral/commit/0191ff840d16d6899c68d1ad7d42953445d70e00))
+* **sub-agent:** keep unread tool results through compaction and cancel Runs after a Turn ends ([#3364](https://github.com/withcoral/coral/issues/3364)) ([244ac3c](https://github.com/withcoral/coral/commit/244ac3c0a79586c1ad3c6b0b285d516f3fba888e))
+* **sub-agent:** read only wording about the context as a too-long refusal ([#3365](https://github.com/withcoral/coral/issues/3365)) ([7a48e3e](https://github.com/withcoral/coral/commit/7a48e3e3ad1db1f282cf9f703be580854c021bc4))
+* **sub-agent:** use reported token usage for compaction threshold ([#3370](https://github.com/withcoral/coral/issues/3370)) ([674d0aa](https://github.com/withcoral/coral/commit/674d0aaec39fed154bc7622bdc668a24795873da))
+* **ui:** hide the sign-in step when Coral runs without sign-in ([#3373](https://github.com/withcoral/coral/issues/3373)) ([6613166](https://github.com/withcoral/coral/commit/66131668ddaa9089eae17f6f890994164f5e3fdc))
+
+
+### Performance Improvements
+
+* **search:** compile out trace-level log records from dependencies ([#3385](https://github.com/withcoral/coral/issues/3385)) ([6f48162](https://github.com/withcoral/coral/commit/6f48162ebd5c94fbbcb13ba7c72328426898aca5))
+* **search:** reuse the vector of an unchanged text in the same Workspace ([#3388](https://github.com/withcoral/coral/issues/3388)) ([61ad9f0](https://github.com/withcoral/coral/commit/61ad9f0980f11d0938c7166bbfa896531728342c))
+
 ## [1.10.0](https://github.com/withcoral/coral/compare/v1.9.0...v1.10.0) (2026-11-19)
 
 
