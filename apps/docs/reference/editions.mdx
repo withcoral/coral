@@ -1,0 +1,77 @@
+---
+title: "Editions"
+description: "Compare the Community Edition and the Enterprise Edition of Coral, and turn on the Enterprise Edition with a License."
+---
+
+import { EnterpriseBadge } from '/snippets/enterprise-badge.jsx'
+
+Coral has two editions: the Community Edition and the Enterprise Edition. Each released build of Coral, the container image and the desktop app, contains both. A build runs as the Community Edition until you add a License.
+
+In these docs, the <EnterpriseBadge /> badge marks a feature or a configuration key that needs the Enterprise Edition.
+
+The Enterprise Edition is for a [shared server](/getting-started/self-host) that you host. The desktop app always runs as the Community Edition.
+
+## Compare the editions
+
+| Feature                                                                                                                                              | Community | Enterprise |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ---------- |
+| [Providers](/guides/providers) from OpenAPI documents and MCP servers                                                                                | Yes       | Yes        |
+| Programs that agents run over MCP                                                                                                                    | Yes       | Yes        |
+| Workspaces, [roles and permissions](/guides/permissions)                                                                                             | Yes       | Yes        |
+| Search, including [semantic search](/reference/configuration#search)                                                                                 | Yes       | Yes        |
+| [Secret store of environment variables](/reference/configuration#read-from-environment-variables) (`env`)                                            | Yes       | Yes        |
+| [External secret stores](/reference/configuration#secret_stores): HashiCorp Vault, OpenBao (`kv-v2`) and AWS Secrets Manager (`aws-secrets-manager`) | No        | Yes        |
+
+To buy a License or ask for a trial, [contact us](https://withcoral.com/contact).
+
+## Turn on the Enterprise Edition
+
+1. Get a License from Coral. A License is one line of text.
+2. Put the License in an environment variable of the Coral process, such as `CORAL_LICENSE`. On Kubernetes, add it to the Secret that holds Coral's other secrets.
+3. Add a `[license]` table to `config.toml` that names the variable:
+
+   ```toml
+   [license]
+   key_env = "CORAL_LICENSE"
+   ```
+
+4. Restart Coral.
+
+When Coral starts, it logs the customer the License names and its expiry date. See [`[license]`](/reference/configuration#license) for each key.
+
+Coral checks the License on your server. It sends nothing to Coral or to another service, so a License works offline and in an air-gapped network.
+
+If the License fails the check, Coral does not start. The error names `license` and says what is wrong. To run as the Community Edition instead, remove the `[license]` table.
+
+## Kinds of License
+
+A License is a Commercial License or an Evaluation License. Each kind has an expiry date.
+
+### Commercial License
+
+A Commercial License covers each Coral build released on or before its expiry date. Coral does not compare the expiry date with the clock.
+
+- After the expiry date, the builds that the License covers keep the Enterprise Edition.
+- A build released after the expiry date does not start with the License. Renew the License before you upgrade to that build.
+
+From 60 days before the expiry date, Coral logs a warning at each startup.
+
+### Evaluation License
+
+An Evaluation License is for a trial. It sets the Enterprise Edition until the end of its expiry date, in UTC.
+
+- After the expiry date, Coral stops within a minute, on each server at the same time. It does not start again with the License.
+- A build released after the expiry date does not start with the License.
+- To keep the Enterprise Edition, add a Commercial License before the expiry date. To run as the Community Edition, remove the `[license]` table.
+
+Coral logs the expiry date as a warning at each startup.
+
+## Run without a License
+
+Without a License, the Enterprise features do not work, but Coral deletes nothing. For example, a `kv-v2` secret store shows as **Needs Enterprise**, and each read from it fails. The store, its grants and the accounts that use it stay. When you add a License and restart Coral, the store works again.
+
+## Build Coral from source
+
+A plain `cargo build` builds the `coral` binary under the Apache 2.0 license. That binary has no Enterprise features. A secret store of an Enterprise kind shows as **Not in this build**.
+
+A build from source does not accept a License that Coral sells. To run the Enterprise Edition, use a released build.

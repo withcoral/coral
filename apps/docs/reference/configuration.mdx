@@ -3,6 +3,8 @@ title: "Configuration reference"
 sidebarTitle: "Configuration"
 ---
 
+import { EnterpriseBadge } from '/snippets/enterprise-badge.jsx'
+
 Your configuration is in the `config.toml` file of Coral's configuration folder. The location of that folder depends on how you run Coral:
 
 - **Container image.** The `ghcr.io/withcoral/coral` image uses `/var/lib/coral/config`. Mount a volume at `/var/lib/coral` so the folder outlives the container. You can also pass the contents of `config.toml` in the `CORAL_CONFIG` variable. See [Container image](#container-image).
@@ -132,13 +134,33 @@ When the check is on, Coral reads the latest release from `api.github.com` at st
 | ------- | -------------------------------------------------- | -------- | ------- |
 | `check` | Check GitHub for a newer Coral release when `true` | No       | `false` |
 
+### `[license]`
+
+A License turns on the [Enterprise Edition](/reference/editions). Without this table, Coral runs as the Community Edition. Set one of the two keys.
+
+```toml
+[license]
+key_env = "CORAL_LICENSE"
+```
+
+| Key       | Description                                             | Required                   | Default |
+| --------- | ------------------------------------------------------- | -------------------------- | ------- |
+| `key`     | The License, as one line of text                        | Yes, if `key_env` is unset | N/A     |
+| `key_env` | Name of the environment variable that holds the License | Yes, if `key` is unset     | N/A     |
+
+Prefer `key_env`, so the License stays out of `config.toml`. Anyone who has the License can turn on the Enterprise Edition.
+
+Coral checks the License when it starts. If the License fails the check, or the variable is not set, Coral does not start. The error names the key. See [Kinds of License](/reference/editions#kinds-of-license) for when a License expires.
+
 ### `[[secret_stores]]`
 
 Each `[[secret_stores]]` table defines a connection to a secrets system that you run. Add one table per store.
 
 Organization owners can see each store's name, kind and status in **Settings**, under **Secret stores**. Open **Settings** from the account menu. There, organization owners grant a store to a workspace, or revoke that grant. An archived workspace keeps its grants, and you cannot change them until you restore it. A grant whose store you remove from this file shows as **Removed from config**.
 
-The `kv-v2` kind connects to HashiCorp Vault or OpenBao KV version 2, and signs in with AppRole. It needs the Enterprise Edition. Under the Community Edition, the store shows as **Needs Enterprise** and every read from it fails. Coral deletes nothing, and the store works again when Coral runs the Enterprise Edition.
+<EnterpriseBadge />
+
+The `kv-v2` kind connects to HashiCorp Vault or OpenBao KV version 2, and signs in with AppRole. It needs the [Enterprise Edition](/reference/editions). Under the Community Edition, the store shows as **Needs Enterprise** and every read from it fails. Coral deletes nothing, and the store works again when Coral runs the Enterprise Edition.
 
 ```toml
 [[secret_stores]]
@@ -202,6 +224,8 @@ A grant of an `env` store to a workspace covers every variable under its prefix.
 Coral compares names without regard to case.
 
 #### Read from AWS Secrets Manager
+
+<EnterpriseBadge />
 
 The `aws-secrets-manager` kind reads secrets from AWS Secrets Manager. It needs the Enterprise Edition, as `kv-v2` does. One store covers one AWS account in one region. Add a store for each account and region you read from.
 

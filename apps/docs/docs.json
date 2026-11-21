@@ -126,7 +126,8 @@
       {
         "group": "Reference",
         "pages": [
-          "reference/configuration"
+          "reference/configuration",
+          "reference/editions"
         ]
       }
     ]
