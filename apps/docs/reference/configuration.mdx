@@ -150,7 +150,7 @@ key_env = "CORAL_LICENSE"
 
 Prefer `key_env`, so the License stays out of `config.toml`. Anyone who has the License can turn on the Enterprise Edition.
 
-Coral checks the License when it starts. If the License fails the check, or the variable is not set, Coral does not start. The error names the key. See [Kinds of License](/reference/editions#kinds-of-license) for when a License expires.
+Coral checks the License when it starts. If the variable is not set, or holds no License, Coral does not start, and the error names the key. If the License fails the check, Coral does not start, and the error names `license` and says what is wrong. See [Kinds of License](/reference/editions#kinds-of-license) for when a License expires.
 
 ### `[[secret_stores]]`
 
@@ -158,9 +158,7 @@ Each `[[secret_stores]]` table defines a connection to a secrets system that you
 
 Organization owners can see each store's name, kind and status in **Settings**, under **Secret stores**. Open **Settings** from the account menu. There, organization owners grant a store to a workspace, or revoke that grant. An archived workspace keeps its grants, and you cannot change them until you restore it. A grant whose store you remove from this file shows as **Removed from config**.
 
-<EnterpriseBadge />
-
-The `kv-v2` kind connects to HashiCorp Vault or OpenBao KV version 2, and signs in with AppRole. It needs the [Enterprise Edition](/reference/editions). Under the Community Edition, the store shows as **Needs Enterprise** and every read from it fails. Coral deletes nothing, and the store works again when Coral runs the Enterprise Edition.
+The `kv-v2` kind <EnterpriseBadge /> connects to HashiCorp Vault or OpenBao KV version 2, and signs in with AppRole. Under the Community Edition, the store shows as **Needs Enterprise**. See [Run without a License](/reference/editions#run-without-a-license).
 
 ```toml
 [[secret_stores]]
@@ -227,7 +225,7 @@ Coral compares names without regard to case.
 
 <EnterpriseBadge />
 
-The `aws-secrets-manager` kind reads secrets from AWS Secrets Manager. It needs the Enterprise Edition, as `kv-v2` does. One store covers one AWS account in one region. Add a store for each account and region you read from.
+The `aws-secrets-manager` kind reads secrets from AWS Secrets Manager. One store covers one AWS account in one region. Add a store for each account and region you read from.
 
 ```toml
 [[secret_stores]]
