@@ -8,7 +8,6 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { createClient } from '@connectrpc/connect'
 import { createGrpcTransport } from '@connectrpc/connect-node'
 
-import { Health, HealthCheckResponse_ServingStatus } from '../generated/grpc/health/v1/health_pb.ts'
 import { reefRoot, repoRoot, type FixtureAddress, type Target } from './config.ts'
 import {
   prepareAuthenticatedTarget,
@@ -140,6 +139,10 @@ export async function ready(origin: string) {
 
 /** Waits until the Run Executor whose health service is at `url` has linked to its Coral. */
 async function linked(url: string) {
+  // Imported here: the harness's own Node tests import this module, and Node's
+  // type stripping rejects the enums in generated code. Vitest loads them.
+  const { Health, HealthCheckResponse_ServingStatus } =
+    await import('../generated/grpc/health/v1/health_pb.ts')
   const health = createClient(Health, createGrpcTransport({ baseUrl: url }))
   const deadline = Date.now() + 30_000
   while (Date.now() < deadline) {
