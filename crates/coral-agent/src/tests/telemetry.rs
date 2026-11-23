@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use coral_app::McpInterfaceFactory as _;
+use coral_app::SubAgentToolsFactory as _;
 use coral_telemetry::testing::{MetricCapture, SpanCapture, attribute, process_spans};
 use coral_test_support::EVENTUALLY;
 use opentelemetry::trace::SpanId;
@@ -136,9 +136,9 @@ async fn a_turn_is_a_trace_of_its_own_with_counts_and_no_text() {
     ] {
         assert_eq!(attribute(span, key).as_deref(), Some(value), "{key}");
     }
-    let run_links = spans.iter().find(|span| span.name == "coral.run.accept");
-    let run_links = run_links.map(|accept| accept.links.iter().map(|link| &link.span_context));
-    assert!(run_links.is_some_and(|links| links.eq([&exec.span_context])));
+    let accepts = spans.iter().filter(|span| span.name == "coral.run.accept");
+    let mut links = accepts.map(|accept| accept.links.iter().map(|link| &link.span_context));
+    assert!(links.any(|links| links.eq([&exec.span_context])));
     for span in &in_turn {
         let events = span.events.iter().flat_map(|event| &event.attributes);
         let values = span.attributes.iter().chain(events);

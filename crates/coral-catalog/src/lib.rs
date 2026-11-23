@@ -15,11 +15,12 @@
 mod binding;
 mod builtin;
 pub use builtin::{
-    AddProviderArguments, AddProviderResult, ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME,
-    BuiltinArguments, BuiltinCatalog, BuiltinCatalogIdentity, BuiltinCredentialRoute,
-    BuiltinExecutionBinding, BuiltinTool, ConfigurationChoices, ConfigurationOutput,
-    ConfigurationPatch, DeclaredHints, Description, DescriptionAuthoring, GetPolicyArguments,
-    GetPolicyResult, GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
+    AddProviderArguments, AddProviderResult, AgentArguments, AgentRequiredAction, AgentResult,
+    AgentStep, ArgumentProblem, BUILTIN_PROVIDER_DISPLAY_NAME, BuiltinArguments, BuiltinCatalog,
+    BuiltinCatalogIdentity, BuiltinCredentialRoute, BuiltinExecutionBinding, BuiltinTool,
+    CancelAgentArguments, ConfigurationChoices, ConfigurationOutput, ConfigurationPatch,
+    DeclaredHints, Description, DescriptionAuthoring, GetPolicyArguments, GetPolicyResult,
+    GetProviderArguments, GetProviderResult, ListProvidersResult, ListedProvider,
     ListedProviderState, ListedSetup, ListedSetupState, MissingPath, NON_TOOL_ROOT_MEMBERS,
     PathsResult, ProviderArgument, ProviderFacts, ProviderSourceArgument, ProviderSourceOutput,
     RemoveToolArguments, RemovedToolResult, SEARCH_PATH_MAX_BYTES, SEARCH_PATHS_MAX,

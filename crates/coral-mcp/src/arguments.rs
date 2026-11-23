@@ -83,9 +83,14 @@ pub(crate) enum Namespaces<'a> {
 /// its `provider` filter takes, each with its display name when that says
 /// more than the namespace. Whole lines only: when the list does not fit, it
 /// ends with how many it leaves out and where to read them. When Coral cannot
-/// list them, the description says to leave `provider` out.
-pub(crate) fn exec_description(namespaces: &Namespaces<'_>) -> String {
+/// list them, the description says to leave `provider` out. Before them comes
+/// `delegation`: how to hand work to a Sub-agent, for a caller who can.
+pub(crate) fn exec_description(namespaces: &Namespaces<'_>, delegation: Option<&str>) -> String {
     let mut description = String::from(EXEC_TOOL_DESCRIPTION);
+    if let Some(delegation) = delegation {
+        description.push_str("\n\n");
+        description.push_str(delegation);
+    }
     let providers = match namespaces {
         Namespaces::Unavailable => {
             description.push_str("\n\nCoral could not list your namespaces. Leave `provider` out.");
@@ -588,7 +593,7 @@ mod tests {
             searchable("long", &"x".repeat(60)),
         ];
         assert_eq!(
-            exec_description(&Namespaces::Listed(&providers)),
+            exec_description(&Namespaces::Listed(&providers), None),
             format!(
                 "{EXEC_TOOL_DESCRIPTION}\n\nNamespaces for `provider`:\naws_sandbox\
                  \ncoral\ngithub\nhackernews\tHacker News\nnotes\tTeam notes (shared)\
@@ -597,14 +602,14 @@ mod tests {
             )
         );
         assert_eq!(
-            exec_description(&Namespaces::Unavailable),
+            exec_description(&Namespaces::Unavailable, None),
             format!(
                 "{EXEC_TOOL_DESCRIPTION}\n\nCoral could not list your namespaces. Leave \
                  `provider` out."
             )
         );
         assert_eq!(
-            exec_description(&Namespaces::Listed(&[])),
+            exec_description(&Namespaces::Listed(&[]), None),
             EXEC_TOOL_DESCRIPTION
         );
     }
@@ -617,7 +622,7 @@ mod tests {
         let providers = (0..400)
             .map(|index| searchable(&format!("provider_{index:03}"), "A Provider"))
             .collect::<Vec<_>>();
-        let description = exec_description(&Namespaces::Listed(&providers));
+        let description = exec_description(&Namespaces::Listed(&providers), None);
         assert!(
             description.len() <= EXEC_DESCRIPTION_MAX_BYTES,
             "{}",

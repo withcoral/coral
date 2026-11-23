@@ -26,7 +26,7 @@ use interruption::close_calls;
 mod steering;
 mod steps;
 
-pub(crate) use steps::{TurnPage, WaitingAction};
+pub(crate) use steps::TurnPage;
 
 /// How long a running Turn stays held after its Coral Instance last renewed
 /// the lease.
@@ -34,6 +34,10 @@ pub(crate) const TURN_LEASE: Duration = Duration::from_secs(30);
 
 /// The most model calls one Turn makes.
 const MODEL_CALLS_PER_TURN: usize = 60;
+
+/// The longest a Turn runs. A Run lives 15 minutes, so a Program that waits
+/// on a Turn sees it end.
+pub(crate) const TURN_MAX: Duration = Duration::from_secs(600);
 
 /// Starts, reads and cancels Sub-agents, each for its own caller.
 #[derive(Clone)]
@@ -64,9 +68,9 @@ impl SubAgents {
         stopping: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         Self {
+            run_tools: Arc::new(RunTools::new(database.clone(), commands, runs.clone())),
             database,
             tasks,
-            run_tools: Arc::new(RunTools::new(commands, runs.clone())),
             runs,
             search,
             model: Arc::new(model),
@@ -201,12 +205,14 @@ impl SubAgents {
         let answered = tokio::select! {
             answered = self.answer(&turn) => answered,
             () = self.hold_lease(&turn) => Err(TurnFailure::Canceled),
+            () = tokio::time::sleep(TURN_MAX) => Err(TurnFailure::TimeLimit),
             () = self.interrupt_at_shutdown(&turn) => {
                 turn.trace.ended(TurnEnd::Interrupted);
                 return;
             }
         };
         let end = TurnEnd::of(&answered);
+        let out_of_time = matches!(answered, Err(TurnFailure::TimeLimit));
         let ending = match answered {
             Ok(answer) => TurnState::Completed { answer },
             Err(TurnFailure::Canceled) => TurnState::Canceled,
@@ -216,9 +222,13 @@ impl SubAgents {
         };
         let ended = self.end_turn(workspace_id, &turn.sub_agent_id, &turn.id, &ending);
         match ended.await {
-            // Its own ending stands, so the lead did not cancel it: its Runs keep running.
+            // Its own ending stands, so the lead did not cancel it: its Runs
+            // keep running, unless the Turn ran out of time.
             Ok(true) => {
                 turn.trace.ended(end);
+                if out_of_time {
+                    self.cancel_started_runs(&turn).await;
+                }
                 return;
             }
             Ok(false) => turn.trace.ended(TurnEnd::Canceled),
@@ -373,8 +383,7 @@ impl SubAgents {
     /// Cancels the Runs that a Turn started if the lead canceled it. A Run
     /// that has ended stays as it is.
     async fn cancel_runs_if_canceled(&self, turn: &RunningTurn) {
-        let caller = &turn.caller;
-        let (principal, workspace_id) = (&caller.principal, &caller.workspace_id);
+        let workspace_id = &turn.caller.workspace_id;
         match repository::turn_canceled(&*self.database, workspace_id, &turn.id).await {
             Ok(true) => {}
             Ok(false) => return,
@@ -386,9 +395,16 @@ impl SubAgents {
                 return;
             }
         }
+        self.cancel_started_runs(turn).await;
+    }
+
+    /// Cancels the Runs that the Turn started. A Run that has ended stays as it is.
+    async fn cancel_started_runs(&self, turn: &RunningTurn) {
+        let caller = &turn.caller;
         let started = caller.started_runs.lock();
         let started = started.unwrap_or_else(PoisonError::into_inner).clone();
-        self.cancel_runs(principal, workspace_id, started).await;
+        self.cancel_runs(&caller.principal, &caller.workspace_id, started)
+            .await;
     }
 
     /// Cancels `runs` as `principal`. A Run that has ended stays as it is.
@@ -491,7 +507,7 @@ pub(crate) enum Error {
 
 impl Error {
     /// The error's stable kind, for an event's `error.type`.
-    const fn code(&self) -> &'static str {
+    pub(crate) const fn code(&self) -> &'static str {
         match self {
             Self::SubAgentNotFound => "sub_agent_not_found",
             Self::Task(_) => "task",
@@ -515,6 +531,8 @@ pub(crate) enum TurnFailure {
     TooManyModelCalls,
     #[error("the model gave no answer: send the message again")]
     NoAnswer,
+    #[error("the Sub-agent reached its 10-minute limit: reply to continue")]
+    TimeLimit,
     #[error("the Sub-agent stopped on an internal error")]
     Internal,
     /// The lead canceled the Turn or ended its Task, or the caller can no

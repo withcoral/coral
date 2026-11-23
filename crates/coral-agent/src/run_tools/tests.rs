@@ -45,13 +45,13 @@ impl Harness {
         )
         .unwrap();
         let tasks = TaskModule::new(database.clone(), workspaces.clone());
-        let search = UniversalSearchModule::new(database, workspaces);
+        let search = UniversalSearchModule::new(database.clone(), workspaces);
         let commands = TaskCommands::new(tasks.clone(), search, runs.clone());
         let principal = AuthenticatedPrincipal::user(user);
         let mut harness = Self {
             _fixture: fixture,
             tasks,
-            tools: RunTools::new(commands, runs),
+            tools: RunTools::new(database, commands, runs),
             caller: Caller {
                 principal,
                 workspace_id,

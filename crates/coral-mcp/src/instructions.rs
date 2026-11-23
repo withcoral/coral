@@ -10,12 +10,10 @@
 //! of the text is kept as it was before discovery moved into Programs.
 
 /// Writes the instructions sent in `InitializeResult` and `DiscoverResult`
-/// around the steps of their Workflow section. A tool surface that changes how
-/// an agent works gives its own steps, as a string literal, and keeps the rest.
+/// around the steps of their Workflow section, as a string literal.
 ///
 /// Clients add instructions to every turn, and Claude Code before 2.1.296 drops
 /// what follows 2048, so longer instructions do not compile.
-#[macro_export]
 macro_rules! instructions {
     ($steps:literal) => {{
         const INSTRUCTIONS: &str = concat!(
@@ -59,3 +57,35 @@ pub(crate) const INSTRUCTIONS: &str = instructions!(
 6. When the work is done or cannot continue, call `end_task` once with the outcome.
 "
 );
+
+/// The instructions of an agent that can also hand work to a Sub-agent:
+/// policy enables `coral.agent` in its Workspace (ADR 0040).
+pub(crate) const DELEGATING_INSTRUCTIONS: &str = instructions!(
+    "\
+1. Pass `goal` to the first `exec` of a unit of work, then its `task_id` to later calls.
+2. Delegate data work, reads and writes, to one of Coral's agents: `return await coral.agent({ message })`; brief it as `exec` says. Call again with `sub_agent_id` while `state` is `running` or `needs_action`; add `message` to reply. Review its `answer`. Do not read the same data yourself. Go to step 5.
+3. For other work, call `exec` with one TypeScript async-function body; it shows how to find provider tools with `coral.search`. While `state` is `running` or `has_more` is true, call `wait` with the `run_id` and latest `next_cursor`.
+4. If other values can reuse the work, add it with `coral.addCustomTool` in a run. Tell the user its path.
+5. When the work is done or cannot continue, call `end_task` once per Task with the outcome.
+"
+);
+
+#[cfg(test)]
+mod tests {
+    use super::{DELEGATING_INSTRUCTIONS, INSTRUCTIONS};
+
+    // Catches: a lead that can delegate served without the call that does it,
+    // and delegating steps served without the sections of core that follow them.
+    #[test]
+    fn the_delegating_instructions_show_the_call_and_keep_cores_other_sections() {
+        let after_workflow = |text: &'static str| text.split_once("## Program rules").unzip().1;
+        let call = "`return await coral.agent({ message })`";
+        assert!(DELEGATING_INSTRUCTIONS.contains(call));
+        assert!(!INSTRUCTIONS.contains("coral.agent"));
+        assert!(after_workflow(INSTRUCTIONS).is_some());
+        assert_eq!(
+            after_workflow(DELEGATING_INSTRUCTIONS),
+            after_workflow(INSTRUCTIONS)
+        );
+    }
+}

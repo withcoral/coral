@@ -1,38 +1,38 @@
-//! The tool surface a launching binary registers for MCP to serve in place
-//! of core's.
+//! The Sub-agent a launching binary registers: what a Program reaches through
+//! `coral.agent` and `coral.cancelAgent`.
 
 use std::sync::Arc;
 
-use coral_mcp::{McpInterface, McpModules};
+use coral_mcp::McpModules;
+use coral_run::SubAgentTools;
 
 use super::runtime::McpStartError;
 use crate::config_toml::{ConfigDecodeError, Document};
 
-/// Builds the tool surface that MCP serves in place of core's, once, at MCP
-/// startup. The launching process registers one in [`Launch`](super::Launch).
-pub trait McpInterfaceFactory: Send + Sync {
+/// Builds the Sub-agent's Tools, once, at MCP startup. The launching process
+/// registers one in [`Launch`](super::Launch).
+pub trait SubAgentToolsFactory: Send + Sync {
     /// The name of the top-level section of the config file that this
-    /// factory reads. The section turns the surface on: without it, core
-    /// never calls [`Self::build`].
+    /// factory reads. The section turns the Sub-agent on: without it, the
+    /// catalog lacks the two Tools and core never calls [`Self::build`].
     fn section_name(&self) -> &'static str;
 
-    /// Builds the surface from its section, undecoded. To keep core's tools,
-    /// wrap [`McpModules::core_interface`].
+    /// Builds the Tools from the section, undecoded.
     ///
     /// # Errors
-    /// Returns why the surface cannot start, never a value the section holds.
+    /// Returns why the Sub-agent cannot start, never a value the section holds.
     fn build(
         &self,
         section: &toml::Table,
-        dependencies: McpInterfaceDependencies,
-    ) -> Result<Arc<dyn McpInterface>, Box<dyn std::error::Error + Send + Sync>>;
+        dependencies: SubAgentDependencies,
+    ) -> Result<Arc<dyn SubAgentTools>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
-/// What bootstrap hands an [`McpInterfaceFactory`] beside its section.
-pub struct McpInterfaceDependencies {
+/// What bootstrap hands a [`SubAgentToolsFactory`] beside its section.
+pub struct SubAgentDependencies {
     /// The database of this Coral Instance.
     pub database: Arc<coral_db::Database>,
-    /// The Workspace, Task, Run and search modules that MCP serves over.
+    /// The Task, Run and search modules that MCP serves over.
     pub modules: McpModules,
     /// The operator's destination policy, for `coral_outbound::Client`.
     pub outbound_policy: coral_outbound::DestinationPolicy,
@@ -47,16 +47,16 @@ pub struct McpInterfaceDependencies {
 
 /// A registered factory with its section, which the config file has.
 #[derive(Clone)]
-pub(super) struct ConfiguredMcpInterface {
-    factory: Arc<dyn McpInterfaceFactory>,
+pub(super) struct ConfiguredSubAgent {
+    factory: Arc<dyn SubAgentToolsFactory>,
     section: toml::Table,
 }
 
-impl ConfiguredMcpInterface {
+impl ConfiguredSubAgent {
     /// Takes the section that `factory` claims out of `document`. None when
     /// the file lacks it.
     pub(super) fn take(
-        factory: &Arc<dyn McpInterfaceFactory>,
+        factory: &Arc<dyn SubAgentToolsFactory>,
         document: &mut Document<'_>,
     ) -> Result<Option<Self>, ConfigDecodeError> {
         let section = document.take_section(factory.section_name())?;
@@ -69,11 +69,11 @@ impl ConfiguredMcpInterface {
     /// Calls the factory with its section.
     pub(super) fn build(
         &self,
-        dependencies: McpInterfaceDependencies,
-    ) -> Result<Arc<dyn McpInterface>, McpStartError> {
+        dependencies: SubAgentDependencies,
+    ) -> Result<Arc<dyn SubAgentTools>, McpStartError> {
         self.factory
             .build(&self.section, dependencies)
-            .map_err(|error| McpStartError::Interface {
+            .map_err(|error| McpStartError::SubAgent {
                 section_name: self.factory.section_name(),
                 error,
             })

@@ -7,10 +7,10 @@ use coral_task::{TaskId, TaskIntent, TaskOutcome};
 use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
-    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
-    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
-    ServerConfig, Tool,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, DiscoverResult,
+    Implementation, InitializeRequestParams, InitializeResult, ListResourceTemplatesResult,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler};
@@ -98,11 +98,34 @@ impl ServerHandler for McpServer {
                 None => implementation,
             }
         })
-        .with_instructions(self.interface.instructions())
     }
 
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
         Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
+    }
+
+    // Both handshakes carry the instructions of this request's caller.
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        context.peer.set_peer_info(request.clone());
+        let instructions = self.interface.instructions(&self.caller).await;
+        Ok(self
+            .negotiate_initialize(&request)?
+            .with_instructions(instructions))
+    }
+
+    async fn discover(
+        &self,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<DiscoverResult, ErrorData> {
+        let instructions = self.interface.instructions(&self.caller).await;
+        Ok(DiscoverResult::from_server_info(
+            SUPPORTED_PROTOCOL_VERSIONS.to_vec(),
+            self.get_info().with_instructions(instructions),
+        ))
     }
 
     async fn call_tool(
@@ -194,8 +217,12 @@ pub(crate) struct CoreInterface {
 
 #[async_trait::async_trait]
 impl McpInterface for CoreInterface {
-    fn instructions(&self) -> &str {
-        crate::instructions::INSTRUCTIONS
+    async fn instructions(&self, caller: &McpCaller) -> &str {
+        if self.for_caller(caller).delegation().await.is_some() {
+            crate::instructions::DELEGATING_INSTRUCTIONS
+        } else {
+            crate::instructions::INSTRUCTIONS
+        }
     }
 
     async fn tools(&self, caller: &McpCaller) -> Result<Vec<Tool>, ErrorData> {
@@ -244,6 +271,20 @@ impl CoreTools {
         }
     }
 
+    /// How to hand work to a Sub-agent, in `coral.agent`'s own words, where
+    /// policy enables that Tool for this caller. A read that fails costs only
+    /// this text: the next call says why.
+    async fn delegation(&self) -> Option<String> {
+        let agent = [coral_search::CallPath::parse("coral.agent").ok()?];
+        let search = &self.runtime.modules.search;
+        let described = search.describe_tools(&self.runtime.principal, &self.workspace_id, &agent);
+        let agent = described.await.ok()?.into_iter().next()?;
+        let enabled = coral_search::ApprovalRequirement::NotRequired;
+        (agent.approval_requirement() == enabled)
+            .then(|| agent.guidance().map(str::to_owned))
+            .flatten()
+    }
+
     /// The tools this caller is served. `exec` names the namespaces the
     /// caller can search, so an agent passes `provider` from its first
     /// Program on. A caller that lost the Workspace meets that on every call,
@@ -271,7 +312,9 @@ impl CoreTools {
                 arguments::Namespaces::Unavailable
             }
         };
-        Ok(arguments::tools(arguments::exec_description(&namespaces)))
+        let delegation = self.delegation().await;
+        let description = arguments::exec_description(&namespaces, delegation.as_deref());
+        Ok(arguments::tools(description))
     }
 
     async fn dispatch(

@@ -106,6 +106,13 @@ async fn each_builtin_tool_reaches_the_principals_its_workspace_action_permits()
             transaction.rollback().await.unwrap();
         }
     }
+    // An Agent and a Member reach the Sub-agent's Tools, as they reach `search`.
+    for key in ["agent", "cancelAgent"] {
+        let key = coral_catalog::ToolKey::parse(key).unwrap();
+        for role in [None, Some(coral_workspace::WorkspaceRole::Member)] {
+            assert!(crate::reaches(&ProviderCallRoot::Builtin, &key, role));
+        }
+    }
 }
 
 // Catches: a Tool call that parses its Generation's schema graph again, and
@@ -769,10 +776,18 @@ async fn each_boot_moves_the_builtin_provider_to_the_booting_catalog_once() {
         );
         let running_keys = arranged.keys().await;
 
-        // A newer Coral boots, then a rollback boots this one again.
+        let mut with_sub_agent = running_keys.clone();
+        with_sub_agent.splice(2..2, ["agent", "cancelAgent"].map(String::from));
+        // A newer Coral boots, a rollback boots this one again, then the
+        // deployment configures a Sub-agent.
         for (served, at, keys) in [
             (catalog_b(), 30, with_list_things(&running_keys)),
             (running(), 40, running_keys.clone()),
+            (
+                BuiltinCatalog::with_sub_agent().unwrap(),
+                50,
+                with_sub_agent,
+            ),
         ] {
             assert_eq!(
                 arranged.boot(&served, at).await,
@@ -788,7 +803,7 @@ async fn each_boot_moves_the_builtin_provider_to_the_booting_catalog_once() {
 
         assert_eq!(arranged.current().await.state(), state, "{arranged_as:?}");
         let events = arranged.events().await;
-        let Some(updates @ [_, _]) = events.get(before..) else {
+        let Some(updates @ [_, _, _]) = events.get(before..) else {
             panic!("{arranged_as:?}: each move records one event: {events:?}");
         };
         for event in updates {

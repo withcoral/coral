@@ -27,6 +27,8 @@ fn valid_arguments(tool: BuiltinTool) -> Vec<Value> {
         BuiltinTool::AddCustomTool => super::private_tools::valid_add_arguments(),
         BuiltinTool::UpdateCustomTool => super::private_tools::valid_update_arguments(),
         BuiltinTool::RemoveCustomTool => super::private_tools::valid_remove_arguments(),
+        BuiltinTool::Agent => super::agent::tests::valid_agent_arguments(),
+        BuiltinTool::CancelAgent => super::agent::tests::valid_cancel_arguments(),
     }
 }
 
@@ -422,6 +424,10 @@ fn each_result_meets_its_output_schema() {
             .map(|result| (BuiltinTool::Search, result)),
     );
     results.extend(private_tool_results());
+    for tool in [BuiltinTool::Agent, BuiltinTool::CancelAgent] {
+        let agent = super::agent::tests::results().into_iter();
+        results.extend(agent.map(|result| (tool, result)));
+    }
     for (tool, result) in results {
         assert_eq!(
             result.get("metadata"),

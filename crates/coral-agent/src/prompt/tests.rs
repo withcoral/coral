@@ -168,6 +168,7 @@ const SECTIONS: &str = "\
 - A tool result over 20 KiB is truncated.
 
 ## Programs
+- Send only the statements inside the function, with `await` and `return` at the top level. Do not wrap them in a function.
 - Call tools by the complete call path that `search` returns: `coral.providers.<name>.…`, `coral.shared.…` or `coral.private.…`.
 - Only provider tools reach the network. Coral does not paginate or retry. Concurrent calls may return HTTP 429.
 - A failed call throws `coral.ToolError`; its `status` and `data` describe the failure, its message does not.

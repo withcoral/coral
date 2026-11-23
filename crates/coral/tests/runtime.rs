@@ -14,6 +14,9 @@ mod composed;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use coral_catalog::{AgentArguments, AgentResult, CancelAgentArguments};
+use coral_run::{SubAgentCaller, SubAgentError, SubAgentTools};
+
 use composed::{WEB, compose, compose_with, recorded_run_state, run_to_end, spin_a_run};
 
 /// After a Program's admission and its Run, this process never started V8:
@@ -157,14 +160,14 @@ async fn readiness_reports_not_serving_while_a_local_childs_run_keeps_the_drain(
     );
 }
 
-/// A factory that claims `[stop_watch]`, serves core's tool surface, and
-/// keeps the stop signal core hands it.
+/// A factory that claims `[stop_watch]`, builds a Sub-agent that refuses
+/// every call, and keeps the stop signal core hands it.
 #[derive(Default)]
 struct StopWatch {
     stopping: OnceLock<tokio::sync::watch::Receiver<bool>>,
 }
 
-impl coral_app::McpInterfaceFactory for StopWatch {
+impl coral_app::SubAgentToolsFactory for StopWatch {
     fn section_name(&self) -> &'static str {
         "stop_watch"
     }
@@ -172,17 +175,58 @@ impl coral_app::McpInterfaceFactory for StopWatch {
     fn build(
         &self,
         _section: &toml::Table,
-        dependencies: coral_app::McpInterfaceDependencies,
-    ) -> Result<Arc<dyn coral_mcp::McpInterface>, Box<dyn std::error::Error + Send + Sync>> {
+        dependencies: coral_app::SubAgentDependencies,
+    ) -> Result<Arc<dyn SubAgentTools>, Box<dyn std::error::Error + Send + Sync>> {
         self.stopping
             .set(dependencies.stopping.clone())
             .map_err(|_set| "core called the factory twice")?;
-        Ok(dependencies.modules.core_interface())
+        Ok(Arc::new(Refusing))
     }
 }
 
+struct Refusing;
+
+#[async_trait::async_trait]
+impl SubAgentTools for Refusing {
+    async fn agent(
+        &self,
+        _caller: SubAgentCaller<'_>,
+        _arguments: &AgentArguments,
+    ) -> Result<AgentResult, SubAgentError> {
+        Err(SubAgentError::Unavailable("the test's agent refuses"))
+    }
+
+    async fn cancel(
+        &self,
+        _caller: SubAgentCaller<'_>,
+        _arguments: &CancelAgentArguments,
+    ) -> Result<AgentResult, SubAgentError> {
+        Err(SubAgentError::Unavailable("the test's agent refuses"))
+    }
+}
+
+/// Catches: a section that leaves `coral.agent` out of the catalog, or a
+/// Sub-agent that bootstrap built and never wired to the Run module.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_reaches_the_sub_agent_that_a_registered_factory_builds() {
+    let factory = Arc::new(StopWatch::default());
+    let composed = compose_with(&format!("{WEB}[stop_watch]\n"), Some(factory)).await;
+
+    let program =
+        "try { await coral.agent({ message: 'hello' }); } catch (error) { return error.message; }";
+    let refused = run_to_end(&composed.client, program).await;
+
+    assert_eq!(
+        refused["final_value"]["value"], "Tool is unavailable: the test's agent refuses",
+        "{refused}"
+    );
+    composed.client.cancel().await.expect("close MCP client");
+    let stopped = composed.runtime.shutdown().await;
+    stopped.expect("stop the composed runtime");
+}
+
 /// Catches: a stop signal that fires only once the Shutdown Drain is over,
-/// too late for a surface to end its own work while the instance serves.
+/// too late for a Sub-agent to end its own work while the instance serves.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_factory_is_told_when_shutdown_begins() {
     let factory = Arc::new(StopWatch::default());

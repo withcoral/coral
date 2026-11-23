@@ -253,6 +253,21 @@ impl TaskModule {
         Ok(())
     }
 
+    /// The Task that the Run was submitted in, if it was submitted in one.
+    /// It checks no Principal: the caller already acts as the Run's.
+    /// # Errors
+    /// Returns a persistence failure.
+    pub async fn run_task(
+        &self,
+        workspace_id: &WorkspaceId,
+        run_id: &coral_run::RunId,
+    ) -> Result<Option<TaskId>, Error> {
+        let mut transaction = self.database.begin_read_snapshot().await?;
+        let task = interaction_repository::run_task(&mut transaction, workspace_id, run_id).await?;
+        transaction.commit().await?;
+        Ok(task)
+    }
+
     /// [`Self::hold_open_in_transaction`], with `refused` deciding what a
     /// Workspace refusal becomes.
     pub(crate) async fn hold_open(

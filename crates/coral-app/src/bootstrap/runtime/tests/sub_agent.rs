@@ -1,21 +1,22 @@
-//! The tool surface that the launching process registers.
+//! The Sub-agent that the launching process registers.
 
 use std::sync::{Arc, OnceLock};
 
-use coral_mcp::{McpCaller, McpInterface, Progress, ToolCallError, ToolFailure};
+use coral_catalog::{AgentArguments, AgentResult, CancelAgentArguments, ToolKey};
+use coral_db::UnixNanos;
+use coral_policy::{ToolAccessState, ToolPolicyTarget};
+use coral_provider::CoralDefinedProvider;
+use coral_run::{SubAgentCaller, SubAgentError, SubAgentTools};
 use coral_test_support::ManualClock;
-use rmcp::ErrorData;
-use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, Tool};
-use serde_json::json;
+use coral_workspace::{ChangeContext, TraceId, local_organization_owner};
 use tempfile::TempDir;
 
-use super::{WEB, mcp_tool, serve_extended_with_mcp_client, start};
-use crate::bootstrap::{AppError, McpInterfaceDependencies, McpInterfaceFactory};
+use super::{WEB, connect_mcp, serve_extended_with_mcp_client, start};
+use crate::bootstrap::{AppError, SubAgentDependencies, SubAgentToolsFactory};
 use crate::{LOCAL_OUTBOUND_DEFAULTS, McpStartError, RuntimeError, ServerBuilder};
 
 /// The section that [`EchoFactory`] claims, as it accepts it.
-const ECHO_SECTION: &str = "[echo_tools]\ngreeting = 'hello'\n";
-const ECHO_INSTRUCTIONS: &str = "Call `echo` to read your arguments back.";
+const ECHO_SECTION: &str = "[echo_agent]\ngreeting = 'hello'\n";
 const CORE_TOOLS: [&str; 5] = [
     "exec",
     "wait",
@@ -24,78 +25,58 @@ const CORE_TOOLS: [&str; 5] = [
     "end_task",
 ];
 
-/// A factory that claims `[echo_tools]` and builds [`CoreWithEcho`]. It keeps
-/// what core handed it.
+/// A factory that claims `[echo_agent]` and builds [`Echo`]. It keeps what
+/// core handed it.
 #[derive(Default)]
 struct EchoFactory {
-    handed: OnceLock<(toml::Table, McpInterfaceDependencies)>,
+    handed: OnceLock<(toml::Table, SubAgentDependencies)>,
 }
 
-impl McpInterfaceFactory for EchoFactory {
+impl SubAgentToolsFactory for EchoFactory {
     fn section_name(&self) -> &'static str {
-        "echo_tools"
+        "echo_agent"
     }
 
     fn build(
         &self,
         section: &toml::Table,
-        dependencies: McpInterfaceDependencies,
-    ) -> Result<Arc<dyn McpInterface>, Box<dyn std::error::Error + Send + Sync>> {
+        dependencies: SubAgentDependencies,
+    ) -> Result<Arc<dyn SubAgentTools>, Box<dyn std::error::Error + Send + Sync>> {
         if !section.contains_key("greeting") {
             return Err("greeting: missing field".into());
         }
-        let core = dependencies.modules.core_interface();
         self.handed
             .set((section.clone(), dependencies))
             .map_err(|_handed| "core called the factory twice")?;
-        Ok(Arc::new(CoreWithEcho { core }))
+        Ok(Arc::new(Echo))
     }
 }
 
-/// Core's tool surface with other instructions and one more tool, `echo`,
-/// which returns its arguments, or fails when they hold `refuse`.
-struct CoreWithEcho {
-    core: Arc<dyn McpInterface>,
-}
+/// A Sub-agent that refuses every call, and says so.
+struct Echo;
 
 #[async_trait::async_trait]
-impl McpInterface for CoreWithEcho {
-    fn instructions(&self) -> &str {
-        ECHO_INSTRUCTIONS
-    }
-
-    async fn tools(&self, caller: &McpCaller) -> Result<Vec<Tool>, ErrorData> {
-        let mut tools = self.core.tools(caller).await?;
-        let any_object = json!({"type": "object"});
-        tools.push(Tool::new(
-            "echo",
-            "Returns its arguments.",
-            any_object.as_object().unwrap().clone(),
-        ));
-        Ok(tools)
-    }
-
-    async fn call(
+impl SubAgentTools for Echo {
+    async fn agent(
         &self,
-        caller: &McpCaller,
-        request: CallToolRequestParams,
-        progress: Option<Progress>,
-    ) -> Result<CallToolResponse, ToolCallError> {
-        if request.name != "echo" {
-            return self.core.call(caller, request, progress).await;
-        }
-        let arguments = request.arguments.unwrap_or_default();
-        if arguments.contains_key("refuse") {
-            let refused = ToolFailure::stable("echo_refused", "Echo refused the call");
-            return Err(ToolCallError::Tool(refused));
-        }
-        Ok(CallToolResult::structured(serde_json::Value::Object(arguments)).into())
+        _caller: SubAgentCaller<'_>,
+        _arguments: &AgentArguments,
+    ) -> Result<AgentResult, SubAgentError> {
+        Err(SubAgentError::Unavailable("Echo refuses"))
+    }
+
+    async fn cancel(
+        &self,
+        _caller: SubAgentCaller<'_>,
+        _arguments: &CancelAgentArguments,
+    ) -> Result<AgentResult, SubAgentError> {
+        Err(SubAgentError::Unavailable("Echo refuses"))
     }
 }
 
 /// A launch that registers `factory`.
 fn registering(factory: &Arc<EchoFactory>) -> ServerBuilder {
-    ServerBuilder::new().with_mcp_interface_factory(factory.clone())
+    ServerBuilder::new().with_sub_agent_factory(factory.clone())
 }
 
 /// The names of the tools `client` is served.
@@ -104,12 +85,11 @@ async fn served_tools(client: &rmcp::service::RunningService<rmcp::RoleClient, (
     tools.iter().map(|tool| tool.name.to_string()).collect()
 }
 
-/// The launching process registers a factory, and MCP serves the
-/// tool surface it builds: its instructions, its tool beside core's, and
-/// core's own tools through it. Catches: a registered surface that core does
-/// not serve, and a factory that gets less than bootstrap resolved.
+// Catches: instructions or an `exec` description that tell a lead to delegate
+// where the Workspace's policy does not enable `coral.agent`, or that do not
+// where it does, and a factory that gets less than bootstrap resolved.
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_serves_the_tool_surface_that_a_registered_factory_builds() {
+async fn the_section_turns_the_sub_agent_on_and_hands_its_factory_what_bootstrap_resolved() {
     const FAN_OUT: usize = 7;
     assert_ne!(FAN_OUT, coral_run::FanOutLimit::DEFAULT_INVOCATIONS);
     let factory = Arc::new(EchoFactory::default());
@@ -120,26 +100,49 @@ async fn mcp_serves_the_tool_surface_that_a_registered_factory_builds() {
             "{WEB}[outbound]\nloopback = 'deny'\n[runtime]\nfan_out_limit = {FAN_OUT}\n{ECHO_SECTION}"
         ),
     );
-    let (server, _workspace, client) =
+    let (server, workspace, client) =
         serve_extended_with_mcp_client(temp.path(), registering(&factory)).await;
-
-    let handshake = client.peer_info().expect("initialize result");
-    assert_eq!(handshake.instructions.as_deref(), Some(ECHO_INSTRUCTIONS));
-    assert_eq!(
-        served_tools(&client).await,
-        [CORE_TOOLS.as_slice(), &["echo"]].concat()
+    assert_eq!(served_tools(&client).await, CORE_TOOLS);
+    // The Workspace gets its Built-in Provider as creating one in production does.
+    let dependencies = server.grpc.engine().grpc_dependencies();
+    let owner = ChangeContext::new(
+        local_organization_owner(),
+        UnixNanos::new(2),
+        TraceId::current_or_new(),
     );
-    let said = json!({"said": "hello"});
-    assert_eq!(mcp_tool(&client, "echo", said.clone()).await, said);
-    // The surface fails its own tool, and core names the call's trace.
-    let failed = mcp_tool(&client, "echo", json!({"refuse": true})).await;
-    assert_eq!(failed.get("code"), Some(&json!("echo_refused")));
-    let trace = failed.get("trace_id");
-    assert!(trace.is_some_and(serde_json::Value::is_string));
-    // Core answers its own tool through the surface that wraps it.
-    let no_such_task = json!({"task_id": "alpha-bravo-charlie-delta", "outcome": "success"});
-    let refused = mcp_tool(&client, "end_task", no_such_task).await;
-    assert_eq!(refused.get("code"), Some(&json!("task_not_found")));
+    let database = server.grpc.database();
+    let mut transaction = database.begin().await.expect("begin");
+    let builtin = dependencies.providers.install_coral_defined_in_transaction(
+        &mut transaction,
+        &owner,
+        &workspace,
+        CoralDefinedProvider::Builtin,
+    );
+    let builtin = builtin.await.expect("install the Built-in Provider");
+    transaction.commit().await.expect("commit the install");
+    let agent = ToolKey::parse("agent").expect("Tool Key");
+    let agent = ToolPolicyTarget::new(workspace.clone(), builtin.skip_search().id().clone(), agent);
+
+    for (state, delegates) in [
+        (ToolAccessState::Enabled, true),
+        (ToolAccessState::ApprovalRequired, false),
+        (ToolAccessState::Disabled, false),
+    ] {
+        let set = dependencies
+            .policies
+            .set_access_state(&owner, agent.clone(), state);
+        set.await.expect("set the policy of coral.agent");
+        let lead = connect_mcp(&server, &workspace).await;
+        let handshake = lead.peer_info().expect("initialize result");
+        let instructions = handshake.instructions.as_deref().unwrap_or_default();
+        assert_eq!(instructions.contains("coral.agent"), delegates, "{state:?}");
+        let tools = lead.list_all_tools().await.expect("list MCP tools");
+        let exec = tools.iter().find(|tool| tool.name == "exec");
+        let exec = exec.and_then(|exec| exec.description.as_deref());
+        let briefs = exec.is_some_and(|text| text.contains("coral.agent({ message })"));
+        assert_eq!(briefs, delegates, "{state:?}: exec's description");
+        lead.cancel().await.expect("close MCP client");
+    }
 
     let (section, handed) = factory.handed.get().expect("core called the factory");
     assert_eq!(section, &toml::toml! { greeting = "hello" });
@@ -183,10 +186,10 @@ async fn a_factory_is_handed_the_clock_and_the_environment_of_the_instance() {
     server.shutdown().await.expect("stop composed server");
 }
 
-/// The section turns a registered surface on. Without it, core does not call
-/// the factory and serves its own tools.
+/// The section turns a registered Sub-agent on. Without it, core does not
+/// call the factory, and its instructions name no `coral.agent`.
 #[tokio::test(flavor = "multi_thread")]
-async fn mcp_serves_core_when_the_config_file_lacks_the_factorys_section() {
+async fn no_sub_agent_is_built_when_the_config_file_lacks_the_factorys_section() {
     let factory = Arc::new(EchoFactory::default());
     let temp = TempDir::new().expect("temporary state root");
     coral_test_support::write_server_config(temp.path(), WEB);
@@ -194,6 +197,10 @@ async fn mcp_serves_core_when_the_config_file_lacks_the_factorys_section() {
         serve_extended_with_mcp_client(temp.path(), registering(&factory)).await;
 
     assert_eq!(served_tools(&client).await, CORE_TOOLS);
+    let instructions = client
+        .peer_info()
+        .and_then(|info| info.instructions.clone());
+    assert!(instructions.is_some_and(|text| !text.contains("coral.agent")));
     assert!(factory.handed.get().is_none());
 
     client.cancel().await.expect("close MCP client");
@@ -210,7 +217,7 @@ async fn a_config_section_that_no_factory_can_take_fails_startup() {
             "nothing is registered",
             ServerBuilder::new(),
             format!("{WEB}{ECHO_SECTION}"),
-            "echo_tools: unknown field",
+            "echo_agent: unknown field",
         ),
         (
             "the factory claims another section",
@@ -221,8 +228,8 @@ async fn a_config_section_that_no_factory_can_take_fails_startup() {
         (
             "the claimed key is no section",
             echo(),
-            format!("echo_tools = 3\n{WEB}"),
-            "echo_tools: unsupported value",
+            format!("echo_agent = 3\n{WEB}"),
+            "echo_agent: unsupported value",
         ),
     ] {
         let temp = TempDir::new().expect("temporary state root");
@@ -248,7 +255,7 @@ async fn a_config_section_that_no_factory_can_take_fails_startup() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_section_that_its_factory_refuses_fails_startup() {
     let temp = TempDir::new().expect("temporary state root");
-    coral_test_support::write_server_config(temp.path(), &format!("{WEB}[echo_tools]\n"));
+    coral_test_support::write_server_config(temp.path(), &format!("{WEB}[echo_agent]\n"));
     let builder = registering(&Arc::new(EchoFactory::default())).with_config_dir(temp.path());
 
     let Err(error) = start(builder).await else {
@@ -259,8 +266,8 @@ async fn a_section_that_its_factory_refuses_fails_startup() {
         matches!(
             &error,
             RuntimeError::StartMcp {
-                error: McpStartError::Interface {
-                    section_name: "echo_tools",
+                error: McpStartError::SubAgent {
+                    section_name: "echo_agent",
                     ..
                 },
                 cleanup: None,

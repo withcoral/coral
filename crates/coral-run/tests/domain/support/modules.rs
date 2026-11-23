@@ -1697,6 +1697,7 @@ pub(crate) fn test_invoker(
         None,
         fixture.runs.search.clone(),
         None,
+        Arc::default(),
         Some(test_reef()),
         fixture.database.clone(),
         fixture.workspaces.clone(),

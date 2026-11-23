@@ -7,10 +7,10 @@
 #[cfg(test)]
 mod tests;
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use coral_mcp::ToolFailure;
+use coral_db::Database;
 use coral_run::{
     FinalValue, ProgramLogLevel, RUN_EVENT_PAGE_MAX, RequiredAction, RequiredActionRequest,
     RequiredActor, RunCursor, RunEvent, RunEventKind, RunFailure, RunFailureCode, RunId, RunModule,
@@ -22,6 +22,8 @@ use coral_workspace::{AuthenticatedPrincipal, AuthorityRefusal, WorkspaceId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use crate::repository;
 
 /// The longest wait that `exec` and `wait` take: 30 seconds.
 const MAX_WAIT_MS: u64 = 30_000;
@@ -59,13 +61,22 @@ pub(crate) struct ToolOutput {
 }
 
 pub(crate) struct RunTools {
+    database: Arc<Database>,
     commands: TaskCommands,
     runs: RunModule,
 }
 
 impl RunTools {
-    pub(crate) const fn new(commands: TaskCommands, runs: RunModule) -> Self {
-        Self { commands, runs }
+    pub(crate) const fn new(
+        database: Arc<Database>,
+        commands: TaskCommands,
+        runs: RunModule,
+    ) -> Self {
+        Self {
+            database,
+            commands,
+            runs,
+        }
     }
 
     /// Runs the tool `name` with the arguments the model wrote, and returns the JSON text the model
@@ -124,10 +135,25 @@ impl RunTools {
             .await
             .map_err(task_failure)?;
         tracing::Span::current().record("coral.run.id", safe::id(&accepted.telemetry_id()));
+        // First, so that a cancel during the write below stops this Run too.
         let started = caller.started_runs.lock();
         started
             .unwrap_or_else(PoisonError::into_inner)
             .push(accepted.run_id().clone());
+        // The record that keeps this Run's Program from calling the agent.
+        let (workspace_id, task_id) = (&caller.workspace_id, &caller.task_id);
+        let run = repository::insert_sub_agent_run(
+            &self.database,
+            workspace_id,
+            task_id,
+            accepted.run_id(),
+        );
+        if let Err(error) = run.await {
+            tracing::warn!(
+                error.type = safe::kind(error.code()),
+                "the Run that a Sub-agent's exec started was not recorded as its own"
+            );
+        }
         let Some(first_wait) = first_wait else {
             return Ok(accepted);
         };
@@ -436,12 +462,6 @@ pub(crate) fn run_failure(error: coral_run::Error) -> Failure {
             "The request is not yet recorded. Call again.",
         ),
         _ => Failure::internal(),
-    }
-}
-
-impl From<Failure> for ToolFailure {
-    fn from(failure: Failure) -> Self {
-        Self::safe(failure.code, failure.message)
     }
 }
 

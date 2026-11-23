@@ -2,14 +2,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
-use coral_app::{McpInterfaceDependencies, McpInterfaceFactory as _};
+use coral_app::{SubAgentDependencies, SubAgentToolsFactory as _};
+use coral_catalog::{ArgumentProblem, BuiltinArguments, BuiltinTool};
 use coral_db::{Clock, Database, UnixNanos};
-use coral_mcp::{HumanInterfaceUrl, McpCaller, McpInterface, McpModules, ToolCallError};
+use coral_mcp::{HumanInterfaceUrl, McpCaller, McpModules, ToolCallError};
 use coral_outbound::{DestinationPolicy, NetworkAccess};
 use coral_provider::ProviderModule;
-use coral_run::{CoralInstanceId, RunInbox, RunModule, RuntimeLimits};
+use coral_run::{
+    CoralInstanceId, RunId, RunInbox, RunModule, RunStop, RuntimeLimits, SubAgentCaller,
+    SubAgentError, SubAgentTools,
+};
 use coral_search::UniversalSearchModule;
-use coral_task::{AttemptKind, TaskCommands, TaskId, TaskIntent, TaskModule};
+use coral_task::{AttemptKind, AttributedCommand, TaskCommands, TaskId, TaskIntent, TaskModule};
 use coral_test_support::{
     EVENTUALLY, ManualClock, TEST_COMPILATION_TIMEOUT, TestDatabase, change, provision_user,
 };
@@ -17,7 +21,8 @@ use coral_workspace::{
     AuthenticatedPrincipal, AuthenticatedUser, IfMatch, OrganizationModule, OrganizationRole,
     WorkspaceDisplayName, WorkspaceId, WorkspaceModule,
 };
-use rmcp::model::{CallToolRequestParams, CallToolResponse, Tool};
+use rmcp::ErrorData;
+use rmcp::model::{CallToolRequestParams, CallToolResponse};
 use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
 use serde_json::{Value, json};
 use wiremock::matchers::{any, body_string_contains, method, path};
@@ -25,9 +30,9 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use crate::model::{Block, Message, ModelClient, Protocol, Role, ToolCall};
 use crate::run_tools::Caller;
-use crate::sub_agents::{Error, RunningTurn, SubAgents, TURN_LEASE, TurnState};
+use crate::sub_agents::{Error, RunningTurn, SubAgents, TURN_LEASE, TURN_MAX, TurnState};
 use crate::telemetry::TurnTrace;
-use crate::{MODEL_CALL_TIMEOUT, SubAgentFactory, lead_text, repository};
+use crate::{MODEL_CALL_TIMEOUT, SubAgentFactory, repository};
 
 mod compaction;
 mod telemetry;
@@ -75,10 +80,11 @@ impl Lead {
             RunInbox::table(database.clone()),
         )
         .unwrap();
+        let reef = HumanInterfaceUrl::parse("https://reef.example.test").unwrap();
+        let runs = runs.with_human_interface(reef.clone());
         let tasks = TaskModule::new(database.clone(), workspaces.clone());
         let search = UniversalSearchModule::new(database.clone(), workspaces.clone());
         let commands = TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
-        let reef = HumanInterfaceUrl::parse("https://reef.example.test").unwrap();
         Self {
             modules: McpModules::new(workspaces.clone(), tasks, commands, runs, search, reef),
             workspaces,
@@ -94,8 +100,8 @@ impl Lead {
 
     /// What bootstrap hands the factory, in an environment that sets only
     /// `MODEL_KEY`.
-    fn dependencies(&self) -> McpInterfaceDependencies {
-        McpInterfaceDependencies {
+    fn dependencies(&self) -> SubAgentDependencies {
+        SubAgentDependencies {
             database: self.database.clone(),
             modules: self.modules.clone(),
             outbound_policy: POLICY,
@@ -109,12 +115,30 @@ impl Lead {
         format!("{}/v1", self.model.uri())
     }
 
-    /// The tools that the factory builds from a section that names the stub.
-    fn tools(&self) -> Arc<dyn McpInterface> {
+    /// The Tools that the factory builds from a section that names the stub.
+    fn tools(&self) -> Arc<dyn SubAgentTools> {
         let section = format!("base_url = '{}'\nmodel = '{MODEL}'", self.base_url());
         SubAgentFactory
             .build(&toml::from_str(&section).unwrap(), self.dependencies())
             .unwrap()
+    }
+
+    /// The factory's Tools as a `[sub_agent]` section serves them: wired into
+    /// the lead's Runs, in a Workspace whose Built-in Provider holds them.
+    async fn served_tools(&self) -> Arc<dyn SubAgentTools> {
+        let (database, workspaces) = (self.database.clone(), self.workspaces.clone());
+        let catalog = coral_catalog::BuiltinCatalog::with_sub_agent().unwrap();
+        let graphs = coral_catalog::SchemaGraphCache::with_default_budget();
+        let providers = ProviderModule::new(POLICY, database, workspaces, catalog, graphs);
+        let installed = providers.install_missing_coral_defined(NOON).await.unwrap();
+        assert!(
+            installed
+                .into_iter()
+                .all(|one| one.into_installed().is_ok())
+        );
+        let tools = self.tools();
+        self.modules.runs.set_sub_agent_tools(tools.clone());
+        tools
     }
 
     /// The Sub-agents of the same database, which call the same stub.
@@ -155,7 +179,7 @@ impl Lead {
 
     /// Starts a Sub-agent in `task_id` and returns its `sub_agent_id` and
     /// how its Turn stands once it ends or 30 seconds pass.
-    async fn turn(&self, tools: &dyn McpInterface, task_id: &TaskId) -> (String, Value) {
+    async fn turn(&self, tools: &dyn SubAgentTools, task_id: &TaskId) -> (String, Value) {
         let caller = self.caller();
         let agent = json!({"task_id": task_id.as_str(), "message": MESSAGE});
         let started = result(call(tools, &caller, "agent", agent).await);
@@ -165,7 +189,7 @@ impl Lead {
             .unwrap()
             .to_owned();
         let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
-        let waited = result(call(tools, &caller, "wait", wait).await);
+        let waited = result(call(tools, &caller, "agent", wait).await);
         (sub_agent_id, waited)
     }
 
@@ -203,12 +227,12 @@ impl Lead {
             .unwrap()
     }
 
-    fn caller(&self) -> McpCaller {
-        McpCaller::fixture(
-            self.actor.clone(),
-            self.workspace_id.clone(),
-            UnixNanos::new(2),
-        )
+    fn caller(&self) -> LeadCaller {
+        let (actor, workspace_id) = (self.actor.clone(), self.workspace_id.clone());
+        LeadCaller {
+            mcp: McpCaller::fixture(actor, workspace_id, UnixNanos::new(2)),
+            modules: self.modules.clone(),
+        }
     }
 
     /// The stub answers every request with `answer`.
@@ -270,20 +294,94 @@ fn no_reply() -> ResponseTemplate {
     reply("late").set_delay(EVENTUALLY)
 }
 
+/// The lead as it calls: over MCP, and from a Run of its own.
+struct LeadCaller {
+    mcp: McpCaller,
+    modules: McpModules,
+}
+
+/// Calls core's tool `name`, or a Sub-agent Tool from a Run of the lead's: in
+/// the Task of `task_id` or `goal`, and asked to stop at once without
+/// `wait_ms`. With `stop`, that Run was canceled.
 async fn call(
-    tools: &dyn McpInterface,
-    caller: &McpCaller,
+    tools: &dyn SubAgentTools,
+    caller: &LeadCaller,
     name: &'static str,
     arguments: Value,
 ) -> Result<Value, ToolCallError> {
-    let Value::Object(arguments) = arguments else {
+    let Value::Object(mut arguments) = arguments else {
         panic!("tool arguments are an object");
     };
-    let request = CallToolRequestParams::new(name).with_arguments(arguments);
-    match tools.call(caller, request, None).await? {
-        CallToolResponse::Complete(result) => Ok(result.structured_content.unwrap()),
-        _ => panic!("{name} completes"),
+    let Some(tool) = BuiltinTool::from_key(name) else {
+        let request = CallToolRequestParams::new(name).with_arguments(arguments);
+        let core = caller.modules.core_interface();
+        return match core.call(&caller.mcp, request, None).await? {
+            CallToolResponse::Complete(result) => Ok(result.structured_content.unwrap()),
+            _ => panic!("{name} completes"),
+        };
+    };
+    let (actor, workspace_id) = (caller.mcp.principal(), caller.mcp.workspace_id());
+    let intent = TaskIntent::parse("Call the agent").unwrap();
+    let task_id = match (arguments.remove("task_id"), arguments.remove("goal")) {
+        (Some(task_id), _) => Some(TaskId::parse(task_id.as_str().unwrap()).unwrap()),
+        (None, Some(goal)) => {
+            let goal = TaskIntent::parse(goal.as_str().unwrap()).unwrap();
+            let started = caller
+                .modules
+                .tasks
+                .start(actor, workspace_id, goal, UnixNanos::new(2));
+            Some(started.await.unwrap().id().clone())
+        }
+        // The call starts no Sub-agent, so its Run needs no Task.
+        (None, None) => None,
+    };
+    let run_id = match task_id.clone() {
+        Some(task_id) => {
+            let call = AttributedCommand::new(actor.clone(), workspace_id.clone(), task_id, intent);
+            let run = caller.modules.commands.submit(&call, "return 0;", 60_000);
+            run.await.unwrap().run_id().clone()
+        }
+        None => RunId::parse("a-run-of-the-leads").unwrap(),
+    };
+    let waits = arguments.get("wait_ms").is_some_and(|wait| wait != 0);
+    let canceled = arguments.remove("stop").is_some();
+    let run = SubAgentCaller {
+        actor,
+        workspace_id,
+        run_id: &run_id,
+        stopped: Box::pin(async move {
+            if canceled {
+                return RunStop::Canceled;
+            }
+            if waits {
+                std::future::pending::<()>().await;
+            }
+            RunStop::Ended
+        }),
+    };
+    let refused =
+        |reason: &str| ToolCallError::Protocol(ErrorData::invalid_params(reason.to_owned(), None));
+    let outcome = match BuiltinArguments::parse(tool, &Value::Object(arguments)) {
+        Ok(BuiltinArguments::Agent(arguments)) => tools.agent(run, &arguments).await,
+        Ok(BuiltinArguments::CancelAgent(arguments)) => tools.cancel(run, &arguments).await,
+        Ok(_) => panic!("{name} is no Sub-agent Tool"),
+        Err(problems) => {
+            return Err(refused(
+                problems.first().map_or("", ArgumentProblem::reason),
+            ));
+        }
+    };
+    let mut result = match outcome {
+        Ok(result) => serde_json::to_value(result).unwrap(),
+        Err(SubAgentError::InvalidInput { reason, .. } | SubAgentError::Unavailable(reason)) => {
+            return Err(refused(reason));
+        }
+        Err(SubAgentError::Host(error)) => panic!("{error}"),
+    };
+    if let (Some(task_id), Some(fields)) = (task_id, result.as_object_mut()) {
+        fields.insert("task_id".to_owned(), json!(task_id.as_str()));
     }
+    Ok(result)
 }
 
 /// The structured result of a call that Coral completed.
@@ -312,18 +410,6 @@ fn refusal(called: Result<Value, ToolCallError>) -> String {
         Err(ToolCallError::Protocol(error)) => error.message.into_owned(),
         _ => panic!("the call is refused"),
     }
-}
-
-/// The names of the arguments that a tool takes, and of those it requires.
-fn arguments(tools: &[Tool], name: &str) -> (Vec<String>, Vec<Value>) {
-    let tool = tools.iter().find(|tool| tool.name == name).unwrap();
-    let schema = &tool.input_schema;
-    let taken = schema.get("properties").and_then(Value::as_object);
-    let required = schema.get("required").and_then(Value::as_array);
-    (
-        taken.unwrap().keys().cloned().collect(),
-        required.cloned().unwrap_or_default(),
-    )
 }
 
 // Catches: a section that starts Coral with a setting it cannot use, and a
@@ -404,33 +490,56 @@ async fn startup_checks_the_section_and_sends_the_model_nothing() {
     assert!(lead.model.received_requests().await.unwrap().is_empty());
 }
 
-// Catches: a lead served without `agent` or the text about it, or a `wait` or
-// `cancel` that refuses a `sub_agent_id`.
+// Catches: a Program that cannot reach the Sub-agent, a Sub-agent outside the
+// Task of the Run that called it, and a call that returns before the Turn ends.
 #[tokio::test]
-async fn a_lead_is_served_agent_beside_cores_tools() {
+async fn coral_agent_returns_the_sub_agents_answer_to_the_program_that_calls_it() {
     let lead = Lead::new().await;
-    let tools = lead.tools();
-    let caller = lead.caller();
-    let core = lead.modules.core_interface();
-    let core_tools = core.tools(&caller).await.unwrap();
+    lead.model_answers(reply("Twelve.")).await;
+    let (tools, task_id) = (lead.served_tools().await, lead.task().await);
+    let program = format!("return (await coral.agent({{ message: '{MESSAGE}' }})).data;");
+    let exec = json!({"task_id": task_id.as_str(), "intent": "Delegate", "program": program, "wait_ms": 30_000});
 
-    let served = tools.tools(&caller).await.unwrap();
-    let names = |tools: &[Tool]| -> Vec<String> {
-        tools.iter().map(|tool| tool.name.to_string()).collect()
-    };
-    let with_agent = [names(&core_tools), vec!["agent".to_owned()]].concat();
-    assert_eq!(names(&served), with_agent);
-    let agent = served.iter().find(|tool| tool.name == "agent");
-    let description = agent.and_then(|tool| tool.description.as_deref());
-    assert_eq!(description, Some(lead_text::AGENT_DESCRIPTION));
-    assert_eq!(tools.instructions(), lead_text::INSTRUCTIONS);
-    for name in ["wait", "cancel"] {
-        let (core_taken, _) = arguments(&core_tools, name);
-        let (taken, required) = arguments(&served, name);
-        let with_sub_agent_id = [core_taken, vec!["sub_agent_id".to_owned()]].concat();
-        assert_eq!(taken, with_sub_agent_id, "{name}");
-        assert!(!required.contains(&json!("run_id")), "{name}");
-    }
+    let run = result(call(&*tools, &lead.caller(), "exec", exec).await);
+
+    let answered = run.pointer("/final_value/value").unwrap_or(&Value::Null);
+    let completed = (&json!("completed"), &json!("Twelve."));
+    assert_eq!(
+        (field(answered, "state"), field(answered, "answer")),
+        completed,
+        "{run}"
+    );
+    let sub_agent_id = field(answered, "sub_agent_id").as_str().unwrap();
+    let in_task = repository::task_id(&*lead.database, &lead.workspace_id, sub_agent_id);
+    assert_eq!(in_task.await.unwrap(), Some(task_id));
+}
+
+// Catches: a Sub-agent whose Program starts another Sub-agent, and a refusal
+// that the Program cannot read.
+#[tokio::test]
+async fn a_program_that_a_sub_agent_started_cannot_call_coral_agent() {
+    let lead = Lead::new().await;
+    let (tools, task_id) = (lead.served_tools().await, lead.task().await);
+    let program = "try { return await coral.agent({ message: 'Deeper' }); } catch (error) { return [error.code, error.message]; }";
+    let exec = json!({"task_id": task_id.as_str(), "intent": "Delegate", "program": program});
+
+    let run = lead.first_result(&*tools, &task_id, tool_call("call_1", "exec", &exec));
+    let run = run.await;
+
+    let refused =
+        "Tool is unavailable: an agent started this run, and an agent cannot call an agent";
+    assert_eq!(
+        run.get("final_value"),
+        Some(&json!(["tool_unavailable", refused])),
+        "{run}"
+    );
+    let sub_agents = Query::select()
+        .column(Alias::new("id"))
+        .from(Alias::new("sub_agent_records"))
+        .to_owned();
+    let sub_agents: Vec<(String,)> = lead.database.fetch_all(sub_agents).await.unwrap();
+    assert_eq!(sub_agents.len(), 1, "nothing started");
+    assert_eq!(lead.model.received_requests().await.unwrap().len(), 2);
 }
 
 // Catches: a Turn that hides why the model gave no reply, one that completes
@@ -493,8 +602,8 @@ async fn a_turn_runs_a_program_in_the_leads_task_and_answers_from_it() {
     let tasks = &lead.modules.tasks;
     let attempts = tasks.interactions(&lead.actor, &lead.workspace_id, &task_id, None, 10);
     let attempts = attempts.await.unwrap();
-    let [attempt] = attempts.as_slice() else {
-        panic!("one attempt: {attempts:?}");
+    let [_the_leads_run, attempt] = attempts.as_slice() else {
+        panic!("the lead's Run, then one attempt: {attempts:?}");
     };
     assert_eq!(attempt.kind, AttemptKind::Submit);
     let thread = lead.thread(&sub_agent_id).await;
@@ -589,7 +698,7 @@ async fn the_lead_reads_the_outcome_that_the_turn_recorded() {
     let message = json!({"sub_agent_id": sub_agent_id, "message": "Look again."});
     result(call(&*tools, &caller, "agent", message).await);
     let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
-    let next = result(call(&*tools, &caller, "wait", wait).await);
+    let next = result(call(&*tools, &caller, "agent", wait).await);
 
     let read = |page: &Value| {
         (
@@ -689,13 +798,13 @@ async fn cancel_ends_a_running_turn_for_good() {
     .await;
     assert!(second.is_err_and(|error| error.is_unique_violation()));
     drop(transaction);
-    let running = result(call(&*tools, &caller, "wait", by_id.clone()).await);
+    let running = result(call(&*tools, &caller, "agent", by_id.clone()).await);
     assert_eq!(
         without_cursor(running),
         json!({"sub_agent_id": sub_agent_id, "state": "running", "steps": []})
     );
 
-    let canceled = result(call(&*tools, &caller, "cancel", by_id.clone()).await);
+    let canceled = result(call(&*tools, &caller, "cancelAgent", by_id.clone()).await);
 
     let stopped = json!({"sub_agent_id": sub_agent_id, "state": "canceled", "steps": []});
     assert_eq!(without_cursor(canceled), stopped);
@@ -707,7 +816,7 @@ async fn cancel_ends_a_running_turn_for_good() {
     let ended = sub_agents.end_turn(workspace_id, sub_agent_id, &turn_id, &late);
     assert!(!ended.await.unwrap(), "the first ending stands");
     assert_eq!(
-        without_cursor(result(call(&*tools, &caller, "wait", by_id).await)),
+        without_cursor(result(call(&*tools, &caller, "agent", by_id).await)),
         stopped
     );
 }
@@ -730,7 +839,7 @@ async fn shutdown_interrupts_a_running_turn() {
     lead.stop.send_replace(true);
 
     let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
-    let waited = result(call(&*tools, &caller, "wait", wait).await);
+    let waited = result(call(&*tools, &caller, "agent", wait).await);
     let steps = json!([{"intent": "Loop", "run_id": run_id}]);
     let interrupted = json!({"sub_agent_id": sub_agent_id, "state": "interrupted", "steps": steps});
     assert_eq!(without_cursor(waited), interrupted);
@@ -767,7 +876,7 @@ async fn a_turn_whose_task_ends_stops_as_canceled() {
     release.send(()).unwrap();
 
     let wait = json!({"sub_agent_id": field(&started, "sub_agent_id"), "wait_ms": 30_000});
-    let waited = result(call(&*tools, &caller, "wait", wait).await);
+    let waited = result(call(&*tools, &caller, "agent", wait).await);
     assert_eq!(field(&waited, "state"), "canceled", "{waited}");
     assert_eq!(lead.model.received_requests().await.unwrap().len(), 2);
     let run = json!({"run_id": waited.pointer("/steps/0/run_id"), "wait_ms": 1_000});
@@ -802,52 +911,84 @@ async fn a_turn_whose_caller_lost_access_stops_as_canceled() {
     assert_eq!(lead.model.received_requests().await.unwrap().len(), 1);
 }
 
-// Catches: a canceled Sub-agent whose running Run goes on, a cancel that
-// changes a Run that had ended, and a canceled Turn that stores the reply of
-// its last model call.
+// Catches: a Run that goes on after its Sub-agent's Turn was stopped, by
+// `cancelAgent`, by a cancellation of the Run that waits on the Sub-agent, or
+// by the Turn's time limit. Also a stop that changes a Run that had ended,
+// one that stores the reply of the Turn's last model call, and a call that
+// waits past its `wait_ms`.
 #[tokio::test]
-async fn cancel_cancels_the_running_runs_of_the_sub_agent() {
-    let lead = Lead::new().await;
-    let (tools, caller, task_id) = (lead.tools(), lead.caller(), lead.task().await);
-    let exec = |id, intent, program, wait_ms: u64| {
-        let task_id = task_id.as_str();
-        let arguments =
-            json!({"task_id": task_id, "intent": intent, "program": program, "wait_ms": wait_ms});
-        tool_call(id, "exec", &arguments)
-    };
-    let execs = [
-        exec("call_1", "Loop", "while (true) {}", 0),
-        exec("call_2", "Count", "return 1;", 30_000),
-    ];
-    Mock::given(any())
-        .respond_with(tool_calls(&execs))
-        .up_to_n_times(1)
-        .mount(&lead.model)
-        .await;
-    let (arrived, release) = lead.hold_first_reply(reply("Done.")).await;
-    let agent = json!({"task_id": task_id.as_str(), "message": MESSAGE});
-    let started = result(call(&*tools, &caller, "agent", agent).await);
-    arrived.await.unwrap();
-    let by_id = json!({"sub_agent_id": field(&started, "sub_agent_id")});
-    let running = result(call(&*tools, &caller, "wait", by_id.clone()).await);
+async fn stopping_a_sub_agent_cancels_the_runs_its_turn_left_running() {
+    enum Stop {
+        CancelAgent,
+        CanceledRun,
+        TimeLimit,
+    }
+    for (stop, ended_as) in [
+        (Stop::CancelAgent, "canceled"),
+        (Stop::CanceledRun, "canceled"),
+        (Stop::TimeLimit, "failed"),
+    ] {
+        let lead = Lead::new().await;
+        let (tools, caller, task_id) = (lead.tools(), lead.caller(), lead.task().await);
+        let exec = |id, intent, program, wait_ms: u64| {
+            let task_id = task_id.as_str();
+            let arguments = json!({"task_id": task_id, "intent": intent, "program": program, "wait_ms": wait_ms});
+            tool_call(id, "exec", &arguments)
+        };
+        let execs = [
+            exec("call_1", "Loop", "while (true) {}", 0),
+            exec("call_2", "Count", "return 1;", 30_000),
+        ];
+        Mock::given(any())
+            .respond_with(tool_calls(&execs))
+            .up_to_n_times(1)
+            .mount(&lead.model)
+            .await;
+        let (arrived, release) = lead.hold_first_reply(reply("Done.")).await;
+        let agent = json!({"task_id": task_id.as_str(), "message": MESSAGE});
+        let started = result(call(&*tools, &caller, "agent", agent).await);
+        arrived.await.unwrap();
+        let sub_agent_id = field(&started, "sub_agent_id");
+        let asked_at = std::time::Instant::now();
+        let look = json!({"sub_agent_id": sub_agent_id, "wait_ms": 50});
+        let running = result(call(&*tools, &caller, "agent", look).await);
+        assert!(asked_at.elapsed() < Duration::from_secs(10), "its wait_ms");
 
-    result(call(&*tools, &caller, "cancel", by_id).await);
-    release.send(()).unwrap();
+        match stop {
+            Stop::CancelAgent => {
+                let by_id = json!({"sub_agent_id": sub_agent_id});
+                result(call(&*tools, &caller, "cancelAgent", by_id).await);
+            }
+            Stop::CanceledRun => {
+                let waiting = json!({"sub_agent_id": sub_agent_id, "stop": "canceled"});
+                result(call(&*tools, &caller, "agent", waiting).await);
+            }
+            Stop::TimeLimit => {
+                tokio::time::pause();
+                tokio::time::advance(TURN_MAX).await;
+                tokio::time::resume();
+            }
+        }
+        let ended = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
+        let ended = result(call(&*tools, &caller, "agent", ended).await);
+        release.send(()).unwrap();
 
-    let steps = field(&running, "steps");
-    let (looped, counted) = (field(&steps[0], "run_id"), field(&steps[1], "run_id"));
-    let wait = json!({"run_id": looped, "wait_ms": 30_000});
-    let looped = result(call(&*tools, &caller, "wait", wait).await);
-    assert_eq!(field(&looped, "state"), "canceled", "{looped}");
-    let read = json!({"run_id": counted});
-    let counted = result(call(&*tools, &caller, "wait", read).await);
-    assert_eq!(field(&counted, "state"), "succeeded", "{counted}");
-    let sub_agent_id = field(&started, "sub_agent_id").as_str().unwrap();
-    assert_eq!(
-        lead.thread(sub_agent_id).await.len(),
-        3,
-        "brief, calls, results"
-    );
+        assert_eq!(field(&ended, "state"), ended_as, "{ended}");
+        let steps = field(&running, "steps");
+        let (looped, counted) = (field(&steps[0], "run_id"), field(&steps[1], "run_id"));
+        let wait = json!({"run_id": looped, "wait_ms": 30_000});
+        let looped = result(call(&*tools, &caller, "wait", wait).await);
+        assert_eq!(field(&looped, "state"), "canceled", "{looped}");
+        let read = json!({"run_id": counted});
+        let counted = result(call(&*tools, &caller, "wait", read).await);
+        assert_eq!(field(&counted, "state"), "succeeded", "{counted}");
+        let sub_agent_id = sub_agent_id.as_str().unwrap();
+        assert_eq!(
+            lead.thread(sub_agent_id).await.len(),
+            3,
+            "brief, calls, results"
+        );
+    }
 }
 
 // Catches: a cancel of a Sub-agent whose Turn has ended that leaves the
@@ -867,7 +1008,7 @@ async fn cancel_cancels_the_runs_of_a_turn_that_has_ended() {
     assert_eq!(field(&completed, "state"), "completed", "{completed}");
 
     let by_id = json!({"sub_agent_id": sub_agent_id});
-    result(call(&*tools, &caller, "cancel", by_id).await);
+    result(call(&*tools, &caller, "cancelAgent", by_id).await);
 
     let steps = field(&completed, "steps");
     let wait = json!({"run_id": field(&steps[0], "run_id"), "wait_ms": 30_000});
@@ -908,7 +1049,8 @@ async fn cancel_cancels_the_run_that_an_exec_still_waits_on() {
             .await
             .unwrap()
             .into_iter()
-            .find_map(|attempt| attempt.run)
+            .filter_map(|attempt| attempt.run)
+            .nth(1)
         {
             break run_id;
         }
@@ -920,7 +1062,7 @@ async fn cancel_cancels_the_run_that_an_exec_still_waits_on() {
         call(
             &*tools,
             &caller,
-            "cancel",
+            "cancelAgent",
             json!({"sub_agent_id": sub_agent_id}),
         )
         .await,
@@ -928,7 +1070,7 @@ async fn cancel_cancels_the_run_that_an_exec_still_waits_on() {
     let message = json!({"sub_agent_id": sub_agent_id, "message": paid});
     result(call(&*tools, &caller, "agent", message).await);
     let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
-    let answered = result(call(&*tools, &caller, "wait", wait).await);
+    let answered = result(call(&*tools, &caller, "agent", wait).await);
 
     assert_eq!(field(&answered, "answer"), "Seven.", "{answered}");
     let requests = lead.model.received_requests().await.unwrap();
@@ -958,10 +1100,10 @@ async fn the_next_read_interrupts_a_turn_whose_lease_lapsed() {
     let lease_end = turn.await.unwrap().lease_expires_at;
 
     lead.clock.set(UnixNanos::new(lease_end.get() - 1));
-    let held = result(call(&*tools, &caller, "wait", by_id.clone()).await);
+    let held = result(call(&*tools, &caller, "agent", by_id.clone()).await);
     assert_eq!(held.get("state"), Some(&json!("running")));
     lead.clock.set(UnixNanos::new(i64::MAX));
-    let lapsed = result(call(&*tools, &caller, "cancel", by_id).await);
+    let lapsed = result(call(&*tools, &caller, "cancelAgent", by_id).await);
 
     let interrupted = json!({"sub_agent_id": sub_agent_id, "state": "interrupted", "steps": []});
     assert_eq!(without_cursor(lapsed), interrupted);
@@ -993,7 +1135,7 @@ async fn a_wait_returns_once_the_lease_of_its_turn_lapses() {
 
     let wait = json!({"sub_agent_id": field(&started, "sub_agent_id"), "wait_ms": 30_000});
     let asked_at = tokio::time::Instant::now();
-    let waited = result(call(&*other.unwrap(), &lead.caller(), "wait", wait).await);
+    let waited = result(call(&*other.unwrap(), &lead.caller(), "agent", wait).await);
     assert!(
         asked_at.elapsed() < Duration::from_secs(30),
         "the wait ran out"

@@ -34,7 +34,7 @@ use coral_workspace::AuthenticatedPrincipal;
 
 use crate::execution::{Backoff, until_answered};
 use crate::invocation::{EnforcementBatch, PrecheckBatch, ToolInvoker};
-use crate::lifecycle::RunRecord;
+use crate::lifecycle::{RunRecord, RunTerminationKind};
 use crate::owner::ChunkWork as _;
 use crate::owner::NO_DEADLINE;
 use crate::program_output::ProgramOutputWriter;
@@ -215,7 +215,11 @@ fn publish_head(
 /// learns why on the Run stream, once a termination written first has
 /// landed ([`spawn_stream_end`]).
 fn terminate_program(handle: &OwnerHandle, start: &OwnerStart, state: &OwnerState) {
-    handle.stop().request();
+    if state.terminated_as() == Some(RunTerminationKind::Canceled) {
+        handle.stop().request_canceled();
+    } else {
+        handle.stop().request();
+    }
     if let Some(link) = stream_link(start)
         && !state.ends_stream_first()
     {
@@ -653,6 +657,7 @@ fn invoker(
         module.provider_renamer.clone(),
         module.search.clone(),
         module.private_tools.clone(),
+        module.sub_agents.clone(),
         module.human_interface.clone(),
         module.database.clone(),
         module.workspaces.clone(),

@@ -35,17 +35,17 @@ pub(crate) async fn compose(config: &str) -> Composed {
     compose_with(config, None).await
 }
 
-/// [`compose`], with `factory` registered for MCP's tool surface.
+/// [`compose`], with `factory` registered as the Sub-agent's.
 pub(crate) async fn compose_with(
     config: &str,
-    factory: Option<Arc<dyn coral_app::McpInterfaceFactory>>,
+    factory: Option<Arc<dyn coral_app::SubAgentToolsFactory>>,
 ) -> Composed {
     let state_root = TempDir::new().expect("temporary state root");
     coral_test_support::write_server_config(state_root.path(), config);
     let runtime = coral_app::start_runtime(coral_app::Launch {
         config_dir: Some(state_root.path().to_owned()),
         run_executor_program: Some(PathBuf::from(env!("CARGO_BIN_EXE_coral"))),
-        mcp_interface_factory: factory,
+        sub_agent_factory: factory,
         ..coral_app::Launch::default()
     })
     .await

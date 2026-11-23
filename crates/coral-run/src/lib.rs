@@ -160,7 +160,7 @@ pub use approval_history::{
 };
 mod approval_repository;
 mod builtin;
-pub use builtin::PrivateTools;
+pub use builtin::{PrivateTools, RunStop, SubAgentCaller, SubAgentError, SubAgentTools};
 mod enforcement;
 mod engine;
 mod error;
@@ -272,6 +272,8 @@ pub struct RunModule {
     policies: coral_policy::ToolPolicyModule,
     provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
     private_tools: Option<PrivateTools>,
+    /// Shared by every clone, so one call wires them all.
+    sub_agents: builtin::SubAgentSlot,
     human_interface: Option<HumanInterfaceUrl>,
     /// What `coral.search` discovers through.
     search: coral_search::UniversalSearchModule,
@@ -368,6 +370,7 @@ impl RunModule {
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             provider_renamer: None,
             private_tools: None,
+            sub_agents: Arc::default(),
             human_interface: None,
             search: coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
             database,
@@ -415,6 +418,7 @@ impl RunModule {
             policies: coral_policy::ToolPolicyModule::new(database.clone(), workspaces.clone()),
             provider_renamer: None,
             private_tools: None,
+            sub_agents: Arc::default(),
             human_interface: None,
             search: coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone()),
             database,
@@ -493,6 +497,13 @@ impl RunModule {
     pub fn with_private_tools(mut self, private_tools: PrivateTools) -> Self {
         self.private_tools = Some(private_tools);
         self
+    }
+
+    /// Lets `coral.agent` and `coral.cancelAgent` reach the Sub-agent, from
+    /// every clone of this module. Only the first call sets it; without it,
+    /// such a call fails with `tool_unavailable`.
+    pub fn set_sub_agent_tools(&self, tools: Arc<dyn SubAgentTools>) {
+        let _already_set = self.sub_agents.set(tools);
     }
 
     /// Makes `coral.search` discover through `search`, the process's one

@@ -329,6 +329,8 @@ fn duration_nanos(duration: Duration) -> i64 {
 /// uncatchable V8 termination plus a notification every stop-aware wait selects on.
 pub(crate) struct ExecutionStop {
     requested: AtomicBool,
+    /// Whether a cancellation of the Run asked for the stop.
+    canceled: AtomicBool,
     requested_notification: Notify,
     v8: coral_v8::ProgramExecutionControl,
 }
@@ -337,6 +339,7 @@ impl ExecutionStop {
     pub(crate) fn new() -> Self {
         Self {
             requested: AtomicBool::new(false),
+            canceled: AtomicBool::new(false),
             requested_notification: Notify::new(),
             v8: coral_v8::ProgramExecutionControl::new(),
         }
@@ -349,8 +352,18 @@ impl ExecutionStop {
         }
     }
 
+    /// Requests the stop of a Run that was canceled.
+    pub(crate) fn request_canceled(&self) {
+        self.canceled.store(true, Ordering::SeqCst);
+        self.request();
+    }
+
     pub(crate) fn is_requested(&self) -> bool {
         self.requested.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn is_canceled(&self) -> bool {
+        self.canceled.load(Ordering::SeqCst)
     }
 
     pub(crate) async fn requested(&self) {

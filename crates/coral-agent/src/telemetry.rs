@@ -149,6 +149,7 @@ impl TurnEnd {
             Err(TurnFailure::Model(error)) => Self::Failed(model_failure(error)),
             Err(TurnFailure::TooManyModelCalls) => Self::Failed("too_many_model_calls"),
             Err(TurnFailure::NoAnswer) => Self::Failed("no_answer"),
+            Err(TurnFailure::TimeLimit) => Self::Failed("time_limit"),
             Err(TurnFailure::Internal) => Self::Failed("internal"),
             Err(TurnFailure::Canceled) => Self::Canceled,
         }

@@ -37,6 +37,7 @@ mod scoping;
 mod search;
 mod secret_stores;
 mod shared_tools;
+mod sub_agents;
 mod summary;
 mod support;
 mod sweep;
