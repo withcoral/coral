@@ -28,8 +28,8 @@ Delegate data work, reads and writes, to one of Coral's agents: \
 verbatim, today's date, and where you would look first. One question per agent. Then wait for its \
 answer: do not search or read the same data yourself.
 
-A call returns when the turn ends, or after `wait_ms`, 20 seconds by default. While `state` is \
-`running`, call again with `sub_agent_id`. On `needs_action`, write each `url` in \
+A call returns when the turn ends, or after `wait_ms`: 20 seconds by default, at most 10 minutes. \
+While `state` is `running`, call again with `sub_agent_id`. On `needs_action`, write each `url` in \
 `required_actions` to the user, then call again. To reply, pass `sub_agent_id` and `message`. A \
 turn ends after 10 minutes: reply to continue it. To stop an agent, call `coral.cancelAgent`, or \
 cancel the run that waits on it. To check a step, call `wait` with its `run_id`.";
