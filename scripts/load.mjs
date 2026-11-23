@@ -149,7 +149,7 @@ export async function parseArgs(argv) {
   }
   if (!['postgres', 'sqlite'].includes(options.backend)) throw new Error('--backend is postgres or sqlite')
   if (!['approve', 'hold'].includes(options.mode)) throw new Error('--mode is approve or hold')
-  if (!(options.path in PATHS)) throw new Error('--path is owner, stream or both')
+  if (!Object.hasOwn(PATHS, options.path)) throw new Error('--path is owner, stream or both')
   const unknown = options.cells.filter((cell) => !CELLS.includes(cell))
   if (unknown.length > 0) throw new Error(`Unknown cell ${unknown.join(', ')}; cells are ${CELLS.join(', ')}`)
   if (options.backend === 'sqlite' && options.latency.some((ms) => ms > 0)) {
@@ -486,7 +486,10 @@ const HEADLINES = {
   ],
 }
 
-/** Each stream cell beside its owner cell: the ratio of each headline number, and whether all stay within PARITY. */
+/**
+ * Each stream cell beside its owner cell: the ratio of each headline number, and whether all
+ * stay within PARITY. A headline either cell lacks leaves the cell inconclusive.
+ */
 export function summarizeParity(reports) {
   const rows = []
   for (const stream of reports.filter((r) => r.path === 'stream')) {
@@ -496,11 +499,12 @@ export function summarizeParity(reports) {
       const [o, s] = [read(owner), read(stream)]
       return [name, o > 0 && s !== undefined && s !== null ? s / o : null]
     })
-    const within = ratios.every(([, ratio]) => ratio === null || ratio <= PARITY)
+    const over = ratios.some(([, ratio]) => ratio !== null && ratio > PARITY)
+    const missing = ratios.some(([, ratio]) => ratio === null)
     rows.push([
       stream.pair,
       ...ratios.map(([name, ratio]) => `${name}: ${ratio === null ? '—' : `${fmt(ratio, 2)}×`}`),
-      within ? `within ${PARITY}×` : `OVER ${PARITY}×`,
+      over ? `OVER ${PARITY}×` : missing ? 'inconclusive' : `within ${PARITY}×`,
     ])
   }
   if (rows.length === 0) return ''

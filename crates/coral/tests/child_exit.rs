@@ -30,7 +30,7 @@ fn local_children() -> Vec<String> {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_local_childs_exit_ends_its_run_interrupted_at_once() {
     let composed = compose(WEB).await;
-    let run_id = spin_a_run(&composed.client).await;
+    let run_id = spin_a_run(&composed).await;
     let children = local_children();
     assert!(!children.is_empty(), "a local child runs the Run");
     for pid in children {

@@ -145,7 +145,7 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   hint. It retires the Run Owner as a Run's one writer, the Run Inbox, the
   per-Run worker lease and its expired-lease sweep, each owner's
   subscription to the change signal, and the Shutdown Drain's interruption
-  of live Runs. Fix a defect in a retiring part under the rules below. Build
+  of live Runs, apart from a local child's at the drain's length. Fix a defect in a retiring part under the rules below. Build
   new Run coordination beside the owner path, in the #2884 slice that
   replaces that part. The one exception is the Run stream (#2903): a Run that
   a Run Executor holds is hosted by a Run Owner whose Program is its stream.
@@ -158,10 +158,13 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   (#2905) starts a new owner, rebuilt from the ledger. The owner it
   replaces, whose stream moved to another Coral Instance or to a reopen on
   its own, rebuilds nothing: its chunk is refused. The Shutdown Drain never
-  interrupts that owner's Run (#2908): the owner dispatches no call the
-  Program makes after the drain starts, and once its Coral Instance holds no
-  pull stream and no dispatch is in flight on the stream, or at the drain's
-  length, it detaches and ends the stream cleanly. For a Run that no worker
+  interrupts that owner's Run on a dialed Run Executor (#2908): the owner
+  dispatches no call the Program makes after the drain starts, and once its
+  Coral Instance holds no pull stream and no dispatch is in flight on the
+  stream, or at the drain's length, it detaches and ends the stream cleanly.
+  A local child's stream can reopen only on its parent, so its owner keeps
+  dispatching through the drain, and at the drain's length it ends the Run
+  Interrupted. For a Run that no worker
   claim fences, the Run sweeper (#2906) also writes under the claim and the
   head, as the sweeper section of ADR 0027 states. So does the Coral Instance
   that receives a decision or a cancellation for it (#2907), and it compares
@@ -426,6 +429,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - A test that compiles TypeScript but is not about the compilation deadline
   uses `coral_test_support::TEST_COMPILATION_TIMEOUT`. The production deadline
   fails such tests on a starved runner.
+- A test that runs a Program in V8 needs real `coral` children, since no Run
+  Executor runs in the Coral process. Put it under `crates/coral/tests`, which
+  builds the binary, and pass `env!("CARGO_BIN_EXE_coral")` through
+  `Launch.run_executor_program` or `ServerBuilder::with_run_executor_program`.
 - A test server whose subject is not semantic search turns it off: write its
   config with `coral_test_support::write_server_config`. With the default on,
   a start whose state root holds no model, as a test's fresh one does,

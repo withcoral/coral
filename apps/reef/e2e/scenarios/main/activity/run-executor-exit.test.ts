@@ -22,7 +22,14 @@ test('A Run whose local Run Executor dies ends interrupted at once, and the next
     await step('Kill the local Run Executor that runs it', async () => {
       killed = await localRunExecutors()
       expect(killed.length).toBeGreaterThan(0)
-      for (const pid of killed) process.kill(pid, 'SIGKILL')
+      for (const pid of killed) {
+        try {
+          process.kill(pid, 'SIGKILL')
+        } catch (error) {
+          // A child that retired since the listing is gone already.
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error
+        }
+      }
     })
     await step('The Run ends interrupted at once', async () => {
       const killedAt = Date.now()

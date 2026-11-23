@@ -49,6 +49,7 @@ test('options that would run a different workload than requested are rejected', 
     [['--cells', 'nope'], /Unknown cell nope/],
     [['--mode', 'sometimes'], /--mode is approve or hold/],
     [['--path', 'sideways'], /--path is owner, stream or both/],
+    [['--path', 'constructor'], /--path is owner, stream or both/],
   ]) {
     await assert.rejects(parseArgs(argv), message, argv.join(' '))
   }
@@ -80,4 +81,5 @@ test('the parity table flags a stream cell over the rule', () => {
   })
   assert.match(summarizeParity([report('owner', 1000), report('stream', 1200)]), /within 1.25×/)
   assert.match(summarizeParity([report('owner', 1000), report('stream', 1300)]), /OVER 1.25×/)
+  assert.match(summarizeParity([report('owner', 1000), report('stream', undefined)]), /inconclusive/)
 })

@@ -61,7 +61,7 @@ async fn a_reef_cancel_stops_a_run_started_over_mcp_promptly() {
         ActivityRunState, CancelActivityRunRequest, activity_service_client::ActivityServiceClient,
     };
     let composed = compose(WEB).await;
-    let run_id = spin_a_run(&composed.client).await;
+    let run_id = spin_a_run(&composed).await;
 
     let mut activity = ActivityServiceClient::connect(composed.runtime.endpoint_uri().to_owned())
         .await
@@ -103,7 +103,7 @@ async fn readiness_reports_not_serving_while_a_local_childs_run_keeps_the_drain(
         HealthCheckRequest, health_check_response::ServingStatus, health_client::HealthClient,
     };
     let composed = compose(&format!("{WEB}[runtime]\nshutdown_drain_seconds = 3\n")).await;
-    let run_id = spin_a_run(&composed.client).await;
+    let run_id = spin_a_run(&composed).await;
     composed.client.cancel().await.expect("close MCP client");
     let mcp = format!("http://{}", composed.runtime.mcp_http_addr());
     let http = reqwest::Client::new();
@@ -192,7 +192,7 @@ async fn a_factory_is_told_when_shutdown_begins() {
     )
     .await;
     // A live Run keeps the Shutdown Drain going.
-    spin_a_run(&composed.client).await;
+    spin_a_run(&composed).await;
     composed.client.cancel().await.expect("close MCP client");
     let mut stopping = factory
         .stopping

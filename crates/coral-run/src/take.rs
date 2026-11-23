@@ -130,10 +130,14 @@ impl RunModule {
                         match run_repository::any_waiting(&self.database).await {
                             Ok(true) => children.request_room(),
                             Ok(false) => {}
-                            Err(error) => tracing::warn!(
-                                error.type = safe::kind(error.code()),
-                                "waiting Runs could not be read"
-                            ),
+                            Err(error) => {
+                                // The next backstop reads again.
+                                rang_since_ask = true;
+                                tracing::warn!(
+                                    error.type = safe::kind(error.code()),
+                                    "waiting Runs could not be read"
+                                );
+                            }
                         }
                     }
                     let room = streams.room_signalled(timing.backstop);

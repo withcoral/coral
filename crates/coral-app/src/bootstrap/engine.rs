@@ -878,8 +878,9 @@ fn private_tools(
 /// but the Run Executor listener binds. The expired-lease sweep gives a Run
 /// whose lease lapsed before boot its owner back before the first request;
 /// the Run sweeper, on SQLite, ends the Runs that an earlier process's
-/// local children held. A pass that fails is logged, the listeners bind
-/// anyway, and its next pass reads again.
+/// local children held, up to its pass limit: later passes end the rest
+/// once their Run Executors' leases lapse. A pass that fails is logged, the
+/// listeners bind anyway, and its next pass reads again.
 async fn sweep_at_boot(runs: &coral_run::RunModule) {
     if let Err(code) = sweep_expired_leases(runs).await {
         tracing::warn!(

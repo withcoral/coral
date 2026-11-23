@@ -663,8 +663,10 @@ impl OwnerHandle {
         self.shared.detached.load(Ordering::SeqCst)
     }
 
-    /// A step of the Shutdown Drain. An owner that hosts a Run stream moves
-    /// the stream; another is stopped once the drain is out, which
+    /// A step of the Shutdown Drain. An owner that hosts a dialed Run
+    /// Executor's stream moves the stream. One that hosts a local child's
+    /// stream keeps dispatching, and at the drain's length ends its Run
+    /// Interrupted. Another is stopped once the drain is out, which
     /// interrupts its Run.
     pub(crate) fn drain(&self, step: DrainStep) {
         if let Some(stream) = &self.shared.stream {

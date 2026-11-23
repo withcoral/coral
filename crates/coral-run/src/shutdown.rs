@@ -4,10 +4,11 @@
 //! grace for them to record it. A Run whose owner records nothing keeps its
 //! lease, and the next process's expired-lease sweep ends it after expiry.
 //!
-//! A Run that a Run Executor runs is never interrupted here (ADR 0027,
-//! Reconnect): the drain closes the pull streams and moves each Run stream
-//! once no dispatch is in flight on it, and the Run goes on on another
-//! Coral Instance.
+//! A Run that a dialed Run Executor runs is never interrupted here (ADR
+//! 0027, Reconnect): the drain closes the pull streams and moves each Run
+//! stream once no dispatch is in flight on it, and the Run goes on on
+//! another Coral Instance. A local child's stream can reopen only here, so
+//! its Run keeps dispatching and ends interrupted at the drain's length.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

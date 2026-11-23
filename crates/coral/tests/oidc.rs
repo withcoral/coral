@@ -1,6 +1,7 @@
 //! The composed server's sign-in journeys through the upstream OIDC
-//! provider. They run Programs, so they live beside the `coral` binary that
-//! the local Run Executors run.
+//! provider. The refresh journey runs a Program, so it lives beside the
+//! `coral` binary that the local Run Executors run, with the login journey
+//! whose fixtures it shares.
 #![allow(
     unused_crate_dependencies,
     missing_docs,

@@ -134,10 +134,10 @@ pub(crate) async fn run_to_end(client: &McpClient, program: &str) -> serde_json:
 }
 
 /// Starts a Run over MCP whose Program spins and commits nothing after it
-/// starts, so only a stop ends it; returns its id once it is running.
-pub(crate) async fn spin_a_run(client: &McpClient) -> String {
+/// starts, so only a stop ends it; returns its id once a local child runs it.
+pub(crate) async fn spin_a_run(composed: &Composed) -> String {
     let exec = mcp_tool(
-        client,
+        &composed.client,
         "exec",
         serde_json::json!({
             "goal": "Spin until stopped",
@@ -148,10 +148,42 @@ pub(crate) async fn spin_a_run(client: &McpClient) -> String {
     )
     .await;
     assert_eq!(exec.get("state"), Some(&serde_json::json!("running")));
-    exec.get("run_id")
+    let run_id = exec
+        .get("run_id")
         .and_then(serde_json::Value::as_str)
         .expect("run id")
-        .to_owned()
+        .to_owned();
+    started_on_a_run_executor(composed.state_root.path(), &run_id).await;
+    run_id
+}
+
+/// Waits up to 30 s until the Run `run_id`, in the SQLite state database at
+/// `dir`, has started on a Run Executor.
+pub(crate) async fn started_on_a_run_executor(dir: &Path, run_id: &str) {
+    use sqlx::Connection as _;
+    let mut connection = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new().filename(dir.join("coral.db")),
+    )
+    .await
+    .expect("open the state database");
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let (started,): (bool,) = sqlx::query_as(
+                "SELECT execution_started_at_unix_nanos IS NOT NULL \
+                 FROM program_run_records WHERE id = ?",
+            )
+            .bind(run_id)
+            .fetch_one(&mut connection)
+            .await
+            .expect("read the Run");
+            if started {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the Run starts on a Run Executor");
 }
 
 /// The state of the Run `run_id` as the SQLite state database at `dir`

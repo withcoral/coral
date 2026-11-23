@@ -4,8 +4,8 @@ use crate::Error;
 
 static V8_INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
 
-/// Whether this process started V8: its platform starts with the first
-/// compile or execution, and never stops.
+/// Whether this process tried to start V8: the first compile or execution
+/// starts its platform, which never stops, and a failed start is kept.
 pub(crate) fn initialized() -> bool {
     V8_INITIALIZED.get().is_some()
 }

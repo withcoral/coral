@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
 
+mod composed;
+
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// `EX_TEMPFAIL`: the exit status launchers retry. Desktop matches this value.
@@ -401,16 +403,42 @@ fn second_runtime_on_a_held_state_root_exits_temporarily() {
     assert_eq!(status.code(), Some(0), "{status}");
 }
 
+/// Runs `future` to its end on a Tokio runtime of its own.
+fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a Tokio runtime")
+        .block_on(future)
+}
+
+/// Calls the MCP `exec` tool at `url` with `arguments`, a JSON object, and
+/// returns the answer's body.
+#[cfg(unix)]
+fn exec_over_mcp(url: String, arguments: &str) -> String {
+    let call = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"exec","arguments":{arguments}}}}}"#
+    );
+    let response = reqwest::blocking::Client::builder()
+        .timeout(STARTUP_TIMEOUT)
+        .build()
+        .expect("an HTTP client")
+        .post(url)
+        .header("Accept", "application/json, text/event-stream")
+        .header("Content-Type", "application/json")
+        .body(call)
+        .send()
+        .expect("call exec");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    response.text().expect("the exec answer")
+}
+
 /// A Workspace created over the runtime's gRPC listener: its MCP URL.
 fn workspace_mcp_url(runtime: &Runtime) -> String {
     use coral_grpc::coral::management::v1::CreateWorkspaceRequest;
     use coral_grpc::coral::management::v1::workspace_service_client::WorkspaceServiceClient;
 
-    let tokio = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("a Tokio runtime");
-    let workspace = tokio.block_on(async {
+    let workspace = block_on(async {
         let mut client = WorkspaceServiceClient::connect(runtime.grpc_endpoint.clone())
             .await
             .expect("connect gRPC");
@@ -467,19 +495,10 @@ fn a_program_compiles_on_a_local_child_that_exits_when_the_runtime_is_killed() {
     let temp = tempfile::tempdir().expect("temp dir");
     let mut runtime = Runtime::start(&local_state_root(&temp), false);
     let url = workspace_mcp_url(&runtime);
-    let exec = r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"exec","arguments":{"goal":"Compile on a child","intent":"Compile on a child","program":"return 40 + 2;"}}}"#;
-    let response = reqwest::blocking::Client::builder()
-        .timeout(STARTUP_TIMEOUT)
-        .build()
-        .expect("an HTTP client")
-        .post(url)
-        .header("Accept", "application/json, text/event-stream")
-        .header("Content-Type", "application/json")
-        .body(exec)
-        .send()
-        .expect("call exec");
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let body = response.text().expect("the exec answer");
+    let body = exec_over_mcp(
+        url,
+        r#"{"goal":"Compile on a child","intent":"Compile on a child","program":"return 40 + 2;"}"#,
+    );
     assert!(
         body.contains(r#""final_value":{"kind":"value","value":42}"#),
         "{body}"
@@ -496,4 +515,42 @@ fn a_program_compiles_on_a_local_child_that_exits_when_the_runtime_is_killed() {
         assert!(Instant::now() < deadline, "the child outlives the runtime");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Catches: a boot that leaves running the Runs a killed runtime's local
+/// children held, or a child that outlives its runtime while it holds a Run.
+#[cfg(unix)]
+#[test]
+fn a_killed_runtimes_run_ends_interrupted_when_the_runtime_starts_again() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let state_root = local_state_root(&temp);
+    let mut runtime = Runtime::start(&state_root, false);
+    let url = workspace_mcp_url(&runtime);
+    let body = exec_over_mcp(
+        url,
+        r#"{"goal":"Spin until stopped","intent":"Spin until stopped","program":"while (true) {}","wait_ms":200}"#,
+    );
+    let run_id = body
+        .split_once(r#""run_id":""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(id, _)| id.to_owned())
+        .expect("the Run's id");
+    block_on(composed::started_on_a_run_executor(&state_root, &run_id));
+    let children = run_executor_children(runtime.child.id());
+    let [child] = children.as_slice() else {
+        panic!("one local child: {children:?}");
+    };
+
+    runtime.child.kill().expect("kill the runtime");
+    runtime.child.wait().expect("reap the runtime");
+    let deadline = Instant::now() + EXIT_TIMEOUT;
+    while runs(child) {
+        assert!(Instant::now() < deadline, "the child outlives the runtime");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let state = || block_on(composed::recorded_run_state(&state_root, &run_id));
+    assert_eq!(state(), "running");
+    // The boot pass runs before the listeners serve.
+    let _again = Runtime::start(&state_root, false);
+    assert_eq!(state(), "interrupted");
 }

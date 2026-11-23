@@ -40,8 +40,9 @@ pub use profile::{TYPESCRIPT_PROFILE, TYPESCRIPT_PROFILE_ID, TypeScriptProfile};
 pub use program_error::{ProgramError, ProgramErrorFrame, ProgramToolError};
 pub use runtime::{FreshIsolate, ProgramExecutor};
 
-/// Whether this process started V8. The Coral process never does: it
-/// compiles and executes only through a Run Executor (ADR 0027).
+/// Whether this process tried to start V8, whether or not the start
+/// succeeded. The Coral process never does: it compiles and executes only
+/// through a Run Executor (ADR 0027).
 #[must_use]
 pub fn initialized() -> bool {
     v8_support::initialized()

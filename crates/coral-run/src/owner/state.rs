@@ -1344,7 +1344,9 @@ impl OwnerState {
         // A Run stream's deadline ends its Run on its own, written first or
         // by its terminal write: the cancellation is then a repeat.
         let deadline_decides = past_deadline && self.requests.is_some();
-        if self.termination.is_none() && !deadline_decides {
+        // A Run stream's end written first came first: the cancellation is
+        // then a repeat.
+        if self.termination.is_none() && self.stream_end.is_none() && !deadline_decides {
             effects.extend(self.terminate(
                 RunTerminationKind::Canceled,
                 Some(requester),
@@ -1933,9 +1935,35 @@ impl OwnerState {
                 self.draining = Draining::Moving;
                 self.move_stream()
             }
-            DrainStep::Interrupt => {
-                self.end_stream_run(RunTerminationKind::Interrupted, now_unix_nanos)
-            }
+            DrainStep::Interrupt => match self.phase {
+                // `Started` is on its way: the Program never starts, and the
+                // terminal write ends the Run Interrupted once it lands. A
+                // cancellation that waits for the start came first, and
+                // decides. The Run deadline is not known before the start.
+                Phase::Starting => {
+                    let canceled = self
+                        .parked
+                        .iter()
+                        .any(|message| matches!(message, Message::Cancel { .. }));
+                    if !canceled
+                        && let Ok(end) = RequestedTermination::new(
+                            RunTerminationKind::Interrupted,
+                            None,
+                            now_unix_nanos,
+                            0,
+                        )
+                    {
+                        self.stream_end = Some(end);
+                    }
+                    self.stop_requested = true;
+                    Vec::new()
+                }
+                // Past the Run deadline the timeout decides, as its timer would.
+                _ if now_unix_nanos >= self.limits.deadline_at_unix_nanos => {
+                    self.deadline(now_unix_nanos)
+                }
+                _ => self.end_stream_run(RunTerminationKind::Interrupted, now_unix_nanos),
+            },
         }
     }
 

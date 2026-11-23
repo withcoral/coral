@@ -86,8 +86,9 @@ pub struct RunExecutorConfig {
     pub coral_address: CoralAddress,
     /// The credential every call carries.
     pub token: Token,
-    /// Coral started it as a local child, its token down stdin. Once it
-    /// retires, a dial that opens no connection means its parent is gone:
+    /// Coral started it as a local child, its token down stdin. Once it is
+    /// ordered to retire, a dial that opens no connection means its parent
+    /// is gone:
     /// it exits at once, and Coral's sweeper ends the Runs it holds.
     pub local_child: bool,
     /// The most Runs it holds at once: its free room while it holds none.
@@ -154,7 +155,7 @@ pub async fn run(
     };
     let retire = async {
         retire.await;
-        link.runs.retire();
+        link.runs.order_to_retire();
         pending::<std::convert::Infallible>().await
     };
     tokio::select! {
@@ -296,6 +297,9 @@ pub(crate) struct Holding {
     streams: u32,
     /// The Run Executor retires.
     retiring: bool,
+    /// The order to retire came from outside, a closed stdin or a signal,
+    /// not from an isolate that missed its stop.
+    ordered: bool,
 }
 
 impl Holding {
@@ -311,6 +315,15 @@ impl Holding {
 }
 
 impl Runs {
+    /// The order to retire from outside the Run Executor.
+    fn order_to_retire(&self) {
+        self.holding.send_if_modified(|holding| {
+            let changed = !(holding.retiring && holding.ordered);
+            (holding.retiring, holding.ordered) = (true, true);
+            changed
+        });
+    }
+
     /// Orders the Run Executor to retire.
     pub(crate) fn retire(&self) {
         self.holding
@@ -449,7 +462,7 @@ impl Link {
                     self.runs.drained().await;
                     return Err(RunError::Refused);
                 }
-                End::Unreachable if self.local_child && self.runs.holding.borrow().retiring => {
+                End::Unreachable if self.local_child && self.runs.holding.borrow().ordered => {
                     // Its stdin closed and nothing listens at its parent's
                     // address: no Coral is left to end its Runs here.
                     tracing::warn!("the Coral that started this Run Executor is gone; exiting");

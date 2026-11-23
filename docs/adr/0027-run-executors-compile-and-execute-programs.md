@@ -180,7 +180,7 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   its side of the stream cleanly; the Run Executor reopens it at once and the Run goes on elsewhere. At the drain's
   length it closes the rest, whose calls in flight end `indeterminate`. A local child dials only its parent, so its
   streams cannot move: the drain keeps dispatching for them, and at its length their Runs end Interrupted. A Run on a
-  dialed Run Executor is never interrupted by the drain, and a rolling deploy loses none.
+  dialed Run Executor is never interrupted by the drain, and a rolling deploy loses none of them.
 - **The word is reconnect.** A Run Executor reconnects a Run, and the Run's stream moves. Coral never resumes a Run: no
   Program is recreated and no isolate is snapshotted.
 

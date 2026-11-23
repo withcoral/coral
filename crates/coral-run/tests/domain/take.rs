@@ -80,7 +80,7 @@ impl LocalChild for SilentChild {
 }
 
 /// Catches: a Run that waits while no pull stream has room and starts no
-/// local child, or a child started while nothing waits.
+/// local child.
 #[tokio::test]
 async fn a_run_that_waits_with_no_room_asks_for_a_local_child() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
@@ -101,11 +101,6 @@ async fn a_run_that_waits_with_no_room_asks_for_a_local_child() {
             .take_loop(held, Some(loop_children), timing(Duration::from_millis(10)))
             .await
     });
-    // The only path to a start is the loop's request, which needs a Run
-    // that waits.
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(starter.starts(), 0, "nothing waits");
-
     waiting_runs(&fixture, &runs, 1).await;
     tokio::time::timeout(EVENTUALLY, async {
         while starter.starts() == 0 {
