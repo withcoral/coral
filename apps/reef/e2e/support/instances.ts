@@ -50,12 +50,22 @@ export function coralInstances() {
       expect(mcp.filter((request) => request.instance !== instance)).toEqual([])
       return run
     },
-    /** The instance that holds the Run's stream, read from the Run row's holder. */
+    /**
+     * The instance that holds the Run's stream, read from the Run row's holder
+     * once the Run has its start mark. The instances start no local Run
+     * Executor, so a dialed one runs every Run.
+     */
     async holder(run: string) {
-      const { holder, instance } = await control<{
-        holder: string | null
-        instance: number | null
-      }>(`/holder?run=${encodeURIComponent(run)}`)
+      const read = () =>
+        control<{
+          holder: string | null
+          started: boolean
+          kind: string | null
+          instance: number | null
+        }>(`/holder?run=${encodeURIComponent(run)}`)
+      await expect.poll(async () => (await read()).started, { timeout: 15_000 }).toBe(true)
+      const { holder, kind, instance } = await read()
+      expect(kind).toBe('dialed')
       if (instance === null) throw new Error(`${run} is held by ${holder ?? 'no Coral Instance'}`)
       return instance
     },

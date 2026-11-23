@@ -1,4 +1,5 @@
 import { expect, test } from 'vitest'
+import { ActivityRunState } from '../../generated/coral/management/v1/activity_pb.ts'
 import { coralInstances, expectNoUnavailable } from '../../support/instances.ts'
 import { managementClients } from '../../support/management.ts'
 import { openApiDocument } from '../../support/provider-fixtures.ts'
@@ -89,6 +90,11 @@ test('An account connected through one Coral Instance continues a Run that the o
           .toEqual(['invocation_approval'])
         expect(await pendingConnections()).toBe(0)
         expect(await instances.holder(run)).toBe(owner)
+        // Each Run Executor holds one Run, so the next journey needs this one ended.
+        await api.activity.cancelActivityRun({ name: run })
+        await expect
+          .poll(async () => (await api.activity.inspectRun({ name: run, pageSize: 1 })).run?.state)
+          .toBe(ActivityRunState.CANCELED)
       })
     }),
   )
