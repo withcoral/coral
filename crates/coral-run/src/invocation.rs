@@ -263,6 +263,8 @@ pub(crate) struct ToolInvoker {
     search: coral_search::UniversalSearchModule,
     /// What `coral.addCustomTool`, `updateCustomTool` and `removeCustomTool` author through.
     private_tools: Option<crate::builtin::PrivateTools>,
+    /// What `coral.agent` and `coral.cancelAgent` reach the Sub-agent through.
+    sub_agents: crate::builtin::SubAgentSlot,
     human_interface: Option<crate::HumanInterfaceUrl>,
     database: Arc<coral_db::Database>,
     workspaces: WorkspaceModule,
@@ -299,6 +301,7 @@ impl ToolInvoker {
         provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
         search: coral_search::UniversalSearchModule,
         private_tools: Option<crate::builtin::PrivateTools>,
+        sub_agents: crate::builtin::SubAgentSlot,
         human_interface: Option<crate::HumanInterfaceUrl>,
         database: Arc<coral_db::Database>,
         workspaces: WorkspaceModule,
@@ -318,6 +321,7 @@ impl ToolInvoker {
             provider_renamer,
             search,
             private_tools,
+            sub_agents,
             human_interface,
             database,
             workspaces,
@@ -1046,10 +1050,12 @@ impl ToolInvoker {
             renamer: self.provider_renamer.as_deref(),
             search: &self.search,
             private_tools: self.private_tools.as_ref(),
+            sub_agents: self.sub_agents.get().map(AsRef::as_ref),
             actor: &self.actor,
             context: context.as_ref(),
             principal: &self.principal,
             workspace_id: &self.workspace_id,
+            run_id: &self.run_id,
             human_interface,
             run: self,
         };

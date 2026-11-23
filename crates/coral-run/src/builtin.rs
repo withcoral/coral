@@ -27,6 +27,7 @@ use crate::{
 };
 
 mod add_provider;
+mod agent;
 mod get_policy;
 mod get_provider;
 mod list_providers;
@@ -48,8 +49,11 @@ pub(crate) enum BuiltinCall {
     Search(Box<search::Search>),
     SaveTool(Box<private_tools::SaveTool>),
     RemoveCustomTool(private_tools::RemoveCustomTool),
+    SubAgent(agent::SubAgentCall),
 }
 
+pub(crate) use agent::SubAgentSlot;
+pub use agent::{SubAgentCaller, SubAgentError, SubAgentTools};
 pub use private_tools::PrivateTools;
 
 impl BuiltinCall {
@@ -102,8 +106,11 @@ impl BuiltinCall {
                     BuiltinArguments::RemoveCustomTool(arguments) => {
                         private_tools::RemoveCustomTool::new(&arguments).map(Self::RemoveCustomTool)
                     }
-                    BuiltinArguments::Agent(_) | BuiltinArguments::CancelAgent(_) => {
-                        Err(CoralFailure::ToolUnavailable.into())
+                    BuiltinArguments::Agent(arguments) => {
+                        Ok(Self::SubAgent(agent::SubAgentCall::Agent(arguments)))
+                    }
+                    BuiltinArguments::CancelAgent(arguments) => {
+                        Ok(Self::SubAgent(agent::SubAgentCall::Cancel(arguments)))
                     }
                 }),
         )
@@ -121,6 +128,7 @@ impl BuiltinCall {
             Self::Search(call) => call.perform(host).await,
             Self::SaveTool(call) => call.perform(host).await,
             Self::RemoveCustomTool(call) => call.perform(host).await,
+            Self::SubAgent(call) => call.perform(host).await,
         }
     }
 }
@@ -152,8 +160,8 @@ pub(crate) async fn recover(
             .await
             .map(Some),
         // A read leaves nothing behind, a policy change and a Private Tool
-        // change record no call to read, and this version cannot read a Tool
-        // it does not perform.
+        // change record no call to read, a Sub-agent's Turn goes on without
+        // its caller, and this version cannot read a Tool it does not perform.
         Some(
             BuiltinTool::ListProviders
             | BuiltinTool::GetProvider
@@ -203,12 +211,16 @@ pub(crate) struct BuiltinHost<'a> {
     /// Where the authoring Tools author; without it, they
     /// fail as `tool_unavailable`.
     pub(crate) private_tools: Option<&'a PrivateTools>,
+    /// Where `agent` and `cancelAgent` reach the Sub-agent; without it, they
+    /// fail as `tool_unavailable`.
+    pub(crate) sub_agents: Option<&'a dyn SubAgentTools>,
     pub(crate) actor: &'a AuthenticatedPrincipal,
     /// The invoking User's change context; `None` for an Agent, which
     /// reaches no Tool that changes the Workspace.
     pub(crate) context: Option<&'a ChangeContext>,
     pub(crate) principal: &'a Principal,
     pub(crate) workspace_id: &'a WorkspaceId,
+    pub(crate) run_id: &'a crate::RunId,
     pub(crate) human_interface: &'a HumanInterfaceUrl,
     pub(crate) run: &'a dyn InvokingRun,
 }

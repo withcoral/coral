@@ -653,6 +653,7 @@ fn invoker(
         module.provider_renamer.clone(),
         module.search.clone(),
         module.private_tools.clone(),
+        module.sub_agents.clone(),
         module.human_interface.clone(),
         module.database.clone(),
         module.workspaces.clone(),
