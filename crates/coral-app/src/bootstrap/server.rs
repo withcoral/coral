@@ -825,6 +825,12 @@ impl RunningServer {
         self.local_addr
     }
 
+    /// This start's Coral Instance id, which the Runs it holds record.
+    #[must_use]
+    pub fn coral_instance_id(&self) -> String {
+        self.engine.instance().to_string()
+    }
+
     /// Returns the initialized persistence foundation for application-owned
     /// companion composition.
     ///

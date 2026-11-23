@@ -545,6 +545,11 @@ impl Engine {
         Ok((booted, link))
     }
 
+    /// This start's Coral Instance.
+    pub(crate) fn instance(&self) -> &coral_run::CoralInstanceId {
+        self.modules.runs.instance()
+    }
+
     /// The initialized persistence foundation.
     pub(crate) fn database(&self) -> Arc<Database> {
         Arc::clone(&self.modules.database)

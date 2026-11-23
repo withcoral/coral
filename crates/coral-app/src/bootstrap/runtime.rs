@@ -304,6 +304,12 @@ impl RunningRuntime {
         self.grpc.local_addr()
     }
 
+    /// This start's Coral Instance id, which the Runs it holds record.
+    #[must_use]
+    pub fn coral_instance_id(&self) -> String {
+        self.grpc.coral_instance_id()
+    }
+
     /// The MCP HTTP listener address.
     #[must_use]
     pub fn mcp_http_addr(&self) -> SocketAddr {

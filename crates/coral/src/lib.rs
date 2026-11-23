@@ -194,6 +194,7 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
     if let Some(callback) = server.provider_oauth_callback_url() {
         println!("Coral Provider OAuth callback listening on {callback}");
     }
+    println!("Coral Instance {} started", server.coral_instance_id());
     println!("Coral gRPC server listening on {endpoint}");
     let address = server.mcp_http_addr();
     let url_path = coral_mcp::WORKSPACE_MCP_ROUTE;
