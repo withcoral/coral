@@ -226,8 +226,9 @@ holds the outline of the operator's pages.
   started last, forward or back, as [ADR 0021](0021-admin-operations-as-a-built-in-provider.md) decides.
 - Each Coral Instance with the core role keeps its own answer to the release check, so the notice of a new release can
   differ between page loads for some hours.
-- A Coral Instance that runs its own Run Executors ends their Runs when it stops. A deployment that must lose no Run in
-  an upgrade runs each Run Executor as a process with the Run Executor role alone.
+- A Coral Instance that runs its own Run Executors keeps dispatching for their Runs through its Shutdown Drain, and at
+  the drain's length those Runs end Interrupted. A deployment that must lose no Run in an upgrade runs each Run Executor
+  as a process with the Run Executor role alone.
 - Nothing in Coral reports that a role has no process. A Program that waits to its limit because no Run Executor takes
   it leaves one warning in the log.
 - An upgrade from a version older than the first release that supports a rolling upgrade stops every process first.

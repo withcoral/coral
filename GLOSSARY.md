@@ -1172,8 +1172,9 @@ component, target, mode, tier, Run Executor link role
 
 **Shutdown Drain**: What a Coral Instance does from its stop signal to its exit. It reports not ready, finishes the
 dispatches in flight of its Runs and the requests in flight on its listeners, and closes. It finishes dispatches, not
-Runs: each Run goes on at another Coral Instance, except the Runs of its own local Run Executors, which end. A setting
-limits its length, and a Shutdown Drain with no work takes no time. _Avoid_: graceful shutdown, lame duck, drain timeout
+Runs: each Run goes on at another Coral Instance. The Runs of its own local Run Executors cannot move, so it keeps
+dispatching for them, and at its length they end Interrupted. A setting limits its length, and a Shutdown Drain with no
+work takes no time. _Avoid_: graceful shutdown, lame duck, drain timeout
 
 **Run Executor**: The runtime outside the Coral process that executes accepted Coral Program packages, each in a fresh
 V8 isolate, and compiles Programs with the Program Compiler. It dials Coral at one address and presents a credential:
