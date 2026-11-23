@@ -51,15 +51,19 @@ impl SubAgentTools for AgentTools {
             }
             AgentArguments::Continue {
                 sub_agent_id,
-                message,
-                cursor,
+                message: Some(message),
+                ..
             } => {
-                if let Some(message) = message {
-                    let messaged = sub_agents.message(actor, workspace_id, sub_agent_id, message);
-                    messaged.await?;
-                }
-                (sub_agent_id.clone(), cursor.as_deref())
+                // The message can start a new Turn, which no earlier cursor names.
+                let messaged = sub_agents.message(actor, workspace_id, sub_agent_id, message);
+                messaged.await?;
+                (sub_agent_id.clone(), None)
             }
+            AgentArguments::Continue {
+                sub_agent_id,
+                cursor,
+                ..
+            } => (sub_agent_id.clone(), cursor.as_deref()),
         };
         let waited = sub_agents.wait(actor, workspace_id, &sub_agent_id, cursor, AGENT_WAIT);
         let page = tokio::select! {
@@ -178,7 +182,7 @@ impl From<Error> for SubAgentError {
             },
             Error::Task(error) => match error.into_database_error() {
                 Ok(database) => Self::Host(database.into()),
-                Err(_refused) => Self::Unavailable("the task of this run has ended"),
+                Err(_refused) => Self::Unavailable("you can no longer use the task of this run"),
             },
             Error::Run(error) => Self::Host(error),
             Error::Database(error) => Self::Host(error.into()),

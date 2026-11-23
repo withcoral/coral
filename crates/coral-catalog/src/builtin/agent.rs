@@ -96,7 +96,7 @@ pub enum AgentArguments {
         #[schemars(with = "String", length(min = 1))]
         message: Option<String>,
         /// The latest `next_cursor` of this agent, so that the call returns
-        /// only for a request you have not seen.
+        /// only for a request you have not seen. A reply does not use it.
         #[serde(default, deserialize_with = "super::present")]
         #[schemars(with = "String")]
         cursor: Option<String>,

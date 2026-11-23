@@ -312,8 +312,8 @@ async fn a_message_during_a_turn_reaches_its_next_model_call() {
     }
 }
 
-// Catches: a message after the Turn ended that is lost, or that a new Turn
-// answers without the earlier conversation.
+// Catches: a message after the Turn ended that is lost, refused for that Turn's
+// cursor, or answered by a new Turn without the earlier conversation.
 #[tokio::test]
 async fn a_message_after_a_turn_starts_a_new_turn_on_the_same_thread() {
     let lead = Lead::new().await;
@@ -328,7 +328,8 @@ async fn a_message_after_a_turn_starts_a_new_turn_on_the_same_thread() {
     let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
     let first = result(call(&*tools, &caller, "agent", wait.clone()).await);
 
-    let message = json!({"sub_agent_id": sub_agent_id, "message": REPLY});
+    let ended = field(&first, "next_cursor");
+    let message = json!({"sub_agent_id": sub_agent_id, "message": REPLY, "cursor": ended});
     result(call(&*tools, &caller, "agent", message).await);
     let second = result(call(&*tools, &caller, "agent", wait).await);
 
