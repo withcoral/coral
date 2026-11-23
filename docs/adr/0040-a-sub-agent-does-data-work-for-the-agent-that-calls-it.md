@@ -6,9 +6,9 @@ status: accepted
 
 Some teams want data work kept in-house, for privacy and for cost. Today a lead agent such as Claude Code does that
 work itself, finding Tools, writing Programs and reading results, and sends provider data to a hosted frontier model at
-every step. The lead calls Coral's Sub-agent through one more MCP tool, `agent`, and watches or stops it with its
-existing `wait` and `cancel` tools. Every build of Coral has the Sub-agent, and it is off until the operator configures
-a model for it. Its code lives in one crate of its own, and the rest of Coral gains only general extension points.
+every step. A Program of the lead calls Coral's Sub-agent through two Built-in Tools, `coral.agent` and
+`coral.cancelAgent`, which the Tool policy of each Workspace governs. Every build of Coral has the Sub-agent, and it is
+off until the operator configures a model for it. Its engine is one crate of its own, and core declares the Tools.
 
 ## What we cared about
 
@@ -36,76 +36,78 @@ flowchart LR
     model["Model<br/>operator's URL"]
     db[("Database<br/>Turn state")]
     subgraph crate["The Sub-agent's crate: on when the config file has a sub_agent section"]
-        agentsurface["Sub-agent surface<br/>adds the agent tool"]
+        agenttools["Sub-agent's Tools<br/>perform agent and cancelAgent"]
         subagent["Sub-agent<br/>runs each Turn"]
     end
     subgraph core["core: the rest of Coral"]
-        shell["MCP shell<br/>authenticates"]
-        coresurface["Core surface<br/>exec, wait, cancel"]
+        shell["MCP tools<br/>exec, wait, cancel"]
+        run["The lead's Run<br/>calls coral.agent"]
         modules["Core modules<br/>Tasks, Runs, Tool search"]
     end
-    lead --> shell --> agentsurface
-    agentsurface --> subagent
-    agentsurface --> coresurface
-    coresurface --> modules
+    lead --> shell --> run
+    run -- through a trait --> agenttools
+    agenttools --> subagent
     subagent --> modules
     subagent --> model
     subagent --> db
 ```
 
-The lead's request enters through core's MCP shell and reaches the Sub-agent's surface. A call to `agent` starts a
-Sub-agent Turn, and every other call passes to the core surface. The Sub-agent sends the conversation to the model, and
-it reaches Tasks, Runs and Tool search by calling core's modules directly, as core's own tools do. In this record, core
-means the rest of Coral: every crate but the Sub-agent's.
+The lead's Program calls `coral.agent`, a Built-in Tool that passes the Policy Enforcement Point like any other. Core
+performs it through a trait that the Sub-agent's crate implements, and that starts a Sub-agent Turn. The Sub-agent
+sends the conversation to the model, and it reaches Tasks, Runs and Tool search by calling core's modules directly, as
+core's own tools do. In this record, core means the rest of Coral: every crate but the Sub-agent's.
 
 The sections below give each decision, the points it serves, and the alternatives we rejected. The appendix at the end
 explains how each part works in detail.
 
 ## Decisions
 
-### 1. The Sub-agent is one crate that wraps core's MCP tools
+### 1. The Sub-agent is one crate behind two Built-in Tools
 
 **Serves points 2 and 5.**
 
-We will keep all Sub-agent code in one crate, `coral-agent`. Core's MCP shell will ask a tool surface interface,
-`McpInterface`, for the instructions, for the list of tools, and to run each tool call. Core will supply the default
-implementation, which serves the tools that Coral serves today. The Sub-agent's crate will supply a second
-implementation that wraps the first. It adds the `agent` tool, lets `wait` and `cancel` accept a `sub_agent_id`, and
-passes every other call to core unchanged.
+We will keep the Sub-agent's engine in one crate, `coral-agent`. The lead reaches it through two Built-in Tools of the
+Coral provider, which a Program calls as it calls `coral.addCustomTool`:
 
-```mermaid
-flowchart TD
-    lead["Lead agent"]
-    shell["Core: MCP shell<br/>protocol, authentication<br/>Workspace check<br/>span per tool call"]
-    iface["Tool surface interface<br/>instructions, tools, call"]
-    agentsurface["Sub-agent surface<br/>adds the agent tool<br/>extends wait and cancel<br/>passes other calls to core"]
-    coresurface["Core surface<br/>the tools served today"]
-    lead --> shell --> iface --> agentsurface
-    agentsurface -- wraps --> coresurface
-```
+| Call                                               | What it does                                                    |
+| -------------------------------------------------- | --------------------------------------------------------------- |
+| `coral.agent({ message })`                         | starts a Sub-agent in the Task of the calling Run, then waits   |
+| `coral.agent({ sub_agent_id, message?, cursor? })` | sends that Sub-agent the message, if there is one, then waits   |
+| `coral.cancelAgent({ sub_agent_id })`              | cancels that Sub-agent's Turn and its unfinished Runs           |
 
-The `coral` process, which every binary runs, will register that implementation when it launches the server. No binary
-registers it, so nothing under `ee/` names it. The Sub-agent's tables are in core's migration chain, and the names of
-its telemetry fields and metrics are in core's `coral-telemetry` crate. Nothing else in core names the Sub-agent. To
-remove it, we delete the crate and the registration. To make it an Enterprise Feature, we move the crate to `ee/` and
-give `Extensions` a field through which the Enterprise binary registers it.
+`coral.agent` returns when the Turn ends, when a Run of the Turn newly needs a person, when the calling Run is asked to
+stop, or after 10 minutes. The Turn does not belong to the calling Run, and goes on when that Run stops. Each call
+returns the `sub_agent_id`, the Turn's state, its steps, and its answer, failure or required actions.
 
-The lead sees the Sub-agent only when the config file has a `[sub_agent]` section. Without the section, it receives
-exactly the tools and instructions that Coral serves today.
+Core owns the contract, as for every Built-in Tool. `coral-catalog` declares both Tools, and `coral-run` performs them
+through a trait, `SubAgentTools`, that the Sub-agent's crate implements. The `coral` process, which every binary runs,
+registers the factory of that implementation when it launches the server. No binary registers it, so nothing under
+`ee/` names it. The Sub-agent's tables are in core's migration chain, and the names of its telemetry fields and metrics
+are in core's `coral-telemetry` crate. To make it an Enterprise Feature, we move the crate to `ee/` and give
+`Extensions` a field through which the Enterprise binary registers it.
 
-| `[sub_agent]` in the config file | Tools the lead sees                                                           |
-| -------------------------------- | ----------------------------------------------------------------------------- |
-| absent                           | `exec`, `wait`, `cancel`, `end_task`                                          |
-| present                          | the same tools plus `agent`; `wait` and `cancel` also accept a `sub_agent_id` |
+The catalog holds the two Tools only when the config file has a `[sub_agent]` section. Its identity then differs, so
+each Workspace gets a new built-in Generation at start-up. A Workspace Owner turns the Tools on, off or to approval for
+one Workspace on the Tools page, as for any Built-in Tool. Both are enabled by default.
+
+| `[sub_agent]` in the config file | What the lead has                                                                  |
+| -------------------------------- | ---------------------------------------------------------------------------------- |
+| absent                           | `exec`, `wait`, `cancel`, `end_task`, and the Built-in Tools that Coral has today  |
+| present                          | the same, plus `coral.agent`, `coral.cancelAgent` and Workflow steps that delegate |
+
+A Program that a Sub-agent started cannot call either Tool. The Sub-agent records each Run that its `exec` starts, and
+both Tools refuse a Run in that record with a failure that the Program can read.
 
 **Rejected:**
 
+- **An MCP tool `agent` beside core's, served by a tool surface that wraps core's.** We built this first. It needed a
+  `wait` and a `cancel` that also took a `sub_agent_id`, a `goal` and a `task_id` of its own, and a switch of its own.
+  As Built-in Tools, the Task is the calling Run's, the wait is fixed, and the Tool policy is the switch.
 - **Ship the Sub-agent as an Enterprise Feature.** We decided this first: the crate lived in `ee/` and checked the
-  Edition on every call. The Sub-agent starts in every build instead. It is still one crate behind the tool surface
-  interface, so this choice stays cheap to reverse.
-- **Wire the Sub-agent into core's MCP server, with no tool surface interface.** Code outside `ee/` may do that. But
-  the Sub-agent's code would then be spread through core's MCP handlers, and removing it or moving it to `ee/` would
-  mean taking those handlers apart.
+  Edition on every call. The Sub-agent starts in every build instead. It is still one crate behind one trait, so this
+  choice stays cheap to reverse.
+- **Let `coral-run` call the Sub-agent's crate, with no trait.** The Sub-agent calls the Run module, so the two crates
+  would depend on each other, and moving the Sub-agent to `ee/` would mean taking core apart.
 
 ### 2. A Sub-agent runs with its caller's permissions
 
@@ -115,7 +117,7 @@ We will give a Sub-agent no identity and no permissions of its own. It runs with
 called it, inside that agent's Task. Each Run it starts is recorded as the calling agent's Run and is checked by the
 same Policy Enforcement Point.
 
-Because those Runs belong to the lead's own Task, the lead can check an answer for itself. Each result from `wait`
+Because those Runs belong to the lead's own Task, the lead can check an answer for itself. Each result of `coral.agent`
 lists the steps the Sub-agent took. A step that started a Run holds the intent the Sub-agent gave for it and its
 `run_id`, and nothing else. The lead reads that Run's Events and Final Value with `wait`.
 
@@ -210,6 +212,10 @@ We will therefore write three things in the Sub-agent's crate: the system prompt
 can call, and the code that writes each tool result, including the wording of each failure. The Sub-agent's model will
 never receive core's MCP instructions or core's MCP tool descriptions, which change to suit outside agents.
 
+The text that the lead reads is core's. The description of `coral.agent` in the catalog says when and how to hand work
+over. Core's MCP instructions serve a second set of Workflow steps when the catalog holds the Tool, and step 2 shows
+the call: `return await coral.agent({ message })`.
+
 The model's tools include an `end_task` of the Sub-agent's own with core's arguments, which Sailfish calls before nearly
 every answer. It ends nothing, since the lead owns the Task, and the lead reads the outcome it records beside the
 Turn's answer.
@@ -231,9 +237,9 @@ advance, because an agent finds every other Tool by searching.
 We will give the Sub-agent's model a `search` tool that the Sub-agent's crate defines. It runs the same search by
 calling core's search module directly, outside a Program.
 
-We will not stop a Sub-agent's Program from calling a Built-in Tool, `coral.search` included. A Program runs with its
-caller's permissions and under its caller's policy, so a Built-in Tool does nothing there that the caller could not do.
-A Sub-agent can therefore add a Provider, change policy or save a Private Tool when its caller is permitted to. The
+We will not stop a Sub-agent's Program from calling a Built-in Tool but the Sub-agent's own two. A Program runs with
+its caller's permissions and under its caller's policy, so a Built-in Tool does nothing there that the caller could not
+do. A Sub-agent can therefore add a Provider, change policy or save a Private Tool when its caller is permitted to. The
 lead's guidance tells the lead to do those things itself.
 
 This does not reverse ADR 0026, which rejected serving search through two interfaces and choosing between them by
@@ -280,8 +286,8 @@ reasons. Limits on running Turns, tokens and duration wait until usage shows wha
 **Serves point 8.**
 
 A Turn is the work a Sub-agent does between receiving one message and sending its response. We will run each Turn as a
-background task in the Coral Instance that accepted the `agent` call. The Turn's state is stored in the database under
-a lease, so any Coral Instance can answer a `wait` or a `cancel` for it.
+background task in the Coral Instance that performed the `coral.agent` call. The Turn's state is stored in the database
+under a lease, so any Coral Instance can answer a later `coral.agent` or `coral.cancelAgent` for it.
 
 We will not resume a Turn on another Coral Instance. A Turn runs with its caller's permissions, and Coral stores no
 caller credential (ADR 0029), so another instance has nothing to continue with. When a Coral Instance shuts down, it
@@ -295,8 +301,9 @@ request from the caller, which is a separate design.
 
 **Serves points 3 and 4.**
 
-We will ship the Sub-agent with no page and no form in Reef. The Runs that a Sub-agent starts appear in Reef as its
-caller's Runs. We will add nothing to the Usage Report, because those Runs are already counted there.
+We will ship the Sub-agent with no page and no form in Reef. Its two Tools appear on the Tools page with the other
+Built-in Tools, and the Runs that a Sub-agent starts appear as its caller's Runs. We will add nothing to the Usage
+Report, because those Runs are already counted there.
 
 We will test the Sub-agent with Rust tests that use a stub in place of the model. The Sub-agent stays off in every
 deployment until its operator adds the `[sub_agent]` section.
@@ -356,13 +363,17 @@ section, and the URL in it comes from an organization.
 - A deployment with no `[sub_agent]` section behaves as it does today.
 - A source build has the Sub-agent too, so anyone can run it and test it against their own model.
 - An operator configures the model the way it already configures the database.
+- A Workspace Owner turns the Sub-agent on, off or to approval for one Workspace, with the Tool policy that Reef has.
 
 **What we accepted**
 
-- A Workspace Owner cannot turn the Sub-agent off for one Workspace. It is on for the whole deployment.
-- A Sub-agent can call Built-in Tools from a Program, so it can add a Provider, change policy or save a Private Tool
-  when its caller can. Nothing restricts a Sub-agent more than its lead. Such a restriction is left for later: one way,
-  a Run started in a narrower mode that the Policy Enforcement Point applies, is noted in [issue
+- The lead needs a Program to reach a Sub-agent. A Run lasts at most 15 minutes, so a call waits at most 10, and the
+  lead calls again for a longer Turn. A call holds one slot of its Run's Fan-out Limit while it waits.
+- The record that stops a Sub-agent's Program from calling `coral.agent` is written just after its Run is accepted. A
+  call that the Program makes before the write commits is not refused.
+- A Sub-agent can call the other Built-in Tools from a Program, so it can add a Provider, change policy or save a
+  Private Tool when its caller can. Nothing restricts a Sub-agent more than its lead. Such a restriction is left for
+  later: one way, a Run started in a narrower mode that the Policy Enforcement Point applies, is noted in [issue
   3358](https://github.com/withcoral/coral/issues/3358).
 - An interrupted Turn does not continue. The lead must send its message again.
 - Program diagnostics and Tool declarations still come from core, so a change to them changes what the model reads.
@@ -378,10 +389,10 @@ section, and the URL in it comes from an organization.
 - Providers beyond Chat Completions, OpenAI Responses and Anthropic Messages (such as native Gemini, Bedrock or Vertex)
   are not built in yet.
 - Coral does not check that the model server is up. It does not call the model at startup, and it does not probe it
-  while it runs. While the model server is down, `agent` stays listed, the lead is still told to hand work to a
-  Sub-agent, and each Turn fails after three retries. Coral could be more robust here: vLLM serves a health check, and
-  many servers list their models, but neither is part of the Chat Completions API. We left that out while we evaluate
-  the Sub-agent.
+  while it runs. While the model server is down, `coral.agent` stays in the catalog, the lead is still told to hand
+  work to a Sub-agent, and each Turn fails after three retries. Coral could be more robust here: vLLM serves a health
+  check, and many servers list their models, but neither is part of the Chat Completions API. We left that out while
+  we evaluate the Sub-agent.
 - Compaction needs `context_window`. Without it, a conversation that outgrows the model fails its Turn. With it, one
   reply's tool results that are larger than the window still fail the Turn: Coral keeps the newest results whole and
   does not shorten them to fit.
@@ -402,15 +413,16 @@ section, and the URL in it comes from an organization.
 
 ## How we will confirm it
 
-- A test shows that the lead receives only core's tools when the config file lacks the section.
-- A test shows that a Turn starts a Run in the lead's Task and `wait` returns the answer.
+- A test shows that a Program reaches `coral.agent` only when the config file has the section.
+- A test shows that a Turn starts a Run in the lead's Task, and that `coral.agent` returns the answer to its Program.
+- A test shows that a Program that a Sub-agent started is refused when it calls `coral.agent`, and starts nothing.
 - Tests compare the system prompt, the tool definitions and a written result against the exact expected text.
 - A developer runs a Turn with several steps and a compaction against Sailfish with reasoning turned on, before the
   Sub-agent is turned on for anyone.
 
 ## Related records
 
-- ADR 0033 gives a binary `Extensions`, the way it adds to Coral. The Sub-agent's tool surface is not registered
+- ADR 0033 gives a binary `Extensions`, the way it adds to Coral. The Sub-agent's factory is not registered
   through it: every build serves the Sub-agent, so the `coral` process registers it at launch.
 - ADR 0026 moved Tool search into Programs for outside agents.
 - ADR 0029 says that Coral keeps no MCP session.
@@ -463,9 +475,9 @@ McpServer::call_tool                     MCP shell: authenticated request, opens
 Decided, the lead calls `exec`:
 
 ```text
-MCP shell: call_tool                     unchanged
-  tool surface interface: call           the Sub-agent's surface passes exec to the core surface
-    core surface: exec                   unchanged: jobs 1, 2 and 3, as in the listing above
+MCP shell: call_tool                     unchanged: jobs 1, 2 and 3, as in the listing above
+  the Run's Program: coral.agent         an Invocation, through the Policy Enforcement Point
+    SubAgentTools: agent                 the Sub-agent's crate starts or follows a Turn
 ```
 
 Decided, the Sub-agent's model calls `exec`:
@@ -484,7 +496,7 @@ because that code is not written yet.
 
 ### What the Sub-agent receives at startup
 
-The `coral` process registers the factory for the Sub-agent's tool surface when it launches the server. At startup,
+The `coral` process registers the factory for the Sub-agent's Tools when it launches the server. At startup,
 when the config file has the factory's section, core calls the factory and gives it:
 
 - the `[sub_agent]` section of the config file, as unparsed TOML;
@@ -588,9 +600,9 @@ protocol and model wrote it. It never includes reasoning in the response to the 
 
 ### The steps of one Turn
 
-When the lead calls `agent`, the Coral Instance that receives the call starts the Turn as a background task and returns
-the `sub_agent_id`. The lead then calls `wait` with that `sub_agent_id` to read the Sub-agent's progress and its
-answer.
+When the lead's Program calls `coral.agent`, the Coral Instance that runs the Program starts the Turn as a background
+task. The call waits for the Turn, then returns the `sub_agent_id`, the Sub-agent's steps and its answer. If the Turn
+outlasts the call, the lead calls `coral.agent` again with the `sub_agent_id`.
 
 During a Turn, the Sub-agent repeats two steps. It sends the conversation to the model. It then runs the tool calls in
 the model's reply and adds their results to the conversation. The Turn ends when the model replies without a tool
@@ -598,15 +610,15 @@ call. That reply is the Sub-agent's answer, unless it has no text: then the Turn
 
 ```mermaid
 flowchart TD
-    ask["The lead calls agent<br/>with a message"]
-    start["Coral starts the Turn<br/>in the background and<br/>returns the sub_agent_id"]
+    ask["The lead's Program calls<br/>coral.agent with a message"]
+    start["Coral starts the Turn<br/>in the background, and<br/>the call waits for it"]
     send["The Turn sends the<br/>conversation to the model"]
     tools{"Tool calls<br/>in the reply?"}
     text{"Text in<br/>the reply?"}
     run["The Turn runs each tool call<br/>and adds the results"]
     answer["The reply is the answer.<br/>The Turn ends."]
     failed["The Turn fails. The lead is told<br/>to send the message again."]
-    wait["The lead calls wait with<br/>the sub_agent_id and reads<br/>the steps and the answer"]
+    wait["coral.agent returns the<br/>sub_agent_id, the steps<br/>and the answer"]
     ask --> start --> send --> tools
     tools -- yes --> run
     run -- next model call --> send
@@ -617,11 +629,13 @@ flowchart TD
 
 | Situation | What happens |
 | --- | --- |
-| The lead calls `cancel` with the `sub_agent_id`, on any Coral Instance | The call records the cancellation in the database and closes the tool calls that the Turn left without results. It also cancels the unfinished Runs that the Sub-agent's stored conversation names, whether the Turn is running or has ended. A running Turn stops at its next step, and the Coral Instance that runs it cancels the Runs it holds that are not stored yet. If that Coral Instance stops first, those Runs keep running. |
+| A Program that a Sub-agent started calls `coral.agent` or `coral.cancelAgent` | The call fails as `tool_unavailable`, and nothing starts or stops. |
+| The Run that called `coral.agent` stops or times out | The call returns, and the Turn goes on. The lead calls `coral.agent` again with the `sub_agent_id`. |
+| The lead calls `coral.cancelAgent` with the `sub_agent_id`, on any Coral Instance | The call records the cancellation in the database and closes the tool calls that the Turn left without results. It also cancels the unfinished Runs that the Sub-agent's stored conversation names, whether the Turn is running or has ended. A running Turn stops at its next step, and the Coral Instance that runs it cancels the Runs it holds that are not stored yet. If that Coral Instance stops first, those Runs keep running. |
 | The lead ends the Task, or can no longer use it | Before each model call and each lease renewal, a running Turn checks that its caller can still use the Task. If the Task has ended, or the caller can no longer see the Task or its Workspace, the Turn stops as canceled. A database error does not stop it. The Runs it started keep running: ending a Task cancels nothing already accepted (ADR 0006). |
 | The model replies with no text and no tool call | The Turn fails. The failure tells the lead to send the message again. |
-| The lead calls `agent` with the `sub_agent_id` and a message while the Turn is running | The Sub-agent reads the message before its next model call. Once the Turn has ended, the same call starts a new Turn with the stored conversation. |
-| A Run that the Turn started waits for a person to approve a Tool call or connect an account | `wait` returns `needs_action` with that Run's required actions. Each names who must act, which can be the Workspace Owner and not the lead's user. |
+| The lead calls `coral.agent` with the `sub_agent_id` and a message while the Turn is running | The Sub-agent reads the message before its next model call. Once the Turn has ended, the same call starts a new Turn with the stored conversation. |
+| A Run that the Turn started waits for a person to approve a Tool call or connect an account | `coral.agent` returns `needs_action` with that Run's required actions. Each names who must act, which can be the Workspace Owner and not the lead's user. |
 | The conversation comes close to the `context_window` in the config file | The Sub-agent asks the model to summarize the older messages. It continues with the summary and the most recent messages. The newest tool results stay whole with the reply that called for them, however large: the model has not read them yet. |
 | The model server answers that a request is too long, and `context_window` is set | Coral's count of tokens is an estimate. The Sub-agent summarizes the older messages and sends the request once more. If nothing is left to summarize, or the server refuses again, the Turn fails. |
 | The conversation outgrows the model and no `context_window` is set | The model server refuses the request, and the Turn fails with a failure that says the conversation is too long. Coral does not read the window out of the refusal's text. |
@@ -630,13 +644,13 @@ flowchart TD
 | The Coral Instance shuts down | Each running Turn marks itself as interrupted when shutdown begins. Coral does not wait for those writes: a Turn that has not written before the process exits is marked by the next request that reads it, once its lease has expired. |
 | The Coral Instance stops without shutting down | The Turn's lease in the database expires. The next request that reads the Turn marks it as interrupted. |
 
-A Run that an interrupted or failed Turn started continues under its Run Owner. Only the lead's `cancel` of a Sub-agent
-cancels the Runs of its Turn. A Turn itself does not use a Run Owner or a Run Executor, because those run Programs. A
+A Run that an interrupted or failed Turn started continues under its Run Owner. Only the lead's `coral.cancelAgent`
+cancels the Runs of a Turn. A Turn itself does not use a Run Owner or a Run Executor, because those run Programs. A
 Turn only calls the model and core's Task, Run and search modules.
 
 ### What telemetry records
 
-Each Turn produces one trace. The root span of that trace links to the span of the `agent` call that started the Turn.
+Each Turn produces one trace. The root span of that trace links to the span of the call that started the Turn.
 Inside the trace there is one span for each model call, each tool call and each compaction. Each Run that the Turn
 starts has its own Run Trace, which links to the tool-call span that started it.
 
