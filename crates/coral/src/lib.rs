@@ -180,8 +180,18 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
         .map_err(anyhow::Error::from)?;
     let endpoint = server.endpoint_uri().to_string();
 
-    if let Some(warning) =
-        grpc_exposure_warning(server.grpc_addr(), server.grpc_authentication_enabled())
+    // Off loopback, the Run Executor listener always requires an operator
+    // token, so it warns only that the token crosses in cleartext.
+    for warning in [
+        exposure_warning(
+            "private gRPC server",
+            server.grpc_addr(),
+            server.grpc_authentication_enabled(),
+        ),
+        exposure_warning("Run Executor listener", server.run_executor_addr(), true),
+    ]
+    .into_iter()
+    .flatten()
     {
         eprintln!("{warning}");
     }
@@ -426,7 +436,11 @@ async fn wait_for_shutdown_signal_or_server_exit(
 }
 
 /// Warns when the private gRPC listener is reachable from another machine.
-fn grpc_exposure_warning(address: SocketAddr, authentication_enabled: bool) -> Option<String> {
+fn exposure_warning(
+    listener: &str,
+    address: SocketAddr,
+    authentication_enabled: bool,
+) -> Option<String> {
     if is_loopback_ip(address.ip()) {
         return None;
     }
@@ -436,7 +450,7 @@ fn grpc_exposure_warning(address: SocketAddr, authentication_enabled: bool) -> O
         "it does not authenticate clients, so anything that can reach it can access Coral"
     };
     Some(format!(
-        "Warning: the private gRPC server at {address} is not bound to loopback and {exposure}. \
+        "Warning: the {listener} at {address} is not bound to loopback and {exposure}. \
          Terminate TLS in front of Coral and keep untrusted clients off the listener."
     ))
 }
@@ -609,27 +623,31 @@ mod tests {
     }
 
     #[test]
-    fn exposed_grpc_listener_warns() {
+    fn an_exposed_listener_warns() {
         const UNAUTHENTICATED: &str = "it does not authenticate clients, so anything that can \
                                        reach it can access Coral";
         const CLEARTEXT: &str =
             "it serves cleartext h2c, so bearer tokens can be read off the wire";
-        for (address, authenticated, exposure) in [
-            ("0.0.0.0:50051", false, Some(UNAUTHENTICATED)),
-            ("0.0.0.0:50051", true, Some(CLEARTEXT)),
-            ("[::]:50051", false, Some(UNAUTHENTICATED)),
-            ("127.0.0.1:50051", false, None),
-            ("[::1]:50051", true, None),
+        const GRPC: &str = "private gRPC server";
+        const RUN_EXECUTORS: &str = "Run Executor listener";
+        for (listener, address, authenticated, exposure) in [
+            (GRPC, "0.0.0.0:50051", false, Some(UNAUTHENTICATED)),
+            (GRPC, "0.0.0.0:50051", true, Some(CLEARTEXT)),
+            (GRPC, "[::]:50051", false, Some(UNAUTHENTICATED)),
+            (GRPC, "127.0.0.1:50051", false, None),
+            (GRPC, "[::1]:50051", true, None),
+            (RUN_EXECUTORS, "0.0.0.0:50052", true, Some(CLEARTEXT)),
+            (RUN_EXECUTORS, "127.0.0.1:50052", true, None),
         ] {
             let expected = exposure.map(|exposure| {
                 format!(
-                    "Warning: the private gRPC server at {address} is not bound to loopback \
+                    "Warning: the {listener} at {address} is not bound to loopback \
                      and {exposure}. Terminate TLS in front of Coral and keep untrusted clients \
                      off the listener."
                 )
             });
             assert_eq!(
-                grpc_exposure_warning(address.parse().unwrap(), authenticated),
+                exposure_warning(listener, address.parse().unwrap(), authenticated),
                 expected,
                 "{address}"
             );
