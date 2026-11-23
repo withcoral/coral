@@ -339,12 +339,6 @@ Your reverse proxy sends the auth server's paths to the auth listener, and every
 - Your users open the UI at `https://<coral-host>:8443`. A workspace's MCP endpoint is `https://<coral-host>/workspaces/<workspace-id>/mcp`.
 - Keep MCP and auth on port 443. A hosted MCP client, such as Claude Desktop or Claude on the web, connects from its provider's servers, and Claude does not reach another port.
 
-An earlier version of this guide gave each listener its own port: the UI on 443, auth on 8443 and MCP on 10000. That layout still works for clients that connect from your user's machine, such as Claude Code and Codex. To move to the layout above:
-
-1. Register the new redirect URI at your identity provider.
-2. Change the three settings and your reverse proxy, then restart Coral.
-3. Ask your users to add the MCP server again at its new URL and sign in.
-
 ## Upgrade
 
 Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first. Run these commands in the directory of your compose file.
