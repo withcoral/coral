@@ -70,7 +70,8 @@ runtime.
 - **Retiring is a report of zero.** A Run Executor that must stop reports no room, honors what crossed the report,
   keeps the pull stream open while its Runs finish, closes it after its last Run ends, and exits. Coral retires a local
   child that has held no Run and no compile for an idle period by closing the child's stdin, the pipe its token came
-  down, which stays open until then; the child treats a closed stdin at any time as that order.
+  down, which stays open until then; the child treats a closed stdin at any time as that order. Its parent's exit
+  closes its stdin too: a retired child whose dial opens no connection exits at once, and the sweeper ends its Runs.
 - **Compiles ride it.** A compile is work: it goes only to a Run Executor with room, and holds one unit until it is
   answered.
 
@@ -177,8 +178,9 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   its Run Executor redials elsewhere. The Coral Instance keeps each open Run stream, dispatching no call the Program
   makes after the drain starts, until it holds no pull stream and that Run has no dispatch in flight on it, then ends
   its side of the stream cleanly; the Run Executor reopens it at once and the Run goes on elsewhere. At the drain's
-  length it closes the rest, whose calls in flight end `indeterminate`. Nothing in the drain records Interrupted, and
-  a rolling deploy loses no Run.
+  length it closes the rest, whose calls in flight end `indeterminate`. A local child dials only its parent, so its
+  streams cannot move: the drain keeps dispatching for them, and at its length their Runs end Interrupted. A Run on a
+  dialed Run Executor is never interrupted by the drain, and a rolling deploy loses none of them.
 - **The word is reconnect.** A Run Executor reconnects a Run, and the Run's stream moves. Coral never resumes a Run: no
   Program is recreated and no isolate is snapshotted.
 
@@ -191,7 +193,7 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   the order the head gives them. The Run Executor's own end at the deadline reaches Coral as a Finish, recorded by the
   same rule. Readers show the recorded state beside the deadline, never a state derived from `now`.
 - **A termination is written first.** Whoever decides it writes the terminal chunk in one transaction that ends the
-  Run's open Invocations and releases the claim; the loop relays Terminate after. No dispatch executes after that write:
+  Run's open Invocations, so that the ended Run no longer holds its Run Executor; the loop relays Terminate after. No dispatch executes after that write:
   the enforcement point's predicates need the Invocation `pending` and the Run `running`, a result that lands on an
   ended Invocation is dropped, and every later request is answered that the Run ended. A dispatch already sent is not
   aborted upstream. There is no grace period.
@@ -298,8 +300,8 @@ Executors roll apart from Coral.
 
 ## The seams
 
-- **The Run stream is Coral's seam.** The loop that serves a Run stream has two adapters: the gRPC stream from a Run
-  Executor, and an in-process stream that the test engine drives. On the Run Executor's side, Coral's existing Program
+- **The Run stream is Coral's seam.** The loop that serves a Run stream takes the gRPC stream from a Run Executor;
+  a test drives it with a scripted stream, or with a Run Executor in its own process. On the Run Executor's side, Coral's existing Program
   engine and host interfaces stay: the Run Executor runs V8 behind them, and its host adapter sends the requests.
 - **The compiler client** has one interface and two adapters, in process for tests and over the pull stream in
   production. Program Admission and Saved Function save share it.

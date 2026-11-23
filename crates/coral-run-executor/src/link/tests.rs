@@ -257,6 +257,62 @@ async fn a_refused_token_retires_the_run_executor() {
     assert!(coral.try_next_call().is_none(), "it dials no more");
 }
 
+/// Catches: a retired local child that outlives its parent, waiting for
+/// Runs no Coral will end, or a dialed Run Executor that gives up its Run
+/// while no Coral answers, as in a rolling deploy.
+#[tokio::test]
+async fn a_retired_local_child_exits_once_its_parent_is_gone_and_a_dialed_one_waits() {
+    let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL); 2]).await;
+    let [local_config, dialed_config] = [true, false].map(|local_child| RunExecutorConfig {
+        local_child,
+        ..run_executor_config(&coral, 8, RunLimits::default())
+    });
+    let spawn = |config| {
+        let (retire, retired) = oneshot::channel::<()>();
+        let task = tokio::spawn(run(config, None, async {
+            drop(retired.await);
+        }));
+        (retire, task)
+    };
+    let (retire_local, local) = spawn(local_config);
+    let mut calls = vec![coral.next_call().await];
+    let (retire_dialed, dialed) = spawn(dialed_config);
+    calls.push(coral.next_call().await);
+    // Each pull stream takes the Run, so each Run Executor holds one.
+    coral.take("run-1", "claim-1");
+    let runs = [coral.next_run().await, coral.next_run().await];
+    drop((retire_local, retire_dialed));
+    for call in &mut calls {
+        assert_eq!(call.rooms.recv().await, Some(0), "it retires");
+    }
+    assert!(
+        !local.is_finished() && !dialed.is_finished(),
+        "each holds its Run while Coral answers"
+    );
+
+    coral.stop().await;
+    for run in runs {
+        run.fail(Status::unavailable("Coral is gone")).await;
+    }
+    let exited = tokio::time::timeout(Duration::from_secs(10), local).await;
+    assert!(
+        matches!(exited, Ok(Ok(Err(RunError::ParentGone)))),
+        "{exited:?}"
+    );
+    assert!(!dialed.is_finished(), "the dialed one keeps its Run");
+    // Windows refuses the port while the old connections hold it.
+    #[cfg(unix)]
+    {
+        coral.restart([Answer::Welcome(PROTOCOL_LEVEL)]).await;
+        let call = coral.next_call().await;
+        assert_eq!(call.hello.map(|hello| hello.free), Some(0));
+        let run = coral.next_run().await;
+        assert_eq!(run.open.run_id, "run-1", "it reopens the Run it held");
+        run.send(ended()).await;
+        retired(dialed).await;
+    }
+}
+
 async fn wait_for(health: &mut HealthClient<tonic::transport::Channel>, status: ServingStatus) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

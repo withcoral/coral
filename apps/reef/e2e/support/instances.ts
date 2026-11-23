@@ -37,10 +37,10 @@ export function coralInstances() {
     other: (instance: number) => 1 - instance,
     on,
     /**
-     * Starts a Run through `instance` and returns its name. The instance that
-     * accepts a Run holds it, so this also teaches the harness that instance's id.
-     * Every MCP request must have reached `instance`; the proxy follows the pin
-     * since no MCP request carries a session.
+     * Starts a Run through `instance` and returns its name. Every MCP request
+     * must have reached `instance`; the proxy follows the pin since no MCP
+     * request carries a session. Either instance may then hold the Run: the
+     * one whose Run Executor took it. Read it with `holder`.
      */
     async startOn(instance: number, start: () => Promise<string>) {
       const before = (await requests()).length
@@ -48,10 +48,9 @@ export function coralInstances() {
       const mcp = (await requests()).slice(before).filter(({ front }) => front === 'mcp')
       expect(mcp.length).toBeGreaterThan(0)
       expect(mcp.filter((request) => request.instance !== instance)).toEqual([])
-      await control('/accepted', { instance, run })
       return run
     },
-    /** The instance whose Run Owner holds the Run, read from the Run row's holder. */
+    /** The instance that holds the Run's stream, read from the Run row's holder. */
     async holder(run: string) {
       const { holder, instance } = await control<{
         holder: string | null

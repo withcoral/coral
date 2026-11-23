@@ -907,6 +907,7 @@ fn unstarted_run() -> crate::lifecycle::RunRecord {
         trace: None,
         time_limit_nanos: None,
         on_run_executor: false,
+        on_local_child: false,
         committed_request_number: None,
         last_commit_at_unix_nanos: None,
     }

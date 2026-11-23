@@ -46,6 +46,7 @@ fn dial(link: &Link) {
             .parse()
             .expect("the link's address"),
         token: token(),
+        local_child: false,
         max_runs_held: 2,
         run_limits: RunLimits::default(),
         compiler_heap_bytes: crate::IsolateLimits::default().compiler_heap_bytes(),

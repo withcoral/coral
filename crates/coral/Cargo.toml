@@ -32,7 +32,10 @@ coral-mcp.workspace = true
 coral-run-executor.workspace = true
 
 [dev-dependencies]
+async-trait.workspace = true
+coral-catalog.workspace = true
 coral-db.workspace = true
+coral-run.workspace = true
 coral-grpc.workspace = true
 tonic.workspace = true
 uuid.workspace = true
@@ -41,3 +44,15 @@ coral-test-support.workspace = true
 reqwest.workspace = true
 assert_cmd.workspace = true
 tempfile.workspace = true
+coral-v8.workspace = true
+rmcp.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tonic-health.workspace = true
+toml.workspace = true
+base64.workspace = true
+coral-auth.workspace = true
+coral-workspace = { workspace = true, features = ["test-fixtures"] }
+jsonwebtoken.workspace = true
+url.workspace = true
+wiremock.workspace = true

@@ -160,6 +160,7 @@ export async function startStack(options: {
     ? [join(rootDir, 'coral-1'), join(rootDir, 'coral-2')]
     : [join(rootDir, 'coral')]
   const processes: ReturnType<typeof startProcess>[] = []
+  const coralPids: number[] = []
   let authentication: Awaited<ReturnType<typeof prepareAuthenticatedTarget>> | undefined
   let secretStore: Awaited<ReturnType<typeof startSecretStoreFixture>> | undefined
   let localWeb: Awaited<ReturnType<typeof reservePort>> | undefined
@@ -240,6 +241,8 @@ export async function startStack(options: {
         : {}),
     }
     const instances: Backend[] = []
+    // The Coral Instance id each printed, which the Runs it holds record.
+    const instanceIds: string[] = []
     for (const [index, stateDir] of stateDirs.entries()) {
       await writeFile(
         join(stateDir, 'config.toml'),
@@ -284,6 +287,8 @@ bind = '127.0.0.1:0'
         ],
       )
       processes.push(coral)
+      if (coral.pid !== undefined) coralPids.push(coral.pid)
+      instanceIds.push(await coral.match(/Coral Instance (\S+) started/))
       const grpcURL = await coral.match(
         /Coral gRPC server listening on (http:\/\/127\.0\.0\.1:\d+)/,
       )
@@ -303,7 +308,8 @@ bind = '127.0.0.1:0'
           /Coral Provider OAuth callback listening on (http:\/\/127\.0\.0\.1:\d+\/provider-oauth\/callback)/,
         )
     proxy?.serve(instances)
-    if (proxy) control = await startInstanceControl(proxy, options.postgresURL!, childEnv)
+    if (proxy)
+      control = await startInstanceControl(proxy, options.postgresURL!, childEnv, instanceIds)
     if (authentication) await ready(authentication.authentication.issuerURL)
     await authentication?.releaseWebPort()
     await localWeb?.release()
@@ -353,6 +359,7 @@ bind = '127.0.0.1:0'
       ],
       ...(authentication ? { authentication: authentication.authentication } : {}),
       ...(control ? { instances: { controlURL: control.url } } : {}),
+      coralPids,
     }
     return { target, stop, pids: processes.map((child) => child.pid) }
   } catch (error) {

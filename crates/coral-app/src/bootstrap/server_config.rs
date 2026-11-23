@@ -92,8 +92,9 @@ pub(crate) struct Launcher {
     pub(crate) extensions: super::runtime::Extensions,
     /// Builds the Sub-agent's Tools from its config section.
     pub(crate) sub_agent_factory: Option<std::sync::Arc<dyn super::SubAgentToolsFactory>>,
-    /// Compile in this process: a test that starts Coral in its own process.
-    pub(crate) compile_in_process: bool,
+    /// The binary local Run Executors run, for a test that starts Coral in
+    /// its own process. Without one, this process's own binary.
+    pub(crate) run_executor_program: Option<std::path::PathBuf>,
     /// Where startup reports each database migration step it applies.
     pub(crate) migration_report: Option<super::runtime::MigrationReport>,
     /// The clock a test drives. Without one, the host's clock.
@@ -464,6 +465,11 @@ impl DeploymentConfig {
     /// that the built-in catalog holds `agent` and `cancelAgent`.
     pub(crate) const fn configures_sub_agent(&self) -> bool {
         self.sub_agent.is_some()
+    }
+
+    /// Reef's origin, where Coral links a person.
+    pub(crate) fn human_interface(&self) -> &coral_mcp::HumanInterfaceUrl {
+        &self.human_interface
     }
 
     /// The `[runtime]` section: the Program runtime limits.

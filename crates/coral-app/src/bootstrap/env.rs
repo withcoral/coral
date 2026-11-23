@@ -180,7 +180,7 @@ impl Launch {
             // The launching binary supplies these, never the environment.
             extensions: super::runtime::Extensions::default(),
             sub_agent_factory: None,
-            compile_in_process: false,
+            run_executor_program: None,
             migration_report: None,
             // The host's clock: only a test supplies another.
             clock: None,

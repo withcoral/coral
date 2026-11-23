@@ -2,8 +2,10 @@
 //! Owner until the take loop claims it for the pull stream with the most
 //! room and sends it there in one `Taken`.
 use super::*;
-use coral_run_executor::PullStreams;
 use coral_run_executor::wire::v1::{PullResponse, TakenRun, pull_response};
+use coral_run_executor::{
+    Credentials, LocalChild, LocalRunExecutors, ProcessStarter, PullStreams, Token,
+};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::Instant;
 
@@ -46,7 +48,68 @@ async fn waiting_runs_in(
 
 fn take_loop(runs: &RunModule, streams: &PullStreams, timing: Timing) {
     let (runs, streams) = (runs.clone(), streams.clone());
-    tokio::spawn(async move { runs.take_loop(streams, timing).await });
+    tokio::spawn(async move { runs.take_loop(streams, None, timing).await });
+}
+
+/// A process starter that counts its starts; each child it starts runs
+/// until the supervisor stops and never opens a pull stream.
+#[derive(Clone, Default)]
+struct CountingStarter(Arc<std::sync::atomic::AtomicUsize>);
+
+impl CountingStarter {
+    fn starts(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl ProcessStarter for CountingStarter {
+    fn start(&mut self, _token: &Token) -> std::io::Result<Box<dyn LocalChild>> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Box::new(SilentChild))
+    }
+}
+
+struct SilentChild;
+
+impl LocalChild for SilentChild {
+    fn close_stdin(&mut self) {}
+    fn kill(&mut self) {}
+    fn exited(&mut self) -> Option<Option<i32>> {
+        None
+    }
+}
+
+/// Catches: a Run that waits while no pull stream has room and starts no
+/// local child.
+#[tokio::test]
+async fn a_run_that_waits_with_no_room_asks_for_a_local_child() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let runs = fixture.runs.clone().with_run_streams();
+    let streams = PullStreams::default();
+    let starter = CountingStarter::default();
+    let children = LocalRunExecutors::start(
+        starter.clone(),
+        1,
+        Credentials::default(),
+        streams.clone(),
+        None,
+    );
+    let (taker, held) = (runs.clone(), streams.clone());
+    let loop_children = children.clone();
+    tokio::spawn(async move {
+        taker
+            .take_loop(held, Some(loop_children), timing(Duration::from_millis(10)))
+            .await
+    });
+    waiting_runs(&fixture, &runs, 1).await;
+    tokio::time::timeout(EVENTUALLY, async {
+        while starter.starts() == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a local child starts for the waiting Run");
+    children.stop();
 }
 
 /// The Run ids of the next `Taken` on a scripted stream.
