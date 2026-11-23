@@ -4,6 +4,12 @@ use crate::Error;
 
 static V8_INITIALIZED: OnceLock<Result<(), String>> = OnceLock::new();
 
+/// Whether this process started V8: its platform starts with the first
+/// compile or execution, and never stops.
+pub(crate) fn initialized() -> bool {
+    V8_INITIALIZED.get().is_some()
+}
+
 pub(crate) fn initialize() -> Result<(), Error> {
     match V8_INITIALIZED.get_or_init(|| {
         // Include tracked external memory in V8's global budget without its

@@ -60,7 +60,9 @@ struct RunExecutorArgs {
     #[arg(long, env = "CORAL_RUN_EXECUTOR_CORAL_ADDRESS")]
     coral_address: coral_run_executor::CoralAddress,
     /// Read the token from stdin up to its first newline, and retire when
-    /// stdin closes. Without it, set `CORAL_RUN_EXECUTOR_TOKEN`.
+    /// stdin closes, as Coral's local child. Once retired, exit as soon as
+    /// Coral's address opens no connection. Without it, set
+    /// `CORAL_RUN_EXECUTOR_TOKEN`.
     #[arg(long, env = "CORAL_RUN_EXECUTOR_TOKEN_STDIN")]
     token_stdin: bool,
     /// The most Runs it holds at once.
@@ -355,6 +357,7 @@ async fn run_executor(args: RunExecutorArgs) -> anyhow::Result<()> {
     let config = coral_run_executor::RunExecutorConfig {
         coral_address,
         token: coral_run_executor::Token::new(token)?,
+        local_child: token_stdin,
         max_runs_held,
         compiler_heap_bytes,
         run_limits: coral_run_executor::RunLimits::default(),

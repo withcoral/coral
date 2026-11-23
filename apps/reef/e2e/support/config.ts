@@ -43,6 +43,8 @@ export interface Target {
   authentication?: AuthenticationTarget
   /** The Coral Instances behind the round-robin proxy, on the multi-instance suite. */
   instances?: InstancesTarget
+  /** The Coral processes Reel started, in a stack it composes: their local Run Executors are their children. */
+  coralPids?: number[]
 }
 
 export interface InstancesTarget {

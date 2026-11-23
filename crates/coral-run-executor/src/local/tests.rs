@@ -98,6 +98,8 @@ struct Harness {
     starter: FakeStarter,
     credentials: Credentials,
     streams: PullStreams,
+    /// The Run Executor ids of the children that exited after a Hello.
+    exited: Mutex<mpsc::UnboundedReceiver<String>>,
     began: Instant,
 }
 
@@ -106,13 +108,20 @@ impl Harness {
         let starter = FakeStarter::default();
         let credentials = Credentials::default();
         let streams = PullStreams::default();
-        let supervisor =
-            LocalRunExecutors::start(starter.clone(), LIMIT, credentials.clone(), streams.clone());
+        let (exits, exited) = mpsc::unbounded_channel();
+        let supervisor = LocalRunExecutors::start(
+            starter.clone(),
+            LIMIT,
+            credentials.clone(),
+            streams.clone(),
+            Some(exits),
+        );
         Self {
             supervisor,
             starter,
             credentials,
             streams,
+            exited: Mutex::new(exited),
             began: Instant::now(),
         }
     }
@@ -141,13 +150,33 @@ impl Harness {
         self.credentials.admit(Some(&bearer)).is_some()
     }
 
-    /// Opens child `index`'s pull stream with `free` units of room.
+    /// Opens child `index`'s pull stream with `free` units of room, as the
+    /// Run Executor [`Self::run_executor_id`] of `index`.
     fn hello(&self, index: usize, free: u32) -> StreamId {
         let bearer = self.child(index, |child| child.bearer.clone());
         let admitted = self.credentials.admit(Some(&bearer)).unwrap();
         let (outbound, _responses) = mpsc::unbounded_channel();
-        let id = uuid::Uuid::new_v4().to_string();
-        self.streams.insert(id, admitted, free, outbound)
+        // As the link does at a Hello.
+        self.credentials
+            .said_hello(admitted.1, &Self::run_executor_id(index));
+        self.streams
+            .insert(Self::run_executor_id(index), admitted, free, outbound)
+    }
+
+    fn run_executor_id(index: usize) -> String {
+        uuid::Uuid::from_u128(u128::try_from(index).unwrap() + 1).to_string()
+    }
+
+    /// Child `index` dies.
+    fn die(&self, index: usize) {
+        let started = lock(&self.starter.started);
+        lock(started.get(index).expect("the child started")).killed = true;
+    }
+
+    /// The ids the supervisor reported as exited since the last call.
+    fn exits(&self) -> Vec<String> {
+        let mut exited = lock(&self.exited);
+        std::iter::from_fn(|| exited.try_recv().ok()).collect()
     }
 }
 
@@ -167,12 +196,29 @@ async fn a_start_that_fails_or_says_no_hello_in_time_backs_off_until_a_hello() {
         assert!(!harness.admits(index), "child {index}'s verifier");
     }
     assert!(harness.admits(3));
+    assert!(
+        harness.exits().is_empty(),
+        "a child that said no Hello held nothing"
+    );
 
     // A Hello resets the wait. That child has no room, so the next starts
     // at once; it says no Hello, and the start after it waits 1 s again.
     harness.hello(3, 0);
     sleep(13 * SECOND).await;
     assert_eq!(harness.starts(), [1, 13, 27, 45, 46, 57]);
+}
+
+/// Catches: a child that dies before a tick saw its pull stream and goes
+/// unnamed, so its Runs wait for its lease to lapse.
+#[tokio::test(start_paused = true)]
+async fn a_child_whose_stream_went_before_a_tick_is_named_at_its_exit() {
+    let harness = Harness::start();
+    harness.request_room().await;
+    let stream = harness.hello(0, MAX_RUNS_HELD);
+    harness.streams.close(stream);
+    harness.die(0);
+    sleep(2 * SECOND).await;
+    assert_eq!(harness.exits(), [Harness::run_executor_id(0)]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -227,6 +273,7 @@ async fn a_child_idle_for_five_minutes_retires_and_its_verifier_is_forgotten() {
     assert!(harness.child(0, |child| child.stdin_closed && !child.killed));
     assert!(!harness.admits(0), "the verifier is forgotten at exit");
     assert_eq!(harness.starts(), [0], "an idle retire starts nothing");
+    assert_eq!(harness.exits(), [Harness::run_executor_id(0)]);
 }
 
 #[tokio::test(start_paused = true)]

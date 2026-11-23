@@ -10,8 +10,11 @@ use super::run_stream_reconnect::{
     Moving, answers, failed_with, finish_with, forecast, only_answer, reopen, result_kinds,
     start_moving,
 };
-use super::run_streams::{Scripted, committed, emit, ended, shape, take};
+use super::run_streams::{Scripted, committed, emit, ended, shape, take, take_for};
 use crate::InvocationResultKind;
+use crate::run_repository::Taker;
+use coral_run_executor::Kind;
+use coral_run_executor::wire::v1::TerminateReason;
 
 /// A drain far longer than any wait in these tests: a shutdown that returns
 /// within one returned before its drain was out.
@@ -236,4 +239,102 @@ async fn a_stream_moves_only_once_its_instance_holds_no_pull_stream() {
         .await
         .expect("the drain ends once its stream moved")
         .expect("the shutdown task");
+}
+
+/// A started Run that a local child of the first of two Coral Instances
+/// holds, whose weather Tool sends through `upstream`.
+async fn on_a_local_child(upstream: Arc<SequencedUpstream>, drain: Duration) -> (Moving, Scripted) {
+    let fixture = TestModules::with_upstream(Arc::new(ImmediateEngine::default()), upstream).await;
+    let tool = fixture
+        .user_tool("user:drain-local", "Drain a local child")
+        .await;
+    let (first, second) = two_instances(&fixture, drain);
+    let accepted = first
+        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
+        .await
+        .expect("accept a Run");
+    let run_id = accepted.run_id().clone();
+    let child = Taker {
+        run_executor_id: "0b7e3c4d-2a51-4f68-9d3e-5c8a1b2f7e90",
+        run_executor_kind: Kind::Local,
+    };
+    let claim = take_for(&first, &child, 1).await;
+    let mut stream = Scripted::open(&first, &run_id.to_string(), &claim);
+    stream.start().await;
+    let moving = Moving {
+        fixture,
+        first,
+        second,
+        tool,
+        run_id,
+        claim,
+    };
+    (moving, stream)
+}
+
+/// Catches: a drain that moves a local child's stream, which can reopen
+/// only on its parent, or holds its new calls.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_local_childs_run_goes_on_through_the_drain_and_finishes_here() {
+    let upstream = held_upstream();
+    let (moving, mut stream) = on_a_local_child(upstream.clone(), LONG_DRAIN).await;
+    stream.request(1, forecast(None));
+    upstream.until_sent(1).await;
+
+    let shutdown = shut_down(&moving.first);
+    // A call made after the drain started still dispatches.
+    stream.request(2, forecast(None));
+    upstream.until_sent(2).await;
+    upstream.release_all();
+    stream
+        .until(|read| !answers(read, 1).is_empty() && !answers(read, 2).is_empty())
+        .await;
+    stream.request(3, finish_with("1"));
+    stream
+        .until(|read| read.contains(&ended(WireEnd::Succeeded)))
+        .await;
+    tokio::time::timeout(EVENTUALLY, shutdown)
+        .await
+        .expect("the drain ends once the Run ended")
+        .expect("the shutdown task");
+    assert_eq!(
+        result_kinds(&moving.fixture, &moving.tool, &moving.run_id).await,
+        [
+            Some(InvocationResultKind::UpstreamOutcome),
+            Some(InvocationResultKind::UpstreamOutcome),
+        ]
+    );
+}
+
+/// Catches: a local child's Run left running past the drain's length, to
+/// wait for its child's lease to lapse.
+#[tokio::test(flavor = "multi_thread")]
+async fn at_the_drains_length_a_local_childs_run_ends_interrupted() {
+    let upstream = held_upstream();
+    let (moving, mut stream) = on_a_local_child(upstream.clone(), Duration::ZERO).await;
+    stream.request(1, forecast(None));
+    upstream.until_sent(1).await;
+
+    let shutdown = shut_down(&moving.first);
+    loop {
+        match stream.next().await {
+            run_response::Message::Terminate(terminate) => {
+                assert_eq!(terminate.reason(), TerminateReason::Interrupted);
+                break;
+            }
+            run_response::Message::Ended(_) => panic!("Ended before Terminate"),
+            _ => {}
+        }
+    }
+    shutdown.await.expect("the shutdown task");
+    let run = moving
+        .fixture
+        .run_record(&moving.tool.workspace_id, &moving.run_id)
+        .await;
+    assert_eq!(run.state, RunState::Interrupted);
+    upstream.release_all();
+    assert_eq!(
+        result_kinds(&moving.fixture, &moving.tool, &moving.run_id).await,
+        [Some(InvocationResultKind::Indeterminate)]
+    );
 }

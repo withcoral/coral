@@ -1911,7 +1911,7 @@ impl OwnerState {
     }
 
     /// A step of the Shutdown Drain, which only a Run stream owner takes.
-    fn drain(&mut self, step: DrainStep) -> Vec<Effect> {
+    fn drain(&mut self, step: DrainStep, now_unix_nanos: i64) -> Vec<Effect> {
         if self.draining == Draining::Moved {
             return Vec::new();
         }
@@ -1932,6 +1932,9 @@ impl OwnerState {
             DrainStep::MoveNow => {
                 self.draining = Draining::Moving;
                 self.move_stream()
+            }
+            DrainStep::Interrupt => {
+                self.end_stream_run(RunTerminationKind::Interrupted, now_unix_nanos)
             }
         }
     }
@@ -2133,6 +2136,6 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         Message::Detached => state.detached(),
         Message::Woken(run) => state.woken(run),
         Message::EndedOutside(kind) => state.ended_outside(kind),
-        Message::Drain(step) => state.drain(step),
+        Message::Drain(step) => state.drain(step, now_unix_nanos),
     }
 }

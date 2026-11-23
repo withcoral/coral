@@ -97,7 +97,21 @@ pub(crate) fn verifier(token: &str) -> Verifier {
 /// The credentials the listener admits, each kept as its SHA-256 verifier:
 /// the operator's tokens, and one per live local child.
 #[derive(Clone, Default)]
-pub struct Credentials(Arc<Mutex<HashMap<Verifier, Kind>>>);
+pub struct Credentials(Arc<Mutex<HashMap<Verifier, Admitted>>>);
+
+/// What one admitted credential is: its kind and, for a local child, the
+/// Run Executor id its first `Hello` gave.
+#[derive(Clone)]
+struct Admitted {
+    kind: Kind,
+    hello: Option<String>,
+}
+
+impl Admitted {
+    const fn of(kind: Kind) -> Self {
+        Self { kind, hello: None }
+    }
+}
 
 impl Credentials {
     /// Admits each of the operator's `tokens`, two during a rotation, as
@@ -108,7 +122,7 @@ impl Credentials {
         lock(&credentials.0).extend(
             tokens
                 .into_iter()
-                .map(|token| (token.verifier(), Kind::Dialed)),
+                .map(|token| (token.verifier(), Admitted::of(Kind::Dialed))),
         );
         credentials
     }
@@ -118,7 +132,7 @@ impl Credentials {
     #[must_use]
     pub fn admit_local(&self, token: &Token) -> LocalCredential {
         let verifier = token.verifier();
-        lock(&self.0).insert(verifier, Kind::Local);
+        lock(&self.0).insert(verifier, Admitted::of(Kind::Local));
         LocalCredential {
             credentials: self.clone(),
             verifier,
@@ -134,8 +148,20 @@ impl Credentials {
             return None;
         }
         let verifier = verifier(token);
-        let kind = lock(&self.0).get(&verifier).copied()?;
+        let kind = lock(&self.0).get(&verifier)?.kind;
         Some((kind, CredentialId(verifier)))
+    }
+
+    /// Records the Run Executor id of a local child's first `Hello` on its
+    /// credential, so the supervisor can name the child once it exits, even
+    /// when its pull stream went before the supervisor saw it.
+    pub(crate) fn said_hello(&self, credential: CredentialId, run_executor_id: &str) {
+        if let Some(admitted) = lock(&self.0).get_mut(&credential.0)
+            && admitted.kind == Kind::Local
+            && admitted.hello.is_none()
+        {
+            admitted.hello = Some(run_executor_id.to_owned());
+        }
     }
 }
 
@@ -166,6 +192,13 @@ impl LocalCredential {
     /// The id its pull streams carry.
     pub(crate) fn id(&self) -> CredentialId {
         CredentialId(self.verifier)
+    }
+
+    /// The Run Executor id of the child's first `Hello`; none before it.
+    pub(crate) fn run_executor_id(&self) -> Option<String> {
+        lock(&self.credentials.0)
+            .get(&self.verifier)
+            .and_then(|admitted| admitted.hello.clone())
     }
 }
 
@@ -902,6 +935,9 @@ impl LinkService for PullService {
         }));
         // The receiver is still here, so the send lands.
         drop(outbound.send(Ok(welcome)));
+        self.link
+            .credentials
+            .said_hello(admitted.1, &run_executor_id);
         let stream =
             self.link
                 .streams

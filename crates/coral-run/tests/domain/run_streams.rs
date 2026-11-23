@@ -91,16 +91,18 @@ impl Scripted {
     }
 
     /// Opens, loads and expects `Started`.
-    pub(super) async fn start(&mut self) {
+    /// Reads the package, sends `Loaded` and returns the `Started` that
+    /// answers it.
+    pub(super) async fn start(&mut self) -> coral_run_executor::wire::v1::Started {
         assert!(matches!(
             self.next().await,
             run_response::Message::Package(_)
         ));
         self.send(run_request::Message::Loaded(Loaded {}));
-        assert!(matches!(
-            self.next().await,
-            run_response::Message::Started(_)
-        ));
+        match self.next().await {
+            run_response::Message::Started(started) => started,
+            other => panic!("expected Started, got {other:?}"),
+        }
     }
 }
 
@@ -221,7 +223,7 @@ async fn a_programs_emissions_logs_and_invocations_land_as_they_do_with_the_run_
     let streams = link.streams();
     tokio::spawn(link.serve(listener, std::future::pending()));
     let taker = on_streams.clone();
-    tokio::spawn(async move { taker.take_runs(streams).await });
+    tokio::spawn(async move { taker.take_runs(streams, None).await });
     let (_retire, _run_executor) = coral_run_executor::testing::spawn_run_executor_at(
         &address,
         4,
@@ -608,6 +610,32 @@ async fn a_run_past_its_deadline_ends_timed_out_first_and_drops_a_late_dispatch_
     assert_eq!(
         fixture.events_after(&tool.workspace_id, &run_id, 0).await,
         events
+    );
+}
+
+/// Catches: a `Started` whose time left is rounded down, so the Run
+/// Executor ends the Program before Coral's deadline and the Run records
+/// Interrupted. The test clock moves a nanosecond each read, so the time
+/// left when `Started` goes out is just under the time limit.
+#[tokio::test]
+async fn started_rounds_the_time_left_up_to_a_whole_millisecond() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let runs = fixture.runs.clone().with_run_streams();
+    let tool = fixture.user_tool("user:round", "Round up").await;
+    let accepted = runs
+        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
+        .await
+        .expect("accept a Run");
+    let claim = take(&runs).await;
+    let mut stream = Scripted::open(&runs, &accepted.run_id().to_string(), &claim);
+    let started = stream.start().await;
+    let run = fixture
+        .run_record(&tool.workspace_id, accepted.run_id())
+        .await;
+    let limit = run.time_limit_nanos.expect("a time limit");
+    assert_eq!(
+        i64::try_from(started.deadline_ms).unwrap(),
+        limit / 1_000_000
     );
 }
 

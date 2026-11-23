@@ -20,7 +20,7 @@ import { withOwner } from '../../../support/topology.ts'
  * keeps the default policy: the User who runs a Program approves each call.
  * Returns the call, the runner and the paused Run Update.
  */
-async function pauseForApproval(
+export async function pauseForApproval(
   page: Page,
   target: Parameters<typeof programRunner>[1],
   accessToken: string | undefined,

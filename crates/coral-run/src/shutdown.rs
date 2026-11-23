@@ -99,7 +99,9 @@ impl RunModule {
     /// on the stream, it commits what it applied and ends the stream cleanly:
     /// the Run Executor reopens it on another Coral Instance. At the drain's
     /// length the rest move at once, and the Coral Instance each reopens on
-    /// settles its dispatches in flight. Nothing records Interrupted.
+    /// settles its dispatches in flight. A local child's stream can reopen
+    /// only here, so it keeps dispatching through the drain, and at its
+    /// length its Run ends interrupted.
     ///
     /// The drain starts when this is called: admission closes, the pull
     /// streams drain and the stream owners hold their dispatches before the

@@ -75,9 +75,10 @@ pub struct Launch {
     /// Builds the tool surface MCP serves in place of core's. Without one,
     /// MCP serves core's.
     pub mcp_interface_factory: Option<Arc<dyn McpInterfaceFactory>>,
-    /// Compile in this process instead of on Run Executors: for a test that
-    /// starts Coral in its own process, whose binary is no `coral`.
-    pub compile_in_process: bool,
+    /// The `coral` binary that local Run Executors run: for a test that
+    /// starts Coral in its own process, whose binary is no `coral`. Without
+    /// one, this process's own binary.
+    pub run_executor_program: Option<std::path::PathBuf>,
     /// Where startup reports each database migration step it applies. They
     /// run before telemetry starts, so without this a long step is silent.
     pub migration_report: Option<MigrationReport>,
@@ -95,10 +96,9 @@ impl Launch {
             Some(factory) => builder.with_mcp_interface_factory(factory),
             None => builder,
         };
-        let builder = if self.compile_in_process {
-            builder.with_in_process_compiler()
-        } else {
-            builder
+        let builder = match self.run_executor_program {
+            Some(program) => builder.with_run_executor_program(program),
+            None => builder,
         };
         let builder = match self.service_version {
             Some(version) => builder.with_service_version(version),

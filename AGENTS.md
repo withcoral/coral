@@ -44,6 +44,8 @@
   replays the stored result. `IfMatch::any()` is compiled only under
   `cfg(test)` and the `test-fixtures` feature, which only dev-dependencies
   enable: a test whose subject is not the conflict check passes it.
+- The Coral process starts no V8 isolate. Compile and execute only through a
+  Run Executor (ADR 0027).
 - Read process environment only at process bootstrap. Pass explicit values to
   domain code. The `env` Secret Store is the one exception: bootstrap hands it
   a reader, and it reads only under its guarded prefix (ADR 0036).

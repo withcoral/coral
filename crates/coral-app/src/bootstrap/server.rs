@@ -211,12 +211,11 @@ impl ServerBuilder {
         self
     }
 
-    /// Compiles in this process instead of on Run Executors, for a test
-    /// that starts Coral in its own process: its binary is no `coral`, so
-    /// it cannot start a local child.
+    /// Runs `program`, a `coral` binary, as each local Run Executor, for a
+    /// test that starts Coral in its own process: its binary is no `coral`.
     #[must_use]
-    pub fn with_in_process_compiler(mut self) -> Self {
-        self.launcher.compile_in_process = true;
+    pub fn with_run_executor_program(mut self, program: std::path::PathBuf) -> Self {
+        self.launcher.run_executor_program = Some(program);
         self
     }
 
@@ -410,7 +409,8 @@ impl PreparedServerBuilder {
         let local_children = match deployment_config.local_run_executors() {
             Some(settings) => Some(LocalChildren {
                 settings,
-                program: std::env::current_exe()?,
+                program: (launcher.run_executor_program.clone())
+                    .map_or_else(std::env::current_exe, Ok)?,
                 environment: super::env::run_executor_environment(),
             }),
             None => None,
@@ -457,6 +457,7 @@ impl PreparedServerBuilder {
             clock: Arc::clone(&clock),
             policy,
             runtime_limits: deployment_config.runtime_limits(),
+            human_interface: deployment_config.human_interface().clone(),
             credentials: CredentialParts {
                 vault,
                 secret_stores,
@@ -467,7 +468,6 @@ impl PreparedServerBuilder {
             run_executors: RunExecutorParts {
                 listener: run_executor_listener,
                 local_children,
-                compile_in_process: launcher.compile_in_process,
             },
             releases,
             edition: launcher.extensions.inspection(),

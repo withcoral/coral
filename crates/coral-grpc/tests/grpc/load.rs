@@ -29,6 +29,7 @@
 //! | `CORAL_LOAD_REPORT` | path of the JSON report (default: stderr only) |
 //! | `CORAL_LOAD_SAMPLER_URL` | direct Postgres URL, outside any proxy, for measurement reads and `pg_stat_activity` sampling |
 //! | `CORAL_LOAD_LABEL` | free text copied into the report, for example `+5ms` |
+//! | `CORAL_LOAD_PATH` | `owner` (default): Runs on Run Owners; `stream`: Runs on Run streams (ADR 0027), executed by a Run Executor in this process |
 //! | `CORAL_LOAD_LOG` | tracing filter for the cell's stderr (default `coral_run=warn`: the Run Owner's suspect, self-interrupt and retry lines) |
 //!
 //! Probes, each on its own task for the whole cell:
@@ -429,6 +430,44 @@ impl Probes {
     }
 }
 
+/// A Run Executor in this process, retired when dropped.
+type RunExecutor = (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<Result<(), coral_run_executor::RunError>>,
+);
+
+/// `runs` for Run streams (ADR 0027): a link on loopback serves its Run
+/// streams, its take loop takes for the link's pull streams, and a Run
+/// Executor in this process dials it.
+async fn on_run_streams(
+    runs: &coral_run::RunModule,
+    database: Arc<coral_db::Database>,
+) -> (coral_run::RunModule, RunExecutor) {
+    let runs = runs.clone().with_run_streams();
+    let token =
+        coral_run_executor::Token::new(coral_run_executor::testing::RUN_EXECUTOR_TOKEN.to_owned())
+            .unwrap();
+    let link = coral_run_executor::LinkServer::new(
+        coral_run_executor::Credentials::new([token]),
+        database,
+        runs.instance().to_string(),
+    )
+    .with_run_streams(runs.run_stream_server());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = format!("http://{}", listener.local_addr().unwrap());
+    let streams = link.streams();
+    tokio::spawn(link.serve(listener, std::future::pending()));
+    let taker = runs.clone();
+    tokio::spawn(async move { taker.take_runs(streams, None).await });
+    let run_executor = coral_run_executor::testing::spawn_run_executor_at(
+        &address,
+        128,
+        coral_run_executor::RunLimits::default(),
+        None,
+    );
+    (runs, run_executor)
+}
+
 /// A second active Workspace: its Owner plus one acting Member, one no-approval
 /// Tool, one-call Runs.
 struct Neighbor {
@@ -726,6 +765,10 @@ fn unix_ms() -> f64 {
 struct Harness {
     f: Fixture,
     backend: &'static str,
+    /// `owner` or `stream`: which path the cell's Runs take.
+    path: &'static str,
+    /// The Run Executor that runs the stream path's Runs, kept for the cell.
+    _run_executor: Option<RunExecutor>,
     actor: AuthenticatedPrincipal,
     upstream: MockServer,
     neighbor: Option<Neighbor>,
@@ -746,7 +789,14 @@ impl Harness {
             )
             .with_writer(std::io::stderr)
             .try_init();
-        let f = Fixture::new().await;
+        let mut f = Fixture::new().await;
+        let (path, run_executor) = if setting("CORAL_LOAD_PATH").as_deref() == Some("stream") {
+            let (runs, run_executor) = on_run_streams(&f.runs, f.database.database()).await;
+            f.runs = runs;
+            ("stream", Some(run_executor))
+        } else {
+            ("owner", None)
+        };
         let backend = match f.database.options() {
             DatabaseOptions::Postgres { .. } => "postgres",
             DatabaseOptions::Sqlite { .. } => "sqlite",
@@ -763,12 +813,14 @@ impl Harness {
         let actor = AuthenticatedPrincipal::user(f.member.clone());
         let label = setting("CORAL_LOAD_LABEL").unwrap_or_default();
         eprintln!(
-            "load: cell={cell} backend={backend} label={label:?} sampler={}",
+            "load: cell={cell} backend={backend} path={path} label={label:?} sampler={}",
             sampler_url.is_some()
         );
         Self {
             f,
             backend,
+            path,
+            _run_executor: run_executor,
             actor,
             upstream,
             neighbor: Some(neighbor),
@@ -819,6 +871,7 @@ impl Harness {
         report.insert("cell".into(), json!(cell));
         report.insert("label".into(), json!(self.label));
         report.insert("backend".into(), json!(self.backend));
+        report.insert("path".into(), json!(self.path));
         report.insert("debug_assertions".into(), json!(cfg!(debug_assertions)));
         if let Value::Object(fields) = body {
             report.extend(fields);

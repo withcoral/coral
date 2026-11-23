@@ -281,6 +281,9 @@ pub(crate) enum DrainStep {
     Move,
     /// The drain is out: move the stream now.
     MoveNow,
+    /// The drain is out for a local child's stream, which cannot move: end
+    /// the Run interrupted.
+    Interrupt,
 }
 
 impl fmt::Debug for Message {
@@ -475,6 +478,10 @@ struct Shared {
 /// whether a chunk of its own is in flight.
 struct StreamHead {
     workspace_id: WorkspaceId,
+    /// A local child of this Coral Instance holds the stream. It reopens
+    /// only here, so the Shutdown Drain lets its Run go on instead of
+    /// moving it, and ends it at the drain's length.
+    local_child: bool,
     /// The head shifted left by two, with [`IN_FLIGHT`] set while a chunk
     /// is in flight and [`LISTENING`] while the owner acts on a wake-up:
     /// one value, read whole.
@@ -539,9 +546,11 @@ impl OwnerHandle {
         run_id: HeldRunId,
         claim_id: String,
         workspace_id: WorkspaceId,
+        local_child: bool,
     ) -> (Self, Mailbox) {
         let stream = StreamHead {
             workspace_id,
+            local_child,
             published: AtomicU64::new(0),
         };
         Self::with_stream(run_id, claim_id, Some(stream))
@@ -658,8 +667,12 @@ impl OwnerHandle {
     /// the stream; another is stopped once the drain is out, which
     /// interrupts its Run.
     pub(crate) fn drain(&self, step: DrainStep) {
-        if self.shared.stream.is_some() {
-            self.send(Message::Drain(step));
+        if let Some(stream) = &self.shared.stream {
+            match (stream.local_child, step) {
+                (false, step) => self.send(Message::Drain(step)),
+                (true, DrainStep::MoveNow) => self.send(Message::Drain(DrainStep::Interrupt)),
+                (true, _) => {}
+            }
         } else if step == DrainStep::MoveNow {
             self.request_stop();
         }

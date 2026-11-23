@@ -69,7 +69,6 @@ coral-workspace.workspace = true
 
 [dev-dependencies]
 coral-telemetry = { workspace = true, features = ["test-support"] }
-coral-v8 = { workspace = true, features = ["test-support"] }
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 coral-search = { workspace = true, features = ["test-fixtures"] }
 tonic-health.workspace = true

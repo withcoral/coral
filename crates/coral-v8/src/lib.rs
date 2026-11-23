@@ -22,9 +22,6 @@ mod profile;
 mod program_error;
 mod runtime;
 mod source_map;
-/// Test support: what a test reads about this process's compilers.
-#[cfg(feature = "test-support")]
-pub mod testing;
 mod v8_support;
 
 // `tests/execution_usage.rs` uses `tracing`; the unit tests do not.
@@ -42,6 +39,13 @@ pub use memory::IsolateLimits;
 pub use profile::{TYPESCRIPT_PROFILE, TYPESCRIPT_PROFILE_ID, TypeScriptProfile};
 pub use program_error::{ProgramError, ProgramErrorFrame, ProgramToolError};
 pub use runtime::{FreshIsolate, ProgramExecutor};
+
+/// Whether this process started V8. The Coral process never does: it
+/// compiles and executes only through a Run Executor (ADR 0027).
+#[must_use]
+pub fn initialized() -> bool {
+    v8_support::initialized()
+}
 
 /// Validates one retained authored source map against the pinned profile rules.
 ///
