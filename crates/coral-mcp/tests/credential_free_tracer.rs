@@ -1842,21 +1842,11 @@ async fn a_failed_namespace_lookup_still_lists_every_tool() {
         .expect("break the Provider's credential contract");
     let client = tracer.sdk().await;
     let tools = client.list_all_tools().await.expect("list MCP tools");
-    let mut names = tools
+    let names = tools
         .iter()
         .map(|tool| tool.name.to_string())
         .collect::<Vec<_>>();
-    names.sort();
-    assert_eq!(
-        names,
-        [
-            "cancel",
-            "end_task",
-            "exec",
-            "show_required_actions",
-            "wait"
-        ]
-    );
+    assert_eq!(names, TOOL_NAMES);
     let description = tools
         .iter()
         .find(|tool| tool.name == "exec")

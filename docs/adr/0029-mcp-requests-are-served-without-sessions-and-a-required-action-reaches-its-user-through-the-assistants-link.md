@@ -76,22 +76,22 @@ summary. Codex wrote the link as text before its first wait. Making the link the
   sends no token gets nothing but the Run Update, and nothing is sent outside the response to the request. Claude
   Code shows that line on the running call; Codex's terminal and Claude Desktop do not (checked by hand on
   2026-11-04, #2846), so the assistant's text stays the first way and the progress line the second.
-- **A client that renders MCP Apps shows the request itself.** Claude Desktop condenses the assistant's text to one
-  line while tools run and renders no progress, so neither way reached the person there. One tool,
-  `show_required_actions`, links one `ui://` resource, an app the host renders with the tool result, in place, while
-  the turn goes on: it shows the entries that name the invoking User, what is asked, the waiting Tool where one Tool
-  waits, the Provider and the deadline, with one control that opens the entry's page. It decides nothing, calls no
+- **A client that renders MCP Apps shows the request itself.** Claude Desktop condenses the assistant's text to one line
+  while tools run and renders no progress, so neither way reached the person there. One tool, which the assistant calls
+  to show a Run's Required Actions, links one `ui://` resource, an app the host renders with the tool result, in place,
+  while the turn goes on: it shows the entries that name the invoking User, what is asked, the waiting Tool where one
+  Tool waits, the Provider and the deadline, with one control that opens the entry's page. It decides nothing, calls no
   tool and holds no state: the tool's result, the Run's Required Actions as the Run Update lists them, is its whole
-  input. The assistant calls the tool once each time a new Required Action names the invoking User, after it writes
-  the link, and then goes on waiting. A card shows the entries the Run had at that call and does not change, so a
-  later request gets its own call and its own card. The observing tools do not link the app. The extension links an app to a tool, not to
-  one result, so a host renders it for every call of a linked tool, and Claude Desktop then tells the assistant that
-  the person already sees the result (seen on 2026-11-22). Every client gets the same declaration; in one without
-  the extension nothing renders, and the tool returns only the Run's identifier, its state and its Required Actions. Claude Desktop rendered the app when the observing tools
-  linked it (checked by hand on 2026-11-04, #2846), and the
-  [MCP Apps documentation](https://modelcontextprotocol.io/extensions/apps/overview#client-support) lists claude.ai
-  and VS Code among its hosts. The link reaches the person when any of the three ways works, and only a client that
-  shows none leaves it to the final reply.
+  input. The assistant calls the tool once each time a new Required Action names the invoking User, after it writes the
+  link, and then goes on waiting. A card shows the entries the Run had at that call and does not change, so a later
+  request gets its own call and its own card. The observing tools do not link the app. The extension links an app to a
+  tool, not to one result, so a host renders it for every call of a linked tool, and Claude Desktop then tells the
+  assistant that the person already sees the result (seen on 2026-11-22). Every client gets the same declaration; in one
+  without the extension nothing renders, and the tool returns only the Run's identifier, its state and its Required
+  Actions. Claude Desktop rendered the app when the observing tools linked it (checked by hand on 2026-11-04, #2846),
+  and the [MCP Apps documentation](https://modelcontextprotocol.io/extensions/apps/overview#client-support) lists
+  claude.ai and VS Code among its hosts. The link reaches the person when any of the three ways works, and only a client
+  that shows none leaves it to the final reply.
 - **Waiting is exact.** From the cursor it was given, the observing tool call that waits holds, for at most one
   bounded call, until the Required Action list changes or the Run ends, then returns at once; ordinary output does
   not wake it, and a call without a cursor treats what it first reads as already seen

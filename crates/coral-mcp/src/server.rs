@@ -486,8 +486,11 @@ impl CoreTools {
         &self,
         arguments: ShowRequiredActionsArguments,
     ) -> Result<CallToolResult, ToolCallError> {
+        // This tool reports no Events, and an observation takes no limit
+        // below one.
+        const EVENT_LIMIT: u16 = 1;
         let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
-        let observation = RunObservation::immediate(None, 1).map_err(invalid_input)?;
+        let observation = RunObservation::immediate(None, EVENT_LIMIT).map_err(invalid_input)?;
         let update = self
             .observe(&run_id, &observation)
             .await
