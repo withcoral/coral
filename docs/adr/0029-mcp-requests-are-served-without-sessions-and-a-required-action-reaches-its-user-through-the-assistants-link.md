@@ -82,11 +82,12 @@ summary. Codex wrote the link as text before its first wait. Making the link the
   the turn goes on: it shows the entries that name the invoking User, what is asked, the waiting Tool where one Tool
   waits, the Provider and the deadline, with one control that opens the entry's page. It decides nothing, calls no
   tool and holds no state: the tool's result, the Run's Required Actions as the Run Update lists them, is its whole
-  input. The assistant calls the tool once when a Required Action names the invoking User, after it writes the link,
-  and then goes on waiting. The observing tools do not link the app. The extension links an app to a tool, not to
+  input. The assistant calls the tool once each time a new Required Action names the invoking User, after it writes
+  the link, and then goes on waiting. A card shows the entries the Run had at that call and does not change, so a
+  later request gets its own call and its own card. The observing tools do not link the app. The extension links an app to a tool, not to
   one result, so a host renders it for every call of a linked tool, and Claude Desktop then tells the assistant that
   the person already sees the result (seen on 2026-11-22). Every client gets the same declaration; in one without
-  the extension the tool only repeats the Required Actions. Claude Desktop rendered the app when the observing tools
+  the extension nothing renders, and the tool returns only the Run's identifier, its state and its Required Actions. Claude Desktop rendered the app when the observing tools
   linked it (checked by hand on 2026-11-04, #2846), and the
   [MCP Apps documentation](https://modelcontextprotocol.io/extensions/apps/overview#client-support) lists claude.ai
   and VS Code among its hosts. The link reaches the person when any of the three ways works, and only a client that
