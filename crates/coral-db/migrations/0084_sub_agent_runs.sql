@@ -7,3 +7,4 @@ CREATE TABLE sub_agent_runs (
     task_id TEXT NOT NULL,
     FOREIGN KEY (workspace_id, task_id) REFERENCES task_records(workspace_id, id) ON DELETE CASCADE
 );
+CREATE INDEX idx_sub_agent_runs_task ON sub_agent_runs (workspace_id, task_id);
