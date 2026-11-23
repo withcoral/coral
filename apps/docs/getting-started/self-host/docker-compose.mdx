@@ -309,9 +309,9 @@ The onboarding prompt can tell some MCP clients to look for a Coral plugin. To o
 
 ## Using a single hostname
 
-Each `public_url` is an origin: a scheme, a host and an optional port, with no path. You cannot serve Coral under a path prefix. Two listeners can share an origin when their paths differ, and the MCP server and the auth server do.
+Each `public_url` is an origin: a scheme, a host and an optional port, with no path. You cannot serve Coral under a path prefix.
 
-If you only have one hostname, as with Tailscale Serve, serve MCP and auth at the hostname and give the UI its own HTTPS port:
+If you only have one hostname, as with Tailscale Serve, put the MCP server and the auth server on the hostname itself. Their paths do not overlap, so they can share an origin. Give the UI its own HTTPS port:
 
 | Setting                                              | Example value               |
 | ---------------------------------------------------- | --------------------------- |
@@ -319,7 +319,9 @@ If you only have one hostname, as with Tailscale Serve, serve MCP and auth at th
 | `listeners.auth.public_url`, `CORAL_WEB_AUTH_ISSUER` | `https://<coral-host>`      |
 | `listeners.web.public_url`, `CORAL_WEB_PUBLIC_URL`   | `https://<coral-host>:8443` |
 
-Your reverse proxy sends the auth server's paths to the auth listener, and every other path to the MCP listener. With Caddy, use this `Caddyfile` and add `"8443:8443"` to the `ports` of the Caddy service:
+Keep MCP and auth on port 443. Claude Desktop and Claude on the web connect from Anthropic's servers, and those servers do not reach any other port.
+
+Your reverse proxy must send the auth server's paths to the auth listener, and every other path to the MCP listener. With Caddy, use this `Caddyfile`:
 
 ```caddyfile
 {
@@ -335,9 +337,13 @@ Your reverse proxy sends the auth server's paths to the auth listener, and every
 }
 ```
 
-- The redirect URI to register is then `https://<coral-host>/auth/oidc/callback`.
-- Your users open the UI at `https://<coral-host>:8443`. A workspace's MCP endpoint is `https://<coral-host>/workspaces/<workspace-id>/mcp`.
-- Keep MCP and auth on port 443. A hosted MCP client, such as Claude Desktop or Claude on the web, connects from its provider's servers, and Claude does not reach another port.
+Then add `"8443:8443"` to the `ports` of the Caddy service.
+
+With this layout:
+
+- The redirect URI to register is `https://<coral-host>/auth/oidc/callback`.
+- Your users open the UI at `https://<coral-host>:8443`.
+- A workspace's MCP endpoint is `https://<coral-host>/workspaces/<workspace-id>/mcp`.
 
 ## Upgrade
 
