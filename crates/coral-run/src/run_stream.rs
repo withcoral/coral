@@ -604,6 +604,7 @@ impl RunModule {
         admitted: crate::shutdown::Admitted,
         resume: Option<Resume>,
     ) {
+        let local_child = run.on_local_child;
         let accepted = AcceptedRun {
             id: run.id,
             workspace_id: run.workspace_id,
@@ -618,8 +619,12 @@ impl RunModule {
             trace: run.trace,
             time_limit_nanos: run.time_limit_nanos,
         };
-        let (handle, mailbox): (OwnerHandle, _) =
-            OwnerHandle::for_stream(accepted.held_id(), claim_id, accepted.workspace_id.clone());
+        let (handle, mailbox): (OwnerHandle, _) = OwnerHandle::for_stream(
+            accepted.held_id(),
+            claim_id,
+            accepted.workspace_id.clone(),
+            local_child,
+        );
         // Decisions and cancellations reach it from their receiver through
         // the Run's head; one an older release put in the Run Inbox reaches
         // it there.

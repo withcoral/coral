@@ -1,17 +1,22 @@
 //! The Shutdown Drain moves a Coral Instance's Run streams, not its Runs
 //! (ADR 0027, Reconnect): a draining Coral Instance opens no stream, holds
 //! new dispatches, ends each open stream cleanly once no dispatch is in
-//! flight on it, and records no Run's end; the Run goes on on another.
+//! flight on it, and records no Run's end; the Run goes on on another. A
+//! local child's stream can reopen only on its parent: its Run keeps
+//! dispatching, and ends Interrupted at the drain's length.
 use super::*;
 use coral_run_executor::wire::v1::{RunEnd as WireEnd, invocation_result, run_response};
 use coral_run_executor::{Closing, PullStreams};
 
 use super::run_stream_reconnect::{
     Moving, answers, failed_with, finish_with, forecast, only_answer, reopen, result_kinds,
-    start_moving,
+    start_moving, start_moving_for,
 };
 use super::run_streams::{Scripted, committed, emit, ended, shape, take};
 use crate::InvocationResultKind;
+use crate::run_repository::Taker;
+use coral_run_executor::Kind;
+use coral_run_executor::wire::v1::TerminateReason;
 
 /// A drain far longer than any wait in these tests: a shutdown that returns
 /// within one returned before its drain was out.
@@ -28,10 +33,26 @@ fn two_instances(fixture: &TestModules, drain: Duration) -> (RunModule, RunModul
 /// A started Run on a stream of the first of two Coral Instances, whose
 /// weather Tool sends through `upstream`.
 async fn streaming(upstream: Arc<SequencedUpstream>, drain: Duration) -> (Moving, Scripted) {
+    streaming_for(upstream, drain, None).await
+}
+
+/// [`streaming`], with the Run taken for `taker`, such as a local child.
+async fn streaming_for(
+    upstream: Arc<SequencedUpstream>,
+    drain: Duration,
+    taker: Option<&Taker<'_>>,
+) -> (Moving, Scripted) {
     let fixture = TestModules::with_upstream(Arc::new(ImmediateEngine::default()), upstream).await;
     let tool = fixture.user_tool("user:drain", "Drain").await;
     let instances = two_instances(&fixture, drain);
-    start_moving(fixture, instances, tool, "return 1;").await
+    Box::pin(start_moving_for(
+        fixture,
+        instances,
+        tool,
+        "return 1;",
+        taker,
+    ))
+    .await
 }
 
 fn held_upstream() -> Arc<SequencedUpstream> {
@@ -236,4 +257,81 @@ async fn a_stream_moves_only_once_its_instance_holds_no_pull_stream() {
         .await
         .expect("the drain ends once its stream moved")
         .expect("the shutdown task");
+}
+
+/// A local child of the first Coral Instance.
+fn local_child() -> Taker<'static> {
+    Taker {
+        run_executor_id: "0b7e3c4d-2a51-4f68-9d3e-5c8a1b2f7e90",
+        run_executor_kind: Kind::Local,
+    }
+}
+
+/// Catches: a drain that moves a local child's stream, which can reopen
+/// only on its parent, or holds its new calls.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_local_childs_run_goes_on_through_the_drain_and_finishes_here() {
+    let upstream = held_upstream();
+    let (moving, mut stream) =
+        streaming_for(upstream.clone(), LONG_DRAIN, Some(&local_child())).await;
+    stream.request(1, forecast(None));
+    upstream.until_sent(1).await;
+
+    let shutdown = shut_down(&moving.first);
+    // A call made after the drain started still dispatches.
+    stream.request(2, forecast(None));
+    upstream.until_sent(2).await;
+    upstream.release_all();
+    stream
+        .until(|read| !answers(read, 1).is_empty() && !answers(read, 2).is_empty())
+        .await;
+    stream.request(3, finish_with("1"));
+    stream
+        .until(|read| read.contains(&ended(WireEnd::Succeeded)))
+        .await;
+    tokio::time::timeout(EVENTUALLY, shutdown)
+        .await
+        .expect("the drain ends once the Run ended")
+        .expect("the shutdown task");
+    assert_eq!(
+        result_kinds(&moving.fixture, &moving.tool, &moving.run_id).await,
+        [
+            Some(InvocationResultKind::UpstreamOutcome),
+            Some(InvocationResultKind::UpstreamOutcome),
+        ]
+    );
+}
+
+/// Catches: a local child's Run left running past the drain's length, to
+/// wait for its child's lease to lapse.
+#[tokio::test(flavor = "multi_thread")]
+async fn at_the_drains_length_a_local_childs_run_ends_interrupted() {
+    let upstream = held_upstream();
+    let (moving, mut stream) =
+        streaming_for(upstream.clone(), Duration::ZERO, Some(&local_child())).await;
+    stream.request(1, forecast(None));
+    upstream.until_sent(1).await;
+
+    let shutdown = shut_down(&moving.first);
+    loop {
+        match stream.next().await {
+            run_response::Message::Terminate(terminate) => {
+                assert_eq!(terminate.reason(), TerminateReason::Interrupted);
+                break;
+            }
+            run_response::Message::Ended(_) => panic!("Ended before Terminate"),
+            _ => {}
+        }
+    }
+    shutdown.await.expect("the shutdown task");
+    let run = moving
+        .fixture
+        .run_record(&moving.tool.workspace_id, &moving.run_id)
+        .await;
+    assert_eq!(run.state, RunState::Interrupted);
+    upstream.release_all();
+    assert_eq!(
+        result_kinds(&moving.fixture, &moving.tool, &moving.run_id).await,
+        [Some(InvocationResultKind::Indeterminate)]
+    );
 }

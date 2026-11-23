@@ -58,8 +58,16 @@ pub(crate) fn start(
             .and_then(|limit| budget.below(crate::nanos_duration(limit)))
     });
     stream.link.send(run_response::Message::Started(Started {
-        deadline_ms: u64::try_from(deadline_at_unix_nanos.saturating_sub(now) / 1_000_000)
-            .unwrap_or(0),
+        // Rounded up, so the Run Executor's end at the deadline never comes
+        // before Coral's: a Finish (deadline reached) times the Run out only
+        // once Coral's clock passed it.
+        deadline_ms: u64::try_from(
+            deadline_at_unix_nanos
+                .saturating_sub(now)
+                .saturating_add(999_999)
+                / 1_000_000,
+        )
+        .unwrap_or(0),
         cpu_budget_ms: cpu_budget
             .map(|budget| u64::try_from(budget.as_millis()).unwrap_or(u64::MAX)),
     }));

@@ -7,15 +7,18 @@ import { runWaitingForApproval } from './waiting-run.ts'
 
 test('Reef approves through one Coral Instance a call on a Run that the other owns', async (context) => {
   const instances = coralInstances()
-  const owner = 0
+  let owner!: number
   const requests = await instances.during(() =>
     withOwner(context, async ({ page, step, target, accessToken }) => {
       const api = managementClients(accessToken)
       let waiting!: Awaited<ReturnType<typeof runWaitingForApproval>>
-      await step('A Run on the first Coral Instance waits for your approval', async () => {
-        waiting = await runWaitingForApproval(page, target, accessToken, owner)
-        expect(await instances.holder(waiting.run)).toBe(owner)
-      })
+      await step(
+        'A Run started through the first Coral Instance waits for your approval',
+        async () => {
+          waiting = await runWaitingForApproval(page, target, accessToken, 0)
+          owner = waiting.owner
+        },
+      )
       await step('Approve the call in Reef through the other Coral Instance', async () => {
         const sent = await instances.during(() =>
           instances.on(instances.other(owner), async () => {

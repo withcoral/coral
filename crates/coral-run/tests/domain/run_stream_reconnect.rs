@@ -10,7 +10,7 @@ use coral_run_executor::wire::v1::{
 };
 
 use super::agents::{AgentLoss, agent_scope};
-use super::run_streams::{Scripted, committed, emit, ended, shape, take};
+use super::run_streams::{Scripted, committed, emit, ended, shape, take, take_for};
 use crate::InvocationResultKind;
 use crate::approval::ApprovalDecision;
 
@@ -180,16 +180,30 @@ fn modules(
 /// Starts a Run of `source` as `tool`'s User on a stream from `first`.
 pub(super) async fn start_moving(
     fixture: TestModules,
+    instances: (RunModule, RunModule),
+    tool: ToolFixture,
+    source: &str,
+) -> (Moving, Scripted) {
+    Box::pin(start_moving_for(fixture, instances, tool, source, None)).await
+}
+
+/// [`start_moving`], with the Run taken for `taker` when one is given.
+pub(super) async fn start_moving_for(
+    fixture: TestModules,
     (first, second): (RunModule, RunModule),
     tool: ToolFixture,
     source: &str,
+    taker: Option<&crate::run_repository::Taker<'_>>,
 ) -> (Moving, Scripted) {
     let accepted = first
         .start(&tool.principal, &tool.workspace_id, submission(source))
         .await
         .expect("accept a Run");
     let run_id = accepted.run_id().clone();
-    let claim = take(&first).await;
+    let claim = match taker {
+        Some(taker) => take_for(&first, taker, 1).await,
+        None => take(&first).await,
+    };
     let mut stream = Scripted::open(&first, &run_id.to_string(), &claim);
     stream.start().await;
     let moving = Moving {

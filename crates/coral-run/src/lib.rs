@@ -66,7 +66,6 @@
 //!   children's rows, up to the pass limit; later passes release the rest
 //!   once their leases lapse. [`RunModule::release_run_executor`] releases
 //!   one at once.
-//!   Only tests run them until production accepts Runs for Run Executors.
 //! - [`RunModule::shutdown`] refuses new Runs, lets the live ones end for the
 //!   Shutdown Drain, then interrupts the rest within the commit grace.
 //! - [`approval::ApprovalModule`] exposes human-only exact Invocation decisions;
@@ -201,7 +200,7 @@ mod source_location_repository;
 mod summary;
 mod summary_repository;
 mod sweep;
-pub use sweep::Swept;
+pub use sweep::{RUN_SWEEP_INTERVAL, Swept};
 mod take;
 mod termination;
 mod tool_result_shape;
@@ -296,7 +295,8 @@ pub struct RunModule {
     /// The wake-up reader of the Run streams' loops on this Coral Instance.
     wakes: run_wake::RunWakes,
     /// Accepted Runs wait for a take and a Run stream instead of a Run Owner
-    /// (ADR 0027). Only tests set it until production switches over.
+    /// (ADR 0027). Production sets it; the Run Owner path stays for the
+    /// Runs an older release owns, and for tests, until #2911.
     run_streams: bool,
     /// This Coral Instance's pull streams, which its Shutdown Drain closes.
     pull_streams: Option<coral_run_executor::PullStreams>,
@@ -480,9 +480,9 @@ impl RunModule {
         self
     }
 
-    /// The Coral Instance this module runs in.
-    #[cfg(test)]
-    pub(crate) const fn instance(&self) -> &CoralInstanceId {
+    /// The Coral Instance this module runs in, which its link names too.
+    #[must_use]
+    pub const fn instance(&self) -> &CoralInstanceId {
         &self.instance
     }
 

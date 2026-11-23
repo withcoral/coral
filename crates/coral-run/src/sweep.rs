@@ -31,9 +31,12 @@ use crate::termination::commit_end;
 use crate::types::HeldRunId;
 use crate::{Error, RunId, RunModule};
 
-/// How long one election holds: three passes of 15 s, so another Coral
-/// Instance takes over once the holder missed two.
-const SWEEPER_LEASE: Duration = Duration::from_secs(45);
+/// How often bootstrap runs [`RunModule::sweep_runs`].
+pub const RUN_SWEEP_INTERVAL: Duration = Duration::from_secs(15);
+
+/// How long one election holds: three passes, so another Coral Instance
+/// takes over once the holder missed two.
+const SWEEPER_LEASE: Duration = RUN_SWEEP_INTERVAL.saturating_mul(3);
 
 /// How long a taken Run waits for its start before it goes back to waiting.
 const START_CONFIRMATION: Duration = Duration::from_secs(10);

@@ -47,6 +47,7 @@ coral-search = { workspace = true, features = ["test-fixtures"] }
 coral-provider = { workspace = true, features = ["test-fixtures"] }
 coral-task = { workspace = true, features = ["test-fixtures"] }
 coral-outbound.workspace = true
+coral-run-executor = { workspace = true, features = ["test-support"] }
 coral-test-support.workspace = true
 tracing-subscriber.workspace = true
 sqlx.workspace = true

@@ -92,8 +92,9 @@ pub(crate) struct Launcher {
     pub(crate) extensions: super::runtime::Extensions,
     /// Builds the tool surface MCP serves in place of core's.
     pub(crate) mcp_interface_factory: Option<std::sync::Arc<dyn super::McpInterfaceFactory>>,
-    /// Compile in this process: a test that starts Coral in its own process.
-    pub(crate) compile_in_process: bool,
+    /// The binary local Run Executors run, for a test that starts Coral in
+    /// its own process. Without one, this process's own binary.
+    pub(crate) run_executor_program: Option<std::path::PathBuf>,
     /// Where startup reports each database migration step it applies.
     pub(crate) migration_report: Option<super::runtime::MigrationReport>,
     /// The clock a test drives. Without one, the host's clock.
@@ -457,6 +458,11 @@ impl DeploymentConfig {
     /// then makes up for with a `token_env`.
     pub(crate) fn local_run_executors(&self) -> Option<LocalRunExecutorSettings> {
         self.local_run_executors
+    }
+
+    /// Reef's origin, where Coral links a person.
+    pub(crate) fn human_interface(&self) -> &coral_mcp::HumanInterfaceUrl {
+        &self.human_interface
     }
 
     /// The `[runtime]` section: the Program runtime limits.

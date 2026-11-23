@@ -43,6 +43,9 @@ pub(crate) struct RunRecord {
     /// A take gave the Run to a Run Executor: no Run Owner's worker claim
     /// ever fences it.
     pub(crate) on_run_executor: bool,
+    /// The Run Executor that took it is a local child, so its Run stream
+    /// reaches only its parent Coral Instance.
+    pub(crate) on_local_child: bool,
     /// The highest Run stream request number committed.
     pub(crate) committed_request_number: Option<u64>,
     pub(crate) last_commit_at_unix_nanos: Option<i64>,

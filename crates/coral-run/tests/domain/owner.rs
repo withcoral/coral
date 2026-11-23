@@ -1745,6 +1745,119 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
     }
 }
 
+/// Catches: the drain's interruption of a local child's Run that records
+/// Interrupted for a Run past its deadline, or that a `Started` still on its
+/// way loses, starting the Program after the drain.
+#[test]
+fn the_drains_interruption_times_out_a_run_past_its_deadline_and_waits_for_its_start() {
+    let ended_as = |effects: &[Effect]| match effects {
+        [.., Effect::EndStreamRun(end)] => Some(end.termination.kind),
+        _ => None,
+    };
+    // A deadline within a lease of the start, so no lease bound fires.
+    let limits = OwnerLimits {
+        deadline_at_unix_nanos: 10,
+        ..LIMITS
+    };
+    let deadline = limits.deadline_at_unix_nanos;
+    for (at, kind) in [
+        (
+            deadline - 1,
+            crate::lifecycle::RunTerminationKind::Interrupted,
+        ),
+        (deadline, crate::lifecycle::RunTerminationKind::TimedOut),
+    ] {
+        let mut state = stream_started(limits);
+        let effects = deliver(apply_without_tick(
+            &mut state,
+            Message::Drain(DrainStep::Interrupt),
+            at,
+        ));
+        assert_eq!(ended_as(&effects), Some(kind), "{at}: {effects:?}");
+    }
+
+    let mut state = OwnerState::for_run_stream(limits, 1, (0, 0));
+    deliver(apply_without_tick(&mut state, Message::Launch, 1));
+    let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::Interrupt), 2);
+    assert!(deliver(effects).is_empty(), "it waits for the start");
+    let effects = deliver(apply_without_tick(
+        &mut state,
+        Message::Started(Ok(Some(StartedExecution {
+            package: ProgramPackage::scripted("x"),
+            head: 1,
+            deadline_at_unix_nanos: deadline,
+        }))),
+        3,
+    ));
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::StartProgram { .. })),
+        "the Program never starts: {effects:?}"
+    );
+    assert_eq!(
+        ended_as(&effects),
+        Some(crate::lifecycle::RunTerminationKind::Interrupted),
+        "{effects:?}"
+    );
+
+    // A cancellation and the interruption both wait for the start: the
+    // first decides, and the other changes nothing.
+    for cancel_first in [true, false] {
+        let mut state = OwnerState::for_run_stream(limits, 1, (0, 0));
+        deliver(apply_without_tick(&mut state, Message::Launch, 1));
+        let interrupt = |state: &mut OwnerState| {
+            deliver(apply_without_tick(
+                state,
+                Message::Drain(DrainStep::Interrupt),
+                2,
+            ));
+        };
+        if !cancel_first {
+            interrupt(&mut state);
+        }
+        deliver(cancel(&mut state, "cancel-row", 2));
+        if cancel_first {
+            interrupt(&mut state);
+        }
+        let mut effects = deliver(apply_without_tick(
+            &mut state,
+            Message::Started(Ok(Some(StartedExecution {
+                package: ProgramPackage::scripted("x"),
+                head: 1,
+                deadline_at_unix_nanos: deadline,
+            }))),
+            3,
+        ));
+        // Each chunk commits before the end is written.
+        let mut stream_end = ended_as(&effects);
+        for now in 4..8 {
+            if !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Commit { .. }))
+            {
+                break;
+            }
+            effects = deliver(apply_without_tick(&mut state, Message::Committed, now));
+            stream_end = stream_end.or(ended_as(&effects));
+        }
+        let canceled = state.termination().map(|intent| intent.termination.kind);
+        let expected = if cancel_first {
+            (None, Some(crate::lifecycle::RunTerminationKind::Canceled))
+        } else {
+            (
+                Some(crate::lifecycle::RunTerminationKind::Interrupted),
+                None,
+            )
+        };
+        assert_eq!(
+            (stream_end, canceled),
+            expected,
+            "{cancel_first}: {effects:?}"
+        );
+    }
+}
+
 /// The Fan-out Limit admits at least one Invocation: at zero no dispatch
 /// could ever start.
 #[test]

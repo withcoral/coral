@@ -246,6 +246,8 @@ impl RunRow {
             trace: decode_trace(self.trace_parent.as_deref()),
             time_limit_nanos: self.time_limit_nanos,
             on_run_executor: self.run_executor_kind.is_some(),
+            on_local_child: self.run_executor_kind.as_deref()
+                == Some(coral_run_executor::Kind::Local.as_storage_str()),
             committed_request_number: self
                 .committed_request_number
                 .map(u64::try_from)
