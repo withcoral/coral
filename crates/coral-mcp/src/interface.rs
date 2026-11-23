@@ -11,9 +11,6 @@ use rmcp::service::{Peer, RoleServer};
 use crate::projection::ToolFailure;
 
 /// The tool surface MCP serves: its instructions, its tools and each tool call.
-///
-/// A launching binary can register one that wraps
-/// [`McpModules::core_interface`](crate::McpModules::core_interface).
 #[async_trait::async_trait]
 pub trait McpInterface: Send + Sync {
     /// The server instructions a client reads before its first call.
