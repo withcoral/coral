@@ -196,6 +196,10 @@ async fn run_runtime(extensions: coral_app::Extensions) -> Result<(), ProcessErr
     }
     println!("Coral Instance {} started", server.coral_instance_id());
     println!("Coral gRPC server listening on {endpoint}");
+    println!(
+        "Coral Run Executor listener on {}",
+        server.run_executor_addr()
+    );
     let address = server.mcp_http_addr();
     let url_path = coral_mcp::WORKSPACE_MCP_ROUTE;
     println!("Coral MCP HTTP server serving each Workspace at http://{address}{url_path}");

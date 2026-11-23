@@ -541,6 +541,7 @@ impl PrivateListeners {
     pub(crate) async fn serve(self, engine: BootedEngine) -> Result<RunningServer, AppError> {
         let listener = TcpListener::bind(self.grpc_bind).await?;
         let local_addr = listener.local_addr()?;
+        let run_executor_addr = self.run_executors.listener.local_addr()?;
         let (lapse, license_lapse) = watch::channel(None);
         let engine = engine.run(LicenseRecheck {
             edition: self.edition,
@@ -573,6 +574,7 @@ impl PrivateListeners {
             mcp_origin,
             endpoint_uri: format!("http://{local_addr}"),
             local_addr,
+            run_executor_addr,
             authorization_server: self.held_authorization_server,
             license_notices: self.license_notices,
             license_lapse,
@@ -790,6 +792,7 @@ pub struct RunningServer {
     mcp_origin: Arc<std::sync::OnceLock<String>>,
     endpoint_uri: String,
     local_addr: SocketAddr,
+    run_executor_addr: SocketAddr,
     authorization_server: Option<Box<CoralAuthorizationServer>>,
     license_notices: Vec<coral_edition::LicenseNotice>,
     /// Why the License recheck stopped Coral, once it has.
@@ -823,6 +826,13 @@ impl RunningServer {
     #[must_use]
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// The address the Run Executor listener is bound to, which a Run
+    /// Executor that Coral did not start dials.
+    #[must_use]
+    pub fn run_executor_addr(&self) -> SocketAddr {
+        self.run_executor_addr
     }
 
     /// This start's Coral Instance id, which the Runs it holds record.

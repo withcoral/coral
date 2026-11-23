@@ -1,6 +1,6 @@
 .PHONY: install docker-build reef-docker-build docker-test rust-checks
 .PHONY: postgres-start postgres-url postgres-stop postgres-clean postgres-tests load-test
-.PHONY: dependency-check advisory-check lint-migrations lint-proto reef-image-checks ee-boundary
+.PHONY: dependency-check advisory-check lint-migrations lint-proto protocol-level reef-image-checks ee-boundary
 
 # Images build and test with Docker or Podman.
 CONTAINER_ENGINE ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
@@ -74,7 +74,7 @@ docker-test: docker-build reef-docker-build
 	CONTAINER_ENGINE="$(CONTAINER_ENGINE)" CORAL_IMAGE="$(DOCKER_IMAGE)" \
 	  CORAL_WEB_IMAGE="$(CORAL_WEB_DOCKER_IMAGE)" docker/image-test.sh
 
-rust-checks: lint-migrations lint-proto dependency-check ee-boundary
+rust-checks: lint-migrations lint-proto protocol-level dependency-check ee-boundary
 	scripts/check-migrations.sh
 	# A plain build at the root builds only the Apache-2.0 crates; prove they
 	# stand alone without ee/ (ADR 0033).
@@ -206,3 +206,13 @@ lint-proto:
 	  (cd "$$crate" && buf lint); \
 	done
 	cargo run -p xtask --locked -- generate-proto --check
+
+# Checks the Run Executor link's protocol level against the newest release
+# (ADR 0027, Versions), then tries each case the check must judge. Needs the
+# release tags. rust-checks runs it too.
+#
+#   make protocol-level
+
+protocol-level: lint-proto
+	scripts/check-protocol-level.sh
+	scripts/check-protocol-level.test.sh
