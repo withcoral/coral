@@ -43,29 +43,17 @@ impl SubAgentToolsFactory for EchoFactory {
     }
 }
 
-/// A Sub-agent whose answer is the brief, and which cancels nothing.
+/// A Sub-agent that refuses every call, and says so.
 struct Echo;
 
 #[async_trait::async_trait]
 impl SubAgentTools for Echo {
     async fn agent(
         &self,
-        caller: SubAgentCaller<'_>,
-        arguments: &AgentArguments,
+        _caller: SubAgentCaller<'_>,
+        _arguments: &AgentArguments,
     ) -> Result<AgentResult, SubAgentError> {
-        let AgentArguments::Start { message } = arguments else {
-            return Err(SubAgentError::Unavailable("Echo keeps no agent"));
-        };
-        Ok(AgentResult {
-            sub_agent_id: caller.run_id.to_string(),
-            state: "completed",
-            answer: Some(message.clone()),
-            failure: None,
-            required_actions: Vec::new(),
-            outcome: None,
-            steps: Vec::new(),
-            next_cursor: String::new(),
-        })
+        Err(SubAgentError::Unavailable("Echo refuses"))
     }
 
     async fn cancel(
@@ -73,7 +61,7 @@ impl SubAgentTools for Echo {
         _caller: SubAgentCaller<'_>,
         _arguments: &CancelAgentArguments,
     ) -> Result<AgentResult, SubAgentError> {
-        Err(SubAgentError::Unavailable("Echo keeps no agent"))
+        Err(SubAgentError::Unavailable("Echo refuses"))
     }
 }
 
@@ -113,12 +101,17 @@ async fn a_program_reaches_the_sub_agent_that_a_registered_factory_builds() {
     let instructions = handshake.instructions.as_deref().unwrap_or_default();
     assert!(instructions.contains("coral.agent"), "{instructions}");
     assert_eq!(served_tools(&client).await, CORE_TOOLS);
-    let program = "return (await coral.agent({ message: 'hello' })).data.answer;";
+    let program =
+        "try { await coral.agent({ message: 'hello' }); } catch (error) { return error.message; }";
     let delegate =
         json!({"goal": "Greet", "intent": "Greet", "program": program, "wait_ms": 30_000});
-    let greeted = mcp_tool(&client, "exec", delegate).await;
-    let answer = greeted.pointer("/final_value/value");
-    assert_eq!(answer, Some(&json!("hello")), "{greeted}");
+    let refused = mcp_tool(&client, "exec", delegate).await;
+    let reached = json!("Tool is unavailable: Echo refuses");
+    assert_eq!(
+        refused.pointer("/final_value/value"),
+        Some(&reached),
+        "{refused}"
+    );
 
     let (section, handed) = factory.handed.get().expect("core called the factory");
     assert_eq!(section, &toml::toml! { greeting = "hello" });

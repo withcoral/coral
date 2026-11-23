@@ -112,21 +112,15 @@ impl AgentArguments {
     /// Returns the argument to correct, and repeats no value the Program sent.
     pub fn parse(arguments: &Value) -> Result<Self, Vec<ArgumentProblem>> {
         // serde also reads a struct from a sequence, which the schema forbids.
-        let read = arguments
-            .is_object()
-            .then(|| Self::deserialize(arguments).ok());
-        let read = read
-            .flatten()
-            .ok_or_else(|| vec![ArgumentProblem::new("", AGENT_TAKES)])?;
-        let (Self::Start { message }
-        | Self::Continue {
-            message: Some(message),
-            ..
-        }) = &read
-        else {
-            return Ok(read);
+        let read = arguments.is_object().then(|| Self::deserialize(arguments));
+        let Some(Ok(read)) = read else {
+            return Err(vec![ArgumentProblem::new("", AGENT_TAKES)]);
         };
-        if message.trim().is_empty() {
+        let message = match &read {
+            Self::Start { message } => Some(message),
+            Self::Continue { message, .. } => message.as_ref(),
+        };
+        if message.is_some_and(|message| message.trim().is_empty()) {
             return Err(vec![ArgumentProblem::new("message", "must not be blank")]);
         }
         Ok(read)
