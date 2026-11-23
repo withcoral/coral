@@ -194,7 +194,11 @@ pub(crate) struct CoreInterface {
 #[async_trait::async_trait]
 impl McpInterface for CoreInterface {
     fn instructions(&self) -> &str {
-        crate::instructions::INSTRUCTIONS
+        if self.modules.delegates {
+            crate::instructions::DELEGATING_INSTRUCTIONS
+        } else {
+            crate::instructions::INSTRUCTIONS
+        }
     }
 
     async fn tools(&self, caller: &McpCaller) -> Result<Vec<Tool>, ErrorData> {

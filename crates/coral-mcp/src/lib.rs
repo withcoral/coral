@@ -64,8 +64,9 @@ pub struct McpModules {
     pub search: UniversalSearchModule,
     pub(crate) human_interface: HumanInterfaceUrl,
     pub(crate) run_update_page_bytes: NonZeroUsize,
-    /// Served in place of core's tool surface.
-    interface: Option<Arc<dyn McpInterface>>,
+    /// Whether the catalog holds `coral.agent`, so that the instructions
+    /// tell a lead how to delegate.
+    pub(crate) delegates: bool,
 }
 impl McpModules {
     /// Receives initialized Modules, including Task commands assembled by bootstrap.
@@ -86,7 +87,7 @@ impl McpModules {
             search,
             human_interface,
             run_update_page_bytes: RUN_UPDATE_PAGE_BYTES,
-            interface: None,
+            delegates: false,
         }
     }
 
@@ -99,32 +100,24 @@ impl McpModules {
         self
     }
 
-    /// Where projections send people to act, for a surface that wraps core's.
+    /// Where projections send people to act.
     #[must_use]
     pub const fn human_interface(&self) -> &HumanInterfaceUrl {
         &self.human_interface
     }
 
-    /// Core's tool surface over these modules, for a surface that wraps it.
+    /// Core's tool surface over these modules.
     #[must_use]
     pub fn core_interface(&self) -> Arc<dyn McpInterface> {
         Arc::new(server::CoreInterface::new(self.clone()))
     }
 
-    /// Serves `interface` in place of core's tool surface.
+    /// Serves the instructions of a lead that can delegate: the deployment
+    /// configures a Sub-agent, so the catalog holds `coral.agent`.
     #[must_use]
-    pub fn with_interface(mut self, interface: Arc<dyn McpInterface>) -> Self {
-        self.interface = Some(interface);
+    pub const fn with_sub_agent(mut self) -> Self {
+        self.delegates = true;
         self
-    }
-
-    /// The tool surface MCP serves: the one [`Self::with_interface`] was
-    /// given, otherwise core's.
-    pub(crate) fn served_interface(&self) -> Arc<dyn McpInterface> {
-        match &self.interface {
-            Some(interface) => Arc::clone(interface),
-            None => self.core_interface(),
-        }
     }
 }
 

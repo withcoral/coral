@@ -8,8 +8,8 @@ use serde::de::IgnoredAny;
 use zeroize::Zeroizing;
 
 use super::env::AppEnvironment;
-use super::mcp_interface::ConfiguredMcpInterface;
 use super::secret_store_config::SecretStoreDefinitions;
+use super::sub_agent::ConfiguredSubAgent;
 use super::{AppError, is_loopback_ip};
 use crate::auth::{
     AuthListenerSettings, AuthSection, AuthServerError, AuthSettings, CoralAuthorizationServer,
@@ -90,8 +90,8 @@ pub(crate) struct Launcher {
     pub(crate) usage_environment: Option<coral_usage::SendEnvironment>,
     /// What the launching binary adds to Coral, such as its Edition check.
     pub(crate) extensions: super::runtime::Extensions,
-    /// Builds the tool surface MCP serves in place of core's.
-    pub(crate) mcp_interface_factory: Option<std::sync::Arc<dyn super::McpInterfaceFactory>>,
+    /// Builds the Sub-agent's Tools from its config section.
+    pub(crate) sub_agent_factory: Option<std::sync::Arc<dyn super::SubAgentToolsFactory>>,
     /// Compile in this process: a test that starts Coral in its own process.
     pub(crate) compile_in_process: bool,
     /// Where startup reports each database migration step it applies.
@@ -163,9 +163,10 @@ impl LoadedServerConfig {
         grpc_bind: Option<SocketAddr>,
     ) -> Result<DeploymentConfig, AppError> {
         let mut document = Document::parse(&self.raw).map_err(AppError::ConfigDecode)?;
-        let mcp_interface = match &launcher.mcp_interface_factory {
-            Some(factory) => ConfiguredMcpInterface::take(factory, &mut document)
-                .map_err(AppError::ConfigDecode)?,
+        let sub_agent = match &launcher.sub_agent_factory {
+            Some(factory) => {
+                ConfiguredSubAgent::take(factory, &mut document).map_err(AppError::ConfigDecode)?
+            }
             None => None,
         };
         // A section that no factory took is an unknown field here.
@@ -256,7 +257,7 @@ impl LoadedServerConfig {
             credential_key_env,
             license,
             secret_stores,
-            mcp_interface,
+            sub_agent,
             session_auth,
             telemetry: TelemetryConfig { otel },
         })
@@ -291,7 +292,7 @@ pub(crate) struct DeploymentConfig {
     license: Option<LicenseSource>,
     /// None when the deployment turned Secret Stores off.
     secret_stores: Option<SecretStoreDefinitions>,
-    mcp_interface: Option<ConfiguredMcpInterface>,
+    sub_agent: Option<ConfiguredSubAgent>,
     session_auth: Option<SessionAuthConfig>,
     telemetry: TelemetryConfig,
 }
@@ -459,6 +460,12 @@ impl DeploymentConfig {
         self.local_run_executors
     }
 
+    /// Whether the config file has the registered Sub-agent's section, so
+    /// that the built-in catalog holds `agent` and `cancelAgent`.
+    pub(crate) const fn configures_sub_agent(&self) -> bool {
+        self.sub_agent.is_some()
+    }
+
     /// The `[runtime]` section: the Program runtime limits.
     pub(crate) fn runtime_limits(&self) -> coral_run::RuntimeLimits {
         self.runtime_limits
@@ -518,7 +525,7 @@ impl DeploymentConfig {
             outbound_policy: self.outbound_policy(defaults),
             mcp_oauth_client_bootstrap: self.mcp_oauth_client_bootstrap(),
             mcp_http: self.mcp_http.clone(),
-            mcp_interface: self.mcp_interface.clone(),
+            sub_agent: self.sub_agent.clone(),
             auth_bind_addr: self.auth_bind_addr,
             session_auth: self.resolve_session_auth()?,
             human_interface: self.human_interface.clone(),
@@ -1179,7 +1186,7 @@ pub struct ServeSettings {
     outbound_policy: coral_outbound::DestinationPolicy,
     mcp_oauth_client_bootstrap: coral_provider::account::ClientBootstrapPolicy,
     pub(super) mcp_http: McpHttpServeConfig,
-    pub(super) mcp_interface: Option<ConfiguredMcpInterface>,
+    pub(super) sub_agent: Option<ConfiguredSubAgent>,
     auth_bind_addr: SocketAddr,
     pub(super) session_auth: Option<SessionAuthSettings>,
     human_interface: coral_mcp::HumanInterfaceUrl,

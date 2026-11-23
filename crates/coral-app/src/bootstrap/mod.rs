@@ -5,17 +5,16 @@ mod engine;
 mod env;
 mod error;
 mod health;
-mod mcp_interface;
 mod periodic;
 mod runtime;
 mod search_model;
 mod secret_store_config;
 mod server;
 mod server_config;
+mod sub_agent;
 
 pub use error::{AppError, StateRefusal};
 pub use health::EngineReadiness as ListenerReadiness;
-pub use mcp_interface::{McpInterfaceDependencies, McpInterfaceFactory};
 pub use runtime::{
     Extensions, Launch, McpStartError, MigrationProgress, MigrationReport, RunningRuntime,
     RuntimeError, ShutdownFailures, start_runtime,
@@ -25,6 +24,7 @@ pub use server::{PreparedServerBuilder, RunningServer, ServerBuilder, ServerMode
 pub use server_config::{
     LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig, ServeSettings, SessionAuthSettings,
 };
+pub use sub_agent::{SubAgentDependencies, SubAgentToolsFactory};
 
 pub(crate) use env::env_var_name;
 /// Startup's decode of `config.toml`, for tests outside bootstrap.

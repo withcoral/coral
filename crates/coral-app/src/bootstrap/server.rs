@@ -201,13 +201,10 @@ impl ServerBuilder {
         self
     }
 
-    /// Registers the factory of the tool surface MCP serves in place of core's.
+    /// Registers the factory of the Sub-agent's Tools.
     #[must_use]
-    pub fn with_mcp_interface_factory(
-        mut self,
-        factory: Arc<dyn super::McpInterfaceFactory>,
-    ) -> Self {
-        self.launcher.mcp_interface_factory = Some(factory);
+    pub fn with_sub_agent_factory(mut self, factory: Arc<dyn super::SubAgentToolsFactory>) -> Self {
+        self.launcher.sub_agent_factory = Some(factory);
         self
     }
 
@@ -457,6 +454,7 @@ impl PreparedServerBuilder {
             clock: Arc::clone(&clock),
             policy,
             runtime_limits: deployment_config.runtime_limits(),
+            sub_agent: deployment_config.configures_sub_agent(),
             credentials: CredentialParts {
                 vault,
                 secret_stores,

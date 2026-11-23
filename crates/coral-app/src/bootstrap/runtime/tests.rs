@@ -12,7 +12,7 @@ use super::{
     ServerBuilder, start_prepared, with_local_launch_defaults,
 };
 
-mod mcp_interface;
+mod sub_agent;
 
 const WEB: &str = "\n[listeners.web]\npublic_url = 'http://127.0.0.1:5173'\n";
 

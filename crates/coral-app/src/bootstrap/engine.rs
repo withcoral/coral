@@ -58,6 +58,9 @@ pub(crate) struct EngineParts {
     pub(crate) clock: Arc<dyn coral_db::Clock>,
     pub(crate) policy: coral_outbound::DestinationPolicy,
     pub(crate) runtime_limits: coral_run::RuntimeLimits,
+    /// Whether the deployment configures a Sub-agent, whose Tools the
+    /// built-in catalog then holds.
+    pub(crate) sub_agent: bool,
     pub(crate) credentials: CredentialParts,
     pub(crate) search: SearchParts,
     pub(crate) run_executors: RunExecutorParts,
@@ -430,6 +433,7 @@ impl Engine {
             clock,
             policy,
             runtime_limits,
+            sub_agent,
             credentials,
             search,
             run_executors,
@@ -438,8 +442,12 @@ impl Engine {
             usage,
         } = parts;
         let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
-        let builtin_catalog = coral_catalog::BuiltinCatalog::running()
-            .map_err(|error| AppError::engine_boot(error.to_string()))?;
+        let builtin_catalog = if sub_agent {
+            coral_catalog::BuiltinCatalog::with_sub_agent()
+        } else {
+            coral_catalog::BuiltinCatalog::running()
+        }
+        .map_err(|error| AppError::engine_boot(error.to_string()))?;
         let providers = coral_provider::ProviderModule::new(
             policy,
             database.clone(),
