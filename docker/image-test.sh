@@ -1,15 +1,20 @@
 #!/bin/sh
 # Image tests for the Coral runtime and Reef images, on fresh state only.
 #
-#   docker/image-test.sh [runtime] [reef] [pair]
+#   docker/image-test.sh [runtime] [reef] [pair] [run-executor]
 #
-# With no argument it runs all three parts. A workflow that holds one image
+# With no argument it runs all four parts. A workflow that holds one image
 # names the part it can run:
 #
-#   runtime  needs CORAL_IMAGE: the entrypoint contract and a serving runtime.
-#   reef     needs CORAL_WEB_IMAGE: the accepted and rejected configurations.
-#   pair     needs both: a first start, with Reef in the runtime's network
-#            namespace and every listener answering health and readiness.
+#   runtime       needs CORAL_IMAGE: the entrypoint contract and a serving
+#                 runtime.
+#   reef          needs CORAL_WEB_IMAGE: the accepted and rejected
+#                 configurations.
+#   pair          needs both: a first start, with Reef in the runtime's
+#                 network namespace and every listener answering health and
+#                 readiness.
+#   run-executor  needs both: a Run Executor in its own container dials the
+#                 runtime across a container network and runs a Program.
 #
 # Product journeys belong to Reel, which runs the same binaries. Each probe
 # runs inside a container, so nothing is published on the host and the script
@@ -22,8 +27,10 @@ CORAL_WEB_IMAGE=${CORAL_WEB_IMAGE:-coral-web:local}
 prefix="coral-image-test-$$"
 config_path=/var/lib/coral/config/config.toml
 secret=coral-web-test-session-secret-0123456789abcdef
+run_executor_token=coral-image-test-run-executor-token-0123456789
 containers=
 volumes=
+networks=
 # Set by new_volume/start for the caller. These helpers record what they create
 # so cleanup can reach it, which means they must run in this shell.
 volume=
@@ -35,6 +42,9 @@ cleanup() {
     done
     for name in $volumes; do
         "$ENGINE" volume rm "$name" >/dev/null 2>&1 || true
+    done
+    for name in $networks; do
+        "$ENGINE" network rm "$name" >/dev/null 2>&1 || true
     done
 }
 trap cleanup EXIT
@@ -51,6 +61,12 @@ new_volume() {
     volume="$prefix-$1"
     "$ENGINE" volume create "$volume" >/dev/null
     volumes="$volumes $volume"
+}
+
+new_network() {
+    network="$prefix-$1"
+    "$ENGINE" network create "$network" >/dev/null
+    networks="$networks $network"
 }
 
 # start <name> <image> [run options...]
@@ -386,13 +402,73 @@ test_pair() {
     remove "$coral"
 }
 
-[ "$#" -gt 0 ] || set -- runtime reef pair
+# start_run_executor <name> <coral address> [run options...]: the runtime
+# image as a Run Executor, with no volume on a read-only root.
+start_run_executor() {
+    container="$prefix-$1"
+    address=$2
+    shift 2
+    containers="$containers $container"
+    "$ENGINE" run -d --name "$container" --read-only \
+        -e CORAL_RUN_EXECUTOR_TOKEN="$run_executor_token" \
+        -e CORAL_HEALTHCHECK_ADDR=127.0.0.1:14558 \
+        "$@" "$CORAL_IMAGE" \
+        run-executor --coral-address "$address" --health-listen 0.0.0.0:14558 >/dev/null
+}
+
+# A Run Executor in its own container, as the guides run it: no volume, a
+# read-only root, the token in its environment, and Coral's address on a
+# container network. Coral starts no local Run Executor, so a Program that
+# runs proves the dial-in, and a stop proves it retires cleanly.
+test_run_executor() {
+    new_network run-executor
+    new_volume run-executor
+    config='[listeners.grpc]
+bind = "127.0.0.1:14555"
+
+[listeners.mcp]
+bind = "127.0.0.1:14556"
+
+[listeners.web]
+public_url = "http://127.0.0.1:3000"
+
+[listeners.run_executor]
+bind = "0.0.0.0:14557"
+token_env = "CORAL_RUN_EXECUTOR_TOKEN"
+
+[runtime]
+local_run_executors = false
+'
+    start executor-coral "$CORAL_IMAGE" -v "$volume:/var/lib/coral" \
+        --network "$network" --network-alias coral \
+        -e CORAL_CONFIG="$config" -e CORAL_RUN_EXECUTOR_TOKEN="$run_executor_token"
+    coral=$container
+    wait_healthy "$coral"
+    start_run_executor executor http://coral:14557 --network "$network"
+    executor=$container
+    wait_healthy "$executor"
+    assert_identity "$executor" 65532:0
+    start_reef executor-reef disabled http://127.0.0.1:14555 --network "container:$coral"
+    reef=$container
+    wait_healthy "$reef"
+    run_program "$reef" || fail 'a Program did not run on the Run Executor'
+    [ -z "$(run_executor_users "$coral")" ] || fail 'Coral started a local Run Executor'
+    "$ENGINE" stop "$executor" >/dev/null
+    [ "$("$ENGINE" inspect --format '{{.State.ExitCode}}' "$executor")" -eq 0 ] ||
+        fail "$executor did not retire cleanly on a stop"
+    remove "$reef"
+    remove "$executor"
+    remove "$coral"
+}
+
+[ "$#" -gt 0 ] || set -- runtime reef pair run-executor
 for part in "$@"; do
     case "$part" in
         runtime) test_runtime ;;
         reef) test_reef ;;
         pair) test_pair ;;
-        *) fail "unknown part: $part (expected runtime, reef, or pair)" ;;
+        run-executor) test_run_executor ;;
+        *) fail "unknown part: $part (expected runtime, reef, pair, or run-executor)" ;;
     esac
     echo "image-test: $part passed"
 done

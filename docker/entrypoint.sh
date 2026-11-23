@@ -1,5 +1,6 @@
 #!/bin/sh
 # Coral container entrypoint. It prepares config.toml, then starts Coral.
+# With `run-executor` as the command, it starts a Run Executor instead (below).
 #
 #   CORAL_CONFIG set    Writes config.toml from it, verbatim, on EVERY start.
 #                       The variable is the file's source of truth: an edit
@@ -15,6 +16,17 @@
 # the host network. To serve a network, set CORAL_CONFIG to a config with
 # [auth] instead.
 set -eu
+
+# A Run Executor keeps no config and no state, so it needs no volume and runs
+# on a read-only root. It reads its token from CORAL_RUN_EXECUTOR_TOKEN:
+#
+#   run-executor --coral-address http://coral:14557 --health-listen 0.0.0.0:14558
+#
+# Set CORAL_HEALTHCHECK_ADDR=127.0.0.1:14558 so the image's health check
+# probes the Run Executor's health listener.
+if [ "${1:-}" = run-executor ]; then
+    exec /usr/local/bin/coral "$@"
+fi
 
 probe=
 staged=
