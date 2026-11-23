@@ -311,7 +311,7 @@ The onboarding prompt can tell some MCP clients to look for a Coral plugin. To o
 
 Each `public_url` is an origin: a scheme, a host and an optional port, with no path. You cannot serve Coral under a path prefix.
 
-If you only have one hostname, as with Tailscale Serve, put the MCP server and the auth server on the hostname itself. Their paths do not overlap, so they can share an origin. Give the UI its own HTTPS port:
+If you only have one hostname, as with Tailscale Serve, put the MCP server and the auth server on the hostname itself, and give the UI its own HTTPS port:
 
 | Setting                                              | Example value               |
 | ---------------------------------------------------- | --------------------------- |
