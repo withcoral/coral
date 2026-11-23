@@ -222,8 +222,8 @@ The text that the lead reads is core's. The description of `coral.agent` in the 
 over. Core's MCP instructions serve a second set of Workflow steps to a caller whose Workspace enables the Tool, and
 step 2 shows the call: `return await coral.agent({ message })`. Each handshake reads the Workspace's Tool policy, so a
 Workspace that disables the Tool, or sets it to approval, reads core's own steps. For the same caller, `exec`'s
-description carries the Tool's guidance: how to brief a Sub-agent, and a Program that watches one and publishes its
-steps with `coral.emit`. A client that shows a lead no instructions still shows it that.
+description carries the Tool's guidance: how to brief a Sub-agent, and what to do with each state that a call returns.
+A client that shows a lead no instructions still shows it that.
 
 The model's tools include an `end_task` of the Sub-agent's own with core's arguments, which Sailfish calls before nearly
 every answer. It ends nothing, since the lead owns the Task, and the lead reads the outcome it records beside the

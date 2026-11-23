@@ -23,34 +23,25 @@ const MAX_WAIT_MS: u64 = 600_000;
 /// When and how to hand work over. `exec`'s description shows it to a lead
 /// whose Workspace enables the Tool, so it stays short.
 const AGENT_GUIDANCE: &str = "\
-Hand data retrieval to one of Coral's agents with `coral.agent`. Brief it in `message`, one brief \
-per question: it reads only your messages. Give the user's question verbatim and, if you have \
-one, a guess at where to look, stated as a guess. You remain responsible for the answer.
-```ts
-let agent = (await coral.agent({ message })).data;
-let seen = 0;
-while (agent.state === \"running\") {
-  if (agent.steps.length > seen) await coral.emit(agent.steps.slice(seen));
-  seen = agent.steps.length;
-  agent = (await coral.agent({ sub_agent_id: agent.sub_agent_id, cursor: agent.next_cursor })).data;
-}
-return agent;
-```
-A call waits `wait_ms`, 20 seconds by default, for the turn to end or for one of its runs to need \
-a person. With `needs_action`, write each `url` in `required_actions` to the user, then call again. \
-To reply, pass `sub_agent_id` and `message`. A turn ends after 10 minutes: reply to continue it. \
-Canceling this run cancels the agent, as `coral.cancelAgent` does. To check a step, call `wait` \
-with its `run_id`.";
+Delegate data work, reads and writes, to one of Coral's agents: \
+`return await coral.agent({ message })`. It sees only your `message`: send the user's question \
+verbatim, today's date, and where you would look first. One question per agent. Then wait for its \
+answer: do not search or read the same data yourself.
+
+A call returns when the turn ends, or after `wait_ms`, 20 seconds by default. While `state` is \
+`running`, call again with `sub_agent_id`. On `needs_action`, write each `url` in \
+`required_actions` to the user, then call again. To reply, pass `sub_agent_id` and `message`. A \
+turn ends after 10 minutes: reply to continue it. To stop an agent, call `coral.cancelAgent`, or \
+cancel the run that waits on it. To check a step, call `wait` with its `run_id`.";
 
 pub(super) fn agent_definition() -> Definition {
     Definition {
         key: BuiltinTool::Agent.key(),
-        summary: "Delegate data retrieval to one of Coral's agents",
+        summary: "Delegate data work to one of Coral's agents",
         presentation: ToolPresentation::new(
             Some("Agent".to_string()),
-            "Delegate data retrieval to one of Coral's agents, and wait for it. An agent reads \
-             the user's connected providers and can make one change you specify exactly. It \
-             runs programs with your permissions, in the task of this run."
+            "Delegate data work, reads and writes, to one of Coral's agents. It runs programs \
+             with your permissions, in the task of this run."
                 .to_string(),
             false,
             vec!["Agents".to_string()],
