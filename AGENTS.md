@@ -46,6 +46,11 @@
   enable: a test whose subject is not the conflict check passes it.
 - The Coral process starts no V8 isolate. Compile and execute only through a
   Run Executor (ADR 0027).
+- A change to the messages in `link.proto` (a comment or a format edit is
+  none) or to the Program Runtime Surface's `globals.json` raises
+  `PROTOCOL_LEVEL` by one over the last release, and takes the steps that the
+  Versions section of ADR 0027 gives a message, a field or a global.
+  `scripts/check-protocol-level.sh` checks the level.
 - Read process environment only at process bootstrap. Pass explicit values to
   domain code. The `env` Secret Store is the one exception: bootstrap hands it
   a reader, and it reads only under its guarded prefix (ADR 0036).

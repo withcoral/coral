@@ -193,6 +193,19 @@ pub(crate) async fn recorded_run_state(dir: &Path, run_id: &str) -> String {
     state
 }
 
+/// The kind of the Run Executor that holds or held the Run `run_id`, as the
+/// SQLite state database at `dir` records it; none before a take.
+pub(crate) async fn recorded_run_executor_kind(dir: &Path, run_id: &str) -> Option<String> {
+    let mut connection = state_database(dir).await;
+    let (kind,): (Option<String>,) =
+        sqlx::query_as("SELECT run_executor_kind FROM program_run_records WHERE id = ?")
+            .bind(run_id)
+            .fetch_one(&mut connection)
+            .await
+            .expect("read the Run");
+    kind
+}
+
 /// The SQLite state database at `dir`.
 async fn state_database(dir: &Path) -> sqlx::SqliteConnection {
     use sqlx::Connection as _;

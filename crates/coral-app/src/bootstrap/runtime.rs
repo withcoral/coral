@@ -304,6 +304,12 @@ impl RunningRuntime {
         self.grpc.local_addr()
     }
 
+    /// The Run Executor listener address.
+    #[must_use]
+    pub fn run_executor_addr(&self) -> SocketAddr {
+        self.grpc.run_executor_addr()
+    }
+
     /// This start's Coral Instance id, which the Runs it holds record.
     #[must_use]
     pub fn coral_instance_id(&self) -> String {
