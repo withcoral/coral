@@ -467,3 +467,173 @@ fn no_value_ever_appears() {
         assert!(!rendered.contains(value), "{value} appeared in {rendered}");
     }
 }
+
+/// `count` keys whose values are numbers and strings in turn, as in a record.
+fn record(prefix: &str, count: usize) -> serde_json::Map<String, Value> {
+    (0..count)
+        .map(|index| {
+            let value = if index % 2 == 0 {
+                json!(index)
+            } else {
+                json!("x")
+            };
+            (format!("{prefix}{index:02}"), value)
+        })
+        .collect()
+}
+
+fn total_bytes(sketched: &ToolResultShapes) -> usize {
+    sketched
+        .shapes()
+        .iter()
+        .map(|shape| {
+            shape.call_path().len() + shape.data().len() + shape.parsed_text().map_or(0, str::len)
+        })
+        .sum()
+}
+
+#[test]
+fn an_object_shows_the_keys_past_the_first_ones_while_there_is_room() {
+    // A search result's items, with the key that matters last.
+    let mut item = record("field", 20);
+    item.insert("merge".to_string(), json!({"merged_at": "2026-01-01"}));
+    let results = json!({"total": 1, "items": [item]});
+    let text = serde_json::to_string(&results).unwrap();
+    // Wrappers put the items deep.
+    let wrapped = json!({"data": {"viewer": {"page": results}}});
+    for shown in [
+        shape_of(http("coral.providers.a.search", results))
+            .data()
+            .to_string(),
+        shape_of(mcp(
+            "coral.providers.a.search",
+            json!({"content": [{"type": "text", "text": text}]}),
+        ))
+        .parsed_text()
+        .unwrap()
+        .to_string(),
+        shape_of(http("coral.providers.a.search", wrapped))
+            .data()
+            .to_string(),
+    ] {
+        assert!(
+            shown.contains("field19: string; merge: { merged_at: string } }>"),
+            "{shown}"
+        );
+        assert!(!shown.contains("more key"), "{shown}");
+    }
+}
+
+#[test]
+fn more_keys_take_no_shown_key_away_and_stay_in_the_byte_budget() {
+    // Each level's first key nests the next, and no level has room for all of
+    // its keys.
+    let mut nested = json!({"leaf": "x"});
+    for level in (0..MAX_DEPTH - 1).rev() {
+        let mut fields = serde_json::Map::from_iter([("next".to_string(), nested)]);
+        fields.extend(record(&format!("level{level}_with_a_long_name_"), 70));
+        nested = Value::Object(fields);
+    }
+    let sketched = sketch(vec![http("coral.providers.a.b", nested)], 0);
+    let total = total_bytes(&sketched);
+    assert!(total <= SHAPES_MAX_BYTES, "{total}");
+    let [shape] = sketched.shapes() else {
+        panic!("one shape expected, got {sketched:?}");
+    };
+    for level in 0..MAX_DEPTH - 1 {
+        for index in 0..KEYS_SHOWN - 1 {
+            let key = format!("level{level}_with_a_long_name_{index:02}:");
+            assert!(shape.data().contains(&key), "{key} in {}", shape.data());
+        }
+    }
+    assert!(shape.data().contains("leaf: string"), "{}", shape.data());
+    // The room left goes to the shallowest level.
+    assert!(
+        shape.data().contains("level0_with_a_long_name_20:"),
+        "{}",
+        shape.data()
+    );
+}
+
+#[test]
+fn shapes_take_the_room_for_more_keys_in_turns() {
+    let name = |prefix: &str| format!("{prefix}_{}_", "n".repeat(24));
+    let wide = |prefix: &str| Value::Object(record(&name(prefix), 64));
+    let sketched = sketch(
+        vec![
+            http("coral.providers.a.first", wide("a")),
+            http("coral.providers.a.second", wide("b")),
+        ],
+        0,
+    );
+    assert!(total_bytes(&sketched) <= SHAPES_MAX_BYTES);
+    let [first, second] = sketched.shapes() else {
+        panic!("two shapes expected, got {sketched:?}");
+    };
+    // There is no room for every key of both, and neither stays at the fewest.
+    for (shape, prefix) in [(first, "a"), (second, "b")] {
+        let key = format!("{}{KEYS_SHOWN}:", name(prefix));
+        assert!(shape.data().contains(&key), "{key} in {}", shape.data());
+    }
+    assert!(first.data().contains("more keys"), "{}", first.data());
+}
+
+#[test]
+fn results_alike_in_their_first_keys_show_the_keys_of_both() {
+    let with = |key: &str| {
+        let mut fields = record("field", KEYS_SHOWN);
+        fields.insert(key.to_string(), json!(null));
+        http("coral.providers.a.b", Value::Object(fields))
+    };
+    let shapes = sketch(
+        vec![with("only_first"), with("only_second"), with("only_first")],
+        0,
+    );
+    let [shape] = shapes.shapes() else {
+        panic!("one shape expected, got {shapes:?}");
+    };
+    assert_eq!(shape.invocations(), 3);
+    assert!(
+        shape
+            .data()
+            .ends_with("field15: string; only_first?: null; only_second?: null }"),
+        "{}",
+        shape.data()
+    );
+}
+
+#[test]
+fn more_room_shows_no_more_keys_that_can_be_data() {
+    // A value for each person, whose names read as field names.
+    for value in [json!(3), json!("c0ral"), json!(true)] {
+        let mut people: serde_json::Map<String, Value> = (0..20)
+            .map(|index| (format!("person{index:02}"), value.clone()))
+            .collect();
+        people.insert("nobody".to_string(), Value::Null);
+        let shown = shape_of(http(
+            "coral.providers.a.b",
+            json!({"total": 20, "people": people}),
+        ))
+        .data()
+        .to_string();
+        assert!(shown.contains("person15: "), "{shown}");
+        assert!(shown.ends_with("… 5 more keys } }"), "{shown}");
+    }
+
+    // Results that are alike in their first keys are an object keyed by data
+    // once they have more keys together than are tracked.
+    let letter = |index: usize| char::from(b'a' + u8::try_from(index % 26).unwrap());
+    let keyed = |group: char| {
+        let mut fields = record("field", KEYS_SHOWN);
+        fields.extend((0..KEYS_TRACKED / 2).map(|index| {
+            let name = format!("{group}_{}{}", letter(index / 26), letter(index));
+            (name, json!("x"))
+        }));
+        http("coral.providers.a.b", Value::Object(fields))
+    };
+    let sketched = sketch(vec![keyed('p'), keyed('q')], 0);
+    let [shape] = sketched.shapes() else {
+        panic!("one shape expected, got {sketched:?}");
+    };
+    assert_eq!(shape.data(), "Record<string, string | number>");
+}
