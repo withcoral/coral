@@ -145,7 +145,7 @@ async fn the_app_shows_what_a_result_lists_and_nothing_for_a_call_without_a_resu
             }),
         )
         .await;
-    assert_eq!(ran["isError"], false, "{ran}");
+    assert_eq!(ran.get("isError"), Some(&json!(false)), "{ran}");
 
     let nothing = json!({"hidden": true, "height": 0, "cards": [], "lines": []});
     assert_eq!(
