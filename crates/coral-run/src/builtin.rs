@@ -102,6 +102,9 @@ impl BuiltinCall {
                     BuiltinArguments::RemoveCustomTool(arguments) => {
                         private_tools::RemoveCustomTool::new(&arguments).map(Self::RemoveCustomTool)
                     }
+                    BuiltinArguments::Agent(_) | BuiltinArguments::CancelAgent(_) => {
+                        Err(CoralFailure::ToolUnavailable.into())
+                    }
                 }),
         )
     }
@@ -159,7 +162,9 @@ pub(crate) async fn recover(
             | BuiltinTool::Search
             | BuiltinTool::AddCustomTool
             | BuiltinTool::UpdateCustomTool
-            | BuiltinTool::RemoveCustomTool,
+            | BuiltinTool::RemoveCustomTool
+            | BuiltinTool::Agent
+            | BuiltinTool::CancelAgent,
         )
         | None => Ok(None),
     }

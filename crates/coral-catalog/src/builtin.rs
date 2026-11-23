@@ -33,6 +33,7 @@ use crate::{
 };
 
 mod add_provider;
+mod agent;
 mod get_policy;
 mod get_provider;
 mod list_providers;
@@ -43,6 +44,9 @@ mod update_policy;
 mod update_provider;
 
 pub use add_provider::{AddProviderArguments, AddProviderResult};
+pub use agent::{
+    AgentArguments, AgentRequiredAction, AgentResult, AgentStep, CancelAgentArguments,
+};
 pub use get_policy::{GetPolicyArguments, GetPolicyResult};
 pub use get_provider::{
     ConfigurationOutput, GetProviderArguments, GetProviderResult, ProviderSourceOutput,
@@ -152,10 +156,15 @@ pub enum BuiltinTool {
     UpdateCustomTool,
     /// Removes one of the caller's own Private Tools.
     RemoveCustomTool,
+    /// Starts a Sub-agent in the calling Run's Task, messages one, or waits
+    /// on one. Only a deployment that configures a Sub-agent serves it.
+    Agent,
+    /// Cancels a Sub-agent's Turn and its unfinished Runs, where `agent` is served.
+    CancelAgent,
 }
 
 impl BuiltinTool {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 12] = [
         Self::AddProvider,
         Self::ListProviders,
         Self::GetProvider,
@@ -166,6 +175,8 @@ impl BuiltinTool {
         Self::AddCustomTool,
         Self::UpdateCustomTool,
         Self::RemoveCustomTool,
+        Self::Agent,
+        Self::CancelAgent,
     ];
 
     /// Returns the Tool Key, which is also its relative path.
@@ -182,6 +193,8 @@ impl BuiltinTool {
             Self::AddCustomTool => "addCustomTool",
             Self::UpdateCustomTool => "updateCustomTool",
             Self::RemoveCustomTool => "removeCustomTool",
+            Self::Agent => "agent",
+            Self::CancelAgent => "cancelAgent",
         }
     }
 
@@ -213,7 +226,13 @@ impl BuiltinTool {
             Self::AddCustomTool | Self::UpdateCustomTool | Self::RemoveCustomTool => {
                 private_tools::NEEDS
             }
+            Self::Agent | Self::CancelAgent => agent::NEEDS,
         }
+    }
+
+    /// Whether only a deployment that configures a Sub-agent serves the Tool.
+    const fn needs_sub_agent(self) -> bool {
+        matches!(self, Self::Agent | Self::CancelAgent)
     }
 }
 
@@ -235,6 +254,16 @@ impl BuiltinCatalog {
     ///
     /// Returns an invalid built-in definition.
     pub fn running() -> Result<Self, Error> {
+        Self::from_definitions(without_sub_agent().map(definition).collect())
+    }
+
+    /// Prepares that catalog with `agent` and `cancelAgent`, for a deployment
+    /// that configures a Sub-agent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid built-in definition.
+    pub fn with_sub_agent() -> Result<Self, Error> {
         Self::from_definitions(BuiltinTool::ALL.into_iter().map(definition).collect())
     }
 
@@ -249,8 +278,7 @@ impl BuiltinCatalog {
     pub fn with_unknown_tools(
         extra: impl IntoIterator<Item = (&'static str, ToolHints)>,
     ) -> Result<Self, Error> {
-        let mut definitions: Vec<Definition> =
-            BuiltinTool::ALL.into_iter().map(definition).collect();
+        let mut definitions: Vec<Definition> = without_sub_agent().map(definition).collect();
         definitions.extend(extra.into_iter().map(|(key, hints)| Definition {
             key,
             summary: "A Tool another Coral version defines",
@@ -289,6 +317,12 @@ impl BuiltinCatalog {
     pub(crate) fn prepared(&self) -> PreparedProviderCatalog {
         self.0.prepared.clone()
     }
+}
+
+/// The Tools of a deployment that configures no Sub-agent.
+fn without_sub_agent() -> impl Iterator<Item = BuiltinTool> {
+    let tools = BuiltinTool::ALL.into_iter();
+    tools.filter(|tool| !tool.needs_sub_agent())
 }
 
 /// A Built-in Provider Tool's Execution Binding. It names the
@@ -369,6 +403,10 @@ pub enum BuiltinArguments {
     UpdateCustomTool(ToolSaveArguments),
     /// `removeCustomTool`'s arguments.
     RemoveCustomTool(RemoveToolArguments),
+    /// `agent`'s arguments.
+    Agent(AgentArguments),
+    /// `cancelAgent`'s arguments.
+    CancelAgent(CancelAgentArguments),
 }
 
 impl BuiltinArguments {
@@ -403,6 +441,10 @@ impl BuiltinArguments {
             }
             BuiltinTool::RemoveCustomTool => {
                 RemoveToolArguments::parse(arguments).map(Self::RemoveCustomTool)
+            }
+            BuiltinTool::Agent => AgentArguments::parse(arguments).map(Self::Agent),
+            BuiltinTool::CancelAgent => {
+                CancelAgentArguments::parse(arguments).map(Self::CancelAgent)
             }
         }
     }
@@ -687,6 +729,8 @@ fn definition(tool: BuiltinTool) -> Definition {
         BuiltinTool::AddCustomTool => private_tools::add_definition(),
         BuiltinTool::UpdateCustomTool => private_tools::update_definition(),
         BuiltinTool::RemoveCustomTool => private_tools::remove_definition(),
+        BuiltinTool::Agent => agent::agent_definition(),
+        BuiltinTool::CancelAgent => agent::cancel_definition(),
     }
 }
 
