@@ -8,7 +8,8 @@
 //! 0027, Reconnect): the drain closes the pull streams and moves each Run
 //! stream once no dispatch is in flight on it, and the Run goes on on
 //! another Coral Instance. A local child's stream can reopen only here, so
-//! its Run keeps dispatching and ends interrupted at the drain's length.
+//! its Run keeps dispatching and, at the drain's length, ends interrupted,
+//! or timed out past its deadline.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -666,8 +666,8 @@ impl OwnerHandle {
     /// A step of the Shutdown Drain. An owner that hosts a dialed Run
     /// Executor's stream moves the stream. One that hosts a local child's
     /// stream keeps dispatching, and at the drain's length ends its Run
-    /// Interrupted. Another is stopped once the drain is out, which
-    /// interrupts its Run.
+    /// interrupted, or timed out past its deadline. Another is stopped once
+    /// the drain is out, which interrupts its Run.
     pub(crate) fn drain(&self, step: DrainStep) {
         if let Some(stream) = &self.shared.stream {
             match (stream.local_child, step) {

@@ -475,6 +475,23 @@ fn run_executor_children(parent: u32) -> Vec<String> {
         .collect()
 }
 
+/// Kills `runtime`, which runs one local child, with SIGKILL, and waits for
+/// that child to exit.
+#[cfg(unix)]
+fn kill_and_outlive_no_child(runtime: &mut Runtime) {
+    let children = run_executor_children(runtime.child.id());
+    let [child] = children.as_slice() else {
+        panic!("one local child: {children:?}");
+    };
+    runtime.child.kill().expect("kill the runtime");
+    runtime.child.wait().expect("reap the runtime");
+    let deadline = Instant::now() + EXIT_TIMEOUT;
+    while runs(child) {
+        assert!(Instant::now() < deadline, "the child outlives the runtime");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Whether process `pid` still runs; a zombie has exited.
 #[cfg(unix)]
 fn runs(pid: &str) -> bool {
@@ -504,17 +521,7 @@ fn a_program_compiles_on_a_local_child_that_exits_when_the_runtime_is_killed() {
         "{body}"
     );
 
-    let children = run_executor_children(runtime.child.id());
-    let [child] = children.as_slice() else {
-        panic!("one local child: {children:?}");
-    };
-    runtime.child.kill().expect("kill the runtime");
-    runtime.child.wait().expect("reap the runtime");
-    let deadline = Instant::now() + EXIT_TIMEOUT;
-    while runs(child) {
-        assert!(Instant::now() < deadline, "the child outlives the runtime");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    kill_and_outlive_no_child(&mut runtime);
 }
 
 /// Catches: a boot that leaves running the Runs a killed runtime's local
@@ -536,18 +543,7 @@ fn a_killed_runtimes_run_ends_interrupted_when_the_runtime_starts_again() {
         .map(|(id, _)| id.to_owned())
         .expect("the Run's id");
     block_on(composed::started_on_a_run_executor(&state_root, &run_id));
-    let children = run_executor_children(runtime.child.id());
-    let [child] = children.as_slice() else {
-        panic!("one local child: {children:?}");
-    };
-
-    runtime.child.kill().expect("kill the runtime");
-    runtime.child.wait().expect("reap the runtime");
-    let deadline = Instant::now() + EXIT_TIMEOUT;
-    while runs(child) {
-        assert!(Instant::now() < deadline, "the child outlives the runtime");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    kill_and_outlive_no_child(&mut runtime);
     let state = || block_on(composed::recorded_run_state(&state_root, &run_id));
     assert_eq!(state(), "running");
     // The boot pass runs before the listeners serve.

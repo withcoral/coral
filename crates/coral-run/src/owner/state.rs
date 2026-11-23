@@ -1344,8 +1344,8 @@ impl OwnerState {
         // A Run stream's deadline ends its Run on its own, written first or
         // by its terminal write: the cancellation is then a repeat.
         let deadline_decides = past_deadline && self.requests.is_some();
-        // A Run stream's end written first came first: the cancellation is
-        // then a repeat.
+        // A Run stream's end that the owner selected first decides, though
+        // not yet written: the cancellation is then a repeat.
         if self.termination.is_none() && self.stream_end.is_none() && !deadline_decides {
             effects.extend(self.terminate(
                 RunTerminationKind::Canceled,

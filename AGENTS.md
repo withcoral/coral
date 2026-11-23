@@ -145,7 +145,8 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   hint. It retires the Run Owner as a Run's one writer, the Run Inbox, the
   per-Run worker lease and its expired-lease sweep, each owner's
   subscription to the change signal, and the Shutdown Drain's interruption
-  of live Runs, apart from a local child's at the drain's length. Fix a defect in a retiring part under the rules below. Build
+  of live Runs; a local child's Run is still interrupted at the drain's
+  length. Fix a defect in a retiring part under the rules below. Build
   new Run coordination beside the owner path, in the #2884 slice that
   replaces that part. The one exception is the Run stream (#2903): a Run that
   a Run Executor holds is hosted by a Run Owner whose Program is its stream.
@@ -164,7 +165,7 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   stream, or at the drain's length, it detaches and ends the stream cleanly.
   A local child's stream can reopen only on its parent, so its owner keeps
   dispatching through the drain, and at the drain's length it ends the Run
-  Interrupted. For a Run that no worker
+  Interrupted, or TimedOut past its deadline. For a Run that no worker
   claim fences, the Run sweeper (#2906) also writes under the claim and the
   head, as the sweeper section of ADR 0027 states. So does the Coral Instance
   that receives a decision or a cancellation for it (#2907), and it compares

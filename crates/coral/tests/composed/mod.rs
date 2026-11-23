@@ -160,12 +160,7 @@ pub(crate) async fn spin_a_run(composed: &Composed) -> String {
 /// Waits up to 30 s until the Run `run_id`, in the SQLite state database at
 /// `dir`, has started on a Run Executor.
 pub(crate) async fn started_on_a_run_executor(dir: &Path, run_id: &str) {
-    use sqlx::Connection as _;
-    let mut connection = sqlx::SqliteConnection::connect_with(
-        &sqlx::sqlite::SqliteConnectOptions::new().filename(dir.join("coral.db")),
-    )
-    .await
-    .expect("open the state database");
+    let mut connection = state_database(dir).await;
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let (started,): (bool,) = sqlx::query_as(
@@ -189,16 +184,21 @@ pub(crate) async fn started_on_a_run_executor(dir: &Path, run_id: &str) {
 /// The state of the Run `run_id` as the SQLite state database at `dir`
 /// records it.
 pub(crate) async fn recorded_run_state(dir: &Path, run_id: &str) -> String {
-    use sqlx::Connection as _;
-    let mut connection = sqlx::SqliteConnection::connect_with(
-        &sqlx::sqlite::SqliteConnectOptions::new().filename(dir.join("coral.db")),
-    )
-    .await
-    .expect("open the state database");
+    let mut connection = state_database(dir).await;
     let (state,): (String,) = sqlx::query_as("SELECT state FROM program_run_records WHERE id = ?")
         .bind(run_id)
         .fetch_one(&mut connection)
         .await
         .expect("read the Run");
     state
+}
+
+/// The SQLite state database at `dir`.
+async fn state_database(dir: &Path) -> sqlx::SqliteConnection {
+    use sqlx::Connection as _;
+    sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new().filename(dir.join("coral.db")),
+    )
+    .await
+    .expect("open the state database")
 }

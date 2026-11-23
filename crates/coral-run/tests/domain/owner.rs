@@ -1829,14 +1829,19 @@ fn the_drains_interruption_times_out_a_run_past_its_deadline_and_waits_for_its_s
             }))),
             3,
         ));
-        // The repeat's acknowledgement commits before the end is written.
-        if matches!(effects.as_slice(), [Effect::Commit { .. }]) {
-            effects = deliver(apply_without_tick(&mut state, Message::Committed, 4));
+        // Each chunk commits before the end is written.
+        let mut stream_end = ended_as(&effects);
+        for now in 4..8 {
+            if !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Commit { .. }))
+            {
+                break;
+            }
+            effects = deliver(apply_without_tick(&mut state, Message::Committed, now));
+            stream_end = stream_end.or(ended_as(&effects));
         }
-        let (stream_end, canceled) = (
-            ended_as(&effects),
-            state.termination().map(|intent| intent.termination.kind),
-        );
+        let canceled = state.termination().map(|intent| intent.termination.kind);
         let expected = if cancel_first {
             (None, Some(crate::lifecycle::RunTerminationKind::Canceled))
         } else {
