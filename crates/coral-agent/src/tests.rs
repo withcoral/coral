@@ -323,9 +323,12 @@ async fn call(
     let intent = TaskIntent::parse("Call the agent").unwrap();
     let task_id = match (arguments.remove("task_id"), arguments.remove("goal")) {
         (Some(task_id), _) => Some(TaskId::parse(task_id.as_str().unwrap()).unwrap()),
-        (None, Some(_goal)) => {
-            let tasks = &caller.modules.tasks;
-            let started = tasks.start(actor, workspace_id, intent.clone(), UnixNanos::new(2));
+        (None, Some(goal)) => {
+            let goal = TaskIntent::parse(goal.as_str().unwrap()).unwrap();
+            let started = caller
+                .modules
+                .tasks
+                .start(actor, workspace_id, goal, UnixNanos::new(2));
             Some(started.await.unwrap().id().clone())
         }
         // The call starts no Sub-agent, so its Run needs no Task.

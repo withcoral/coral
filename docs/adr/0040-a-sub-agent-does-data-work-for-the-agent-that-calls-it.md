@@ -96,7 +96,8 @@ one Workspace on the Tools page, as for any Built-in Tool. Both are enabled by d
 | present                          | the same, plus `coral.agent`, `coral.cancelAgent` and Workflow steps that delegate |
 
 A Program that a Sub-agent started cannot call either Tool. The Sub-agent records each Run that its `exec` starts, and
-both Tools refuse a Run in that record with a failure that the Program can read.
+both Tools refuse a Run in that record with a failure that the Program can read. The record is written just after the
+Run is accepted, so a call before that write is not refused: see what we accepted.
 
 **Rejected:**
 
@@ -569,7 +570,7 @@ context_window = 131072                     # optional: the model's context wind
   variable is missing, startup fails. If it is not set, Coral sends no `Authorization` (or `x-api-key`) header.
 - Requests to the model go through `coral-outbound` and follow the operator's `[outbound]` destination policy, with no
   exception for the Sub-agent. A model on loopback or on a private network must be allowed there.
-- The Sub-agent is on for every Workspace in the deployment.
+- The Sub-agent is on for every Workspace in the deployment, until a Workspace Owner disables its Tools there.
 - The party that runs the deployment writes the section. For a self-hosted deployment, that is the operator. For a SaaS
   deployment, it is Coral's control plane.
 

@@ -256,8 +256,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     core.retain(|key| !["agent", "cancelAgent"].contains(key));
     assert_eq!(without, core);
     // The retained Generation keeps the enabled default the catalog declares
-    // for the Tools that change only the caller's own Private Tools, and
-    // for no other Tool, so policy reads it from storage.
+    // for the Tools that change only the caller's own Private Tools and for
+    // the Sub-agent's two, and for no other Tool, so policy reads it from storage.
     let enabled_by_default = |facts: coral_catalog::ToolPolicyFacts, key: &str| {
         assert_eq!(
             facts.declares_enabled_by_default(),

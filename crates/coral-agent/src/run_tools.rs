@@ -135,6 +135,11 @@ impl RunTools {
             .await
             .map_err(task_failure)?;
         tracing::Span::current().record("coral.run.id", safe::id(&accepted.telemetry_id()));
+        // First, so that a cancel during the write below stops this Run too.
+        let started = caller.started_runs.lock();
+        started
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(accepted.run_id().clone());
         // The record that keeps this Run's Program from calling the agent.
         let (workspace_id, task_id) = (&caller.workspace_id, &caller.task_id);
         let run = repository::insert_sub_agent_run(
@@ -149,10 +154,6 @@ impl RunTools {
                 "the Run that a Sub-agent's exec started was not recorded as its own"
             );
         }
-        let started = caller.started_runs.lock();
-        started
-            .unwrap_or_else(PoisonError::into_inner)
-            .push(accepted.run_id().clone());
         let Some(first_wait) = first_wait else {
             return Ok(accepted);
         };

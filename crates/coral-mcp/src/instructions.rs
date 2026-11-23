@@ -63,7 +63,7 @@ pub(crate) const INSTRUCTIONS: &str = instructions!(
 pub(crate) const DELEGATING_INSTRUCTIONS: &str = instructions!(
     "\
 1. Pass `goal` to the first `exec` of a unit of work, then its `task_id` to later calls.
-2. For data work you can describe in a message, brief one of Coral's agents from a program, one brief per question: `return await coral.agent({ message })`. Review its `answer` and its `steps`, and reply with its `sub_agent_id`. Go to step 5.
+2. For data work you can describe in a message, brief one of Coral's agents from a program, one brief per question: `return await coral.agent({ message })`. While `state` is `running` or `needs_action`, call again with `sub_agent_id`. Review `answer` and `steps`; to reply, add `message`. Go to step 5.
 3. Otherwise, call `exec` with one TypeScript async-function body; it shows how to find provider tools with `coral.search`. While `state` is `running` or `has_more` is true, call `wait` with the `run_id` and latest `next_cursor`.
 4. If other values can reuse the work, add it with `coral.addCustomTool` in a run. Tell the user its path.
 5. When the work is done or cannot continue, call `end_task` once per Task with the outcome.
