@@ -42,9 +42,8 @@ impl crate::SubAgentTools for Echo {
     }
 }
 
-// Catches: a Sub-agent Tool that runs where no Sub-agent is wired, a call
-// that reaches the Sub-agent without its Run, and a refusal that stops the
-// Run instead of reaching the Program.
+// Catches: a Sub-agent Tool that runs where none is wired, a call that reaches
+// the Sub-agent without its Run, and a refusal that the Program cannot read.
 #[tokio::test]
 async fn programs_reach_the_wired_sub_agent_and_read_its_refusals() {
     let scope = AdminScope::new("user:sub-agent").await;

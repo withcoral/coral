@@ -500,9 +500,8 @@ impl RunModule {
     }
 
     /// Lets `coral.agent` and `coral.cancelAgent` reach the Sub-agent, from
-    /// this module and every clone of it. Bootstrap calls it once, after it
-    /// built the modules the Sub-agent acts through; a second call changes
-    /// nothing. Without it, such a call fails with `tool_unavailable`.
+    /// every clone of this module. Only the first call sets it; without it,
+    /// such a call fails with `tool_unavailable`.
     pub fn set_sub_agent_tools(&self, tools: Arc<dyn SubAgentTools>) {
         let _already_set = self.sub_agents.set(tools);
     }

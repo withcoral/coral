@@ -123,9 +123,8 @@ impl Lead {
             .unwrap()
     }
 
-    /// The factory's Tools as a deployment with a `[sub_agent]` section serves
-    /// them: wired into the lead's Runs, in a Workspace whose Built-in Provider
-    /// holds `coral.agent`.
+    /// The factory's Tools as a `[sub_agent]` section serves them: wired into
+    /// the lead's Runs, in a Workspace whose Built-in Provider holds them.
     async fn served_tools(&self) -> Arc<dyn SubAgentTools> {
         let (database, workspaces) = (self.database.clone(), self.workspaces.clone());
         let catalog = coral_catalog::BuiltinCatalog::with_sub_agent().unwrap();
@@ -301,33 +300,8 @@ struct LeadCaller {
     modules: McpModules,
 }
 
-impl LeadCaller {
-    /// A Run of the lead's in the Task that a call names: `task_id`, or a new
-    /// Task for `goal`. A call that names neither starts no Sub-agent, so its
-    /// Run needs no Task.
-    async fn run(&self, task_id: Option<Value>, goal: Option<Value>) -> (Option<TaskId>, RunId) {
-        let (actor, workspace_id) = (self.mcp.principal(), self.mcp.workspace_id());
-        let intent = TaskIntent::parse("Call the agent").unwrap();
-        let task_id = match (task_id.as_ref().and_then(Value::as_str), goal) {
-            (Some(task_id), _) => TaskId::parse(task_id).unwrap(),
-            (None, Some(_goal)) => {
-                let tasks = &self.modules.tasks;
-                let started = tasks.start(actor, workspace_id, intent.clone(), UnixNanos::new(2));
-                started.await.unwrap().id().clone()
-            }
-            (None, None) => return (None, RunId::parse("a-run-of-the-leads").unwrap()),
-        };
-        let call =
-            AttributedCommand::new(actor.clone(), workspace_id.clone(), task_id.clone(), intent);
-        let run = self.modules.commands.submit(&call, "return 0;", 60_000);
-        (Some(task_id), run.await.unwrap().run_id().clone())
-    }
-}
-
-/// Calls a tool as the lead does. `agent` and `cancelAgent` reach the
-/// Sub-agent's Tools from a Run of the lead's. Two arguments stand for that
-/// Run: `task_id` or `goal` for its Task, and `wait_ms` unless the Run is
-/// asked to stop at once. Any other tool is core's.
+/// Calls core's tool `name`, or a Sub-agent Tool from a Run of the lead's: in
+/// the Task of `task_id` or `goal`, and asked to stop at once without `wait_ms`.
 async fn call(
     tools: &dyn SubAgentTools,
     caller: &LeadCaller,
@@ -345,14 +319,32 @@ async fn call(
             _ => panic!("{name} completes"),
         };
     };
-    let (task_id, run_id) = (arguments.remove("task_id"), arguments.remove("goal"));
-    let (task_id, run_id) = caller.run(task_id, run_id).await;
+    let (actor, workspace_id) = (caller.mcp.principal(), caller.mcp.workspace_id());
+    let intent = TaskIntent::parse("Call the agent").unwrap();
+    let task_id = match (arguments.remove("task_id"), arguments.remove("goal")) {
+        (Some(task_id), _) => Some(TaskId::parse(task_id.as_str().unwrap()).unwrap()),
+        (None, Some(_goal)) => {
+            let tasks = &caller.modules.tasks;
+            let started = tasks.start(actor, workspace_id, intent.clone(), UnixNanos::new(2));
+            Some(started.await.unwrap().id().clone())
+        }
+        // The call starts no Sub-agent, so its Run needs no Task.
+        (None, None) => None,
+    };
+    let run_id = match task_id.clone() {
+        Some(task_id) => {
+            let call = AttributedCommand::new(actor.clone(), workspace_id.clone(), task_id, intent);
+            let run = caller.modules.commands.submit(&call, "return 0;", 60_000);
+            run.await.unwrap().run_id().clone()
+        }
+        None => RunId::parse("a-run-of-the-leads").unwrap(),
+    };
     let waits = arguments
         .remove("wait_ms")
         .is_some_and(|wait_ms| wait_ms != 0);
     let run = SubAgentCaller {
-        actor: caller.mcp.principal(),
-        workspace_id: caller.mcp.workspace_id(),
+        actor,
+        workspace_id,
         run_id: &run_id,
         stopped: Box::pin(async move {
             if waits {
@@ -491,9 +483,8 @@ async fn startup_checks_the_section_and_sends_the_model_nothing() {
     assert!(lead.model.received_requests().await.unwrap().is_empty());
 }
 
-// Catches: a Program that cannot reach the Sub-agent, a Sub-agent started
-// outside the Task of the Run that called it, and a call that returns before
-// the Turn ends.
+// Catches: a Program that cannot reach the Sub-agent, a Sub-agent outside the
+// Task of the Run that called it, and a call that returns before the Turn ends.
 #[tokio::test]
 async fn coral_agent_returns_the_sub_agents_answer_to_the_program_that_calls_it() {
     let lead = Lead::new().await;

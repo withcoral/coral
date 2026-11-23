@@ -13,9 +13,8 @@ use crate::config_toml::{ConfigDecodeError, Document};
 /// registers one in [`Launch`](super::Launch).
 pub trait SubAgentToolsFactory: Send + Sync {
     /// The name of the top-level section of the config file that this
-    /// factory reads. The section turns the Sub-agent on: with it, the
-    /// built-in catalog holds the two Tools; without it, core never calls
-    /// [`Self::build`].
+    /// factory reads. The section turns the Sub-agent on: without it, the
+    /// catalog lacks the two Tools and core never calls [`Self::build`].
     fn section_name(&self) -> &'static str;
 
     /// Builds the Tools from the section, undecoded.

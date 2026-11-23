@@ -255,9 +255,7 @@ impl TaskModule {
 
     /// The Task that the Run was submitted in, if it was submitted in one.
     /// It checks no Principal: the caller already acts as the Run's.
-    ///
     /// # Errors
-    ///
     /// Returns a persistence failure.
     pub async fn run_task(
         &self,

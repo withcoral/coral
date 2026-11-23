@@ -1,7 +1,5 @@
-//! `coral.agent` and `coral.cancelAgent`: the schemas a Program is typed
-//! from, the arguments Coral reads against the input schemas, and the result
-//! the Sub-agent writes against the output schema (ADR 0040). The catalog
-//! holds both only while the deployment configures a Sub-agent.
+//! `coral.agent` and `coral.cancelAgent` (ADR 0040): their schemas, the
+//! arguments Coral reads, and the result the Sub-agent writes.
 
 use coral_workspace::WorkspaceAction;
 use schemars::JsonSchema;
@@ -110,9 +108,7 @@ const AGENT_TAKES: &str = "pass `message` to brief a new agent, or `sub_agent_id
 
 impl AgentArguments {
     /// Reads the arguments: the shape first, then the message.
-    ///
     /// # Errors
-    ///
     /// Returns the argument to correct, and repeats no value the Program sent.
     pub fn parse(arguments: &Value) -> Result<Self, Vec<ArgumentProblem>> {
         // serde also reads a struct from a sequence, which the schema forbids.
@@ -148,9 +144,7 @@ pub struct CancelAgentArguments {
 
 impl CancelAgentArguments {
     /// Reads the arguments.
-    ///
     /// # Errors
-    ///
     /// Returns the argument to correct.
     pub fn parse(arguments: &Value) -> Result<Self, Vec<ArgumentProblem>> {
         if !arguments.is_object() {
@@ -166,9 +160,8 @@ impl CancelAgentArguments {
 pub struct AgentResult {
     /// Names the agent, for coral.agent and coral.cancelAgent.
     pub sub_agent_id: String,
-    /// Where the turn stands. `needs_action` means that a run of a step waits
-    /// for a person: handle `required_actions` as a run's. `interrupted` means
-    /// that Coral stopped before the agent answered: send it a message again.
+    /// Where the turn stands. With `needs_action`, handle `required_actions`
+    /// as a run's. After `interrupted`, send the agent a message again.
     #[schemars(extend("enum" = ["running", "needs_action", "completed", "failed", "canceled", "interrupted"]))]
     pub state: &'static str,
     /// The agent's answer, once state is `completed`.

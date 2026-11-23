@@ -1,7 +1,5 @@
-//! Performs `coral.agent` and `coral.cancelAgent` through the Sub-agent that
-//! the deployment configures. coral-run cannot depend on the Sub-agent's
-//! crate, so that crate implements [`SubAgentTools`] and bootstrap hands the
-//! implementation to [`crate::RunModule::set_sub_agent_tools`].
+//! Performs `coral.agent` and `coral.cancelAgent` through [`SubAgentTools`],
+//! which the Sub-agent's crate implements: coral-run cannot depend on it.
 
 use std::future::Future;
 use std::pin::Pin;

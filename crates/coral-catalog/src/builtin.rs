@@ -229,11 +229,6 @@ impl BuiltinTool {
             Self::Agent | Self::CancelAgent => agent::NEEDS,
         }
     }
-
-    /// Whether only a deployment that configures a Sub-agent serves the Tool.
-    const fn needs_sub_agent(self) -> bool {
-        matches!(self, Self::Agent | Self::CancelAgent)
-    }
 }
 
 /// The Built-in Provider's catalog that a Coral process serves, and the
@@ -259,9 +254,7 @@ impl BuiltinCatalog {
 
     /// Prepares that catalog with `agent` and `cancelAgent`, for a deployment
     /// that configures a Sub-agent.
-    ///
     /// # Errors
-    ///
     /// Returns an invalid built-in definition.
     pub fn with_sub_agent() -> Result<Self, Error> {
         Self::from_definitions(BuiltinTool::ALL.into_iter().map(definition).collect())
@@ -322,7 +315,7 @@ impl BuiltinCatalog {
 /// The Tools of a deployment that configures no Sub-agent.
 fn without_sub_agent() -> impl Iterator<Item = BuiltinTool> {
     let tools = BuiltinTool::ALL.into_iter();
-    tools.filter(|tool| !tool.needs_sub_agent())
+    tools.filter(|tool| !matches!(tool, BuiltinTool::Agent | BuiltinTool::CancelAgent))
 }
 
 /// A Built-in Provider Tool's Execution Binding. It names the

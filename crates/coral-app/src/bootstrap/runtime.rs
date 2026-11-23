@@ -548,8 +548,7 @@ async fn start_mcp_http(
 }
 
 /// Wires the registered factory's Sub-agent into the Runs of `modules`, and
-/// serves the instructions of a lead that can delegate, when the config file
-/// has the factory's section.
+/// tells a lead how to delegate, when the config file has the factory's section.
 fn with_registered_sub_agent(
     modules: McpModules,
     settings: &ServeSettings,

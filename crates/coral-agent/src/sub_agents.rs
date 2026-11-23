@@ -26,7 +26,7 @@ use interruption::close_calls;
 mod steering;
 mod steps;
 
-pub(crate) use steps::{TurnPage, WaitingAction};
+pub(crate) use steps::TurnPage;
 
 /// How long a running Turn stays held after its Coral Instance last renewed
 /// the lease.

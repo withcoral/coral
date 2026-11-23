@@ -88,11 +88,8 @@ async fn served_tools(client: &rmcp::service::RunningService<rmcp::RoleClient, (
     tools.iter().map(|tool| tool.name.to_string()).collect()
 }
 
-/// The launching process registers a factory, and its section turns the
-/// Sub-agent on: a Program reaches the Tools the factory built, and MCP tells
-/// the lead how to delegate. Catches: a section that leaves `coral.agent` out
-/// of the catalog or unwired, and a factory that gets less than bootstrap
-/// resolved.
+// Catches: a section that leaves `coral.agent` out of the catalog, unwired or
+// out of the instructions, and a factory that gets less than bootstrap resolved.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_program_reaches_the_sub_agent_that_a_registered_factory_builds() {
     const FAN_OUT: usize = 7;

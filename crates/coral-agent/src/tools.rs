@@ -17,7 +17,7 @@ use coral_workspace::WorkspaceId;
 
 use crate::repository;
 use crate::run_tools::Outcome;
-use crate::sub_agents::{Error, SubAgents, TurnPage, TurnState, WaitingAction};
+use crate::sub_agents::{Error, SubAgents, TurnPage, TurnState};
 
 /// How long `coral.agent` waits for a Turn before it returns it as running.
 const AGENT_WAIT: Duration = Duration::from_secs(600);
@@ -120,45 +120,44 @@ impl AgentTools {
             intent: step.intent.clone(),
             run_id: step.run_id.as_ref().map(ToString::to_string),
         });
-        let waiting = page.required_actions.iter();
+        // The fields of core's `required_actions`, and the Run's `run_id`.
+        let actions = page.required_actions.iter().map(|waiting| {
+            let action = &waiting.action;
+            let (kind, request_id) = match &action.request {
+                RequiredActionRequest::AccountConnection(id) => {
+                    ("account_connection", id.to_string())
+                }
+                RequiredActionRequest::InvocationApproval(id) => {
+                    ("invocation_approval", id.to_string())
+                }
+            };
+            let deadline_at = chrono::DateTime::from_timestamp_nanos(action.deadline_at_unix_nanos);
+            AgentRequiredAction {
+                run_id: waiting.run_id.to_string(),
+                kind,
+                request_id,
+                required_actor: match action.required_actor {
+                    RequiredActor::InvokingUser => "invoking_user",
+                    RequiredActor::WorkspaceOwner => "workspace_owner",
+                },
+                tool: action.call_path.clone(),
+                provider: action.provider_label.clone(),
+                deadline_at: deadline_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                url: self.human_interface.page_url(&action.action_path),
+            }
+        });
         AgentResult {
             sub_agent_id: sub_agent_id.to_owned(),
             state,
             answer,
             failure,
-            required_actions: waiting.map(|waiting| self.action(waiting)).collect(),
+            required_actions: actions.collect(),
             outcome: page.outcome.map(|outcome| match outcome {
                 Outcome::Success => "success",
                 Outcome::Failure => "failure",
             }),
             steps: steps.collect(),
             next_cursor: page.cursor(),
-        }
-    }
-
-    /// One request a Run waits on: the fields of core's `required_actions`,
-    /// and the Run's `run_id`.
-    fn action(&self, waiting: &WaitingAction) -> AgentRequiredAction {
-        let action = &waiting.action;
-        let (kind, request_id) = match &action.request {
-            RequiredActionRequest::AccountConnection(id) => ("account_connection", id.to_string()),
-            RequiredActionRequest::InvocationApproval(id) => {
-                ("invocation_approval", id.to_string())
-            }
-        };
-        let deadline_at = chrono::DateTime::from_timestamp_nanos(action.deadline_at_unix_nanos);
-        AgentRequiredAction {
-            run_id: waiting.run_id.to_string(),
-            kind,
-            request_id,
-            required_actor: match action.required_actor {
-                RequiredActor::InvokingUser => "invoking_user",
-                RequiredActor::WorkspaceOwner => "workspace_owner",
-            },
-            tool: action.call_path.clone(),
-            provider: action.provider_label.clone(),
-            deadline_at: deadline_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-            url: self.human_interface.page_url(&action.action_path),
         }
     }
 }
