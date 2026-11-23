@@ -64,9 +64,9 @@ impl SubAgents {
         stopping: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
         Self {
+            run_tools: Arc::new(RunTools::new(database.clone(), commands, runs.clone())),
             database,
             tasks,
-            run_tools: Arc::new(RunTools::new(commands, runs.clone())),
             runs,
             search,
             model: Arc::new(model),

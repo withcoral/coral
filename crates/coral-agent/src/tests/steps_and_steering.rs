@@ -18,14 +18,14 @@ const REPLY: &str = "Count only the paid invoices.";
 
 impl Lead {
     /// Starts a Sub-agent in a new Task and returns its first page.
-    async fn agent(&self, tools: &dyn McpInterface) -> Value {
+    async fn agent(&self, tools: &dyn SubAgentTools) -> Value {
         let agent = json!({"goal": "Count the invoices", "message": MESSAGE});
         result(call(tools, &self.caller(), "agent", agent).await)
     }
 
     /// Starts the lead's own Run of `program` in `task_id`, and returns its
     /// `run_id` once it ends or waits for a person.
-    async fn exec(&self, tools: &dyn McpInterface, task_id: &Value, program: &str) -> Value {
+    async fn exec(&self, tools: &dyn SubAgentTools, task_id: &Value, program: &str) -> Value {
         let exec = json!({"task_id": task_id, "intent": "Check", "program": program});
         let started = result(call(tools, &self.caller(), "exec", exec).await);
         field(&started, "run_id").clone()
@@ -185,8 +185,8 @@ async fn the_steps_show_while_a_turn_runs_and_after_it_ends() {
         .await;
 
     let by_id = json!({"sub_agent_id": sub_agent_id});
-    let running = result(call(&*tools, &caller, "wait", by_id.clone()).await);
-    let canceled = result(call(&*tools, &caller, "cancel", by_id).await);
+    let running = result(call(&*tools, &caller, "agent", by_id.clone()).await);
+    let canceled = result(call(&*tools, &caller, "cancelAgent", by_id).await);
 
     let steps = json!([{"intent": "Read the birds", "run_id": run_id}]);
     assert_eq!(field(&started, "steps"), &json!([]));
@@ -221,7 +221,7 @@ async fn a_search_is_a_step_with_its_query_and_no_run_id() {
     }
 
     let by_id = json!({"sub_agent_id": sub_agent_id});
-    let waited = result(call(&*tools, &lead.caller(), "wait", by_id).await);
+    let waited = result(call(&*tools, &lead.caller(), "agent", by_id).await);
 
     let read = "Read the declarations of coral.providers.billing.listInvoices, coral.providers.billing.getInvoice";
     let steps = json!([{"intent": "list invoices"}, {"intent": read}]);
@@ -251,7 +251,7 @@ async fn a_run_that_waits_for_a_person_shows_the_lead_needs_action() {
     let wait = json!({"sub_agent_id": field(&started, "sub_agent_id"), "cursor": field(&started, "next_cursor"), "wait_ms": 30_000});
 
     let asked_at = Instant::now();
-    let waited = result(call(&*tools, &lead.caller(), "wait", wait).await);
+    let waited = result(call(&*tools, &lead.caller(), "agent", wait).await);
 
     assert!(
         asked_at.elapsed() < Duration::from_secs(30),
@@ -291,7 +291,7 @@ async fn a_message_during_a_turn_reaches_its_next_model_call() {
         let messaged = result(call(&*tools, &caller, "agent", message).await);
         release.send(()).unwrap();
         let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
-        let waited = result(call(&*tools, &caller, "wait", wait).await);
+        let waited = result(call(&*tools, &caller, "agent", wait).await);
 
         assert_eq!(field(&messaged, "state"), "running");
         assert_eq!(field(&waited, "answer"), "Seven.", "{waited}");
@@ -326,11 +326,11 @@ async fn a_message_after_a_turn_starts_a_new_turn_on_the_same_thread() {
     let started = lead.agent(&*tools).await;
     let sub_agent_id = field(&started, "sub_agent_id");
     let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
-    let first = result(call(&*tools, &caller, "wait", wait.clone()).await);
+    let first = result(call(&*tools, &caller, "agent", wait.clone()).await);
 
     let message = json!({"sub_agent_id": sub_agent_id, "message": REPLY});
     result(call(&*tools, &caller, "agent", message).await);
-    let second = result(call(&*tools, &caller, "wait", wait).await);
+    let second = result(call(&*tools, &caller, "agent", wait).await);
 
     assert_eq!(field(&first, "answer"), "Twelve.");
     assert_eq!(field(&second, "answer"), "Seven.", "{second}");
@@ -354,13 +354,13 @@ async fn wait_and_cancel_refuse_a_cursor_of_another_turn() {
     let second = lead.agent(&*tools).await;
     let foreign = json!({"sub_agent_id": field(&first, "sub_agent_id"), "cursor": field(&second, "next_cursor")});
 
-    let waited = call(&*tools, &caller, "wait", foreign.clone()).await;
-    let canceled = call(&*tools, &caller, "cancel", foreign).await;
+    let waited = call(&*tools, &caller, "agent", foreign.clone()).await;
+    let canceled = call(&*tools, &caller, "cancelAgent", foreign).await;
 
-    assert_eq!(refusal(waited), "cursor belongs to another Turn");
-    let takes = "with `sub_agent_id`, cancel takes nothing beside it";
+    assert_eq!(refusal(waited), "belongs to another turn of the agent");
+    let takes = "unknown field `cursor`, expected `sub_agent_id`";
     assert_eq!(refusal(canceled), takes);
     let unchanged = json!({"sub_agent_id": field(&first, "sub_agent_id")});
-    let unchanged = result(call(&*tools, &caller, "wait", unchanged).await);
+    let unchanged = result(call(&*tools, &caller, "agent", unchanged).await);
     assert_eq!(field(&unchanged, "state"), "running");
 }

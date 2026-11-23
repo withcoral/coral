@@ -60,9 +60,9 @@ impl Lead {
 
     /// Starts a Turn whose model makes `call` and then answers, and returns
     /// the call's result as JSON.
-    async fn first_result(
+    pub(super) async fn first_result(
         &self,
-        tools: &dyn McpInterface,
+        tools: &dyn SubAgentTools,
         task_id: &TaskId,
         call: ToolCall,
     ) -> Value {

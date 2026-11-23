@@ -1097,7 +1097,6 @@ dependencies = [
  "opentelemetry",
  "reqwest",
  "rmcp",
- "schemars",
  "sea-query",
  "serde",
  "serde_json",

@@ -3,6 +3,7 @@
 //! caller too.
 
 use coral_db::{Database, QueryExecutor, Transaction, UnixNanos};
+use coral_run::RunId;
 use coral_task::TaskId;
 use coral_workspace::{Principal, WorkspaceId};
 use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Order, Query};
@@ -59,6 +60,14 @@ enum SubAgentThreadMessages {
     OutputTokens,
 }
 
+#[derive(Iden)]
+enum SubAgentRuns {
+    Table,
+    RunId,
+    WorkspaceId,
+    TaskId,
+}
+
 const RUNNING: &str = "running";
 const INTERRUPTED: &str = "interrupted";
 
@@ -94,6 +103,45 @@ pub(crate) async fn insert_sub_agent(
         )
         .to_owned();
     Ok(transaction.execute_change(statement).await? == 1)
+}
+
+/// Records that a Sub-agent's `exec` started the Run, in the Task it works in.
+pub(crate) async fn insert_sub_agent_run(
+    database: &Database,
+    workspace_id: &WorkspaceId,
+    task_id: &TaskId,
+    run_id: &RunId,
+) -> Result<(), coral_db::Error> {
+    let statement = Query::insert()
+        .into_table(SubAgentRuns::Table)
+        .columns([
+            SubAgentRuns::RunId,
+            SubAgentRuns::WorkspaceId,
+            SubAgentRuns::TaskId,
+        ])
+        .values_panic([
+            Expr::val(run_id.as_str()),
+            Expr::val(workspace_id.to_string()),
+            Expr::val(task_id.as_str()),
+        ])
+        .to_owned();
+    database.execute(statement).await.map(drop)
+}
+
+/// Whether a Sub-agent's `exec` started the Run.
+pub(crate) async fn started_by_sub_agent(
+    executor: impl QueryExecutor,
+    workspace_id: &WorkspaceId,
+    run_id: &RunId,
+) -> Result<bool, coral_db::Error> {
+    let statement = Query::select()
+        .column(SubAgentRuns::RunId)
+        .from(SubAgentRuns::Table)
+        .and_where(Expr::col(SubAgentRuns::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SubAgentRuns::RunId).eq(run_id.as_str()))
+        .to_owned();
+    let row: Option<(String,)> = executor.fetch_optional(statement).await?;
+    Ok(row.is_some())
 }
 
 /// Inserts the Sub-agent's running Turn, started at `now` and held until

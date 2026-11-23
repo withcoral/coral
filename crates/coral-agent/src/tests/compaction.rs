@@ -225,7 +225,7 @@ async fn reported_usage_triggers_compaction_across_turns() {
     let sent = result(call(&*tools, &caller, "agent", follow_up).await);
     assert_eq!(sent.get("state"), Some(&json!("running")), "{sent}");
     let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
-    let waited = result(call(&*tools, &caller, "wait", wait).await);
+    let waited = result(call(&*tools, &caller, "agent", wait).await);
     assert_eq!(waited.get("answer"), Some(&json!(ANSWER)), "{waited}");
     assert_eq!(
         requests(&lead).await,
