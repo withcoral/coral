@@ -228,7 +228,7 @@ async fn agents_observe_and_cancel_only_their_own_runs() {
         let other_run = parked(&other).await;
         let own_run = parked(&agent).await;
 
-        for tool in ["wait", "cancel"] {
+        for tool in ["wait", "cancel", "show_required_actions"] {
             for (case, session, run) in [
                 ("an Agent targets a User's Run", &agent, &owner_run),
                 ("an Agent targets another Agent's Run", &agent, &other_run),

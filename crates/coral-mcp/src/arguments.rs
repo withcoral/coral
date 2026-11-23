@@ -51,11 +51,16 @@ const _: () = assert!(EXEC_TOOL_DESCRIPTION.len() <= 2304);
 pub const WAIT_TOOL_DESCRIPTION: &str = concat!(
     "Observe one program run: its authored emissions and logs, current `required_actions`, and `state`. Returns when `required_actions` change, the run ends, or `wait_ms` runs out, with the output that arrived by then. New output alone does not end the wait. Observing consumes nothing, so an earlier cursor reads the same output again.",
     // What to do when the Run waits on a person: write the link,
-    // then keep waiting. `exec` returns the same Run Update, but
+    // show the app, then keep waiting. `exec` returns the same Run Update, but
     // its description keeps the discovery example within its
     // budget, so it gives the first step and points here.
-    " Human handoff: a non-empty `required_actions` means the run waits for a person. For an entry whose `required_actor` is `invoking_user`, write to the user, as reply text before your next tool call, what is asked (`tool`, `provider`, `kind`), the `url` exactly as given, the `run_id` and the `deadline_at`: tool results and your thinking stay hidden from them. Then keep calling `wait` with `wait_ms` 30000 and the latest `next_cursor` until `required_actions` is empty or the run ends. While it holds, the call can report the link as its progress, and the person's decision on that page resumes the run on its own, so do not ask them to report back. For any other `required_actor`, keep calling `wait` the same way. You cannot decide an entry and must not say you did. A connection happens on that page, so never ask for a token, password or account in the chat. A decline or a missed `deadline_at` reaches the program as `coral.ToolError`, and a run past its own deadline ends `timed_out`: report what happened from the run's output, and do not start the program again unless asked. For `account_connection`, ask only when the entry appears."
+    " Human handoff: a non-empty `required_actions` means the run waits for a person. For an entry whose `required_actor` is `invoking_user`, write to the user, as reply text before your next tool call, what is asked (`tool`, `provider`, `kind`), the `url` exactly as given, the `run_id` and the `deadline_at`: tool results and your thinking stay hidden from them. Call `show_required_actions` once with the `run_id`. Then keep calling `wait` with `wait_ms` 30000 and the latest `next_cursor` until `required_actions` is empty or the run ends. While it holds, the call can report the link as its progress, and the person's decision on that page resumes the run on its own, so do not ask them to report back. For any other `required_actor`, keep calling `wait` the same way. You cannot decide an entry and must not say you did. A connection happens on that page, so never ask for a token, password or account in the chat. A decline or a missed `deadline_at` reaches the program as `coral.ToolError`, and a run past its own deadline ends `timed_out`: report what happened from the run's output, and do not start the program again unless asked. For `account_connection`, ask only when the entry appears."
 );
+/// `show_required_actions`' description. It says when to call the tool,
+/// because only this tool renders the app: a client that renders MCP Apps
+/// shows one for every call of a tool that links one, and tells the assistant
+/// that the person already sees the result.
+const SHOW_REQUIRED_ACTIONS_TOOL_DESCRIPTION: &str = "Show the user what one program run waits for from them. In a client that renders MCP Apps, the result is a card for each `required_actions` entry whose `required_actor` is `invoking_user`, with a control that opens its `url`. Call it once when `exec` or `wait` returns such an entry, after you write the `url` as reply text, then keep calling `wait`. Other clients render nothing, so the reply text still carries the link. The card decides nothing.";
 /// `cancel`'s description. A surface that wraps core's reuses it.
 pub const CANCEL_TOOL_DESCRIPTION: &str = "Request cancellation of one program run.";
 
@@ -243,6 +248,21 @@ impl ToolArguments for CancelArguments {
     const NAME: &'static str = "cancel";
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub(crate) struct ShowRequiredActionsArguments {
+    #[schemars(
+        schema_with = "identifier_schema",
+        description = RUN_ID_DESCRIPTION
+    )]
+    pub(crate) run_id: String,
+}
+
+impl ToolArguments for ShowRequiredActionsArguments {
+    const NAME: &'static str = "show_required_actions";
+}
+
 #[derive(Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[schemars(rename_all = "snake_case")]
@@ -359,19 +379,22 @@ pub(crate) fn served_name(name: &str) -> Option<&'static str> {
 
 static TOOLS: std::sync::LazyLock<Vec<Tool>> = std::sync::LazyLock::new(|| {
     vec![
-        shown_as_app(always_loaded(tool::<
-            ExecArguments,
-            crate::projection::ExecResult<'_>,
-        >(
+        always_loaded(tool::<ExecArguments, crate::projection::ExecResult<'_>>(
             EXEC_TOOL_DESCRIPTION,
             mutation_annotations("Execute program", true, true),
-        ))),
-        shown_as_app(always_loaded(tool::<
-            WaitArguments,
-            crate::projection::ObservedRun<'_>,
-        >(
+        )),
+        always_loaded(tool::<WaitArguments, crate::projection::ObservedRun<'_>>(
             WAIT_TOOL_DESCRIPTION,
             read_annotations("Wait for run"),
+        )),
+        // The one tool that links the app. `exec` and `wait` do not: a client
+        // renders the app for every call of a tool that links it.
+        shown_as_app(always_loaded(tool::<
+            ShowRequiredActionsArguments,
+            crate::projection::ShownRequiredActions,
+        >(
+            SHOW_REQUIRED_ACTIONS_TOOL_DESCRIPTION,
+            read_annotations("Show required actions"),
         ))),
         tool::<CancelArguments, crate::projection::ObservedRun<'_>>(
             CANCEL_TOOL_DESCRIPTION,
@@ -410,7 +433,7 @@ fn always_loaded(tool: Tool) -> Tool {
     tool.with_meta(meta)
 }
 
-/// Links a tool's Run Update to the app that shows its Required Actions, in
+/// Links a tool's result to the app that shows a Run's Required Actions, in
 /// a client that renders MCP Apps.
 fn shown_as_app(mut tool: Tool) -> Tool {
     let mut meta = tool.meta.take().unwrap_or_default();
@@ -530,6 +553,7 @@ mod tests {
         let expected = [
             ("exec", Some(json!(true))),
             ("wait", Some(json!(true))),
+            ("show_required_actions", Some(json!(true))),
             ("end_task", Some(json!(true))),
             ("cancel", None),
         ]

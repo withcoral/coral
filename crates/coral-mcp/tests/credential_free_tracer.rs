@@ -87,7 +87,13 @@ const RUN_UPDATE_PAGE_BYTES: usize = 4096;
 /// The Program runtime's own bound on one encoded Program error.
 const PROGRAM_ERROR_MAX_BYTES: usize = 8 * 1024;
 
-const TOOL_NAMES: [&str; 4] = ["exec", "wait", "cancel", "end_task"];
+const TOOL_NAMES: [&str; 5] = [
+    "exec",
+    "wait",
+    "show_required_actions",
+    "cancel",
+    "end_task",
+];
 
 #[derive(Clone, Default)]
 struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
@@ -858,8 +864,10 @@ async fn requests_are_bound_to_host_credential_workspace_and_protocol_window() {
     assert_eq!(structured(&concealed)["code"], "task_not_found");
 }
 
-/// `exec` and `wait` link the MCP App that shows a Run's Required Action, no
-/// other tool does, and the app is the one readable resource.
+/// `show_required_actions` links the MCP App that shows a Run's Required
+/// Action, no other tool does, and the app is the one readable resource. A
+/// client renders the app for every call of a tool that links it, so `exec`
+/// and `wait` must not.
 async fn the_app_is_linked_and_readable(session: &RawSession, version: &ProtocolVersion) {
     const APP: &str = "ui://coral/required-actions";
     let tools = session
@@ -867,16 +875,18 @@ async fn the_app_is_linked_and_readable(session: &RawSession, version: &Protocol
         .await
         .expect("tools/list");
     let tools = tools.get("tools").and_then(Value::as_array).expect("tools");
-    assert!(!tools.is_empty(), "{version}");
+    let mut shown = 0;
     for tool in tools {
         let name = tool.get("name").and_then(Value::as_str).expect("tool name");
         let linked = tool.pointer("/_meta/ui/resourceUri");
-        if name == "exec" || name == "wait" {
+        if name == "show_required_actions" {
             assert_eq!(linked, Some(&json!(APP)), "{version}: {name} shows the app");
+            shown += 1;
         } else {
             assert_eq!(linked, None, "{version}: {name} shows no app");
         }
     }
+    assert_eq!(shown, 1, "{version}: one tool shows the app");
     let app = session
         .result("resources/read", json!({"uri": APP}))
         .await
@@ -906,8 +916,8 @@ async fn the_app_is_linked_and_readable(session: &RawSession, version: &Protocol
 /// Clients add server instructions to the model's context, so they carry the
 /// agent workflow. Embedded output blocks declare the resources capability,
 /// but their URIs are never listed or readable; the one readable resource is
-/// the MCP App that shows a Run's Required Action, which `exec` and `wait`
-/// link and the server declares as an extension.
+/// the MCP App that shows a Run's Required Action, which
+/// `show_required_actions` links and the server declares as an extension.
 #[tokio::test(flavor = "multi_thread")]
 async fn handshakes_carry_instructions_and_only_the_app_is_readable_on_every_version() {
     let tracer = Tracer::start().await;
@@ -928,6 +938,7 @@ async fn handshakes_carry_instructions_and_only_the_app_is_readable_on_every_ver
             "`coral.ToolError`",
             "`coral.search`",
             "`invoking_user`",
+            "`show_required_actions`",
         ] {
             assert!(
                 instructions.contains(expected),
@@ -1836,7 +1847,16 @@ async fn a_failed_namespace_lookup_still_lists_every_tool() {
         .map(|tool| tool.name.to_string())
         .collect::<Vec<_>>();
     names.sort();
-    assert_eq!(names, ["cancel", "end_task", "exec", "wait"]);
+    assert_eq!(
+        names,
+        [
+            "cancel",
+            "end_task",
+            "exec",
+            "show_required_actions",
+            "wait"
+        ]
+    );
     let description = tools
         .iter()
         .find(|tool| tool.name == "exec")
@@ -2422,6 +2442,18 @@ async fn check_raw_human_action(endpoint: &str, task: &str, version: &ProtocolVe
     assert_eq!(observed["required_actions"], update["required_actions"]);
     assert_eq!(observed["events"], json!([]));
     assert_eq!(observed["next_cursor"], update["next_cursor"]);
+    // The tool that shows the app reports what the Run waits for, and none
+    // of its output.
+    let shown = session
+        .tool("show_required_actions", json!({"run_id":update["run_id"]}))
+        .await;
+    assert_eq!(
+        shown.get("structuredContent"),
+        Some(&json!({
+            "run_id":update["run_id"], "state":"running",
+            "required_actions":update["required_actions"]
+        }))
+    );
     let canceled = session
         .tool("cancel", json!({"run_id":update["run_id"]}))
         .await;
@@ -2432,6 +2464,15 @@ async fn check_raw_human_action(endpoint: &str, task: &str, version: &ProtocolVe
     assert_eq!(canceled["required_actions"], json!([]));
     assert_eq!(canceled["events"], update["events"]);
     assert_eq!(canceled["has_more"], false);
+    let shown = session
+        .tool("show_required_actions", json!({"run_id":update["run_id"]}))
+        .await;
+    assert_eq!(
+        shown.get("structuredContent"),
+        Some(&json!({
+            "run_id":update["run_id"], "state":"canceled", "required_actions":[]
+        }))
+    );
 }
 
 async fn check_raw_terminal_states(session: &RawSession, task: &str) {

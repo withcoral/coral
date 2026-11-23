@@ -145,6 +145,13 @@
           animation: none;
         }
       }
+      .empty {
+        margin: 0;
+        padding: 6px 2px;
+        font-size: 12px;
+        line-height: 16px;
+        color: var(--fg-2);
+      }
       .address {
         grid-column: 1 / -1;
         margin: 12px 0 0;
@@ -304,7 +311,13 @@
         const actions = ((update && update.required_actions) || []).filter(
           (action) => action.required_actor === "invoking_user",
         );
-        root.hidden = actions.length === 0;
+        // The host renders the app for every call of its tool, and a frame
+        // with no height reads as a broken app. So a result with no entry
+        // for this person says so.
+        root.hidden = false;
+        if (actions.length === 0) {
+          root.append(element("p", "empty", "No request is waiting for you."));
+        }
         for (const action of actions) {
           const connection = action.kind === "account_connection";
           const provider = action.provider;
@@ -392,6 +405,7 @@
 
       function reportSize() {
         // The body's height follows the cards; the document's never drops below the frame's.
+        // Before the first result, the app shows nothing.
         const height = root.hidden ? 0 : document.body.scrollHeight;
         notify("ui/notifications/size-changed", { width: document.documentElement.scrollWidth, height });
       }

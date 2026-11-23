@@ -25,7 +25,8 @@ pub(crate) fn extensions() -> ExtensionCapabilities {
     extensions
 }
 
-/// Links a tool's result to the app.
+/// Links a tool's result to the app. A client renders the app for every call
+/// of a tool that links it, so only the tool that exists to show it does.
 pub(crate) fn link_tool(meta: &mut MetaObject) {
     meta.0
         .insert("ui".to_owned(), json!({"resourceUri": RESOURCE_URI}));

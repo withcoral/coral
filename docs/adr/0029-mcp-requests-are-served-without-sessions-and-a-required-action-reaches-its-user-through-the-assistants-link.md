@@ -29,7 +29,8 @@ With the session goes the prompt. Coral calls a request that a Run waits on a **
 Action of a Run that a User invoked reaches that User one way, through the assistant's link: the tool call that observes
 the Run returns the Run Update with the Required Action and the link to the page where that User decides it, the
 assistant passes the link and the Run identifier to the person, the waiting call shows the link to a client that asks
-for progress or renders the request as an MCP App, and the person decides on that page, signed in to Reef. An
+for progress, a client that renders MCP Apps shows the request as one, and the person decides on that page, signed in
+to Reef. An
 approval's page shows the exact Tool arguments. Reef is the standing place: the Approvals Page holds every Approval
 Request, the person's account pages their Account Connection Requests, and the Run Status Page every Required Action
 of its Run, from the moment it exists, and the first answer counts wherever it comes from. Coral sends no MCP
@@ -76,12 +77,17 @@ summary. Codex wrote the link as text before its first wait. Making the link the
   Code shows that line on the running call; Codex's terminal and Claude Desktop do not (checked by hand on
   2026-11-04, #2846), so the assistant's text stays the first way and the progress line the second.
 - **A client that renders MCP Apps shows the request itself.** Claude Desktop condenses the assistant's text to one
-  line while tools run and renders no progress, so neither way reached the person there. The observing tools link
-  one `ui://` resource, an app the host renders with the tool result, in place, while the turn goes on: it shows
-  the entries that name the invoking User, what is asked, the waiting Tool where one Tool waits, the Provider and
-  the deadline, with one control that opens the entry's page. It decides nothing, calls no tool and holds no state:
-  the Run Update it receives is its whole input. Every client gets the same declaration; one without the extension
-  sees only the Run Update. Claude Desktop renders it (checked by hand on 2026-11-04, #2846), and the
+  line while tools run and renders no progress, so neither way reached the person there. One tool,
+  `show_required_actions`, links one `ui://` resource, an app the host renders with the tool result, in place, while
+  the turn goes on: it shows the entries that name the invoking User, what is asked, the waiting Tool where one Tool
+  waits, the Provider and the deadline, with one control that opens the entry's page. It decides nothing, calls no
+  tool and holds no state: the tool's result, the Run's Required Actions as the Run Update lists them, is its whole
+  input. The assistant calls the tool once when a Required Action names the invoking User, after it writes the link,
+  and then goes on waiting. The observing tools do not link the app. The extension links an app to a tool, not to
+  one result, so a host renders it for every call of a linked tool, and Claude Desktop then tells the assistant that
+  the person already sees the result (seen on 2026-11-22). Every client gets the same declaration; in one without
+  the extension the tool only repeats the Required Actions. Claude Desktop rendered the app when the observing tools
+  linked it (checked by hand on 2026-11-04, #2846), and the
   [MCP Apps documentation](https://modelcontextprotocol.io/extensions/apps/overview#client-support) lists claude.ai
   and VS Code among its hosts. The link reaches the person when any of the three ways works, and only a client that
   shows none leaves it to the final reply.

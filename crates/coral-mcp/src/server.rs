@@ -16,8 +16,8 @@ use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler};
 
 use crate::arguments::{
-    self, CancelArguments, EndTaskArguments, ExecArguments, TaskOutcomeArgument, ToolArguments,
-    WaitArguments,
+    self, CancelArguments, EndTaskArguments, ExecArguments, ShowRequiredActionsArguments,
+    TaskOutcomeArgument, ToolArguments, WaitArguments,
 };
 use crate::interface::{McpCaller, McpInterface, Progress, ToolCallError};
 use crate::projection::{self, Reporter, ToolFailure};
@@ -186,7 +186,8 @@ impl ServerHandler for McpServer {
     }
 }
 
-/// Core's tool surface: `exec`, `wait`, `cancel` and `end_task`.
+/// Core's tool surface: `exec`, `wait`, `show_required_actions`, `cancel` and
+/// `end_task`.
 pub(crate) struct CoreInterface {
     modules: McpModules,
 }
@@ -295,6 +296,11 @@ impl CoreTools {
             WaitArguments::NAME => {
                 let arguments = arguments::parse::<WaitArguments>(request.arguments)?;
                 return self.wait(arguments, progress).await;
+            }
+            ShowRequiredActionsArguments::NAME => {
+                let arguments =
+                    arguments::parse::<ShowRequiredActionsArguments>(request.arguments)?;
+                self.show_required_actions(arguments).await
             }
             CancelArguments::NAME => {
                 let arguments = arguments::parse::<CancelArguments>(request.arguments)?;
@@ -472,6 +478,22 @@ impl CoreTools {
                 observation,
             )
             .await
+    }
+
+    /// Reads what the Run waits for now, without waiting. It reports none of
+    /// the Run's output, which stays with `wait`.
+    async fn show_required_actions(
+        &self,
+        arguments: ShowRequiredActionsArguments,
+    ) -> Result<CallToolResult, ToolCallError> {
+        let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
+        let observation = RunObservation::immediate(None, 1).map_err(invalid_input)?;
+        let update = self
+            .observe(&run_id, &observation)
+            .await
+            .map_err(run_failure)?;
+        projection::shown_required_actions(&update, &self.runtime.modules.human_interface)
+            .map_err(ToolCallError::Tool)
     }
 
     async fn cancel(&self, arguments: CancelArguments) -> Result<CallToolResult, ToolCallError> {
