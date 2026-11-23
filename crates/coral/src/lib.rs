@@ -435,7 +435,8 @@ async fn wait_for_shutdown_signal_or_server_exit(
     }
 }
 
-/// Warns when the private gRPC listener is reachable from another machine.
+/// Warns when `listener`, bound to `address`, is reachable from another
+/// machine.
 fn exposure_warning(
     listener: &str,
     address: SocketAddr,
