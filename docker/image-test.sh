@@ -31,9 +31,10 @@ run_executor_token=coral-image-test-run-executor-token-0123456789
 containers=
 volumes=
 networks=
-# Set by new_volume/start for the caller. These helpers record what they create
-# so cleanup can reach it, which means they must run in this shell.
+# Set by new_volume/new_network/start for the caller. These helpers record what
+# they create so cleanup can reach it, which means they must run in this shell.
 volume=
+network=
 container=
 
 cleanup() {
