@@ -51,8 +51,8 @@ impl Refusal {
     }
 }
 
-/// The error that a Chat Completions server sends with a refusal. Servers wrap
-/// it in `error`, send `error` as plain text, or send the error bare.
+/// The error that a model server sends with a refusal. Servers wrap it in
+/// `error`, send `error` as plain text, or send the error bare.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ErrorBody {
@@ -88,6 +88,7 @@ const TOO_LONG_REASONS: &[&str] = &[
 /// the test beside this file.
 const TOO_LONG_PHRASES: &[&str] = &[
     "prompt is too long",                     // Anthropic
+    "exceed context limit",                   // Anthropic (input + max_tokens)
     "prompt too long",                        // z.ai, Ollama
     "prompt exceeds max length",              // z.ai
     "input is too long for requested model",  // Amazon Bedrock
@@ -131,6 +132,8 @@ mod tests {
             // A bare error with a number for its code, as vLLM sends.
             (400, r#"{"object":"error","message":"This model's maximum context length is 4096 tokens. However, you requested 5000 tokens.","type":"BadRequestError","param":null,"code":400}"#.to_owned()),
             (400, r#"{"error":"prompt too long; exceeded max context length by 10 tokens"}"#.to_owned()),
+            (400, r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 213462 tokens > 200000 maximum"}}"#.to_owned()),
+            (400, r#"{"type":"error","error":{"type":"invalid_request_error","message":"input length and `max_tokens` exceed context limit: 188000 + 16384 > 200000, decrease input length or `max_tokens` and try again"}}"#.to_owned()),
             (400, wrapped("prompt is too long: 213462 tokens > 200000 maximum")),
             (400, wrapped("Requested token count exceeds the model's maximum context length of 131072 tokens")),
             (400, wrapped("the request exceeds the available context size, try increasing it")),
@@ -150,6 +153,7 @@ mod tests {
             ),
             // Words that another bad request can use, such as one about the reply's length.
             (400, wrapped("max_tokens: too many tokens requested")),
+            (400, r#"{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: 100000 > 64000, which is the maximum allowed number of output tokens for claude-sonnet-4-6"}}"#.to_owned()),
             (401, wrapped("prompt is too long")),
             (400, wrapped("Unknown tool `nothing`")),
             (400, "prompt is too long".to_owned()),

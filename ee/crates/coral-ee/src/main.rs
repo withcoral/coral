@@ -18,9 +18,13 @@ fn main() -> ExitCode {
 
 /// What this binary adds to Coral, each part asking `edition` when used.
 fn extensions(edition: coral_edition::EditionCheck) -> coral_app::Extensions {
-    let secret_store_kinds = coral_secret_store::SecretStoreKinds::default().with(Arc::new(
-        coral_ee_secret_stores::KvV2Kind::new(edition.clone()),
-    ));
+    let secret_store_kinds = coral_secret_store::SecretStoreKinds::default()
+        .with(Arc::new(coral_ee_secret_stores::KvV2Kind::new(
+            edition.clone(),
+        )))
+        .with(Arc::new(
+            coral_ee_secret_stores::AwsSecretsManagerKind::new(edition.clone()),
+        ));
     let enterprise_features = coral_edition::EnterpriseFeatures::default()
         .with(coral_ee_secret_stores::EXTERNAL_SECRET_STORES);
     coral_app::Extensions {
@@ -32,6 +36,15 @@ fn extensions(edition: coral_edition::EditionCheck) -> coral_app::Extensions {
 
 #[cfg(test)]
 mod tests {
+    /// Config can name each Secret Store kind this binary adds.
+    #[test]
+    fn registers_its_secret_store_kinds() {
+        let extensions = extensions(EditionCheck::new(Arc::new(Edition::Community)));
+        for kind in ["kv-v2", "aws-secrets-manager"] {
+            assert!(extensions.secret_store_kinds.get(kind).is_some(), "{kind}");
+        }
+    }
+
     use coral_edition::{Edition, EditionCheck, EditionInspection, FeatureState};
 
     use super::*;

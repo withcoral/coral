@@ -54,6 +54,7 @@ fn each_tool_reads_as_written() {
                 CANCEL_PARAMETERS
             ),
             ("search", SEARCH_DESCRIPTION, SEARCH_PARAMETERS),
+            ("end_task", END_TASK_DESCRIPTION, END_TASK_PARAMETERS),
         ]
     );
 }
@@ -75,6 +76,7 @@ fn each_schema_is_json_and_names_the_arguments_the_tools_read() {
             &[][..],
             &["query", "provider", "limit", "offset", "paths", "types"][..],
         ),
+        ("end_task", &["task_id", "outcome"][..], &["feedback"][..]),
     ] {
         let tool = TOOLS
             .iter()
@@ -90,6 +92,41 @@ fn each_schema_is_json_and_names_the_arguments_the_tools_read() {
         );
         assert_eq!(schema.required, required, "{name}");
     }
+}
+
+// Catches: an identifier's pattern or length in a schema that drifts from the
+// identifiers Coral issues and accepts. The schemas copy `coral-identifier`'s
+// rules as the model reads them.
+#[test]
+fn each_identifier_in_a_schema_follows_coral_identifier() {
+    let max_length = u64::try_from(coral_identifier::MAX_LENGTH).ok();
+    let mut checked = Vec::new();
+    for tool in &TOOLS {
+        let schema: Schema = serde_json::from_str(tool.parameters).expect("JSON");
+        for (argument, property) in &schema.properties {
+            let Some(pattern) = property.get("pattern") else {
+                continue;
+            };
+            let at = format!("{}.{argument}", tool.name);
+            assert_eq!(
+                pattern.as_str(),
+                Some(coral_identifier::SCHEMA_PATTERN),
+                "{at}"
+            );
+            let length = property.get("maxLength").and_then(Value::as_u64);
+            assert_eq!(length, max_length, "{at}");
+            checked.push(at);
+        }
+    }
+    assert_eq!(
+        checked,
+        [
+            "exec.task_id",
+            "wait.run_id",
+            "cancel.run_id",
+            "end_task.task_id"
+        ]
+    );
 }
 
 /// The parts of a tool's argument schema that name its arguments.
@@ -127,6 +164,7 @@ const SECTIONS: &str = "\
 - exec: run one TypeScript async-function body as a new run. Include this thread's task_id.
 - wait: read a run whose state is `running` or that has more output.
 - cancel: stop a run.
+- end_task: record the outcome once the work is done or cannot continue, then reply with your answer.
 - A tool result over 20 KiB is truncated.
 
 ## Programs
@@ -231,6 +269,32 @@ const CANCEL_PARAMETERS: &str = r#"{
     }
   },
   "required": ["run_id"],
+  "additionalProperties": false
+}"#;
+
+const END_TASK_DESCRIPTION: &str = "Record whether your work succeeded or failed. The lead's Task stays open: the lead ends it. Then reply with your answer, with no tool call.";
+
+const END_TASK_PARAMETERS: &str = r#"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "task_id": {
+      "description": "The task_id of the Task this call continues.",
+      "type": "string",
+      "pattern": "^([a-z]{1,20}(-[a-z]{1,20}){3,4}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
+      "maxLength": 104
+    },
+    "outcome": {
+      "description": "Whether the work succeeded.",
+      "type": "string",
+      "enum": ["success", "failure"]
+    },
+    "feedback": {
+      "description": "Optional notes on how the work went.",
+      "type": ["string", "null"]
+    }
+  },
+  "required": ["task_id", "outcome"],
   "additionalProperties": false
 }"#;
 

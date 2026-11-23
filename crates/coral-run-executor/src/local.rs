@@ -74,13 +74,16 @@ pub struct LocalRunExecutors {
 impl LocalRunExecutors {
     /// Starts the supervisor, which runs at most `limit` children at once.
     /// Each child opens its pull stream in `streams`, and is admitted
-    /// through `credentials`.
+    /// through `credentials`. When a child that said `Hello` exits, its Run
+    /// Executor id, as its `Hello` gave it, goes to `exited`: the Coral
+    /// Instance then releases that child's Runs at once (ADR 0027).
     #[must_use]
     pub fn start(
         starter: impl ProcessStarter,
         limit: usize,
         credentials: Credentials,
         streams: PullStreams,
+        exited: Option<mpsc::UnboundedSender<String>>,
     ) -> Self {
         let (requests, requested) = mpsc::channel(1);
         let stopped = Arc::new(Notify::new());
@@ -89,6 +92,7 @@ impl LocalRunExecutors {
             limit,
             credentials,
             streams,
+            exited,
             children: Vec::new(),
             wanted: false,
             backoff: FIRST_BACKOFF,
@@ -135,6 +139,7 @@ struct Supervisor<S> {
     limit: usize,
     credentials: Credentials,
     streams: PullStreams,
+    exited: Option<mpsc::UnboundedSender<String>>,
     children: Vec<Child>,
     /// Work waited when it last asked, and no room has shown since.
     wanted: bool,
@@ -203,6 +208,12 @@ impl<S: ProcessStarter> Supervisor<S> {
                 );
                 if child.hello.is_none() && !child.retiring {
                     self.start_failed(now);
+                }
+                // A child that said no Hello held nothing. Its credential
+                // names it even when its stream went before a tick saw it.
+                if let (Some(exited), Some(id)) = (&self.exited, child.credential.run_executor_id())
+                {
+                    let _gone = exited.send(id);
                 }
                 // Dropping the child forgets its verifier.
                 return false;

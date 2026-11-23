@@ -2,29 +2,24 @@
 
 //! The `HashiCorp` Vault and `OpenBao` KV version 2 adapter, with `AppRole` login.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use coral_outbound::OutboundUrlPolicyError;
 use reqwest::StatusCode;
 use reqwest::header::HeaderValue;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex;
 use url::Url;
-use zeroize::{Zeroize as _, Zeroizing};
+use zeroize::Zeroizing;
 
 use coral_secret_store::{
     Error, InvalidSetting, KeyField, ReferenceForm, Secret, SecretReference, SecretStore,
 };
 
-/// How long one request to a store may take.
-pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// The largest answer Coral reads from a store.
-const BODY_LIMIT: usize = 1 << 20;
+use crate::store_http::{Fields, read_body};
+pub use crate::store_http::{REQUEST_TIMEOUT, StoreAddress};
 
 /// How long reads share a failed login or renewal instead of each trying their own.
 const RETRY_AFTER: Duration = Duration::from_secs(5);
@@ -52,32 +47,6 @@ pub struct AppRole {
     pub role_id: String,
     /// The role's secret ID.
     pub secret_id: Secret,
-}
-
-/// A store's origin. This checks its shape only: the destination policy decides
-/// whether Coral may reach it, and over which scheme, for every request.
-pub struct StoreAddress(Url);
-
-impl StoreAddress {
-    /// # Errors
-    /// Returns [`InvalidSetting`] for anything but an http or https origin.
-    pub fn parse(value: &str) -> Result<Self, InvalidSetting> {
-        Url::parse(value)
-            .ok()
-            .filter(|url| {
-                matches!(url.scheme(), "http" | "https")
-                    && url.host().is_some()
-                    && url.username().is_empty()
-                    && url.password().is_none()
-                    && url.path() == "/"
-                    && url.query().is_none()
-                    && url.fragment().is_none()
-            })
-            .map(Self)
-            .ok_or(InvalidSetting::new(
-                "must be an http or https origin, without a path, query or credentials",
-            ))
-    }
 }
 
 /// A mount path of one or more `/`-separated segments.
@@ -460,35 +429,6 @@ async fn auth_token(response: reqwest::Response, now: Instant) -> Result<Token, 
     let answer: AuthAnswer =
         serde_json::from_slice(&body).map_err(|_error| Error::MalformedResponse)?;
     Token::new(&answer.auth, now)
-}
-
-async fn read_body(response: reqwest::Response) -> Result<Zeroizing<Vec<u8>>, Error> {
-    coral_outbound::read_bounded_body(response, BODY_LIMIT)
-        .await
-        .map(Zeroizing::new)
-        .map_err(|error| match error {
-            OutboundUrlPolicyError::BodyTooLarge { .. } => Error::MalformedResponse,
-            _ => Error::Unreachable,
-        })
-}
-
-/// An entry's fields, wiped when dropped: the answer holds every value in the
-/// entry, including those nobody asked for.
-#[derive(Deserialize)]
-struct Fields(BTreeMap<String, Value>);
-
-impl Drop for Fields {
-    fn drop(&mut self) {
-        fn wipe(value: &mut Value) {
-            match value {
-                Value::String(text) => text.zeroize(),
-                Value::Array(items) => items.iter_mut().for_each(wipe),
-                Value::Object(fields) => fields.values_mut().for_each(wipe),
-                Value::Null | Value::Bool(_) | Value::Number(_) => {}
-            }
-        }
-        self.0.values_mut().for_each(wipe);
-    }
 }
 
 #[derive(Deserialize)]

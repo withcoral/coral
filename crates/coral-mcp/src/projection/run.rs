@@ -73,6 +73,18 @@ pub(crate) enum Reporter<'a> {
     Observer,
 }
 
+/// What `show_required_actions` reports: what a Run waits for from a
+/// person, and nothing of its output. The app reads `required_actions`.
+#[derive(Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ShownRequiredActions {
+    #[schemars(schema_with = "crate::arguments::identifier_schema")]
+    run_id: String,
+    state: State,
+    /// Empty when the Run waits for no person or has ended.
+    required_actions: Vec<Action>,
+}
+
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum State {
@@ -82,6 +94,19 @@ enum State {
     Canceled,
     TimedOut,
     Interrupted,
+}
+
+impl From<RunState> for State {
+    fn from(state: RunState) -> Self {
+        match state {
+            RunState::Running => Self::Running,
+            RunState::Succeeded => Self::Succeeded,
+            RunState::Failed => Self::Failed,
+            RunState::Canceled => Self::Canceled,
+            RunState::TimedOut => Self::TimedOut,
+            RunState::Interrupted => Self::Interrupted,
+        }
+    }
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -513,19 +538,8 @@ fn project_page<'a, Task: Serialize>(
     let result = RunUpdateResult {
         task,
         run_id: page.run_id().to_string(),
-        state: match page.state() {
-            RunState::Running => State::Running,
-            RunState::Succeeded => State::Succeeded,
-            RunState::Failed => State::Failed,
-            RunState::Canceled => State::Canceled,
-            RunState::TimedOut => State::TimedOut,
-            RunState::Interrupted => State::Interrupted,
-        },
-        required_actions: page
-            .required_actions()
-            .iter()
-            .map(|action| required_action(action, human_interface))
-            .collect(),
+        state: page.state().into(),
+        required_actions: required_actions(page.required_actions(), human_interface),
         events: Vec::new(),
         next_cursor: page.next_cursor().to_string(),
         has_more: page.has_more(),
@@ -537,6 +551,19 @@ fn project_page<'a, Task: Serialize>(
             .map(|trace| trace.as_str().to_string()),
     };
     Page::new(result, final_block, events, count)
+}
+
+/// Projects what `update`'s Run waits for from a person, for the app that
+/// shows it.
+pub(crate) fn shown_required_actions(
+    update: &RunUpdate,
+    human_interface: &crate::HumanInterfaceUrl,
+) -> Result<CallToolResult, ToolFailure> {
+    success(ShownRequiredActions {
+        run_id: update.run_id().to_string(),
+        state: update.state().into(),
+        required_actions: required_actions(update.required_actions(), human_interface),
+    })
 }
 
 /// One line for the person while a call holds: what the Run waits for from
@@ -565,6 +592,16 @@ pub(crate) fn handoff_progress(
             None => format!("{url} · connect your account"),
         },
     })
+}
+
+fn required_actions(
+    actions: &[RequiredAction],
+    human_interface: &crate::HumanInterfaceUrl,
+) -> Vec<Action> {
+    actions
+        .iter()
+        .map(|action| required_action(action, human_interface))
+        .collect()
 }
 
 fn required_action(action: &RequiredAction, human_interface: &crate::HumanInterfaceUrl) -> Action {

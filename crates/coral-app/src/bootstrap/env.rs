@@ -79,6 +79,16 @@ pub(crate) fn run_executor_environment() -> Vec<(OsString, OsString)> {
         .collect()
 }
 
+/// The environment AWS credential lookup reads, taken once here: the
+/// `coral-aws` identities a Secret Store builds read no other.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "coral-app is the single owner of process environment access."
+)]
+pub(crate) fn aws_environment() -> coral_aws::Environment {
+    coral_aws::Environment::snapshot(std::env::vars_os())
+}
+
 /// Whether a local Run Executor gets the variable `name`. Windows ignores
 /// the case of a variable's name.
 fn reaches_run_executor(name: &str, windows: bool) -> bool {
@@ -170,7 +180,7 @@ impl Launch {
             // The launching binary supplies these, never the environment.
             extensions: super::runtime::Extensions::default(),
             mcp_interface_factory: None,
-            compile_in_process: false,
+            run_executor_program: None,
             migration_report: None,
             // The host's clock: only a test supplies another.
             clock: None,

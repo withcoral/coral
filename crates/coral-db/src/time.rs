@@ -89,6 +89,13 @@ impl UnixNanos {
         let nanos = i128::from(self.0) - i128::from(earlier.0);
         u64::try_from(nanos).map_or(Duration::ZERO, Duration::from_nanos)
     }
+
+    /// The instant as a `SystemTime`, for a library that takes one. An
+    /// instant before 1970 gives 1970.
+    #[must_use]
+    pub fn to_system_time(self) -> SystemTime {
+        UNIX_EPOCH + u64::try_from(self.0).map_or(Duration::ZERO, Duration::from_nanos)
+    }
 }
 
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
@@ -147,6 +154,15 @@ fn instant_of(host_time: SystemTime) -> UnixNanos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_instant_converts_to_a_system_time_from_1970() {
+        assert_eq!(
+            UnixNanos::new(1_500).to_system_time(),
+            UNIX_EPOCH + Duration::from_nanos(1_500)
+        );
+        assert_eq!(UnixNanos::new(-1).to_system_time(), UNIX_EPOCH);
+    }
 
     #[test]
     fn an_instant_moves_by_a_span_and_refuses_one_past_what_a_row_holds() {

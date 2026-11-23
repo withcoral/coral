@@ -6,8 +6,8 @@ use std::convert::Infallible;
 use std::time::Duration;
 
 use coral_db::Transaction;
-use coral_run_executor::PullStreams;
 use coral_run_executor::wire::v1::TakenRun;
+use coral_run_executor::{LocalRunExecutors, PullStreams};
 use coral_telemetry::safe;
 use tokio::time::Instant;
 
@@ -80,17 +80,31 @@ impl Pace {
 impl RunModule {
     /// Takes waiting Runs for `streams`, this Coral Instance's pull streams,
     /// for as long as it is polled (ADR 0027). Nothing starts a taken Run
-    /// until its Run Executor opens its Run stream.
-    pub async fn take_runs(&self, streams: PullStreams) -> Infallible {
-        self.take_loop(streams, Timing::PRODUCTION).await
+    /// until its Run Executor opens its Run stream. While Runs wait and no
+    /// stream has room, it asks `children`, the local child supervisor, for
+    /// room, which keeps the limit and the back-off.
+    pub async fn take_runs(
+        &self,
+        streams: PullStreams,
+        children: Option<LocalRunExecutors>,
+    ) -> Infallible {
+        self.take_loop(streams, children, Timing::PRODUCTION).await
     }
 
-    pub(crate) async fn take_loop(&self, streams: PullStreams, timing: Timing) -> Infallible {
+    pub(crate) async fn take_loop(
+        &self,
+        streams: PullStreams,
+        children: Option<LocalRunExecutors>,
+        timing: Timing,
+    ) -> Infallible {
         let mut changes = None;
         let mut pace = Pace::new(timing);
+        // A change rang since the children were last asked for room.
+        let mut rang_since_ask = true;
         loop {
             if changes.is_none() {
                 changes = self.database.subscribe_changes().ok();
+                rang_since_ask |= changes.is_none();
             }
             let now = Instant::now();
             match pace.due(streams.has_room(), now) {
@@ -102,10 +116,38 @@ impl RunModule {
                     () = tokio::time::sleep_until(due) => {}
                     () = rung(&mut changes) => pace.ring(),
                 },
-                // New room is an ask, as the change signal is. A change
-                // while no stream has room waits in the subscription.
+                // New room is an ask, as the change signal is. While no
+                // stream has room, a Run that waits asks the children for
+                // room, at most once a backstop and only after a change:
+                // an acceptance, a take and a released Run each write, and
+                // the supervisor keeps the ask until room opens. A compile,
+                // which comes before every acceptance, has asked for the
+                // first child already.
                 None => {
-                    streams.room_signalled(timing.backstop).await;
+                    if let Some(children) = &children
+                        && std::mem::take(&mut rang_since_ask)
+                    {
+                        match run_repository::any_waiting(&self.database).await {
+                            Ok(true) => children.request_room(),
+                            Ok(false) => {}
+                            Err(error) => {
+                                // The next backstop reads again.
+                                rang_since_ask = true;
+                                tracing::warn!(
+                                    error.type = safe::kind(error.code()),
+                                    "waiting Runs could not be read"
+                                );
+                            }
+                        }
+                    }
+                    let room = streams.room_signalled(timing.backstop);
+                    tokio::pin!(room);
+                    loop {
+                        tokio::select! {
+                            () = &mut room => break,
+                            () = rung(&mut changes) => rang_since_ask = true,
+                        }
+                    }
                     pace.ring();
                 }
             }

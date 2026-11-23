@@ -11,7 +11,9 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
+coral-aws.workspace = true
 coral-credentials.workspace = true
+coral-db.workspace = true
 coral-outbound.workspace = true
 serde.workspace = true
 serde_path_to_error.workspace = true

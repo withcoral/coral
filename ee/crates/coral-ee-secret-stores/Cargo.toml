@@ -14,9 +14,12 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
+coral-aws.workspace = true
+coral-db.workspace = true
 coral-edition.workspace = true
 coral-outbound = { workspace = true, features = ["transport"] }
 coral-secret-store.workspace = true
+http.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -26,6 +29,7 @@ zeroize = { workspace = true, features = ["serde"] }
 
 [dev-dependencies]
 coral-edition = { workspace = true, features = ["test-fixtures"] }
+coral-test-support.workspace = true
 toml.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 wiremock.workspace = true

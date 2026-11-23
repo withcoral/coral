@@ -7,20 +7,20 @@ import { runWaitingForApproval } from './waiting-run.ts'
 
 test('An MCP client on 2026-07-28 is handed the link, decides in Reef, and waits through the Coral Instance that does not own the Run', async (context) => {
   const instances = coralInstances()
-  const owner = 1
+  let owner!: number
   const requests = await instances.during(() =>
     withOwner(context, async ({ page, step, target, accessToken }) => {
       const api = managementClients(accessToken)
       let waiting!: Awaited<ReturnType<typeof runWaitingForApproval>>
       await step(
-        'exec on the second Coral Instance returns the required action, never a prompt',
+        'exec through the second Coral Instance returns the required action, never a prompt',
         async () => {
-          waiting = await runWaitingForApproval(page, target, accessToken, owner, '2026-07-28')
+          waiting = await runWaitingForApproval(page, target, accessToken, 1, '2026-07-28')
+          owner = waiting.owner
           const [action] = waiting.paused.required_actions
           expect(action.url).toContain(`/${waiting.approval}`)
           expect(action.tool).toBe('coral.addProvider')
           expect(action.provider).toEqual(expect.any(String))
-          expect(await instances.holder(waiting.run)).toBe(owner)
         },
       )
       await step('Approve the call on the Approvals Page', async () => {

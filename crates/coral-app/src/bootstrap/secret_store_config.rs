@@ -171,7 +171,7 @@ fn entries<'a>(
         }
         if let Some(factory) = store.factory {
             factory
-                .validate(&store.settings, named)
+                .validate(&store.name, &store.settings, named)
                 .map_err(|error| rejected(&store.label, &error))?;
         }
         stores.push(store);
@@ -211,12 +211,8 @@ impl SecretStoreDefinitions {
 
     /// Builds the stores. No request leaves here, so an unreachable store
     /// does not stop Coral from starting; a missing secret does.
-    pub(super) fn build(
-        &self,
-        policy: coral_outbound::DestinationPolicy,
-        env: &EnvReader,
-    ) -> Result<SecretStores, AppError> {
-        build(&self.named, &self.raw, &self.kinds, policy, env)
+    pub(super) fn build(&self, environment: &BuildEnvironment) -> Result<SecretStores, AppError> {
+        build(&self.named, &self.raw, &self.kinds, environment)
     }
 }
 
@@ -224,19 +220,14 @@ fn build(
     named: &NamedVariables,
     raw: &[toml::Value],
     kinds: &SecretStoreKinds,
-    policy: coral_outbound::DestinationPolicy,
-    env: &EnvReader,
+    environment: &BuildEnvironment,
 ) -> Result<SecretStores, AppError> {
-    let kinds = with_core_kinds(kinds, Arc::clone(env));
-    let environment = BuildEnvironment {
-        policy,
-        env: &**env,
-    };
+    let kinds = with_core_kinds(kinds, Arc::clone(&environment.env));
     let mut stores = Vec::with_capacity(raw.len());
     for entry in entries(named, raw, &kinds)? {
         let store: Arc<dyn SecretStore> = if let Some(factory) = entry.factory {
             factory
-                .build(&entry.settings, &environment)
+                .build(&entry.name, &entry.settings, environment)
                 .map_err(|error| rejected(&entry.label, &error))?
         } else {
             tracing::warn!(
@@ -258,7 +249,8 @@ mod tests {
     use coral_outbound::DestinationPolicy;
     use coral_secret_store::{
         BuildEnvironment, Error, NamedVariables, SecretReference, SecretStore, SecretStoreFactory,
-        SecretStoreKind, SecretStoreKinds, SecretStores, SettingError, StoreSettings, StoreStatus,
+        SecretStoreKind, SecretStoreKinds, SecretStoreName, SecretStores, SettingError,
+        StoreSettings, StoreStatus,
     };
     use coral_test_support::InMemorySecretStore;
     use serde::Deserialize;
@@ -285,6 +277,7 @@ mod tests {
         }
         fn validate(
             &self,
+            _name: &SecretStoreName,
             settings: &StoreSettings,
             _named: &NamedVariables,
         ) -> Result<(), SettingError> {
@@ -296,8 +289,9 @@ mod tests {
         }
         fn build(
             &self,
+            _name: &SecretStoreName,
             settings: &StoreSettings,
-            environment: &BuildEnvironment<'_>,
+            environment: &BuildEnvironment,
         ) -> Result<Arc<dyn SecretStore>, SettingError> {
             let settings: TestSettings = settings.decode()?;
             environment.secret("secret_env", &settings.secret_env)?;
@@ -330,10 +324,11 @@ mod tests {
         kinds: &SecretStoreKinds,
         env: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
     ) -> Result<SecretStores, AppError> {
-        validated_with(raw, kinds)?.secret_stores_from(
+        validated_with(raw, kinds)?.secret_stores_from(&BuildEnvironment::new(
             DestinationPolicy::default(),
-            &(Arc::new(move |name: &str| Ok(env(name))) as coral_secret_store::EnvReader),
-        )
+            Arc::new(move |name: &str| Ok(env(name))),
+            Arc::new(coral_test_support::ManualClock::starting_now()),
+        ))
     }
 
     /// The `env` kind is Community: every build has it, beside what the

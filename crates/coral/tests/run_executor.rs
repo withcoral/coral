@@ -75,6 +75,39 @@ async fn a_local_child_says_hello_with_its_stdin_token_and_retires_when_stdin_cl
     assert!(status.success(), "{status}");
 }
 
+/// Catches: a local child that outlives the Coral that started it, holding
+/// a Run no Coral will end.
+#[tokio::test]
+async fn a_local_child_exits_once_its_parent_is_gone() {
+    let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
+    let mut child = spawn(&coral, |command| {
+        command.arg("--token-stdin");
+    });
+    let mut stdin = child.stdin.take().expect("the Run Executor's stdin");
+    stdin
+        .write_all(b"local-child-token\n")
+        .await
+        .expect("write the token");
+    let mut call = coral.next_call().await;
+    coral.take("run-1", "claim-1");
+    let run = coral.next_run().await;
+
+    // Coral's exit closes the child's stdin and its listener.
+    drop(stdin);
+    assert_eq!(call.rooms.recv().await, Some(0), "it retires");
+    assert!(
+        child.try_wait().expect("poll the Run Executor").is_none(),
+        "it holds the Run while Coral answers"
+    );
+    coral.stop().await;
+    run.fail(tonic::Status::unavailable("Coral is gone")).await;
+    let status = tokio::time::timeout(Duration::from_secs(30), child.wait())
+        .await
+        .expect("the Run Executor exits")
+        .expect("wait for the Run Executor");
+    assert!(!status.success(), "{status}");
+}
+
 /// Catches: a Run Executor that exits on SIGTERM while it holds a Run, or
 /// one that never exits once that Run ends.
 #[cfg(unix)]
@@ -237,7 +270,7 @@ async fn coral_starts_a_local_child_that_opens_its_pull_stream_and_exits_when_it
         },
         children: children.clone(),
     };
-    let supervisor = LocalRunExecutors::start(starter, 1, credentials, streams.clone());
+    let supervisor = LocalRunExecutors::start(starter, 1, credentials, streams.clone(), None);
 
     supervisor.request_room();
     let opened = async {

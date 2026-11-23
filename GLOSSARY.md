@@ -527,7 +527,7 @@ but `env` is part of External Secret Stores.
 _Avoid_: vault, credential vault, external credential store
 
 **Secret Reference**: The address of one Credential Field's value in a Secret Store granted to the Account's Workspace:
-the store, a path, and a key where the store has keys. The value stays in the store and Coral never stores a copy.
+the store, a path, and a key where the entry has keys. The value stays in the store and Coral never stores a copy.
 _Avoid_: vault path, secret pointer, linked secret
 
 **Credential Route**: The Provider setting that determines whether Invocations use no credentials (`none`), its single
@@ -788,7 +788,8 @@ A Required Action of a Run that a User invoked reaches that User one way:
 - The observing tool call returns it with the link to the page where the User decides it (an Approval Request's own
   address on the Approvals Page, or the person's account page for the Provider for a connection request).
 - The assistant passes the link on.
-- The waiting call shows it to a client that asks for progress or renders it as an MCP App.
+- The waiting call shows it to a client that asks for progress.
+- A client that renders MCP Apps shows it as one, when the assistant calls the tool that links the app.
 
 Reef holds the request from the moment it exists, so a page is never a second way in, and the assistant has no path to
 decide. Coral sends no MCP elicitation for a Required Action, and no notification apart from the waiting call's progress

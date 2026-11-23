@@ -145,6 +145,13 @@
           animation: none;
         }
       }
+      .empty {
+        margin: 0;
+        padding: 6px 2px;
+        font-size: 12px;
+        line-height: 16px;
+        color: var(--fg-2);
+      }
       .address {
         grid-column: 1 / -1;
         margin: 12px 0 0;
@@ -300,11 +307,18 @@
 
       function render(result) {
         root.replaceChildren();
-        const update = result && result.structuredContent;
-        const actions = ((update && update.required_actions) || []).filter(
-          (action) => action.required_actor === "invoking_user",
-        );
-        root.hidden = actions.length === 0;
+        const update = result && !result.isError && result.structuredContent;
+        const listed = update && Array.isArray(update.required_actions) ? update.required_actions : null;
+        // A cancelled call or a failure says nothing about what waits, so
+        // the app shows nothing for it.
+        root.hidden = listed === null;
+        const actions = (listed || []).filter((action) => action.required_actor === "invoking_user");
+        // The host renders the app for every call of its tool, and a frame
+        // with no height reads as a broken app. So a result with no entry
+        // for this person says so.
+        if (listed !== null && actions.length === 0) {
+          root.append(element("p", "empty", "No request is waiting for you."));
+        }
         for (const action of actions) {
           const connection = action.kind === "account_connection";
           const provider = action.provider;
@@ -392,6 +406,7 @@
 
       function reportSize() {
         // The body's height follows the cards; the document's never drops below the frame's.
+        // Before the first result, and for a cancelled or failed call, the app shows nothing.
         const height = root.hidden ? 0 : document.body.scrollHeight;
         notify("ui/notifications/size-changed", { width: document.documentElement.scrollWidth, height });
       }

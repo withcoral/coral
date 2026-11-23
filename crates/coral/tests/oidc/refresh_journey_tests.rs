@@ -69,7 +69,7 @@ impl Journey {
         let clock = ManualClock::starting_now();
         let runtime = coral_app::start_runtime(coral_app::Launch {
             config_dir: Some(temp.path().to_owned()),
-            compile_in_process: true,
+            run_executor_program: Some(env!("CARGO_BIN_EXE_coral").into()),
             clock: Some(Arc::new(clock.clone())),
             ..coral_app::Launch::default()
         })

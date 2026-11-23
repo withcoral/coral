@@ -78,7 +78,10 @@ impl Harness {
 
     async fn call(&self, name: &str, arguments: &Value) -> String {
         let arguments = arguments.to_string();
-        self.tools.call(&self.caller, name, &arguments).await.0
+        self.tools
+            .call(&self.caller, name, &arguments)
+            .await
+            .content
     }
 
     /// How many attempts `task_id` has recorded: one for each `exec` that
@@ -166,6 +169,53 @@ async fn a_task_other_than_the_leads_is_refused_and_starts_nothing() {
     assert_eq!(harness.attempts(&harness.caller.task_id).await, 0);
 }
 
+// Catches: an `end_task` that answers in other fields than core's, or that
+// ends a Task or records anything on one: the lead owns its Task, and only
+// the lead ends it.
+#[tokio::test]
+async fn end_task_answers_as_cores_does_and_ends_no_task() {
+    let harness = Harness::new().await;
+    let lead = harness.caller.task_id.as_str();
+    let other = harness.task().await;
+    let wrong_task = format!("Nothing was recorded. Your Task is \"{lead}\": pass that task_id.");
+
+    let rows = [
+        (
+            "success",
+            json!({"task_id": lead, "outcome": "success"}),
+            json!({"task_id": lead, "outcome": "success"}),
+        ),
+        (
+            "failure, with feedback",
+            json!({"task_id": lead, "outcome": "failure", "feedback": "No invoices."}),
+            json!({"task_id": lead, "outcome": "failure"}),
+        ),
+        (
+            "another Task",
+            json!({"task_id": other.as_str(), "outcome": "success"}),
+            json!({"error": {"code": "wrong_task", "message": wrong_task}}),
+        ),
+    ];
+
+    for (case, arguments, expected) in rows {
+        let text = harness.call("end_task", &arguments).await;
+        assert_eq!(text, expected.to_string(), "{case}");
+    }
+    let unknown = json!({"task_id": lead, "outcome": "done"});
+    let text = harness.call("end_task", &unknown).await;
+    let refused: Value = serde_json::from_str(&text).unwrap();
+    let code = refused.pointer("/error/code");
+    assert_eq!(code, Some(&json!("invalid_arguments")), "{text}");
+    for task_id in [&harness.caller.task_id, &other] {
+        let caller = &harness.caller;
+        let open = harness
+            .tasks
+            .check_open(&caller.principal, &caller.workspace_id, task_id);
+        open.await.unwrap();
+        assert_eq!(harness.attempts(task_id).await, 0, "{task_id:?}");
+    }
+}
+
 // Catches: a long result cut inside a character, or cut without saying how
 // much is gone.
 #[test]
@@ -194,7 +244,7 @@ async fn failures_show_only_what_is_safe() {
         (
             "unknown tool",
             harness.call("find", &json!({})).await,
-            json!({"error": {"code": "unknown_tool", "message": "There is no tool named \"find\". Call exec, wait, cancel or search."}}),
+            json!({"error": {"code": "unknown_tool", "message": "There is no tool named \"find\". Call exec, wait, cancel, search or end_task."}}),
         ),
         (
             "Program that does not compile",

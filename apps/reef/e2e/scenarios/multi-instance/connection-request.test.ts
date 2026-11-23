@@ -12,7 +12,7 @@ import { withOwner } from '../../support/topology.ts'
 
 test('An account connected through one Coral Instance continues a Run that the other owns', async (context) => {
   const instances = coralInstances()
-  const owner = 0
+  let owner!: number
   const requests = await instances.during(() =>
     withOwner(context, async ({ page, step, target, accessToken }) => {
       const api = managementClients(accessToken)
@@ -24,28 +24,32 @@ test('An account connected through one Coral Instance continues a Run that the o
       let run = ''
       let update!: RunUpdate
       let program!: ReturnType<typeof programRunner>
-      await step('A Run on the first Coral Instance waits for you to connect', async () => {
-        workspace = await createWorkspace(accessToken, `Connections ${crypto.randomUUID()}`)
-        await addProviderFromFile(
-          page,
-          workspace,
-          openApiDocument(
-            'Connections',
-            { listEntries: { summary: 'List entries', method: 'post' } },
-            {},
-          ),
-          'connections',
-          { authentication: 'Bearer token', account: 'own-later' },
-        )
-        program = programRunner(page, target, workspace, { waitMs: 100 })
-        run = await instances.startOn(owner, async () => {
-          update = (await program.exec('return await coral.providers.connections.listEntries({});'))
-            .structuredContent
-          return `workspaces/${workspace}/runs/${update.run_id}`
-        })
-        await expect.poll(pendingConnections, { timeout: 15_000 }).toBe(1)
-        expect(await instances.holder(run)).toBe(owner)
-      })
+      await step(
+        'A Run started through the first Coral Instance waits for you to connect',
+        async () => {
+          workspace = await createWorkspace(accessToken, `Connections ${crypto.randomUUID()}`)
+          await addProviderFromFile(
+            page,
+            workspace,
+            openApiDocument(
+              'Connections',
+              { listEntries: { summary: 'List entries', method: 'post' } },
+              {},
+            ),
+            'connections',
+            { authentication: 'Bearer token', account: 'own-later' },
+          )
+          program = programRunner(page, target, workspace, { waitMs: 100 })
+          run = await instances.startOn(0, async () => {
+            update = (
+              await program.exec('return await coral.providers.connections.listEntries({});')
+            ).structuredContent
+            return `workspaces/${workspace}/runs/${update.run_id}`
+          })
+          await expect.poll(pendingConnections, { timeout: 15_000 }).toBe(1)
+          owner = await instances.holder(run)
+        },
+      )
       await step('Connect from Accounts through the other Coral Instance', async () => {
         const sent = await instances.during(() =>
           instances.on(instances.other(owner), async () => {

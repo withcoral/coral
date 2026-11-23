@@ -273,8 +273,13 @@ async fn a_call_with_no_room_starts_a_local_child_that_serves_it() {
     let streams = PullStreams::default();
     let credentials = Credentials::default();
     let starter = FakeStarter::default();
-    let children =
-        LocalRunExecutors::start(starter.clone(), 1, credentials.clone(), streams.clone());
+    let children = LocalRunExecutors::start(
+        starter.clone(),
+        1,
+        credentials.clone(),
+        streams.clone(),
+        None,
+    );
     let caller = PullStreamCompiler::new(streams.clone(), Some(children));
     let waiting = held_later(&caller);
 

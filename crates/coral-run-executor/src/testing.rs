@@ -157,6 +157,7 @@ fn run_executor_config_for(max_runs_held: u32, run_limits: RunLimits) -> RunExec
     RunExecutorConfig {
         coral_address: "http://127.0.0.1:1".parse().expect("an address"),
         token: Token::new(RUN_EXECUTOR_TOKEN.to_owned()).expect("a valid token"),
+        local_child: false,
         max_runs_held,
         compiler_heap_bytes: coral_v8::IsolateLimits::defaults().compiler_heap_bytes(),
         run_limits,
@@ -247,6 +248,29 @@ impl ScriptedCoral {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind a loopback port");
+        Self::serve(listener, script)
+    }
+
+    /// Stops serving, as a Coral process that exits: its listener closes,
+    /// so a dial opens no connection, and every held pull stream ends.
+    pub async fn stop(&mut self) {
+        self.server.abort();
+        // The listener closes once the aborted task is gone.
+        drop((&mut self.server).await);
+        self.release();
+    }
+
+    /// Serves `script` again at the address it served before
+    /// [`Self::stop`], as a Coral that starts again.
+    pub async fn restart(&mut self, script: impl IntoIterator<Item = Answer>) {
+        let address = self.address.trim_start_matches("http://");
+        let listener = TcpListener::bind(address)
+            .await
+            .expect("bind the port again");
+        *self = Self::serve(listener, script);
+    }
+
+    fn serve(listener: TcpListener, script: impl IntoIterator<Item = Answer>) -> Self {
         let address = format!("http://{}", listener.local_addr().expect("local address"));
         let (calls_tx, calls) = mpsc::unbounded_channel();
         let (release, released) = watch::channel(());

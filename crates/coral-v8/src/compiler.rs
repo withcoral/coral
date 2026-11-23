@@ -105,8 +105,6 @@ impl ProgramCompiler {
             .name("coral-typescript-compiler".to_string())
             .spawn(move || {
                 let _dispatch = tracing::dispatcher::set_default(&dispatch);
-                #[cfg(feature = "test-support")]
-                let _counted = crate::testing::CountedThread::start();
                 let mut compiler = match CompilerIsolate::new(isolate_limits) {
                     Ok(compiler) => Some(compiler),
                     Err(error) => {

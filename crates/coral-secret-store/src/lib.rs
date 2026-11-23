@@ -188,27 +188,29 @@ pub trait SecretStoreFactory: Send + Sync {
     /// The kind this factory builds.
     fn kind(&self) -> &SecretStoreKind;
 
-    /// Checks one store's settings without reading the environment. `named`
-    /// holds the variables the rest of config names, for a kind that reads
-    /// the environment to stay clear of.
+    /// Checks the settings of the store called `name` without reading the
+    /// environment. `named` holds the variables the rest of config names, for
+    /// a kind that reads the environment to stay clear of.
     ///
     /// # Errors
     /// Returns the field and reason a setting is unusable, never its value.
     fn validate(
         &self,
+        name: &SecretStoreName,
         settings: &StoreSettings,
         named: &NamedVariables,
     ) -> Result<(), SettingError>;
 
-    /// Builds one store. Sends nothing, so an unreachable store does not stop
-    /// Coral from starting.
+    /// Builds the store called `name`. Sends nothing, so an unreachable store
+    /// does not stop Coral from starting.
     ///
     /// # Errors
     /// Returns the field and reason a setting is unusable, never its value.
     fn build(
         &self,
+        name: &SecretStoreName,
         settings: &StoreSettings,
-        environment: &BuildEnvironment<'_>,
+        environment: &BuildEnvironment,
     ) -> Result<Arc<dyn SecretStore>, SettingError>;
 }
 
@@ -529,6 +531,7 @@ mod tests {
         }
         fn validate(
             &self,
+            _name: &SecretStoreName,
             _settings: &StoreSettings,
             _named: &NamedVariables,
         ) -> Result<(), SettingError> {
@@ -536,8 +539,9 @@ mod tests {
         }
         fn build(
             &self,
+            _name: &SecretStoreName,
             _settings: &StoreSettings,
-            _environment: &BuildEnvironment<'_>,
+            _environment: &BuildEnvironment,
         ) -> Result<Arc<dyn SecretStore>, SettingError> {
             Ok(Arc::new(Refusing))
         }

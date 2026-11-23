@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use tracing::Instrument as _;
 
-use super::{Error, RunningTurn, SubAgents, TURN_LEASE, TurnFailure, TurnState};
+use super::{Error, RunningTurn, SubAgents, TURN_LEASE, ThreadEntry, TurnFailure, TurnState};
 use crate::model::Message;
 use crate::repository;
 use crate::run_tools::Caller;
@@ -50,7 +50,7 @@ impl SubAgents {
     pub(super) async fn read_messages(
         &self,
         turn: &RunningTurn,
-        thread: &mut Vec<Message>,
+        thread: &mut Vec<ThreadEntry>,
     ) -> Result<(), TurnFailure> {
         let position = i64::try_from(thread.len()).unwrap_or(i64::MAX);
         let read = async {
@@ -67,7 +67,7 @@ impl SubAgents {
         let message = read
             .await
             .map_err(|error| TurnFailure::internal(error.code()))?;
-        thread.extend(message);
+        thread.extend(message.map(ThreadEntry::plain));
         Ok(())
     }
 

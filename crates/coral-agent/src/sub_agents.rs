@@ -14,7 +14,7 @@ use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use futures_util::future::join_all;
 use tracing::Instrument as _;
 
-use crate::model::{Message, ModelCall, ModelClient, ModelError, ToolCall};
+use crate::model::{Message, ModelCall, ModelClient, ModelError, ToolCall, Usage};
 use crate::run_tools::{Caller, RunTools};
 use crate::telemetry::{TurnEnd, TurnTrace};
 use crate::{prompt, repository, search};
@@ -241,7 +241,7 @@ impl SubAgents {
             .map_err(|error| TurnFailure::internal(error.code()))?;
         let system = prompt::system_prompt(&providers);
         let mut thread =
-            repository::thread(&*self.database, &caller.workspace_id, &turn.sub_agent_id)
+            repository::thread_entries(&*self.database, &caller.workspace_id, &turn.sub_agent_id)
                 .await
                 .map_err(|error| TurnFailure::internal(error.code()))?;
         for _model_call in 0..MODEL_CALLS_PER_TURN {
@@ -273,8 +273,8 @@ impl SubAgents {
                     &call.name,
                     &call.arguments,
                 );
-                let (content, run_id) = turn.trace.tool_call(&call.name, result).await;
-                call.result(content, run_id)
+                let output = turn.trace.tool_call(&call.name, result).await;
+                call.result(output.content, output.is_error, output.run_id)
             }));
             let results = Message::tool_results(results.await);
             self.add(turn, &mut thread, results, None).await?;
@@ -288,7 +288,7 @@ impl SubAgents {
     async fn add(
         &self,
         turn: &RunningTurn,
-        thread: &mut Vec<Message>,
+        thread: &mut Vec<ThreadEntry>,
         message: Message,
         call: Option<&ModelCall>,
     ) -> Result<(), TurnFailure> {
@@ -305,7 +305,10 @@ impl SubAgents {
         if !stored.map_err(|error| TurnFailure::internal(error.code()))? {
             return Err(TurnFailure::Canceled);
         }
-        thread.push(message);
+        thread.push(ThreadEntry {
+            message,
+            usage: call.and_then(|call| call.usage),
+        });
         Ok(())
     }
 
@@ -437,6 +440,23 @@ pub(crate) struct Turn {
     pub(crate) id: String,
     pub(crate) state: TurnState,
     pub(crate) lease_expires_at: UnixNanos,
+}
+
+/// One message in a Sub-agent's thread, with the token usage the model
+/// reported when it wrote that message, if any.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ThreadEntry {
+    pub(crate) message: Message,
+    pub(crate) usage: Option<Usage>,
+}
+
+impl ThreadEntry {
+    pub(crate) const fn plain(message: Message) -> Self {
+        Self {
+            message,
+            usage: None,
+        }
+    }
 }
 
 /// A Turn that this Coral Instance runs, and the caller its tools act as.

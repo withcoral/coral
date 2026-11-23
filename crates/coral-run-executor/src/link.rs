@@ -86,6 +86,11 @@ pub struct RunExecutorConfig {
     pub coral_address: CoralAddress,
     /// The credential every call carries.
     pub token: Token,
+    /// Coral started it as a local child, its token down stdin. Once it is
+    /// ordered to retire, a dial that opens no connection means its parent
+    /// is gone:
+    /// it exits at once, and Coral's sweeper ends the Runs it holds.
+    pub local_child: bool,
     /// The most Runs it holds at once: its free room while it holds none.
     pub max_runs_held: u32,
     /// What each Run runs within.
@@ -106,18 +111,23 @@ pub enum RunError {
     /// Coral refused the token, so the Run Executor retired.
     #[error("Coral refused the Run Executor's token")]
     Refused,
+    /// The local child retired and its parent's address opened no
+    /// connection: the Coral that started it is gone.
+    #[error("the Coral that started this local Run Executor is gone")]
+    ParentGone,
 }
 
 /// Warms the Program Compiler, then holds the link to Coral until it has
 /// retired: once `retire` completes, Coral refuses its token, or a Program
 /// misses its stop, it reports no room and returns after its last Run ends.
-/// Serves the gRPC health service on `health`, when given, until then.
+/// A retired local child returns at once when its parent is gone. Serves
+/// the gRPC health service on `health`, when given, until then.
 ///
 /// # Errors
 ///
 /// Returns a compiler that cannot start, before any dial, the health
-/// listener's failure, or [`RunError::Refused`] once retired after Coral
-/// refused the token.
+/// listener's failure, [`RunError::Refused`] once retired after Coral
+/// refused the token, or [`RunError::ParentGone`].
 pub async fn run(
     config: RunExecutorConfig,
     health: Option<TcpListener>,
@@ -145,7 +155,7 @@ pub async fn run(
     };
     let retire = async {
         retire.await;
-        link.runs.retire();
+        link.runs.order_to_retire();
         pending::<std::convert::Infallible>().await
     };
     tokio::select! {
@@ -243,6 +253,9 @@ pub(crate) enum End {
     Moved,
     /// Anything else: redial after the back-off.
     Failed,
+    /// The dial opened no connection: redial after the back-off, unless a
+    /// retired local child's parent is gone.
+    Unreachable,
     /// Coral refused the token: retire, and dial no more.
     Refused,
     /// The Run Executor retired and holds nothing: exit.
@@ -252,6 +265,7 @@ pub(crate) enum End {
 struct Link {
     endpoint: Endpoint,
     token: Token,
+    local_child: bool,
     hello: Hello,
     compiler: Arc<dyn CompilerClient>,
     /// Whether a pull stream Coral welcomed is open.
@@ -283,6 +297,9 @@ pub(crate) struct Holding {
     streams: u32,
     /// The Run Executor retires.
     retiring: bool,
+    /// The order to retire came from outside, a closed stdin or a signal,
+    /// not from an isolate that missed its stop.
+    ordered: bool,
 }
 
 impl Holding {
@@ -298,6 +315,15 @@ impl Holding {
 }
 
 impl Runs {
+    /// The order to retire from outside the Run Executor.
+    fn order_to_retire(&self) {
+        self.holding.send_if_modified(|holding| {
+            let changed = !(holding.retiring && holding.ordered);
+            (holding.retiring, holding.ordered) = (true, true);
+            changed
+        });
+    }
+
     /// Orders the Run Executor to retire.
     pub(crate) fn retire(&self) {
         self.holding
@@ -387,6 +413,7 @@ impl Link {
         Self {
             endpoint,
             token: config.token,
+            local_child: config.local_child,
             hello,
             compiler,
             linked,
@@ -412,7 +439,8 @@ impl Link {
             .saturating_sub(compiling)
     }
 
-    /// Opens the pull stream again each time it ends, until it has retired.
+    /// Opens the pull stream again each time it ends, until it has retired,
+    /// or until a retired local child's parent is gone.
     async fn hold(&self) -> Result<(), RunError> {
         let mut backoff = Backoff::default();
         loop {
@@ -434,7 +462,13 @@ impl Link {
                     self.runs.drained().await;
                     return Err(RunError::Refused);
                 }
-                End::Moved | End::Failed => {}
+                End::Unreachable if self.local_child && self.runs.holding.borrow().ordered => {
+                    // Its stdin closed and nothing listens at its parent's
+                    // address: no Coral is left to end its Runs here.
+                    tracing::warn!("the Coral that started this Run Executor is gone; exiting");
+                    return Err(RunError::ParentGone);
+                }
+                End::Moved | End::Failed | End::Unreachable => {}
             }
             if let Some(delay) = backoff.after(&end) {
                 tokio::select! {
@@ -468,7 +502,7 @@ impl Link {
             () = self.runs.drained() => return Err(End::Retired),
         };
         let Ok(channel) = connected else {
-            return Err(End::Failed);
+            return Err(End::Unreachable);
         };
         let mut client = LinkServiceClient::with_interceptor(channel, Bearer(self.token.clone()))
             .max_decoding_message_size(MESSAGE_MAX_BYTES)

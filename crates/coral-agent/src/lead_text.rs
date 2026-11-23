@@ -6,7 +6,7 @@ Delegate data retrieval to Coral's agents. An agent reads the user's connected p
 
 One brief per question. An agent observes only your messages. Include the user's question verbatim, today's date, and, if you have one, a guess at where to look first, stated as a guess.
 
-An agent's turn ends when it sends a message without a tool call: an answer, or a report of where it is blocked. Reply in one or two sentences with `agent`, `sub_agent_id` and `message`; a message sent during a turn is read before the agent's next step. `wait` on the `sub_agent_id` until it ends; it returns its `state` (`running`, `needs_action`, `completed`, `failed`, `canceled` or `interrupted`), its `answer` once `completed`, and its `steps`. A step that started a run holds the agent's intent and that run's `run_id`; to check the step, call `wait` with that `run_id`.";
+An agent's turn ends when it sends a message without a tool call: an answer, or a report of where it is blocked. Reply in one or two sentences with `agent`, `sub_agent_id` and `message`; a message sent during a turn is read before the agent's next step. `wait` on the `sub_agent_id` until it ends; it returns its `state` (`running`, `needs_action`, `completed`, `failed`, `canceled` or `interrupted`), its `answer` once `completed`, the `outcome` (`success` or `failure`) it recorded for its work if it recorded one, and its `steps`. A step that started a run holds the agent's intent and that run's `run_id`; to check the step, call `wait` with that `run_id`.";
 
 /// Core's server instructions, with the steps of a lead that can hand work to a
 /// Sub-agent as their Workflow section.

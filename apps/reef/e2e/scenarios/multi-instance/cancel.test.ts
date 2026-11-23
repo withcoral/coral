@@ -7,15 +7,18 @@ import { runWaitingForApproval } from './waiting-run.ts'
 
 test('Reef cancels through one Coral Instance a Run that the other owns, over its one connection', async (context) => {
   const instances = coralInstances()
-  const owner = 1
+  let owner!: number
   const requests = await instances.during(() =>
     withOwner(context, async ({ page, step, target, accessToken }) => {
       const api = managementClients(accessToken)
       let waiting!: Awaited<ReturnType<typeof runWaitingForApproval>>
-      await step('A Run on the second Coral Instance waits for your approval', async () => {
-        waiting = await runWaitingForApproval(page, target, accessToken, owner)
-        expect(await instances.holder(waiting.run)).toBe(owner)
-      })
+      await step(
+        'A Run started through the second Coral Instance waits for your approval',
+        async () => {
+          waiting = await runWaitingForApproval(page, target, accessToken, 1)
+          owner = waiting.owner
+        },
+      )
       await step('Open the Run in Reef through the Coral Instance that owns it', async () => {
         await instances.on(owner, async () => {
           await page.goto(`/${waiting.run}`)
@@ -30,7 +33,7 @@ test('Reef cancels through one Coral Instance a Run that the other owns, over it
             .getByRole('dialog', { name: 'Cancel this run?' })
             .getByRole('button', { name: 'Cancel run', exact: true })
             .click()
-          // The owner ends the Run within its five-second shutdown grace.
+          // The Coral Instance that holds the Run ends it once the cancellation commits.
           await page
             .getByRole('dialog', { name: 'Activity details' })
             .locator('header')

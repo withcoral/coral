@@ -186,6 +186,7 @@ impl OutputContracts {
                     "next_cursor",
                     "has_more",
                 ],
+                "show_required_actions" => &["run_id", "state", "required_actions"],
                 "end_task" => &["task_id", "outcome"],
                 _ => panic!("unexpected public tool {name}"),
             }
