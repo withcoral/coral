@@ -47,5 +47,6 @@ coral-test-support.workspace = true
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 opentelemetry.workspace = true
 rmcp.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber.workspace = true
 wiremock.workspace = true

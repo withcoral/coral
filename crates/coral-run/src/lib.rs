@@ -160,7 +160,7 @@ pub use approval_history::{
 };
 mod approval_repository;
 mod builtin;
-pub use builtin::{PrivateTools, SubAgentCaller, SubAgentError, SubAgentTools};
+pub use builtin::{PrivateTools, RunStop, SubAgentCaller, SubAgentError, SubAgentTools};
 mod enforcement;
 mod engine;
 mod error;

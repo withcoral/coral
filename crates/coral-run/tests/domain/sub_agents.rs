@@ -17,7 +17,7 @@ impl crate::SubAgentTools for Echo {
         caller: SubAgentCaller<'_>,
         arguments: &AgentArguments,
     ) -> Result<AgentResult, SubAgentError> {
-        let AgentArguments::Start { message } = arguments else {
+        let AgentArguments::Start { message, .. } = arguments else {
             let (field, reason) = ("sub_agent_id", "names no agent of yours");
             return Err(SubAgentError::InvalidInput { field, reason });
         };

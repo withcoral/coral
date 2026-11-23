@@ -14,21 +14,33 @@ use crate::{ToolHints, ToolPresentation};
 /// which acts with that Principal's permissions.
 pub(super) const NEEDS: WorkspaceAction = WorkspaceAction::Inspect;
 
+/// How long a call waits unless the Program says. `exec` itself waits 30
+/// seconds, so a Program of one call ends within one `exec`.
+const DEFAULT_WAIT_MS: u64 = 20_000;
+/// The longest wait a call may ask for: as long as a Turn lasts.
+const MAX_WAIT_MS: u64 = 600_000;
+
+/// When and how to hand work over. `exec`'s description shows it to a lead
+/// whose Workspace enables the Tool, so it stays short.
 const AGENT_GUIDANCE: &str = "\
-Add providers, change policy and save custom tools yourself. You remain responsible for the answer.
-
-Pass message alone to brief a new agent: one brief per question. An agent observes only your \
-messages. Include the user's question verbatim, today's date, and, if you have one, a guess at \
-where to look first, stated as a guess.
-
-The call returns when the agent's turn ends, when one of its runs newly needs a person, when this \
-run is asked to stop, or after 10 minutes. A turn ends when the agent sends a message without a \
-tool call: an answer, or a report of where it is blocked. The turn goes on when this run ends. \
-While state is running or needs_action, call again with sub_agent_id and the latest next_cursor \
-as cursor. To reply, pass sub_agent_id and a message of one or two sentences; a message sent \
-during a turn is read before the agent's next step. A step that started a run holds the agent's \
-intent and that run's run_id; to check the step, call wait with that run_id. A program that an \
-agent started cannot call this tool.";
+Hand data retrieval to one of Coral's agents with `coral.agent`. Brief it in `message`, one brief \
+per question: it reads only your messages. Give the user's question verbatim and, if you have \
+one, a guess at where to look, stated as a guess. You remain responsible for the answer.
+```ts
+let agent = (await coral.agent({ message })).data;
+let seen = 0;
+while (agent.state === \"running\") {
+  if (agent.steps.length > seen) await coral.emit(agent.steps.slice(seen));
+  seen = agent.steps.length;
+  agent = (await coral.agent({ sub_agent_id: agent.sub_agent_id, cursor: agent.next_cursor })).data;
+}
+return agent;
+```
+A call waits `wait_ms`, 20 seconds by default, for the turn to end or for one of its runs to need \
+a person. With `needs_action`, write each `url` in `required_actions` to the user, then call again. \
+To reply, pass `sub_agent_id` and `message`. A turn ends after 10 minutes: reply to continue it. \
+Canceling this run cancels the agent, as `coral.cancelAgent` does. To check a step, call `wait` \
+with its `run_id`.";
 
 pub(super) fn agent_definition() -> Definition {
     Definition {
@@ -85,6 +97,10 @@ pub enum AgentArguments {
         /// Everything the new agent is to do. It reads nothing else.
         #[schemars(length(min = 1))]
         message: String,
+        /// The longest this call waits, in milliseconds. Default 20000. 0 returns at once.
+        #[serde(default, deserialize_with = "super::present")]
+        #[schemars(with = "u64", range(max = MAX_WAIT_MS))]
+        wait_ms: Option<u64>,
     },
     /// Replies to an agent you started, or waits on it again.
     Continue {
@@ -100,11 +116,15 @@ pub enum AgentArguments {
         #[serde(default, deserialize_with = "super::present")]
         #[schemars(with = "String")]
         cursor: Option<String>,
+        /// The longest this call waits, in milliseconds. Default 20000. 0 returns at once.
+        #[serde(default, deserialize_with = "super::present")]
+        #[schemars(with = "u64", range(max = MAX_WAIT_MS))]
+        wait_ms: Option<u64>,
     },
 }
 
 const AGENT_TAKES: &str = "pass `message` to brief a new agent, or `sub_agent_id` with an \
-                           optional `message` and `cursor`";
+                           optional `message` and `cursor`; `wait_ms` is at most 600000";
 
 impl AgentArguments {
     /// Reads the arguments: the shape first, then the message.
@@ -116,14 +136,26 @@ impl AgentArguments {
         let Some(Ok(read)) = read else {
             return Err(vec![ArgumentProblem::new("", AGENT_TAKES)]);
         };
-        let message = match &read {
-            Self::Start { message } => Some(message),
-            Self::Continue { message, .. } => message.as_ref(),
+        let (message, wait_ms) = match &read {
+            Self::Start { message, wait_ms } => (Some(message), wait_ms),
+            Self::Continue {
+                message, wait_ms, ..
+            } => (message.as_ref(), wait_ms),
         };
         if message.is_some_and(|message| message.trim().is_empty()) {
             return Err(vec![ArgumentProblem::new("message", "must not be blank")]);
         }
+        if wait_ms.is_some_and(|wait_ms| wait_ms > MAX_WAIT_MS) {
+            return Err(vec![ArgumentProblem::new("wait_ms", "is at most 600000")]);
+        }
         Ok(read)
+    }
+
+    /// How long the call waits for the Turn.
+    #[must_use]
+    pub fn wait(&self) -> std::time::Duration {
+        let (Self::Start { wait_ms, .. } | Self::Continue { wait_ms, .. }) = self;
+        std::time::Duration::from_millis(wait_ms.unwrap_or(DEFAULT_WAIT_MS))
     }
 }
 
@@ -237,8 +269,8 @@ pub(super) mod tests {
 
     pub(in super::super) fn valid_agent_arguments() -> Vec<Value> {
         vec![
-            json!({ "message": "Count the open invoices." }),
-            json!({ "sub_agent_id": "a1", "message": "Only this year.", "cursor": "t1" }),
+            json!({ "message": "Count the open invoices.", "wait_ms": 0 }),
+            json!({ "sub_agent_id": "a1", "message": "Only this year.", "cursor": "t1", "wait_ms": 600_000 }),
         ]
     }
 

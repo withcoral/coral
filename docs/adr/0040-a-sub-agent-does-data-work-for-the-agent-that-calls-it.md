@@ -76,8 +76,13 @@ Coral provider, which a Program calls as it calls `coral.addCustomTool`:
 | `coral.cancelAgent({ sub_agent_id })`              | cancels that Sub-agent's Turn and its unfinished Runs           |
 
 `coral.agent` returns when the Turn ends, when a Run of the Turn newly needs a person, when the calling Run is asked to
-stop, or after 10 minutes. The Turn does not belong to the calling Run, and goes on when that Run stops. Each call
-returns the `sub_agent_id`, the Turn's state, its steps, and its answer, failure or required actions.
+stop, or after `wait_ms`. The wait is 20 seconds unless the Program passes one, so that a Program of one call ends
+within the 30 seconds that `exec` waits, and the lead holds the `sub_agent_id` and the steps so far. Each call returns
+the `sub_agent_id`, the Turn's state, its steps, and its answer, failure or required actions.
+
+The Turn does not belong to the calling Run, and goes on when that Run ends. A cancellation is the exception: when
+someone cancels a Run while its `coral.agent` call waits, Coral cancels that Sub-agent too. A Turn lasts at most 10
+minutes, so a Program that waits on one sees it end: a Run lives 15.
 
 Core owns the contract, as for every Built-in Tool. `coral-catalog` declares both Tools, and `coral-run` performs them
 through a trait, `SubAgentTools`, that the Sub-agent's crate implements. The `coral` process, which every binary runs,
@@ -216,7 +221,9 @@ never receive core's MCP instructions or core's MCP tool descriptions, which cha
 The text that the lead reads is core's. The description of `coral.agent` in the catalog says when and how to hand work
 over. Core's MCP instructions serve a second set of Workflow steps to a caller whose Workspace enables the Tool, and
 step 2 shows the call: `return await coral.agent({ message })`. Each handshake reads the Workspace's Tool policy, so a
-Workspace that disables the Tool, or sets it to approval, reads core's own steps.
+Workspace that disables the Tool, or sets it to approval, reads core's own steps. For the same caller, `exec`'s
+description carries the Tool's guidance: how to brief a Sub-agent, and a Program that watches one and publishes its
+steps with `coral.emit`. A client that shows a lead no instructions still shows it that.
 
 The model's tools include an `end_task` of the Sub-agent's own with core's arguments, which Sailfish calls before nearly
 every answer. It ends nothing, since the lead owns the Task, and the lead reads the outcome it records beside the
@@ -369,8 +376,11 @@ section, and the URL in it comes from an organization.
 
 **What we accepted**
 
-- The lead needs a Program to reach a Sub-agent. A Run lasts at most 15 minutes, so a call waits at most 10, and the
-  lead calls again for a longer Turn. A call holds one slot of its Run's Fan-out Limit while it waits.
+- The lead needs a Program to reach a Sub-agent, and each look at a running Turn is a Run. A call holds one slot of
+  its Run's Fan-out Limit while it waits.
+- A Turn ends after 10 minutes, with its unfinished Runs. The lead replies to continue the work in a new Turn.
+- A cancellation reaches the Sub-agent only while a `coral.agent` call of the canceled Run waits. A Run canceled
+  between two calls leaves its Sub-agent running, for at most the rest of the Turn's 10 minutes.
 - A client reads the instructions when it connects. After an owner changes the Tool's policy, a connected lead keeps
   the text it read until it connects again. The Tool itself follows the policy at once.
 - The record that stops a Sub-agent's Program from calling `coral.agent` is written just after its Run is accepted. A
@@ -606,7 +616,8 @@ protocol and model wrote it. It never includes reasoning in the response to the 
 
 When the lead's Program calls `coral.agent`, the Coral Instance that runs the Program starts the Turn as a background
 task. The call waits for the Turn, then returns the `sub_agent_id`, the Sub-agent's steps and its answer. If the Turn
-outlasts the call, the lead calls `coral.agent` again with the `sub_agent_id`.
+outlasts the call's wait, the call returns it as running, and the lead calls `coral.agent` again with the
+`sub_agent_id`.
 
 During a Turn, the Sub-agent repeats two steps. It sends the conversation to the model. It then runs the tool calls in
 the model's reply and adds their results to the conversation. The Turn ends when the model replies without a tool
@@ -634,7 +645,8 @@ flowchart TD
 | Situation | What happens |
 | --- | --- |
 | A Program that a Sub-agent started calls `coral.agent` or `coral.cancelAgent` | The call fails as `tool_unavailable`, and nothing starts or stops. |
-| The Run that called `coral.agent` stops or times out | The call returns, and the Turn goes on. The lead calls `coral.agent` again with the `sub_agent_id`. |
+| The Run that called `coral.agent` ends or times out | The call returns, and the Turn goes on. The lead calls `coral.agent` again with the `sub_agent_id`. |
+| Someone cancels the Run while its `coral.agent` call waits | Coral cancels the Sub-agent as `coral.cancelAgent` does: its Turn and its unfinished Runs. |
 | The lead calls `coral.cancelAgent` with the `sub_agent_id`, on any Coral Instance | The call records the cancellation in the database and closes the tool calls that the Turn left without results. It also cancels the unfinished Runs that the Sub-agent's stored conversation names, whether the Turn is running or has ended. A running Turn stops at its next step, and the Coral Instance that runs it cancels the Runs it holds that are not stored yet. If that Coral Instance stops first, those Runs keep running. |
 | The lead ends the Task, or can no longer use it | Before each model call and each lease renewal, a running Turn checks that its caller can still use the Task. If the Task has ended, or the caller can no longer see the Task or its Workspace, the Turn stops as canceled. A database error does not stop it. The Runs it started keep running: ending a Task cancels nothing already accepted (ADR 0006). |
 | The model replies with no text and no tool call | The Turn fails. The failure tells the lead to send the message again. |
@@ -645,11 +657,13 @@ flowchart TD
 | The conversation outgrows the model and no `context_window` is set | The model server refuses the request, and the Turn fails with a failure that says the conversation is too long. Coral does not read the window out of the refusal's text. |
 | The model server returns HTTP 429 or a 5xx status, or the request fails to send | The client retries three times. If the request still fails, the Turn fails with the model server's error, and the lead can send the message again. |
 | The Turn makes 60 model calls without finishing | The Turn fails. The error tells the lead to send a narrower message. |
+| The Turn runs for 10 minutes | The Turn fails, and Coral cancels the Runs it started that have not ended. The failure tells the lead to reply to continue. The reply starts a new Turn with the stored conversation. |
 | The Coral Instance shuts down | Each running Turn marks itself as interrupted when shutdown begins. Coral does not wait for those writes: a Turn that has not written before the process exits is marked by the next request that reads it, once its lease has expired. |
 | The Coral Instance stops without shutting down | The Turn's lease in the database expires. The next request that reads the Turn marks it as interrupted. |
 
-A Run that an interrupted or failed Turn started continues under its Run Owner. Only the lead's `coral.cancelAgent`
-cancels the Runs of a Turn. A Turn itself does not use a Run Owner or a Run Executor, because those run Programs. A
+A Run that an interrupted or failed Turn started continues under its Run Owner. The Runs of a Turn are canceled only
+by the lead's `coral.cancelAgent`, by a cancellation of the Run that waits on the Sub-agent, and by the Turn's time
+limit. A Turn itself does not use a Run Owner or a Run Executor, because those run Programs. A
 Turn only calls the model and core's Task, Run and search modules.
 
 ### What telemetry records

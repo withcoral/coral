@@ -85,9 +85,9 @@ async fn served_tools(client: &rmcp::service::RunningService<rmcp::RoleClient, (
     tools.iter().map(|tool| tool.name.to_string()).collect()
 }
 
-// Catches: instructions that tell a lead to delegate where the Workspace's
-// policy does not enable `coral.agent`, or that do not where it does, and a
-// factory that gets less than bootstrap resolved.
+// Catches: instructions or an `exec` description that tell a lead to delegate
+// where the Workspace's policy does not enable `coral.agent`, or that do not
+// where it does, and a factory that gets less than bootstrap resolved.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_section_turns_the_sub_agent_on_and_hands_its_factory_what_bootstrap_resolved() {
     const FAN_OUT: usize = 7;
@@ -136,6 +136,11 @@ async fn the_section_turns_the_sub_agent_on_and_hands_its_factory_what_bootstrap
         let handshake = lead.peer_info().expect("initialize result");
         let instructions = handshake.instructions.as_deref().unwrap_or_default();
         assert_eq!(instructions.contains("coral.agent"), delegates, "{state:?}");
+        let tools = lead.list_all_tools().await.expect("list MCP tools");
+        let exec = tools.iter().find(|tool| tool.name == "exec");
+        let exec = exec.and_then(|exec| exec.description.as_deref());
+        let briefs = exec.is_some_and(|text| text.contains("coral.agent({ message })"));
+        assert_eq!(briefs, delegates, "{state:?}: exec's description");
         lead.cancel().await.expect("close MCP client");
     }
 

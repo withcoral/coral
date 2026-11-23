@@ -53,7 +53,7 @@ pub(crate) enum BuiltinCall {
 }
 
 pub(crate) use agent::SubAgentSlot;
-pub use agent::{SubAgentCaller, SubAgentError, SubAgentTools};
+pub use agent::{RunStop, SubAgentCaller, SubAgentError, SubAgentTools};
 pub use private_tools::PrivateTools;
 
 impl BuiltinCall {
@@ -186,6 +186,9 @@ pub(crate) trait InvokingRun: Send + Sync {
 
     /// Completes when the Run is asked to stop.
     async fn stopped(&self);
+
+    /// Whether a cancellation asked the Run to stop. Read it after [`Self::stopped`].
+    fn canceled(&self) -> bool;
 
     /// The current time on the Run's clock.
     fn now(&self) -> Result<i64, Error>;

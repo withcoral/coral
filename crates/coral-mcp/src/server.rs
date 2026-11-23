@@ -218,7 +218,7 @@ pub(crate) struct CoreInterface {
 #[async_trait::async_trait]
 impl McpInterface for CoreInterface {
     async fn instructions(&self, caller: &McpCaller) -> &str {
-        if self.for_caller(caller).delegates().await {
+        if self.for_caller(caller).delegation().await.is_some() {
             crate::instructions::DELEGATING_INSTRUCTIONS
         } else {
             crate::instructions::INSTRUCTIONS
@@ -271,20 +271,18 @@ impl CoreTools {
         }
     }
 
-    /// Whether policy enables `coral.agent` for this caller in its Workspace.
-    /// A read that fails costs only the delegating text: the next call says why.
-    async fn delegates(&self) -> bool {
-        let Ok(agent) = coral_search::CallPath::parse("coral.agent") else {
-            return false;
-        };
-        let (search, agent) = (&self.runtime.modules.search, [agent]);
+    /// How to hand work to a Sub-agent, in `coral.agent`'s own words, where
+    /// policy enables that Tool for this caller. A read that fails costs only
+    /// this text: the next call says why.
+    async fn delegation(&self) -> Option<String> {
+        let agent = [coral_search::CallPath::parse("coral.agent").ok()?];
+        let search = &self.runtime.modules.search;
         let described = search.describe_tools(&self.runtime.principal, &self.workspace_id, &agent);
-        described.await.is_ok_and(|tools| {
-            let enabled = coral_search::ApprovalRequirement::NotRequired;
-            tools
-                .iter()
-                .any(|tool| tool.approval_requirement() == enabled)
-        })
+        let agent = described.await.ok()?.into_iter().next()?;
+        let enabled = coral_search::ApprovalRequirement::NotRequired;
+        (agent.approval_requirement() == enabled)
+            .then(|| agent.guidance().map(str::to_owned))
+            .flatten()
     }
 
     /// The tools this caller is served. `exec` names the namespaces the
@@ -314,7 +312,9 @@ impl CoreTools {
                 arguments::Namespaces::Unavailable
             }
         };
-        Ok(arguments::tools(arguments::exec_description(&namespaces)))
+        let delegation = self.delegation().await;
+        let description = arguments::exec_description(&namespaces, delegation.as_deref());
+        Ok(arguments::tools(description))
     }
 
     async fn dispatch(

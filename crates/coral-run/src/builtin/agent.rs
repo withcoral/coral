@@ -39,8 +39,17 @@ pub struct SubAgentCaller<'a> {
     pub workspace_id: &'a WorkspaceId,
     /// The calling Run. Its Task is the Sub-agent's.
     pub run_id: &'a RunId,
-    /// Completes when the Run is asked to stop.
-    pub stopped: Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
+    /// Completes when the Run is asked to stop, with why.
+    pub stopped: Pin<Box<dyn Future<Output = RunStop> + Send + 'a>>,
+}
+
+/// Why the Run that calls a Sub-agent Tool was asked to stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunStop {
+    /// Someone canceled the Run.
+    Canceled,
+    /// Its deadline, its end, or the shutdown of its Coral Instance.
+    Ended,
 }
 
 /// Why a Sub-agent Tool did nothing.
@@ -80,7 +89,14 @@ impl SubAgentCall {
             actor: host.actor,
             workspace_id: host.workspace_id,
             run_id: host.run_id,
-            stopped: host.run.stopped(),
+            stopped: Box::pin(async {
+                host.run.stopped().await;
+                if host.run.canceled() {
+                    RunStop::Canceled
+                } else {
+                    RunStop::Ended
+                }
+            }),
         };
         let result = match self {
             Self::Agent(arguments) => tools.agent(caller, arguments).await,

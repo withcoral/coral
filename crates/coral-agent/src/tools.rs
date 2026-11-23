@@ -2,25 +2,22 @@
 //! lead's Sub-agents, and each Turn as the lead reads it.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use coral_catalog::{
     AgentArguments, AgentRequiredAction, AgentResult, AgentStep, CancelAgentArguments,
 };
 use coral_db::Database;
 use coral_run::{
-    HumanInterfaceUrl, RequiredActionRequest, RequiredActor, RunId, SubAgentCaller, SubAgentError,
-    SubAgentTools,
+    HumanInterfaceUrl, RequiredActionRequest, RequiredActor, RunId, RunStop, SubAgentCaller,
+    SubAgentError, SubAgentTools,
 };
 use coral_task::TaskModule;
-use coral_workspace::WorkspaceId;
+use coral_telemetry::safe;
+use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 use crate::repository;
 use crate::run_tools::Outcome;
 use crate::sub_agents::{Error, SubAgents, TurnPage, TurnState};
-
-/// How long `coral.agent` waits for a Turn before it returns it as running.
-const AGENT_WAIT: Duration = Duration::from_secs(600);
 
 /// The Sub-agent as a Program of the lead calls it.
 pub(crate) struct AgentTools {
@@ -42,7 +39,7 @@ impl SubAgentTools for AgentTools {
         self.refuse_a_sub_agent(workspace_id, caller.run_id).await?;
         let sub_agents = &self.sub_agents;
         let (sub_agent_id, cursor) = match arguments {
-            AgentArguments::Start { message } => {
+            AgentArguments::Start { message, .. } => {
                 let task_id = self.tasks.run_task(workspace_id, caller.run_id).await;
                 let task_id = task_id.map_err(Error::from)?;
                 let task_id = task_id.ok_or(SubAgentError::Unavailable(NO_TASK))?;
@@ -65,11 +62,15 @@ impl SubAgentTools for AgentTools {
                 ..
             } => (sub_agent_id.clone(), cursor.as_deref()),
         };
-        let waited = sub_agents.wait(actor, workspace_id, &sub_agent_id, cursor, AGENT_WAIT);
+        let waited = sub_agents.wait(actor, workspace_id, &sub_agent_id, cursor, arguments.wait());
         let page = tokio::select! {
             page = waited => page?,
-            // The Turn goes on. The Run reads it as it stands.
-            () = caller.stopped => {
+            // The Turn goes on, unless someone canceled the Run that waits on
+            // it. The Run reads the Turn as it stands.
+            stop = caller.stopped => {
+                if stop == RunStop::Canceled {
+                    self.cancel_with_its_run(caller.actor, workspace_id, &sub_agent_id);
+                }
                 let page = sub_agents.page(actor, workspace_id, &sub_agent_id).await?;
                 page.seen(cursor)?;
                 page
@@ -95,6 +96,27 @@ const NO_TASK: &str = "this run is in no task";
 const STARTED_BY_AGENT: &str = "an agent started this run, and an agent cannot call an agent";
 
 impl AgentTools {
+    /// Cancels the Sub-agent in a task of its own: the canceled Run may drop
+    /// the call that waits on it first.
+    fn cancel_with_its_run(
+        &self,
+        actor: &AuthenticatedPrincipal,
+        workspace_id: &WorkspaceId,
+        sub_agent_id: &str,
+    ) {
+        let (sub_agents, actor) = (self.sub_agents.clone(), actor.clone());
+        let (workspace_id, sub_agent_id) = (workspace_id.clone(), sub_agent_id.to_owned());
+        tokio::spawn(async move {
+            let canceled = sub_agents.cancel(&actor, &workspace_id, &sub_agent_id);
+            if let Err(error) = canceled.await {
+                tracing::warn!(
+                    error.type = safe::kind(error.code()),
+                    "the Sub-agent of a canceled Run was not canceled"
+                );
+            }
+        });
+    }
+
     /// Refuses a Run that a Sub-agent's `exec` started, from the record of it.
     async fn refuse_a_sub_agent(
         &self,

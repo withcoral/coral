@@ -2970,6 +2970,10 @@ impl crate::builtin::InvokingRun for ToolInvoker {
         self.stop.requested().await;
     }
 
+    fn canceled(&self) -> bool {
+        self.stop.is_canceled()
+    }
+
     fn now(&self) -> Result<i64, Error> {
         ToolInvoker::now(self)
     }

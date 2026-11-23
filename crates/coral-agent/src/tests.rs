@@ -9,8 +9,8 @@ use coral_mcp::{HumanInterfaceUrl, McpCaller, McpModules, ToolCallError};
 use coral_outbound::{DestinationPolicy, NetworkAccess};
 use coral_provider::ProviderModule;
 use coral_run::{
-    CoralInstanceId, RunId, RunInbox, RunModule, RuntimeLimits, SubAgentCaller, SubAgentError,
-    SubAgentTools,
+    CoralInstanceId, RunId, RunInbox, RunModule, RunStop, RuntimeLimits, SubAgentCaller,
+    SubAgentError, SubAgentTools,
 };
 use coral_search::UniversalSearchModule;
 use coral_task::{AttemptKind, AttributedCommand, TaskCommands, TaskId, TaskIntent, TaskModule};
@@ -30,7 +30,7 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use crate::model::{Block, Message, ModelClient, Protocol, Role, ToolCall};
 use crate::run_tools::Caller;
-use crate::sub_agents::{Error, RunningTurn, SubAgents, TURN_LEASE, TurnState};
+use crate::sub_agents::{Error, RunningTurn, SubAgents, TURN_LEASE, TURN_MAX, TurnState};
 use crate::telemetry::TurnTrace;
 use crate::{MODEL_CALL_TIMEOUT, SubAgentFactory, repository};
 
@@ -301,7 +301,8 @@ struct LeadCaller {
 }
 
 /// Calls core's tool `name`, or a Sub-agent Tool from a Run of the lead's: in
-/// the Task of `task_id` or `goal`, and asked to stop at once without `wait_ms`.
+/// the Task of `task_id` or `goal`, and asked to stop at once without
+/// `wait_ms`. With `stop`, that Run was canceled.
 async fn call(
     tools: &dyn SubAgentTools,
     caller: &LeadCaller,
@@ -342,17 +343,20 @@ async fn call(
         }
         None => RunId::parse("a-run-of-the-leads").unwrap(),
     };
-    let waits = arguments
-        .remove("wait_ms")
-        .is_some_and(|wait_ms| wait_ms != 0);
+    let waits = arguments.get("wait_ms").is_some_and(|wait| wait != 0);
+    let canceled = arguments.remove("stop").is_some();
     let run = SubAgentCaller {
         actor,
         workspace_id,
         run_id: &run_id,
         stopped: Box::pin(async move {
+            if canceled {
+                return RunStop::Canceled;
+            }
             if waits {
                 std::future::pending::<()>().await;
             }
+            RunStop::Ended
         }),
     };
     let refused =
@@ -907,52 +911,84 @@ async fn a_turn_whose_caller_lost_access_stops_as_canceled() {
     assert_eq!(lead.model.received_requests().await.unwrap().len(), 1);
 }
 
-// Catches: a canceled Sub-agent whose running Run goes on, a cancel that
-// changes a Run that had ended, and a canceled Turn that stores the reply of
-// its last model call.
+// Catches: a Run that goes on after its Sub-agent's Turn was stopped, by
+// `cancelAgent`, by a cancellation of the Run that waits on the Sub-agent, or
+// by the Turn's time limit. Also a stop that changes a Run that had ended,
+// one that stores the reply of the Turn's last model call, and a call that
+// waits past its `wait_ms`.
 #[tokio::test]
-async fn cancel_cancels_the_running_runs_of_the_sub_agent() {
-    let lead = Lead::new().await;
-    let (tools, caller, task_id) = (lead.tools(), lead.caller(), lead.task().await);
-    let exec = |id, intent, program, wait_ms: u64| {
-        let task_id = task_id.as_str();
-        let arguments =
-            json!({"task_id": task_id, "intent": intent, "program": program, "wait_ms": wait_ms});
-        tool_call(id, "exec", &arguments)
-    };
-    let execs = [
-        exec("call_1", "Loop", "while (true) {}", 0),
-        exec("call_2", "Count", "return 1;", 30_000),
-    ];
-    Mock::given(any())
-        .respond_with(tool_calls(&execs))
-        .up_to_n_times(1)
-        .mount(&lead.model)
-        .await;
-    let (arrived, release) = lead.hold_first_reply(reply("Done.")).await;
-    let agent = json!({"task_id": task_id.as_str(), "message": MESSAGE});
-    let started = result(call(&*tools, &caller, "agent", agent).await);
-    arrived.await.unwrap();
-    let by_id = json!({"sub_agent_id": field(&started, "sub_agent_id")});
-    let running = result(call(&*tools, &caller, "agent", by_id.clone()).await);
+async fn stopping_a_sub_agent_cancels_the_runs_its_turn_left_running() {
+    enum Stop {
+        CancelAgent,
+        CanceledRun,
+        TimeLimit,
+    }
+    for (stop, ended_as) in [
+        (Stop::CancelAgent, "canceled"),
+        (Stop::CanceledRun, "canceled"),
+        (Stop::TimeLimit, "failed"),
+    ] {
+        let lead = Lead::new().await;
+        let (tools, caller, task_id) = (lead.tools(), lead.caller(), lead.task().await);
+        let exec = |id, intent, program, wait_ms: u64| {
+            let task_id = task_id.as_str();
+            let arguments = json!({"task_id": task_id, "intent": intent, "program": program, "wait_ms": wait_ms});
+            tool_call(id, "exec", &arguments)
+        };
+        let execs = [
+            exec("call_1", "Loop", "while (true) {}", 0),
+            exec("call_2", "Count", "return 1;", 30_000),
+        ];
+        Mock::given(any())
+            .respond_with(tool_calls(&execs))
+            .up_to_n_times(1)
+            .mount(&lead.model)
+            .await;
+        let (arrived, release) = lead.hold_first_reply(reply("Done.")).await;
+        let agent = json!({"task_id": task_id.as_str(), "message": MESSAGE});
+        let started = result(call(&*tools, &caller, "agent", agent).await);
+        arrived.await.unwrap();
+        let sub_agent_id = field(&started, "sub_agent_id");
+        let asked_at = std::time::Instant::now();
+        let look = json!({"sub_agent_id": sub_agent_id, "wait_ms": 50});
+        let running = result(call(&*tools, &caller, "agent", look).await);
+        assert!(asked_at.elapsed() < Duration::from_secs(10), "its wait_ms");
 
-    result(call(&*tools, &caller, "cancelAgent", by_id).await);
-    release.send(()).unwrap();
+        match stop {
+            Stop::CancelAgent => {
+                let by_id = json!({"sub_agent_id": sub_agent_id});
+                result(call(&*tools, &caller, "cancelAgent", by_id).await);
+            }
+            Stop::CanceledRun => {
+                let waiting = json!({"sub_agent_id": sub_agent_id, "stop": "canceled"});
+                result(call(&*tools, &caller, "agent", waiting).await);
+            }
+            Stop::TimeLimit => {
+                tokio::time::pause();
+                tokio::time::advance(TURN_MAX).await;
+                tokio::time::resume();
+            }
+        }
+        let ended = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
+        let ended = result(call(&*tools, &caller, "agent", ended).await);
+        release.send(()).unwrap();
 
-    let steps = field(&running, "steps");
-    let (looped, counted) = (field(&steps[0], "run_id"), field(&steps[1], "run_id"));
-    let wait = json!({"run_id": looped, "wait_ms": 30_000});
-    let looped = result(call(&*tools, &caller, "wait", wait).await);
-    assert_eq!(field(&looped, "state"), "canceled", "{looped}");
-    let read = json!({"run_id": counted});
-    let counted = result(call(&*tools, &caller, "wait", read).await);
-    assert_eq!(field(&counted, "state"), "succeeded", "{counted}");
-    let sub_agent_id = field(&started, "sub_agent_id").as_str().unwrap();
-    assert_eq!(
-        lead.thread(sub_agent_id).await.len(),
-        3,
-        "brief, calls, results"
-    );
+        assert_eq!(field(&ended, "state"), ended_as, "{ended}");
+        let steps = field(&running, "steps");
+        let (looped, counted) = (field(&steps[0], "run_id"), field(&steps[1], "run_id"));
+        let wait = json!({"run_id": looped, "wait_ms": 30_000});
+        let looped = result(call(&*tools, &caller, "wait", wait).await);
+        assert_eq!(field(&looped, "state"), "canceled", "{looped}");
+        let read = json!({"run_id": counted});
+        let counted = result(call(&*tools, &caller, "wait", read).await);
+        assert_eq!(field(&counted, "state"), "succeeded", "{counted}");
+        let sub_agent_id = sub_agent_id.as_str().unwrap();
+        assert_eq!(
+            lead.thread(sub_agent_id).await.len(),
+            3,
+            "brief, calls, results"
+        );
+    }
 }
 
 // Catches: a cancel of a Sub-agent whose Turn has ended that leaves the

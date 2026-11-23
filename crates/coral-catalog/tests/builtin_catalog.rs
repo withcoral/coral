@@ -190,7 +190,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             // It starts a Sub-agent or a Turn, so it is not read-only.
             ToolHints::new(Some(false), Some(false), Some(false), Some(true)),
             &[
-                r#"(input: ({ "message": string } | { "cursor"?: string; "message"?: string; "sub_agent_id": string }))"#,
+                r#"(input: ({ "message": string; "wait_ms"?: number } | { "cursor"?: string; "message"?: string; "sub_agent_id": string; "wait_ms"?: number }))"#,
                 r#""state": "running" | "needs_action" | "completed" | "failed" | "canceled" | "interrupted""#,
             ][..],
         ),
