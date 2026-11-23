@@ -64,9 +64,6 @@ pub struct McpModules {
     pub search: UniversalSearchModule,
     pub(crate) human_interface: HumanInterfaceUrl,
     pub(crate) run_update_page_bytes: NonZeroUsize,
-    /// Whether the catalog holds `coral.agent`, so that the instructions
-    /// tell a lead how to delegate.
-    pub(crate) delegates: bool,
 }
 impl McpModules {
     /// Receives initialized Modules, including Task commands assembled by bootstrap.
@@ -87,7 +84,6 @@ impl McpModules {
             search,
             human_interface,
             run_update_page_bytes: RUN_UPDATE_PAGE_BYTES,
-            delegates: false,
         }
     }
 
@@ -110,14 +106,6 @@ impl McpModules {
     #[must_use]
     pub fn core_interface(&self) -> Arc<dyn McpInterface> {
         Arc::new(server::CoreInterface::new(self.clone()))
-    }
-
-    /// Serves the instructions of a lead that can delegate: the deployment
-    /// configures a Sub-agent, so the catalog holds `coral.agent`.
-    #[must_use]
-    pub const fn with_sub_agent(mut self) -> Self {
-        self.delegates = true;
-        self
     }
 }
 

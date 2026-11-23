@@ -2,12 +2,16 @@
 
 use std::sync::{Arc, OnceLock};
 
-use coral_catalog::{AgentArguments, AgentResult, CancelAgentArguments};
+use coral_catalog::{AgentArguments, AgentResult, CancelAgentArguments, ToolKey};
+use coral_db::UnixNanos;
+use coral_policy::{ToolAccessState, ToolPolicyTarget};
+use coral_provider::CoralDefinedProvider;
 use coral_run::{SubAgentCaller, SubAgentError, SubAgentTools};
 use coral_test_support::ManualClock;
+use coral_workspace::{ChangeContext, TraceId, local_organization_owner};
 use tempfile::TempDir;
 
-use super::{WEB, serve_extended_with_mcp_client, start};
+use super::{WEB, connect_mcp, serve_extended_with_mcp_client, start};
 use crate::bootstrap::{AppError, SubAgentDependencies, SubAgentToolsFactory};
 use crate::{LOCAL_OUTBOUND_DEFAULTS, McpStartError, RuntimeError, ServerBuilder};
 
@@ -81,7 +85,8 @@ async fn served_tools(client: &rmcp::service::RunningService<rmcp::RoleClient, (
     tools.iter().map(|tool| tool.name.to_string()).collect()
 }
 
-// Catches: a section that leaves `coral.agent` out of the instructions, and a
+// Catches: instructions that tell a lead to delegate where the Workspace's
+// policy does not enable `coral.agent`, or that do not where it does, and a
 // factory that gets less than bootstrap resolved.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_section_turns_the_sub_agent_on_and_hands_its_factory_what_bootstrap_resolved() {
@@ -95,13 +100,44 @@ async fn the_section_turns_the_sub_agent_on_and_hands_its_factory_what_bootstrap
             "{WEB}[outbound]\nloopback = 'deny'\n[runtime]\nfan_out_limit = {FAN_OUT}\n{ECHO_SECTION}"
         ),
     );
-    let (server, _workspace, client) =
+    let (server, workspace, client) =
         serve_extended_with_mcp_client(temp.path(), registering(&factory)).await;
-
-    let handshake = client.peer_info().expect("initialize result");
-    let instructions = handshake.instructions.as_deref().unwrap_or_default();
-    assert!(instructions.contains("coral.agent"), "{instructions}");
     assert_eq!(served_tools(&client).await, CORE_TOOLS);
+    // The Workspace gets its Built-in Provider as creating one in production does.
+    let dependencies = server.grpc.engine().grpc_dependencies();
+    let owner = ChangeContext::new(
+        local_organization_owner(),
+        UnixNanos::new(2),
+        TraceId::current_or_new(),
+    );
+    let database = server.grpc.database();
+    let mut transaction = database.begin().await.expect("begin");
+    let builtin = dependencies.providers.install_coral_defined_in_transaction(
+        &mut transaction,
+        &owner,
+        &workspace,
+        CoralDefinedProvider::Builtin,
+    );
+    let builtin = builtin.await.expect("install the Built-in Provider");
+    transaction.commit().await.expect("commit the install");
+    let agent = ToolKey::parse("agent").expect("Tool Key");
+    let agent = ToolPolicyTarget::new(workspace.clone(), builtin.skip_search().id().clone(), agent);
+
+    for (state, delegates) in [
+        (ToolAccessState::Enabled, true),
+        (ToolAccessState::ApprovalRequired, false),
+        (ToolAccessState::Disabled, false),
+    ] {
+        let set = dependencies
+            .policies
+            .set_access_state(&owner, agent.clone(), state);
+        set.await.expect("set the policy of coral.agent");
+        let lead = connect_mcp(&server, &workspace).await;
+        let handshake = lead.peer_info().expect("initialize result");
+        let instructions = handshake.instructions.as_deref().unwrap_or_default();
+        assert_eq!(instructions.contains("coral.agent"), delegates, "{state:?}");
+        lead.cancel().await.expect("close MCP client");
+    }
 
     let (section, handed) = factory.handed.get().expect("core called the factory");
     assert_eq!(section, &toml::toml! { greeting = "hello" });

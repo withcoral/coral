@@ -376,18 +376,22 @@ async fn serve_extended_with_mcp_client(
         )
         .await
         .expect("create Workspace");
+    let client = connect_mcp(&server, workspace.id()).await;
+    (server, workspace.id().clone(), client)
+}
+
+/// A new MCP client of `workspace`, which makes a handshake of its own.
+async fn connect_mcp(
+    server: &RunningRuntime,
+    workspace: &coral_workspace::WorkspaceId,
+) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
     let urls = crate::WorkspaceMcpUrls::new(
         crate::CanonicalOauthUrl::parse(&format!("http://{}", server.mcp_http_addr()))
             .expect("MCP origin"),
     )
     .expect("Workspace URLs");
-    let client = ()
-        .serve(StreamableHttpClientTransport::from_uri(
-            urls.resource(workspace.id()),
-        ))
-        .await
-        .expect("connect MCP client");
-    (server, workspace.id().clone(), client)
+    let transport = StreamableHttpClientTransport::from_uri(urls.resource(workspace));
+    ().serve(transport).await.expect("connect MCP client")
 }
 
 /// A connection of its own to the SQLite state database at `dir`.

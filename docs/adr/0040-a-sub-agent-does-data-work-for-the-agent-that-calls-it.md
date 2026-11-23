@@ -214,8 +214,9 @@ can call, and the code that writes each tool result, including the wording of ea
 never receive core's MCP instructions or core's MCP tool descriptions, which change to suit outside agents.
 
 The text that the lead reads is core's. The description of `coral.agent` in the catalog says when and how to hand work
-over. Core's MCP instructions serve a second set of Workflow steps when the catalog holds the Tool, and step 2 shows
-the call: `return await coral.agent({ message })`.
+over. Core's MCP instructions serve a second set of Workflow steps to a caller whose Workspace enables the Tool, and
+step 2 shows the call: `return await coral.agent({ message })`. Each handshake reads the Workspace's Tool policy, so a
+Workspace that disables the Tool, or sets it to approval, reads core's own steps.
 
 The model's tools include an `end_task` of the Sub-agent's own with core's arguments, which Sailfish calls before nearly
 every answer. It ends nothing, since the lead owns the Task, and the lead reads the outcome it records beside the
@@ -370,6 +371,8 @@ section, and the URL in it comes from an organization.
 
 - The lead needs a Program to reach a Sub-agent. A Run lasts at most 15 minutes, so a call waits at most 10, and the
   lead calls again for a longer Turn. A call holds one slot of its Run's Fan-out Limit while it waits.
+- A client reads the instructions when it connects. After an owner changes the Tool's policy, a connected lead keeps
+  the text it read until it connects again. The Tool itself follows the policy at once.
 - The record that stops a Sub-agent's Program from calling `coral.agent` is written just after its Run is accepted. A
   call that the Program makes before the write commits is not refused.
 - A Sub-agent can call the other Built-in Tools from a Program, so it can add a Provider, change policy or save a

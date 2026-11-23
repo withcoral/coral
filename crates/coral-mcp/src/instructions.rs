@@ -58,8 +58,8 @@ pub(crate) const INSTRUCTIONS: &str = instructions!(
 "
 );
 
-/// The instructions of an agent that can also hand work to a Sub-agent: the
-/// catalog holds `coral.agent` (ADR 0040).
+/// The instructions of an agent that can also hand work to a Sub-agent:
+/// policy enables `coral.agent` in its Workspace (ADR 0040).
 pub(crate) const DELEGATING_INSTRUCTIONS: &str = instructions!(
     "\
 1. Pass `goal` to the first `exec` of a unit of work, then its `task_id` to later calls.

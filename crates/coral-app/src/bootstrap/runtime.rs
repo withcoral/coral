@@ -553,8 +553,8 @@ async fn start_mcp_http(
     Ok(server)
 }
 
-/// Wires the registered factory's Sub-agent into the Runs of `modules`, and
-/// tells a lead how to delegate, when the config file has the factory's section.
+/// Wires the registered factory's Sub-agent into the Runs of `modules`, when
+/// the config file has the factory's section.
 fn with_registered_sub_agent(
     modules: McpModules,
     settings: &ServeSettings,
@@ -573,7 +573,7 @@ fn with_registered_sub_agent(
         stopping: grpc.engine().readiness().stopping(),
     })?;
     modules.runs.set_sub_agent_tools(tools);
-    Ok(modules.with_sub_agent())
+    Ok(modules)
 }
 
 #[cfg(test)]
