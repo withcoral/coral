@@ -336,8 +336,10 @@ takes no `--database`.
   its health service reports it linked. Each writes `run-executor-1.log` or
   `run-executor-2.log`.
 - Each Run Executor holds at most one Run. A Run that waits for approval fills
-  one, so a journey can tell which Run Executor takes the next Run. A journey
-  ends every Run it starts, or the next journey finds no room.
+  one, so a journey can tell which Run Executor takes the next Run. A Run left
+  running would leave the next journey no room, so a journey passes each Run it
+  starts to `endAfterTest` (`waiting-run.ts`), which cancels it when the test
+  ends, failed or not.
 
 A scenario steers the proxy with `coralInstances()` from `support/instances.ts`:
 

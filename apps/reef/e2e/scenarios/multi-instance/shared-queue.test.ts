@@ -4,7 +4,7 @@ import { coralInstances, expectNoUnavailable } from '../../support/instances.ts'
 import { managementClients } from '../../support/management.ts'
 import { observeRun, programRunner } from '../../support/providers.ts'
 import { withOwner } from '../../support/topology.ts'
-import { runWaitingForApproval } from './waiting-run.ts'
+import { endAfterTest, runWaitingForApproval } from './waiting-run.ts'
 
 test('A Run accepted through one Coral Instance waits in the shared queue and runs on the Run Executor of the other', async (context) => {
   const instances = coralInstances()
@@ -27,7 +27,9 @@ test('A Run accepted through one Coral Instance waits in the shared queue and ru
           let started!: Awaited<ReturnType<typeof runner.exec>>
           const run = await instances.startOn(full, async () => {
             started = await runner.exec('return 40 + 2;')
-            return `workspaces/${waiting.workspace}/runs/${started.structuredContent.run_id}`
+            const name = `workspaces/${waiting.workspace}/runs/${started.structuredContent.run_id}`
+            endAfterTest(accessToken, name)
+            return name
           })
           const { update } = await observeRun(runner, started)
           expect(update.final_value).toEqual({ kind: 'value', value: 42 })

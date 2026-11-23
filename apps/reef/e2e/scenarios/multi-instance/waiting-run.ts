@@ -1,5 +1,6 @@
 import type { Page } from 'playwright'
-import { expect } from 'vitest'
+import { expect, onTestFinished } from 'vitest'
+import { ActivityRunState } from '../../generated/coral/management/v1/activity_pb.ts'
 import type { Target } from '../../support/config.ts'
 import { coralInstances } from '../../support/instances.ts'
 import { managementClients } from '../../support/management.ts'
@@ -52,7 +53,9 @@ export async function runWaitingForApproval(
   const instances = coralInstances()
   const run = await instances.startOn(start, async () => {
     paused = await pausedForApproval(runner, addProviderProgram())
-    return `workspaces/${workspace}/runs/${paused.run_id}`
+    const name = `workspaces/${workspace}/runs/${paused.run_id}`
+    endAfterTest(accessToken, name)
+    return name
   })
   const approval = `workspaces/${workspace}/approvals/${paused.required_actions[0].request_id}`
   const inspected = await managementClients(accessToken).activity.inspectApproval({
@@ -61,4 +64,22 @@ export async function runWaitingForApproval(
   expect([inspected.run, inspected.state]).toEqual([run, 'pending'])
   const owner = await instances.holder(run)
   return { workspace, runner, paused, run, approval, owner }
+}
+
+/**
+ * Cancels `run` once the test finishes, unless it has ended. Each Run Executor
+ * holds one Run, so a Run that a failed journey left running would leave the
+ * next journey no room.
+ */
+export function endAfterTest(accessToken: string | undefined, run: string) {
+  onTestFinished(async () => {
+    const { activity } = managementClients(accessToken)
+    // A Run that has ended another way keeps its state.
+    await activity.cancelActivityRun({ name: run })
+    await expect
+      .poll(async () => (await activity.inspectRun({ name: run, pageSize: 1 })).run?.state, {
+        timeout: 15_000,
+      })
+      .not.toBe(ActivityRunState.RUNNING)
+  })
 }
