@@ -16,7 +16,13 @@ use crate::{LOCAL_OUTBOUND_DEFAULTS, McpStartError, RuntimeError, ServerBuilder}
 /// The section that [`EchoFactory`] claims, as it accepts it.
 const ECHO_SECTION: &str = "[echo_tools]\ngreeting = 'hello'\n";
 const ECHO_INSTRUCTIONS: &str = "Call `echo` to read your arguments back.";
-const CORE_TOOLS: [&str; 4] = ["exec", "wait", "cancel", "end_task"];
+const CORE_TOOLS: [&str; 5] = [
+    "exec",
+    "wait",
+    "show_required_actions",
+    "cancel",
+    "end_task",
+];
 
 /// A factory that claims `[echo_tools]` and builds [`CoreWithEcho`]. It keeps
 /// what core handed it.
