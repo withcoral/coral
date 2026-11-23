@@ -24,6 +24,12 @@ struct Runtime {
     child: Child,
     grpc_endpoint: String,
     mcp_origin: String,
+    /// The Run Executor listener's address, which a Run Executor dials.
+    #[cfg_attr(
+        not(unix),
+        expect(dead_code, reason = "only the unix dialed tests read it")
+    )]
+    run_executor_address: String,
 }
 
 impl Runtime {
@@ -64,6 +70,7 @@ impl Runtime {
             child,
             grpc_endpoint: String::new(),
             mcp_origin: String::new(),
+            run_executor_address: String::new(),
         };
         let deadline = Instant::now() + STARTUP_TIMEOUT;
         runtime.mcp_origin = loop {
@@ -73,6 +80,9 @@ impl Runtime {
                 .expect("runtime reports its MCP listener");
             if let Some(endpoint) = line.strip_prefix("Coral gRPC server listening on ") {
                 endpoint.clone_into(&mut runtime.grpc_endpoint);
+            }
+            if let Some(address) = line.strip_prefix("Coral Run Executor listener on ") {
+                runtime.run_executor_address = format!("http://{address}");
             }
             if let Some(rest) =
                 line.strip_prefix("Coral MCP HTTP server serving each Workspace at ")
@@ -140,17 +150,24 @@ fn runtime_command(state_root: &Path) -> std::process::Command {
 /// loopback ports, so runtimes never contend for a fixed port, and whose
 /// semantic search is off.
 fn local_state_root(temp: &tempfile::TempDir) -> PathBuf {
+    local_state_root_with(temp, "")
+}
+
+/// [`local_state_root`] with the TOML `extra_toml` appended to its config.
+fn local_state_root_with(temp: &tempfile::TempDir, extra_toml: &str) -> PathBuf {
     let state_root = temp.path().join("coral-state");
     std::fs::create_dir(&state_root).expect("create state root");
     coral_test_support::write_server_config(
         &state_root,
-        "[listeners.grpc]
+        &format!(
+            "[listeners.grpc]
 bind = '127.0.0.1:0'
          [listeners.mcp]
 bind = '127.0.0.1:0'
          [listeners.auth]
 bind = '127.0.0.1:0'
-",
+{extra_toml}"
+        ),
     );
     state_root
 }
@@ -416,8 +433,15 @@ fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
 /// returns the answer's body.
 #[cfg(unix)]
 fn exec_over_mcp(url: String, arguments: &str) -> String {
+    call_over_mcp(url, "exec", arguments)
+}
+
+/// Calls the MCP tool `tool` at `url` with `arguments`, a JSON object, and
+/// returns the answer's body.
+#[cfg(unix)]
+fn call_over_mcp(url: String, tool: &str, arguments: &str) -> String {
     let call = format!(
-        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"exec","arguments":{arguments}}}}}"#
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"{tool}","arguments":{arguments}}}}}"#
     );
     let response = reqwest::blocking::Client::builder()
         .timeout(STARTUP_TIMEOUT)
@@ -537,11 +561,7 @@ fn a_killed_runtimes_run_ends_interrupted_when_the_runtime_starts_again() {
         url,
         r#"{"goal":"Spin until stopped","intent":"Spin until stopped","program":"while (true) {}","wait_ms":200}"#,
     );
-    let run_id = body
-        .split_once(r#""run_id":""#)
-        .and_then(|(_, rest)| rest.split_once('"'))
-        .map(|(id, _)| id.to_owned())
-        .expect("the Run's id");
+    let run_id = run_id_in(&body);
     block_on(composed::started_on_a_run_executor(&state_root, &run_id));
     kill_and_outlive_no_child(&mut runtime);
     let state = || block_on(composed::recorded_run_state(&state_root, &run_id));
@@ -549,4 +569,140 @@ fn a_killed_runtimes_run_ends_interrupted_when_the_runtime_starts_again() {
     // The boot pass runs before the listeners serve.
     let _again = Runtime::start(&state_root, false);
     assert_eq!(state(), "interrupted");
+}
+
+/// The id of the Run that an MCP `exec` answer `body` names.
+#[cfg(unix)]
+fn run_id_in(body: &str) -> String {
+    body.split_once(r#""run_id":""#)
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(id, _)| id.to_owned())
+        .expect("the Run's id")
+}
+
+/// The variable that holds the operator token in the dialed tests.
+#[cfg(unix)]
+const OPERATOR_TOKEN_ENV: &str = "CORAL_TEST_RUN_EXECUTOR_TOKEN";
+#[cfg(unix)]
+const OPERATOR_TOKEN: &str = "operator-token-for-the-dialed-run-executor-tests";
+
+/// A runtime with its local Run Executors off, admitting the operator token,
+/// on a state root in `temp`.
+#[cfg(unix)]
+fn runtime_with_children_off(temp: &tempfile::TempDir) -> (Runtime, PathBuf) {
+    let state_root = local_state_root_with(
+        temp,
+        &format!(
+            "[listeners.run_executor]
+bind = '127.0.0.1:0'
+token_env = '{OPERATOR_TOKEN_ENV}'
+[runtime]
+local_run_executors = false
+"
+        ),
+    );
+    let runtime = Runtime::start_with(&state_root, false, |command| {
+        command.env(OPERATOR_TOKEN_ENV, OPERATOR_TOKEN);
+    });
+    (runtime, state_root)
+}
+
+/// A `coral run-executor` that `runtime` did not start, dialing it with the
+/// operator token and holding at most `max_runs_held` Runs.
+#[cfg(unix)]
+struct Dialed(Child);
+
+#[cfg(unix)]
+impl Dialed {
+    fn dial(runtime: &Runtime, max_runs_held: u32) -> Self {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_coral"));
+        command
+            .env_clear()
+            .env("CORAL_RUN_EXECUTOR_TOKEN", OPERATOR_TOKEN)
+            .args(["run-executor", "--coral-address"])
+            .arg(&runtime.run_executor_address)
+            .args(["--max-runs-held", &max_runs_held.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null());
+        Self(command.spawn().expect("spawn the Run Executor"))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Dialed {
+    fn drop(&mut self) {
+        drop(self.0.kill());
+        drop(self.0.wait());
+    }
+}
+
+/// Asserts that `runtime` has started no local Run Executor.
+#[cfg(unix)]
+fn assert_no_child(runtime: &Runtime) {
+    let children = run_executor_children(runtime.child.id());
+    assert!(children.is_empty(), "local children started: {children:?}");
+}
+
+/// Catches: a runtime with its children off that cannot run a Program on a
+/// Run Executor it did not start, or that starts a child anyway.
+#[cfg(unix)]
+#[test]
+fn a_dialed_run_executor_compiles_and_runs_with_local_children_off() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let (runtime, state_root) = runtime_with_children_off(&temp);
+    let _dialed = Dialed::dial(&runtime, 128);
+    let body = exec_over_mcp(
+        workspace_mcp_url(&runtime),
+        r#"{"goal":"Run on a dialed one","intent":"Run on a dialed one","program":"return 40 + 2;"}"#,
+    );
+    assert!(
+        body.contains(r#""final_value":{"kind":"value","value":42}"#),
+        "{body}"
+    );
+    let kind = block_on(composed::recorded_run_executor_kind(
+        &state_root,
+        &run_id_in(&body),
+    ));
+    assert_eq!(kind.as_deref(), Some("dialed"));
+    assert_no_child(&runtime);
+}
+
+/// Catches: a full fleet that starts a local child with children off, or
+/// work that a full Run Executor takes, or that never runs once room frees.
+/// A compile holds a unit of room too, so the new Program waits for room
+/// before it is a Run.
+#[cfg(unix)]
+#[test]
+fn a_full_fleet_leaves_work_waiting_and_starts_no_child() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let (runtime, state_root) = runtime_with_children_off(&temp);
+    let _dialed = Dialed::dial(&runtime, 1);
+    let url = workspace_mcp_url(&runtime);
+    let spinning = run_id_in(&exec_over_mcp(
+        url.clone(),
+        r#"{"goal":"Hold the room","intent":"Hold the room","program":"while (true) {}","wait_ms":200}"#,
+    ));
+    block_on(composed::started_on_a_run_executor(&state_root, &spinning));
+    let waiting = std::thread::spawn({
+        let url = url.clone();
+        move || {
+            exec_over_mcp(
+                url,
+                r#"{"goal":"Wait for room","intent":"Wait for room","program":"return 1;"}"#,
+            )
+        }
+    });
+    // Several take periods and the children's request backstop pass.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(!waiting.is_finished(), "work ran on a full fleet");
+    assert_no_child(&runtime);
+
+    let cancelled = call_over_mcp(url, "cancel", &format!(r#"{{"run_id":"{spinning}"}}"#));
+    assert!(!cancelled.contains(r#""isError":true"#), "{cancelled}");
+    let body = waiting.join().expect("the waiting exec");
+    assert!(
+        body.contains(r#""final_value":{"kind":"value","value":1}"#),
+        "{body}"
+    );
+    assert_no_child(&runtime);
 }
