@@ -153,8 +153,8 @@ fn local_state_root(temp: &tempfile::TempDir) -> PathBuf {
     local_state_root_with(temp, "")
 }
 
-/// [`local_state_root`] with `extra` config appended.
-fn local_state_root_with(temp: &tempfile::TempDir, extra: &str) -> PathBuf {
+/// [`local_state_root`] with the TOML `extra_toml` appended to its config.
+fn local_state_root_with(temp: &tempfile::TempDir, extra_toml: &str) -> PathBuf {
     let state_root = temp.path().join("coral-state");
     std::fs::create_dir(&state_root).expect("create state root");
     coral_test_support::write_server_config(
@@ -166,7 +166,7 @@ bind = '127.0.0.1:0'
 bind = '127.0.0.1:0'
          [listeners.auth]
 bind = '127.0.0.1:0'
-{extra}"
+{extra_toml}"
         ),
     );
     state_root

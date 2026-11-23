@@ -297,8 +297,8 @@ Executors roll apart from Coral.
   it. Only a removed global matters, and the Run then fails as a Program that uses a missing global.
 - The rule applies from the release in which Coral accepts dial-ins from Run Executors it did not start, the first
   after v1.10.0. Before it, every Run Executor is a child of the same binary. A Run Executor from v1.8.0 also reports
-  level 1, so a later Coral admits it, but it has no Run stream: a Run it takes never starts and goes back to waiting.
-  An operator runs no Run Executor older than v1.9.0 beside a later Coral.
+  level 1 but has no Run stream, so it cannot execute a Run. An operator runs no Run Executor older than v1.9.0
+  beside a later Coral.
 - `scripts/check-protocol-level.sh`, in `make rust-checks`, compares the messages, as Buf builds them, and the
   globals' allow-list with the newest release's, and fails unless a change raised the level by exactly one.
 

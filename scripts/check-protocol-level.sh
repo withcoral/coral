@@ -59,7 +59,7 @@ if [ ${#changed[@]} -gt 0 ]; then
   if [ "$level" -ne "$wanted" ]; then
     echo "check-protocol-level: since $release (level $released_level), this checkout changes:" >&2
     printf '  %s\n' "${changed[@]}" >&2
-    echo "Set PROTOCOL_LEVEL in $level_file to $wanted, not $level. AGENTS.md has the steps a change takes." >&2
+    echo "Set PROTOCOL_LEVEL in $level_file to $wanted, not $level. The Versions section of ADR 0027 has the steps a change takes." >&2
     exit 1
   fi
 elif [ "$level" -ne "$released_level" ]; then

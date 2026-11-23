@@ -75,6 +75,10 @@ expect 'a new field with a raise of two' "to $((level + 1)), not $((level + 2))"
 in_repo sed -i.bak -E 's/^\[/["testOnlyGlobal",/' "$globals"
 expect 'a new global without a raise' "Program Runtime Surface"
 
+in_repo sed -i.bak -E 's/^\[/["testOnlyGlobal",/' "$globals"
+set_level $((level + 1))
+expect 'a new global with a raise of one' ''
+
 set_level $((level + 1))
 expect 'a raise with no change' 'nothing it covers changed'
 
