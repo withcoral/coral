@@ -2545,6 +2545,8 @@ async fn check_raw_terminal_states(session: &RawSession, task: &str) {
     }
 }
 
+#[path = "credential_free_tracer/app_contracts.rs"]
+mod app_contracts;
 #[path = "credential_free_tracer/client_visible_contracts.rs"]
 mod client_visible_contracts;
 #[path = "credential_free_tracer/default_contracts.rs"]
