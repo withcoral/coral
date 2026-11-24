@@ -57,6 +57,29 @@ const WEATHER: &str = r#"{
 /// word of the queries `moon` and `moon anchor`.
 const HARBOUR: &str = "List high and low water for one harbour";
 
+/// The description of a quay's tide tables: a text about a quay, with no
+/// word of the query `moon anchor`. At a path of tides, it means what the
+/// whole query means.
+const QUAY: &str = "Tables of the water at one quay";
+
+/// One Tool about tides, whose text holds no word of the query `moon anchor`.
+const TIDES: &str = r#"{
+  "openapi": "3.1.0",
+  "info": { "title": "Tides", "version": "1.0.0" },
+  "servers": [{ "url": "https://tides.example" }],
+  "security": [],
+  "paths": {
+    "/tables": {
+      "get": {
+        "operationId": "getTides",
+        "summary": "Get high and low water",
+        "description": "Returns the water levels of one day.",
+        "responses": { "200": { "description": "OK" } }
+      }
+    }
+  }
+}"#;
+
 const GITHUB: &str = r#"{
   "openapi": "3.1.0",
   "info": { "title": "GitHub", "version": "1.0.0" },
@@ -150,8 +173,12 @@ async fn the_vector_list_holds_only_the_private_and_shared_tools_the_caller_may_
 }
 
 #[tokio::test]
-async fn a_page_of_three_kinds_puts_the_strong_first_in_one_order_for_every_limit() {
+async fn a_page_of_three_kinds_puts_strong_weak_and_last_in_one_order_for_every_limit() {
     let harbour = Harbour::new().await;
+    // Twelve more Tools of no meaning, so the Tool vector list holds weak
+    // Tools.
+    harbour.world.publish_notes().await;
+    harbour.world.index_and_embed().await;
     let semantic = harbour.world.semantic();
     let page = async |limit: u16, offset: u32| {
         harbour
@@ -168,31 +195,32 @@ async fn a_page_of_three_kinds_puts_the_strong_first_in_one_order_for_every_limi
 
     let all = page(50, 0).await;
 
-    // Each kind's vector list marks its top five strong: both Tools, the
-    // five quay Private Tools and the one Shared Tool the User may see. The
-    // two archive Private Tools are sixth and seventh, so weak: they follow
-    // every strong entry.
+    // Every Tool means nothing of the query, so all fourteen are as near
+    // to it: the Tool vector list marks five strong and nine weak. The five
+    // quay Private Tools and the harbour Shared Tool are nearer, so
+    // strong. The two archive Private Tools are as near as the Tools, so
+    // last: they follow every weak Tool.
     assert_eq!(
-        all.hits().iter().map(SearchHit::kind).collect::<Vec<_>>(),
+        kinds(&all),
         [
-            EntityKind::ProviderTool,
-            EntityKind::PrivateTool,
-            EntityKind::SharedTool,
-            EntityKind::ProviderTool,
-            EntityKind::PrivateTool,
-            EntityKind::PrivateTool,
-            EntityKind::PrivateTool,
-            EntityKind::PrivateTool,
-            EntityKind::PrivateTool,
-            EntityKind::PrivateTool,
-        ],
+            [
+                EntityKind::ProviderTool,
+                EntityKind::PrivateTool,
+                EntityKind::SharedTool,
+            ]
+            .as_slice(),
+            &[EntityKind::ProviderTool, EntityKind::PrivateTool].repeat(4),
+            &[EntityKind::ProviderTool; 9],
+            &[EntityKind::PrivateTool; 2],
+        ]
+        .concat(),
         "{:?}",
         paths(&all)
     );
-    let mut weak = paths(&all).split_off(8);
-    weak.sort_unstable();
+    let mut last = paths(&all).split_off(20);
+    last.sort_unstable();
     assert_eq!(
-        weak,
+        last,
         [
             "coral.private.notes.archive01",
             "coral.private.notes.archive02"
@@ -411,40 +439,238 @@ async fn the_vector_list_holds_only_tools_the_caller_may_see_and_the_filter_name
 }
 
 #[tokio::test]
+async fn authored_tools_farther_than_the_nearest_tool_follow_every_weak_tool() {
+    let world = World::new().await;
+    // Fourteen Tools: the forecast Tool, nearest to `rain`, and thirteen of
+    // no meaning, so the vector list marks five strong and nine weak.
+    world.publish_notes().await;
+    // Six Private Tools and one Shared Tool of no meaning and no word of
+    // the query: each is farther from it than the forecast Tool.
+    let mut archives = Vec::new();
+    for number in 1..=6 {
+        archives.push(
+            world
+                .save(
+                    &world.principal,
+                    &format!("notes.archive{number:02}"),
+                    "Archive old notes",
+                )
+                .await,
+        );
+    }
+    world
+        .publish(
+            "notes.archive",
+            "Archive old notes",
+            &archives[0],
+            ToolAccessState::Enabled,
+        )
+        .await;
+    world.index_and_embed().await;
+    let semantic = world.semantic();
+    let rain = |limit: u16| {
+        SearchRequest::query(SearchQuery::parse("rain").unwrap())
+            .with_limit(SearchLimit::parse(limit).unwrap())
+    };
+
+    let first = world.request(&semantic, &world.principal, rain(10)).await;
+    let all = world.request(&semantic, &world.principal, rain(50)).await;
+
+    assert_eq!(
+        kinds(&first),
+        [EntityKind::ProviderTool; 10],
+        "Tools fill the first page: {:?}",
+        paths(&first)
+    );
+    assert_eq!(
+        kinds(&all),
+        [
+            [EntityKind::ProviderTool; 14].as_slice(),
+            &[EntityKind::PrivateTool, EntityKind::SharedTool],
+            &[EntityKind::PrivateTool; 5],
+        ]
+        .concat(),
+        "with room, the Authored Tools follow every weak Tool: {:?}",
+        paths(&all)
+    );
+}
+
+#[tokio::test]
+async fn an_authored_tool_strictly_nearer_than_the_nearest_tool_is_strong() {
+    let world = World::anchorage().await;
+    // No word of `moon anchor` is in these Tools' texts. A quay Tool is as
+    // near to it as a Tool can be. A harbour Tool means what the tide Tool
+    // means, so it is exactly as near as the nearest Tool.
+    world.save_and_publish("quay.tides01", QUAY).await;
+    world.save_and_publish("harbour.tideTimes", HARBOUR).await;
+    world.index_and_embed().await;
+
+    let all = world.anchor(&world.semantic(), None).await;
+
+    assert_eq!(
+        paths(&all).get(..3),
+        Some(
+            [
+                "coral.providers.tides.getTides",
+                "coral.private.quay.tides01",
+                "coral.shared.quay.tides01",
+            ]
+            .as_slice()
+        ),
+        "the quay Tools are strong: {:?}",
+        paths(&all)
+    );
+    assert_eq!(
+        kinds(&all),
+        [
+            [
+                EntityKind::ProviderTool,
+                EntityKind::PrivateTool,
+                EntityKind::SharedTool
+            ]
+            .as_slice(),
+            &[EntityKind::ProviderTool; 14],
+            &[EntityKind::PrivateTool, EntityKind::SharedTool],
+        ]
+        .concat(),
+        "an equal distance is not strong, so the harbour Tools follow every weak Tool: {:?}",
+        paths(&all)
+    );
+}
+
+#[tokio::test]
+async fn with_a_provider_filter_an_authored_tool_is_compared_with_the_nearest_tool_inside_it() {
+    let world = World::anchorage().await;
+    // As near as the Tides Tool, and nearer than every Notes Tool.
+    world.save_and_publish("harbour.tideTimes", HARBOUR).await;
+    world.index_and_embed().await;
+    let semantic = world.semantic();
+
+    let all = world.anchor(&semantic, None).await;
+    let notes = world.anchor(&semantic, Some("notes")).await;
+
+    assert_eq!(
+        kinds(&all).get(15..),
+        Some([EntityKind::PrivateTool, EntityKind::SharedTool].as_slice()),
+        "without a filter, the Tides Tool is as near: {:?}",
+        paths(&all)
+    );
+    assert_eq!(
+        kinds(&notes),
+        [
+            [
+                EntityKind::ProviderTool,
+                EntityKind::PrivateTool,
+                EntityKind::SharedTool
+            ]
+            .as_slice(),
+            &[EntityKind::ProviderTool; 11],
+        ]
+        .concat(),
+        "inside the Notes filter, the harbour Tools are nearer than every Tool: {:?}",
+        paths(&notes)
+    );
+}
+
+#[tokio::test]
+async fn without_a_provider_distance_no_authored_tool_is_strong_by_distance() {
+    let world = World::anchorage().await;
+    // For `moon anchor water`: a Tool whose text holds the query, one whose
+    // path starts a word with `anchor`, which no Tool path does, and the
+    // quay Tool, which shares only `water` with it and is as near to it as
+    // a Tool can be. The Tides Tool shares `water`, so every page holds it.
+    world
+        .save_and_publish("watch.log", "Log of moon anchor water")
+        .await;
+    world
+        .save_and_publish("anchor.depths", "Depth below the keel")
+        .await;
+    world.save_and_publish("quay.tides01", QUAY).await;
+    world.index_and_embed().await;
+    let tool_docs = "(SELECT doc_id FROM search_entities WHERE kind = 'provider_tool')";
+    let quay = [
+        "coral.private.quay.tides01".to_owned(),
+        "coral.shared.quay.tides01".to_owned(),
+    ];
+    // Each case: the search, a change to the index before it, and the
+    // Authored Tools that follow every Tool. A phrase and a rare path word
+    // keep their Tools strong in every case.
+    let cases: [(&str, UniversalSearchModule, Option<String>, &[String]); 5] = [
+        ("a Tool distance", world.semantic(), None, &[]),
+        ("the setting off", world.by_words(), None, &quay),
+        (
+            "the Tool vector query fails",
+            world.failing_tool_vector_query(),
+            None,
+            &quay,
+        ),
+        (
+            "no Tool vector",
+            world.semantic(),
+            Some(format!(
+                "DELETE FROM search_entity_embeddings WHERE doc_id IN {tool_docs}"
+            )),
+            &quay,
+        ),
+        (
+            "Tool vectors of other text",
+            world.semantic(),
+            Some(format!(
+                "UPDATE search_entity_embeddings \
+                 SET source_indexed_at_unix_nanos = source_indexed_at_unix_nanos - 1 \
+                 WHERE doc_id IN {tool_docs}"
+            )),
+            &quay,
+        ),
+    ];
+    for (case, search, change, last) in cases {
+        if let Some(change) = change {
+            world.execute(&change).await;
+        }
+
+        let page = world
+            .request(
+                &search,
+                &world.principal,
+                SearchRequest::query(SearchQuery::parse("moon anchor water").unwrap())
+                    .with_limit(SearchLimit::parse(50).unwrap()),
+            )
+            .await;
+
+        let mut authored = [EntityKind::PrivateTool, EntityKind::SharedTool]
+            .into_iter()
+        .flat_map(|kind| of_kind(&page, kind))
+        .collect::<Vec<_>>();
+        authored.sort_unstable();
+        assert_eq!(
+            authored,
+            [
+                "coral.private.anchor.depths",
+                "coral.private.quay.tides01",
+                "coral.private.watch.log",
+                "coral.shared.anchor.depths",
+                "coral.shared.quay.tides01",
+                "coral.shared.watch.log",
+            ],
+            "{case}: {:?}",
+            paths(&page)
+        );
+        assert_eq!(
+            after_every_tool(&page),
+            last,
+            "{case}: {:?}",
+            paths(&page)
+        );
+        world.index_and_embed().await;
+    }
+}
+
+#[tokio::test]
 async fn every_limit_and_offset_pages_one_order_with_ties_in_the_vector_list() {
     let world = World::new().await;
     // Twelve more Tools whose vectors are all the same, as is the GitHub
     // Tool's, so the vector list holds a tie of thirteen.
-    let operations = (1..=12)
-        .map(|number| {
-            (
-                format!("/notes/{number}"),
-                serde_json::json!({ "get": {
-                    "operationId": format!("listNotes{number:02}"),
-                    "summary": format!("List notes {number}"),
-                    "description": "Returns notes.",
-                    "responses": { "200": { "description": "OK" } }
-                }}),
-            )
-        })
-        .collect::<serde_json::Map<_, _>>();
-    let notes = serde_json::json!({
-        "openapi": "3.1.0",
-        "info": { "title": "Notes", "version": "1.0.0" },
-        "servers": [{ "url": "https://notes.example" }],
-        "security": [],
-        "paths": operations,
-    });
-    world
-        .modules
-        .publish_openapi(
-            &world.user,
-            &world.workspace,
-            &notes.to_string(),
-            "notes",
-            40,
-        )
-        .await;
+    world.publish_notes().await;
     world.index_and_embed().await;
     let semantic = world.semantic();
     let page = async |limit: u16, offset: u32| {
@@ -494,13 +720,15 @@ async fn the_setting_off_and_each_vector_side_failure_give_the_lexical_page() {
     let lexical = world.search(&world.by_words(), "rain issues").await;
     assert_eq!(paths(&lexical), ["coral.providers.github.issues.list"]);
     let fused = world.search(&world.semantic(), "rain issues").await;
+    // The outlook Tools are as near to the query as the forecast Tool, so
+    // not strong: they follow every Tool.
     assert_eq!(
         paths(&fused),
         [
             "coral.providers.github.issues.list",
+            "coral.providers.weather.getForecast",
             "coral.private.outlook.daily",
             "coral.shared.outlook.daily",
-            "coral.providers.weather.getForecast",
         ]
     );
     let drop_vector_table = match world.modules.search.database.system() {
@@ -579,8 +807,18 @@ async fn a_fused_search_exports_the_query_embedding_and_each_ranking_under_the_s
     };
     assert_eq!(embed.parent_span_id, search.span_context.span_id());
     assert!(
-        exported_keys(embed).is_empty() && exported_keys(search).is_empty(),
-        "neither span carries a field: {embed:#?} {search:#?}"
+        exported_keys(embed).is_empty(),
+        "the query embedding's span carries no field: {embed:#?}"
+    );
+    assert_eq!(
+        exported_keys(search),
+        [
+            "coral.search.authored_strong.distance",
+            "coral.search.authored_strong.phrase",
+            "coral.search.authored_strong.rare_path_word",
+            "coral.search.provider_tool_distance",
+        ],
+        "the export filter passes the search span's counts and nothing else"
     );
     let ranks = named("coral.search.rank");
     assert_eq!(ranks.len(), 3, "one span for each retriever");
@@ -589,6 +827,68 @@ async fn a_fused_search_exports_the_query_embedding_and_each_ranking_under_the_s
             .iter()
             .all(|rank| rank.parent_span_id == search.span_context.span_id())
     );
+}
+
+#[tokio::test]
+async fn the_search_span_counts_the_authored_tools_each_rule_makes_strong() {
+    let world = World::anchorage().await;
+    // For `moon anchor water`: a phrase, a rare path word, the quay Tool
+    // nearer than every Tool, and the harbour Tool, as near as the Tides
+    // Tool. The quay and harbour Tools share only `water` with the query.
+    for (path, description) in [
+        ("watch.log", "Log of moon anchor water"),
+        ("anchor.depths", "Depth below the keel"),
+        ("quay.tides01", QUAY),
+        ("harbour.tideTimes", HARBOUR),
+    ] {
+        world.save_and_publish(path, description).await;
+    }
+    world.index_and_embed().await;
+    let exported = ExportCapture::default();
+    let spans = SpanCapture::exporting_to(&exported);
+    let _traced = tracing::subscriber::set_default(spans.subscriber());
+    // Each case: the Authored Tools made strong by a phrase, by a rare path
+    // word and by distance, Private and Shared together, and whether a Tool
+    // distance was there.
+    let cases = [
+        ("a fused search", world.semantic(), ["2", "2", "2", "true"]),
+        ("the setting off", world.by_words(), ["2", "2", "0", "false"]),
+    ];
+    for (case, search, expected) in cases {
+        let before = exported.spans().len();
+
+        world.search(&search, "moon anchor water").await;
+
+        let left = eventually(std::time::Duration::from_secs(30), async || {
+            exported
+                .spans()
+                .iter()
+                .skip(before)
+                .any(|span| span.name == "coral.search")
+        })
+        .await;
+        assert!(left, "{case}: the search span leaves the host");
+        let spans = exported.spans();
+        let [search] = spans
+            .iter()
+            .skip(before)
+            .filter(|span| span.name == "coral.search")
+            .collect::<Vec<_>>()[..]
+        else {
+            panic!("{case}: one search span");
+        };
+        assert_eq!(
+            [
+                "coral.search.authored_strong.phrase",
+                "coral.search.authored_strong.rare_path_word",
+                "coral.search.authored_strong.distance",
+                "coral.search.provider_tool_distance",
+            ]
+            .map(|key| attribute(search, key)),
+            expected.map(|value| Some(value.to_owned())),
+            "{case}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -730,6 +1030,28 @@ async fn assert_pages_of_one_order(all: &[&str], page: impl AsyncFn(u16, u32) ->
         paged.extend(paths(&page(3, offset).await).into_iter().map(str::to_owned));
     }
     assert_eq!(paged, all, "offset pages of three");
+}
+
+/// The kind of each hit on `page`, in page order.
+fn kinds(page: &SearchPage) -> Vec<EntityKind> {
+    page.hits().iter().map(SearchHit::kind).collect()
+}
+
+/// The Call Paths of the hits that follow every Tool on `page`, sorted.
+fn after_every_tool(page: &SearchPage) -> Vec<String> {
+    let start = page
+        .hits()
+        .iter()
+        .rposition(|hit| hit.kind() == EntityKind::ProviderTool)
+        .map_or(0, |last| last + 1);
+    let mut after = page
+        .hits()
+        .iter()
+        .skip(start)
+        .map(|hit| hit.call_path().as_str().to_owned())
+        .collect::<Vec<_>>();
+    after.sort_unstable();
+    after
 }
 
 /// The Call Paths of the hits of `kind` on `page`, in page order.
@@ -1115,6 +1437,22 @@ impl World {
         Self::with(Arc::new(Meanings::weather())).await
     }
 
+    /// A World of [`Meanings::tides`] with the Notes and Tides Providers.
+    /// For the query `moon anchor`, the Tides Tool is the nearest Tool, and
+    /// as near as a text about tides alone can be. The fourteen other Tools
+    /// mean nothing of the query: the vector list marks four of them
+    /// strong and ten weak.
+    async fn anchorage() -> Self {
+        let world = Self::with(Arc::new(Meanings::tides())).await;
+        world.publish_notes().await;
+        world
+            .modules
+            .publish_openapi(&world.user, &world.workspace, TIDES, "tides", 50)
+            .await;
+        world.index_and_embed().await;
+        world
+    }
+
     async fn with(model: Arc<dyn Embed>) -> Self {
         let modules = TestModules::new().await;
         let user = organization_user(modules.search.database.clone(), USER).await;
@@ -1151,6 +1489,41 @@ impl World {
         background.abort();
     }
 
+    /// Publishes the Notes Provider: twelve Tools of no meaning, whose
+    /// vectors are all the same, as is the GitHub Tool's. The index learns
+    /// of it at its next pass.
+    async fn publish_notes(&self) {
+        let operations = (1..=12)
+            .map(|number| {
+                (
+                    format!("/notes/{number}"),
+                    serde_json::json!({ "get": {
+                        "operationId": format!("listNotes{number:02}"),
+                        "summary": format!("List notes {number}"),
+                        "description": "Returns notes.",
+                        "responses": { "200": { "description": "OK" } }
+                    }}),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let notes = serde_json::json!({
+            "openapi": "3.1.0",
+            "info": { "title": "Notes", "version": "1.0.0" },
+            "servers": [{ "url": "https://notes.example" }],
+            "security": [],
+            "paths": operations,
+        });
+        self.modules
+            .publish_openapi(
+                &self.user,
+                &self.workspace,
+                &notes.to_string(),
+                "notes",
+                40,
+            )
+            .await;
+    }
+
     /// Discovery whose engine embeds each query with the World's model.
     fn semantic(&self) -> UniversalSearchModule {
         self.with_model(ModelLoad::Ready(Arc::clone(&self.model)))
@@ -1162,6 +1535,17 @@ impl World {
             self.modules.search.database.clone(),
             self.modules.workspaces.clone(),
         )
+    }
+
+    /// Discovery whose engine embeds each query with the World's model, and
+    /// whose Tool retriever's vector query fails.
+    fn failing_tool_vector_query(&self) -> UniversalSearchModule {
+        let (_ready, model) = watch::channel(ModelLoad::Ready(Arc::clone(&self.model)));
+        UniversalSearchModule::with_failing_tool_vector_query(
+            self.modules.search.database.clone(),
+            self.modules.workspaces.clone(),
+        )
+        .with_model(model)
     }
 
     /// Discovery whose model slot holds `model`.
@@ -1211,6 +1595,28 @@ impl World {
                 ),
             )
             .await
+    }
+
+    /// Saves the User's Private Tool at `path` with `description`, and
+    /// publishes it as the Shared Tool at the same path, which policy lets
+    /// every caller call.
+    async fn save_and_publish(&self, path: &str, description: &str) {
+        let origin = self.save(&self.principal, path, description).await;
+        self.publish(path, description, &origin, ToolAccessState::Enabled)
+            .await;
+    }
+
+    /// The User's page for `moon anchor` with room for every hit, through
+    /// `filter` when it names a Provider namespace.
+    async fn anchor(&self, search: &UniversalSearchModule, filter: Option<&str>) -> SearchPage {
+        let mut request = SearchRequest::query(SearchQuery::parse("moon anchor").unwrap())
+            .with_limit(SearchLimit::parse(50).unwrap());
+        if let Some(namespace) = filter {
+            request = request.with_provider(
+                &ProviderCallRoot::parse(&format!("coral.providers.{namespace}")).unwrap(),
+            );
+        }
+        self.request(search, &self.principal, request).await
     }
 
     /// Disables `shared` by the User's rule as Workspace Owner.

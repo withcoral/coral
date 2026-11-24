@@ -27,8 +27,9 @@ use super::plan::QueryPlan;
 use super::repository;
 use super::vector_list::{self, VectorList};
 use super::{
-    Answer, AuthoredToolRef, EntityRef, EntityRetriever, Hydrated, LexicalReason, Listing,
-    QueryError, QueryRequest, RequestContext, RetrievalError, Semantic, WindowEntry, count,
+    Answer, AuthoredStrong, AuthoredToolRef, EntityRef, EntityRetriever, Hydrated, LexicalReason,
+    Listing, Mark, QueryError, QueryRequest, RequestContext, RetrievalError, Semantic, WindowEntry,
+    count,
 };
 use crate::hit::{HitMaterial, hit_text};
 use crate::signature::Callable;
@@ -102,6 +103,7 @@ impl EntityRetriever for AuthoredToolRetriever {
                 window: Vec::new(),
                 coverage: RetrieverCoverage::new(eligible, eligible, 0, false),
                 semantic: Some(Semantic::of(&request.vector)),
+                authored_strong: Some(AuthoredStrong::default()),
             });
         };
         let ids = current.keys().cloned().collect::<Vec<_>>();
@@ -144,13 +146,14 @@ impl EntityRetriever for AuthoredToolRetriever {
             request.window,
         );
         // The content words that decide each entry's mark by the rare-word
-        // rule: none for an entry that a phrase or the vector list makes
-        // strong already.
+        // rule: none for an entry that a phrase makes strong already. A place
+        // in the vector list makes no Authored Tool strong: the rerank step
+        // judges its distance.
         let marked = merged
             .into_iter()
             .map(|entry| {
                 let matched = &entry.entry.matched;
-                let words = if entry.strong_by_vector() || matched.phrase_points > 0 {
+                let words = if matched.phrase_points > 0 {
                     Vec::new()
                 } else {
                     plan.content_words_starting([matched.name.as_str()])
@@ -166,8 +169,9 @@ impl EntityRetriever for AuthoredToolRetriever {
             .collect::<Vec<_>>();
         let rare = rare_path_words(transaction, context.workspace_id, &asked).await?;
         let mut window = Vec::new();
+        let mut strong = AuthoredStrong::default();
         for (entry, words) in marked {
-            let strong_by_vector = entry.strong_by_vector();
+            let distance = entry.distance;
             let ranked = entry.entry;
             let material =
                 current
@@ -175,8 +179,13 @@ impl EntityRetriever for AuthoredToolRetriever {
                     .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
                         "a ranked Authored Tool is not one the caller discovers",
                     )))?;
+            let rule = strong_rule(&ranked.matched, &words, &rare);
+            if let Some(rule) = rule {
+                strong.count(rule);
+            }
             window.push(WindowEntry {
-                strong: strong_by_vector || strong_authored_tool(&ranked.matched, &words, &rare),
+                mark: Mark::of(rule.is_some()),
+                distance,
                 entity: EntityRef::AuthoredTool(AuthoredToolRef {
                     material: material.clone(),
                     call_path: ranked.call_path,
@@ -192,6 +201,7 @@ impl EntityRetriever for AuthoredToolRetriever {
             ),
             window,
             semantic: Some(semantic),
+            authored_strong: Some(strong),
         })
     }
 
@@ -421,17 +431,41 @@ pub(crate) async fn explain_vector_query(
 /// Provider Tool. The result moves little between 2% and 10% (#3412).
 const RARE_PATH_WORD_PERCENT: i64 = 10;
 
-/// Whether a ranked Authored Tool is a strong match, by its retriever's own
-/// rule: a field holds the query's words in order, or a content word of the
-/// query that starts a word of its path, one of `path_words`, is in `rare`.
-/// One that shares only description words or common path words with the
-/// query is weak, so it follows every strong Tool.
-fn strong_authored_tool(
+/// The first of its retriever's own rules that makes a ranked Authored Tool
+/// a strong match: a field holds the query's words in order, or a content
+/// word of the query that starts a word of its path, one of `path_words`,
+/// is in `rare`. One that shares only description words or common path
+/// words with the query is not strong by these rules; the rerank step
+/// judges its distance.
+fn strong_rule(
     matched: &repository::RowMatch,
     path_words: &[&str],
     rare: &HashSet<String>,
-) -> bool {
-    matched.phrase_points > 0 || path_words.iter().any(|word| rare.contains(*word))
+) -> Option<StrongRule> {
+    if matched.phrase_points > 0 {
+        Some(StrongRule::Phrase)
+    } else if path_words.iter().any(|word| rare.contains(*word)) {
+        Some(StrongRule::RarePathWord)
+    } else {
+        None
+    }
+}
+
+/// A rule of the Authored Tool retriever that makes an entry strong.
+#[derive(Clone, Copy)]
+enum StrongRule {
+    Phrase,
+    RarePathWord,
+}
+
+impl AuthoredStrong {
+    /// Counts one entry that `rule` made strong.
+    const fn count(&mut self, rule: StrongRule) {
+        match rule {
+            StrongRule::Phrase => self.phrase += 1,
+            StrongRule::RarePathWord => self.rare_path_word += 1,
+        }
+    }
 }
 
 /// Which of `words`, distinct content words of the query that start a word

@@ -18,7 +18,7 @@ pub(crate) mod tools;
 pub(crate) mod vector_list;
 
 pub(crate) use repository::{abandon_query, begin_query, end_query};
-pub(crate) use vector_list::{LexicalReason, Semantic};
+pub(crate) use vector_list::{Distance, LexicalReason, Semantic};
 
 use std::sync::Arc;
 
@@ -106,16 +106,52 @@ pub(crate) struct Answer {
     /// Whether the window merged a vector list; `None` for a retriever
     /// that keeps no vectors.
     pub(crate) semantic: Option<Semantic>,
+    /// How many entries of the window each of the Authored Tool rules made
+    /// strong, for the search span; `None` for the Tool retriever.
+    pub(crate) authored_strong: Option<AuthoredStrong>,
 }
 
-/// One Entity of a ranked window and its retriever's mark. A retriever
-/// marks an Entity strong when, by its own rule and over its own signals, the
-/// Entity plainly answers the query; the engine puts every strong Entity of
-/// every window before the weak ones, each group by position. Scores stay in
-/// the retriever, since they do not compare across kinds.
+/// How many Authored Tools of a window each of their retriever's rules made
+/// strong. An entry counts under its first rule that holds: a phrase, then a
+/// rare path word.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AuthoredStrong {
+    pub(crate) phrase: usize,
+    pub(crate) rare_path_word: usize,
+}
+
+/// One Entity of a ranked window and its mark. A retriever marks an Entity
+/// strong when, by its own rule and over its own signals, the Entity plainly
+/// answers the query, and weak otherwise; the rerank step can change the mark
+/// of an Authored Tool. Scores stay in the retriever, since they do not
+/// compare across kinds.
 pub(crate) struct WindowEntry {
     pub(crate) entity: EntityRef,
-    pub(crate) strong: bool,
+    pub(crate) mark: Mark,
+    /// The Entity's distance from the query when its retriever's vector
+    /// list holds it.
+    pub(crate) distance: Option<Distance>,
+}
+
+/// Where the engine puts a window entry: every strong entry of every window
+/// before every weak one, and every weak one before every last one, each
+/// group by position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Mark {
+    /// The Entity plainly answers the query.
+    Strong,
+    /// The Entity matched the query, and no rule makes it strong.
+    Weak,
+    /// An Authored Tool that no rule makes strong. Only the rerank step
+    /// gives this mark.
+    Last,
+}
+
+impl Mark {
+    /// A retriever's mark: strong when its own rule holds, weak otherwise.
+    pub(crate) const fn of(strong: bool) -> Self {
+        if strong { Self::Strong } else { Self::Weak }
+    }
 }
 
 /// Why a retriever could not answer.

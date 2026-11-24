@@ -67,6 +67,7 @@ mod model_load;
 mod page;
 pub mod projection;
 mod readiness;
+mod rerank;
 mod retriever;
 mod signature;
 mod snippet;
@@ -86,8 +87,8 @@ use page::{Ranked, hydrate_page_in_transaction};
 use retriever::authored_tools::AuthoredToolRetriever;
 use retriever::tools::ToolRetriever;
 use retriever::{
-    Answer, EntityRetriever, LexicalReason, QueryError, QueryRequest, RequestContext, Semantic,
-    WindowEntry, abandon_query, begin_query, count, end_query,
+    Answer, AuthoredStrong, EntityRetriever, LexicalReason, QueryError, QueryRequest,
+    RequestContext, Semantic, WindowEntry, abandon_query, begin_query, count, end_query,
 };
 use tracing::Instrument as _;
 use tracing::field::Empty;
@@ -183,11 +184,27 @@ impl UniversalSearchModule {
             workspaces,
             ToolRetriever {
                 fail_ranking: kinds.contains(&EntityKind::ProviderTool),
+                ..ToolRetriever::default()
             },
             |kind| AuthoredToolRetriever {
                 fail_ranking: kinds.contains(&EntityKind::authored(kind)),
                 ..AuthoredToolRetriever::new(kind)
             },
+        )
+    }
+
+    /// Builds discovery whose Tool retriever's vector query fails, through
+    /// the same path a failing vector query takes.
+    #[cfg(test)]
+    fn with_failing_tool_vector_query(database: Arc<Database>, workspaces: WorkspaceModule) -> Self {
+        Self::with_retrievers(
+            database,
+            workspaces,
+            ToolRetriever {
+                fail_vector_query: true,
+                ..ToolRetriever::default()
+            },
+            AuthoredToolRetriever::new,
         )
     }
 
@@ -269,7 +286,13 @@ impl UniversalSearchModule {
         request: &SearchRequest,
     ) -> Result<SearchPage, Error> {
         self.page_in_span(actor, workspace_id, request)
-            .instrument(tracing::info_span!("coral.search"))
+            .instrument(tracing::info_span!(
+                "coral.search",
+                coral.search.authored_strong.phrase = Empty,
+                coral.search.authored_strong.rare_path_word = Empty,
+                coral.search.authored_strong.distance = Empty,
+                coral.search.provider_tool_distance = Empty,
+            ))
             .await
     }
 
@@ -437,6 +460,7 @@ impl UniversalSearchModule {
         let mut statuses = Vec::with_capacity(self.retrievers.len());
         let mut applied = 0usize;
         let mut failed = 0usize;
+        let mut authored = AuthoredStrong::default();
         for (retriever_index, retriever) in self.retrievers.iter().enumerate() {
             begin_query(transaction).await?;
             let span = tracing::info_span!(
@@ -454,9 +478,14 @@ impl UniversalSearchModule {
                     window,
                     coverage,
                     semantic,
+                    authored_strong,
                 }) => {
                     if let Some(semantic) = semantic {
                         record_semantic(&span, semantic);
+                    }
+                    if let Some(strong) = authored_strong {
+                        authored.phrase += strong.phrase;
+                        authored.rare_path_word += strong.rare_path_word;
                     }
                     end_query(transaction).await?;
                     applied += 1;
@@ -487,6 +516,8 @@ impl UniversalSearchModule {
         if applied > 0 && failed == applied {
             return Err(Error::ServiceUnavailable);
         }
+        let reranked = rerank::rerank(&mut windows);
+        record_marks(&tracing::Span::current(), authored, &reranked);
         Ok((fuse(windows), statuses))
     }
 
@@ -714,11 +745,10 @@ fn query_terms(query: &str) -> Vec<String> {
 
 /// Fuses the retrievers' windows, each `(retriever index, window)` in
 /// retriever order: the strong entries of every window by position, then the
-/// weak ones by position. At equal position the earlier retriever comes
-/// first. Each retriever marks its own entries by its own rule and signals,
-/// so only a position and that mark cross into the engine, and no score is
-/// compared across kinds. A weak entry is demoted below every strong one,
-/// never dropped.
+/// weak ones by position, then the last ones by position. At equal position
+/// the earlier retriever comes first. Only a position and a mark cross into
+/// `fuse`, and no score is compared across kinds. A weak or last entry is
+/// demoted, never dropped.
 fn fuse(windows: Vec<(usize, Vec<WindowEntry>)>) -> Vec<Ranked> {
     let mut entries = windows
         .into_iter()
@@ -726,15 +756,15 @@ fn fuse(windows: Vec<(usize, Vec<WindowEntry>)>) -> Vec<Ranked> {
             window
                 .into_iter()
                 .enumerate()
-                .map(move |(position, entry)| (!entry.strong, position, retriever_index, entry))
+                .map(move |(position, entry)| (entry.mark, position, retriever_index, entry))
         })
         .collect::<Vec<_>>();
-    entries.sort_by_key(|(weak, position, retriever_index, _entry)| {
-        (*weak, *position, *retriever_index)
+    entries.sort_by_key(|(mark, position, retriever_index, _entry)| {
+        (*mark, *position, *retriever_index)
     });
     entries
         .into_iter()
-        .map(|(_weak, _position, retriever_index, entry)| Ranked {
+        .map(|(_mark, _position, retriever_index, entry)| Ranked {
             retriever_index,
             entity: entry.entity,
         })
@@ -751,6 +781,27 @@ fn record_semantic(span: &tracing::Span, semantic: Semantic) {
             safe::kind(reason.as_str()),
         );
     }
+}
+
+/// Records on the search span how many Authored Tools each rule made strong,
+/// and whether a Provider Tool distance was there to compare with.
+fn record_marks(span: &tracing::Span, authored: AuthoredStrong, reranked: &rerank::Reranked) {
+    span.record(
+        "coral.search.authored_strong.phrase",
+        safe::number(count(authored.phrase)),
+    );
+    span.record(
+        "coral.search.authored_strong.rare_path_word",
+        safe::number(count(authored.rare_path_word)),
+    );
+    span.record(
+        "coral.search.authored_strong.distance",
+        safe::number(count(reranked.strong_by_distance)),
+    );
+    span.record(
+        "coral.search.provider_tool_distance",
+        safe::flag(reranked.tool_distance),
+    );
 }
 
 /// A ranked retriever's state follows from its coverage.
