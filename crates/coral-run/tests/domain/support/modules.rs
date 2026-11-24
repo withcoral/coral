@@ -93,6 +93,8 @@ impl CancellationCaller {
 }
 
 pub(crate) struct TestModules {
+    /// The tasks that serve Run Modules' Runs on Run Executors.
+    pub(crate) serving: Mutex<Vec<Serving>>,
     pub(crate) test_database: TestDatabase,
     pub(crate) database: Arc<coral_db::Database>,
     pub(crate) workspaces: WorkspaceModule,
@@ -198,6 +200,7 @@ impl TestModules {
             runs,
             upstream,
             clock,
+            serving: Mutex::new(Vec::new()),
         }
     }
 
@@ -215,6 +218,11 @@ impl TestModules {
         }
     }
 
+    /// [`Self::live_runs`], served on a Run Executor in the test process.
+    pub(crate) async fn live(&self, accounts: Option<AccountModule>) -> RunModule {
+        self.served(self.live_runs(accounts)).await
+    }
+
     /// [`Self::live_runs`] without Accounts, compiling through `compiler`.
     pub(crate) fn live_runs_compiling_through(
         &self,
@@ -229,7 +237,6 @@ impl TestModules {
                 .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
             compiler,
             crate::CoralInstanceId::generate(),
-            crate::RunInbox::table(self.database.clone()),
         )
         .expect("start the real Program runtime")
         .with_human_interface(test_reef());
@@ -237,59 +244,25 @@ impl TestModules {
         runs
     }
 
-    /// Another process over this fixture's database, clock and execution
-    /// policy, with none of this process's Run Owners: the process a rolling
-    /// update starts beside this one, or the one that boots after it died.
+    /// Another Coral Instance over this fixture's database, clock and
+    /// execution policy: the one a Run's stream moves to, or that receives
+    /// an outside request for a Run another holds.
     pub(crate) fn next_process(&self) -> RunModule {
-        self.next_process_observed(Arc::new(NoopExecutionObserver))
-    }
-
-    /// [`Self::next_process`], with `observer` on its Run Owners.
-    pub(crate) fn next_process_observed(&self, observer: Arc<dyn ExecutionObserver>) -> RunModule {
         let mut runs = RunModule::with_adapters(
             self.database.clone(),
             self.workspaces.clone(),
             self.providers.clone(),
-            Arc::new(ImmediateEngine::default()),
+            Arc::new(ImmediateEngine),
             self.upstream.clone(),
             self.clock.clone(),
-            crate::TestObservers::new(Arc::new(NoopInvocationObserver), observer),
+            crate::TestObservers::new(
+                Arc::new(NoopInvocationObserver),
+                Arc::new(NoopExecutionObserver),
+            ),
         )
         .with_human_interface(test_reef());
         runs.execution_policy = self.runs.execution_policy;
         runs
-    }
-
-    /// Hands the Run to `holder`, a process that is not this fixture: the
-    /// Run row's claim becomes `holder`'s (its execution claim too once the
-    /// Run started), with `holder` as its Coral Instance, its lease ending at
-    /// `lease_until_unix_nanos`, or at the Run's acceptance, long lapsed, for
-    /// `None`: a holder that died. An owner of this fixture still live for
-    /// the Run loses it at its next commit and writes nothing more. Returns
-    /// the Run row as handed over.
-    pub(crate) async fn hand_to(
-        &self,
-        workspace_id: &coral_workspace::WorkspaceId,
-        run_id: &crate::RunId,
-        holder: &str,
-        lease_until_unix_nanos: Option<i64>,
-    ) -> crate::lifecycle::RunRecord {
-        let lease = lease_until_unix_nanos
-            .map_or_else(|| "accepted_at_unix_nanos".to_string(), |at| at.to_string());
-        let running = RunState::Running.as_storage_str();
-        assert_eq!(
-            self.inject_fault(&format!(
-                "UPDATE program_run_records SET \
-                 execution_claim_id = CASE WHEN execution_claim_id IS NULL THEN NULL \
-                 ELSE '{holder}' END, \
-                 worker_claim_id = '{holder}', worker_claim_expires_at_unix_nanos = {lease}, \
-                 holder_instance_id = '{holder}' \
-                 WHERE id = '{run_id}' AND state = '{running}'"
-            ))
-            .await,
-            1
-        );
-        self.run_record(workspace_id, run_id).await
     }
 
     /// Accounts over a filesystem vault in a fresh directory, never the OS
@@ -449,67 +422,6 @@ impl TestModules {
             )
             .await
             .expect("require approval for the fixture Tool");
-    }
-
-    /// Puts `request` in the Run's Run Inbox, as the Coral Instance that
-    /// received it does, without waiting for an owner to record it. The Run
-    /// must take it: running, with no request for the same decided thing
-    /// waiting (and, for a cancellation, no termination recorded).
-    pub(crate) async fn submit_to_inbox(
-        &self,
-        workspace_id: &coral_workspace::WorkspaceId,
-        run_id: &crate::RunId,
-        request: crate::run_inbox::OutsideRequest,
-    ) {
-        let request = crate::run_inbox::InboxRequest {
-            workspace_id: workspace_id.clone(),
-            run_id: run_id.clone(),
-            request,
-        };
-        let waiting = self.inbox_rows(workspace_id, run_id).await;
-        let mut transaction = self.database.begin().await.expect("begin");
-        self.runs
-            .inbox
-            .submit(&mut transaction, &request, self.runs.now().expect("clock"))
-            .await
-            .expect("submit to the Run Inbox");
-        transaction.commit().await.expect("commit");
-        assert_eq!(
-            self.inbox_rows(workspace_id, run_id).await,
-            waiting + 1,
-            "the Run Inbox took the request"
-        );
-    }
-
-    /// The rows waiting in the Run's Run Inbox.
-    pub(crate) async fn inbox_rows(
-        &self,
-        workspace_id: &coral_workspace::WorkspaceId,
-        run_id: &crate::RunId,
-    ) -> usize {
-        self.rows_of_run("program_run_inbox", workspace_id, run_id)
-            .await
-    }
-
-    async fn rows_of_run(
-        &self,
-        table: &str,
-        workspace_id: &coral_workspace::WorkspaceId,
-        run_id: &crate::RunId,
-    ) -> usize {
-        let rows: Vec<(String,)> = self
-            .database
-            .fetch_all(
-                Query::select()
-                    .column(Alias::new("run_id"))
-                    .from(Alias::new(table))
-                    .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace_id.to_string()))
-                    .and_where(Expr::col(Alias::new("run_id")).eq(run_id.as_str()))
-                    .to_owned(),
-            )
-            .await
-            .unwrap_or_else(|error| panic!("read the Run's rows in {table}: {error}"));
-        rows.len()
     }
 
     /// Installs or removes a persistence fault, such as a constraint that rejects
@@ -758,38 +670,6 @@ impl TestModules {
         staged.run_id().clone()
     }
 
-    /// Gives a staged Run `claim_id` as its worker and execution claim, with a
-    /// lease that ends at `lease_until_unix_nanos`, as the test's own writer:
-    /// no owner exists for a staged Run, so the test's chunks are its own.
-    pub(crate) async fn claim_run(
-        &self,
-        workspace_id: &coral_workspace::WorkspaceId,
-        run_id: &crate::RunId,
-        claim_id: &str,
-        lease_until_unix_nanos: i64,
-    ) {
-        let mut transaction = self.database.begin().await.expect("begin claim");
-        let run = crate::run_repository::find_exact_in_transaction(
-            &mut transaction,
-            workspace_id,
-            run_id,
-        )
-        .await
-        .expect("read the Run")
-        .expect("staged Run exists");
-        let now = self.clock.now_unix_nanos().expect("clock");
-        crate::run_repository::claim_for_test(
-            &mut transaction,
-            &run,
-            claim_id,
-            lease_until_unix_nanos,
-            now,
-        )
-        .await
-        .expect("claim the staged Run");
-        transaction.commit().await.expect("commit claim");
-    }
-
     /// The Run row as the repository decodes it, from a fresh read snapshot.
     pub(crate) async fn run_record(
         &self,
@@ -820,24 +700,6 @@ impl TestModules {
         .await;
         transaction.rollback().await.expect("end read snapshot");
         run.map(|run| run.expect("Run exists"))
-    }
-
-    /// Releases the Run's worker claim and its lease, as the previous
-    /// release's recovery left an unstarted Run, and returns the Run row.
-    pub(crate) async fn release_worker_claim(
-        &self,
-        workspace_id: &coral_workspace::WorkspaceId,
-        run_id: &crate::RunId,
-    ) -> crate::lifecycle::RunRecord {
-        assert_eq!(
-            self.inject_fault(&format!(
-                "UPDATE program_run_records SET worker_claim_id = NULL, \
-                 worker_claim_expires_at_unix_nanos = NULL WHERE id = '{run_id}'"
-            ))
-            .await,
-            1
-        );
-        self.run_record(workspace_id, run_id).await
     }
 
     /// The Run row once it is terminal; fails after [`EVENTUALLY`].
@@ -892,33 +754,6 @@ impl TestModules {
         transaction.commit().await.expect("end read snapshot");
         assert!(!has_more, "the test reads every Event in one page");
         events
-    }
-
-    /// Lapses the lease of this process's own holder of the Run, which keeps
-    /// its claim: an owner that stopped renewing (hung) while its process
-    /// lives. The next process's sweep takes the Run over from that claim.
-    pub(crate) async fn expire_worker_claim(
-        &self,
-        workspace_id: &coral_workspace::WorkspaceId,
-        run_id: &crate::RunId,
-        expires_at_unix_nanos: i64,
-    ) {
-        let changed = self
-            .database
-            .execute(
-                Query::update()
-                    .table(Alias::new("program_run_records"))
-                    .value(
-                        Alias::new("worker_claim_expires_at_unix_nanos"),
-                        expires_at_unix_nanos,
-                    )
-                    .and_where(Expr::col(Alias::new("workspace_id")).eq(workspace_id.to_string()))
-                    .and_where(Expr::col(Alias::new("id")).eq(run_id.to_string()))
-                    .to_owned(),
-            )
-            .await
-            .expect("expire worker claim through private recovery control");
-        assert_eq!(changed, 1);
     }
 }
 
@@ -1668,11 +1503,7 @@ pub(crate) fn test_invoker(
     tool: &ToolFixture,
     run: &crate::lifecycle::RunRecord,
 ) -> crate::invocation::ToolInvoker {
-    let claim_id = run
-        .execution_claim_id
-        .clone()
-        .or_else(|| run.worker_claim_id.clone())
-        .expect("a claimed Run");
+    let claim_id = run.execution_claim_id.clone().expect("a claimed Run");
     let deadline = run.deadline_at_unix_nanos.expect("a started Run");
     let accepted = crate::types::AcceptedRun {
         id: run.id.clone(),
@@ -1682,14 +1513,16 @@ pub(crate) fn test_invoker(
         shutdown_grace_nanos: run.shutdown_grace_nanos,
         value_limits: run.value_limits,
         claim_id: claim_id.clone(),
-        worker_claim_expires_at_unix_nanos: run
-            .worker_claim_expires_at_unix_nanos
-            .unwrap_or(deadline),
         linked_snapshots: std::collections::HashMap::new(),
         trace: run.trace.clone(),
         time_limit_nanos: None,
     };
-    let (owner, _mailbox) = crate::owner::OwnerHandle::new(accepted.held_id(), claim_id);
+    let (owner, _mailbox) = crate::owner::OwnerHandle::for_stream(
+        accepted.held_id(),
+        claim_id,
+        accepted.workspace_id.clone(),
+        false,
+    );
     crate::invocation::ToolInvoker::new(
         None,
         fixture.providers.clone(),

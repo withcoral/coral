@@ -11,9 +11,10 @@ async fn a_spent_cpu_budget_fails_only_its_own_run() {
     ))
     .await;
     let runs = fixture
-        .runs
-        .clone()
-        .with_cpu_budget(crate::RunCpuBudget::new(Duration::from_millis(200)).expect("a budget"));
+        .served(fixture.runs.clone().with_cpu_budget(
+            crate::RunCpuBudget::new(Duration::from_millis(200)).expect("a budget"),
+        ))
+        .await;
     let (workspace, principal) = fixture.user_scope("user:cpu", "Spend the budget").await;
     let busy = runs
         .start(

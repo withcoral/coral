@@ -1,5 +1,7 @@
 //! Program admission, packaging and Private Tool linking.
+use super::run_streams::{Scripted, take};
 use super::*;
+use coral_run_executor::wire::v1::run_response;
 
 #[test]
 fn fixed_program_source_limit_accepts_the_boundary_only() {
@@ -122,7 +124,7 @@ async fn admission_rejects_a_private_tool_change_during_one_source_closure_read(
 #[tokio::test]
 async fn type_only_private_tool_references_do_not_enter_the_runtime_closure() {
     coral_test_support::database_only!(Sqlite);
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
@@ -130,7 +132,7 @@ async fn type_only_private_tool_references_do_not_enter_the_runtime_closure() {
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Private Tool compiler");
-    let runs = fixture.live_runs(None);
+    let runs = fixture.live(None).await;
     let (workspace_id, principal) = fixture
         .user_scope(
             "user:type-only-link",
@@ -173,7 +175,7 @@ async fn type_only_private_tool_references_do_not_enter_the_runtime_closure() {
 #[tokio::test]
 async fn program_calls_one_private_tool_repeatedly_after_top_level_initialization() {
     coral_test_support::database_only!(Sqlite);
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
@@ -181,7 +183,7 @@ async fn program_calls_one_private_tool_repeatedly_after_top_level_initializatio
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Private Tool compiler");
-    let runs = fixture.live_runs(None);
+    let runs = fixture.live(None).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:function-runner", "Call Private Tool")
         .await;
@@ -236,7 +238,7 @@ async fn program_calls_one_private_tool_repeatedly_after_top_level_initializatio
 #[tokio::test]
 async fn program_links_multiple_transitive_private_tools_into_one_run() {
     coral_test_support::database_only!(Sqlite);
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
@@ -244,7 +246,7 @@ async fn program_links_multiple_transitive_private_tools_into_one_run() {
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Private Tool compiler");
-    let runs = fixture.live_runs(None);
+    let runs = fixture.live(None).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:closure-runner", "Link a Private Tool closure")
         .await;
@@ -329,7 +331,7 @@ async fn program_links_multiple_transitive_private_tools_into_one_run() {
 async fn admission_analyzes_the_program_and_each_closure_level_once_and_compiles_once() {
     use coral_run_executor::testing::{CompilerCalls, CountingCompiler};
     coral_test_support::database_only!(Sqlite);
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
@@ -341,7 +343,9 @@ async fn admission_analyzes_the_program_and_each_closure_level_once_and_compiles
         coral_run_executor::InProcessCompiler::new(crate::IsolateLimits::default())
             .expect("start the Program compiler"),
     )));
-    let runs = fixture.live_runs_compiling_through(compiler.clone());
+    let runs = fixture
+        .served(fixture.live_runs_compiling_through(compiler.clone()))
+        .await;
     let (workspace_id, principal) = fixture
         .user_scope("user:counted-admission", "Count compiler calls")
         .await;
@@ -475,12 +479,13 @@ async fn linked_private_tool_limit_accepts_the_boundary_and_rejects_overflow_ato
         )
         .await
         .expect("accept exactly 64 linked Private Tools");
-    let boundary = wait_for_terminal(runs, &principal, &workspace_id, boundary.run_id()).await;
+    // The scanning engine's package names how many Tools it linked.
+    let claim = take(runs).await;
+    let mut stream = Scripted::open(runs, &boundary.run_id().to_string(), &claim);
     assert!(matches!(
-        boundary.terminal_outcome(),
-        Some(RunTerminalOutcome::Succeeded {
-            final_value: FinalValue::Present(value)
-        }) if value.as_json() == &serde_json::json!(crate::LINKED_TOOL_MAX_COUNT)
+        stream.next().await,
+        run_response::Message::Package(package)
+            if package.script == crate::LINKED_TOOL_MAX_COUNT.to_string()
     ));
 
     assert!(matches!(
@@ -498,7 +503,7 @@ async fn linked_private_tool_limit_accepts_the_boundary_and_rejects_overflow_ato
 
 #[tokio::test]
 async fn transitive_source_closure_enforces_the_combined_typescript_limit_without_a_run() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
@@ -506,7 +511,7 @@ async fn transitive_source_closure_enforces_the_combined_typescript_limit_withou
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Private Tool compiler");
-    let runs = fixture.live_runs(None);
+    let runs = fixture.live(None).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:closure-bytes", "Bound combined TypeScript")
         .await;
@@ -567,8 +572,8 @@ async fn private_tool_initialization_uses_the_run_surface_once_before_the_progra
         .mount(&server)
         .await;
 
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.live_runs(None);
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
@@ -652,8 +657,9 @@ async fn private_tool_initialization_uses_the_run_surface_once_before_the_progra
 
 #[tokio::test]
 async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
-    let (engine, release) = SnapshotEngine::new();
-    let fixture = TestModules::new(Arc::new(engine.clone())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    // No take loop runs until the Tool is replaced and deleted.
+    let runs = fixture.live_runs(None);
     let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
@@ -679,8 +685,7 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
         .await
         .expect("save original");
 
-    let accepted = fixture
-        .runs
+    let accepted = runs
         .start(
             &principal,
             &workspace_id,
@@ -688,7 +693,6 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
         )
         .await
         .expect("accept Run with original source");
-    wait_until(|| engine.started.load(Ordering::SeqCst)).await;
 
     private_tools
         .save(
@@ -713,8 +717,7 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
         )
         .await
         .expect("delete after Run acceptance");
-    let detail = fixture
-        .runs
+    let detail = runs
         .inspect_run(
             &principal,
             &workspace_id,
@@ -731,19 +734,17 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
     let snapshot = detail.linked_private_tools.first().unwrap();
     assert_eq!(snapshot.path, "snapshots.value");
     assert_eq!(snapshot.source, original_source);
-    release.send(()).expect("release accepted package");
 
-    let terminal =
-        wait_for_terminal(&fixture.runs, &principal, &workspace_id, accepted.run_id()).await;
+    let runs = fixture.served(runs).await;
+    let terminal = wait_for_terminal(&runs, &principal, &workspace_id, accepted.run_id()).await;
     assert!(matches!(
         terminal.terminal_outcome(),
         Some(RunTerminalOutcome::Succeeded {
             final_value: FinalValue::Present(value)
-        }) if value.as_json() == &serde_json::json!({"linked_source": original_source})
+        }) if value.as_json() == &serde_json::json!("original")
     ));
     assert!(matches!(
-        fixture
-            .runs
+        runs
             .start(
                 &principal,
                 &workspace_id,
@@ -751,16 +752,16 @@ async fn replacement_and_deletion_do_not_change_an_accepted_run_package() {
             )
             .await,
         Err(Error::ProgramAdmission(message))
-            if message == "Program:1:1: coral.private.snapshots.value names no Tool that you can call. Find one with coral.search."
+            if message == "Program:1:8: coral.private.snapshots.value names no Tool that you can call. Find one with coral.search."
     ));
-    assert_eq!(fixture.runs.count_runs().await.expect("count Runs"), 1);
+    assert_eq!(runs.count_runs().await.expect("count Runs"), 1);
 }
 
 #[tokio::test]
 async fn admission_rejects_missing_or_computed_private_tool_paths_without_a_run() {
     coral_test_support::database_only!(Sqlite);
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.live_runs(None);
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:link-rejections", "Reject invalid links")
         .await;
@@ -810,7 +811,7 @@ async fn admission_rejects_missing_or_computed_private_tool_paths_without_a_run(
 #[tokio::test]
 async fn direct_repeated_calls_follow_a_unicode_private_tool_live_binding() {
     coral_test_support::database_only!(Sqlite);
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
@@ -818,7 +819,7 @@ async fn direct_repeated_calls_follow_a_unicode_private_tool_live_binding() {
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Private Tool compiler");
-    let runs = fixture.live_runs(None);
+    let runs = fixture.live(None).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:live-binding", "Run live binding")
         .await;
@@ -860,7 +861,7 @@ async fn direct_repeated_calls_follow_a_unicode_private_tool_live_binding() {
 #[tokio::test]
 async fn equivalent_callable_default_export_forms_execute() {
     coral_test_support::database_only!(Sqlite);
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let private_tools = PrivateToolModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
@@ -868,7 +869,7 @@ async fn equivalent_callable_default_export_forms_execute() {
         coral_test_support::TEST_COMPILATION_TIMEOUT,
     )
     .expect("start Private Tool compiler");
-    let runs = fixture.live_runs(None);
+    let runs = fixture.live(None).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:export-forms", "Run export forms")
         .await;
@@ -928,26 +929,24 @@ async fn equivalent_callable_default_export_forms_execute() {
     reason = "one end-to-end admission scenario covers both successful Final Value forms and rejection atomicity"
 )]
 async fn admission_executes_one_durable_package_and_preserves_final_value_presence() {
-    let engine = Arc::new(ImmediateEngine::default());
-    let fixture = TestModules::new(engine.clone()).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let (workspace_id, principal) = fixture.user_scope("user:runner", "Run programs").await;
 
-    let absent = fixture
-        .runs
-        .start(&principal, &workspace_id, submission("absent"))
+    let absent = runs
+        .start(&principal, &workspace_id, submission("return;"))
         .await
         .expect("accept no-value Program");
     assert_eq!(absent.state(), RunState::Running);
     assert_eq!(absent.events(), []);
-    let absent = wait_for_terminal(&fixture.runs, &principal, &workspace_id, absent.run_id()).await;
+    let absent = wait_for_terminal(&runs, &principal, &workspace_id, absent.run_id()).await;
     assert!(matches!(
         absent.terminal_outcome(),
         Some(RunTerminalOutcome::Succeeded {
             final_value: FinalValue::Absent
         })
     ));
-    let completion_winner = fixture
-        .runs
+    let completion_winner = runs
         .cancel(
             &principal,
             &workspace_id,
@@ -958,36 +957,24 @@ async fn admission_executes_one_durable_package_and_preserves_final_value_presen
         .expect("completed Run keeps its terminal result");
     assert_eq!(completion_winner.state(), RunState::Succeeded);
     assert!(
-        !retained_events(
-            &fixture.runs,
-            &principal,
-            &workspace_id,
-            completion_winner.run_id()
-        )
-        .await
-        .iter()
-        .any(|event| matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
+        !retained_events(&runs, &principal, &workspace_id, completion_winner.run_id())
+            .await
+            .iter()
+            .any(|event| matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
     );
 
-    let explicit_null = fixture
-        .runs
-        .start(&principal, &workspace_id, submission("null"))
+    let explicit_null = runs
+        .start(&principal, &workspace_id, submission("return null;"))
         .await
         .expect("accept explicit-null Program");
-    let explicit_null = wait_for_terminal(
-        &fixture.runs,
-        &principal,
-        &workspace_id,
-        explicit_null.run_id(),
-    )
-    .await;
+    let explicit_null =
+        wait_for_terminal(&runs, &principal, &workspace_id, explicit_null.run_id()).await;
     assert!(matches!(
         explicit_null.terminal_outcome(),
         Some(RunTerminalOutcome::Succeeded {
             final_value: FinalValue::Present(value)
         }) if value.as_json().is_null()
     ));
-    assert_eq!(engine.executions.load(Ordering::SeqCst), 2);
 
     let other = organization_user(
         fixture.database.clone(),
@@ -1052,7 +1039,6 @@ async fn admission_executes_one_durable_package_and_preserves_final_value_presen
         Err(Error::ProgramAdmission(_))
     ));
     assert_eq!(fixture.runs.count_runs().await.expect("count Runs"), before);
-    assert_eq!(engine.executions.load(Ordering::SeqCst), 2);
     ProgramSource::parse(&"x".repeat(crate::PROGRAM_SOURCE_MAX_BYTES + 1))
         .expect_err("oversized source must fail before admission");
 }
@@ -1060,8 +1046,8 @@ async fn admission_executes_one_durable_package_and_preserves_final_value_presen
 #[tokio::test]
 async fn accepted_typescript_executes_from_its_stored_package() {
     coral_test_support::database_only!(Sqlite);
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.live_runs(None);
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:typescript-runner", "Execute TypeScript")
         .await;
@@ -1180,12 +1166,12 @@ async fn compilation_holds_no_write_transaction_and_final_recheck_is_atomic() {
         Err(Error::Workspace(coral_workspace::Error::WorkspaceArchived))
     ));
     assert_eq!(fixture.runs.count_runs().await.expect("count Runs"), 0);
-    assert_eq!(engine.executions.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
 async fn standalone_acceptance_can_commit_before_launch_without_a_goal() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let user = organization_user(
         fixture.database.clone(),
         "user:standalone",
@@ -1201,34 +1187,31 @@ async fn standalone_acceptance_can_commit_before_launch_without_a_goal() {
         .await
         .unwrap();
     let actor = AuthenticatedPrincipal::user(user);
-    let prepared = fixture
-        .runs
+    let prepared = runs
         .prepare(
             &actor,
             workspace.id(),
             RunSubmission::new(
-                ProgramSource::parse("null").unwrap(),
+                ProgramSource::parse("return null;").unwrap(),
                 RunTimeout::from_millis(30_000).unwrap(),
             ),
         )
         .await
         .unwrap();
     let mut transaction = fixture.database.begin().await.unwrap();
-    let staged = fixture
-        .runs
+    let staged = runs
         .accept_in_transaction(&mut transaction, prepared)
         .await
         .unwrap();
     let id = staged.run_id().clone();
     transaction.commit().await.unwrap();
-    let accepted = fixture
-        .runs
+    let accepted = runs
         .observe(&actor, workspace.id(), &id, &immediate(None, 100))
         .await
         .unwrap();
     assert_eq!(accepted.state(), RunState::Running);
-    fixture.runs.launch(staged).await.unwrap();
-    let terminal = wait_for_terminal(&fixture.runs, &actor, workspace.id(), &id).await;
+    runs.launch(staged).await.unwrap();
+    let terminal = wait_for_terminal(&runs, &actor, workspace.id(), &id).await;
     assert_eq!(terminal.state(), RunState::Succeeded);
 }
 
@@ -1236,7 +1219,7 @@ async fn standalone_acceptance_can_commit_before_launch_without_a_goal() {
 /// plus the time limit, so time spent waiting to start does not count.
 #[tokio::test]
 async fn the_deadline_counts_the_time_limit_from_the_start() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:start-deadline", "Count the deadline from the start")
         .await;
@@ -1259,18 +1242,20 @@ async fn the_deadline_counts_the_time_limit_from_the_start() {
         "acceptance records none"
     );
 
-    // Less than the lease, which a Run that waits longer has lost.
-    let waited = fixture.runs.execution_policy.claim_lease_nanos() / 2;
+    let waited = 30_000_000_000;
     fixture.clock.next.fetch_add(waited, Ordering::SeqCst);
     fixture.runs.launch(staged).await.unwrap();
-    wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await;
-    let ended = fixture.run_record(&workspace_id, &run_id).await;
-    let started_at = ended
+    let claim = take(&fixture.runs).await;
+    Scripted::open(&fixture.runs, &run_id.to_string(), &claim)
+        .start()
+        .await;
+    let started = fixture.run_record(&workspace_id, &run_id).await;
+    let started_at = started
         .execution_started_at_unix_nanos
         .expect("the Run started");
     assert!(started_at > accepted.accepted_at_unix_nanos + waited);
     assert_eq!(
-        ended.deadline_at_unix_nanos,
+        started.deadline_at_unix_nanos,
         Some(started_at + 60_000_000_000),
         "the start plus the 60 s time limit"
     );

@@ -113,16 +113,6 @@ pub(crate) struct UndecodableRun {
 }
 
 impl RunRow {
-    /// [`Self::decode`], naming the Run whose row does not decode, so a
-    /// caller that reads many Runs can leave that one out.
-    pub(super) fn decode_or_name(self) -> Result<RunRecord, UndecodableRun> {
-        let stored_id = self.id.clone();
-        self.decode().map_err(|error| UndecodableRun {
-            id: RunId::parse(&stored_id).ok().map(HeldRunId::of_held_row),
-            error: Box::new(error),
-        })
-    }
-
     #[expect(
         clippy::too_many_lines,
         reason = "one decode checks every lifecycle column of the Run row together"
@@ -179,7 +169,7 @@ impl RunRow {
         }
         let termination = decode_termination(&self, state)?;
         // An earlier release released the worker claim when it recorded an
-        // interruption; this one keeps it until the terminal chunk.
+        // interruption.
         let released_on_interruption = self.worker_claim_id.is_none()
             && termination
                 .is_some_and(|termination| termination.kind == RunTerminationKind::Interrupted);
@@ -229,7 +219,6 @@ impl RunRow {
             accepted_at_unix_nanos: self.accepted_at_unix_nanos,
             deadline_at_unix_nanos: self.deadline_at_unix_nanos,
             worker_claim_id: self.worker_claim_id,
-            worker_claim_expires_at_unix_nanos: self.worker_claim_expires_at_unix_nanos,
             holder_instance_id: self
                 .holder_instance_id
                 .map(crate::CoralInstanceId::from_stored),

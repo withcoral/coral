@@ -57,6 +57,7 @@ async fn updates_preserve_compatible_approved_work_but_replacement_and_settings_
                 .unwrap();
         }
         fixture.runs = fixture.runs.with_accounts(accounts.clone());
+        fixture.serve().await;
         fixture.require_approval(&tool).await;
         let approvals = fixture.approvals();
         let run = fixture.runs.start(&tool.principal, scope, submission("try { await coral.providers.weather.getForecast({}); return 'dispatched'; } catch (e) { return e.code; }")).await.unwrap();

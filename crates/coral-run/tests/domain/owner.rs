@@ -1,320 +1,116 @@
-//! The Run Owner (ADR 0018): Program requests answer at Applied (at Recorded
-//! while the owner is suspect), the Run Ledger lands in chunks, the lease
-//! rides every commit, and a claim mismatch stops the owner. The `apply`
-//! tables drive the owner's loop without a database.
+//! A Run stream's loop (ADR 0018, ADR 0027): Program requests answer at
+//! Applied (at Recorded above the Applied cap), the Run Ledger lands in
+//! chunks, and a claim mismatch stops the loop. The `apply` tables drive the
+//! loop without a database.
 use super::*;
 
+use super::run_stream_reconnect::finish_with;
+use super::run_streams::{ended, started as started_on_a_stream};
 use crate::owner::{
     CHUNK_WORK_CAP, Check, CommitRejection, DrainStep, Effect, Message, OwnerLimits, OwnerState,
-    ParkedWait, Phase, StartedExecution, Timer,
+    ParkedWait, Phase, StartedExecution, Timer, apply,
 };
-
-/// [`crate::owner::apply`] without the idle tick's re-arming, which every
-/// commit returns for the host to run; the cases below read the rest. The
-/// cases on the tick itself call the owner's `apply` directly.
-fn apply_without_tick(
-    state: &mut OwnerState,
-    message: Message,
-    now_unix_nanos: i64,
-) -> Vec<Effect> {
-    crate::owner::apply(state, message, now_unix_nanos)
-        .into_iter()
-        .filter(|effect| {
-            !matches!(
-                effect,
-                Effect::ArmTimer {
-                    timer: Timer::IdleTick,
-                    ..
-                }
-            )
-        })
-        .collect()
-}
-use crate::owner::RecoveryStep;
 use crate::termination::ShutdownAction;
 use crate::{AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, CoralFailure, FanOutLimit};
+use coral_run_executor::wire::v1::RunEnd as WireEnd;
 
+/// Catches: a burst of Emissions committed one chunk each, or a chunk that
+/// lands out of order or in part. While the first chunk waits to commit,
+/// the rest queue behind it; the burst then lands in a few chunks,
+/// prefix-complete, under the default Applied cap and above the smallest.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_burst_of_emits_commits_in_chunks_and_stays_prefix_complete() {
-    const EMITS: usize = 200;
-    let values = (0..EMITS).map(|index| index.to_string()).collect();
-    let (engine, gates) = BurstEngine::new(values);
-    let (commit_gate, release_commit) = CommitGate::blocking();
-    let fixture = TestModules::with_execution_adapters(
-        engine.clone(),
-        Arc::new(RejectingUpstream),
-        Arc::new(NoopInvocationObserver),
-        commit_gate.clone(),
-    )
-    .await;
-    let (workspace_id, principal) = fixture.user_scope("user:burst", "Emit a burst").await;
-    let accepted = fixture
-        .runs
-        .start(&principal, &workspace_id, submission("burst"))
-        .await
-        .expect("accept the Program");
-    let run_id = accepted.run_id().clone();
-    wait_until_started(&fixture, &workspace_id, &run_id).await;
-    let started = fixture.run_record(&workspace_id, &run_id).await;
-
-    // The first chunk is held at its commit; every emit still answers at
-    // Applied, and nothing lands.
-    gates.go.send(()).expect("start the burst");
-    wait_until(|| engine.acknowledged.load(Ordering::SeqCst) == EMITS).await;
-    assert_eq!(engine.rejected.load(Ordering::SeqCst), 0);
-    assert!(commit_gate.entered());
-    assert_eq!(fixture.run_record(&workspace_id, &run_id).await, started);
-    assert_eq!(
-        fixture.events_after(&workspace_id, &run_id, 1).await,
-        [] as [RunEvent; 0]
-    );
-
-    release_commit.send(()).expect("release the commit");
-    gates.release.send(()).expect("release the Program");
-    let terminal = wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await;
-    assert_eq!(terminal.state(), RunState::Succeeded);
-    let after = fixture.run_record(&workspace_id, &run_id).await;
-    // The held chunk, the one chunk that queued behind it, and the terminal
-    // chunk (an idle tick may add one): far fewer chunks than emits.
-    assert!(
-        after.chunk_sequence - started.chunk_sequence <= 4,
-        "{} chunks for {EMITS} emits",
-        after.chunk_sequence - started.chunk_sequence
-    );
-    let emitted = retained_events(&fixture.runs, &principal, &workspace_id, &run_id)
-        .await
-        .into_iter()
-        .filter_map(|event| match event.kind() {
-            RunEventKind::ProgramEmitted { value } => {
-                Some((event.sequence(), value.as_json().clone()))
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        emitted,
-        (0..EMITS)
-            .map(|index| (index as u64 + 2, serde_json::json!(index)))
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(last_sequence(&after), EMITS as u64 + 2);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn above_the_applied_cap_a_program_request_answers_only_after_its_chunk_commits() {
-    // Three Emissions of one chunk each: the third crosses the smallest cap.
-    let cap = AppliedOutputCap::new(2 * CHUNK_BYTES_CAP).expect("the smallest cap");
-    let value = format!("\"{}\"", "x".repeat(CHUNK_BYTES_CAP - 2));
-    let (engine, gates) = BurstEngine::new(vec![value; 3]);
-    gates.go.send(()).expect("no gate before the burst");
-    let (commit_gate, release_commit) = CommitGate::blocking();
-    let fixture = TestModules::with_execution_adapters(
-        engine.clone(),
-        Arc::new(RejectingUpstream),
-        Arc::new(NoopInvocationObserver),
-        commit_gate.clone(),
-    )
-    .await;
-    let runs = fixture.runs.clone().with_applied_output_cap(cap);
-    let (workspace_id, principal) = fixture.user_scope("user:cap", "Cross the cap").await;
-    let accepted = runs
-        .start(&principal, &workspace_id, submission("cap"))
-        .await
-        .expect("accept the Program");
-    let run_id = accepted.run_id().clone();
-
-    // The first Emission's chunk is held at its commit. The second answers at
-    // Applied, at the cap; the third is above it and waits for its own chunk.
-    wait_until(|| engine.acknowledged.load(Ordering::SeqCst) == 2).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(
-        engine.acknowledged.load(Ordering::SeqCst),
-        2,
-        "the third Emission waits for its chunk while the cap is exceeded"
-    );
-    assert!(
-        fixture
-            .events_after(&workspace_id, &run_id, 1)
-            .await
-            .is_empty(),
-        "nothing landed while the first chunk was held"
-    );
-
-    release_commit.send(()).expect("release the commit");
-    wait_until(|| engine.acknowledged.load(Ordering::SeqCst) == 3).await;
-    gates.release.send(()).expect("release the Program");
-    let terminal = wait_for_terminal(&runs, &principal, &workspace_id, &run_id).await;
-    assert_eq!(terminal.state(), RunState::Succeeded);
-    let after = fixture.run_record(&workspace_id, &run_id).await;
-    assert_eq!(after.accumulated_output_bytes, 3 * CHUNK_BYTES_CAP);
-    assert_eq!(last_sequence(&after), 2 + 3);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_claim_mismatch_on_commit_stops_the_owner_ends_v8_and_changes_nothing_further() {
-    let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
-    gates.go.send(()).expect("no gate before the Emission");
-    let fixture = TestModules::new(engine.clone()).await;
-    let (workspace_id, principal) = fixture
-        .user_scope("user:claim-mismatch", "Lose the claim")
-        .await;
-    let accepted = fixture
-        .runs
-        .start(&principal, &workspace_id, submission("mismatch"))
-        .await
-        .expect("accept the Program");
-    let run_id = accepted.run_id().clone();
-    wait_until(|| engine.acknowledged.load(Ordering::SeqCst) == 1).await;
-    wait_until_recorded(&fixture, &workspace_id, &run_id, 2).await;
-    let claimed = fixture.run_record(&workspace_id, &run_id).await;
-    let claim_id = claimed.execution_claim_id.clone().expect("started Run");
-    let owner = fixture
-        .runs
-        .owners
-        .find(&run_id, &claim_id)
-        .expect("the owner is live");
-
-    // Another holder takes the Run: both claim columns name a new claim id.
-    fixture
-        .inject_fault(&format!(
-            "UPDATE program_run_records SET execution_claim_id = 'taken-over', worker_claim_id = 'taken-over' WHERE id = '{run_id}'"
-        ))
-        .await;
-    let taken = fixture.run_record(&workspace_id, &run_id).await;
-    let counter = fixture.compatibility_counter(&workspace_id, &run_id).await;
-    let events = fixture.events_after(&workspace_id, &run_id, 0).await;
-
-    // The next chunk commit finds the mismatch: the work waiting on it learns
-    // the owner is lost, the Program is terminated, and nothing else is written.
-    let (work, settled) = probe_work();
-    owner.work(work).expect("the owner takes the work");
-    wait_until(|| settled.lock().expect("settle lock").is_some()).await;
-    assert!(
-        matches!(
-            settled.lock().expect("settle lock").as_ref(),
-            Some(Err(Error::OwnerLost))
+    let full = serde_json::Value::String("x".repeat(CHUNK_BYTES_CAP - 2));
+    let smallest = AppliedOutputCap::new(2 * CHUNK_BYTES_CAP).expect("the smallest cap");
+    let cases: [(AppliedOutputCap, Vec<serde_json::Value>, u64); 2] = [
+        (
+            AppliedOutputCap::default(),
+            (0..200).map(|index| serde_json::json!(index)).collect(),
+            4,
         ),
-        "{:?}",
-        settled.lock().expect("settle lock")
-    );
-    // The work settles from the commit task; the owner terminates the Program
-    // when the rejection reaches its loop.
-    wait_until(|| owner.stop().is_requested()).await;
-    gates.release.send(()).expect("release the Program");
-    wait_until(|| !fixture.runs.has_owner(&run_id)).await;
+        // One chunk each: the third crosses the cap.
+        (smallest, vec![full; 3], 4),
+    ];
+    for (cap, values, most_chunks) in cases {
+        let (commit_gate, release_commit) = CommitGate::blocking();
+        let fixture = TestModules::with_execution_adapters(
+            Arc::new(ImmediateEngine),
+            Arc::new(RejectingUpstream),
+            Arc::new(NoopInvocationObserver),
+            commit_gate.clone(),
+        )
+        .await;
+        let runs = fixture.runs.clone().with_applied_output_cap(cap);
+        let tool = fixture.user_tool("user:burst", "Emit a burst").await;
+        let (run_id, mut stream) = started_on_a_stream(&runs, &tool).await;
+        let started = fixture.run_record(&tool.workspace_id, &run_id).await;
+        let emits = u64::try_from(values.len()).expect("a small burst");
+        let dequeued = commit_gate.dequeued();
 
-    assert_eq!(fixture.run_record(&workspace_id, &run_id).await, taken);
-    assert_eq!(
-        fixture.compatibility_counter(&workspace_id, &run_id).await,
-        counter
-    );
-    assert_eq!(
-        fixture.events_after(&workspace_id, &run_id, 0).await,
-        events
-    );
-    let observed = fixture
-        .runs
-        .observe(&principal, &workspace_id, &run_id, &immediate(None, 100))
-        .await
-        .expect("observe the Run");
-    assert_eq!(observed.state(), RunState::Running, "no terminal write");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_lease_is_renewed_by_a_chunk_commit_and_by_the_idle_tick() {
-    let (engine, gates) = BurstEngine::new(vec!["\"one\"".to_string()]);
-    gates.go.send(()).expect("no gate before the Emission");
-    let fixture = TestModules::new(engine.clone()).await;
-    let (workspace_id, principal) = fixture.user_scope("user:lease", "Renew the lease").await;
-    let accepted = fixture
-        .runs
-        .start(&principal, &workspace_id, submission("lease"))
-        .await
-        .expect("accept the Program");
-    let run_id = accepted.run_id().clone();
-    wait_until_recorded(&fixture, &workspace_id, &run_id, 2).await;
-    let after_chunk = fixture.run_record(&workspace_id, &run_id).await;
-    let lease = fixture.runs.execution_policy.claim_lease_nanos();
-    let expires_at = after_chunk
-        .worker_claim_expires_at_unix_nanos
-        .expect("leased Run");
-    // Acceptance leased the Run from its acceptance; the chunk's commit, later
-    // on the clock, leased it again from its own time.
-    assert!(
-        expires_at > after_chunk.accepted_at_unix_nanos + lease,
-        "{expires_at} vs {}",
-        after_chunk.accepted_at_unix_nanos + lease
-    );
-    assert_eq!(
-        after_chunk.worker_claim_id.as_deref(),
-        after_chunk.execution_claim_id.as_deref()
-    );
-
-    // Nothing is pending now. Within a lease the idle tick renews again, with
-    // one empty chunk and no Event.
-    let events = fixture.events_after(&workspace_id, &run_id, 0).await;
-    let renewed = tokio::time::timeout(EVENTUALLY, async {
-        loop {
-            let run = fixture.run_record(&workspace_id, &run_id).await;
-            if run.worker_claim_expires_at_unix_nanos > Some(expires_at) {
-                return run;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
+        for (number, value) in (1..).zip(&values) {
+            stream.request(number, super::run_streams::emit(value));
         }
-    })
-    .await
-    .expect("the idle tick renews the lease within a lease");
-    assert!(renewed.chunk_sequence > after_chunk.chunk_sequence);
-    assert_eq!(
-        fixture.events_after(&workspace_id, &run_id, 0).await,
-        events
-    );
-    assert_eq!(
-        renewed.accumulated_output_bytes,
-        after_chunk.accumulated_output_bytes
-    );
+        // The first chunk is held at its commit while the loop applies the
+        // burst: nothing lands.
+        wait_until(|| commit_gate.dequeued() - dequeued == values.len()).await;
+        assert!(commit_gate.entered());
+        assert_eq!(
+            fixture.run_record(&tool.workspace_id, &run_id).await,
+            started
+        );
+        assert_eq!(
+            fixture.events_after(&tool.workspace_id, &run_id, 1).await,
+            [] as [RunEvent; 0]
+        );
 
-    gates.release.send(()).expect("release the Program");
-    let terminal = wait_for_terminal(&fixture.runs, &principal, &workspace_id, &run_id).await;
-    assert_eq!(terminal.state(), RunState::Succeeded);
+        release_commit.send(()).expect("release the commit");
+        stream.request(emits + 1, finish_with("null"));
+        stream
+            .until(|read| read.contains(&ended(WireEnd::Succeeded)))
+            .await;
+        let after = fixture.run_record(&tool.workspace_id, &run_id).await;
+        // The held chunk, the chunks that queued behind it, and the
+        // terminal chunk: far fewer chunks than Emissions.
+        assert!(
+            after.chunk_sequence - started.chunk_sequence <= most_chunks,
+            "{} chunks for {emits} Emissions",
+            after.chunk_sequence - started.chunk_sequence
+        );
+        let emitted = retained_events(&runs, &tool.principal, &tool.workspace_id, &run_id)
+            .await
+            .into_iter()
+            .filter_map(|event| match event.kind() {
+                RunEventKind::ProgramEmitted { value } => {
+                    Some((event.sequence(), value.as_json().clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(emitted, (2..).zip(values).collect::<Vec<_>>());
+        assert_eq!(last_sequence(&after), emits + 2);
+    }
 }
 
-/// A clock the host cannot read stops the owner like a failed commit; the
+/// A clock the host cannot read stops the loop like a failed commit; the
 /// Program's end that follows still reaches the terminal write, which fails
-/// on the same clock, and the owner retires with the Run's end unrecorded.
+/// on the same clock, and the loop retires with the Run's end unrecorded.
 /// Without that, the end was discarded with the failed clock read and the
-/// owner stayed registered forever.
+/// loop stayed registered forever.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failing_clock_stops_the_owner_and_the_programs_end_still_retires_it() {
-    let (engine, gates) = BurstEngine::new(Vec::new());
-    gates.go.send(()).expect("no gate before the Program runs");
-    let fixture = TestModules::new(engine.clone()).await;
-    let (workspace_id, principal) = fixture.user_scope("user:clock", "Lose the clock").await;
-    let accepted = fixture
-        .runs
-        .start(&principal, &workspace_id, submission("clock"))
-        .await
-        .expect("accept the Program");
-    let run_id = accepted.run_id().clone();
-    // The start mark is the owner's first chunk and the Program runs after
-    // it; the clock fails once the Program is running.
-    wait_until_started(&fixture, &workspace_id, &run_id).await;
-    let events = fixture.events_after(&workspace_id, &run_id, 0).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let tool = fixture.user_tool("user:clock", "Lose the clock").await;
+    let (run_id, stream) = started_on_a_stream(&fixture.runs, &tool).await;
+    let events = fixture.events_after(&tool.workspace_id, &run_id, 0).await;
     fixture.clock.fail();
 
-    gates.release.send(()).expect("release the Program");
-    tokio::time::timeout(EVENTUALLY, async {
-        while fixture.runs.has_owner(&run_id) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("the owner retires after the Program's end");
-    let abandoned = fixture.run_record(&workspace_id, &run_id).await;
+    stream.request(1, finish_with("null"));
+    wait_until(|| !fixture.runs.has_owner(&run_id)).await;
+    let abandoned = fixture.run_record(&tool.workspace_id, &run_id).await;
     assert_eq!(abandoned.state, RunState::Running);
     assert!(abandoned.termination.is_none());
     assert_eq!(
-        fixture.events_after(&workspace_id, &run_id, 0).await,
+        fixture.events_after(&tool.workspace_id, &run_id, 0).await,
         events,
         "no Event is written on a clock the host cannot read"
     );
@@ -338,7 +134,7 @@ fn emit(state: &mut OwnerState, bytes: usize, now: i64) -> (Vec<Effect>, Answer)
         location: None,
         reply,
     };
-    (apply_without_tick(state, message, now), receiver)
+    (apply(state, message, now), receiver)
 }
 
 type Answer = tokio::sync::oneshot::Receiver<Result<(), Error>>;
@@ -358,7 +154,7 @@ fn result_freeing(
     let (reply, receiver) = reply();
     let (work, settled) = probe_work();
     (
-        apply_without_tick(
+        apply(
             state,
             Message::InvocationResult {
                 bytes,
@@ -396,28 +192,15 @@ fn deliver(effects: Vec<Effect>) -> Vec<Effect> {
         .collect()
 }
 
-/// An owner launched at 1 and started at 2 with the deadline `limits`
-/// names: the launch arms the idle tick and no deadline, which the start
-/// mark records; the start mark arms the Run deadline and the idle tick
-/// again.
+/// A Run stream's loop started at 2 with the deadline `limits` names: the
+/// start arms the Run deadline and starts the Program.
 fn started(limits: OwnerLimits) -> OwnerState {
-    let mut state = OwnerState::new(limits, 1);
-    assert!(matches!(
-        crate::owner::apply(&mut state, Message::Launch, 1).as_slice(),
-        [
-            Effect::Start,
-            Effect::ArmTimer {
-                timer: Timer::IdleTick,
-                after_nanos: tick,
-            }
-        ] if *tick == limits.idle_tick_nanos
-    ));
+    let mut state = OwnerState::for_run_stream(limits, (0, 0));
     let deadline = limits.deadline_at_unix_nanos;
     assert!(matches!(
-        crate::owner::apply(
+        apply(
             &mut state,
             Message::Started(Ok(Some(StartedExecution {
-                package: ProgramPackage::scripted("x"),
                 head: 1,
                 deadline_at_unix_nanos: deadline,
             }))),
@@ -429,64 +212,27 @@ fn started(limits: OwnerLimits) -> OwnerState {
                 timer: Timer::RunDeadline,
                 after_nanos: until_deadline,
             },
-            Effect::ArmTimer {
-                timer: Timer::IdleTick,
-                after_nanos,
-            },
-            Effect::StartProgram { deadline_at_unix_nanos, .. }
-        ] if *until_deadline == deadline - 2
-            && *after_nanos == limits.idle_tick_nanos
-            && *deadline_at_unix_nanos == deadline
+            Effect::StartProgram { deadline_at_unix_nanos }
+        ] if *until_deadline == deadline - 2 && *deadline_at_unix_nanos == deadline
     ));
     assert_eq!(state.phase(), Phase::Running);
     assert_eq!(state.head(), 1);
     state
 }
 
-/// A Run stream's owner, launched at 1 and started at 2 with the deadline
-/// `limits` names.
-fn stream_started(limits: OwnerLimits) -> OwnerState {
-    let mut state = OwnerState::for_run_stream(limits, 1, (0, 0));
-    deliver(apply_without_tick(&mut state, Message::Launch, 1));
-    deliver(apply_without_tick(
-        &mut state,
-        Message::Started(Ok(Some(StartedExecution {
-            package: ProgramPackage::scripted("x"),
-            head: 1,
-            deadline_at_unix_nanos: limits.deadline_at_unix_nanos,
-        }))),
-        2,
-    ));
-    assert_eq!(state.phase(), Phase::Running);
-    state
+/// The termination a Run stream's end writes, when `effects` end with it.
+fn ended_as(effects: &[Effect]) -> Option<crate::lifecycle::RunTerminationKind> {
+    match effects {
+        [.., Effect::EndStreamRun(end)] => Some(end.termination.kind),
+        _ => None,
+    }
 }
-
-/// The effects of a stop: the shutdown grace armed, then the Program
-/// terminated.
-fn stops(effects: &[Effect]) -> bool {
-    matches!(
-        effects,
-        [
-            Effect::ArmTimer {
-                timer: Timer::Grace,
-                after_nanos
-            },
-            Effect::TerminateProgram
-        ] if *after_nanos == LIMITS.shutdown_grace_nanos
-    )
-}
-
-const LEASE: i64 = 100_000;
 
 const LIMITS: OwnerLimits = OwnerLimits {
     run_output_bytes: 64 << 20,
     applied_cap_bytes: AppliedOutputCap::DEFAULT_BYTES,
     fan_out_invocations: FanOutLimit::DEFAULT_INVOCATIONS,
     deadline_at_unix_nanos: 1_000_000,
-    shutdown_grace_nanos: 1_000,
-    idle_tick_nanos: LEASE / 2,
-    suspect_after_nanos: LEASE,
-    self_interrupt_after_nanos: 3 * LEASE,
     precheck_interval_nanos: PRECHECK,
     wake_gap_nanos: WAKE_GAP,
 };
@@ -528,7 +274,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         );
         assert_eq!(state.pending_chunks(), 2);
         assert_eq!(state.output_total(), 10 * (CHUNK_EVENTS_CAP + 5));
-        let effects = apply_without_tick(&mut state, Message::Drained, 2_000);
+        let effects = apply(&mut state, Message::Drained, 2_000);
         let [
             Effect::Commit {
                 chunk,
@@ -542,8 +288,8 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert_eq!(*output_total, 10 * CHUNK_EVENTS_CAP);
         assert!(state.has_commit_in_flight());
         // Nothing else commits while one is in flight; the next drain is a no-op.
-        assert!(apply_without_tick(&mut state, Message::Drained, 2_001).is_empty());
-        let effects = apply_without_tick(&mut state, Message::Committed, 2_002);
+        assert!(apply(&mut state, Message::Drained, 2_001).is_empty());
+        let effects = apply(&mut state, Message::Committed, 2_002);
         let [
             Effect::Commit {
                 chunk,
@@ -555,7 +301,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         };
         assert_eq!(chunk.events, 5);
         assert_eq!(*output_total, 10 * (CHUNK_EVENTS_CAP + 5));
-        assert!(apply_without_tick(&mut state, Message::Committed, 2_003).is_empty());
+        assert!(apply(&mut state, Message::Committed, 2_003).is_empty());
         assert_eq!(state.unrecorded_bytes(), 0);
     }
 
@@ -568,7 +314,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             assert!(deliver(effects).is_empty());
         }
         assert_eq!(state.pending_chunks(), 2);
-        let effects = apply_without_tick(&mut state, Message::Drained, 6);
+        let effects = apply(&mut state, Message::Drained, 6);
         let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
             panic!("{effects:?}");
         };
@@ -610,7 +356,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             "exactly the budget fits"
         );
         assert_eq!(state.output_total(), 300);
-        let effects = apply_without_tick(&mut state, Message::Drained, 13);
+        let effects = apply(&mut state, Message::Drained, 13);
         let [
             Effect::Commit {
                 chunk,
@@ -652,11 +398,11 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             "one Event at the bytes cap fills a chunk"
         );
         assert!(matches!(
-            apply_without_tick(&mut state, Message::Drained, 23).as_slice(),
+            apply(&mut state, Message::Drained, 23).as_slice(),
             [Effect::Commit { .. }]
         ));
         for now in [24, 25] {
-            let effects = deliver(apply_without_tick(&mut state, Message::Committed, now));
+            let effects = deliver(apply(&mut state, Message::Committed, now));
             assert!(
                 matches!(effects.as_slice(), [Effect::Commit { .. }]),
                 "{effects:?}"
@@ -666,7 +412,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
                 "its own chunk has not landed"
             );
         }
-        let effects = deliver(apply_without_tick(&mut state, Message::Committed, 26));
+        let effects = deliver(apply(&mut state, Message::Committed, 26));
         assert!(effects.is_empty(), "{effects:?}");
         assert!(matches!(answered(&mut third), Some(Ok(()))));
         assert_eq!(state.unrecorded_bytes(), 0);
@@ -693,12 +439,12 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         // Land the three full chunks; the fourth, carrying the waiting request,
         // is then in flight.
         assert!(matches!(
-            apply_without_tick(&mut state, Message::Drained, 32).as_slice(),
+            apply(&mut state, Message::Drained, 32).as_slice(),
             [Effect::Commit { .. }]
         ));
         for now in [33, 34, 35] {
             // The third full chunk also answers the Emission that crossed the cap.
-            let rest = deliver(apply_without_tick(&mut state, Message::Committed, now));
+            let rest = deliver(apply(&mut state, Message::Committed, now));
             assert!(
                 matches!(rest.as_slice(), [Effect::Commit { .. }]),
                 "{rest:?}"
@@ -711,7 +457,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             matches!(answered(&mut applied), Some(Ok(()))),
             "under the cap again"
         );
-        let effects = apply_without_tick(
+        let effects = apply(
             &mut state,
             Message::CommitRejected(CommitRejection::ClaimMismatch),
             37,
@@ -730,7 +476,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert!(
             rest.iter()
                 .all(|effect| matches!(effect, Effect::TerminateProgram)),
-            "a rejected commit terminates the Program; the grace starts with a stop, not here: {rest:?}"
+            "a rejected commit terminates the Program: {rest:?}"
         );
         assert!(matches!(
             answered(&mut waiting),
@@ -751,7 +497,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             answered(&mut refused),
             Some(Err(Error::RunEventPersistence(_)))
         ));
-        let effects = apply_without_tick(
+        let effects = apply(
             &mut state,
             Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
             39,
@@ -769,13 +515,13 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         let mut state = started(LIMITS);
         let (effects, _) = emit(&mut state, 10, 40);
         deliver(effects);
-        apply_without_tick(&mut state, Message::Drained, 41);
-        deliver(apply_without_tick(
+        apply(&mut state, Message::Drained, 41);
+        deliver(apply(
             &mut state,
             Message::CommitRejected(CommitRejection::Refused),
             42,
         ));
-        let effects = apply_without_tick(
+        let effects = apply(
             &mut state,
             Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
             43,
@@ -792,66 +538,12 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         );
     }
 
-    // The idle tick commits an empty chunk only while nothing else is pending
-    // or in flight, and arms itself again either way (every commit does, so
-    // a busy owner renews its lease by its chunks alone); it renews the
-    // lease and nothing else.
-    {
-        let mut state = started(LIMITS);
-        let tick = |state: &mut OwnerState, now: i64| -> Vec<Effect> {
-            let mut effects = crate::owner::apply(state, Message::Timer(Timer::IdleTick), now);
-            assert!(
-                matches!(
-                    effects.first(),
-                    Some(Effect::ArmTimer {
-                        timer: Timer::IdleTick,
-                        after_nanos
-                    }) if *after_nanos == LIMITS.idle_tick_nanos
-                ),
-                "{effects:?}"
-            );
-            effects.remove(0);
-            effects
-        };
-        let effects = tick(&mut state, 50);
-        let [
-            Effect::Commit {
-                chunk,
-                output_total,
-            },
-        ] = effects.as_slice()
-        else {
-            panic!("{effects:?}");
-        };
-        assert!(chunk.is_empty());
-        assert_eq!(*output_total, 0);
-        assert!(tick(&mut state, 51).is_empty());
-        apply_without_tick(&mut state, Message::Committed, 52);
-        let (effects, _) = emit(&mut state, 10, 53);
-        deliver(effects);
-        assert!(tick(&mut state, 54).is_empty());
-        let effects = crate::owner::apply(&mut state, Message::Drained, 55);
-        assert!(
-            matches!(
-                effects.as_slice(),
-                [
-                    Effect::ArmTimer {
-                        timer: Timer::IdleTick,
-                        ..
-                    },
-                    Effect::Commit { .. }
-                ]
-            ),
-            "every commit arms the tick again: {effects:?}"
-        );
-    }
-
     // The Program's end drains what is pending before the terminal write.
     {
         let mut state = started(LIMITS);
         let (effects, _) = emit(&mut state, 10, 60);
         deliver(effects);
-        let effects = apply_without_tick(
+        let effects = apply(
             &mut state,
             Message::ProgramEnded(ExecutionCompletion::Succeeded(FinalValue::Absent)),
             61,
@@ -864,7 +556,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             "{effects:?}"
         );
         assert_eq!(state.phase(), Phase::Ending);
-        let effects = apply_without_tick(&mut state, Message::Committed, 62);
+        let effects = apply(&mut state, Message::Committed, 62);
         assert!(
             matches!(
                 effects.as_slice(),
@@ -877,7 +569,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         );
         assert_eq!(state.phase(), Phase::Completing);
         assert!(matches!(
-            apply_without_tick(&mut state, Message::Completed(Ok(None)), 63).as_slice(),
+            apply(&mut state, Message::Completed(Ok(None)), 63).as_slice(),
             [Effect::Retire]
         ));
     }
@@ -889,9 +581,9 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
             let (effects, _) = emit(&mut state, 10, 70 + i64::try_from(index).expect("small"));
             deliver(effects);
         }
-        assert!(apply_without_tick(&mut state, Message::Work(probe_work().0), 2_000).is_empty());
+        assert!(apply(&mut state, Message::Work(probe_work().0), 2_000).is_empty());
         assert_eq!(state.pending_chunks(), 1, "the work closed the chunk");
-        let effects = apply_without_tick(&mut state, Message::Drained, 2_001);
+        let effects = apply(&mut state, Message::Drained, 2_001);
         let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
             panic!("{effects:?}");
         };
@@ -904,7 +596,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
     // with nothing pending, the owner retires and leaves the Run to recovery.
     {
         let mut state = started(LIMITS);
-        let effects = apply_without_tick(
+        let effects = apply(
             &mut state,
             Message::ProgramEnded(ExecutionCompletion::Succeeded(FinalValue::Absent)),
             80,
@@ -920,13 +612,13 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert!(deliver(effects).is_empty());
         assert!(matches!(answered(&mut late), Some(Ok(()))));
         let refused = || Message::Completed(Err(Error::InvocationPersistence("open".into())));
-        let effects = apply_without_tick(&mut state, refused(), 82);
+        let effects = apply(&mut state, refused(), 82);
         assert!(
             matches!(effects.as_slice(), [Effect::Commit { .. }]),
             "{effects:?}"
         );
         assert_eq!(state.phase(), Phase::Ending);
-        let effects = apply_without_tick(&mut state, Message::Committed, 83);
+        let effects = apply(&mut state, Message::Committed, 83);
         assert!(
             matches!(
                 effects.as_slice(),
@@ -939,7 +631,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         );
         assert!(late_work.lock().expect("settle").is_none());
         assert!(matches!(
-            apply_without_tick(&mut state, refused(), 84).as_slice(),
+            apply(&mut state, refused(), 84).as_slice(),
             [Effect::Retire]
         ));
         assert_eq!(state.phase(), Phase::Retired);
@@ -952,14 +644,14 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
     // the Run retires the owner, which accepts nothing more.
     {
         let mut state = started(LIMITS);
-        deliver(apply_without_tick(
+        deliver(apply(
             &mut state,
             Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
             90,
         ));
         let (effects, _, _) = result(&mut state, 10, 91);
         deliver(effects);
-        let effects = apply_without_tick(
+        let effects = apply(
             &mut state,
             Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
             92,
@@ -971,7 +663,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert_eq!(state.phase(), Phase::Settling);
         assert!(
             matches!(
-                apply_without_tick(&mut state, Message::Committed, 93).as_slice(),
+                apply(&mut state, Message::Committed, 93).as_slice(),
                 [Effect::Settle { again: false, .. }]
             ),
             "the settle is attempted once the pending result is recorded"
@@ -980,28 +672,28 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert!(deliver(effects).is_empty());
         assert!(matches!(answered(&mut late), Some(Ok(()))));
         assert!(
-            apply_without_tick(&mut state, Message::Drained, 95).is_empty(),
+            apply(&mut state, Message::Drained, 95).is_empty(),
             "nothing commits during a settle attempt"
         );
-        let effects = apply_without_tick(&mut state, Message::SettleAttempted(Ok(false)), 96);
+        let effects = apply(&mut state, Message::SettleAttempted(Ok(false)), 96);
         assert!(
             matches!(effects.as_slice(), [Effect::Commit { .. }]),
             "the late result commits before the next attempt: {effects:?}"
         );
         assert!(matches!(
-            apply_without_tick(&mut state, Message::Committed, 97).as_slice(),
+            apply(&mut state, Message::Committed, 97).as_slice(),
             [Effect::Settle { again: false, .. }]
         ));
         assert!(late_work.lock().expect("settle").is_none());
         assert!(
             matches!(
-                apply_without_tick(&mut state, Message::SettleAttempted(Ok(false)), 98).as_slice(),
+                apply(&mut state, Message::SettleAttempted(Ok(false)), 98).as_slice(),
                 [Effect::Settle { again: true, .. }]
             ),
             "with nothing to commit the next attempt waits a moment"
         );
         assert!(matches!(
-            apply_without_tick(&mut state, Message::SettleAttempted(Ok(true)), 99).as_slice(),
+            apply(&mut state, Message::SettleAttempted(Ok(true)), 99).as_slice(),
             [Effect::Retire]
         ));
         assert_eq!(state.phase(), Phase::Retired);
@@ -1017,177 +709,16 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         ));
     }
 
-    // Suspect: past one lease without a successful commit, a Program request
-    // answers only once its chunk is recorded; the next commit clears it.
-    {
-        let mut state = started(LIMITS);
-        let (effects, mut prompt) = emit(&mut state, 10, 100);
-        assert!(deliver(effects).is_empty());
-        assert!(matches!(answered(&mut prompt), Some(Ok(()))));
-        assert!(matches!(
-            apply_without_tick(&mut state, Message::Drained, 101).as_slice(),
-            [Effect::Commit { .. }]
-        ));
-        let (effects, mut late) = emit(&mut state, 10, 2 + LEASE + 1);
-        assert!(
-            matches!(
-                effects.as_slice(),
-                [Effect::Suspect {
-                    last_commit_age_nanos
-                }] if *last_commit_age_nanos == LEASE + 1
-            ),
-            "{effects:?}"
-        );
-        assert!(state.is_suspect());
-        assert!(
-            answered(&mut late).is_none(),
-            "suspect: answers at Recorded"
-        );
-        // The chunk in flight lands: the owner is trusted again, and the
-        // late Emission's chunk commits and answers it.
-        let effects = deliver(apply_without_tick(
-            &mut state,
-            Message::Committed,
-            2 + LEASE + 2,
-        ));
-        assert!(
-            matches!(effects.as_slice(), [Effect::Commit { .. }]),
-            "{effects:?}"
-        );
-        assert!(!state.is_suspect());
-        assert!(answered(&mut late).is_none());
-        assert!(
-            deliver(apply_without_tick(
-                &mut state,
-                Message::Committed,
-                2 + LEASE + 3
-            ))
-            .is_empty()
-        );
-        assert!(matches!(answered(&mut late), Some(Ok(()))));
-        let (effects, mut prompt) = emit(&mut state, 10, 2 + LEASE + 4);
-        assert!(deliver(effects).is_empty());
-        assert!(
-            matches!(answered(&mut prompt), Some(Ok(()))),
-            "Applied again"
-        );
-    }
-
-    // Self-interrupt: past three leases without a successful commit the
-    // owner gives its Run up. The request on the chunk in flight and the
-    // pending work learn the host ended, the Program is terminated, the
-    // Interrupted chunk is written; the late outcome of the chunk in flight
-    // and the Program's end change nothing, and the record retires the owner.
-    {
-        // Every request rides its chunk, so each one is observable.
-        let mut state = started(OwnerLimits {
-            applied_cap_bytes: 0,
-            ..LIMITS
-        });
-        let (effects, mut waiting) = emit(&mut state, 10, 200);
-        assert!(deliver(effects).is_empty());
-        assert!(answered(&mut waiting).is_none());
-        assert!(matches!(
-            apply_without_tick(&mut state, Message::Drained, 201).as_slice(),
-            [Effect::Commit { .. }]
-        ));
-        let (effects, mut pending, pending_work) = result(&mut state, 10, 202);
-        assert!(deliver(effects).is_empty());
-        assert!(answered(&mut pending).is_none());
-        let now = 2 + 3 * LEASE + 1;
-        let effects = apply_without_tick(&mut state, Message::Timer(Timer::IdleTick), now);
-        assert!(
-            matches!(
-                effects.as_slice(),
-                [.., Effect::TerminateProgram, Effect::Interrupt {
-                    last_commit_age_nanos
-                }] if *last_commit_age_nanos == 3 * LEASE + 1
-            ),
-            "{effects:?}"
-        );
-        let rest = deliver(effects);
-        assert_eq!(rest.len(), 2, "{rest:?}");
-        assert!(matches!(
-            answered(&mut waiting),
-            Some(Err(Error::ProgramHostTerminated))
-        ));
-        assert!(matches!(
-            answered(&mut pending),
-            Some(Err(Error::ProgramHostTerminated))
-        ));
-        assert!(matches!(
-            pending_work.lock().expect("settle").as_ref(),
-            Some(Err(Error::ProgramHostTerminated))
-        ));
-        assert_eq!(state.phase(), Phase::Interrupting);
-        assert_eq!(state.pending_chunks(), 0);
-        assert!(apply_without_tick(&mut state, Message::Committed, now + 1).is_empty());
-        assert!(
-            apply_without_tick(
-                &mut state,
-                Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
-                now + 2,
-            )
-            .is_empty()
-        );
-        let (effects, mut refused) = emit(&mut state, 4, now + 3);
-        deliver(effects);
-        assert!(matches!(
-            answered(&mut refused),
-            Some(Err(Error::RunEventPersistence(_)))
-        ));
-        assert!(matches!(
-            apply_without_tick(&mut state, Message::Interrupted(Ok(())), now + 4).as_slice(),
-            [Effect::Retire]
-        ));
-        assert_eq!(state.phase(), Phase::Retired);
-    }
-
-    // A commit that succeeded counts before the liveness judgement: its
-    // message may reach the owner past the self-interrupt bound.
-    {
-        let mut state = started(LIMITS);
-        let (effects, _) = emit(&mut state, 10, 100);
-        deliver(effects);
-        apply_without_tick(&mut state, Message::Drained, 101);
-        assert!(state.has_commit_in_flight());
-        let effects = apply_without_tick(&mut state, Message::Committed, 2 + 3 * LEASE + 5);
-        assert!(
-            effects
-                .iter()
-                .all(|effect| matches!(effect, Effect::Commit { .. })),
-            "{effects:?}"
-        );
-        assert_eq!(state.phase(), Phase::Running);
-        assert!(!state.is_suspect());
-    }
-
-    // Past the Run deadline the deadline ends the Run, not the owner's
-    // liveness bound.
-    {
-        let mut state = started(LIMITS);
-        let past_deadline = LIMITS.deadline_at_unix_nanos + 3 * LEASE;
-        let effects =
-            apply_without_tick(&mut state, Message::Timer(Timer::IdleTick), past_deadline);
-        assert!(
-            effects
-                .iter()
-                .all(|effect| matches!(effect, Effect::Commit { .. } | Effect::ArmTimer { .. })),
-            "{effects:?}"
-        );
-        assert_eq!(state.phase(), Phase::Running);
-    }
-
     // A corrupt ledger: the owner stops loudly, pending work learns it, and
     // the Program's end writes nothing.
     {
         let mut state = started(LIMITS);
         let (effects, _) = emit(&mut state, 10, 300);
         deliver(effects);
-        apply_without_tick(&mut state, Message::Drained, 301);
+        apply(&mut state, Message::Drained, 301);
         let (work_effects, _, pending_work) = result(&mut state, 10, 302);
         assert!(deliver(work_effects).is_empty());
-        let effects = apply_without_tick(
+        let effects = apply(
             &mut state,
             Message::CommitRejected(CommitRejection::Corrupt),
             303,
@@ -1196,14 +727,14 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert!(
             rest.iter()
                 .all(|effect| matches!(effect, Effect::TerminateProgram)),
-            "a rejected commit terminates the Program; the grace starts with a stop, not here: {rest:?}"
+            "a rejected commit terminates the Program: {rest:?}"
         );
         assert!(matches!(
             pending_work.lock().expect("settle").as_ref(),
             Some(Err(Error::CorruptData(_)))
         ));
         assert_eq!(state.phase(), Phase::Stopped(CommitRejection::Corrupt));
-        let effects = apply_without_tick(
+        let effects = apply(
             &mut state,
             Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
             304,
@@ -1230,27 +761,20 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
 
     type EnforcementAnswer = tokio::sync::oneshot::Receiver<Result<EnforcementOutcome, Error>>;
 
-    let (engine, _release) = BlockingEngine::new();
-    let fixture = TestModules::new(Arc::new(engine)).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool("user:apply-enforcement", "Enforcement rows")
         .await;
-    let run = fixture
-        .runs
-        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
-        .await
-        .unwrap();
-    wait_until_started(&fixture, &tool.workspace_id, run.run_id()).await;
-    let record = fixture.run_record(&tool.workspace_id, run.run_id()).await;
+    let (run_id, _stream) = started_on_a_stream(&fixture.runs, &tool).await;
+    let record = fixture.run_record(&tool.workspace_id, &run_id).await;
     // Four Invocations: a request names one of them, so a batch says which
     // ones it holds.
     let mut invocations = Vec::new();
     for _ in 0..4 {
-        invocations.push(admitted_invocation(&fixture, &tool, run.run_id()).await);
+        invocations.push(admitted_invocation(&fixture, &tool, &run_id).await);
     }
     // A call to a Private Tool, which Coral performs in the Program.
-    let performed =
-        admitted_private_invocation(&fixture, &tool, run.run_id(), "weather.spin").await;
+    let performed = admitted_private_invocation(&fixture, &tool, &run_id, "weather.spin").await;
     let ids: [crate::InvocationId; 4] = invocations
         .iter()
         .map(|admitted| admitted.id.clone())
@@ -1264,7 +788,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
             let admitted = invocations.get(index).expect("one of four").clone();
             let request = EnforcementRequest::for_apply_test(invoker.clone(), admitted, sender);
             (
-                apply_without_tick(state, Message::Enforce(Box::new(request)), now),
+                apply(state, Message::Enforce(Box::new(request)), now),
                 receiver,
             )
         };
@@ -1307,7 +831,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         }
         assert_eq!(state.pending_chunks(), 1);
         assert!(answers.iter_mut().all(|answer| answered(answer).is_none()));
-        let effects = apply_without_tick(&mut state, Message::Drained, 6);
+        let effects = apply(&mut state, Message::Drained, 6);
         let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
             panic!("{effects:?}");
         };
@@ -1339,7 +863,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
             deliver(effects);
         }
         assert_eq!(state.pending_chunks(), 2);
-        let effects = apply_without_tick(&mut state, Message::Drained, 100);
+        let effects = apply(&mut state, Message::Drained, 100);
         let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
             panic!("{effects:?}");
         };
@@ -1361,7 +885,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         let (effects, _) = emit(&mut state, CHUNK_BYTES_CAP + 1, 11);
         deliver(effects);
         assert_eq!(state.pending_chunks(), 2);
-        let effects = apply_without_tick(&mut state, Message::Drained, 12);
+        let effects = apply(&mut state, Message::Drained, 12);
         let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
             panic!("{effects:?}");
         };
@@ -1371,32 +895,22 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         );
     }
 
-    // A stop: the batch not yet committed answers terminated at once, the
-    // Program is terminated, and the chunk that held only the batch is gone.
+    // The deadline's stop: the batch not yet committed answers terminated
+    // at once, the Program is terminated, and the chunk that held only the
+    // batch is gone, so the end is written at once.
     {
         let mut state = started(LIMITS);
         let (effects, mut first) = enforce(&mut state, 20);
         deliver(effects);
         let (effects, mut second) = enforce(&mut state, 21);
         deliver(effects);
-        let effects = apply_without_tick(&mut state, Message::Stop, 22);
+        let rest = deliver(apply(&mut state, Message::Timer(Timer::RunDeadline), 22));
         assert!(
-            effects
-                .iter()
-                .any(|effect| matches!(effect, Effect::TerminateProgram)),
-            "{effects:?}"
-        );
-        let rest = deliver(effects);
-        assert!(
-            rest.iter().all(|effect| matches!(
-                effect,
-                Effect::TerminateProgram
-                    | Effect::ArmTimer {
-                        timer: Timer::Grace,
-                        ..
-                    }
-            )),
-            "a stop terminates the Program and starts the shutdown grace: {rest:?}"
+            matches!(
+                rest.as_slice(),
+                [Effect::TerminateProgram, Effect::EndStreamRun(_)]
+            ),
+            "the stop terminates the Program and writes the end: {rest:?}"
         );
         for answer in [&mut first, &mut second] {
             assert!(
@@ -1405,7 +919,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
             );
         }
         assert_eq!(state.pending_chunks(), 0);
-        assert!(apply_without_tick(&mut state, Message::Drained, 23).is_empty());
+        assert!(apply(&mut state, Message::Drained, 23).is_empty());
         // A request after the stop answers at once too.
         let (effects, mut late) = enforce(&mut state, 24);
         assert!(deliver(effects).is_empty());
@@ -1416,21 +930,19 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
     }
 
     // A stop leaves the chunk's other pending work: an Emission beside the
-    // abandoned batch still commits, without the batch.
+    // abandoned batch still commits, without the batch, before the end.
     {
         let mut state = started(LIMITS);
         let (effects, _) = emit(&mut state, 10, 20);
         deliver(effects);
         let (effects, mut pending) = enforce(&mut state, 21);
         deliver(effects);
-        deliver(apply_without_tick(&mut state, Message::Stop, 22));
+        let effects = deliver(apply(&mut state, Message::Timer(Timer::RunDeadline), 22));
         assert!(matches!(
             answered(&mut pending),
             Some(Err(Error::ProgramHostTerminated))
         ));
-        assert_eq!(state.pending_chunks(), 1);
-        let effects = apply_without_tick(&mut state, Message::Drained, 23);
-        let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
+        let [Effect::TerminateProgram, Effect::Commit { chunk, .. }] = effects.as_slice() else {
             panic!("{effects:?}");
         };
         assert!(
@@ -1459,10 +971,10 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         let (effects, mut answer) = enforce(&mut state, 30);
         deliver(effects);
         assert!(matches!(
-            apply_without_tick(&mut state, Message::Drained, 31).as_slice(),
+            apply(&mut state, Message::Drained, 31).as_slice(),
             [Effect::Commit { .. }]
         ));
-        let effects = apply_without_tick(
+        let effects = apply(
             &mut state,
             Message::ProgramEnded(ExecutionCompletion::Succeeded(FinalValue::Absent)),
             32,
@@ -1475,7 +987,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
             answered(&mut answer).is_none(),
             "the batch is still in flight"
         );
-        let effects = apply_without_tick(&mut state, Message::Committed, 33);
+        let effects = apply(&mut state, Message::Committed, 33);
         assert!(
             matches!(effects.as_slice(), [Effect::CompleteExecution { .. }]),
             "{effects:?}"
@@ -1495,9 +1007,9 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         assert_eq!(state.slots_held(), 2);
         assert_eq!(state.waiting_for_a_slot(), 2);
         assert_eq!(state.pending_chunks(), 1);
-        let effects = apply_without_tick(&mut state, Message::Drained, 7);
+        let effects = apply(&mut state, Message::Drained, 7);
         assert_eq!(batched(&effects), [ids[0].clone(), ids[1].clone()]);
-        assert!(deliver(apply_without_tick(&mut state, Message::Committed, 8)).is_empty());
+        assert!(deliver(apply(&mut state, Message::Committed, 8)).is_empty());
         assert_eq!(state.pending_chunks(), 0, "a slot wait builds no chunk");
         assert!(answers.iter_mut().all(|answer| answered(answer).is_none()));
 
@@ -1509,7 +1021,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         );
         assert_eq!(state.slots_held(), 2);
         assert_eq!(state.waiting_for_a_slot(), 1);
-        let effects = apply_without_tick(&mut state, Message::Drained, 10);
+        let effects = apply(&mut state, Message::Drained, 10);
         let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
             panic!("{effects:?}");
         };
@@ -1519,19 +1031,19 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
             [ids[2].clone()],
             "the third, not the fourth"
         );
-        deliver(apply_without_tick(&mut state, Message::Committed, 11));
+        deliver(apply(&mut state, Message::Committed, 11));
 
-        deliver(apply_without_tick(&mut state, Message::DispatchEnded, 12));
-        deliver(apply_without_tick(&mut state, Message::DispatchEnded, 13));
+        deliver(apply(&mut state, Message::DispatchEnded, 12));
+        deliver(apply(&mut state, Message::DispatchEnded, 13));
         assert_eq!(
             state.slots_held(),
             1,
             "the fourth took the first slot freed"
         );
         assert_eq!(state.waiting_for_a_slot(), 0);
-        let effects = apply_without_tick(&mut state, Message::Drained, 14);
+        let effects = apply(&mut state, Message::Drained, 14);
         assert_eq!(batched(&effects), [ids[3].clone()]);
-        deliver(apply_without_tick(&mut state, Message::Committed, 15));
+        deliver(apply(&mut state, Message::Committed, 15));
         let (effects, _) = enforce(&mut state, 16);
         deliver(effects);
         assert_eq!(state.slots_held(), 2);
@@ -1548,8 +1060,8 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
             ..LIMITED
         });
         let mut answers = enforce_each(&mut state, 20..23);
-        deliver(apply_without_tick(&mut state, Message::Drained, 23));
-        deliver(apply_without_tick(&mut state, Message::Committed, 24));
+        deliver(apply(&mut state, Message::Drained, 23));
+        deliver(apply(&mut state, Message::Committed, 24));
         let (effects, mut refused, refused_work) = result(&mut state, 11, 25);
         assert!(deliver(effects).is_empty());
         assert!(matches!(
@@ -1565,7 +1077,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         assert_eq!(state.waiting_for_a_slot(), 1);
         assert_eq!(state.pending_chunks(), 0);
         assert!(answered(answers.last_mut().expect("the waiting request")).is_none());
-        deliver(apply_without_tick(&mut state, Message::DispatchEnded, 26));
+        deliver(apply(&mut state, Message::DispatchEnded, 26));
         assert_eq!(state.slots_held(), 2);
         assert_eq!(state.waiting_for_a_slot(), 0);
         assert_eq!(state.pending_chunks(), 1, "the row's end freed the slot");
@@ -1577,24 +1089,17 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
     {
         let mut state = started(LIMITED);
         let mut answers = enforce_each(&mut state, 50..53);
-        deliver(apply_without_tick(&mut state, Message::Drained, 53));
-        deliver(apply_without_tick(&mut state, Message::Committed, 54));
+        deliver(apply(&mut state, Message::Drained, 53));
+        deliver(apply(&mut state, Message::Committed, 54));
         let (sender, _answer) = tokio::sync::oneshot::channel();
         let request =
             EnforcementRequest::for_apply_test(invoker.clone(), performed.clone(), sender);
-        assert!(
-            deliver(apply_without_tick(
-                &mut state,
-                Message::Enforce(Box::new(request)),
-                55
-            ))
-            .is_empty()
-        );
+        assert!(deliver(apply(&mut state, Message::Enforce(Box::new(request)), 55)).is_empty());
         assert_eq!(state.slots_held(), 2);
         assert_eq!(state.waiting_for_a_slot(), 1);
-        let effects = apply_without_tick(&mut state, Message::Drained, 56);
+        let effects = apply(&mut state, Message::Drained, 56);
         assert_eq!(batched(&effects), std::slice::from_ref(&performed.id));
-        deliver(apply_without_tick(&mut state, Message::Committed, 57));
+        deliver(apply(&mut state, Message::Committed, 57));
 
         let (effects, mut applied, _work) = result_freeing(&mut state, 10, false, 58);
         assert!(deliver(effects).is_empty());
@@ -1610,8 +1115,8 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
     // lost claim each end a slot wait.
     for (ending, message, lost) in [
         (
-            "a stop",
-            Message::Stop,
+            "the deadline's stop",
+            Message::Timer(Timer::RunDeadline),
             (|error: &Error| matches!(error, Error::ProgramHostTerminated)) as fn(&Error) -> bool,
         ),
         (
@@ -1627,9 +1132,9 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
     ] {
         let mut state = started(LIMITED);
         let mut answers = enforce_each(&mut state, 30..33);
-        deliver(apply_without_tick(&mut state, Message::Drained, 33));
+        deliver(apply(&mut state, Message::Drained, 33));
         assert!(state.has_commit_in_flight(), "{ending}");
-        deliver(apply_without_tick(&mut state, message, 34));
+        deliver(apply(&mut state, message, 34));
         assert!(
             matches!(
                 answered(answers.last_mut().expect("the waiting request")),
@@ -1649,9 +1154,9 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
     {
         let mut state = started(LIMITED);
         let mut answers = enforce_each(&mut state, 40..44);
-        deliver(apply_without_tick(&mut state, Message::Drained, 44));
-        deliver(apply_without_tick(&mut state, Message::Committed, 45));
-        let effects = apply_without_tick(
+        deliver(apply(&mut state, Message::Drained, 44));
+        deliver(apply(&mut state, Message::Committed, 45));
+        let effects = apply(
             &mut state,
             Message::DispatchEnded,
             LIMITS.deadline_at_unix_nanos,
@@ -1673,18 +1178,18 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
     // held request is answered as the Program's host ending, its result's
     // row commits with no dispatch, and nothing writes the Run's end.
     {
-        let mut state = stream_started(LIMITED);
+        let mut state = started(LIMITED);
         let mut answers = enforce_each(&mut state, 50..51);
-        deliver(apply_without_tick(&mut state, Message::Drained, 51));
-        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::Hold), 52);
+        deliver(apply(&mut state, Message::Drained, 51));
+        let effects = apply(&mut state, Message::Drain(DrainStep::Hold), 52);
         assert!(deliver(effects).is_empty());
         let (effects, mut held) = enforce_as(&mut state, 1, 53);
         assert!(deliver(effects).is_empty());
         assert_eq!(state.waiting_for_a_slot(), 1, "held, with a slot free");
         assert_eq!(state.slots_held(), 1);
-        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::Move), 54);
+        let effects = apply(&mut state, Message::Drain(DrainStep::Move), 54);
         assert!(effects.is_empty(), "the batch is in flight: {effects:?}");
-        let effects = deliver(apply_without_tick(&mut state, Message::Committed, 55));
+        let effects = deliver(apply(&mut state, Message::Committed, 55));
         assert!(effects.is_empty(), "its dispatch is in flight: {effects:?}");
         assert!(answered(answers.first_mut().expect("the batched request")).is_none());
         let (effects, _applied, _work) = result(&mut state, 10, 56);
@@ -1697,12 +1202,12 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
             answered(&mut held),
             Some(Err(Error::ProgramHostTerminated))
         ));
-        let effects = deliver(apply_without_tick(&mut state, Message::Detached, 57));
+        let effects = deliver(apply(&mut state, Message::Detached, 57));
         assert!(
             matches!(effects.as_slice(), [Effect::Commit { chunk, .. }] if chunk.enforcement.is_none()),
             "the result's row commits, with no dispatch: {effects:?}"
         );
-        let effects = apply_without_tick(&mut state, Message::Committed, 58);
+        let effects = apply(&mut state, Message::Committed, 58);
         assert!(
             matches!(effects.as_slice(), [Effect::Retire]),
             "{effects:?}"
@@ -1713,12 +1218,12 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
     // and a batch not yet committed starts no dispatch. A request that its
     // mailbox held behind the move is held too, and the detach answers it.
     {
-        let mut state = stream_started(LIMITS);
+        let mut state = started(LIMITS);
         let mut answers = enforce_each(&mut state, 60..61);
-        deliver(apply_without_tick(&mut state, Message::Drained, 61));
+        deliver(apply(&mut state, Message::Drained, 61));
         let (effects, mut unsent) = enforce_as(&mut state, 1, 62);
         assert!(deliver(effects).is_empty());
-        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::MoveNow), 63);
+        let effects = apply(&mut state, Message::Drain(DrainStep::MoveNow), 63);
         assert!(
             matches!(
                 effects.as_slice(),
@@ -1735,9 +1240,9 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         let (effects, mut behind) = enforce_as(&mut state, 2, 64);
         assert!(deliver(effects).is_empty());
         assert_eq!(state.waiting_for_a_slot(), 1);
-        let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::MoveNow), 65);
+        let effects = apply(&mut state, Message::Drain(DrainStep::MoveNow), 65);
         assert!(deliver(effects).is_empty(), "it moves once");
-        deliver(apply_without_tick(&mut state, Message::Detached, 66));
+        deliver(apply(&mut state, Message::Detached, 66));
         assert!(matches!(
             answered(&mut behind),
             Some(Err(Error::ProgramHostTerminated))
@@ -1750,11 +1255,6 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
 /// way loses, starting the Program after the drain.
 #[test]
 fn the_drains_interruption_times_out_a_run_past_its_deadline_and_waits_for_its_start() {
-    let ended_as = |effects: &[Effect]| match effects {
-        [.., Effect::EndStreamRun(end)] => Some(end.termination.kind),
-        _ => None,
-    };
-    // A deadline within a lease of the start, so no lease bound fires.
     let limits = OwnerLimits {
         deadline_at_unix_nanos: 10,
         ..LIMITS
@@ -1767,23 +1267,17 @@ fn the_drains_interruption_times_out_a_run_past_its_deadline_and_waits_for_its_s
         ),
         (deadline, crate::lifecycle::RunTerminationKind::TimedOut),
     ] {
-        let mut state = stream_started(limits);
-        let effects = deliver(apply_without_tick(
-            &mut state,
-            Message::Drain(DrainStep::Interrupt),
-            at,
-        ));
+        let mut state = started(limits);
+        let effects = deliver(apply(&mut state, Message::Drain(DrainStep::Interrupt), at));
         assert_eq!(ended_as(&effects), Some(kind), "{at}: {effects:?}");
     }
 
-    let mut state = OwnerState::for_run_stream(limits, 1, (0, 0));
-    deliver(apply_without_tick(&mut state, Message::Launch, 1));
-    let effects = apply_without_tick(&mut state, Message::Drain(DrainStep::Interrupt), 2);
+    let mut state = OwnerState::for_run_stream(limits, (0, 0));
+    let effects = apply(&mut state, Message::Drain(DrainStep::Interrupt), 2);
     assert!(deliver(effects).is_empty(), "it waits for the start");
-    let effects = deliver(apply_without_tick(
+    let effects = deliver(apply(
         &mut state,
         Message::Started(Ok(Some(StartedExecution {
-            package: ProgramPackage::scripted("x"),
             head: 1,
             deadline_at_unix_nanos: deadline,
         }))),
@@ -1800,62 +1294,6 @@ fn the_drains_interruption_times_out_a_run_past_its_deadline_and_waits_for_its_s
         Some(crate::lifecycle::RunTerminationKind::Interrupted),
         "{effects:?}"
     );
-
-    // A cancellation and the interruption both wait for the start: the
-    // first decides, and the other changes nothing.
-    for cancel_first in [true, false] {
-        let mut state = OwnerState::for_run_stream(limits, 1, (0, 0));
-        deliver(apply_without_tick(&mut state, Message::Launch, 1));
-        let interrupt = |state: &mut OwnerState| {
-            deliver(apply_without_tick(
-                state,
-                Message::Drain(DrainStep::Interrupt),
-                2,
-            ));
-        };
-        if !cancel_first {
-            interrupt(&mut state);
-        }
-        deliver(cancel(&mut state, "cancel-row", 2));
-        if cancel_first {
-            interrupt(&mut state);
-        }
-        let mut effects = deliver(apply_without_tick(
-            &mut state,
-            Message::Started(Ok(Some(StartedExecution {
-                package: ProgramPackage::scripted("x"),
-                head: 1,
-                deadline_at_unix_nanos: deadline,
-            }))),
-            3,
-        ));
-        // Each chunk commits before the end is written.
-        let mut stream_end = ended_as(&effects);
-        for now in 4..8 {
-            if !effects
-                .iter()
-                .any(|effect| matches!(effect, Effect::Commit { .. }))
-            {
-                break;
-            }
-            effects = deliver(apply_without_tick(&mut state, Message::Committed, now));
-            stream_end = stream_end.or(ended_as(&effects));
-        }
-        let canceled = state.termination().map(|intent| intent.termination.kind);
-        let expected = if cancel_first {
-            (None, Some(crate::lifecycle::RunTerminationKind::Canceled))
-        } else {
-            (
-                Some(crate::lifecycle::RunTerminationKind::Interrupted),
-                None,
-            )
-        };
-        assert_eq!(
-            (stream_end, canceled),
-            expected,
-            "{cancel_first}: {effects:?}"
-        );
-    }
 }
 
 /// The Fan-out Limit admits at least one Invocation: at zero no dispatch
@@ -1876,56 +1314,8 @@ fn a_fan_out_limit_below_one_invocation_is_rejected() {
 /// The deadline of every Approval Request in the apply table.
 const APPROVAL_DEADLINE: i64 = 100;
 
-/// A decision request for the apply table, on a fresh Approval Request id.
-fn decision(approval: &crate::approval::ApprovalId) -> crate::owner::DecisionRequest {
-    crate::owner::DecisionRequest {
-        approval: approval.clone(),
-        deadline_at_unix_nanos: APPROVAL_DEADLINE,
-        decision: crate::approval::ApprovalDecision::Approve,
-        actor: requester(),
-        comment: None,
-        trace: TraceId::parse(&"e".repeat(32)).expect("a trace id"),
-    }
-}
-
-fn requester() -> coral_workspace::Principal {
-    coral_workspace::Principal::from_parts(
-        coral_workspace::PrincipalId::parse("user:apply").expect("a principal id"),
-        coral_workspace::PrincipalKind::User,
-    )
-}
-
 fn approval_id() -> crate::approval::ApprovalId {
     crate::approval::ApprovalId::parse(&uuid::Uuid::new_v4().to_string()).expect("an id")
-}
-
-/// A decision on `approval` the Run Inbox delivers in `row`.
-fn decide(
-    state: &mut OwnerState,
-    approval: &crate::approval::ApprovalId,
-    row: &str,
-    now: i64,
-) -> Vec<Effect> {
-    apply_without_tick(
-        state,
-        Message::Decide {
-            request: decision(approval),
-            row: crate::run_inbox::InboxRow(row.to_string()),
-        },
-        now,
-    )
-}
-
-/// A cancellation the Run Inbox delivers in `row`.
-fn cancel(state: &mut OwnerState, row: &str, now: i64) -> Vec<Effect> {
-    apply_without_tick(
-        state,
-        Message::Cancel {
-            requester: requester(),
-            row: crate::run_inbox::InboxRow(row.to_string()),
-        },
-        now,
-    )
 }
 
 /// What a parked Invocation reads once its owner wakes it (`Ok`) or lets
@@ -1942,10 +1332,7 @@ fn park(
 ) -> (Vec<Effect>, Woken) {
     let (wake, woken) = tokio::sync::oneshot::channel();
     let parked = crate::invocation::ParkedInvocation::for_apply_test(invoker, admitted, wait, wake);
-    (
-        apply_without_tick(state, Message::Parked(Box::new(parked)), now),
-        woken,
-    )
+    (apply(state, Message::Parked(Box::new(parked)), now), woken)
 }
 
 fn approval_wait(approval: &crate::approval::ApprovalId) -> ParkedWait {
@@ -1974,7 +1361,7 @@ fn connection_request() -> coral_provider::account::ConnectionRequestId {
 fn prechecks(effects: &[Effect], check: Check, parks: &[u64]) -> bool {
     match effects {
         [Effect::Precheck(batch)] => {
-            check == Check::Periodic && batch.check() == check && batch.parks() == parks
+            check != Check::Connections && batch.check() == check && batch.parks() == parks
         }
         [
             Effect::Precheck(batch),
@@ -1996,701 +1383,6 @@ fn committed_chunk(effects: Vec<Effect>) -> crate::owner::ChunkBuildView {
     crate::owner::ChunkBuildView::of(chunk)
 }
 
-#[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one table of outside-request message orders, each case a block"
-)]
-async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_cancel_at_once() {
-    use crate::invocation::EnforcementRequest;
-    use crate::lifecycle::RunTerminationKind;
-
-    let (engine, _release) = BlockingEngine::new();
-    let fixture = TestModules::new(Arc::new(engine)).await;
-    let tool = fixture
-        .user_tool("user:apply-requests", "Request rows")
-        .await;
-    let run = fixture
-        .runs
-        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
-        .await
-        .unwrap();
-    wait_until_started(&fixture, &tool.workspace_id, run.run_id()).await;
-    let record = fixture.run_record(&tool.workspace_id, run.run_id()).await;
-    let admitted = admitted_invocation(&fixture, &tool, run.run_id()).await;
-    let invoker = test_invoker(&fixture, &tool, &record);
-
-    // Two decisions on one request: the first rides the next chunk with the
-    // deletion of its row; the second, a repeat, has its row deleted by the
-    // same chunk, and a third, after the record, by the next one. A row
-    // delivered again changes nothing, before its deletion lands and after.
-    {
-        let mut state = started(LIMITS);
-        let approval = approval_id();
-        assert!(deliver(decide(&mut state, &approval, "first", 3)).is_empty());
-        assert!(deliver(decide(&mut state, &approval, "first", 4)).is_empty());
-        assert!(deliver(decide(&mut state, &approval, "second", 4)).is_empty());
-        assert_eq!(state.parked_requests(), 0);
-        assert_eq!(state.pending_chunks(), 1);
-        let chunk = committed_chunk(apply_without_tick(&mut state, Message::Drained, 5));
-        assert_eq!((chunk.works, chunk.inbox_rows), (1, 2));
-        assert!(chunk.termination.is_none());
-        let effects = deliver(apply_without_tick(&mut state, Message::Committed, 6));
-        assert!(effects.is_empty(), "{effects:?}");
-        assert!(deliver(decide(&mut state, &approval, "second", 7)).is_empty());
-        assert_eq!(state.pending_chunks(), 0);
-        assert!(deliver(decide(&mut state, &approval, "third", 7)).is_empty());
-        let repeat = committed_chunk(apply_without_tick(&mut state, Message::Drained, 8));
-        assert_eq!(
-            (repeat.works, repeat.inbox_rows),
-            (0, 1),
-            "a recorded request joins no work"
-        );
-        assert_eq!(state.head(), 2);
-    }
-
-    // A cancel while an enforcement check is in flight: applied at once (the
-    // Program is terminated, the batch in flight is left to return on its own),
-    // and the intent, `cancellation.requested` and the deletion of its Run
-    // Inbox row ride the next chunk. The row delivered again changes nothing,
-    // before its deletion lands and after; a later row, a repeat, changes
-    // nothing but has a chunk delete it.
-    {
-        let mut state = started(LIMITS);
-        let (sender, _receiver) = tokio::sync::oneshot::channel();
-        let request = EnforcementRequest::for_apply_test(invoker.clone(), admitted.clone(), sender);
-        deliver(apply_without_tick(
-            &mut state,
-            Message::Enforce(Box::new(request)),
-            3,
-        ));
-        let batch = committed_chunk(apply_without_tick(&mut state, Message::Drained, 4));
-        assert_eq!(batch.pending_enforcement, 1);
-        let effects = deliver(cancel(&mut state, "first", 5));
-        assert!(stops(&effects), "{effects:?}");
-        assert_eq!(
-            state.termination().map(|intent| intent.termination.kind),
-            Some(RunTerminationKind::Canceled)
-        );
-        assert_eq!(state.pending_chunks(), 1);
-        assert!(deliver(cancel(&mut state, "first", 6)).is_empty());
-        assert_eq!(state.parked_requests(), 0);
-        assert!(
-            deliver(apply_without_tick(&mut state, Message::Drained, 7)).is_empty(),
-            "the intent waits behind the enforcement check in flight"
-        );
-        let intent = committed_chunk(apply_without_tick(&mut state, Message::Committed, 8));
-        assert_eq!(intent.events, 1, "`cancellation.requested`");
-        assert_eq!(intent.inbox_rows, 1);
-        assert_eq!(
-            intent.termination.map(|intent| intent.termination.kind),
-            Some(RunTerminationKind::Canceled)
-        );
-        let effects = deliver(apply_without_tick(&mut state, Message::Committed, 9));
-        assert!(effects.is_empty(), "{effects:?}");
-        assert!(deliver(cancel(&mut state, "first", 10)).is_empty());
-        assert_eq!(state.pending_chunks(), 0);
-        assert!(deliver(cancel(&mut state, "repeat", 11)).is_empty());
-        let repeat = committed_chunk(apply_without_tick(&mut state, Message::Drained, 12));
-        assert_eq!((repeat.events, repeat.inbox_rows), (0, 1));
-        assert!(repeat.termination.is_none());
-        assert_eq!(state.head(), 3);
-    }
-
-    // The deadline against a decision: a decision applied before the
-    // deadline rides a chunk; the deadline terminates the Program and rides
-    // the next chunk's head update like a cancellation, with no Event; a
-    // decision applied after it closes the request in that same chunk, and
-    // the terminal write finds the timeout recorded.
-    {
-        let mut state = started(LIMITS);
-        let approval = approval_id();
-        assert!(deliver(decide(&mut state, &approval, "first", 3)).is_empty());
-        let effects = deliver(apply_without_tick(
-            &mut state,
-            Message::Timer(Timer::RunDeadline),
-            LIMITS.deadline_at_unix_nanos,
-        ));
-        assert!(stops(&effects), "{effects:?}");
-        assert_eq!(
-            state.termination().map(|intent| intent.termination.kind),
-            Some(RunTerminationKind::TimedOut)
-        );
-        assert!(
-            deliver(decide(
-                &mut state,
-                &approval_id(),
-                "late",
-                LIMITS.deadline_at_unix_nanos + 1,
-            ))
-            .is_empty()
-        );
-        let chunk = committed_chunk(apply_without_tick(
-            &mut state,
-            Message::Drained,
-            LIMITS.deadline_at_unix_nanos + 2,
-        ));
-        assert_eq!((chunk.works, chunk.inbox_rows), (2, 2));
-        assert_eq!(chunk.events, 0, "a timeout writes no Event");
-        assert_eq!(
-            chunk.termination.map(|intent| intent.termination.kind),
-            Some(RunTerminationKind::TimedOut),
-            "the timeout rides the chunk's head update"
-        );
-        deliver(apply_without_tick(
-            &mut state,
-            Message::Committed,
-            LIMITS.deadline_at_unix_nanos + 3,
-        ));
-        let effects = apply_without_tick(
-            &mut state,
-            Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
-            LIMITS.deadline_at_unix_nanos + 4,
-        );
-        assert!(
-            matches!(
-                effects.as_slice(),
-                [
-                    Effect::TerminateProgram,
-                    Effect::CompleteExecution {
-                        completion: ExecutionCompletion::ProgramHostTerminated,
-                        intent: None,
-                    }
-                ]
-            ),
-            "the timeout is recorded already: {effects:?}"
-        );
-    }
-
-    // A cancel past the deadline times the Run out: the Program is
-    // terminated, and the timeout rides the next chunk with the deletion of
-    // the cancel's row, a repeat of the timeout.
-    {
-        let mut state = started(LIMITS);
-        let effects = cancel(&mut state, "late", LIMITS.deadline_at_unix_nanos);
-        assert!(stops(&deliver(effects)));
-        assert_eq!(state.pending_chunks(), 1);
-        assert_eq!(state.parked_requests(), 0);
-        let chunk = committed_chunk(apply_without_tick(
-            &mut state,
-            Message::Drained,
-            LIMITS.deadline_at_unix_nanos + 1,
-        ));
-        assert_eq!(
-            chunk.events, 0,
-            "a cancel past the deadline writes no Event"
-        );
-        assert_eq!(chunk.inbox_rows, 1);
-        assert_eq!(
-            chunk.termination.map(|intent| intent.termination.kind),
-            Some(RunTerminationKind::TimedOut)
-        );
-        let effects = deliver(apply_without_tick(
-            &mut state,
-            Message::Committed,
-            LIMITS.deadline_at_unix_nanos + 2,
-        ));
-        assert!(effects.is_empty(), "{effects:?}");
-        let effects = apply_without_tick(
-            &mut state,
-            Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
-            LIMITS.deadline_at_unix_nanos + 3,
-        );
-        assert!(
-            matches!(
-                effects.as_slice(),
-                [
-                    Effect::TerminateProgram,
-                    Effect::CompleteExecution { intent: None, .. }
-                ]
-            ),
-            "{effects:?}"
-        );
-    }
-
-    // A Program that never reports its end after the cancel: once the
-    // shutdown grace is out the owner ends the Run without it, and a late
-    // end changes nothing.
-    {
-        let mut state = started(LIMITS);
-        deliver(cancel(&mut state, "cancel", 3));
-        committed_chunk(apply_without_tick(&mut state, Message::Drained, 4));
-        deliver(apply_without_tick(&mut state, Message::Committed, 5));
-        let effects = apply_without_tick(&mut state, Message::Timer(Timer::Grace), 6);
-        assert!(
-            matches!(
-                effects.as_slice(),
-                [
-                    Effect::TerminateProgram,
-                    Effect::CompleteExecution { intent: None, .. }
-                ]
-            ),
-            "{effects:?}"
-        );
-        assert_eq!(state.phase(), Phase::Completing);
-        assert!(
-            apply_without_tick(
-                &mut state,
-                Message::ProgramEnded(ExecutionCompletion::Succeeded(FinalValue::Absent)),
-                7,
-            )
-            .is_empty()
-        );
-    }
-
-    // A lost claim commits nothing more: the rows of the decision on the
-    // chunk in flight, of its repeat and of a cancellation on a chunk not
-    // yet committed stay in the Run Inbox. A row delivered again, or a new
-    // one, changes nothing.
-    {
-        let mut state = started(LIMITS);
-        let approval = approval_id();
-        assert!(deliver(decide(&mut state, &approval, "first", 3)).is_empty());
-        committed_chunk(apply_without_tick(&mut state, Message::Drained, 4));
-        assert!(deliver(decide(&mut state, &approval, "repeat", 5)).is_empty());
-        deliver(cancel(&mut state, "pending", 6));
-        let effects = deliver(apply_without_tick(
-            &mut state,
-            Message::CommitRejected(CommitRejection::ClaimMismatch),
-            7,
-        ));
-        assert!(
-            matches!(effects.as_slice(), [Effect::TerminateProgram]),
-            "{effects:?}"
-        );
-        assert_eq!(
-            state.phase(),
-            Phase::Stopped(CommitRejection::ClaimMismatch)
-        );
-        assert!(deliver(cancel(&mut state, "pending", 8)).is_empty());
-        assert!(deliver(decide(&mut state, &approval, "first", 8)).is_empty());
-        assert!(deliver(decide(&mut state, &approval_id(), "late", 8)).is_empty());
-        assert_eq!(state.pending_chunks(), 0);
-    }
-
-    // A cancel before the Run started: the owner stops at once, so the
-    // Program never starts. The Run has no deadline yet (none from
-    // acceptance), so the cancel waits for the one the start mark records: a
-    // cancellation before it, a timeout past it. The intent commits once the
-    // start mark has, and the terminal write ends the Run.
-    for (deadline, kind, events) in [
-        (
-            LIMITS.deadline_at_unix_nanos,
-            RunTerminationKind::Canceled,
-            1,
-        ),
-        (2, RunTerminationKind::TimedOut, 0),
-    ] {
-        let limits = OwnerLimits {
-            deadline_at_unix_nanos: 1,
-            ..LIMITS
-        };
-        let mut state = OwnerState::new(limits, 1);
-        deliver(apply_without_tick(&mut state, Message::Launch, 1));
-        assert!(stops(&deliver(cancel(&mut state, "early", 2))));
-        assert_eq!(state.parked_requests(), 1);
-        let started = apply_without_tick(
-            &mut state,
-            Message::Started(Ok(Some(StartedExecution {
-                package: ProgramPackage::scripted("x"),
-                head: 1,
-                deadline_at_unix_nanos: deadline,
-            }))),
-            3,
-        );
-        let chunk = committed_chunk(
-            started
-                .into_iter()
-                .filter(|effect| !matches!(effect, Effect::TerminateProgram))
-                .collect(),
-        );
-        assert_eq!(state.phase(), Phase::Ending);
-        assert_eq!((chunk.events, chunk.inbox_rows), (events, 1), "{kind:?}");
-        assert_eq!(
-            chunk.termination.map(|intent| intent.termination.kind),
-            Some(kind)
-        );
-        let effects = apply_without_tick(&mut state, Message::Committed, 4);
-        assert!(
-            matches!(
-                effects.as_slice(),
-                [Effect::CompleteExecution {
-                    completion: ExecutionCompletion::ProgramHostTerminated,
-                    ..
-                }]
-            ),
-            "{effects:?}"
-        );
-        let effects = apply_without_tick(
-            &mut state,
-            Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
-            5,
-        );
-        assert!(matches!(
-            effects.as_slice(),
-            [Effect::Settle { again: false, .. }]
-        ));
-    }
-
-    // During the terminal write a decision joins the next chunk, which
-    // closes its request, and a cancel waits for that write. The Run ended:
-    // nothing more commits, and both rows stay for the record to answer. A
-    // termination to settle: a chunk of the settle closes the request and
-    // deletes both rows, the cancel's a repeat.
-    {
-        let mut state = started(LIMITS);
-        deliver(apply_without_tick(
-            &mut state,
-            Message::ProgramEnded(ExecutionCompletion::Succeeded(FinalValue::Absent)),
-            3,
-        ));
-        assert_eq!(state.phase(), Phase::Completing);
-        assert!(deliver(decide(&mut state, &approval_id(), "decision", 4)).is_empty());
-        assert!(deliver(cancel(&mut state, "cancel", 4)).is_empty());
-        assert!(deliver(cancel(&mut state, "cancel", 4)).is_empty());
-        assert_eq!(
-            state.parked_requests(),
-            1,
-            "a row delivered again parks once"
-        );
-        assert_eq!(state.pending_chunks(), 1);
-        let effects = deliver(apply_without_tick(
-            &mut state,
-            Message::Completed(Ok(None)),
-            5,
-        ));
-        assert!(
-            matches!(effects.as_slice(), [Effect::Retire]),
-            "{effects:?}"
-        );
-
-        let mut state = started(LIMITS);
-        deliver(apply_without_tick(
-            &mut state,
-            Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
-            3,
-        ));
-        assert!(deliver(decide(&mut state, &approval_id(), "decision", 4)).is_empty());
-        assert!(deliver(cancel(&mut state, "settled", 4)).is_empty());
-        let chunk = committed_chunk(apply_without_tick(
-            &mut state,
-            Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
-            5,
-        ));
-        assert_eq!((chunk.works, chunk.inbox_rows), (1, 2));
-        assert!(chunk.termination.is_none());
-        assert_eq!(state.phase(), Phase::Settling);
-        let effects = apply_without_tick(&mut state, Message::Committed, 6);
-        assert!(
-            matches!(effects.as_slice(), [Effect::Settle { again: false, .. }]),
-            "{effects:?}"
-        );
-    }
-
-    // A cancel and the Run deadline in one drain: the first applied decides
-    // the kind. The cancel first: the intent is the cancellation and rides
-    // the next chunk; the deadline's timer changes nothing.
-    {
-        let mut state = started(LIMITS);
-        assert!(stops(&deliver(cancel(&mut state, "first", 3))));
-        assert!(
-            apply_without_tick(
-                &mut state,
-                Message::Timer(Timer::RunDeadline),
-                LIMITS.deadline_at_unix_nanos
-            )
-            .is_empty()
-        );
-        assert_eq!(
-            state.termination().map(|intent| intent.termination.kind),
-            Some(RunTerminationKind::Canceled)
-        );
-        let chunk = committed_chunk(apply_without_tick(
-            &mut state,
-            Message::Drained,
-            LIMITS.deadline_at_unix_nanos + 1,
-        ));
-        assert_eq!(
-            (chunk.events, chunk.inbox_rows),
-            (1, 1),
-            "`cancellation.requested`"
-        );
-        assert_eq!(
-            chunk.termination.map(|intent| intent.termination.kind),
-            Some(RunTerminationKind::Canceled)
-        );
-    }
-
-    // The deadline's timer first, both before the deadline on the owner's
-    // clock (the timer fires on the host's): the timeout is the intent, and
-    // the cancel, a repeat, has its row deleted by the chunk that carries
-    // the timeout.
-    {
-        let mut state = started(LIMITS);
-        let effects = deliver(apply_without_tick(
-            &mut state,
-            Message::Timer(Timer::RunDeadline),
-            10,
-        ));
-        assert!(stops(&effects), "{effects:?}");
-        assert!(deliver(cancel(&mut state, "after", 11)).is_empty());
-        assert_eq!(
-            state.termination().map(|intent| intent.termination.kind),
-            Some(RunTerminationKind::TimedOut)
-        );
-        assert_eq!(state.parked_requests(), 0);
-        assert_eq!(
-            state.pending_chunks(),
-            1,
-            "the timeout and the cancel's row ride one chunk"
-        );
-        let chunk = committed_chunk(apply_without_tick(&mut state, Message::Drained, 12));
-        assert_eq!((chunk.events, chunk.inbox_rows), (0, 1));
-        assert_eq!(
-            chunk.termination.map(|intent| intent.termination.kind),
-            Some(RunTerminationKind::TimedOut)
-        );
-        deliver(apply_without_tick(&mut state, Message::Committed, 13));
-        let effects = apply_without_tick(
-            &mut state,
-            Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
-            14,
-        );
-        assert!(
-            matches!(
-                effects.as_slice(),
-                [
-                    Effect::TerminateProgram,
-                    Effect::CompleteExecution { intent: None, .. }
-                ]
-            ),
-            "{effects:?}"
-        );
-    }
-
-    // An Approval Request's deadline: the chunk whose gate parked the
-    // Invocation on the request reports the park, and the owner arms the
-    // request's timer and the periodic precheck. The timer first: the expiry
-    // rides the next chunk with no requester, and once it is recorded the
-    // parked Invocation goes back to its held recheck with no read; a
-    // decision applied after the timer is a repeat, whose row rides the
-    // expiry's chunk. A park on a request already decided goes back at once
-    // and arms nothing.
-    {
-        let mut state = started(LIMITS);
-        let approval = approval_id();
-        let timer = Timer::Approval(approval.clone());
-        let (effects, mut woken) =
-            park(&mut state, &invoker, &admitted, approval_wait(&approval), 3);
-        assert!(
-            matches!(
-                effects.as_slice(),
-                [
-                    Effect::ArmTimer { timer: Timer::Approval(id), after_nanos: 97 },
-                    Effect::ArmTimer { timer: Timer::Precheck, after_nanos: PRECHECK },
-                ] if *id == approval
-            ),
-            "an approval wait subscribes to nothing: {effects:?}"
-        );
-        assert!(
-            apply_without_tick(&mut state, Message::Timer(timer.clone()), APPROVAL_DEADLINE)
-                .is_empty()
-        );
-        assert_eq!(state.pending_chunks(), 1);
-        assert!(deliver(decide(&mut state, &approval, "late", APPROVAL_DEADLINE + 1)).is_empty());
-        assert_eq!(state.parked_requests(), 0);
-        let chunk = committed_chunk(apply_without_tick(&mut state, Message::Drained, 102));
-        assert_eq!(
-            (chunk.works, chunk.inbox_rows),
-            (1, 1),
-            "the expiry, and the decision's row"
-        );
-        woken.try_recv().expect_err("parked until the expiry lands");
-        let effects = deliver(apply_without_tick(&mut state, Message::Committed, 104));
-        assert!(effects.is_empty(), "{effects:?}");
-        woken.try_recv().expect("the recorded expiry wakes it");
-        assert_eq!(state.parked_invocations(), 0);
-        assert_eq!(state.pending_chunks(), 0);
-        let (effects, mut again) = park(
-            &mut state,
-            &invoker,
-            &admitted,
-            approval_wait(&approval),
-            105,
-        );
-        assert!(
-            deliver(effects).is_empty(),
-            "a decided request arms no timer"
-        );
-        again.try_recv().expect("and goes back at once");
-        assert_eq!(state.parked_invocations(), 0);
-    }
-
-    // The decision first: it rides the chunk and wakes the parked
-    // Invocation once recorded, and the timer that fires after it builds no
-    // expiry.
-    {
-        let mut state = started(LIMITS);
-        let approval = approval_id();
-        let timer = Timer::Approval(approval.clone());
-        let (effects, mut woken) =
-            park(&mut state, &invoker, &admitted, approval_wait(&approval), 3);
-        assert_eq!(effects.len(), 2, "{effects:?}");
-        assert!(deliver(decide(&mut state, &approval, "first", 4)).is_empty());
-        assert!(apply_without_tick(&mut state, Message::Timer(timer.clone()), 100).is_empty());
-        let chunk = committed_chunk(apply_without_tick(&mut state, Message::Drained, 101));
-        assert_eq!(
-            (chunk.works, chunk.inbox_rows),
-            (1, 1),
-            "the decision alone"
-        );
-        deliver(apply_without_tick(&mut state, Message::Committed, 103));
-        woken.try_recv().expect("woken");
-        assert!(
-            apply_without_tick(&mut state, Message::Timer(timer), 104).is_empty(),
-            "a late timer on a decided request"
-        );
-        assert_eq!(state.pending_chunks(), 0);
-    }
-
-    // A decision applied past the request's deadline on the owner's clock,
-    // before its timer's message arrived: the expiry is applied first, as
-    // the timer would have been, and the decision is a repeat whose row
-    // rides the expiry's chunk.
-    {
-        let mut state = started(LIMITS);
-        let approval = approval_id();
-        let (effects, mut woken) =
-            park(&mut state, &invoker, &admitted, approval_wait(&approval), 3);
-        assert_eq!(effects.len(), 2, "{effects:?}");
-        assert!(deliver(decide(&mut state, &approval, "late", APPROVAL_DEADLINE)).is_empty());
-        let chunk = committed_chunk(apply_without_tick(&mut state, Message::Drained, 101));
-        assert_eq!(
-            (chunk.works, chunk.inbox_rows),
-            (1, 1),
-            "the expiry, and the decision's row"
-        );
-        deliver(apply_without_tick(&mut state, Message::Committed, 103));
-        woken.try_recv().expect("woken");
-        assert_eq!(state.pending_chunks(), 0);
-    }
-
-    // A connection request's deadline wakes the Invocations parked on that
-    // request alone while the Run takes Program requests, and nothing once
-    // it stops; the stop lets every parked Invocation go.
-    {
-        let mut state = started(LIMITS);
-        let request = connection_request();
-        let other = connection_request();
-        let timer = Timer::Connection(request);
-        let (effects, mut woken) = park(
-            &mut state,
-            &invoker,
-            &admitted,
-            connection_wait(request, 50),
-            3,
-        );
-        assert!(
-            matches!(
-                effects.as_slice(),
-                [
-                    Effect::ArmTimer {
-                        timer: Timer::Connection(_),
-                        after_nanos: 47
-                    },
-                    Effect::Subscribe,
-                    Effect::ArmTimer {
-                        timer: Timer::Precheck,
-                        ..
-                    },
-                ]
-            ),
-            "{effects:?}"
-        );
-        let (effects, mut bystander) = park(
-            &mut state,
-            &invoker,
-            &admitted,
-            connection_wait(other, 70),
-            4,
-        );
-        let [
-            Effect::ArmTimer {
-                timer: Timer::Connection(_),
-                after_nanos: 66,
-            },
-            read @ ..,
-        ] = effects.as_slice()
-        else {
-            panic!("{effects:?}");
-        };
-        assert!(
-            prechecks(read, Check::Connections, &[1, 2]),
-            "one subscription and one precheck timer; the park under the held \
-             subscription reads the requests: {effects:?}"
-        );
-        let effects = deliver(apply_without_tick(
-            &mut state,
-            Message::Timer(timer.clone()),
-            50,
-        ));
-        assert!(effects.is_empty(), "{effects:?}");
-        woken.try_recv().expect("woken");
-        bystander
-            .try_recv()
-            .expect_err("another request's wait stays parked");
-        let (_, mut again) = park(
-            &mut state,
-            &invoker,
-            &admitted,
-            connection_wait(request, 50),
-            51,
-        );
-        let effects = deliver(apply_without_tick(&mut state, Message::Stop, 52));
-        assert!(
-            matches!(
-                effects.as_slice(),
-                [
-                    Effect::ArmTimer {
-                        timer: Timer::Grace,
-                        ..
-                    },
-                    Effect::Unsubscribe,
-                    Effect::TerminateProgram,
-                ]
-            ),
-            "{effects:?}"
-        );
-        assert!(
-            matches!(
-                again.try_recv(),
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed)
-            ),
-            "a stop lets the parked Invocations go"
-        );
-        assert!(matches!(
-            bystander.try_recv(),
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
-        ));
-        assert!(apply_without_tick(&mut state, Message::Timer(timer), 53).is_empty());
-        let (effects, mut late) = park(
-            &mut state,
-            &invoker,
-            &admitted,
-            connection_wait(request, 90),
-            54,
-        );
-        assert!(
-            effects.is_empty(),
-            "a stopped Run parks nothing: {effects:?}"
-        );
-        assert!(matches!(
-            late.try_recv(),
-            Err(tokio::sync::oneshot::error::TryRecvError::Closed)
-        ));
-    }
-}
-
 /// The owner's wake-ups and prechecks of its parked Invocations, in mailbox
 /// order: an approval wait subscribes to nothing, so a change rings nothing
 /// and reads nothing; a connection wait holds the one subscription, and the
@@ -2704,19 +1396,13 @@ async fn apply_records_outside_requests_once_in_mailbox_order_and_applies_a_canc
     reason = "one table of wake-up and precheck message orders, each case a block"
 )]
 async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_rest() {
-    let (engine, _release) = BlockingEngine::new();
-    let fixture = TestModules::new(Arc::new(engine)).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool("user:apply-wakeups", "Parked waits")
         .await;
-    let run = fixture
-        .runs
-        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
-        .await
-        .unwrap();
-    wait_until_started(&fixture, &tool.workspace_id, run.run_id()).await;
-    let record = fixture.run_record(&tool.workspace_id, run.run_id()).await;
-    let admitted = admitted_invocation(&fixture, &tool, run.run_id()).await;
+    let (run_id, _stream) = started_on_a_stream(&fixture.runs, &tool).await;
+    let record = fixture.run_record(&tool.workspace_id, &run_id).await;
+    let admitted = admitted_invocation(&fixture, &tool, &run_id).await;
     let invoker = test_invoker(&fixture, &tool, &record);
 
     // An approval wait, then a connection wait: the first arms the periodic
@@ -2733,7 +1419,7 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
             park(&mut state, &invoker, &admitted, approval_wait(&approval), 3);
         assert_eq!(effects.len(), 2, "{effects:?}");
         assert!(
-            apply_without_tick(&mut state, Message::Changed, 4).is_empty(),
+            apply(&mut state, Message::Changed, 4).is_empty(),
             "no subscription: an unrelated commit reads nothing"
         );
         let (effects, mut connection_woken) = park(
@@ -2756,10 +1442,10 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
             ),
             "{effects:?}"
         );
-        let effects = apply_without_tick(&mut state, Message::Changed, 6);
+        let effects = apply(&mut state, Message::Changed, 6);
         assert!(prechecks(&effects, Check::Connections, &[2]), "{effects:?}");
-        assert!(apply_without_tick(&mut state, Message::Changed, 7).is_empty());
-        let effects = apply_without_tick(
+        assert!(apply(&mut state, Message::Changed, 7).is_empty());
+        let effects = apply(
             &mut state,
             Message::Prechecked {
                 check: Check::Connections,
@@ -2768,15 +1454,15 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
             8,
         );
         assert!(effects.is_empty(), "the gap is not out: {effects:?}");
-        assert!(apply_without_tick(&mut state, Message::Changed, 9).is_empty());
-        let effects = apply_without_tick(&mut state, Message::Timer(Timer::WakeGap), 10);
+        assert!(apply(&mut state, Message::Changed, 9).is_empty());
+        let effects = apply(&mut state, Message::Timer(Timer::WakeGap), 10);
         assert!(
             prechecks(&effects, Check::Connections, &[2]),
             "the rings coalesce into one read: {effects:?}"
         );
-        let effects = apply_without_tick(&mut state, Message::Timer(Timer::WakeGap), 11);
+        let effects = apply(&mut state, Message::Timer(Timer::WakeGap), 11);
         assert!(effects.is_empty(), "nothing rang since: {effects:?}");
-        let effects = deliver(apply_without_tick(
+        let effects = deliver(apply(
             &mut state,
             Message::Prechecked {
                 check: Check::Connections,
@@ -2790,7 +1476,7 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
         );
         connection_woken.try_recv().expect("woken");
         approval_woken.try_recv().expect_err("still parked");
-        assert!(apply_without_tick(&mut state, Message::Changed, 13).is_empty());
+        assert!(apply(&mut state, Message::Changed, 13).is_empty());
         assert_eq!(state.parked_invocations(), 1);
     }
 
@@ -2812,7 +1498,7 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
                 .iter()
                 .any(|effect| matches!(effect, Effect::Subscribe))
         );
-        let effects = apply_without_tick(&mut state, Message::Changed, 4);
+        let effects = apply(&mut state, Message::Changed, 4);
         assert!(prechecks(&effects, Check::Connections, &[1]), "{effects:?}");
         let (effects, _second) = park(
             &mut state,
@@ -2832,7 +1518,7 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
             "the first read still runs: {effects:?}"
         );
         assert!(
-            apply_without_tick(
+            apply(
                 &mut state,
                 Message::Prechecked {
                     check: Check::Connections,
@@ -2843,7 +1529,7 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
             .is_empty(),
             "the gap is not out"
         );
-        let effects = apply_without_tick(&mut state, Message::Timer(Timer::WakeGap), 7);
+        let effects = apply(&mut state, Message::Timer(Timer::WakeGap), 7);
         assert!(
             prechecks(&effects, Check::Connections, &[1, 2]),
             "the second park is read without a ring of its own: {effects:?}"
@@ -2867,9 +1553,9 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
             connection_wait(request, 500),
             4,
         );
-        let effects = apply_without_tick(&mut state, Message::Timer(Timer::Precheck), 5);
+        let effects = apply(&mut state, Message::Timer(Timer::Precheck), 5);
         assert!(prechecks(&effects, Check::Periodic, &[1, 2]), "{effects:?}");
-        let effects = apply_without_tick(
+        let effects = apply(
             &mut state,
             Message::Prechecked {
                 check: Check::Periodic,
@@ -2887,9 +1573,9 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
             ),
             "a failed precheck wakes nothing and is read again: {effects:?}"
         );
-        let effects = apply_without_tick(&mut state, Message::Timer(Timer::Precheck), 7);
+        let effects = apply(&mut state, Message::Timer(Timer::Precheck), 7);
         assert!(prechecks(&effects, Check::Periodic, &[1, 2]), "{effects:?}");
-        let effects = deliver(apply_without_tick(
+        let effects = deliver(apply(
             &mut state,
             Message::Prechecked {
                 check: Check::Periodic,
@@ -2912,15 +1598,26 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
         );
         connection_woken.try_recv().expect("woken");
         approval_woken.try_recv().expect_err("still parked");
-        let effects = apply_without_tick(&mut state, Message::Timer(Timer::Precheck), 9);
+        let effects = apply(&mut state, Message::Timer(Timer::Precheck), 9);
         assert!(prechecks(&effects, Check::Periodic, &[1]), "{effects:?}");
-        // The decision lands before the precheck answers: the owner's
-        // record wakes the Invocation, and the finding finds it gone.
-        assert!(deliver(decide(&mut state, &approval, "decision", 10)).is_empty());
-        committed_chunk(apply_without_tick(&mut state, Message::Drained, 11));
-        deliver(apply_without_tick(&mut state, Message::Committed, 12));
+        // Another writer decides before the precheck answers: the moved
+        // head reads the Approval Requests, which wakes the Invocation, and
+        // the finding finds it gone.
+        let moved = crate::run_repository::RunHead {
+            head: state.head() + 1,
+            recorded_total: 0,
+            running: true,
+            termination: None,
+        };
+        let effects = apply(&mut state, Message::Woken(moved), 10);
+        assert!(prechecks(&effects, Check::Approvals, &[1]), "{effects:?}");
+        let found = Message::Prechecked {
+            check: Check::Approvals,
+            found: Ok(vec![1]),
+        };
+        assert!(deliver(apply(&mut state, found, 11)).is_empty());
         approval_woken.try_recv().expect("woken");
-        let effects = apply_without_tick(
+        let effects = apply(
             &mut state,
             Message::Prechecked {
                 check: Check::Periodic,
@@ -2933,7 +1630,7 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
             "a stale finding wakes nothing and nothing is left to precheck: {effects:?}"
         );
         assert_eq!(state.parked_invocations(), 0);
-        let effects = apply_without_tick(&mut state, Message::Timer(Timer::Precheck), 14);
+        let effects = apply(&mut state, Message::Timer(Timer::Precheck), 14);
         assert!(effects.is_empty(), "{effects:?}");
     }
 
@@ -2949,15 +1646,15 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
             approval_wait(&approval_id()),
             3,
         );
-        let effects = deliver(apply_without_tick(
+        let effects = deliver(apply(
             &mut state,
             Message::Timer(Timer::Precheck),
             LIMITS.deadline_at_unix_nanos,
         ));
-        assert!(stops(&effects), "{effects:?}");
         assert_eq!(
-            state.termination().map(|intent| intent.termination.kind),
-            Some(crate::lifecycle::RunTerminationKind::TimedOut)
+            ended_as(&effects),
+            Some(crate::lifecycle::RunTerminationKind::TimedOut),
+            "{effects:?}"
         );
         assert!(matches!(
             woken.try_recv(),
@@ -2976,237 +1673,36 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
             approval_wait(&approval_id()),
             3,
         );
-        deliver(apply_without_tick(&mut state, Message::Stop, 4));
+        deliver(apply(&mut state, Message::Timer(Timer::RunDeadline), 4));
         assert_eq!(state.parked_invocations(), 0);
-        let effects = apply_without_tick(&mut state, Message::Timer(Timer::Precheck), 5);
+        let effects = apply(&mut state, Message::Timer(Timer::Precheck), 5);
         assert!(effects.is_empty(), "{effects:?}");
     }
 }
 
-/// A recovered owner applies the Run Inbox requests the sweep queued after
-/// the timers, as a live owner applies them: a decision past its request's
-/// deadline is a repeat of its expiry, even past the Run deadline; a
-/// cancellation is the first termination unless the Run deadline passed,
-/// whose timeout comes first; a decision after a termination closes its
-/// request. Its chunk deletes every row it applied.
-#[test]
-fn a_recovered_owner_applies_its_run_inbox_requests_in_insert_order() {
-    use crate::run_inbox::InboxRow;
-    #[derive(Debug, Clone, Copy)]
-    enum Sent {
-        Cancel,
-        Decision,
-    }
-    #[derive(Debug, PartialEq)]
-    enum Step {
-        Expire,
-        Record,
-        Close,
-        Cancel,
-    }
-    let run_deadline = LIMITS.deadline_at_unix_nanos;
-    // (the requests delivered, in order, each with when it was applied;
-    // what the chunk writes, the cancellation last)
-    let cases = [
-        (vec![(Sent::Decision, 3)], vec![Step::Record]),
-        (
-            vec![(Sent::Decision, APPROVAL_DEADLINE)],
-            vec![Step::Expire],
-        ),
-        (vec![(Sent::Decision, run_deadline)], vec![Step::Expire]),
-        (
-            vec![(Sent::Decision, 3), (Sent::Cancel, 4)],
-            vec![Step::Record, Step::Cancel],
-        ),
-        (
-            vec![(Sent::Cancel, 3), (Sent::Decision, 4)],
-            vec![Step::Close, Step::Cancel],
-        ),
-        (
-            vec![(Sent::Cancel, 3), (Sent::Decision, APPROVAL_DEADLINE)],
-            vec![Step::Close, Step::Cancel],
-        ),
-        (vec![(Sent::Cancel, run_deadline)], vec![]),
-    ];
-    for (delivered, written) in cases {
-        let approval = approval_id();
-        let mut state = OwnerState::recovered(LIMITS, 1);
-        let rows = (0..delivered.len())
-            .map(|index| format!("row-{index}"))
-            .collect::<Vec<_>>();
-        for (&(sent, at), row) in delivered.iter().zip(&rows) {
-            let effects = match sent {
-                Sent::Cancel => cancel(&mut state, row, at),
-                Sent::Decision => decide(&mut state, &approval, row, at),
-            };
-            assert!(effects.is_empty(), "{delivered:?}: {effects:?}");
-        }
-        let effects = apply_without_tick(&mut state, Message::Recover, run_deadline + 1);
-        let [Effect::Recover(recovered)] = effects.as_slice() else {
-            panic!("{delivered:?}: one chunk, nothing else: {effects:?}");
-        };
-        let steps = recovered
-            .steps
-            .iter()
-            .map(|step| match step {
-                RecoveryStep::Expire(expired) => {
-                    assert_eq!(*expired, approval);
-                    Step::Expire
-                }
-                RecoveryStep::Decide {
-                    record,
-                    applied_at_unix_nanos,
-                    ..
-                } => {
-                    // A decision is dated when the owner applied it.
-                    assert!(
-                        delivered
-                            .iter()
-                            .any(|&(sent, at)| matches!(sent, Sent::Decision)
-                                && at == *applied_at_unix_nanos),
-                        "{delivered:?}: {step:?}"
-                    );
-                    if *record { Step::Record } else { Step::Close }
-                }
-            })
-            .chain(recovered.termination.iter().map(|intent| {
-                assert_eq!(intent.requester, Some(requester()));
-                Step::Cancel
-            }))
-            .collect::<Vec<_>>();
-        assert_eq!(steps, written, "{delivered:?}");
-        assert_eq!(
-            recovered.rows,
-            rows.into_iter().map(InboxRow).collect::<Vec<_>>(),
-            "{delivered:?}"
-        );
-    }
-    // A cancellation whose intent the row cannot hold is not applied, and
-    // its row stays.
-    let mut state = OwnerState::recovered(
-        OwnerLimits {
-            shutdown_grace_nanos: i64::MAX,
-            ..LIMITS
-        },
-        1,
-    );
-    assert!(cancel(&mut state, "cancel", 3).is_empty());
-    let effects = apply_without_tick(&mut state, Message::Recover, 4);
-    let [Effect::Recover(recovered)] = effects.as_slice() else {
-        panic!("one chunk, nothing else: {effects:?}");
-    };
-    assert!(recovered.termination.is_none() && recovered.rows.is_empty());
-}
-
-/// A recovered owner gathers the Approval Request timers the sweep queued,
-/// in order, and its end writes them in one chunk. The write's answer, or a
-/// stop (the Shutdown Drain is out) whether the chunk is queued or in
-/// flight, retires it.
-#[test]
-fn a_recovered_owner_writes_its_queued_expiries_in_one_chunk_and_retires() {
-    let (first, second) = (approval_id(), approval_id());
-    let mut state = OwnerState::recovered(LIMITS, 1);
-    let mut effects = Vec::new();
-    for message in [
-        Message::Timer(Timer::Approval(first.clone())),
-        Message::Timer(Timer::Approval(second.clone())),
-        Message::Recover,
-    ] {
-        effects.extend(apply_without_tick(&mut state, message, 3));
-    }
-    let [Effect::Recover(recovered)] = effects.as_slice() else {
-        panic!("one chunk, nothing else: {effects:?}");
-    };
-    assert!(
-        matches!(
-            recovered.steps.as_slice(),
-            [RecoveryStep::Expire(one), RecoveryStep::Expire(two)] if *one == first && *two == second
-        ),
-        "{recovered:?}"
-    );
-    assert!(apply_without_tick(&mut state, Message::Drained, 4).is_empty());
-    assert!(matches!(
-        apply_without_tick(
-            &mut state,
-            Message::Interrupted(Err(CommitRejection::ClaimMismatch)),
-            5
-        )
-        .as_slice(),
-        [Effect::Retire]
-    ));
-    assert_eq!(state.phase(), Phase::Retired);
-    for writing in [false, true] {
-        let mut state = OwnerState::recovered(LIMITS, 1);
-        if writing {
-            apply_without_tick(&mut state, Message::Recover, 3);
-        }
-        let effects = apply_without_tick(&mut state, Message::Stop, 4);
-        assert!(
-            matches!(effects.as_slice(), [Effect::Retire]),
-            "writing {writing}: {effects:?}"
-        );
-        assert_eq!(state.phase(), Phase::Retired);
-    }
-    // A clock the host cannot read rejects before the message it dequeued:
-    // the owner retires, and a decision applied then records nothing, its
-    // row left for the next recovered owner.
-    let mut state = OwnerState::recovered(LIMITS, 1);
-    let effects = apply_without_tick(
-        &mut state,
-        Message::CommitRejected(CommitRejection::Failed),
-        1,
-    );
-    assert!(
-        matches!(effects.as_slice(), [Effect::Retire]),
-        "{effects:?}"
-    );
-    assert!(decide(&mut state, &approval_id(), "row", 1).is_empty());
-    assert!(
-        apply_without_tick(&mut state, Message::Recover, 2).is_empty(),
-        "no chunk writes the decision or deletes its row"
-    );
-    assert_eq!(state.phase(), Phase::Retired);
-}
-
 /// Catches: a Run stream's deadline that rides an intent with a shutdown
-/// grace, or a cancellation past it recorded beside the deadline's end, so
-/// that the Run ends Canceled while the stream hears `TIMED_OUT`.
+/// grace, or that is written before the chunks applied ahead of it.
 #[test]
-fn a_run_streams_deadline_is_written_after_its_chunks_and_a_cancel_past_it_is_a_repeat() {
+fn a_run_streams_deadline_is_written_after_its_chunks() {
     use crate::lifecycle::RunTerminationKind;
 
-    let mut state = OwnerState::for_run_stream(LIMITS, 1, (0, 0));
-    deliver(apply_without_tick(&mut state, Message::Launch, 1));
-    deliver(apply_without_tick(
-        &mut state,
-        Message::Started(Ok(Some(StartedExecution {
-            package: ProgramPackage::scripted("x"),
-            head: 1,
-            deadline_at_unix_nanos: LIMITS.deadline_at_unix_nanos,
-        }))),
-        2,
-    ));
+    let mut state = started(LIMITS);
     // One chunk in flight, one applied behind it.
     let (effects, _first) = emit(&mut state, 8, 3);
     deliver(effects);
-    committed_chunk(apply_without_tick(&mut state, Message::Drained, 3));
+    committed_chunk(apply(&mut state, Message::Drained, 3));
     let (effects, _second) = emit(&mut state, 8, 4);
     deliver(effects);
 
     let past = LIMITS.deadline_at_unix_nanos + 1;
-    let effects = deliver(cancel(&mut state, "late", past));
+    let effects = deliver(apply(&mut state, Message::Timer(Timer::RunDeadline), past));
     assert!(
         matches!(effects.as_slice(), [Effect::TerminateProgram]),
         "the stop at once, no grace and no intent: {effects:?}"
     );
-    assert_eq!(state.termination(), None);
-    let chunk = committed_chunk(apply_without_tick(&mut state, Message::Committed, past));
-    assert_eq!(
-        (chunk.events, chunk.inbox_rows, chunk.termination),
-        (1, 1, None),
-        "the applied Emission commits; the cancellation is a repeat"
-    );
-    let effects = apply_without_tick(&mut state, Message::Committed, past);
+    let chunk = committed_chunk(apply(&mut state, Message::Committed, past));
+    assert_eq!(chunk.events, 1, "the applied Emission commits");
+    let effects = apply(&mut state, Message::Committed, past);
     assert!(
         matches!(
             effects.as_slice(),
@@ -3218,34 +1714,24 @@ fn a_run_streams_deadline_is_written_after_its_chunks_and_a_cancel_past_it_is_a_
     );
 }
 
-/// Catches: a Run stream's `Terminate` that names the owner's own applied
-/// intent once another writer ended the Run with another termination: the
-/// end the Run records comes first.
+/// Catches: a Run stream's `Terminate` that names the loop's own decided
+/// end once another writer ended the Run with another termination: the end
+/// the Run records comes first.
 #[test]
 fn a_run_streams_terminate_names_the_end_its_run_records() {
     use crate::lifecycle::RunTerminationKind;
 
-    let mut state = OwnerState::for_run_stream(LIMITS, 1, (0, 0));
-    deliver(apply_without_tick(&mut state, Message::Launch, 1));
-    deliver(apply_without_tick(
-        &mut state,
-        Message::Started(Ok(Some(StartedExecution {
-            package: ProgramPackage::scripted("x"),
-            head: 1,
-            deadline_at_unix_nanos: LIMITS.deadline_at_unix_nanos,
-        }))),
-        2,
-    ));
-    // A cancellation an older release left in the Run Inbox is applied.
-    deliver(cancel(&mut state, "inbox", 3));
-    assert_eq!(state.terminated_as(), Some(RunTerminationKind::Canceled));
+    let mut state = started(LIMITS);
+    // The loop decides the deadline's end on its own.
+    deliver(apply(&mut state, Message::Timer(Timer::RunDeadline), 3));
+    assert_eq!(state.terminated_as(), None);
 
-    // The sweeper ended the Run first, at its deadline.
-    deliver(apply_without_tick(
+    // A cancellation ended the Run first.
+    deliver(apply(
         &mut state,
-        Message::EndedOutside(Some(RunTerminationKind::TimedOut)),
+        Message::EndedOutside(Some(RunTerminationKind::Canceled)),
         4,
     ));
 
-    assert_eq!(state.terminated_as(), Some(RunTerminationKind::TimedOut));
+    assert_eq!(state.terminated_as(), Some(RunTerminationKind::Canceled));
 }

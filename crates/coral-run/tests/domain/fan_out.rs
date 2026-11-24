@@ -8,8 +8,13 @@
 //! the `apply` table (`owner.rs`).
 use super::*;
 
+use std::sync::atomic::AtomicU64;
+
+use super::run_stream_reconnect::{answers, finish_with, only_answer};
+use super::run_streams::{Scripted, ended, take};
 use crate::approval::{ApprovalDecision, ApprovalState};
 use crate::{FanOutLimit, InvocationResultKind};
+use coral_run_executor::wire::v1::{Invoke, RunEnd as WireEnd, invocation_result, request};
 
 use axum::http::StatusCode;
 
@@ -49,16 +54,18 @@ impl Setup {
     }
 }
 
-/// A Run under a Fan-out Limit whose calls the test starts one at a time,
-/// so readiness order is the test's own, and whose upstream sends it ends
-/// one at a time. `weather` is the fixture's `getForecast`; `alerts` is a
+/// A Run under a Fan-out Limit whose calls the test starts one at a time on
+/// its stream, so readiness order is the test's own, and whose upstream
+/// sends it ends one at a time. `weather` is the fixture's `getForecast`; `alerts` is a
 /// second credential-free Tool of the same Workspace.
 struct FanOutRun {
     fixture: TestModules,
     runs: RunModule,
     upstream: Arc<SequencedUpstream>,
     latch: Arc<EnforcementLatch>,
-    calls: ScriptedCalls,
+    stream: Scripted,
+    /// The calls started so far, numbered from one on the stream.
+    calls: AtomicU64,
     tool: ToolFixture,
     run_id: crate::RunId,
     /// The OAuth Account's server and credential store, kept for the Run's life.
@@ -74,9 +81,8 @@ impl FanOutRun {
 
     async fn arrange(setup: Setup) -> Self {
         let upstream = SequencedUpstream::new(HttpOutcome::new(200, serde_json::json!({})));
-        let (engine, calls) = ScriptedCallsEngine::new();
         let fixture = TestModules::with_invocation_adapters(
-            Arc::new(engine),
+            Arc::new(ImmediateEngine),
             upstream.clone(),
             setup.latch.clone(),
         )
@@ -117,12 +123,16 @@ impl FanOutRun {
             .expect("accept the Program")
             .run_id()
             .clone();
+        let claim = take(&runs).await;
+        let mut stream = Scripted::open(&runs, &run_id.to_string(), &claim);
+        stream.start().await;
         Self {
             fixture,
             runs,
             upstream,
             latch: setup.latch,
-            calls,
+            stream,
+            calls: AtomicU64::new(0),
             tool,
             run_id,
             _oauth: kept,
@@ -153,16 +163,30 @@ impl FanOutRun {
             .expect("observe the Run")
     }
 
+    /// Starts one call by Call Path, as the stream's next request.
+    fn invoke(&self, call_path: &str) {
+        let number = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+        self.stream.request(
+            number,
+            request::Kind::Invoke(Invoke {
+                call_path: call_path.to_owned(),
+                arguments_json: "{}".to_owned(),
+                location: None,
+                parent: None,
+            }),
+        );
+    }
+
     /// Starts one call and waits until it is admitted: its row exists.
     async fn admit(&self, call_path: &str, admitted_so_far: usize) {
-        self.calls.invoke(call_path);
+        self.invoke(call_path);
         wait_until_async(async || self.rows().await.len() > admitted_so_far).await;
     }
 
     /// Starts one call and waits until its send reached the upstream, which
     /// a dispatch does only after its enforcement check committed.
     async fn dispatch(&self, call_path: &str, sent_so_far: usize) {
-        self.calls.invoke(call_path);
+        self.invoke(call_path);
         self.upstream.until_sent(sent_so_far + 1).await;
     }
 
@@ -192,9 +216,29 @@ impl FanOutRun {
         );
     }
 
-    /// Ends the Program and returns the Run's terminal update.
-    async fn finish(&self) -> crate::RunUpdate {
-        self.calls.finish();
+    /// Ends the Program once every call is answered, with each call's
+    /// outcome in start order (`"ok"` or the failure code), and returns the
+    /// Run's terminal update.
+    async fn finish(&mut self) -> crate::RunUpdate {
+        let calls = self.calls.load(Ordering::SeqCst);
+        let read = self
+            .stream
+            .until(|read| (1..=calls).all(|number| !answers(read, number).is_empty()))
+            .await;
+        let outcomes: Vec<String> = (1..=calls)
+            .map(|number| match &only_answer(&read, number).outcome {
+                Some(invocation_result::Outcome::ResultJson(_)) => "ok".to_owned(),
+                Some(invocation_result::Outcome::CoralFailure(failure)) => failure.code.clone(),
+                other => format!("{other:?}"),
+            })
+            .collect();
+        self.stream.request(
+            calls + 1,
+            finish_with(&serde_json::json!(outcomes).to_string()),
+        );
+        self.stream
+            .until(|read| read.contains(&ended(WireEnd::Succeeded)))
+            .await;
         wait_for_terminal(
             &self.runs,
             &self.tool.principal,
@@ -244,7 +288,7 @@ fn assert_succeeded(terminal: &crate::RunUpdate, outcomes: &[&str]) {
 /// upstream outcome.
 #[tokio::test]
 async fn ready_calls_above_the_limit_wait_in_memory_and_dispatch_in_readiness_order() {
-    let run = FanOutRun::start(Setup::new("user:fan-out")).await;
+    let mut run = FanOutRun::start(Setup::new("user:fan-out")).await;
     run.dispatch(WEATHER, 0).await;
     run.dispatch(WEATHER, 1).await;
     // The third (alerts) and the fourth (weather) become ready in this order.
@@ -310,7 +354,7 @@ async fn ready_calls_above_the_limit_wait_in_memory_and_dispatch_in_readiness_or
 /// and no required action, then dispatches when an earlier call ends.
 #[tokio::test]
 async fn a_call_parked_on_approval_holds_no_slot_and_its_request_stays_visible() {
-    let run = FanOutRun::start(Setup {
+    let mut run = FanOutRun::start(Setup {
         approval_required: true,
         ..Setup::new("user:fan-out-approval")
     })
@@ -380,77 +424,6 @@ async fn a_call_parked_on_approval_holds_no_slot_and_its_request_stays_visible()
     assert_succeeded(&run.finish().await, &["ok", "ok", "ok"]);
 }
 
-/// A Run canceled while a call waits for a slot ends that call as
-/// `run_terminated`, with no dispatch start; the two dispatching calls end
-/// indeterminate, and nothing more is sent.
-#[tokio::test]
-async fn a_run_terminated_while_a_call_waits_for_a_slot_ends_it_as_run_terminated() {
-    let run = FanOutRun::start(Setup::new("user:fan-out-cancel")).await;
-    run.dispatch(WEATHER, 0).await;
-    run.dispatch(WEATHER, 1).await;
-    run.admit(ALERTS, 2).await;
-    run.latch.until_arrived(3).await;
-    run.assert_slot_wait_is_silent(&[ALERTS], 2).await;
-
-    let canceled = run
-        .runs
-        .cancel(
-            &run.tool.principal,
-            &run.tool.workspace_id,
-            &run.run_id,
-            &immediate(None, 100),
-        )
-        .await
-        .expect("cancel the Run");
-    assert_eq!(canceled.state(), RunState::Canceled);
-    let terminal = wait_for_terminal(
-        &run.runs,
-        &run.tool.principal,
-        &run.tool.workspace_id,
-        &run.run_id,
-    )
-    .await;
-    assert_eq!(terminal.state(), RunState::Canceled);
-
-    let rows = run.rows().await;
-    let waiting = rows
-        .iter()
-        .find(|row| row.call_path == ALERTS)
-        .expect("the waiting call");
-    assert_eq!(waiting.state, "ended", "{rows:?}");
-    assert_eq!(
-        waiting.result_kind,
-        Some(InvocationResultKind::RunTerminated)
-    );
-    assert_eq!(waiting.dispatch_started_at_unix_nanos, None);
-    assert_eq!(waiting.failure_code, None);
-    assert!(
-        run.events().await.iter().any(|event| matches!(
-            event.kind(),
-            RunEventKind::InvocationEnded {
-                invocation_id,
-                result_kind: InvocationResultKind::RunTerminated,
-            } if invocation_id == &waiting.id
-        )),
-        "the slot wait ends with `invocation.ended` as run_terminated"
-    );
-    let dispatching: Vec<_> = rows.iter().filter(|row| row.call_path == WEATHER).collect();
-    assert_eq!(dispatching.len(), 2);
-    assert!(
-        dispatching.iter().all(|row| {
-            row.state == "ended"
-                && row.result_kind == Some(InvocationResultKind::Indeterminate)
-                && row.dispatch_started_at_unix_nanos.is_some()
-        }),
-        "{rows:?}"
-    );
-    assert_eq!(
-        run.upstream.sends.load(Ordering::SeqCst),
-        2,
-        "nothing more was sent"
-    );
-}
-
 /// A refresh wait parked by the enforcement point holds no slot: under a limit
 /// of one, a call whose token the enforcement point found expired frees its
 /// slot while it refreshes outside every lock, a later ready call dispatches
@@ -465,7 +438,7 @@ async fn a_refresh_wait_parked_by_the_enforcement_point_holds_no_slot() {
     // Arrivals are held before their enforcement point once: the token expires
     // while the first call stands there with its credentials prepared, so the
     // enforcement point, not the selection before it, finds the token expired.
-    let run = FanOutRun::start(Setup {
+    let mut run = FanOutRun::start(Setup {
         limit: 1,
         latch: EnforcementLatch::holding_arrivals(),
         oauth: Some(OAuth {
@@ -478,7 +451,7 @@ async fn a_refresh_wait_parked_by_the_enforcement_point_holds_no_slot() {
 
     // The enforcement point parks the OAuth call on its refresh, which the
     // endpoint holds.
-    run.calls.invoke(WEATHER);
+    run.invoke(WEATHER);
     run.latch.until_arrived(1).await;
     run.fixture.clock.next.store(
         i64::try_from(TOKEN_LIFETIME_SECS).unwrap() * 1_000_000_000 + 1_000,

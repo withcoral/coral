@@ -7,7 +7,7 @@ use coral_run_executor::wire::v1::{
     Emit, Finish, FinishEnd, Loaded, Open, Request as WireRequest, RunEnd as WireEnd, RunRequest,
     RunResponse, TerminateReason, finish, request, run_request, run_response,
 };
-use coral_run_executor::{Closing, Credentials, Kind, LinkServer, PROTOCOL_LEVEL, ServedRunStream};
+use coral_run_executor::{Closing, Kind, PROTOCOL_LEVEL, ServedRunStream};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -106,6 +106,20 @@ impl Scripted {
     }
 }
 
+/// Answers the stream's `Terminate` as the Run Executor does, once its
+/// Program has ended.
+pub(super) async fn finish_terminated(stream: &mut Scripted, number: u64) {
+    stream
+        .until(|read| matches!(read.last(), Some(run_response::Message::Terminate(_))))
+        .await;
+    stream.request(
+        number,
+        request::Kind::Finish(Finish {
+            completion: Some(finish::Completion::End(FinishEnd::HostTerminated.into())),
+        }),
+    );
+}
+
 pub(super) fn emit(value: &serde_json::Value) -> request::Kind {
     request::Kind::Emit(Emit {
         value_json: value.to_string(),
@@ -185,96 +199,9 @@ pub(super) fn shape(events: &[RunEvent]) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn a_programs_emissions_logs_and_invocations_land_as_they_do_with_the_run_owner() {
-    let server = wiremock::MockServer::start().await;
-    wiremock::Mock::given(wiremock::matchers::path("/forecast"))
-        .respond_with(
-            wiremock::ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({"temperature": 18})),
-        )
-        .mount(&server)
-        .await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let tool = fixture
-        .user_tool_at("user:stream", "Stream parity", &server.uri())
-        .await;
-    let source = r#"
-        await coral.emit({ step: 1 });
-        console.log("between");
-        const forecast = await coral.providers.weather.getForecast();
-        await coral.emit({ temperature: forecast.data.temperature });
-        return forecast.data.temperature;
-    "#;
-    let owned = fixture.live_runs(None);
-    let on_streams = fixture.live_runs(None).with_run_streams();
-    let link = LinkServer::new(
-        Credentials::new([coral_run_executor::Token::new(
-            coral_run_executor::testing::RUN_EXECUTOR_TOKEN.to_owned(),
-        )
-        .expect("a token")]),
-        fixture.database.clone(),
-        on_streams.instance.as_str().to_owned(),
-    )
-    .with_run_streams(on_streams.run_stream_server());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind the link");
-    let address = format!("http://{}", listener.local_addr().expect("its address"));
-    let streams = link.streams();
-    tokio::spawn(link.serve(listener, std::future::pending()));
-    let taker = on_streams.clone();
-    tokio::spawn(async move { taker.take_runs(streams, None).await });
-    let (_retire, _run_executor) = coral_run_executor::testing::spawn_run_executor_at(
-        &address,
-        4,
-        coral_run_executor::RunLimits::default(),
-        None,
-    );
-
-    let mut shapes = Vec::new();
-    for runs in [&owned, &on_streams] {
-        let accepted = runs
-            .start(&tool.principal, &tool.workspace_id, submission(source))
-            .await
-            .expect("accept the Program");
-        let terminal =
-            wait_for_terminal(runs, &tool.principal, &tool.workspace_id, accepted.run_id()).await;
-        assert!(
-            matches!(
-                terminal.terminal_outcome(),
-                Some(RunTerminalOutcome::Succeeded { .. })
-            ),
-            "{:?}",
-            terminal.terminal_outcome()
-        );
-        shapes.push((shape(terminal.events()), accepted.run_id().clone()));
-    }
-    let [(owned, _), (streamed, run_id)] = shapes.as_slice() else {
-        panic!("one Run on each path");
-    };
-    assert_eq!(owned, streamed);
-    // The stream's Run committed its requests in number order: the two
-    // Emissions, the Log and the Invocation; the terminal write took Finish.
-    let run = fixture.run_record(&tool.workspace_id, run_id).await;
-    assert_eq!(run.committed_request_number, Some(4));
-    let numbers: Vec<(Option<i64>,)> = fixture
-        .database
-        .fetch_all(
-            Query::select()
-                .column(Alias::new("request_number"))
-                .from(Alias::new("tool_invocations"))
-                .and_where(Expr::col(Alias::new("run_id")).eq(run_id.to_string()))
-                .to_owned(),
-        )
-        .await
-        .expect("read the Invocations");
-    assert_eq!(numbers, vec![(Some(3),)]);
-}
-
-#[tokio::test]
 async fn an_open_with_another_claim_is_told_the_run_is_not_held() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.runs.clone().with_run_streams();
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.runs.clone();
     let (workspace_id, principal) = fixture.user_scope("user:claim", "Claims").await;
     let accepted = runs
         .start(&principal, &workspace_id, submission("return 1;"))
@@ -295,8 +222,8 @@ async fn an_open_with_another_claim_is_told_the_run_is_not_held() {
 /// waiting for a Run Executor reads as executing.
 #[tokio::test]
 async fn a_run_summary_reads_no_start_mark_until_its_run_stream_starts_it() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.runs.clone().with_run_streams();
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.runs.clone();
     let (workspace_id, principal) = fixture.user_scope("user:start", "Start mark").await;
     let accepted = runs
         .start(&principal, &workspace_id, submission("return 1;"))
@@ -336,8 +263,8 @@ async fn a_run_summary_reads_no_start_mark_until_its_run_stream_starts_it() {
 async fn a_broken_message_before_started_interrupts_the_run_and_closes_the_stream() {
     // A request where Loaded belongs, and a message with nothing in it.
     for empty in [false, true] {
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-        let runs = fixture.runs.clone().with_run_streams();
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+        let runs = fixture.runs.clone();
         let (workspace_id, principal) = fixture.user_scope("user:early", "Early request").await;
         let accepted = runs
             .start(&principal, &workspace_id, submission("return 1;"))
@@ -374,8 +301,8 @@ async fn a_broken_message_before_started_interrupts_the_run_and_closes_the_strea
 #[tokio::test]
 async fn a_lost_authority_at_the_start_fails_the_run_before_any_program_code() {
     for loss in AgentLoss::ALL {
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-        let runs = fixture.runs.clone().with_run_streams();
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+        let runs = fixture.runs.clone();
         let (workspace_id, owner) = fixture.user_scope("user:owner", "Stream start").await;
         let (agent, registration) = agent_scope(&fixture, &owner, &workspace_id).await;
         let accepted = runs
@@ -413,13 +340,13 @@ async fn a_lost_authority_at_the_start_fails_the_run_before_any_program_code() {
 async fn a_head_race_with_a_direct_write_lands_each_request_once() {
     let (gate, release) = CommitGate::blocking();
     let fixture = TestModules::with_execution_adapters(
-        Arc::new(ImmediateEngine::default()),
+        Arc::new(ImmediateEngine),
         Arc::new(RejectingUpstream),
         Arc::new(NoopInvocationObserver),
         gate.clone(),
     )
     .await;
-    let runs = fixture.runs.clone().with_run_streams();
+    let runs = fixture.runs.clone();
     let (workspace_id, principal) = fixture.user_scope("user:race", "Head race").await;
     let accepted = runs
         .start(&principal, &workspace_id, submission("return 3;"))
@@ -499,7 +426,7 @@ pub(super) fn invoke_forecast() -> request::Kind {
 }
 
 /// Fires one of the stream Run owner's timers now, as its sleep would.
-fn fire(runs: &RunModule, run_id: &crate::RunId, timer: crate::owner::Timer) {
+pub(super) fn fire(runs: &RunModule, run_id: &crate::RunId, timer: crate::owner::Timer) {
     runs.owners
         .get(run_id)
         .expect("the stream's owner")
@@ -507,7 +434,7 @@ fn fire(runs: &RunModule, run_id: &crate::RunId, timer: crate::owner::Timer) {
 }
 
 /// An accepted Run of `tool` taken and started on a scripted stream.
-async fn started(runs: &RunModule, tool: &ToolFixture) -> (crate::RunId, Scripted) {
+pub(super) async fn started(runs: &RunModule, tool: &ToolFixture) -> (crate::RunId, Scripted) {
     let accepted = runs
         .start(
             &tool.principal,
@@ -532,7 +459,7 @@ async fn a_run_past_its_deadline_ends_timed_out_first_and_drops_a_late_dispatch_
         serde_json::json!({}),
     )));
     let fixture = TestModules::with_execution_adapters(
-        Arc::new(ImmediateEngine::default()),
+        Arc::new(ImmediateEngine),
         upstream.clone(),
         Arc::new(NoopInvocationObserver),
         Arc::new(NoopExecutionObserver),
@@ -541,8 +468,7 @@ async fn a_run_past_its_deadline_ends_timed_out_first_and_drops_a_late_dispatch_
     let runs = fixture
         .runs
         .clone()
-        .with_fan_out_limit(crate::FanOutLimit::new(1).expect("a limit"))
-        .with_run_streams();
+        .with_fan_out_limit(crate::FanOutLimit::new(1).expect("a limit"));
     let tool = fixture
         .user_tool("user:deadline", "Past the deadline")
         .await;
@@ -619,8 +545,8 @@ async fn a_run_past_its_deadline_ends_timed_out_first_and_drops_a_late_dispatch_
 /// left when `Started` goes out is just under the time limit.
 #[tokio::test]
 async fn started_rounds_the_time_left_up_to_a_whole_millisecond() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.runs.clone().with_run_streams();
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.runs.clone();
     let tool = fixture.user_tool("user:round", "Round up").await;
     let accepted = runs
         .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
@@ -647,8 +573,8 @@ async fn a_finish_at_the_deadline_times_out_once_corals_clock_passed_it() {
         (true, WireEnd::TimedOut, RunState::TimedOut),
         (false, WireEnd::Interrupted, RunState::Interrupted),
     ] {
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-        let runs = fixture.runs.clone().with_run_streams();
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+        let runs = fixture.runs.clone();
         let tool = fixture
             .user_tool("user:finish", "Finish at the deadline")
             .await;
@@ -683,8 +609,8 @@ async fn a_finish_at_the_deadline_times_out_once_corals_clock_passed_it() {
 #[tokio::test]
 async fn an_approval_expires_in_the_loop_unless_a_decision_committed_first() {
     for decided_first in [false, true] {
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-        let runs = fixture.runs.clone().with_run_streams();
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+        let runs = fixture.runs.clone();
         let tool = fixture.user_tool("user:review", "Expire in the loop").await;
         fixture.require_approval(&tool).await;
         let approvals = fixture.approvals();
@@ -765,8 +691,8 @@ async fn an_approval_expires_in_the_loop_unless_a_decision_committed_first() {
 /// stream another Coral Instance now holds, under the claim the reopen kept.
 #[tokio::test]
 async fn a_stream_owner_writes_no_interruption_once_another_instance_holds_the_stream() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.runs.clone().with_run_streams();
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.runs.clone();
     let tool = fixture.user_tool("user:holder", "Stream holder").await;
     let (run_id, stream) = started(&runs, &tool).await;
     drop(stream);
@@ -796,7 +722,6 @@ async fn a_stream_owner_writes_no_interruption_once_another_instance_holds_the_s
             &tool.workspace_id,
             &run_id,
             &claim,
-            None,
             None,
             crate::termination::Interrupter::Owner,
         )

@@ -221,6 +221,9 @@ impl Drop for TestUpstream {
 /// One credential-free MCP server over a fresh database: Workspaces A and B, the
 /// weather Provider published and enabled in A, and an Agent registered in A.
 struct Tracer {
+    /// Serves the Runs on a Run Executor in this process, until a test
+    /// stops it.
+    serving: std::sync::Mutex<Option<coral_run::testing::Serving>>,
     database: TestDatabase,
     upstream: TestUpstream,
     server: coral_mcp::RunningMcpHttpServer,
@@ -294,7 +297,6 @@ impl Tracer {
             coral_run::RuntimeLimits::default()
                 .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
             coral_run::CoralInstanceId::generate(),
-            coral_run::RunInbox::table(db.clone()),
         )
         .expect("start real Program runtime")
         // Built-in Tools such as coral.search run only where Reef's
@@ -358,6 +360,7 @@ impl Tracer {
             private_tools.clone(),
             index.clone(),
         ));
+        let (runs, serving) = coral_run::testing::serve_on_run_executor(runs).await;
         let agent = workspaces
             .create_agent(
                 &change(local_user.clone(), 12, '3'),
@@ -402,6 +405,7 @@ impl Tracer {
             workspaces,
             providers,
             runs,
+            serving: std::sync::Mutex::new(Some(serving)),
             policies,
             approvals,
             private_tools,
@@ -1970,12 +1974,14 @@ async fn the_exec_example_type_checks_and_reads_a_real_search() {
     assert_eq!(found["missing"], json!([]), "{found}");
 }
 
-/// A worker runtime disappeared after durable authored output. The
-/// expired-lease sweep and both wire adapters must expose an interrupted Run,
-/// not an MCP tool error.
+/// A Run Executor disappeared after durable authored output. The Run
+/// sweeper and both wire adapters must expose an interrupted Run, not an MCP
+/// tool error.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_lost_worker_run_is_interrupted_not_a_tool_error() {
     let tracer = Tracer::start().await;
+    // Only the lost worker's take loop takes the Run.
+    drop(tracer.serving.lock().expect("the serving tasks").take());
     let lost_worker = start_lost_worker(
         tracer.database.options().clone(),
         tracer.local_user.clone(),
@@ -1983,20 +1989,18 @@ async fn a_lost_worker_run_is_interrupted_not_a_tool_error() {
         tracer.upstream.signals.clone(),
     )
     .await;
-    // The worker claim lease is 30 seconds, and RunModule has no clock to
-    // inject. The test moves the end of the lost worker's lease back to the
-    // Run's acceptance, the earliest end a lease can have, so it does not
-    // wait out the lease.
+    // The Run Executor's lease outlives the test, and RunModule has no clock
+    // to inject. The test moves the lost worker's back to the epoch, so it
+    // does not wait the lease out.
     let lapsed = tracer
         .database
         .execute_fixture_sql(&format!(
-            "UPDATE program_run_records \
-             SET worker_claim_expires_at_unix_nanos = accepted_at_unix_nanos \
-             WHERE id = '{lost_worker}' AND worker_claim_expires_at_unix_nanos IS NOT NULL"
+            "UPDATE run_executors SET lease_until = 0 WHERE id = \
+             (SELECT run_executor_id FROM program_run_records WHERE id = '{lost_worker}')"
         ))
         .await
-        .expect("lapse the lost worker's lease");
-    assert_eq!(lapsed, 1, "the lost worker held a lease on its Run");
+        .expect("lapse the lost Run Executor's lease");
+    assert_eq!(lapsed, 1, "the lost worker's Run Executor held a lease");
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = RawSession::open(&tracer.endpoint(), version).await;
         // A liveness bound: recovery interrupts the Run in its own time.
@@ -2004,9 +2008,9 @@ async fn a_lost_worker_run_is_interrupted_not_a_tool_error() {
             loop {
                 tracer
                     .runs
-                    .sweep_expired_leases()
+                    .sweep_runs()
                     .await
-                    .expect("sweep the lost worker's lapsed lease");
+                    .expect("sweep the lost Run Executor's Runs");
                 // Recovery interrupts the Run under load; a transient server
                 // failure on one poll is retried within the same deadline.
                 let Some(result) = session
@@ -2257,22 +2261,25 @@ async fn start_lost_worker(
                 coral_run::RuntimeLimits::default()
                     .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
                 coral_run::CoralInstanceId::generate(),
-                coral_run::RunInbox::table(database),
             )
             .expect("the lost worker's own Program runtime");
+            let (runs, serving) = coral_run::testing::serve_on_run_executor(runs).await;
             let actor = coral_workspace::AuthenticatedPrincipal::user(user);
             let submitted = coral_run::RunSubmission::new(
                 coral_run::ProgramSource::parse("await coral.emit('before interruption'); await coral.providers.weather.lostWorker({});").expect("pending Program"),
-                coral_run::RunTimeout::from_millis(300_000).expect("deadline outlives worker lease"),
+                coral_run::RunTimeout::from_millis(300_000).expect("deadline outlives the test"),
             );
             let accepted = runs.start(&actor, &workspace, submitted).await.expect("accept lost-worker fixture");
             tokio::time::timeout(Duration::from_secs(10), signals.worker_arrived.notified())
                 .await.expect("worker emits and reaches gated upstream before stopping");
-            accepted.run_id().clone()
+            (accepted.run_id().clone(), serving)
         });
+        let (run_id, serving) = run_id;
         // Abort the orchestration/heartbeat tasks before execution can commit its
         // terminal result. The aborted Invocation stops its waiting isolate.
         runtime.shutdown_timeout(Duration::from_secs(3));
+        // The Run Executor and the Run's stream went with the runtime.
+        drop(serving);
         signals.release_worker.notify_one();
         run_id
     }).await.expect("lost worker thread")

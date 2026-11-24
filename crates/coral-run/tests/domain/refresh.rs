@@ -40,12 +40,12 @@ async fn a_waiting_invocations_cancellation_or_deadline_does_not_cancel_the_refr
             .expect(1)
             .mount(&server)
             .await;
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
         let tool = fixture
             .user_tool_at("user:stopped-refresh", "Stopped waiter", &server.uri())
             .await;
         let (_directory, accounts) = oauth_account(&fixture, &tool, &server, &endpoint.url).await;
-        let runs = fixture.live_runs(Some(accounts));
+        let runs = fixture.live(Some(accounts)).await;
         let source = "return await coral.providers.weather.getForecast({});";
         let first = runs
             .start(&tool.principal, &tool.workspace_id, submission(source))
@@ -123,7 +123,7 @@ async fn reconnect_disconnect_and_setting_changes_block_invocations_waiting_on_a
     for mutation in ["reconnect", "disconnect", "setting"] {
         let endpoint = TokenEndpoint::new(StatusCode::OK).await;
         let server = MockServer::start().await;
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
         let tool = fixture
             .user_tool_at("user:enforced-refresh", "Enforced refresh", &server.uri())
             .await;
@@ -140,7 +140,7 @@ async fn reconnect_disconnect_and_setting_changes_block_invocations_waiting_on_a
             .unwrap()
             .account
             .unwrap();
-        let runs = fixture.live_runs(None).with_accounts(accounts.clone());
+        let runs = fixture.live(Some(accounts.clone())).await;
         let source = "try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }";
         let first = runs
             .start(&tool.principal, &tool.workspace_id, submission(source))
@@ -274,7 +274,7 @@ async fn reconnect_disconnect_and_setting_changes_block_invocations_waiting_on_a
 async fn offboarding_and_rejoin_block_a_late_refresh_without_overwriting_the_new_account() {
     let endpoint = TokenEndpoint::new(StatusCode::OK).await;
     let server = MockServer::start().await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool_at(
             "user:offboarded-refresh",
@@ -283,7 +283,7 @@ async fn offboarding_and_rejoin_block_a_late_refresh_without_overwriting_the_new
         )
         .await;
     let (_directory, accounts) = oauth_account(&fixture, &tool, &server, &endpoint.url).await;
-    let runs = fixture.live_runs(None).with_accounts(accounts.clone());
+    let runs = fixture.live(Some(accounts.clone())).await;
     let run = runs.start(&tool.principal, &tool.workspace_id,
         submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
     tokio::time::timeout(EVENTUALLY, endpoint.entered.notified())
@@ -371,7 +371,7 @@ async fn failed_refresh_settles_waiting_invocations_without_retrying_the_exchang
     ] {
         let endpoint = TokenEndpoint::new(status).await;
         let server = MockServer::start().await;
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
         let tool = fixture
             .user_tool_at("user:failed-refresh", "Failed refresh", &server.uri())
             .await;
@@ -388,7 +388,7 @@ async fn failed_refresh_settles_waiting_invocations_without_retrying_the_exchang
             .unwrap()
             .account
             .unwrap();
-        let runs = fixture.live_runs(None).with_accounts(accounts.clone());
+        let runs = fixture.live(Some(accounts.clone())).await;
         let source = "try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }";
         let first = runs
             .start(&tool.principal, &tool.workspace_id, submission(source))
@@ -458,7 +458,7 @@ async fn concurrent_invocations_wait_for_one_refresh_across_catalog_update_and_e
         .expect(2)
         .mount(&server)
         .await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool_at(
             "user:concurrent-refresh",
@@ -467,7 +467,7 @@ async fn concurrent_invocations_wait_for_one_refresh_across_catalog_update_and_e
         )
         .await;
     let (_directory, accounts) = oauth_account(&fixture, &tool, &server, &endpoint.url).await;
-    let runs = fixture.live_runs(Some(accounts));
+    let runs = fixture.live(Some(accounts)).await;
     let source = "coral.emit('once'); return await coral.providers.weather.getForecast({});";
     let first = runs
         .start(&tool.principal, &tool.workspace_id, submission(source))

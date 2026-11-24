@@ -2,43 +2,40 @@
 //! lines 1, 2, 4 and 5), on a Run no worker touches.
 use super::*;
 
-use crate::run_repository::{
-    Chunk, NewEvent, commit_chunk, find_exact_in_transaction, start_execution,
-};
+use super::run_streams::take;
+use crate::run_repository::{Chunk, NewEvent, commit_chunk, find_exact_in_transaction};
 
-const LEASE_UNTIL: i64 = 1_000_000_000_000;
-
-/// A staged Run, claimed by `claim` when one is given, with its row as read.
+/// A staged Run, and the claim of its take when `taken`.
 async fn arranged_run(
     fixture: &TestModules,
     label: &str,
-    claim: Option<&str>,
-) -> (coral_workspace::WorkspaceId, crate::RunId) {
+    taken: bool,
+) -> (coral_workspace::WorkspaceId, crate::RunId, Option<String>) {
     let (workspace_id, principal) = fixture
         .user_scope(&format!("user:ledger-{label}"), "Run Ledger")
         .await;
     let run_id = fixture
         .staged_run(&principal, &workspace_id, "ledger")
         .await;
-    if let Some(claim) = claim {
-        fixture
-            .claim_run(&workspace_id, &run_id, claim, LEASE_UNTIL)
-            .await;
-    }
-    (workspace_id, run_id)
+    let claim = if taken {
+        Some(take(&fixture.runs).await)
+    } else {
+        None
+    };
+    (workspace_id, run_id, claim)
 }
 
 #[tokio::test]
 async fn a_chunk_built_on_a_stale_claim_matches_no_row_and_changes_nothing() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    // (the claim the Run row holds, the claim the chunk was built on)
-    let cases: [(&str, Option<&str>, Option<&str>); 3] = [
-        ("other-claim", Some("claim-a"), Some("claim-b")),
-        ("claim-lost", Some("claim-a"), None),
-        ("claim-not-yet", None, Some("claim-a")),
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    // (whether a take claimed the Run, the claim the chunk was built on)
+    let cases: [(&str, bool, Option<&str>); 3] = [
+        ("other-claim", true, Some("claim-b")),
+        ("claim-lost", true, None),
+        ("claim-not-yet", false, Some("claim-a")),
     ];
-    for (label, row_claim, chunk_claim) in cases {
-        let (workspace_id, run_id) = arranged_run(&fixture, label, row_claim).await;
+    for (label, taken, chunk_claim) in cases {
+        let (workspace_id, run_id, _claim) = arranged_run(&fixture, label, taken).await;
         let before = fixture.run_record(&workspace_id, &run_id).await;
         let counter_before = fixture.compatibility_counter(&workspace_id, &run_id).await;
         let events_before = fixture.events_after(&workspace_id, &run_id, 0).await;
@@ -53,8 +50,7 @@ async fn a_chunk_built_on_a_stale_claim_matches_no_row_and_changes_nothing() {
                 NewEvent::Logged(ProgramLogLevel::Info, "stale", None),
                 2_000,
             )
-            .output_bytes(5)
-            .renew_lease(LEASE_UNTIL + 1);
+            .output_bytes(5);
         let rejected = commit_chunk(&mut transaction, chunk).await;
         assert!(
             matches!(rejected, Err(Error::ClaimMismatch)),
@@ -85,8 +81,9 @@ async fn a_chunk_built_on_a_stale_claim_matches_no_row_and_changes_nothing() {
 
 #[tokio::test]
 async fn a_chunk_built_on_a_stale_head_matches_no_row_and_changes_nothing() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let (workspace_id, run_id) = arranged_run(&fixture, "head", Some("claim-a")).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let (workspace_id, run_id, claim) = arranged_run(&fixture, "head", true).await;
+    let claim = claim.as_deref();
     // Move the head once, so a chunk can be stale in either direction.
     let mut transaction = fixture.database.begin().await.expect("begin");
     let run = find_exact_in_transaction(&mut transaction, &workspace_id, &run_id)
@@ -95,7 +92,7 @@ async fn a_chunk_built_on_a_stale_head_matches_no_row_and_changes_nothing() {
         .expect("Run exists");
     commit_chunk(
         &mut transaction,
-        Chunk::new(&run, Some("claim-a"), 2_000)
+        Chunk::new(&run, claim, 2_000)
             .event(NewEvent::Logged(ProgramLogLevel::Info, "one", None), 2_000),
     )
     .await
@@ -112,14 +109,13 @@ async fn a_chunk_built_on_a_stale_head_matches_no_row_and_changes_nothing() {
             .await
             .expect("read")
             .expect("Run exists");
-        let chunk = Chunk::new(&run, Some("claim-a"), 2_000)
+        let chunk = Chunk::new(&run, claim, 2_000)
             .built_on_head(stale_head)
             .event(
                 NewEvent::Logged(ProgramLogLevel::Info, "stale", None),
                 3_000,
             )
-            .output_bytes(before.accumulated_output_bytes + 5)
-            .renew_lease(LEASE_UNTIL + 1);
+            .output_bytes(before.accumulated_output_bytes + 5);
         let rejected = commit_chunk(&mut transaction, chunk).await;
         assert!(
             matches!(rejected, Err(Error::HeadMismatch)),
@@ -152,10 +148,9 @@ async fn a_chunk_built_on_a_stale_head_matches_no_row_and_changes_nothing() {
 async fn a_chunk_of_n_events_moves_the_head_once_and_lands_prefix_complete() {
     const EVENTS: usize = 5;
     let events = u64::try_from(EVENTS).expect("a small chunk");
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let (workspace_id, run_id) = arranged_run(&fixture, "chunk", Some("claim-a")).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let (workspace_id, run_id, claim) = arranged_run(&fixture, "chunk", true).await;
     let before = fixture.run_record(&workspace_id, &run_id).await;
-    assert_eq!(before.worker_claim_expires_at_unix_nanos, Some(LEASE_UNTIL));
     let counter_before = fixture.compatibility_counter(&workspace_id, &run_id).await;
     let last_commit_at = async || {
         crate::run_repository::last_commit_at(&fixture.database, &workspace_id, &run_id)
@@ -169,9 +164,8 @@ async fn a_chunk_of_n_events_moves_the_head_once_and_lands_prefix_complete() {
         .await
         .expect("read")
         .expect("Run exists");
-    let mut chunk = Chunk::new(&run, Some("claim-a"), 2_000)
-        .output_bytes(run.accumulated_output_bytes + 5 * EVENTS)
-        .renew_lease(LEASE_UNTIL + 1);
+    let mut chunk = Chunk::new(&run, claim.as_deref(), 2_000)
+        .output_bytes(run.accumulated_output_bytes + 5 * EVENTS);
     for index in 0..events {
         chunk = chunk.event(
             NewEvent::Logged(ProgramLogLevel::Info, "chunk", None),
@@ -205,10 +199,6 @@ async fn a_chunk_of_n_events_moves_the_head_once_and_lands_prefix_complete() {
         5 * EVENTS
     );
     assert_eq!(
-        after.worker_claim_expires_at_unix_nanos,
-        Some(LEASE_UNTIL + 1)
-    );
-    assert_eq!(
         last_commit_at().await,
         Some(2_000),
         "the chunk records its commit time"
@@ -240,21 +230,23 @@ async fn a_chunk_of_n_events_moves_the_head_once_and_lands_prefix_complete() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn writers_racing_on_one_head_land_once_and_the_rest_write_nothing() {
     const WRITERS: usize = 4;
-    let fixture = Arc::new(TestModules::new(Arc::new(ImmediateEngine::default())).await);
-    let (workspace_id, run_id) = arranged_run(&fixture, "race", Some("claim-a")).await;
+    let fixture = Arc::new(TestModules::new(Arc::new(ImmediateEngine)).await);
+    let (workspace_id, run_id, claim) = arranged_run(&fixture, "race", true).await;
     let before = Arc::new(fixture.run_record(&workspace_id, &run_id).await);
+    let claim = Arc::new(claim);
 
     let barrier = Arc::new(tokio::sync::Barrier::new(WRITERS));
     let writers = (0..WRITERS).map(|_| {
         let fixture = Arc::clone(&fixture);
         let barrier = barrier.clone();
         let before = Arc::clone(&before);
+        let claim = Arc::clone(&claim);
         tokio::spawn(async move {
             barrier.wait().await;
             let mut transaction = fixture.database.begin().await.expect("begin");
             let written = commit_chunk(
                 &mut transaction,
-                Chunk::new(&before, Some("claim-a"), 2_000)
+                Chunk::new(&before, claim.as_deref(), 2_000)
                     .event(NewEvent::Logged(ProgramLogLevel::Info, "race", None), 2_000),
             )
             .await;
@@ -291,17 +283,33 @@ async fn writers_racing_on_one_head_land_once_and_the_rest_write_nothing() {
 
 #[tokio::test]
 async fn no_chunk_lands_after_run_ended() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let (workspace_id, run_id) = arranged_run(&fixture, "ended", Some("claim-a")).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let (workspace_id, run_id, claim) = arranged_run(&fixture, "ended", true).await;
+    let claim = claim.expect("the take's claim");
     let mut transaction = fixture.database.begin().await.expect("begin");
     let run = find_exact_in_transaction(&mut transaction, &workspace_id, &run_id)
         .await
         .expect("read")
         .expect("Run exists");
+    crate::run_repository::start_taken(
+        &mut transaction,
+        &run,
+        &claim,
+        1_500,
+        1_000_000,
+        &crate::CoralInstanceId::generate(),
+    )
+    .await
+    .expect("the start chunk commits");
+    let run = find_exact_in_transaction(&mut transaction, &workspace_id, &run_id)
+        .await
+        .expect("read")
+        .expect("Run exists");
+    // A started Run ends under the take's claim and keeps it.
     crate::run_repository::finish_run(
         &mut transaction,
         &run,
-        "claim-a",
+        &claim,
         &RunTerminalOutcome::Succeeded {
             final_value: FinalValue::Absent,
         },
@@ -324,7 +332,7 @@ async fn no_chunk_lands_after_run_ended() {
         .expect("Run exists");
     let rejected = commit_chunk(
         &mut transaction,
-        Chunk::new(&run, Some("claim-a"), 2_000)
+        Chunk::new(&run, run.execution_claim_id.as_deref(), 2_000)
             .event(NewEvent::Logged(ProgramLogLevel::Info, "late", None), 3_000),
     )
     .await;
@@ -343,40 +351,4 @@ async fn no_chunk_lands_after_run_ended() {
         fixture.compatibility_counter(&workspace_id, &run_id).await,
         counter_ended
     );
-}
-
-/// The start mark lands only on the worker claim acceptance wrote: on a Run
-/// whose worker claim was released (as the previous release's recovery left
-/// an unstarted Run whose lease expired), the mark matches no row and
-/// changes nothing, instead of leaving a started Run unclaimed.
-#[tokio::test]
-async fn a_start_mark_on_a_released_worker_claim_is_refused() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let (workspace_id, run_id) = arranged_run(&fixture, "released-claim", None).await;
-    fixture
-        .inject_fault(&format!(
-            "UPDATE program_run_records SET worker_claim_id = 'claim-a', \
-             worker_claim_expires_at_unix_nanos = {LEASE_UNTIL} WHERE id = '{run_id}'"
-        ))
-        .await;
-    let claimed = fixture.run_record(&workspace_id, &run_id).await;
-    let released = fixture.release_worker_claim(&workspace_id, &run_id).await;
-    assert_eq!(released.worker_claim_id, None);
-
-    let mut transaction = fixture.database.begin().await.expect("begin");
-    let refused = start_execution(
-        &mut transaction,
-        &claimed,
-        "claim-a",
-        2_000,
-        3_000,
-        LEASE_UNTIL,
-    )
-    .await;
-    assert!(matches!(refused, Err(Error::ClaimMismatch)), "{refused:?}");
-    transaction
-        .commit()
-        .await
-        .expect("commit the refused write");
-    assert_eq!(fixture.run_record(&workspace_id, &run_id).await, released);
 }

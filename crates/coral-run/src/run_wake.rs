@@ -9,8 +9,7 @@
 //! or moved past what it wrote, with what the row shows. While no Run
 //! stream's loop is registered here it reads nothing. Per-Run loops never
 //! subscribe to the signal: a loop parked on a connection request hears its
-//! rings through the reader. A Run Owner of an owned Run keeps a
-//! subscription of its own until the owner path goes (#2911).
+//! rings through the reader.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};

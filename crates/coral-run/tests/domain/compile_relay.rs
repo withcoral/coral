@@ -86,7 +86,7 @@ async fn relayed(fixture: &TestModules) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_program_admitted_where_no_run_executor_is_linked_compiles_on_another_coral_instance() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let here = serve_link(&fixture, "coral-here", Vec::new()).await;
     let elsewhere = serve_link(&fixture, "coral-elsewhere", vec![token()]).await;
     dial(&elsewhere);
@@ -107,7 +107,7 @@ async fn a_program_admitted_where_no_run_executor_is_linked_compiles_on_another_
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_program_admitted_before_any_run_executor_links_compiles_once_one_dials_in() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let link = serve_link(&fixture, "coral-only", vec![token()]).await;
     let runs = fixture.live_runs_compiling_through(link.compiler.clone());
     let (workspace_id, principal) = fixture

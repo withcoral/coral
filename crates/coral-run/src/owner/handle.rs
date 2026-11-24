@@ -1,4 +1,4 @@
-//! The Run Owner's mailbox, its handle, and the registry of live owners.
+//! A Run stream loop's mailbox, its handle, and the registry of live loops.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -10,10 +10,9 @@ use coral_workspace::{Principal, TraceId, WorkspaceId};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::approval::{ApprovalDecision, ApprovalId};
-use crate::engine::{ExecutionCompletion, ProgramPackage};
+use crate::engine::ExecutionCompletion;
 use crate::execution::ExecutionStop;
 use crate::invocation::{EnforcementRequest, ParkedInvocation};
-use crate::run_inbox::InboxRow;
 use crate::termination::ShutdownAction;
 use crate::types::HeldRunId;
 use crate::{Error, ProgramLogLevel, ProgramValue, RunId, SourceLocation};
@@ -23,11 +22,13 @@ use super::chunk::ChunkWork;
 /// The answer to one Program request, at Applied or at Recorded.
 pub(crate) type Reply = oneshot::Sender<Result<(), Error>>;
 
-/// A timer the owner arms (an [`Effect::ArmTimer`] the host runs as a sleep
+/// A timer the loop arms (an [`Effect::ArmTimer`] the host runs as a sleep
 /// on its own clock). It fires back into the mailbox as [`Message::Timer`],
 /// applied in arrival order with every other message, so the clock decides
 /// nothing outside `apply`: a passed deadline is one ordered decision
-/// against the cancel or the decision that races it.
+/// against the Program request that races it. An outside writer's decision
+/// or cancellation races it through the database instead, ordered by the
+/// held rows and the Run's head.
 ///
 /// [`Effect::ArmTimer`]: super::state::Effect::ArmTimer
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -40,11 +41,6 @@ pub(crate) enum Timer {
     /// One connection request's deadline: the Invocations parked on it stop
     /// waiting for it.
     Connection(ConnectionRequestId),
-    /// Half a lease: an owner that committed nothing meanwhile renews its
-    /// lease with an empty chunk. Armed again on every fire.
-    IdleTick,
-    /// The shutdown grace since the Program was stopped is out.
-    Grace,
     /// The periodic precheck of the parked waits is due.
     Precheck,
     /// The gap since the last connection check after a change is out.
@@ -101,11 +97,10 @@ pub(crate) enum Check {
     Approvals,
 }
 
-/// What the owner's first chunk started: the package to execute, and the
-/// Run Ledger head after the execution-start mark, which the owner tracks
-/// from here on.
+/// What the stream's start left: the Run Ledger head after the
+/// execution-start mark, which the loop tracks from here on.
+#[derive(Clone, Copy)]
 pub(crate) struct StartedExecution {
-    pub(crate) package: ProgramPackage,
     pub(crate) head: u64,
     /// The Run deadline the start mark recorded.
     pub(crate) deadline_at_unix_nanos: i64,
@@ -118,35 +113,26 @@ pub(crate) struct StartedExecution {
 pub(crate) enum RequestKey {
     /// A decision on one Approval Request.
     Approval(ApprovalId),
-    /// The Run's termination intent: one cancellation, or the deadline.
-    Termination,
 }
 
-/// A decision an outside requester asks the owner to record on one Approval
-/// Request of its Run. Authorized and concealed before it reaches the Run
-/// Inbox.
+/// A decision an outside requester records on one Approval Request of a
+/// Run, authorized and concealed before it is committed.
 #[derive(Debug, Clone)]
 pub(crate) struct DecisionRequest {
     pub(crate) approval: ApprovalId,
-    /// The request's deadline as the requester read it: a decision applied
-    /// past it on the owner's clock is judged as the request's timer would
-    /// have been first.
-    pub(crate) deadline_at_unix_nanos: i64,
     pub(crate) decision: ApprovalDecision,
     pub(crate) actor: Principal,
     pub(crate) comment: Option<String>,
     pub(crate) trace: TraceId,
 }
 
-/// Everything the Run Owner's loop decides on: Run Requests from the Program
-/// host and from outside, the outcomes of the effects the hosting task ran
+/// Everything a Run stream's loop decides on: the stream's requests, the
+/// wake-up reader's wake-ups, the outcomes of the effects the hosting task ran
 /// (a chunk's answer and what its work recorded or parked, a snapshot check
 /// of the parked waits), and the signals the hosting task adds (the drained
 /// mailbox, the timers, and the change signal's rings).
 pub(crate) enum Message {
-    /// The owner exists; commit its first chunk.
-    Launch,
-    /// The first chunk's outcome: the execution to start, or nothing to run.
+    /// The stream's start: the execution to start, or nothing to run.
     Started(Result<Option<StartedExecution>, Error>),
     Emit {
         value: ProgramValue,
@@ -186,24 +172,9 @@ pub(crate) enum Message {
     /// Built-in Tool), or the Run is ending. An Invocation that does record a
     /// result frees its slot through [`Self::InvocationResult`] instead.
     DispatchEnded,
-    /// A decision on one Approval Request from the Run Inbox, with the row
-    /// that carried it. The first decision on a request rides the next chunk,
-    /// which deletes the row; a repeat, or one the expiry came before,
-    /// changes nothing but has its row deleted too, and a row delivered
-    /// again changes nothing.
-    Decide {
-        request: DecisionRequest,
-        row: InboxRow,
-    },
-    /// A cancellation from the Run Inbox, with the row that carried it: the
-    /// termination intent and `cancellation.requested` ride the next chunk,
-    /// and the Program is terminated at once. That chunk deletes the row; a
-    /// repeat changes nothing but has its row deleted too, and a row
-    /// delivered again changes nothing.
-    Cancel { requester: Principal, row: InboxRow },
-    /// A timer the owner armed fired: the Run deadline, an Approval
-    /// Request's or a connection request's deadline, the idle tick, the
-    /// shutdown grace, the periodic precheck, or the end of the wake gap.
+    /// A timer the loop armed fired: the Run deadline, an Approval
+    /// Request's or a connection request's deadline, the periodic precheck,
+    /// or the end of the wake gap.
     Timer(Timer),
     /// A chunk that landed parked an Invocation: its held recheck found it
     /// waiting on an Approval Request or a connection request. Reaches the
@@ -234,16 +205,6 @@ pub(crate) enum Message {
     /// Run is terminal; `Ok(false)` a dispatch is still in flight within the
     /// shutdown grace, and the owner tries again.
     SettleAttempted(Result<bool, Error>),
-    /// The self-interrupt's one chunk, or a recovered owner's, is recorded,
-    /// or another writer ended or took the Run first.
-    Interrupted(Result<(), CommitRejection>),
-    /// A recovered owner has applied every timer that passed and every
-    /// request waiting in the Run Inbox: end the Run in one chunk. The sweep
-    /// queues it last.
-    Recover,
-    /// The process interrupts the Run: its Shutdown Drain is out, or another
-    /// owner registered for the Run.
-    Stop,
     /// The mailbox is empty: commit when free.
     Drained,
     /// Run stream request `number`: `message` is what it asks of the owner,
@@ -289,7 +250,6 @@ pub(crate) enum DrainStep {
 impl fmt::Debug for Message {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Launch => formatter.write_str("Launch"),
             Self::Started(result) => formatter
                 .debug_tuple("Started")
                 .field(&result.as_ref().map(Option::is_some))
@@ -320,17 +280,6 @@ impl fmt::Debug for Message {
             Self::Work(work) => formatter.debug_tuple("Work").field(work).finish(),
             Self::Enforce(request) => formatter.debug_tuple("Enforce").field(request).finish(),
             Self::DispatchEnded => formatter.write_str("DispatchEnded"),
-            Self::Decide { request, row } => formatter
-                .debug_struct("Decide")
-                .field("approval", &request.approval)
-                .field("decision", &request.decision)
-                .field("row", row)
-                .finish(),
-            Self::Cancel { requester, row } => formatter
-                .debug_struct("Cancel")
-                .field("requester", requester)
-                .field("row", row)
-                .finish(),
             Self::Timer(timer) => formatter.debug_tuple("Timer").field(timer).finish(),
             Self::Parked(parked) => formatter.debug_tuple("Parked").field(parked).finish(),
             Self::Changed => formatter.write_str("Changed"),
@@ -357,11 +306,6 @@ impl fmt::Debug for Message {
                 .debug_tuple("SettleAttempted")
                 .field(result)
                 .finish(),
-            Self::Interrupted(result) => {
-                formatter.debug_tuple("Interrupted").field(result).finish()
-            }
-            Self::Recover => formatter.write_str("Recover"),
-            Self::Stop => formatter.write_str("Stop"),
             Self::Drained => formatter.write_str("Drained"),
             Self::Request { number, message } => formatter
                 .debug_struct("Request")
@@ -392,8 +336,8 @@ pub(crate) enum CommitRejection {
     ClaimMismatch,
     /// The Run ended under another writer; no Event follows `run.ended`.
     RunEnded,
-    /// The Run row no longer takes Program work: its deadline passed, or an
-    /// outside writer released the worker claim. The terminal write decides.
+    /// The Run row no longer takes the loop's chunks though its claim
+    /// matches. The terminal write decides.
     Refused,
     /// The commit failed on a definite answer that is neither the Run's
     /// (a clock the host cannot read, a domain rule a work item met); the
@@ -401,25 +345,13 @@ pub(crate) enum CommitRejection {
     /// An answer the database did not give is not a rejection: the hosting
     /// task rereads the Run and recommits until it has one.
     Failed,
-    /// The Run row contradicts the owner's own history: a head below the one
-    /// the chunk was built on, or a head mismatch under a matching claim,
-    /// which one serial owner cannot cause. Loud, never treated as a lost
-    /// claim, and nothing more is written.
+    /// The Run row contradicts the loop's own history: a head below the one
+    /// the chunk was built on. Loud, never treated as a lost claim, and
+    /// nothing more is written.
     Corrupt,
 }
 
 impl CommitRejection {
-    /// The rejection's kind, for an event's `error.type`.
-    pub(crate) const fn code(self) -> &'static str {
-        match self {
-            Self::ClaimMismatch => "claim_mismatch",
-            Self::RunEnded => "run_ended",
-            Self::Refused => "refused",
-            Self::Failed => "failed",
-            Self::Corrupt => "corrupt",
-        }
-    }
-
     /// The answer every Program request lost with the chunk receives.
     pub(crate) fn lost(self) -> Error {
         match self {
@@ -433,10 +365,10 @@ impl CommitRejection {
 }
 
 impl From<Error> for CommitRejection {
-    /// The rejection a definite answer means. The owner is the only writer
-    /// of a nonterminal Run's ledger, so a head mismatch under a matching
-    /// claim is corruption. A row that does not decode is a failure like any
-    /// other definite answer, with its own reason.
+    /// The rejection a definite answer means. A head mismatch under a
+    /// matching claim reaches here only once the loop has rebuilt on the
+    /// moved head, so it is corruption. A row that does not decode is a
+    /// failure like any other definite answer, with its own reason.
     fn from(error: Error) -> Self {
         match error {
             Error::ClaimMismatch => Self::ClaimMismatch,
@@ -451,9 +383,9 @@ impl From<Error> for CommitRejection {
 /// request or row work is awaited by the task that queued it, so the queue
 /// never holds more than the Program's outstanding calls (one Emission or Log
 /// at a time; one message per Invocation in flight, which admission does not
-/// cap) plus the outside requests in flight and the owner's own few
-/// messages, and the owner applies each one in memory without I/O. The
-/// owner's own messages must never wait.
+/// cap) plus the wake-ups and the loop's own few messages, and the loop
+/// applies each one in memory without I/O. The loop's own messages must
+/// never wait.
 pub(crate) type Mailbox = mpsc::UnboundedReceiver<Message>;
 
 struct Shared {
@@ -465,9 +397,9 @@ struct Shared {
     /// Its Run's stream ended, or a reopen of it on this Coral Instance
     /// replaced it: the Run goes on without it.
     detached: AtomicBool,
-    /// It hosts a Run stream: the Shutdown Drain moves its stream instead
-    /// of stopping it, and the wake-up reader compares its head.
-    stream: Option<StreamHead>,
+    /// Its Run stream: the Shutdown Drain moves it, and the wake-up reader
+    /// compares its head.
+    stream: StreamHead,
     /// The number of the Run stream request being handed to the Program's
     /// host, until the call it makes takes it.
     request: std::sync::Mutex<Option<u64>>,
@@ -527,19 +459,15 @@ impl Drop for RequestTicket {
     }
 }
 
-/// A handle on one live Run Owner: the Program host and the Invocation tasks
-/// send it Program requests, the Run Inbox reader the outside requests; the
-/// Shutdown Drain asks it to stop.
+/// A handle on one live Run stream loop: the stream's reader and the
+/// Invocation tasks send it Program requests, the wake-up reader its
+/// wake-ups, and the Shutdown Drain its steps.
 #[derive(Clone)]
 pub(crate) struct OwnerHandle {
     shared: Arc<Shared>,
 }
 
 impl OwnerHandle {
-    pub(crate) fn new(run_id: HeldRunId, claim_id: String) -> (Self, Mailbox) {
-        Self::with_stream(run_id, claim_id, None)
-    }
-
     /// The handle on the owner that hosts a Run stream's Run, which the
     /// Workspace `workspace_id` owns.
     pub(crate) fn for_stream(
@@ -553,14 +481,6 @@ impl OwnerHandle {
             local_child,
             published: AtomicU64::new(0),
         };
-        Self::with_stream(run_id, claim_id, Some(stream))
-    }
-
-    fn with_stream(
-        run_id: HeldRunId,
-        claim_id: String,
-        stream: Option<StreamHead>,
-    ) -> (Self, Mailbox) {
         let (sender, mailbox) = mpsc::unbounded_channel();
         let handle = Self {
             shared: Arc::new(Shared {
@@ -581,12 +501,9 @@ impl OwnerHandle {
         self.shared.run_id.run_id()
     }
 
-    /// A Run stream owner's Run's Workspace; `None` for any other owner.
-    pub(crate) fn stream_workspace(&self) -> Option<&WorkspaceId> {
-        self.shared
-            .stream
-            .as_ref()
-            .map(|stream| &stream.workspace_id)
+    /// The Run's Workspace.
+    pub(crate) fn stream_workspace(&self) -> &WorkspaceId {
+        &self.shared.stream.workspace_id
     }
 
     /// A Run stream owner publishes `head`, the one it last wrote, whether
@@ -594,9 +511,7 @@ impl OwnerHandle {
     /// acting on a wake-up. `true` when it began listening with this
     /// publish.
     pub(crate) fn publish_head(&self, head: u64, in_flight: bool, listening: bool) -> bool {
-        let Some(stream) = &self.shared.stream else {
-            return false;
-        };
+        let stream = &self.shared.stream;
         let flags = if in_flight { IN_FLIGHT } else { 0 } | if listening { LISTENING } else { 0 };
         let before = stream.published.swap(head << 2 | flags, Ordering::SeqCst);
         listening && before & LISTENING == 0
@@ -605,12 +520,8 @@ impl OwnerHandle {
     /// Whether a Run row at `head` that is still `running` shows a write
     /// this listening Run stream owner has not seen: the Run ended, or its
     /// head moved past the one the owner wrote, its chunk in flight counted.
-    /// `false` for any other owner.
     pub(crate) fn behind(&self, head: u64, running: bool) -> bool {
-        let Some(stream) = &self.shared.stream else {
-            return false;
-        };
-        let published = stream.published.load(Ordering::SeqCst);
+        let published = self.shared.stream.published.load(Ordering::SeqCst);
         let written = (published >> 2) + (published & IN_FLIGHT);
         published & LISTENING != 0 && (!running || head > written)
     }
@@ -632,13 +543,6 @@ impl OwnerHandle {
     /// The stop shared with the Program and its dispatches.
     pub(crate) fn stop(&self) -> Arc<ExecutionStop> {
         self.shared.stop.clone()
-    }
-
-    /// Terminates the Program at once and tells the owner no more Program
-    /// requests are accepted. The owner still records what it applied.
-    pub(crate) fn request_stop(&self) {
-        self.shared.stop.request();
-        self.send(Message::Stop);
     }
 
     /// Whether a stop was requested: the owner's terminal state as a dispatch
@@ -663,20 +567,15 @@ impl OwnerHandle {
         self.shared.detached.load(Ordering::SeqCst)
     }
 
-    /// A step of the Shutdown Drain. An owner that hosts a dialed Run
+    /// A step of the Shutdown Drain. A loop that hosts a dialed Run
     /// Executor's stream moves the stream. One that hosts a local child's
     /// stream keeps dispatching, and at the drain's length ends its Run
-    /// interrupted, or timed out past its deadline. Another is stopped once
-    /// the drain is out, which interrupts its Run.
+    /// interrupted, or timed out past its deadline.
     pub(crate) fn drain(&self, step: DrainStep) {
-        if let Some(stream) = &self.shared.stream {
-            match (stream.local_child, step) {
-                (false, step) => self.send(Message::Drain(step)),
-                (true, DrainStep::MoveNow) => self.send(Message::Drain(DrainStep::Interrupt)),
-                (true, _) => {}
-            }
-        } else if step == DrainStep::MoveNow {
-            self.request_stop();
+        match (self.shared.stream.local_child, step) {
+            (false, step) => self.send(Message::Drain(step)),
+            (true, DrainStep::MoveNow) => self.send(Message::Drain(DrainStep::Interrupt)),
+            (true, _) => {}
         }
     }
 
@@ -823,15 +722,6 @@ impl Owners {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Registers `handle` as its Run's owner for the registration's lifetime.
-    pub(crate) fn register(&self, handle: OwnerHandle) -> OwnerRegistration {
-        let (registration, replaced) = self.insert(&mut self.lock(), handle);
-        if let Some(replaced) = replaced {
-            replaced.request_stop();
-        }
-        registration
-    }
-
     /// Registers the owner of a Run stream: one for its Run that is live
     /// here still, whose stream ended or never reached it, is detached, not
     /// stopped, since the Run goes on.
@@ -849,17 +739,6 @@ impl Owners {
         if let Some(replaced) = self.get(run_id) {
             replaced.detach();
         }
-    }
-
-    /// Registers a recovered owner, unless an owner for its Run is live here
-    /// already: a local owner is never swept, it continues while its commits
-    /// find its claim.
-    pub(crate) fn register_recovered(&self, handle: OwnerHandle) -> Option<OwnerRegistration> {
-        let mut owners = self.lock();
-        if owners.contains_key(handle.run_id()) {
-            return None;
-        }
-        Some(self.insert(&mut owners, handle).0)
     }
 
     fn insert(
@@ -907,7 +786,7 @@ impl Owners {
     pub(crate) fn streams(&self) -> Vec<(WorkspaceId, OwnerHandle)> {
         self.lock()
             .values()
-            .filter_map(|owner| Some((owner.stream_workspace()?.clone(), owner.clone())))
+            .map(|owner| (owner.stream_workspace().clone(), owner.clone()))
             .collect()
     }
 

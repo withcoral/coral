@@ -38,6 +38,7 @@ tower.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+coral-run = { workspace = true, features = ["test-support"] }
 coral-catalog.workspace = true
 coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-outbound.workspace = true

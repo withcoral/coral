@@ -12,8 +12,8 @@ use coral_workspace::{
 use super::*;
 use serde_json::{Value, json};
 
-/// A Run Module over `database`. Only a test that calls `exec` launches a
-/// Run's execution.
+/// A Run Module over `database`. Nothing takes its Runs: an accepted Run
+/// waits for a take, and none of these tests runs a Program.
 fn run_module(database: &Arc<coral_db::Database>, workspaces: &WorkspaceModule) -> RunModule {
     RunModule::new(
         coral_outbound::DestinationPolicy::default(),
@@ -27,7 +27,6 @@ fn run_module(database: &Arc<coral_db::Database>, workspaces: &WorkspaceModule) 
         RuntimeLimits::default()
             .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
         coral_run::CoralInstanceId::generate(),
-        coral_run::RunInbox::table(database.clone()),
     )
     .unwrap()
 }
@@ -369,8 +368,8 @@ fn run_error_codes() -> Vec<(coral_run::Error, &'static str)> {
         (Error::ClaimMismatch, internal),
         (Error::HeadMismatch, internal),
         (Error::RunEnded, internal),
-        // A Run Owner that stopped before answering and a request its owner
-        // has not yet recorded are retryable, not internal errors.
+        // A Run stream's loop that stopped before answering and a request
+        // not yet recorded are retryable, not internal errors.
         (Error::OwnerLost, "run_owner_lost"),
         (
             Error::RunRequestNotYetRecorded,

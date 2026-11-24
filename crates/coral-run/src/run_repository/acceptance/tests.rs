@@ -6,15 +6,14 @@ use coral_workspace::{
 use sea_query::{Expr, ExprTrait as _, Query};
 
 use super::insert_record;
+use crate::RunId;
 use crate::run_repository::ProgramRunRecords;
 use crate::types::AcceptedRun;
-use crate::{CoralInstanceId, RunId};
 
-/// Acceptance records the accepting Coral Instance. A conflict on the
-/// identifier writes nothing and reports `false`; a fresh identifier in the
-/// same transaction still inserts.
+/// A conflict on the Run identifier writes nothing and reports `false`; a
+/// fresh identifier in the same transaction still inserts.
 #[tokio::test]
-async fn acceptance_records_its_coral_instance_and_a_taken_identifier_writes_nothing() {
+async fn a_taken_identifier_writes_nothing_and_a_fresh_one_inserts() {
     let fixture = TestDatabase::new(coral_db::migration_plan())
         .await
         .expect("test database");
@@ -42,53 +41,38 @@ async fn acceptance_records_its_coral_instance_and_a_taken_identifier_writes_not
         shutdown_grace_nanos: 0,
         value_limits: coral_value::ValueLimits::default(),
         claim_id: format!("claim-{accepted_at_unix_nanos}"),
-        worker_claim_expires_at_unix_nanos: accepted_at_unix_nanos + 1_000,
         linked_snapshots: std::collections::HashMap::new(),
         trace: None,
         time_limit_nanos: None,
     };
     let taken = "height-word-database-library";
 
-    let (first, second) = (CoralInstanceId::generate(), CoralInstanceId::generate());
-
     let mut transaction = database.begin().await.expect("transaction");
     assert!(
-        insert_record(&mut transaction, &run(taken, 10), Some(&first))
+        insert_record(&mut transaction, &run(taken, 10))
             .await
             .expect("first insert")
     );
     assert!(
-        !insert_record(&mut transaction, &run(taken, 20), Some(&second))
+        !insert_record(&mut transaction, &run(taken, 20))
             .await
             .expect("conflicting insert")
     );
     assert!(
-        insert_record(
-            &mut transaction,
-            &run("random-big-business-store", 30),
-            Some(&second)
-        )
-        .await
-        .expect("fresh insert after the conflict")
+        insert_record(&mut transaction, &run("random-big-business-store", 30))
+            .await
+            .expect("fresh insert after the conflict")
     );
     let statement = Query::select()
-        .columns([
-            ProgramRunRecords::AcceptedAtUnixNanos,
-            ProgramRunRecords::HolderInstanceId,
-        ])
+        .column(ProgramRunRecords::AcceptedAtUnixNanos)
         .from(ProgramRunRecords::Table)
         .and_where(Expr::col(ProgramRunRecords::Id).eq(taken))
         .to_owned();
-    let (accepted_at_unix_nanos, holder): (i64, Option<String>) = transaction
+    let (accepted_at_unix_nanos,): (i64,) = transaction
         .fetch_optional(statement)
         .await
         .expect("read the Run row")
         .expect("the first Run row");
     assert_eq!(accepted_at_unix_nanos, 10, "the conflict changed nothing");
-    assert_eq!(
-        holder.as_deref(),
-        Some(first.as_str()),
-        "acceptance records the accepting Coral Instance"
-    );
     transaction.commit().await.expect("commit");
 }

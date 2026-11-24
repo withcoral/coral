@@ -15,7 +15,6 @@ use coral_run_executor::{Closing, SHUTTING_DOWN};
 use coral_workspace::AuthenticatedPrincipal;
 
 use super::{LinkedTools, Requests, StreamLink, taken_end, wire_end};
-use crate::engine::ProgramPackage;
 use crate::execution::until_answered;
 use crate::invocation_lifecycle::{self, InvocationState};
 use crate::invocation_repository::{self, RecordedOutcome, StreamInvocation};
@@ -61,18 +60,13 @@ type RetainedTools = HashMap<InvocationId, Option<ResolvedInvocationTool>>;
 
 impl RunModule {
     /// Serves the reopened stream of `run`, a started Run that `claim_id`
-    /// holds, as `Open` read it with its package and linked Tools.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each is one part of the Open the stream answers"
-    )]
+    /// holds, as `Open` read it with its linked Tools.
     pub(super) async fn reopen_stream(
         &self,
         requests: Requests,
         link: &Arc<StreamLink>,
         run: RunRecord,
         claim_id: String,
-        package: ProgramPackage,
         linked: LinkedTools,
         awaited: Vec<Awaited>,
     ) {
@@ -100,7 +94,6 @@ impl RunModule {
                         &held,
                         &claim_id,
                         None,
-                        None,
                         crate::termination::Interrupter::Reopen,
                     )
                     .await;
@@ -120,7 +113,6 @@ impl RunModule {
         };
         link.committed(Some(resume.watermark));
         let started = StartedExecution {
-            package,
             head: run.chunk_sequence,
             deadline_at_unix_nanos,
         };

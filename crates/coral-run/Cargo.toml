@@ -9,6 +9,11 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# Serves a Run Module's Runs on a Run Executor in the test process, for
+# tests in other crates.
+test-support = ["coral-run-executor/test-support"]
+
 [dependencies]
 coral-outbound = { workspace = true, features = ["transport"] }
 async-trait.workspace = true

@@ -14,8 +14,8 @@ use crate::testing::{
 use crate::wire::v1::{
     Awaited, Committed, Complete, CoralFailure, Emit, Fatal, Finish, FinishEnd, InvocationResult,
     Invoke, LinkedSnapshot, LinkedToolRoot, Loaded, Location, Log, LogLevel, Permitted, Request,
-    Started, Terminate, TerminateReason, UpstreamOutcome, complete, finish, invocation_result,
-    request,
+    Started, Terminate, TerminateReason, Threw, UpstreamOutcome, complete, finish,
+    invocation_result, request,
 };
 use crate::{CompilerClient as _, InProcessCompiler};
 
@@ -500,6 +500,61 @@ return caught;"#;
         r#"["RangeError","RangeError"]"#.to_owned(),
     ));
     assert_eq!(next_request(&mut run).await, (1, value));
+}
+
+/// Catches: a call or a Tool body's result that the link cannot carry sent
+/// anyway: the stream fails on every resend, and the Run waits for its
+/// deadline. The call fails instead, as Coral fails a value over its limit.
+#[tokio::test]
+async fn a_call_or_a_result_that_the_link_cannot_carry_fails_the_call() {
+    let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
+    let big = private_tool(
+        "big.make",
+        "tool-9",
+        r#"export default async function make() { return "x".repeat(17 * 1024 * 1024); }"#,
+    );
+    let source = r#"let input = "";
+try { await coral.providers.tracker.issues.list({ q: "y".repeat(17 * 1024 * 1024) }); } catch (error) { input = (error as { code: string }).code; }
+await coral.emit(input);
+return await coral.private.big.make();"#;
+    let mut package = compiled_with(source, &[big]).await;
+    // Values this large cross the isolate's host boundary.
+    package.value_limits.as_mut().unwrap().host_bytes = 64 << 20;
+    let mut run = started(&mut coral, package, None).await;
+    // The Invoke is never sent.
+    let (number, kind) = next_request(&mut run).await;
+    let request::Kind::Emit(emitted) = kind else {
+        panic!("expected an Emit, got {kind:?}");
+    };
+    assert_eq!(
+        (number, emitted.value_json.as_str()),
+        (1, r#""tool_input_too_large""#)
+    );
+    run.send(result(
+        1,
+        0,
+        invocation_result::Outcome::Permitted(Permitted {}),
+    ))
+    .await;
+    let (number, kind) = next_request(&mut run).await;
+    assert!(matches!(kind, request::Kind::Perform(_)), "{kind:?}");
+    run.send(result(
+        number,
+        0,
+        invocation_result::Outcome::Permitted(Permitted {}),
+    ))
+    .await;
+    let (_, kind) = next_request(&mut run).await;
+    assert_eq!(
+        kind,
+        request::Kind::Complete(Complete {
+            perform: number,
+            outcome: Some(complete::Outcome::Threw(Threw {
+                message: "Tool result exceeds its limit".to_owned(),
+                tool_error: Some("upstream_result_too_large".to_owned()),
+            })),
+        })
+    );
 }
 
 /// Catches: an Output Budget that leaves out an `InvocationResult`'s bytes,

@@ -3,40 +3,33 @@
 //! [`RunModule`] consumes current source selections from `coral-tools` and
 //! owns accepted source snapshots and execution. It validates exact
 //! Principal and Workspace attribution, compiles outside database write
-//! transactions, atomically accepts one complete Program package with
-//! `run.started` and the Run's worker claim, and gives every launched Run one
-//! Run Owner (ADR 0018): the in-process actor that alone appends the Run
-//! Ledger on every path the Program takes, in chunks, and runs the Run-bound
-//! Tool Invocation and Policy Enforcement Point choreography inside its
-//! commits. A Run accepted in a caller's transaction and never launched keeps
-//! its claim until the expired-lease sweep ends it. A Run accepted for Run
-//! streams ([`RunModule::with_run_streams`], ADR 0027) gets neither the
-//! worker claim nor a Run Owner: it waits, `running`, until a take claims it.
-//! The invariants below that name the worker claim or the owner hold for the
-//! owner path.
+//! transactions, and atomically accepts one complete Program package with
+//! `run.started`. An accepted Run waits, `running`, until a take claims it
+//! for a Run Executor (ADR 0027), which executes the Program over a Run
+//! stream. The Coral Instance that serves the stream hosts the Run's loop
+//! (see the `owner` module): it appends the Run Ledger on every path the
+//! Program takes, in chunks, and runs the Run-bound Tool Invocation and
+//! Policy Enforcement Point choreography inside its commits.
 //!
 //! # Interface
 //!
 //! - [`RunModule::start`] admits a complete package and returns its first
 //!   [`RunUpdate`], without a goal or intent parameter.
 //! - [`RunModule::prepare`], [`RunModule::accept_in_transaction`], and
-//!   [`RunModule::launch`] expose the same admission and execution behavior to
-//!   an upper-level transaction owner. Staged acceptance is not proof of commit;
-//!   launch reads durable evidence and keeps the normal worker claim and Policy
-//!   Enforcement Point checks.
+//!   [`RunModule::launch`] expose the same admission to an upper-level
+//!   transaction owner. Staged acceptance is not proof of commit; launch
+//!   reads durable evidence.
+//! - [`RunModule::take_runs`] takes waiting Runs for this Coral Instance's
+//!   pull streams, and [`RunModule::run_stream_server`] serves their Run
+//!   streams.
 //! - [`RunModule::observe`] replays bounded authored Emissions/Logs with current
 //!   Principal-filtered required actions and terminal data on the final output page.
 //!   Bounded waiting ignores internal lifecycle records. Initial observation batches
 //!   authored output until human action, terminal state, or the requested deadline.
-//! - [`RunModule::cancel`] puts a cancellation in the Run's Run Inbox, through
-//!   the same Principal-specific visibility rules, whichever Coral Instance
-//!   owns the Run: the owner terminates active execution at once and records
-//!   the intent in its next chunk. The call waits up to the shutdown grace and
-//!   a settle margin for the owner to record it and end the Run, then returns
-//!   the state recorded by then, or answers that it is not yet recorded. A
-//!   Run a Run Executor holds is ended by the Coral Instance that receives
-//!   the cancellation, in one chunk under its claim and head, and its stream's
-//!   loop learns of it from the Run's head (see the `run_wake` module).
+//! - [`RunModule::cancel`] ends the Run, through the same Principal-specific
+//!   visibility rules, in one chunk under its claim and head, whichever Coral
+//!   Instance receives it. The Run's loop learns of it from the Run's head
+//!   (see the `run_wake` module) and terminates the Program.
 //! - [`RunModule::listed_providers`] reads what `coral.listProviders` returns, without a Run.
 //! - [`RunModule::activity_entries`] reads bounded chronological child summaries.
 //!   Exact Event/Invocation anchors retain their identities. Upper owners can join
@@ -51,23 +44,21 @@
 //!   authorize exact retained source, bounded Events, logical arguments, native outcomes,
 //!   and historical request references. These reads never renew retention. Retained
 //!   Account references survive active waiter detachment and grant no request authority.
-//! - [`RunModule::sweep_expired_leases`] is one pass of the expired-lease sweep:
-//!   every `running` Run that no process owns (its lease lapsed) gets its
-//!   Run Owner back,
-//!   which records the timers that passed and the Run's end in one chunk.
-//!   Bootstrap runs it before any listener binds and then every
-//!   [`RunModule::sweep_interval`]. Coral never resumes a Run.
-//! - [`RunModule::sweep_runs`] is one pass of the Run sweeper,
-//!   for the Runs that Run Executors hold: one Coral Instance at a time,
-//!   elected by a lease row, ends the Runs past their deadline, expires the
-//!   Approval Requests past theirs, puts back the taken Runs that never
-//!   started, and releases the Run Executors whose lease lapsed.
-//!   On `SQLite`, [`RunModule::sweep_runs_at_boot`] also releases the local
-//!   children's rows, up to the pass limit; later passes release the rest
-//!   once their leases lapse. [`RunModule::release_run_executor`] releases
-//!   one at once.
-//! - [`RunModule::shutdown`] refuses new Runs, lets the live ones end for the
-//!   Shutdown Drain, then interrupts the rest within the commit grace.
+//! - [`RunModule::sweep_runs`] is one pass of the Run sweeper: one Coral
+//!   Instance at a time, elected by a lease row, ends the Runs past their
+//!   deadline, expires the Approval Requests past theirs, puts back the
+//!   taken Runs that never started, and releases the Run Executors whose
+//!   lease lapsed. On `SQLite`, [`RunModule::sweep_runs_at_boot`] also
+//!   releases the local children's rows, up to the pass limit; later passes
+//!   release the rest once their leases lapse.
+//!   [`RunModule::release_run_executor`] releases one at once. Coral never
+//!   resumes a Run.
+//! - [`RunModule::shutdown`] refuses new Runs and drains the Run streams. A
+//!   dialed Run Executor's stream moves to another Coral Instance once no
+//!   dispatch is in flight on it, or at once at the drain's length, when the
+//!   Coral Instance it reopens on ends the calls still in flight
+//!   `indeterminate`. A local child's stream cannot move: its Run ends
+//!   interrupted, or timed out past its deadline, at the drain's length.
 //! - [`approval::ApprovalModule`] exposes human-only exact Invocation decisions;
 //!   request validity and lifecycle evidence stay behind that separate Interface.
 //!
@@ -86,17 +77,17 @@
 //! no Run and starts no execution. The deadline begins at the execution-start mark.
 //! Exact submitted and linked source, emitted JavaScript, source map, compiler
 //! provenance, limits, Run, and `run.started` evidence commit together.
-//! Execution code is always reloaded from that durable package. Acceptance
-//! writes the Run's worker claim, so no owned Run is unclaimed; the Run
-//! Owner's first chunk is the execution-start mark, and after it JavaScript is
-//! never resumed or replayed. The owner applies `coral.emit`, the bounded
-//! console, admission and Invocation results in arrival order against its
-//! exact output total and answers the Program at Applied; each chunk commits
-//! when none is in flight, predicated on the owner's claim and the head, and
-//! renews the lease. Above the Applied cap on unrecorded output the Program
-//! waits for the chunk. Emissions and Logs remain observable after a later
-//! failure. Invocation admission retains its Provider target, arguments,
-//! child record, and `invocation.started` in one chunk. The Policy Enforcement
+//! Execution code is always loaded from that durable package. The stream's
+//! start is the execution-start mark, written under the take's claim, and
+//! after it JavaScript is never resumed or replayed. The loop applies the
+//! stream's requests (`coral.emit`, the bounded console, admission and
+//! Invocation results) in number order against its exact output total and
+//! answers the Program at Applied; each chunk commits when none is in
+//! flight, predicated on the claim and the head, and stamps its commit time.
+//! Above the Applied cap on unrecorded output the Program waits for the
+//! chunk. Emissions and Logs remain observable after a later failure.
+//! Invocation admission retains its Provider target, arguments, child
+//! record, and `invocation.started` in one chunk. The Policy Enforcement
 //! Point is one batched check per chunk commit: inside the chunk's transaction
 //! it reads the Workspace, Agent/Registration, Provider, policy and Account
 //! facts the chunk's ready Invocations share once, holding their rows shared so
@@ -106,7 +97,7 @@
 //! sample after the last read, and records every permitted dispatch start in
 //! the same commit; it reads the retained Tool by its Generation id and never
 //! the Account's material. Decryption and the upstream send run outside
-//! every lock, after the pre-send check; a stop that reaches the owner first
+//! every lock, after the pre-send check; a stop that reaches the loop first
 //! ends a permitted Invocation as `run_terminated` instead of sending, and an
 //! enforcement check not yet committed answers terminated at once. Missing
 //! User caller Accounts attach to durable shared connection
@@ -116,35 +107,25 @@
 //! evidence commit together; decline and expiry also settle the child
 //! atomically. Waiting never replays a Program or changes its selected
 //! account. An upstream result settles the Program Promise at Applied; a known
-//! failure only once it is recorded. A claim mismatch on commit stops the
-//! owner at once: it terminates the Program, cancels its dispatches, and
-//! answers waiting requests `OwnerLost`. A Run cannot complete while any child
+//! failure only once it is recorded. A Run cannot complete while any child
 //! Invocation is nonterminal.
-//! While a Run is nonterminal its owner is the only writer of its row and its
-//! Events: approval decisions and cancellation reach the owner as requests,
-//! and the Run and Approval Request deadlines are its own timers, applied in
-//! mailbox order with them (see the `owner` module). Both reach it from any
-//! Coral Instance through the Run Inbox (see the `run_inbox` module). A Run a
-//! Run Executor holds has them committed by the Coral Instance that receives
-//! them, and its stream's loop sees its head move (see the `run_wake`
-//! module). The
-//! worker lease is ownership between processes: a Run whose lease lapsed with
-//! no owner here is the expired-lease sweep's, which recreates its owner, and a
-//! Run whose live lease another process holds is never touched. The clock
-//! decides a Run's timeout and an Approval Request's expiry only inside the
-//! owner (its `apply`, and its own writes' clock sample). A connection
-//! request is Account-owned: the Account module records its expiry when a holder reads it, and the
-//! owner's timer at its deadline only wakes the Invocations parked on it.
-//! Readers show the recorded state beside a deadline and never derive an
-//! expiry or a timeout from `now`.
-//! Cancellation and deadline intent stop new Program work, request uncatchable V8
-//! termination, and preserve complete child outcomes that beat bounded cleanup.
-//! A recovered owner takes the Run over with a new claim in the same chunk that
-//! ends its children and the Run, so nothing still in flight under the old
-//! claim lands. The first terminal transaction wins. User work remains
-//! private; Workspace Owners can observe and cancel Workspace-owned Agent
-//! Runs, while an Agent can address only that same Agent's Run in its fixed
-//! Workspace. Run identifiers and cursors grant no authority.
+//! While a Run is nonterminal it has three writers: the loop that holds its
+//! stream, the Coral Instance that receives an outside request for it (an
+//! approval decision, a cancellation), and the Run sweeper, each under the
+//! Run's head, so the first commit wins. A loop learns of another writer
+//! only from the head. Only the loop and the sweeper compare a clock: the
+//! loop's Run deadline and Approval Request timers are applied in mailbox
+//! order (see the `owner` module), and the sweeper writes what no stream
+//! decided in time. A connection request is Account-owned: the Account
+//! module records its expiry when a holder reads it, and the loop's timer at
+//! its deadline only wakes the Invocations parked on it. Readers show the
+//! recorded state beside a deadline and never derive an expiry or a timeout
+//! from `now`. A termination is written first, in one chunk that ends the
+//! Run's open Invocations, and the Program hears of it after. The first
+//! terminal transaction wins. User work remains private; Workspace Owners
+//! can observe and cancel Workspace-owned Agent Runs, while an Agent can
+//! address only that same Agent's Run in its fixed Workspace. Run
+//! identifiers and cursors grant no authority.
 
 mod activity;
 mod activity_observation;
@@ -185,24 +166,23 @@ mod lifecycle;
 mod observation;
 mod owner;
 mod program_output;
-mod recovery;
 mod required_actions;
 mod required_actions_repository;
 pub mod retention;
-mod run_inbox;
-mod run_wake;
-pub mod usage_repository;
-pub use run_inbox::RunInbox;
 mod run_repository;
 mod run_stream;
+mod run_wake;
 mod shutdown;
 mod source_location_repository;
 mod summary;
 mod summary_repository;
 mod sweep;
+pub mod usage_repository;
 pub use sweep::{RUN_SWEEP_INTERVAL, Swept};
 mod take;
 mod termination;
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing;
 mod tool_result_shape;
 pub use tool_result_shape::{ToolResultShape, ToolResultShapes};
 mod trace;
@@ -292,21 +272,12 @@ pub struct RunModule {
     compilation_timeout: std::time::Duration,
     /// The Coral Instance this module runs in; a Run row it claims records it.
     instance: CoralInstanceId,
-    /// Where outside Run Requests wait for the Run Owner of their Run.
-    inbox: RunInbox,
     /// The wake-up reader of the Run streams' loops on this Coral Instance.
     wakes: run_wake::RunWakes,
-    /// Accepted Runs wait for a take and a Run stream instead of a Run Owner
-    /// (ADR 0027). Production sets it; the Run Owner path stays for the
-    /// Runs an older release owns, and for tests, until #2911.
-    run_streams: bool,
     /// This Coral Instance's pull streams, which its Shutdown Drain closes.
     pull_streams: Option<coral_run_executor::PullStreams>,
     owners: Owners,
     admission: shutdown::Admission,
-    /// Bounds the recovered owners' writes at once, so a mass recovery after
-    /// a crash queues here instead of on the pool.
-    recovery_writes: Arc<tokio::sync::Semaphore>,
     #[cfg(test)]
     invocation_observer: Arc<dyn InvocationObserver>,
     #[cfg(test)]
@@ -317,10 +288,10 @@ impl RunModule {
     /// Builds the runtime with the deployment's outbound policy and runtime limits.
     /// Built-in Tools prepare Setups through `providers`, the bootstrap's
     /// Provider Module. `instance` is the Coral Instance the process runs as,
-    /// which every Run it claims records; `inbox` is where outside Run
-    /// Requests wait for their Run Owner. The runtime starts a warm compiler
-    /// of its own; a composed process shares its one compiler through
-    /// [`Self::with_compiler_client`] instead.
+    /// which every Run stream it serves records. Each accepted Run waits,
+    /// `running`, until a take claims it for a Run Executor (ADR 0027). The
+    /// runtime starts a warm compiler of its own; a composed process shares
+    /// its one compiler through [`Self::with_compiler_client`] instead.
     /// # Errors
     /// Returns an initialization error when the runtime or HTTP client cannot start.
     pub fn new(
@@ -330,7 +301,6 @@ impl RunModule {
         providers: coral_provider::ProviderModule,
         limits: RuntimeLimits,
         instance: CoralInstanceId,
-        inbox: RunInbox,
     ) -> Result<Self, Error> {
         let compiler = coral_run_executor::InProcessCompiler::new(limits.isolate())
             .map_err(|error| Error::ProgramRuntimeUnavailable(error.to_string()))?;
@@ -342,7 +312,6 @@ impl RunModule {
             limits,
             Arc::new(compiler),
             instance,
-            inbox,
         )
     }
 
@@ -350,10 +319,6 @@ impl RunModule {
     /// Admission compiles through `compiler`, the process's one warm compiler.
     /// # Errors
     /// Returns an initialization error when the HTTP client cannot start.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "bootstrap passes each shared process component"
-    )]
     pub fn with_compiler_client(
         policy: coral_outbound::DestinationPolicy,
         database: Arc<Database>,
@@ -362,7 +327,6 @@ impl RunModule {
         limits: RuntimeLimits,
         compiler: Arc<dyn coral_run_executor::CompilerClient>,
         instance: CoralInstanceId,
-        inbox: RunInbox,
     ) -> Result<Self, Error> {
         let wakes = run_wake::RunWakes::new(database.clone());
         Ok(Self {
@@ -376,7 +340,7 @@ impl RunModule {
             database,
             workspaces,
             accounts: None,
-            engine: Arc::new(V8ProgramEngine::with_compiler(compiler, limits.isolate())),
+            engine: Arc::new(V8ProgramEngine::with_compiler(compiler)),
             upstream: Arc::new(ProductionUpstream::new(policy)?),
             clock: Arc::new(SystemClock),
             execution_policy: ExecutionPolicy::production(),
@@ -387,13 +351,10 @@ impl RunModule {
             cpu_budget: limits.cpu_budget(),
             compilation_timeout: limits.compilation_timeout(),
             instance,
-            inbox,
             wakes,
-            run_streams: false,
             pull_streams: None,
             owners: Owners::default(),
             admission: shutdown::Admission::default(),
-            recovery_writes: recovery::write_permits(),
             #[cfg(test)]
             invocation_observer: Arc::new(NoopInvocationObserver),
             #[cfg(test)]
@@ -411,7 +372,6 @@ impl RunModule {
         clock: Arc<dyn Clock>,
         observers: TestObservers,
     ) -> Self {
-        let inbox = RunInbox::table(database.clone());
         let wakes = run_wake::RunWakes::new(database.clone());
         Self {
             providers,
@@ -435,25 +395,13 @@ impl RunModule {
             cpu_budget: None,
             compilation_timeout: coral_test_support::TEST_COMPILATION_TIMEOUT,
             instance: CoralInstanceId::generate(),
-            inbox,
             wakes,
-            run_streams: false,
             pull_streams: None,
             owners: Owners::default(),
             admission: shutdown::Admission::default(),
-            recovery_writes: recovery::write_permits(),
             invocation_observer: observers.invocation,
             execution_observer: observers.execution,
         }
-    }
-
-    /// Accepts each Run for Run streams (ADR 0027): acceptance writes no
-    /// worker claim, lease or holder and creates no Run Owner, and the Run
-    /// waits, `running`, until a take claims it.
-    #[must_use]
-    pub fn with_run_streams(mut self) -> Self {
-        self.run_streams = true;
-        self
     }
 
     /// Drains `streams`, this Coral Instance's pull streams, in its Shutdown

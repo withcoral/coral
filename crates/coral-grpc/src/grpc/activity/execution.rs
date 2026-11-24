@@ -17,13 +17,15 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         coral_run::Error::Provider(error) => crate::grpc::providers::error(error),
         coral_run::Error::Policy(error) => crate::grpc::policies::error(error),
         coral_run::Error::Tools(error) => crate::grpc::authored_tools::error(error),
-        // The Run Owner stopped before it answered the request: the outcome
+        // The Run stream's loop stopped before it answered the request: the outcome
         // may be recorded already, and the record read again says.
         coral_run::Error::OwnerLost => {
             status::safe_status(tonic::Code::Aborted, "RUN_OUTCOME_UNKNOWN")
         }
-        // The request waits in the Run Inbox and its owner has not recorded
-        // it yet. Retryable: a retry reads what was recorded meanwhile.
+        // Other writers moved the Run under every attempt, or an older
+        // release's Run Owner holds it. Retryable: a retry reads what was
+        // recorded meanwhile; for an older release's Run, retries stay
+        // refused until that Coral Instance stops.
         coral_run::Error::RunRequestNotYetRecorded => {
             status::safe_status(tonic::Code::Unavailable, "RUN_REQUEST_NOT_YET_RECORDED")
         }

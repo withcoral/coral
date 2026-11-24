@@ -120,7 +120,13 @@ pub(crate) fn start(
     drop(entered);
     let value_limits = accepted.value_limits;
     let handle = handle.clone();
+    // The reader's thread records its telemetry where this task does. Where
+    // this task has no dispatcher, it is left to find the global one, which
+    // may be set by then.
+    let dispatch = tracing::dispatcher::get_default(Clone::clone);
     tokio::task::spawn_blocking(move || {
+        let _dispatch = (!dispatch.is::<tracing::subscriber::NoSubscriber>())
+            .then(|| tracing::dispatcher::set_default(&dispatch));
         let _execute = span;
         let message = match reader.read(requests, value_limits) {
             // `Finish` reached the owner, or the reader detached it before

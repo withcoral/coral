@@ -1,5 +1,5 @@
 use super::*;
-use crate::approval::{ApprovalDecision, ApprovalModule, ApprovalState};
+use crate::approval::{ApprovalDecision, ApprovalState};
 use coral_outbound::DestinationPolicy;
 
 #[tokio::test]
@@ -8,11 +8,8 @@ async fn approval_waits_for_the_invoking_user_and_commits_one_decision() {
         200,
         serde_json::json!({"temperature": 21}),
     ));
-    let fixture = TestModules::with_upstream(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream.clone(),
-    )
-    .await;
+    let mut fixture = TestModules::with_upstream(v8_engine(), upstream.clone()).await;
+    fixture.serve().await;
     let tool = fixture.user_tool("user:approver", "Approve weather").await;
     let mut tx = fixture.database.begin().await.unwrap();
     coral_workspace::OrganizationModule::hold_profile_updates_in_transaction(&mut tx)
@@ -34,7 +31,7 @@ async fn approval_waits_for_the_invoking_user_and_commits_one_decision() {
         .start(
             &tool.principal,
             &tool.workspace_id,
-            submission("invoke-tool"),
+            submission(INVOKE_WEATHER),
         )
         .await
         .unwrap();
@@ -100,10 +97,11 @@ async fn approval_waits_for_the_invoking_user_and_commits_one_decision() {
 #[tokio::test]
 async fn declining_commits_invocation_failure_with_the_winning_decision() {
     let telemetry = super::trace::telemetry();
-    let fixture = TestModules::new(Arc::new(
+    let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:decliner", "Decline exact invocation")
         .await;
@@ -188,10 +186,8 @@ struct ApprovalAudience {
 
 impl ApprovalAudience {
     async fn new() -> Self {
-        let fixture = TestModules::new(Arc::new(InvokingEngine::new(
-            "coral.providers.weather.getForecast",
-        )))
-        .await;
+        let mut fixture = TestModules::new(v8_engine()).await;
+        fixture.serve().await;
         let tool = fixture.user_tool("user:private", "Private approvals").await;
         fixture.require_approval(&tool).await;
         let org_owner = AuthenticatedPrincipal::user(
@@ -245,7 +241,7 @@ impl ApprovalAudience {
         let run = self
             .fixture
             .runs
-            .start(actor, &self.tool.workspace_id, submission("invoke"))
+            .start(actor, &self.tool.workspace_id, submission(INVOKE_WEATHER))
             .await
             .unwrap()
             .run_id()
@@ -494,10 +490,8 @@ async fn organization_ownership_does_not_restore_agent_approval_to_a_demoted_own
 
 #[tokio::test]
 async fn destructive_lifecycle_keeps_exact_agent_invocation_and_approval_history() {
-    let fixture = TestModules::new(Arc::new(
-        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
-    ))
-    .await;
+    let mut fixture = TestModules::new(v8_engine()).await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:retained-approval", "Retain approvals")
         .await;
@@ -602,17 +596,18 @@ async fn racing_decisions_have_one_durable_winner_and_event() {
         200,
         serde_json::json!({"temperature": 21}),
     ));
-    let fixture = TestModules::with_upstream(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream.clone(),
-    )
-    .await;
+    let mut fixture = TestModules::with_upstream(v8_engine(), upstream.clone()).await;
+    fixture.serve().await;
     let tool = fixture.user_tool("user:race", "Approval race").await;
     fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
     let run = fixture
         .runs
-        .start(&tool.principal, &tool.workspace_id, submission("invoke"))
+        .start(
+            &tool.principal,
+            &tool.workspace_id,
+            submission(INVOKE_WEATHER),
+        )
         .await
         .unwrap();
     let request = wait_for_approval(
@@ -688,14 +683,8 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
         200,
         serde_json::json!({"temperature": 21}),
     ));
-    let mut fixture = TestModules::with_upstream(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream.clone(),
-    )
-    .await;
-    // Advance one shared clock without turning this into an unrelated lost-worker test.
-    fixture.runs.execution_policy =
-        crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_mins(15));
+    let mut fixture = TestModules::with_upstream(v8_engine(), upstream.clone()).await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:human-review-budget", "Review within the Run timeout")
         .await;
@@ -707,7 +696,7 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
             &tool.principal,
             &tool.workspace_id,
             RunSubmission::new(
-                ProgramSource::parse("invoke-tool").unwrap(),
+                ProgramSource::parse(INVOKE_WEATHER).unwrap(),
                 RunTimeout::from_millis(900_000).unwrap(),
             ),
         )
@@ -786,11 +775,12 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
-    // The request's own deadline, well inside the Run's and the worker lease.
+    // The request's own deadline, well inside the Run's.
     // Its real timer never fires here; the test sends its message.
     let approval_wait = Duration::from_secs(30);
     fixture.runs.execution_policy =
         crate::execution::ExecutionPolicy::testing_with_approval_wait(approval_wait);
+    fixture.serve().await;
     let tool = fixture.user_tool("user:expiry", "Approval expiry").await;
     fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
@@ -928,6 +918,7 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
     fixture.runs.execution_policy =
         crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(30))
             .with_wakeups(Duration::from_secs(3600), Duration::from_millis(50));
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:late-reader", "Approval past its deadline")
         .await;
@@ -1020,159 +1011,6 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
     );
 }
 
-/// A decision sent to the other Coral Instance and applied at the request
-/// deadline on the owner's clock, before the request's timer fired, expires
-/// the request instead of approving it: the owner applies the expiry first,
-/// as its timer would have, and the decision reads the record.
-#[tokio::test]
-async fn a_decision_at_the_request_deadline_expires() {
-    let mut fixture = TestModules::new(Arc::new(
-        crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
-    ))
-    .await;
-    // Isolate the request's deadline from the Run's: its timer (30 s on the
-    // host clock) does not fire within this test.
-    fixture.runs.execution_policy =
-        crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(30));
-    let tool = fixture
-        .user_tool("user:late-expiry", "Approval expiry under holds")
-        .await;
-    fixture.require_approval(&tool).await;
-    let approvals = fixture.approvals();
-    let run = fixture.runs.start(&tool.principal, &tool.workspace_id, RunSubmission::new(
-        ProgramSource::parse("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; }").unwrap(),
-        RunTimeout::from_millis(900_000).unwrap())).await.unwrap();
-    let request = wait_for_approval(
-        &approvals,
-        &tool.principal,
-        &tool.workspace_id,
-        run.run_id(),
-    )
-    .await;
-    // The owner's clock reaches the deadline before the decision is applied;
-    // the request's timer has not fired.
-    fixture
-        .clock
-        .next
-        .store(request.deadline_at_unix_nanos, Ordering::SeqCst);
-    let expired = fixture
-        .next_process()
-        .approvals()
-        .decide(
-            &tool.principal,
-            &tool.workspace_id,
-            &request.id,
-            ApprovalDecision::Approve,
-            None,
-            &TraceId::parse(&"f".repeat(32)).unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(expired.state, ApprovalState::Expired);
-    assert_eq!(expired.approver, None);
-    assert_eq!(
-        expired.decided_at_unix_nanos,
-        Some(request.deadline_at_unix_nanos)
-    );
-    let terminal = wait_for_terminal(
-        &fixture.runs,
-        &tool.principal,
-        &tool.workspace_id,
-        run.run_id(),
-    )
-    .await;
-    assert_final_code(&terminal, "approval_expired");
-    let events = approvals
-        .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
-        .await
-        .unwrap();
-    assert!(
-        matches!(events.as_slice(), [event] if event.state == ApprovalState::Expired),
-        "no Approved decision is written: {events:?}"
-    );
-}
-
-/// An approval the owner applies before the request's deadline, whose chunk
-/// commits after the deadline passed, is dated when the owner applied it,
-/// so it still counts and the Invocation dispatches.
-#[tokio::test]
-async fn an_approval_applied_before_its_deadline_counts_when_its_chunk_commits_after_it() {
-    let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
-    let (mut fixture, tool, approvals, probe) = quiet_approval_fixture(
-        Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
-        upstream.clone(),
-        "late-commit",
-    )
-    .await;
-    // Isolate the request's deadline from the Run's: its timer (30 s on the
-    // host clock) does not fire within this test.
-    fixture.runs.execution_policy =
-        crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(30));
-    let run = fixture.runs.start(&tool.principal, &tool.workspace_id, RunSubmission::new(
-        ProgramSource::parse("try { await coral.providers.weather.getForecast({}); } catch (e) { return e.code; } return 'dispatched';").unwrap(),
-        RunTimeout::from_millis(900_000).unwrap())).await.unwrap();
-    let request = wait_for_approval(
-        &approvals,
-        &tool.principal,
-        &tool.workspace_id,
-        run.run_id(),
-    )
-    .await;
-    let release = probe.hold_next_commit();
-    let decided = {
-        let approvals = approvals.clone();
-        let actor = tool.principal.clone();
-        let workspace = tool.workspace_id.clone();
-        let id = request.id.clone();
-        tokio::spawn(async move {
-            approvals
-                .decide(
-                    &actor,
-                    &workspace,
-                    &id,
-                    ApprovalDecision::Approve,
-                    None,
-                    &TraceId::parse(&"c".repeat(32)).unwrap(),
-                )
-                .await
-        })
-    };
-    // The owner applied the decision before the deadline; its chunk is held
-    // until the clock has passed it.
-    wait_until(|| probe.held()).await;
-    assert_eq!(
-        approvals
-            .get(&tool.principal, &tool.workspace_id, &request.id)
-            .await
-            .unwrap()
-            .state,
-        ApprovalState::Pending,
-        "the held chunk is the decision's"
-    );
-    fixture
-        .clock
-        .next
-        .store(request.deadline_at_unix_nanos + 1, Ordering::SeqCst);
-    release.send(()).expect("release the decision chunk");
-    let decided = decided.await.expect("join").expect("the decision");
-    assert_eq!(decided.state, ApprovalState::Approved);
-    assert!(
-        decided
-            .decided_at_unix_nanos
-            .is_some_and(|at| at < request.deadline_at_unix_nanos),
-        "dated when the owner applied it: {decided:?}"
-    );
-    let terminal = wait_for_terminal(
-        &fixture.runs,
-        &tool.principal,
-        &tool.workspace_id,
-        run.run_id(),
-    )
-    .await;
-    assert_final_code(&terminal, "dispatched");
-    assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
-}
-
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -1192,6 +1030,7 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
         // Outlast the test: only a dispatched Invocation may hold cancellation open.
         fixture.runs.execution_policy =
             crate::execution::ExecutionPolicy::testing_with_shutdown_grace(Duration::from_mins(15));
+        fixture.serve().await;
         let tool = fixture
             .user_tool("user:wait-races", "Pending approval lifecycle")
             .await;
@@ -1352,6 +1191,7 @@ async fn approval_binds_the_selected_account_and_is_not_reusable_by_another_invo
         };
         fixture.require_approval(&tool).await;
         fixture.runs = fixture.runs.clone().with_accounts(accounts.clone());
+        fixture.serve().await;
         let approvals = fixture.approvals();
         let context = change(tool.user.clone(), 50, '5');
         let scope = tool.workspace_id.clone();
@@ -1486,12 +1326,13 @@ async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_enforcement_
         serde_json::json!({"temperature":21}),
     ));
     let (gate, release) = EnforcementGate::blocking();
-    let fixture = TestModules::with_invocation_adapters(
+    let mut fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
         gate.clone(),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:approved-policy", "Approved but disabled")
         .await;
@@ -1546,21 +1387,22 @@ async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_enforcement_
     );
 }
 
-/// A definite fault in a decision's write fails the owner's chunk, as any
-/// row work's does: nothing of the decision is written (no decided
-/// lifecycle event, no `invocation.ended` of its own), the Run ends
-/// Interrupted with the request Closed by the terminal write, and the
-/// approver's wait ends with the Run, answered from the record.
+/// A definite fault in a decision's write fails the receiver's commit:
+/// the approver gets the database's answer, nothing of the decision is
+/// written (no decided lifecycle event, no `invocation.ended` of its own),
+/// and the Run still waits on the pending request. Its cancellation then
+/// closes the request and ends the Invocation with the Run.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "one decided event seeds the fault; the rest is the one scenario"
 )]
-async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decision() {
-    let fixture = TestModules::new(Arc::new(
+async fn a_decision_persistence_fault_leaves_the_run_waiting_and_records_no_partial_decision() {
+    let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:approval-fault", "Atomic approval evidence")
         .await;
@@ -1622,7 +1464,7 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
     )
     .await;
 
-    let closed = approvals
+    let refused = approvals
         .decide(
             &tool.principal,
             &tool.workspace_id,
@@ -1632,17 +1474,26 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
             &trace,
         )
         .await
-        .expect("the record answers once the Run ends");
-    let terminal = wait_for_terminal(
-        &fixture.runs,
-        &tool.principal,
-        &tool.workspace_id,
-        run.run_id(),
-    )
-    .await;
-    assert_eq!(terminal.state(), RunState::Interrupted);
-    assert_eq!(closed.state, ApprovalState::Closed);
-    assert_eq!(closed.approver, None, "no decision was recorded");
+        .expect_err("the decision's write fails");
+    assert!(refused.database_error().is_some(), "{refused:?}");
+    let still = approvals
+        .get(&tool.principal, &tool.workspace_id, &pending.id)
+        .await
+        .unwrap();
+    assert_eq!(still.state, ApprovalState::Pending);
+    assert_eq!(still.approver, None, "no decision was recorded");
+    approval_event_fault(&fixture, false).await;
+    let canceled = fixture
+        .runs
+        .cancel(
+            &tool.principal,
+            &tool.workspace_id,
+            run.run_id(),
+            &immediate(None, 100),
+        )
+        .await
+        .expect("cancel the waiting Run");
+    assert_eq!(canceled.state(), RunState::Canceled);
     assert!(
         approvals
             .list_lifecycle_events(&tool.principal, &tool.workspace_id, &pending.id)
@@ -1669,7 +1520,6 @@ async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decisi
         .eq([crate::InvocationResultKind::RunTerminated]),
         "the Invocation ended with the Run, not with the decision"
     );
-    approval_event_fault(&fixture, false).await;
 }
 
 /// Rejects a second decided (not Closed) lifecycle event in a Workspace:
@@ -1761,6 +1611,7 @@ async fn an_approval_counts_by_its_decision_time_whenever_the_dispatch_comes() {
             clock: fixture.clock.clone(),
             expire_at_checks: during_final_checks.then_some(APPROVAL_DEADLINE),
         });
+        fixture.serve().await;
         let tool = fixture
             .user_tool("user:approval-expiry", "Approval expiry")
             .await;
@@ -1775,8 +1626,8 @@ async fn an_approval_counts_by_its_decision_time_whenever_the_dispatch_comes() {
         )
         .await;
         wait_until(|| wait.entered()).await;
-        // Isolate the request's deadline from the longer Run and worker-claim
-        // deadlines. During final checks, the enforcement point's clock
+        // Isolate the request's deadline from the longer Run deadline.
+        // During final checks, the enforcement point's clock
         // sample reaches the deadline the gate read; before the gate, every
         // later clock read is at or past the deadline.
         if during_final_checks {
@@ -1871,12 +1722,13 @@ impl InvocationObserver for ApprovalFailureGate {
 #[tokio::test]
 async fn a_decline_after_a_policy_change_is_recorded_as_the_decline() {
     let (gate, release) = EnforcementGate::blocking();
-    let fixture = TestModules::with_invocation_adapters(
+    let mut fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         Arc::new(RejectingUpstream),
         Arc::new(ApprovalFailureGate(gate.clone())),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:decline-completion-race", "Recover winning rejection")
         .await;
@@ -1943,12 +1795,13 @@ async fn a_decline_after_a_policy_change_is_recorded_as_the_decline() {
 async fn first_durable_decision_wins_against_policy_changes_before_the_worker_observes_them() {
     for (policy_first, agent_case) in [(false, false), (true, false), (false, true), (true, true)] {
         let (gate, release) = EnforcementGate::blocking();
-        let fixture = TestModules::with_invocation_adapters(
+        let mut fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             Arc::new(RejectingUpstream),
             Arc::new(ApprovalWaitGate(gate.clone())),
         )
         .await;
+        fixture.serve().await;
         let tool = fixture
             .user_tool("user:decline-winner", "Keep durable denial")
             .await;
@@ -2133,7 +1986,7 @@ async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_enforcement_
 #[tokio::test]
 async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_request_closed() {
     let (fixture, probe) = probed_fixture(
-        crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_secs(60))
+        crate::execution::ExecutionPolicy::testing()
             .with_wakeups(Duration::from_millis(300), Duration::from_secs(1)),
     )
     .await;
@@ -2213,8 +2066,8 @@ async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_reque
 /// with no read, long before the periodic precheck. The wait parks once.
 #[tokio::test]
 async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
-    // Isolate approval expiry from the capped Run deadline and worker-claim
-    // expiry: the request expires two seconds after its creation, long
+    // Isolate approval expiry from the capped Run deadline: the request
+    // expires two seconds after its creation, long
     // before the periodic precheck.
     let (fixture, probe) = probed_fixture(
         crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(2))
@@ -2358,10 +2211,11 @@ async fn a_run_timeout_expires_its_pending_approval() {
 )]
 async fn settled_approvals_list_decisions_and_expiries_newest_first_and_page_stably() {
     use crate::SettledOutcome::{Approved, Declined, Expired};
-    let fixture = TestModules::new(Arc::new(
+    let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
+    fixture.serve().await;
     let tool = fixture.user_tool("user:history", "Approval history").await;
     fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
@@ -2507,6 +2361,7 @@ async fn probed_fixture(
     )
     .await;
     fixture.runs.execution_policy = policy;
+    fixture.serve().await;
     (fixture, probe)
 }
 
@@ -2526,141 +2381,6 @@ async fn commit_elsewhere(fixture: &TestModules, bystander: &ToolFixture, at: i6
         )
         .await
         .unwrap();
-}
-
-/// A fixture whose owner commits nothing on its own (a long lease, no idle
-/// tick) and whose chunk commits a test can hold: one approval-gated call
-/// through `engine`, sent to `upstream`.
-async fn quiet_approval_fixture(
-    engine: Arc<dyn ProgramEngine>,
-    upstream: Arc<dyn UpstreamSender>,
-    label: &str,
-) -> (TestModules, ToolFixture, ApprovalModule, Arc<CommitProbe>) {
-    let probe = CommitProbe::new();
-    let mut fixture = TestModules::with_execution_adapters(
-        engine,
-        upstream,
-        Arc::new(NoopInvocationObserver),
-        probe.clone(),
-    )
-    .await;
-    fixture.runs.execution_policy =
-        crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_secs(60));
-    let tool = fixture
-        .user_tool(&format!("user:{label}"), "Owner-recorded decisions")
-        .await;
-    fixture.require_approval(&tool).await;
-    let approvals = fixture.approvals();
-    (fixture, tool, approvals, probe)
-}
-
-/// Two deciders on one Approval Request, one on each Coral Instance: the
-/// first inserted wins and rides one chunk, the second finds its row
-/// waiting, waits for that chunk and receives the first's recorded answer
-/// (the decision, who made it, when), and so does a third, after the row is
-/// gone. Nothing else changes: one lifecycle event, one dispatch.
-///
-/// The approved call is held at its upstream until the Run Inbox has been
-/// counted. Nothing tells the test that the second decider has submitted, so
-/// on a slow database it may submit after the first's chunk: its row is then
-/// a repeat the owner's next chunk deletes before it is answered, which only
-/// a running Run does. A Run that had ended would keep that row.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn two_deciders_on_one_request_are_answered_in_insert_order_and_the_loser_learns_the_winner()
-{
-    let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
-        200,
-        serde_json::json!({"temperature": 21}),
-    )));
-    let (fixture, tool, approvals, probe) = quiet_approval_fixture(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream.clone(),
-        "two-deciders",
-    )
-    .await;
-    let run = fixture
-        .runs
-        .start(&tool.principal, &tool.workspace_id, submission("invoke"))
-        .await
-        .unwrap();
-    let request = wait_for_approval(
-        &approvals,
-        &tool.principal,
-        &tool.workspace_id,
-        run.run_id(),
-    )
-    .await;
-    let trace = TraceId::parse(&"a".repeat(32)).unwrap();
-    let release = probe.hold_next_commit();
-    let elsewhere = fixture.next_process().approvals();
-    let decide = |approvals: &ApprovalModule, decision: ApprovalDecision, comment: &'static str| {
-        let approvals = approvals.clone();
-        let actor = tool.principal.clone();
-        let workspace = tool.workspace_id.clone();
-        let id = request.id.clone();
-        let trace = trace.clone();
-        tokio::spawn(async move {
-            approvals
-                .decide(&actor, &workspace, &id, decision, Some(comment), &trace)
-                .await
-        })
-    };
-    let first = decide(&approvals, ApprovalDecision::Approve, "first");
-    // The first decision's chunk is held before its transaction: the owner
-    // has applied the first, and the second finds its row waiting.
-    wait_until(|| probe.held()).await;
-    let second = decide(&elsewhere, ApprovalDecision::Decline, "second");
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(
-        !first.is_finished() && !second.is_finished(),
-        "both are answered at Recorded"
-    );
-    release.send(()).expect("release the decision chunk");
-    let first = first.await.expect("join").expect("the first decision");
-    let second = second.await.expect("join").expect("the second decision");
-    assert_eq!(first.state, ApprovalState::Approved);
-    assert_eq!(first.approver.as_ref(), Some(tool.principal.principal()));
-    assert_eq!(first.comment.as_deref(), Some("first"));
-    assert!(first.decided_at_unix_nanos.is_some());
-    assert_eq!(
-        second, first,
-        "the loser receives the winner's recorded answer"
-    );
-    assert_eq!(
-        fixture.inbox_rows(&tool.workspace_id, run.run_id()).await,
-        0
-    );
-    let third = elsewhere
-        .decide(
-            &tool.principal,
-            &tool.workspace_id,
-            &request.id,
-            ApprovalDecision::Decline,
-            Some("third"),
-            &trace,
-        )
-        .await
-        .expect("a repeat after the record");
-    assert_eq!(third, first);
-    let events = approvals
-        .list_lifecycle_events(&tool.principal, &tool.workspace_id, &request.id)
-        .await
-        .unwrap();
-    assert_eq!(
-        events.iter().map(|event| event.state).collect::<Vec<_>>(),
-        [ApprovalState::Approved],
-        "one decision is recorded"
-    );
-    upstream.release();
-    let terminal = wait_for_terminal(
-        &fixture.runs,
-        &tool.principal,
-        &tool.workspace_id,
-        run.run_id(),
-    )
-    .await;
-    assert_eq!(terminal.state(), RunState::Succeeded);
-    assert_eq!(upstream.sends.load(Ordering::SeqCst), 1);
 }
 
 /// A decision on a terminated Run closes the obsolete request and records
@@ -2689,6 +2409,7 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
         .await;
         fixture.runs.execution_policy =
             crate::execution::ExecutionPolicy::testing_with_shutdown_grace(Duration::from_secs(30));
+        fixture.serve().await;
         let tool = fixture
             .user_tool("user:decide-settling", "Decide while settling")
             .await;
@@ -2791,15 +2512,20 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
     // Once terminal: the terminal chunk closed the request; the decision
     // reads it.
     {
-        let (fixture, tool, approvals, _probe) = quiet_approval_fixture(
-            Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-            Arc::new(RejectingUpstream),
-            "decide-terminal",
-        )
-        .await;
+        let mut fixture = TestModules::new(v8_engine()).await;
+        fixture.serve().await;
+        let tool = fixture
+            .user_tool("user:decide-terminal", "Decide once terminal")
+            .await;
+        fixture.require_approval(&tool).await;
+        let approvals = fixture.approvals();
         let run = fixture
             .runs
-            .start(&tool.principal, &tool.workspace_id, submission("invoke"))
+            .start(
+                &tool.principal,
+                &tool.workspace_id,
+                submission(INVOKE_WEATHER),
+            )
             .await
             .unwrap();
         let request = wait_for_approval(
@@ -2850,65 +2576,6 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
             "nothing is written for a terminal Run"
         );
     }
-}
-
-/// An owner that dies right after its decision chunk landed: the requester
-/// reads the decision from the record, and the supervisor interrupts the
-/// Run.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_owner_that_dies_after_recording_a_decision_leaves_its_requester_the_record() {
-    let (fixture, tool, approvals, probe) = quiet_approval_fixture(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        Arc::new(ScriptedUpstream::json(200, serde_json::json!({}))),
-        "owner-dies",
-    )
-    .await;
-    let run = fixture
-        .runs
-        .start(&tool.principal, &tool.workspace_id, submission("invoke"))
-        .await
-        .unwrap();
-    let request = wait_for_approval(
-        &approvals,
-        &tool.principal,
-        &tool.workspace_id,
-        run.run_id(),
-    )
-    .await;
-    let release = probe.hold_next_commit();
-    let deciding = {
-        let approvals = approvals.clone();
-        let actor = tool.principal.clone();
-        let workspace = tool.workspace_id.clone();
-        let id = request.id.clone();
-        tokio::spawn(async move {
-            approvals
-                .decide(
-                    &actor,
-                    &workspace,
-                    &id,
-                    ApprovalDecision::Approve,
-                    None,
-                    &TraceId::parse(&"d".repeat(32)).unwrap(),
-                )
-                .await
-        })
-    };
-    wait_until(|| probe.held()).await;
-    // The next message the owner dequeues is its own commit's answer.
-    probe.panic_on_next_message();
-    release.send(()).expect("release the decision chunk");
-    let recorded = deciding.await.expect("join").expect("the record answers");
-    assert_eq!(recorded.state, ApprovalState::Approved);
-    assert_eq!(recorded.approver.as_ref(), Some(tool.principal.principal()));
-    let terminal = wait_for_terminal(
-        &fixture.runs,
-        &tool.principal,
-        &tool.workspace_id,
-        run.run_id(),
-    )
-    .await;
-    assert_eq!(terminal.state(), RunState::Interrupted);
 }
 
 /// A pending Approval Request whose stored ID is not one Coral issues is the
@@ -2978,12 +2645,13 @@ impl TwoToolsTwoApprovers {
             held: AtomicUsize::new(0),
             release: released,
         });
-        let fixture = TestModules::with_invocation_adapters(
+        let mut fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             Arc::new(RejectingUpstream),
             waits.clone(),
         )
         .await;
+        fixture.serve().await;
         let tool = fixture.user_tool("user:first-approver", "Two Tools").await;
         super::required_actions::publish_approval_provider(&fixture, &tool).await;
         fixture.require_approval(&tool).await;

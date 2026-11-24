@@ -3,17 +3,15 @@
 use coral_catalog::AuthoredToolKind;
 use coral_db::Transaction;
 use coral_tools::LinkedToolSelection;
-use coral_workspace::WorkspaceId;
-use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query};
+use sea_query::{Expr, Iden, OnConflict, Query};
 use sqlx::FromRow;
 
 use super::events::{NewEvent, insert_events};
 use super::{ChunkEvent, ProgramRunRecords};
-use crate::CoralInstanceId;
 use crate::engine::ProgramPackage;
 use crate::types::AcceptedRun;
 use crate::{
-    EMITTED_JAVASCRIPT_MAX_BYTES, Error, PROGRAM_SOURCE_MAX_BYTES, ProgramSource, RunId, RunState,
+    EMITTED_JAVASCRIPT_MAX_BYTES, Error, PROGRAM_SOURCE_MAX_BYTES, ProgramSource, RunState,
     SOURCE_MAP_MAX_BYTES,
 };
 
@@ -74,15 +72,14 @@ impl PackageRow {
     }
 }
 
-/// Inserts the Run row, claimed by `holder` and with no deadline (its start
-/// records one), and its package, which records the `compilation_timeout` it
-/// was compiled under. With no `holder` the Run waits for a take, with no
-/// worker claim and no lease. `false` means a Run with this identifier
-/// already exists and nothing was written: the caller draws a new identifier.
+/// Inserts the Run row, unclaimed and with no deadline (its start records
+/// one), and its package, which records the `compilation_timeout` it was
+/// compiled under. The Run waits for a take. `false` means a Run with this
+/// identifier already exists and nothing was written: the caller draws a new
+/// identifier.
 pub(crate) async fn insert_acceptance(
     transaction: &mut Transaction<'_>,
     run: &AcceptedRun,
-    holder: Option<&CoralInstanceId>,
     source: &ProgramSource,
     package: &ProgramPackage,
     linked: &[LinkedToolSelection],
@@ -96,7 +93,7 @@ pub(crate) async fn insert_acceptance(
         i64::try_from(compilation_timeout.as_millis()).map_err(|_error| {
             Error::CorruptData("compilation timeout exceeds durable range".to_string())
         })?;
-    if !insert_record(transaction, run, holder).await? {
+    if !insert_record(transaction, run).await? {
         return Ok(false);
     }
 
@@ -161,20 +158,14 @@ pub(crate) async fn insert_acceptance(
     Ok(true)
 }
 
-/// Inserts the Run row. `false` means a Run with this identifier already
-/// exists and nothing was written. The conflict target is the primary key, so
-/// a Postgres transaction stays usable after it.
+/// Inserts the Run row, which waits for a take: no claim and no holder.
+/// `false` means a Run with this identifier already exists and nothing was
+/// written. The conflict target is the primary key, so a Postgres
+/// transaction stays usable after it.
 async fn insert_record(
     transaction: &mut Transaction<'_>,
     run: &AcceptedRun,
-    holder: Option<&CoralInstanceId>,
 ) -> Result<bool, Error> {
-    let worker_claim = holder.map(|_holder| {
-        (
-            run.claim_id.as_str(),
-            run.worker_claim_expires_at_unix_nanos,
-        )
-    });
     let statement = Query::insert()
         .into_table(ProgramRunRecords::Table)
         .columns([
@@ -185,9 +176,6 @@ async fn insert_record(
             ProgramRunRecords::State,
             ProgramRunRecords::AcceptedAtUnixNanos,
             ProgramRunRecords::ShutdownGraceNanos,
-            ProgramRunRecords::WorkerClaimId,
-            ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
-            ProgramRunRecords::HolderInstanceId,
             ProgramRunRecords::TraceParent,
             ProgramRunRecords::ValueLimitsJson,
             ProgramRunRecords::NextEventSequence,
@@ -203,11 +191,6 @@ async fn insert_record(
             Expr::val(RunState::Running.as_storage_str()),
             Expr::val(run.accepted_at_unix_nanos),
             Expr::val(run.shutdown_grace_nanos),
-            // The Run Owner's worker claim: written with acceptance, so no
-            // owned Run is ever unclaimed, and renewed by every chunk.
-            Expr::val(worker_claim.map(|(claim, _lease)| claim)),
-            Expr::val(worker_claim.map(|(_claim, lease)| lease)),
-            Expr::val(holder.map(CoralInstanceId::as_str)),
             Expr::val(run.trace.as_ref().map(|trace| trace.as_str().to_string())),
             Expr::val(serde_json::to_string(&run.value_limits).map_err(Error::ProgramValueJson)?),
             // The previous release's Event counter: this release advances it per
@@ -224,21 +207,6 @@ async fn insert_record(
         )
         .to_owned();
     Ok(transaction.execute(statement).await? == 1)
-}
-
-pub(crate) async fn load_package_in_transaction(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    run_id: &RunId,
-) -> Result<Option<ProgramPackage>, Error> {
-    let statement = Query::select()
-        .columns(PACKAGE_COLUMNS)
-        .from(ProgramRunPackages::Table)
-        .and_where(Expr::col(ProgramRunPackages::WorkspaceId).eq(workspace_id.to_string()))
-        .and_where(Expr::col(ProgramRunPackages::RunId).eq(run_id.to_string()))
-        .to_owned();
-    let row: Option<PackageRow> = transaction.fetch_optional(statement).await?;
-    row.map(PackageRow::decode).transpose()
 }
 
 fn stored_revision(snapshot: &LinkedToolSelection) -> Result<i64, Error> {

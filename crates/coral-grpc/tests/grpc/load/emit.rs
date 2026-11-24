@@ -4,12 +4,10 @@
 //! is timed from the Program's own clock (`Date.now()` inside the emitted
 //! value) to four points:
 //!
-//! - `emit_ack_ms`: `await coral.emit(...)` resolved in the Program: Applied,
-//!   once the Run Owner has the Emission in memory (before the owner, the
-//!   Emission's own commit).
-//! - `held_ms`: the Emission's `occurred_at`, the owner's apply time (before the
-//!   owner, the time the write transaction got the Run row: pool wait plus the
-//!   row hold).
+//! - `emit_ack_ms`: `await coral.emit(...)` resolved in the Program, once the
+//!   Run Executor submitted the Emission to its stream within its Applied and
+//!   held caps.
+//! - `held_ms`: the Emission's `occurred_at`, the loop's apply time.
 //! - `recorded_ms`: a poller on the measurement connection first saw the Emission
 //!   row committed, at `RECORDED_POLL` resolution.
 //! - `visible_ms`: an observer paging through `RunModule::observe` from the Run's

@@ -1,4 +1,5 @@
-//! V8 host callbacks and the synchronous/asynchronous execution bridge.
+//! The host a Run's Program calls through its Run stream: the synchronous
+//! and asynchronous bridge between a Run Executor's requests and the Run.
 
 mod resume;
 
@@ -18,48 +19,9 @@ use crate::{
     CoralFailure, ProgramLogLevel, Rejection, SourceDocument, SourceLocation, ValueLimits,
 };
 
-use super::{ExecutionCompletion, ProgramEngine, ProgramPackage};
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each is one part of the Run that the Program's host serves"
-)]
-pub(crate) async fn execute(
-    engine: Arc<dyn ProgramEngine>,
-    package: ProgramPackage,
-    linked_snapshots: HashMap<String, crate::types::LinkedTool>,
-    invoker: ToolInvoker,
-    output: ProgramOutputWriter,
-    value_limits: ValueLimits,
-    cpu_budget: Option<std::time::Duration>,
-    stop: Arc<ExecutionStop>,
-) -> ExecutionCompletion {
-    let host = program_host(
-        linked_snapshots,
-        invoker,
-        output,
-        value_limits,
-        cpu_budget,
-        stop.clone(),
-    );
-    // The Program's thread records its telemetry where this task does. Where
-    // this task has no dispatcher, it is left to find the global one, which
-    // may be set by then.
-    let dispatch = tracing::dispatcher::get_default(Clone::clone);
-    tokio::task::spawn_blocking(move || {
-        if dispatch.is::<tracing::subscriber::NoSubscriber>() {
-            engine.execute(package, host, stop)
-        } else {
-            tracing::dispatcher::with_default(&dispatch, || engine.execute(package, host, stop))
-        }
-    })
-    .await
-    .unwrap_or(ExecutionCompletion::ProgramHostTerminated)
-}
-
-/// The host one Run's Program calls, wherever it runs: in this process's
-/// isolate, or on a Run Executor through the Run stream. Built inside the
-/// Run's execute span, which each Tool Invocation's span is a child of.
+/// The host one Run's Program calls on a Run Executor, through the Run
+/// stream. Built inside the Run's execute span, which each Tool
+/// Invocation's span is a child of.
 pub(crate) fn program_host(
     linked_snapshots: HashMap<String, crate::types::LinkedTool>,
     invoker: ToolInvoker,

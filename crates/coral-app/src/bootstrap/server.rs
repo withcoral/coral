@@ -901,7 +901,7 @@ impl RunningServer {
         self.shutdown_inner().await
     }
 
-    /// Reports not ready, stops the expired-lease sweep and drains the Runs
+    /// Reports not ready, stops the take loop and drains the Runs
     /// ([`coral_run::RunModule::shutdown`]) while every listener still
     /// serves; stop the listeners after it.
     pub async fn drain_runs(&self) {
