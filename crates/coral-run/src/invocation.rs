@@ -12,7 +12,7 @@
 //! upstream result at Applied, a known failure once it is recorded. Operational
 //! failure is host-fatal rather than catchable. Known failures persist the same
 //! closed [`CoralFailure`] code and safe [`Rejection`] message projected to the
-//! Program, even during child shutdown. Only shutdown and recovery record lost
+//! Program, even during child shutdown. Only a Run's termination records lost
 //! dispatching work as indeterminate; a stop that reaches the owner before a
 //! permitted Invocation sends ends it as `run_terminated` instead, as Run
 //! termination ends a Private Tool call whose body was still running.

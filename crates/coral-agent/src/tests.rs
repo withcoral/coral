@@ -9,8 +9,8 @@ use coral_mcp::{HumanInterfaceUrl, McpCaller, McpModules, ToolCallError};
 use coral_outbound::{DestinationPolicy, NetworkAccess};
 use coral_provider::ProviderModule;
 use coral_run::{
-    CoralInstanceId, RunId, RunInbox, RunModule, RunStop, RuntimeLimits, SubAgentCaller,
-    SubAgentError, SubAgentTools,
+    CoralInstanceId, RunId, RunModule, RunStop, RuntimeLimits, SubAgentCaller, SubAgentError,
+    SubAgentTools,
 };
 use coral_search::UniversalSearchModule;
 use coral_task::{AttemptKind, AttributedCommand, TaskCommands, TaskId, TaskIntent, TaskModule};
@@ -53,6 +53,9 @@ struct Lead {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     modules: McpModules,
+    /// Serves the Runs on a Run Executor in this process.
+    _serving: coral_run::testing::Serving,
+
     actor: AuthenticatedPrincipal,
     workspace_id: WorkspaceId,
     model: MockServer,
@@ -77,16 +80,17 @@ impl Lead {
             providers,
             RuntimeLimits::default().with_compilation_timeout(TEST_COMPILATION_TIMEOUT),
             CoralInstanceId::generate(),
-            RunInbox::table(database.clone()),
         )
         .unwrap();
         let reef = HumanInterfaceUrl::parse("https://reef.example.test").unwrap();
         let runs = runs.with_human_interface(reef.clone());
+        let (runs, serving) = coral_run::testing::serve_on_run_executor(runs).await;
         let tasks = TaskModule::new(database.clone(), workspaces.clone());
         let search = UniversalSearchModule::new(database.clone(), workspaces.clone());
         let commands = TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
         Self {
             modules: McpModules::new(workspaces.clone(), tasks, commands, runs, search, reef),
+            _serving: serving,
             workspaces,
             actor: AuthenticatedPrincipal::user(user),
             workspace_id,

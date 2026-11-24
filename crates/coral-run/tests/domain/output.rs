@@ -5,7 +5,10 @@ use std::sync::Arc;
 use coral_value::ValueLimits;
 use serde_json::json;
 
-use super::{ImmediateEngine, ScriptedUpstream, TestModules, submission, wait_for_terminal};
+use super::{
+    ImmediateEngine, ScriptedUpstream, TestModules, serve_runs, submission, v8_engine,
+    wait_for_terminal,
+};
 use crate::{FinalValue, InvocationResultKind, RunEventKind, RunFailureCode, RunTerminalOutcome};
 
 #[tokio::test]
@@ -14,11 +17,12 @@ use crate::{FinalValue, InvocationResultKind, RunEventKind, RunFailureCode, RunT
     reason = "one Run's children, viewports and exact parts must agree on the same bytes"
 )]
 async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         Arc::new(ConcurrentUpstream(tokio::sync::Barrier::new(2))),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture.user_tool("context-impact", "Context impact").await;
     let accepted = fixture.runs.start(&tool.principal, &tool.workspace_id, submission(
         "console.log('é'); await coral.emit('é'); await Promise.all([1,2].map(() => coral.providers.weather.getForecast({city:'Paris'}))); return 'é';"
@@ -135,15 +139,19 @@ async fn context_impact_counts_utf8_payloads_once_across_child_pages() {
 
 #[tokio::test]
 async fn many_emissions_share_a_byte_budget_with_logs_and_survive_limit_failure() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let (workspace, principal) = fixture
         .user_scope("user:output-budget", "Bound cumulative output")
         .await;
     // The log retains two UTF-8 bytes; each JSON string retains four, including quotes.
     for (budget, retained_emissions) in [(258, 64), (257, 63)] {
-        let runs = fixture
-            .live_runs(None)
-            .with_value_limits(ValueLimits::new(5, 1024, 4096, budget).expect("limits"));
+        // One take loop at a time: this iteration's stops at its end.
+        let (runs, _serving) = serve_runs(
+            fixture
+                .live_runs(None)
+                .with_value_limits(ValueLimits::new(5, 1024, 4096, budget).expect("limits")),
+        )
+        .await;
         let accepted = runs
             .start(
                 &principal,
@@ -185,14 +193,12 @@ async fn many_emissions_share_a_byte_budget_with_logs_and_survive_limit_failure(
 /// was admitted. Tool arguments never count.
 #[tokio::test]
 async fn invocation_results_share_the_output_budget_by_the_byte_but_arguments_do_not() {
-    let fixture = TestModules::with_upstream(
-        Arc::new(
-            crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
-                .expect("V8 engine"),
-        ),
+    let mut fixture = TestModules::with_upstream(
+        v8_engine(),
         Arc::new(ConcurrentUpstream(tokio::sync::Barrier::new(2))),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:invocation-output-budget", "Bound Invocation output")
         .await;
@@ -202,9 +208,13 @@ async fn invocation_results_share_the_output_budget_by_the_byte_but_arguments_do
     let cases = [(306, true, 306), (305, false, 156)];
     for (budget, both_admitted, recorded_bytes) in cases {
         let runs = fixture
-            .runs
-            .clone()
-            .with_value_limits(ValueLimits::new(5, 1024, 4096, budget).expect("limits"));
+            .served(
+                fixture
+                    .runs
+                    .clone()
+                    .with_value_limits(ValueLimits::new(5, 1024, 4096, budget).expect("limits")),
+            )
+            .await;
         let accepted = runs
             .start(
                 &tool.principal,
@@ -305,7 +315,7 @@ impl crate::invocation::UpstreamSender for ConcurrentUpstream {
 
 #[tokio::test]
 async fn rejected_invocation_output_leaves_the_remaining_budget_for_program_output() {
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
                 .expect("V8 engine"),
@@ -313,6 +323,7 @@ async fn rejected_invocation_output_leaves_the_remaining_budget_for_program_outp
         Arc::new(ScriptedUpstream::json(200, json!(null))),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool(
             "user:remaining-output-budget",
@@ -321,9 +332,13 @@ async fn rejected_invocation_output_leaves_the_remaining_budget_for_program_outp
         .await;
     // One HTTP result (150), a log (2), an Emission (4), and a Final Value (1).
     let runs = fixture
-        .runs
-        .clone()
-        .with_value_limits(ValueLimits::new(5, 1024, 4096, 157).expect("limits"));
+        .served(
+            fixture
+                .runs
+                .clone()
+                .with_value_limits(ValueLimits::new(5, 1024, 4096, 157).expect("limits")),
+        )
+        .await;
     let accepted = runs
         .start(
             &tool.principal,

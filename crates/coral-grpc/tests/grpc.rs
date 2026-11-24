@@ -64,6 +64,8 @@ struct Fixture {
     provider_module: coral_provider::ProviderModule,
     tasks: coral_task::TaskModule,
     runs: coral_run::RunModule,
+    /// Serves the Runs on a Run Executor in this process.
+    _serving: coral_run::testing::Serving,
     private_tools: coral_tools::PrivateToolModule,
 }
 
@@ -269,10 +271,10 @@ impl Fixture {
             coral_run::RuntimeLimits::default()
                 .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
             coral_run::CoralInstanceId::generate(),
-            coral_run::RunInbox::table(database.clone()),
         )
         .unwrap()
         .with_accounts(accounts.clone());
+        let (runs, serving) = coral_run::testing::serve_on_run_executor(runs).await;
         let private_tools = coral_tools::PrivateToolModule::new(
             database.clone(),
             workspaces.clone(),
@@ -370,6 +372,7 @@ impl Fixture {
         .await;
         Self {
             database: fixture,
+            _serving: serving,
             _vault_dir: vault_dir,
             channel: server.channel(),
             _server: server,

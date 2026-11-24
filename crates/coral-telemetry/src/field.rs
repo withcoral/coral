@@ -25,22 +25,11 @@ const CORAL: &[&str] = &[
     "coral.run.id",
     "coral.run.status",
     "coral.run.phase",
-    // The execution claim a Run Owner holds, and the one that takes over a
-    // Run whose owner failed.
+    // The execution claim a Run stream's loop holds.
     "coral.run.claim.id",
-    "coral.run.takeover_claim.id",
-    // The Run Owner write that did not land, and which attempt it was.
+    // The Run write that did not land, and which attempt it was.
     "coral.run.write",
     "coral.run.write.attempt",
-    // How long ago the Run Owner's last commit succeeded, in milliseconds.
-    "coral.run.last_commit_age_ms",
-    // How many Runs an expired-lease sweep recovered.
-    "coral.run.recovered",
-    // An outside request to a Run (a cancel or a decision), and how long it
-    // took to reach the Run Owner, or how long its requester waited for it to
-    // be recorded, in milliseconds.
-    "coral.run.request.kind",
-    "coral.run.request.delay_ms",
     // The periodic pass a log record is about, by its fixed name.
     "coral.periodic.pass",
     // How many Runs were still live when the Shutdown Drain ran out, and how

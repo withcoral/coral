@@ -2,6 +2,16 @@
 use crate::tests::*;
 use coral_tools::{AuthoredToolPath, LinkedToolReference, LinkedToolSelection};
 
+/// The real Program engine, for a Program that runs on the test's Run
+/// Executor.
+pub(crate) fn v8_engine() -> Arc<dyn ProgramEngine> {
+    Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap())
+}
+
+/// A Program that calls the fixture's weather Tool once and returns its
+/// result.
+pub(crate) const INVOKE_WEATHER: &str = "return await coral.providers.weather.getForecast({});";
+
 #[derive(Clone)]
 pub(crate) struct ClosureReadGateEngine {
     pub(crate) reading_root: Arc<AtomicBool>,
@@ -54,96 +64,10 @@ impl ProgramEngine for ClosureReadGateEngine {
     ) -> Result<ProgramPackage, PackageFailure> {
         Ok(ProgramPackage::scripted(source))
     }
-
-    fn execute(
-        &self,
-        _package: ProgramPackage,
-        _host: Arc<dyn coral_v8::ProgramHost>,
-        _stop: Arc<crate::execution::ExecutionStop>,
-    ) -> ExecutionCompletion {
-        ExecutionCompletion::Succeeded(FinalValue::Absent)
-    }
 }
 
 #[derive(Clone)]
-pub(crate) struct SnapshotEngine {
-    pub(crate) started: Arc<AtomicBool>,
-    pub(crate) release: Arc<Mutex<mpsc::Receiver<()>>>,
-}
-
-impl SnapshotEngine {
-    pub(crate) fn new() -> (Self, mpsc::Sender<()>) {
-        let (sender, receiver) = mpsc::channel();
-        (
-            Self {
-                started: Arc::new(AtomicBool::new(false)),
-                release: Arc::new(Mutex::new(receiver)),
-            },
-            sender,
-        )
-    }
-}
-
-#[async_trait::async_trait]
-impl ProgramEngine for SnapshotEngine {
-    async fn analyze(
-        &self,
-        _deadline: std::time::Instant,
-        sources: &[AdmissionSource],
-    ) -> Result<Vec<AdmissionReferences>, CompileFailure> {
-        analyze_each(sources, |source| match source {
-            AdmissionSource::Program(_) => {
-                test_private_tool_reference("snapshots.value").map(|reference| vec![reference])
-            }
-            AdmissionSource::Linked { .. } => Ok(Vec::new()),
-        })
-    }
-
-    async fn compile(
-        &self,
-        _deadline: std::time::Instant,
-        source: &str,
-        linked: &[LinkedToolSelection],
-        _builtin_tools: &coral_v8::BuiltinTools,
-        _callable: Option<&[String]>,
-    ) -> Result<ProgramPackage, PackageFailure> {
-        Ok(ProgramPackage::scripted(
-            linked
-                .first()
-                .map_or(source, |linked| linked.source().as_str()),
-        ))
-    }
-
-    fn execute(
-        &self,
-        package: ProgramPackage,
-        _host: Arc<dyn coral_v8::ProgramHost>,
-        _stop: Arc<crate::execution::ExecutionStop>,
-    ) -> ExecutionCompletion {
-        self.started.store(true, Ordering::SeqCst);
-        if self
-            .release
-            .lock()
-            .expect("snapshot release lock")
-            .recv()
-            .is_err()
-        {
-            return ExecutionCompletion::Failed(crate::RunFailure::new(
-                RunFailureCode::ProgramExecutionFailed,
-                "Snapshot test release failed".to_string(),
-            ));
-        }
-        ExecutionCompletion::Succeeded(FinalValue::Present(
-            ProgramValue::from_json(&serde_json::json!({"linked_source": package.javascript}))
-                .expect("snapshot Program Value"),
-        ))
-    }
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct ImmediateEngine {
-    pub(crate) executions: Arc<AtomicUsize>,
-}
+pub(crate) struct ImmediateEngine;
 
 #[async_trait::async_trait]
 impl ProgramEngine for ImmediateEngine {
@@ -169,21 +93,6 @@ impl ProgramEngine for ImmediateEngine {
             package.source_map = "{}".to_string();
         }
         Ok(package)
-    }
-
-    fn execute(
-        &self,
-        package: ProgramPackage,
-        _host: Arc<dyn coral_v8::ProgramHost>,
-        _stop: Arc<crate::execution::ExecutionStop>,
-    ) -> ExecutionCompletion {
-        self.executions.fetch_add(1, Ordering::SeqCst);
-        match package.javascript.as_str() {
-            "null" => ExecutionCompletion::Succeeded(FinalValue::Present(
-                ProgramValue::from_json(&serde_json::Value::Null).expect("Program Value"),
-            )),
-            _ => ExecutionCompletion::Succeeded(FinalValue::Absent),
-        }
     }
 }
 
@@ -235,281 +144,6 @@ impl ProgramEngine for FailingCompileEngine {
         Self::fail_at("compile", source)?;
         Ok(ProgramPackage::scripted(source))
     }
-
-    fn execute(
-        &self,
-        _package: ProgramPackage,
-        _host: Arc<dyn coral_v8::ProgramHost>,
-        _stop: Arc<crate::execution::ExecutionStop>,
-    ) -> ExecutionCompletion {
-        ExecutionCompletion::Succeeded(FinalValue::Absent)
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct InvokingEngine {
-    pub(crate) call_path: String,
-}
-
-impl InvokingEngine {
-    pub(crate) fn new(call_path: &str) -> Self {
-        Self {
-            call_path: call_path.to_string(),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl ProgramEngine for InvokingEngine {
-    async fn compile(
-        &self,
-        _deadline: std::time::Instant,
-        source: &str,
-        _linked: &[LinkedToolSelection],
-        _builtin_tools: &coral_v8::BuiltinTools,
-        _callable: Option<&[String]>,
-    ) -> Result<ProgramPackage, PackageFailure> {
-        Ok(ProgramPackage::scripted(source))
-    }
-
-    fn execute(
-        &self,
-        _package: ProgramPackage,
-        host: Arc<dyn coral_v8::ProgramHost>,
-        _stop: Arc<crate::execution::ExecutionStop>,
-    ) -> ExecutionCompletion {
-        match tokio::runtime::Handle::current().block_on(host.invoke(
-            self.call_path.clone(),
-            "{}".to_string(),
-            None,
-        )) {
-            Ok(result_json) => match ProgramValue::from_encoded_json(result_json) {
-                Ok(value) => ExecutionCompletion::Succeeded(FinalValue::Present(value)),
-                Err(error) => ExecutionCompletion::Failed(crate::RunFailure::new(
-                    RunFailureCode::InvalidProgramValue,
-                    error.to_string(),
-                )),
-            },
-            Err(
-                coral_v8::ToolHostError::Rejected { .. } | coral_v8::ToolHostError::Upstream { .. },
-            ) => ExecutionCompletion::Failed(crate::RunFailure::new(
-                RunFailureCode::ProgramRejected,
-                "Program rejected".to_string(),
-            )),
-            Err(coral_v8::ToolHostError::Fatal) => ExecutionCompletion::ProgramHostTerminated,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct StaleClaimEngine {
-    pub(crate) call_path: String,
-    pub(crate) started: Arc<AtomicBool>,
-    pub(crate) attempted_late_work: Arc<AtomicBool>,
-    pub(crate) emission_succeeded: Arc<AtomicBool>,
-    pub(crate) invocation_succeeded: Arc<AtomicBool>,
-    pub(crate) release: Arc<Mutex<mpsc::Receiver<()>>>,
-}
-
-impl StaleClaimEngine {
-    pub(crate) fn new(call_path: &str) -> (Self, mpsc::Sender<()>) {
-        let (sender, receiver) = mpsc::channel();
-        (
-            Self {
-                call_path: call_path.to_string(),
-                started: Arc::new(AtomicBool::new(false)),
-                attempted_late_work: Arc::new(AtomicBool::new(false)),
-                emission_succeeded: Arc::new(AtomicBool::new(false)),
-                invocation_succeeded: Arc::new(AtomicBool::new(false)),
-                release: Arc::new(Mutex::new(receiver)),
-            },
-            sender,
-        )
-    }
-}
-
-#[async_trait::async_trait]
-impl ProgramEngine for StaleClaimEngine {
-    async fn compile(
-        &self,
-        _deadline: std::time::Instant,
-        source: &str,
-        _linked: &[LinkedToolSelection],
-        _builtin_tools: &coral_v8::BuiltinTools,
-        _callable: Option<&[String]>,
-    ) -> Result<ProgramPackage, PackageFailure> {
-        Ok(ProgramPackage::scripted(source))
-    }
-
-    fn execute(
-        &self,
-        _package: ProgramPackage,
-        host: Arc<dyn coral_v8::ProgramHost>,
-        _stop: Arc<crate::execution::ExecutionStop>,
-    ) -> ExecutionCompletion {
-        self.started.store(true, Ordering::SeqCst);
-        if self
-            .release
-            .lock()
-            .expect("stale execution release lock")
-            .recv()
-            .is_err()
-        {
-            return ExecutionCompletion::ProgramHostTerminated;
-        }
-        self.emission_succeeded
-            .store(host.emit("42", None).is_ok(), Ordering::SeqCst);
-        self.invocation_succeeded.store(
-            tokio::runtime::Handle::current()
-                .block_on(host.invoke(self.call_path.clone(), "{}".to_string(), None))
-                .is_ok(),
-            Ordering::SeqCst,
-        );
-        self.attempted_late_work.store(true, Ordering::SeqCst);
-        ExecutionCompletion::Succeeded(FinalValue::Absent)
-    }
-}
-
-pub(crate) struct CompletionAttemptingEngine {
-    pub(crate) call_path: String,
-    pub(crate) finished: AtomicBool,
-}
-
-impl CompletionAttemptingEngine {
-    pub(crate) fn new(call_path: &str) -> Self {
-        Self {
-            call_path: call_path.to_string(),
-            finished: AtomicBool::new(false),
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl ProgramEngine for CompletionAttemptingEngine {
-    async fn compile(
-        &self,
-        _deadline: std::time::Instant,
-        source: &str,
-        _linked: &[LinkedToolSelection],
-        _builtin_tools: &coral_v8::BuiltinTools,
-        _callable: Option<&[String]>,
-    ) -> Result<ProgramPackage, PackageFailure> {
-        Ok(ProgramPackage::scripted(source))
-    }
-
-    fn execute(
-        &self,
-        _package: ProgramPackage,
-        host: Arc<dyn coral_v8::ProgramHost>,
-        _stop: Arc<crate::execution::ExecutionStop>,
-    ) -> ExecutionCompletion {
-        let _host_result = tokio::runtime::Handle::current().block_on(host.invoke(
-            self.call_path.clone(),
-            "{}".to_string(),
-            None,
-        ));
-        self.finished.store(true, Ordering::SeqCst);
-        ExecutionCompletion::Succeeded(FinalValue::Absent)
-    }
-}
-
-/// A Program that runs until the owner stops it. A Program whose source is
-/// `until-released` also ends on its own, with no Final Value, once the test
-/// sets `released`.
-#[derive(Clone, Default)]
-pub(crate) struct StopAwareEngine {
-    pub(crate) started: Arc<AtomicBool>,
-    pub(crate) stopped: Arc<AtomicBool>,
-    pub(crate) executions: Arc<AtomicUsize>,
-    pub(crate) released: Arc<AtomicBool>,
-}
-
-#[async_trait::async_trait]
-impl ProgramEngine for StopAwareEngine {
-    async fn compile(
-        &self,
-        _deadline: std::time::Instant,
-        source: &str,
-        _linked: &[LinkedToolSelection],
-        _builtin_tools: &coral_v8::BuiltinTools,
-        _callable: Option<&[String]>,
-    ) -> Result<ProgramPackage, PackageFailure> {
-        Ok(ProgramPackage::scripted(source))
-    }
-
-    fn execute(
-        &self,
-        package: ProgramPackage,
-        _host: Arc<dyn coral_v8::ProgramHost>,
-        stop: Arc<ExecutionStop>,
-    ) -> ExecutionCompletion {
-        self.executions.fetch_add(1, Ordering::SeqCst);
-        self.started.store(true, Ordering::SeqCst);
-        let until_released = package.javascript == "until-released";
-        while !stop.is_requested() {
-            if until_released && self.released.load(Ordering::SeqCst) {
-                return ExecutionCompletion::Succeeded(FinalValue::Absent);
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        self.stopped.store(true, Ordering::SeqCst);
-        ExecutionCompletion::ProgramHostTerminated
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct BlockingEngine {
-    pub(crate) started: Arc<AtomicBool>,
-    pub(crate) finished: Arc<AtomicBool>,
-    pub(crate) executions: Arc<AtomicUsize>,
-    pub(crate) completion: Arc<Mutex<mpsc::Receiver<ExecutionCompletion>>>,
-}
-
-impl BlockingEngine {
-    pub(crate) fn new() -> (Self, mpsc::Sender<ExecutionCompletion>) {
-        let (sender, receiver) = mpsc::channel();
-        (
-            Self {
-                started: Arc::new(AtomicBool::new(false)),
-                finished: Arc::new(AtomicBool::new(false)),
-                executions: Arc::new(AtomicUsize::new(0)),
-                completion: Arc::new(Mutex::new(receiver)),
-            },
-            sender,
-        )
-    }
-}
-
-#[async_trait::async_trait]
-impl ProgramEngine for BlockingEngine {
-    async fn compile(
-        &self,
-        _deadline: std::time::Instant,
-        source: &str,
-        _linked: &[LinkedToolSelection],
-        _builtin_tools: &coral_v8::BuiltinTools,
-        _callable: Option<&[String]>,
-    ) -> Result<ProgramPackage, PackageFailure> {
-        Ok(ProgramPackage::scripted(source))
-    }
-
-    fn execute(
-        &self,
-        _package: ProgramPackage,
-        _host: Arc<dyn coral_v8::ProgramHost>,
-        _stop: Arc<crate::execution::ExecutionStop>,
-    ) -> ExecutionCompletion {
-        self.executions.fetch_add(1, Ordering::SeqCst);
-        self.started.store(true, Ordering::SeqCst);
-        let completion = self
-            .completion
-            .lock()
-            .expect("completion lock")
-            .recv()
-            .expect("scripted completion");
-        self.finished.store(true, Ordering::SeqCst);
-        completion
-    }
 }
 
 /// Waits until `release` takes a message. The wait blocks, so it runs on a
@@ -531,7 +165,6 @@ async fn wait_for_release(release: &Arc<Mutex<mpsc::Receiver<()>>>) -> Result<()
 #[derive(Clone)]
 pub(crate) struct CompileGateEngine {
     pub(crate) compiling: Arc<AtomicBool>,
-    pub(crate) executions: Arc<AtomicUsize>,
     pub(crate) release: Arc<Mutex<mpsc::Receiver<()>>>,
 }
 
@@ -541,7 +174,6 @@ impl CompileGateEngine {
         (
             Self {
                 compiling: Arc::new(AtomicBool::new(false)),
-                executions: Arc::new(AtomicUsize::new(0)),
                 release: Arc::new(Mutex::new(receiver)),
             },
             sender,
@@ -562,16 +194,6 @@ impl ProgramEngine for CompileGateEngine {
         self.compiling.store(true, Ordering::SeqCst);
         wait_for_release(&self.release).await?;
         Ok(ProgramPackage::scripted(source))
-    }
-
-    fn execute(
-        &self,
-        _package: ProgramPackage,
-        _host: Arc<dyn coral_v8::ProgramHost>,
-        _stop: Arc<crate::execution::ExecutionStop>,
-    ) -> ExecutionCompletion {
-        self.executions.fetch_add(1, Ordering::SeqCst);
-        ExecutionCompletion::Succeeded(FinalValue::Absent)
     }
 }
 
@@ -633,18 +255,6 @@ impl ProgramEngine for ReferenceScanningEngine {
             ProgramPackage::scripted(&linked.len().to_string())
         })
     }
-
-    fn execute(
-        &self,
-        package: ProgramPackage,
-        _host: Arc<dyn coral_v8::ProgramHost>,
-        _stop: Arc<ExecutionStop>,
-    ) -> ExecutionCompletion {
-        let linked = serde_json::from_str(&package.javascript).unwrap_or_default();
-        ExecutionCompletion::Succeeded(FinalValue::Present(
-            ProgramValue::from_json(&linked).expect("linked count"),
-        ))
-    }
 }
 
 /// Each source's linked Tools from `references`, as an engine that finds no
@@ -668,115 +278,4 @@ pub(crate) fn test_private_tool_reference(
         1,
         1,
     ))
-}
-
-/// What the test tells a [`ScriptedCallsEngine`] to do next.
-pub(crate) enum ScriptedCall {
-    /// Start one call by Call Path, as its own task.
-    Invoke(String),
-    /// End the Program once every started call has settled.
-    Finish,
-}
-
-/// The test's side of a [`ScriptedCallsEngine`].
-pub(crate) struct ScriptedCalls {
-    commands: mpsc::Sender<ScriptedCall>,
-}
-
-impl ScriptedCalls {
-    pub(crate) fn invoke(&self, call_path: &str) {
-        self.commands
-            .send(ScriptedCall::Invoke(call_path.to_string()))
-            .expect("the Program is running");
-    }
-
-    pub(crate) fn finish(&self) {
-        self.commands
-            .send(ScriptedCall::Finish)
-            .expect("the Program is running");
-    }
-}
-
-/// A Program whose calls the test starts one at a time, by Call Path, so the
-/// order in which they reach the Run Owner is the test's own. Each call runs
-/// as its own task, as the V8 host runs the Program's Promises. `finish` ends
-/// the Program with every call's outcome in start order (`"ok"` or the
-/// failure code); a stop ends it as terminated.
-pub(crate) struct ScriptedCallsEngine {
-    commands: Mutex<mpsc::Receiver<ScriptedCall>>,
-}
-
-impl ScriptedCallsEngine {
-    pub(crate) fn new() -> (Self, ScriptedCalls) {
-        let (commands, receiver) = mpsc::channel();
-        (
-            Self {
-                commands: Mutex::new(receiver),
-            },
-            ScriptedCalls { commands },
-        )
-    }
-}
-
-#[async_trait::async_trait]
-impl ProgramEngine for ScriptedCallsEngine {
-    async fn compile(
-        &self,
-        _deadline: std::time::Instant,
-        source: &str,
-        _linked: &[LinkedToolSelection],
-        _builtin_tools: &coral_v8::BuiltinTools,
-        _callable: Option<&[String]>,
-    ) -> Result<ProgramPackage, PackageFailure> {
-        Ok(ProgramPackage::scripted(source))
-    }
-
-    fn execute(
-        &self,
-        _package: ProgramPackage,
-        host: Arc<dyn coral_v8::ProgramHost>,
-        stop: Arc<ExecutionStop>,
-    ) -> ExecutionCompletion {
-        let runtime = tokio::runtime::Handle::current();
-        let commands = self.commands.lock().expect("commands lock");
-        let mut calls = Vec::new();
-        loop {
-            if stop.is_requested() {
-                return ExecutionCompletion::ProgramHostTerminated;
-            }
-            match commands.recv_timeout(Duration::from_millis(5)) {
-                Ok(ScriptedCall::Invoke(call_path)) => {
-                    calls.push(runtime.spawn(host.clone().invoke(
-                        call_path,
-                        "{}".to_string(),
-                        None,
-                    )));
-                }
-                Ok(ScriptedCall::Finish) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return ExecutionCompletion::ProgramHostTerminated;
-                }
-            }
-        }
-        let mut outcomes = Vec::new();
-        for call in calls {
-            if stop.is_requested() {
-                return ExecutionCompletion::ProgramHostTerminated;
-            }
-            match runtime.block_on(call).expect("the call's task ends") {
-                Ok(_result_json) => outcomes.push(serde_json::json!("ok")),
-                Err(
-                    coral_v8::ToolHostError::Rejected { code, .. }
-                    | coral_v8::ToolHostError::Upstream { code, .. },
-                ) => outcomes.push(serde_json::json!(code)),
-                Err(coral_v8::ToolHostError::Fatal) => {
-                    return ExecutionCompletion::ProgramHostTerminated;
-                }
-            }
-        }
-        let value = ProgramValue::from_encoded_json(serde_json::Value::Array(outcomes).to_string())
-            .expect("an array of outcomes");
-        ExecutionCompletion::Succeeded(FinalValue::Present(value))
-    }
 }

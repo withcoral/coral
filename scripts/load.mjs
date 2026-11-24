@@ -9,7 +9,6 @@
 //   node scripts/load.mjs --calls 30,101 --latency 0,5,20 --release
 //   node scripts/load.mjs --backend sqlite --calls 30,101
 //   node scripts/load.mjs --cells fanout --mode hold --hold-secs 40   # today's #2391 reproduction shape
-//   node scripts/load.mjs --path stream                  # only the Run stream path (ADR 0027)
 //
 // Cells (per added latency, in this order)
 //   fanout       one Run makes N parallel approval-gated calls, once per --calls value
@@ -18,8 +17,6 @@
 //
 // Options
 //   --backend postgres|sqlite   (default postgres)
-//   --path owner|stream|both    Run Owner path, Run stream path with a Run Executor in the
-//                               cell's process, or each in turn with a parity table (default both)
 //   --cells NAME[,NAME...]      cells to run (default fanout,emit,concurrent)
 //   --calls N[,N...]            fanout: parallel approval-gated calls in one Run (default 30)
 //   --mode approve|hold         fanout: approve every request once visible, or cancel after the steady phase (default approve)
@@ -54,15 +51,11 @@ import { LocalPostgres } from './postgres.ts'
 const exec = promisify(execFile)
 const env = { ...process.env }
 const CELLS = ['fanout', 'emit', 'concurrent']
-const PATHS = { owner: ['owner'], stream: ['stream'], both: ['owner', 'stream'] }
-/** The parity rule: the stream path's headline numbers stay within this factor of the owner path's. */
-export const PARITY = 1.25
 const LARGE_EMIT_BYTES = 64 * 1024
 
 export async function parseArgs(argv) {
   const options = {
     backend: 'postgres',
-    path: 'both',
     cells: CELLS,
     calls: [30],
     latency: [0],
@@ -97,9 +90,6 @@ export async function parseArgs(argv) {
     switch (flag) {
       case '--backend':
         options.backend = next()
-        break
-      case '--path':
-        options.path = next()
         break
       case '--cells':
         options.cells = next().split(',').map((v) => v.trim()).filter(Boolean)
@@ -149,7 +139,6 @@ export async function parseArgs(argv) {
   }
   if (!['postgres', 'sqlite'].includes(options.backend)) throw new Error('--backend is postgres or sqlite')
   if (!['approve', 'hold'].includes(options.mode)) throw new Error('--mode is approve or hold')
-  if (!Object.hasOwn(PATHS, options.path)) throw new Error('--path is owner, stream or both')
   const unknown = options.cells.filter((cell) => !CELLS.includes(cell))
   if (unknown.length > 0) throw new Error(`Unknown cell ${unknown.join(', ')}; cells are ${CELLS.join(', ')}`)
   if (options.backend === 'sqlite' && options.latency.some((ms) => ms > 0)) {
@@ -324,15 +313,7 @@ export function plan(options, latency) {
       })
     }
   }
-  return PATHS[options.path].flatMap((path) =>
-    cells.map((cell) => ({
-      ...cell,
-      path,
-      pair: `${options.backend}-${cell.stem}-${latency}ms`,
-      stem: `${options.backend}-${path}-${cell.stem}-${latency}ms`,
-      knobs: { ...cell.knobs, CORAL_LOAD_PATH: path },
-    })),
-  )
+  return cells.map((cell) => ({ ...cell, stem: `${options.backend}-${cell.stem}-${latency}ms` }))
 }
 
 const fmt = (v, digits = 0) => (v === null || v === undefined ? '—' : Number(v).toFixed(digits))
@@ -344,7 +325,7 @@ const p95Failed = (p) => (p && p.n > 0 ? `${fmt(p.p95_ms)} / ${failed(p)}` : '�
 const seconds = (ms) => `${fmt(ms / 1000, 1)} s`
 const phaseOf = (r, name) => r.phases.find((p) => p.name === name) ?? {}
 const cellName = (r, detail) =>
-  `${r.backend} ${r.path ?? 'owner'} ${detail}${r.label ? ` ${r.label}` : ''}${r.debug_assertions ? ' (debug)' : ''}` +
+  `${r.backend} ${detail}${r.label ? ` ${r.label}` : ''}${r.debug_assertions ? ' (debug)' : ''}` +
   `${r.sampler_error ? ' (sampler failed)' : ''}${r.probes_aborted_in_flight ? ` (${r.probes_aborted_in_flight} probes cut off)` : ''}`
 const byState = (counts) => Object.entries(counts ?? {}).map(([state, n]) => `${state} ${n}`).join(', ') || '—'
 const table = (header, rows) => {
@@ -467,50 +448,6 @@ function summarizeConcurrent(reports) {
   return table(header, rows)
 }
 
-/** Each cell's headline numbers, which the parity table compares. */
-const HEADLINES = {
-  fanout: [
-    ['all visible ms', (r) => r.run.all_visible_after_ms],
-    ['dispatch p95 ms', (r) => r.invocations.dispatch_ms?.p95_ms],
-    ['begin p95 ms (burst)', (r) => phaseOf(r, 'burst').begin?.p95_ms],
-  ],
-  emit: [
-    ['emitting ms', (r) => r.run.emitting_ms],
-    ['visible p95 ms', (r) => r.emissions.visible_ms?.p95_ms],
-    ['begin p95 ms (emitting)', (r) => phaseOf(r, 'emitting').begin?.p95_ms],
-  ],
-  concurrent: [
-    ['all ended ms', (r) => r.runs.all_ended_after_ms],
-    ['total p95 ms', (r) => r.runs.total_ms?.p95_ms],
-    ['begin p95 ms (burst)', (r) => phaseOf(r, 'burst').begin?.p95_ms],
-  ],
-}
-
-/**
- * Each stream cell beside its owner cell: the ratio of each headline number, and whether all
- * stay within PARITY. A headline either cell lacks leaves the cell inconclusive.
- */
-export function summarizeParity(reports) {
-  const rows = []
-  for (const stream of reports.filter((r) => r.path === 'stream')) {
-    const owner = reports.find((r) => r.path === 'owner' && r.pair === stream.pair)
-    if (!owner) continue
-    const ratios = HEADLINES[stream.cell].map(([name, read]) => {
-      const [o, s] = [read(owner), read(stream)]
-      return [name, o > 0 && s !== undefined && s !== null ? s / o : null]
-    })
-    const over = ratios.some(([, ratio]) => ratio !== null && ratio > PARITY)
-    const missing = ratios.some(([, ratio]) => ratio === null)
-    rows.push([
-      stream.pair,
-      ...ratios.map(([name, ratio]) => `${name}: ${ratio === null ? '—' : `${fmt(ratio, 2)}×`}`),
-      over ? `OVER ${PARITY}×` : missing ? 'inconclusive' : `within ${PARITY}×`,
-    ])
-  }
-  if (rows.length === 0) return ''
-  return table(['cell', 'headline 1', 'headline 2', 'headline 3', 'parity'], rows)
-}
-
 export function summarize(reports, options) {
   const sections = [
     ['Fan-out', 'fanout', summarizeFanOut],
@@ -527,8 +464,6 @@ export function summarize(reports, options) {
     if (rows.length === 0) continue
     parts.push('', `## ${title}`, '', render(rows))
   }
-  const parity = summarizeParity(reports)
-  if (parity) parts.push('', '## Parity: stream ÷ owner', '', parity)
   return parts.join('\n')
 }
 
@@ -586,11 +521,11 @@ export async function main(argv) {
           delete cellEnv.CORAL_TEST_POSTGRES_URL
           delete cellEnv.CORAL_LOAD_SAMPLER_URL
         }
-        console.error(`\n### cell: ${options.backend}, ${cell.path}, ${cell.title}, +${latency} ms\n`)
+        console.error(`\n### cell: ${options.backend}, ${cell.title}, +${latency} ms\n`)
         const code = await runTest(cell.test, cellEnv, options.release)
         if (interrupted) throw new Error(`interrupted by ${interrupted} during cell ${cell.stem}`)
         if (code !== 0) throw new Error(`load cell ${cell.stem} failed with exit code ${code}`)
-        reports.push({ ...JSON.parse(await readFile(report, 'utf8')), path: cell.path, pair: cell.pair })
+        reports.push(JSON.parse(await readFile(report, 'utf8')))
       }
     }
     const summary = summarize(reports, options)

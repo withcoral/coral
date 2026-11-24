@@ -20,14 +20,14 @@ async fn caller_connection_is_shared_and_canceling_one_run_does_not_cancel_anoth
         .expect(1)
         .mount(&server)
         .await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool_at("user:connecting", "Caller wait", &server.uri())
         .await;
     let context = change(tool.user.clone(), 40, '4');
     let scope = tool.workspace_id.clone();
     let (_dir, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
-    let runs = fixture.live_runs(None).with_accounts(accounts.clone());
+    let runs = fixture.live(Some(accounts.clone())).await;
     let source = "return await coral.providers.weather.getForecast({});";
     let first = runs
         .start(&tool.principal, &tool.workspace_id, submission(source))
@@ -138,12 +138,12 @@ struct WaitingConnection {
 impl WaitingConnection {
     async fn new() -> Self {
         let server = MockServer::start().await;
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
         let tool = fixture
             .user_tool_at("user:gate-loss", "Connection gate", &server.uri())
             .await;
         let (directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
-        let runs = fixture.live_runs(Some(accounts.clone()));
+        let runs = fixture.live(Some(accounts.clone())).await;
         let accepted = runs
             .start(
                 &tool.principal,
@@ -500,18 +500,21 @@ async fn an_ended_request_records_one_terminal_event_and_replays_unchanged() {
 async fn the_owner_arms_a_timer_at_a_connection_requests_deadline() {
     let server = MockServer::start().await;
     let probe = Arc::new(TimerProbe::default());
-    let fixture = TestModules::with_execution_adapters(
+    let mut fixture = TestModules::with_execution_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         Arc::new(RejectingUpstream),
         Arc::new(NoopInvocationObserver),
         probe.clone(),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool_at("user:connection-timer", "Connection timer", &server.uri())
         .await;
     let (_directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
-    let runs = fixture.runs.clone().with_accounts(accounts.clone());
+    let runs = fixture
+        .served(fixture.runs.clone().with_accounts(accounts.clone()))
+        .await;
     let accepted = runs
         .start(
             &tool.principal,
@@ -704,7 +707,7 @@ async fn caller_connection_outlives_run_deadlines_and_empty_waiter_sets() {
         .expect(1)
         .mount(&server)
         .await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool_at(
             "user:deadline-connection",
@@ -713,10 +716,10 @@ async fn caller_connection_outlives_run_deadlines_and_empty_waiter_sets() {
         )
         .await;
     let (directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
-    let mut runs = fixture.live_runs(None).with_accounts(accounts.clone());
+    let mut runs = fixture.live_runs(Some(accounts.clone()));
     runs.clock = fixture.clock.clone();
-    runs.execution_policy =
-        crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_secs(30));
+    runs.execution_policy = crate::execution::ExecutionPolicy::testing();
+    let runs = fixture.served(runs).await;
     let source = "return await coral.providers.weather.getForecast({});";
     let short = RunSubmission::new(
         ProgramSource::parse(source).unwrap(),
@@ -767,7 +770,7 @@ async fn caller_connection_outlives_run_deadlines_and_empty_waiter_sets() {
         "presentation does not shorten the shared request lifetime"
     );
     assert_eq!(first_card.call_path, "coral.providers.weather.getForecast");
-    // Expire only the short Run, not either worker's 30-second claim lease.
+    // Expire only the short Run.
     fixture.clock.next.store(20_000_000_000, Ordering::SeqCst);
     let terminal =
         wait_for_terminal(&runs, &tool.principal, &tool.workspace_id, first.run_id()).await;
@@ -872,7 +875,7 @@ async fn caller_connection_cannot_complete_an_obsolete_contract_after_regenerati
         .expect(0)
         .mount(&server)
         .await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool_at(
             "user:pinned-connection",
@@ -882,7 +885,7 @@ async fn caller_connection_cannot_complete_an_obsolete_contract_after_regenerati
         .await;
     let (_directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
     let context = change(tool.user.clone(), 40, '4');
-    let runs = fixture.live_runs(None).with_accounts(accounts.clone());
+    let runs = fixture.live(Some(accounts.clone())).await;
     let accepted = runs
         .start(
             &tool.principal,
@@ -1022,7 +1025,7 @@ async fn caller_connection_reconnect_preserves_account_and_blocks_prepared_dispa
         .expect(1)
         .mount(&server)
         .await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool_at("user:existing-account", "Existing account", &server.uri())
         .await;
@@ -1030,7 +1033,7 @@ async fn caller_connection_reconnect_preserves_account_and_blocks_prepared_dispa
     let context = change(tool.user.clone(), 40, '4');
     let scope = tool.workspace_id.clone();
 
-    let mut runs = fixture.live_runs(None).with_accounts(accounts.clone());
+    let mut runs = fixture.live(Some(accounts.clone())).await;
     let accepted = runs
         .start(
             &tool.principal,
@@ -1092,6 +1095,7 @@ async fn caller_connection_reconnect_preserves_account_and_blocks_prepared_dispa
     );
     let (gate, release) = EnforcementGate::blocking();
     runs.invocation_observer = gate.clone();
+    let runs = fixture.served(runs).await;
     let later = runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
     wait_until(|| gate.entered()).await;
     for secret in ["different-account", "existing-account"] {
@@ -1145,7 +1149,7 @@ async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_afte
  {
     let server = MockServer::start().await;
     forecast_once(&server, "first-canary").await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let first = fixture
         .user_tool_at("user:first-connecting", "First caller wait", &server.uri())
         .await;
@@ -1168,6 +1172,7 @@ async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_afte
     runs.execution_policy = runs
         .execution_policy
         .with_wakeups(Duration::from_secs(15), wake_gap);
+    let runs = fixture.served(runs).await;
     let source = "return await coral.providers.weather.getForecast({});";
     let first_run = runs
         .start(&first.principal, &first.workspace_id, submission(source))
@@ -1260,7 +1265,7 @@ async fn with_the_change_listener_down_the_periodic_precheck_still_finds_a_compl
     coral_test_support::database_only!(Postgres);
     let server = MockServer::start().await;
     forecast_once(&server, "outage-canary").await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool_at("user:outage-connecting", "Caller wait", &server.uri())
         .await;
@@ -1272,6 +1277,7 @@ async fn with_the_change_listener_down_the_periodic_precheck_still_finds_a_compl
     runs.execution_policy = runs
         .execution_policy
         .with_wakeups(Duration::from_millis(200), Duration::from_secs(3));
+    let runs = fixture.served(runs).await;
     let run = runs
         .start(
             &tool.principal,
@@ -1325,7 +1331,7 @@ async fn a_completed_connection_wakes_a_run_streams_loop_through_its_coral_insta
 
     let server = MockServer::start().await;
     forecast_once(&server, "stream-canary").await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool_at(
             "user:stream-connecting",
@@ -1334,7 +1340,7 @@ async fn a_completed_connection_wakes_a_run_streams_loop_through_its_coral_insta
         )
         .await;
     let (_directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
-    let mut runs = fixture.live_runs(Some(accounts.clone())).with_run_streams();
+    let mut runs = fixture.live_runs(Some(accounts.clone()));
     // An hour keeps the periodic precheck out of this test.
     runs.execution_policy = runs
         .execution_policy

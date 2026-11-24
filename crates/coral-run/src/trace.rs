@@ -19,11 +19,9 @@ use crate::lifecycle::{RunRecord, RunTerminationKind};
 use crate::types::HeldRunId;
 use crate::{FinalValue, RunState, RunTerminalOutcome};
 
-/// One phase of a Run under its Run Owner.
+/// One phase of a Run stream's Run.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Phase {
-    /// The start mark: the owner's first chunk.
-    Start,
     /// The Program, from start until it returns or throws.
     Execute,
     /// The terminal write after the Program ended, or an interruption.
@@ -31,18 +29,14 @@ pub(crate) enum Phase {
     /// Settling a recorded termination: a cancellation, the deadline or a
     /// shutdown.
     Terminate,
-    /// A recovered owner's one chunk.
-    Recover,
 }
 
 impl Phase {
     const fn metric(self) -> metric::RunPhase {
         match self {
-            Self::Start => metric::RunPhase::Start,
             Self::Execute => metric::RunPhase::Execute,
             Self::Complete => metric::RunPhase::Complete,
             Self::Terminate => metric::RunPhase::Terminate,
-            Self::Recover => metric::RunPhase::Recover,
         }
     }
 }
@@ -83,13 +77,6 @@ pub(crate) fn accept_span() -> tracing::Span {
 /// is a new root.
 pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &HeldRunId, phase: Phase) -> TimedSpan {
     let span = match phase {
-        Phase::Start => tracing::info_span!(
-            parent: None,
-            "coral.run.start",
-            coral.run.id = safe::id(run_id),
-            coral.run.status = Empty,
-            error.type = Empty,
-        ),
         Phase::Execute => {
             tracing::info_span!(parent: None, "coral.run.execute", coral.run.id = safe::id(run_id))
         }
@@ -103,13 +90,6 @@ pub(crate) fn phase_span(trace: Option<&RunTrace>, run_id: &HeldRunId, phase: Ph
         Phase::Terminate => tracing::info_span!(
             parent: None,
             "coral.run.terminate",
-            coral.run.id = safe::id(run_id),
-            coral.run.status = Empty,
-            error.type = Empty,
-        ),
-        Phase::Recover => tracing::info_span!(
-            parent: None,
-            "coral.run.recover",
             coral.run.id = safe::id(run_id),
             coral.run.status = Empty,
             error.type = Empty,
@@ -157,9 +137,6 @@ pub(crate) enum RunEnd<'a> {
         outcome: &'a RunTerminalOutcome,
         reason: RunTerminationKind,
     },
-    /// A recovered Run Owner ended it. Its Program, if it started, ended
-    /// with the Coral Instance that ran it, so none is stopped here.
-    Recovered(&'a RunTerminalOutcome),
 }
 
 impl RunEnd<'_> {
@@ -167,8 +144,7 @@ impl RunEnd<'_> {
         match self {
             Self::Unstarted(outcome)
             | Self::Returned { outcome, .. }
-            | Self::Stopped { outcome, .. }
-            | Self::Recovered(outcome) => outcome,
+            | Self::Stopped { outcome, .. } => outcome,
         }
     }
 }
@@ -202,10 +178,7 @@ pub(crate) fn record_run_end(run: &RunRecord, end: &RunEnd<'_>, ended_at: i64) {
         RunEnd::Stopped { reason, .. } if run.execution_started() => {
             metric::program_terminated(termination_reason(*reason));
         }
-        RunEnd::Unstarted(_)
-        | RunEnd::Returned { .. }
-        | RunEnd::Stopped { .. }
-        | RunEnd::Recovered(_) => {}
+        RunEnd::Unstarted(_) | RunEnd::Returned { .. } | RunEnd::Stopped { .. } => {}
     }
     let status = match state {
         RunState::Succeeded => metric::RunStatus::Succeeded,

@@ -10,17 +10,22 @@ use coral_workspace::HistoryScope;
 )]
 async fn execution_children_keep_exact_event_identity_and_retained_requests_after_resolution() {
     let (gate, release) = EnforcementGate::blocking();
-    let fixture = TestModules::with_invocation_adapters(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
+    let mut fixture = TestModules::with_invocation_adapters(
+        v8_engine(),
         Arc::new(RejectingUpstream),
         Arc::new(ApprovalWaitGate(gate.clone())),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture.user_tool("invocation-reader", "invocations").await;
     fixture.require_approval(&tool).await;
     let accepted = fixture
         .runs
-        .start(&tool.principal, &tool.workspace_id, submission("invoke"))
+        .start(
+            &tool.principal,
+            &tool.workspace_id,
+            submission(INVOKE_WEATHER),
+        )
         .await
         .unwrap();
     wait_until(|| gate.entered()).await;
@@ -206,17 +211,17 @@ async fn execution_children_keep_exact_event_identity_and_retained_requests_afte
 
 #[tokio::test]
 async fn deleted_agent_execution_is_readable_only_in_owner_authorized_history() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let (workspace, owner) = fixture
         .user_scope("history-retained-owner", "Retained Agent")
         .await;
     let agent = registered_agent(&fixture.workspaces, &owner, &workspace).await;
-    let accepted = fixture
-        .runs
-        .start(&agent, &workspace, submission("null"))
+    let accepted = runs
+        .start(&agent, &workspace, submission("return null;"))
         .await
         .unwrap();
-    wait_for_terminal(&fixture.runs, &agent, &workspace, accepted.run_id()).await;
+    wait_for_terminal(&runs, &agent, &workspace, accepted.run_id()).await;
     coral_administration::AccessLifecycleModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
@@ -264,7 +269,7 @@ async fn deleted_agent_execution_is_readable_only_in_owner_authorized_history() 
             .await
             .unwrap()
             .submitted_source,
-        "null"
+        "return null;"
     );
     let personal = fixture
         .runs
@@ -308,10 +313,11 @@ async fn deleted_agent_execution_is_readable_only_in_owner_authorized_history() 
     reason = "one failed Run checks its retained entries, exact emission, and privacy"
 )]
 async fn emissions_before_a_failure_stay_readable_and_exact_events_stay_private() {
-    let fixture = TestModules::new(Arc::new(
+    let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
+    fixture.serve().await;
     let (workspace, actor) = fixture.user_scope("emission-reader", "Emissions").await;
     let accepted = fixture
         .runs
@@ -429,7 +435,8 @@ async fn emissions_before_a_failure_stay_readable_and_exact_events_stay_private(
 /// Run its authority does not cover. The read of one Run conceals both.
 #[tokio::test]
 async fn a_read_of_several_runs_conceals_what_the_read_of_one_run_conceals() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let home = fixture.user_tool("user:several-runs", "Home").await;
     let away = fixture.user_tool("user:several-runs-host", "Away").await;
     // The reader also works in the other User's Workspace.
@@ -445,9 +452,9 @@ async fn a_read_of_several_runs_conceals_what_the_read_of_one_run_conceals() {
     );
     let finish = async |actor: &AuthenticatedPrincipal,
                         workspace: &coral_workspace::WorkspaceId| {
-        let accepted = fixture.runs.start(actor, workspace, submission("null"));
+        let accepted = runs.start(actor, workspace, submission("return null;"));
         let run = accepted.await.unwrap().run_id().clone();
-        wait_for_terminal(&fixture.runs, actor, workspace, &run).await;
+        wait_for_terminal(&runs, actor, workspace, &run).await;
         run
     };
     let own_home = finish(&reader, &home.workspace_id).await;

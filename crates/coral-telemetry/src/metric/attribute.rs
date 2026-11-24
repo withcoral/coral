@@ -92,41 +92,19 @@ attribute! {
 }
 
 attribute! {
-    /// One phase of a Program Run under its Run Owner, for `run.phase`.
+    /// One phase of a Program Run, for `run.phase`.
     RunPhase {
-        Start => "start",
         Execute => "execute",
         Complete => "complete",
         Terminate => "terminate",
-        Recover => "recover",
-    }
-}
-
-attribute! {
-    /// How a recovered Run Owner's one chunk ended, for `outcome`.
-    RecoveryOutcome {
-        /// The chunk ended the Run.
-        Ended => "ended",
-        /// The Run had already ended.
-        AlreadyEnded => "already_ended",
-        /// Another Coral Instance owns the Run.
-        Lost => "lost",
-        /// The chunk failed.
-        Failed => "failed",
     }
 }
 
 attribute! {
     /// A claim to own a Program Run, for `operation`.
     ClaimKind {
-        /// The claim written with the accepted Run.
+        /// The Run's acceptance.
         Accept => "accept",
-        /// The Run Owner's start mark, which renews the acceptance claim.
-        Start => "start",
-        /// An expired-lease sweep's takeover.
-        Recover => "recover",
-        /// A panicked Run Owner's supervisor taking over to end its Run.
-        Takeover => "takeover",
     }
 }
 

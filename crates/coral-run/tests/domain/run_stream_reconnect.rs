@@ -121,7 +121,6 @@ pub(super) fn only_answer(read: &[run_response::Message], number: u64) -> &Invoc
 async fn decide_without_a_loop(
     fixture: &TestModules,
     tool: &ToolFixture,
-    run_id: &crate::RunId,
     waiting: crate::approval::ApprovalId,
 ) {
     let decided = approve(
@@ -133,7 +132,6 @@ async fn decide_without_a_loop(
     .await
     .expect("the decision is recorded");
     assert_eq!(decided.state, crate::approval::ApprovalState::Approved);
-    assert_eq!(fixture.inbox_rows(&tool.workspace_id, run_id).await, 0);
 }
 
 /// Each Invocation of `run_id`, in admission order, by its result kind.
@@ -168,9 +166,9 @@ fn modules(
     fixture: &TestModules,
     serving: impl Fn(RunModule) -> RunModule,
 ) -> (RunModule, RunModule) {
-    let first = serving(fixture.runs.clone().with_run_streams());
+    let first = serving(fixture.runs.clone());
     let second = if fixture.database.system() == coral_db::DatabaseSystem::Postgres {
-        serving(fixture.next_process().with_run_streams())
+        serving(fixture.next_process())
     } else {
         first.clone()
     };
@@ -220,7 +218,7 @@ pub(super) async fn start_moving_for(
 /// A started Run whose weather Tool waits for approval, sending through
 /// `upstream`.
 async fn moving(upstream: Arc<SequencedUpstream>) -> (Moving, Scripted) {
-    let fixture = TestModules::with_upstream(Arc::new(ImmediateEngine::default()), upstream).await;
+    let fixture = TestModules::with_upstream(Arc::new(ImmediateEngine), upstream).await;
     let tool = fixture.user_tool("user:reconnect", "Reconnect").await;
     fixture.require_approval(&tool).await;
     let modules = modules(&fixture, |runs| runs);
@@ -294,7 +292,7 @@ async fn a_run_stream_that_moves_mid_run_lands_each_request_and_result_once() {
     drop(stream);
 
     // Decided while no loop holds the Run's stream.
-    decide_without_a_loop(fixture, tool, run_id, waiting).await;
+    decide_without_a_loop(fixture, tool, waiting).await;
 
     // The Run Executor saw `Committed(3)`, waits on 2 and 3, and resends 4.
     let mut stream = reopen(&moving, &[(2, 0), (3, 0)]);
@@ -355,8 +353,8 @@ async fn a_run_stream_that_moves_mid_run_lands_each_request_and_result_once() {
 
 #[tokio::test]
 async fn a_reopen_answers_a_waited_request_that_left_no_row_as_not_admitted() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.runs.clone().with_run_streams();
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.runs.clone();
     let (workspace_id, principal) = fixture.user_scope("user:unadmitted", "Not admitted").await;
     let accepted = runs
         .start(&principal, &workspace_id, submission("return 1;"))
@@ -408,7 +406,7 @@ async fn a_loop_whose_stream_moved_commits_nothing_more() {
     ));
     upstream.release_all();
     let fixture = TestModules::with_execution_adapters(
-        Arc::new(ImmediateEngine::default()),
+        Arc::new(ImmediateEngine),
         upstream,
         Arc::new(NoopInvocationObserver),
         gate.clone(),
@@ -463,8 +461,8 @@ async fn a_reopen_rebuilds_the_runs_actor_and_interrupts_a_run_whose_principal_i
         (AgentLoss::Deleted, ended(WireEnd::Interrupted), false),
         (AgentLoss::Deleted, ended(WireEnd::Interrupted), true),
     ] {
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-        let runs = fixture.runs.clone().with_run_streams();
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+        let runs = fixture.runs.clone();
         let (workspace_id, owner) = fixture.user_scope("user:owner", "Reopen actor").await;
         let (agent, registration) = agent_scope(&fixture, &owner, &workspace_id).await;
         let accepted = runs
@@ -479,7 +477,7 @@ async fn a_reopen_rebuilds_the_runs_actor_and_interrupts_a_run_whose_principal_i
         loss.apply(&fixture, &owner, &workspace_id, &agent, &registration)
             .await;
         let reopening = if elsewhere {
-            fixture.next_process().with_run_streams()
+            fixture.next_process()
         } else {
             runs.clone()
         };
@@ -725,13 +723,7 @@ async fn a_perform_waiting_for_its_approval_is_permitted_after_a_reopen() {
     };
     stream.until(|read| read.contains(&committed(1))).await;
     drop(stream);
-    decide_without_a_loop(
-        &moving.fixture,
-        &moving.tool,
-        &moving.run_id,
-        waiting.id.clone(),
-    )
-    .await;
+    decide_without_a_loop(&moving.fixture, &moving.tool, waiting.id.clone()).await;
     let mut stream = reopen(&moving, &[(1, 0)]);
     assert_eq!(stream.next().await, committed(1));
     assert!(permitted(&answer(&mut stream, 1).await));
@@ -753,8 +745,8 @@ async fn a_perform_waiting_for_its_approval_is_permitted_after_a_reopen() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reopen_ends_a_run_whose_termination_the_loop_before_recorded() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.runs.clone().with_run_streams();
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.runs.clone();
     let (workspace_id, principal) = fixture.user_scope("user:ending", "Reopen end").await;
     let accepted = runs
         .start(&principal, &workspace_id, submission("return 1;"))

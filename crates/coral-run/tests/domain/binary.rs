@@ -12,9 +12,11 @@ use crate::{FinalValue, InvocationResultKind, RunEventKind, RunFailureCode, RunT
 
 #[tokio::test]
 async fn binary_metadata_and_base64_are_revalidated_for_emissions_and_final_values() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let limits = ValueLimits::new(5, 1024, 4096, 4096).expect("limits");
-    let runs = fixture.live_runs(None).with_value_limits(limits);
+    let runs = fixture
+        .served(fixture.live_runs(None).with_value_limits(limits))
+        .await;
     let (workspace, principal) = fixture
         .user_scope("user:binary-validation", "Validate binary crossings")
         .await;
@@ -82,8 +84,8 @@ async fn binary_metadata_and_base64_are_revalidated_for_emissions_and_final_valu
 
 #[tokio::test]
 async fn ordinary_json_fields_are_not_reserved_as_mcp_binary_payloads() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.live_runs(None);
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let (workspace, principal) = fixture
         .user_scope("user:ordinary-json", "Preserve ordinary JSON")
         .await;
@@ -96,10 +98,14 @@ async fn ordinary_json_fields_are_not_reserved_as_mcp_binary_payloads() {
 
 #[tokio::test]
 async fn final_value_cannot_exceed_the_remaining_durable_output_budget() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let runs = fixture
-        .live_runs(None)
-        .with_value_limits(ValueLimits::new(5, 1024, 4096, 10).expect("limits"));
+        .served(
+            fixture
+                .live_runs(None)
+                .with_value_limits(ValueLimits::new(5, 1024, 4096, 10).expect("limits")),
+        )
+        .await;
     let (workspace, principal) = fixture
         .user_scope("user:final-budget", "Bound final output")
         .await;
@@ -158,10 +164,14 @@ async fn oversized_http_output_ends_one_invocation_without_a_partial_result_or_r
         .expect(1)
         .mount(&server)
         .await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let runs = fixture
-        .live_runs(None)
-        .with_value_limits(ValueLimits::new(5, 1024, 4096, 4096).expect("limits"));
+        .served(
+            fixture
+                .live_runs(None)
+                .with_value_limits(ValueLimits::new(5, 1024, 4096, 4096).expect("limits")),
+        )
+        .await;
     let tool = fixture
         .user_tool_at(
             "user:oversized-result",

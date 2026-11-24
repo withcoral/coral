@@ -39,6 +39,7 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+coral-run = { workspace = true, features = ["test-support"] }
 coral-mcp = { workspace = true, features = ["test-fixtures"] }
 coral-policy.workspace = true
 coral-provider = { workspace = true, features = ["test-fixtures"] }

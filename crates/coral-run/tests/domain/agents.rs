@@ -1,5 +1,8 @@
+use super::run_stream_reconnect::finish_with;
+use super::run_streams::{Scripted, ended, take};
 use super::*;
 use coral_catalog::AuthoredToolKind;
+use coral_run_executor::wire::v1::RunEnd as WireEnd;
 use coral_workspace::{
     AgentDisplayName, AgentRegistrationId, AgentState, IfMatch, RequestId, WorkspaceId,
 };
@@ -10,8 +13,7 @@ use coral_workspace::{
     reason = "one Agent is followed from a running Program through deletion to its retained history"
 )]
 async fn deleting_agent_removes_current_work_but_retains_attribution() {
-    let (engine, release) = SnapshotEngine::new();
-    let fixture = TestModules::new(Arc::new(engine.clone())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let (workspace, owner) = fixture.user_scope("user:deletion-owner", "Deletion").await;
     let agent = registered_agent(&fixture.workspaces, &owner, &workspace).await;
     let saved = PrivateToolModule::new(
@@ -43,7 +45,9 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
         )
         .await
         .unwrap();
-    wait_until(|| engine.started.load(Ordering::SeqCst)).await;
+    let claim = take(&fixture.runs).await;
+    let mut stream = Scripted::open(&fixture.runs, &run.run_id().to_string(), &claim);
+    stream.start().await;
     let lifecycle = coral_administration::AccessLifecycleModule::new(
         fixture.database.clone(),
         fixture.workspaces.clone(),
@@ -95,12 +99,15 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
         .await,
         Err(ToolsError::NotFound(AuthoredToolKind::Private))
     ));
-    release.send(()).unwrap();
+    stream.request(1, finish_with("42"));
+    stream
+        .until(|read| read.contains(&ended(WireEnd::Succeeded)))
+        .await;
     let terminal = wait_for_terminal(&fixture.runs, &owner, &workspace, run.run_id()).await;
     assert!(
         matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Succeeded {
         final_value: FinalValue::Present(value)
-    }) if value.as_json() == &serde_json::json!({"linked_source": "export default () => 42;"}))
+    }) if value.as_json() == &serde_json::json!(42))
     );
     assert_eq!(
         wait_for_terminal(&fixture.runs, &owner, &workspace, run.run_id()).await,
@@ -360,42 +367,6 @@ async fn agent_lifecycle_loss_during_compilation_rejects_admission_without_a_run
             "{loss:?}"
         );
         assert_eq!(fixture.runs.count_runs().await.unwrap(), 0, "{loss:?}");
-        assert_eq!(engine.executions.load(Ordering::SeqCst), 0, "{loss:?}");
-    }
-}
-
-#[tokio::test]
-async fn agent_lifecycle_loss_after_acceptance_fails_without_executing_program() {
-    for loss in AgentLoss::ALL {
-        let engine = Arc::new(ImmediateEngine::default());
-        let gate = Arc::new(ClaimGate::default());
-        let fixture = TestModules::with_execution_adapters(
-            engine.clone(),
-            Arc::new(RejectingUpstream),
-            Arc::new(NoopInvocationObserver),
-            gate.clone(),
-        )
-        .await;
-        let (workspace_id, owner) = fixture
-            .user_scope("user:owner", "Execution-start race")
-            .await;
-        let (agent, registration) = agent_scope(&fixture, &owner, &workspace_id).await;
-        let accepted = fixture
-            .runs
-            .start(&agent, &workspace_id, submission("queued"))
-            .await
-            .unwrap();
-        wait_until(|| gate.entered.load(Ordering::SeqCst)).await;
-        loss.apply(&fixture, &owner, &workspace_id, &agent, &registration)
-            .await;
-        gate.release();
-        let terminal =
-            wait_for_terminal(&fixture.runs, &owner, &workspace_id, accepted.run_id()).await;
-        assert!(
-            matches!(terminal.terminal_outcome(), Some(RunTerminalOutcome::Failed(failure)) if failure.code() == RunFailureCode::RunAuthorityLost),
-            "{loss:?}"
-        );
-        assert_eq!(engine.executions.load(Ordering::SeqCst), 0, "{loss:?}");
     }
 }
 
@@ -404,12 +375,13 @@ async fn agent_lifecycle_loss_before_dispatch_blocks_send_but_allows_secret_free
     for loss in AgentLoss::ALL {
         let (gate, release) = EnforcementGate::blocking();
         let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
-        let fixture = TestModules::with_invocation_adapters(
+        let mut fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             upstream.clone(),
             gate.clone(),
         )
         .await;
+        fixture.serve().await;
         let tool = fixture.user_tool("user:owner", "Dispatch race").await;
         let (agent, registration) =
             agent_scope(&fixture, &tool.principal, &tool.workspace_id).await;
@@ -466,7 +438,7 @@ struct ExpireApprovalAuthority(Arc<TestClock>);
 impl InvocationObserver for ExpireApprovalAuthority {
     fn approval_authority_checked(&self) {
         // Advance past Registration expiry after authority was read, keeping
-        // the Run deadline and worker lease current.
+        // the Run deadline current.
         self.0.next.store(1_000_000, Ordering::SeqCst);
     }
 }
@@ -480,6 +452,7 @@ async fn agent_expiry_during_approval_check_is_catchable_and_preserves_computati
     )
     .await;
     fixture.runs.invocation_observer = Arc::new(ExpireApprovalAuthority(fixture.clock.clone()));
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:owner", "Approval expiry race")
         .await;
@@ -534,6 +507,7 @@ async fn agent_expiry_during_final_checks_blocks_dispatch_but_not_computation() 
     .await;
     let observer = AdvanceEnforcementTime::new(fixture.clock.clone(), 1_000_000);
     fixture.runs.invocation_observer = observer.clone();
+    fixture.serve().await;
     let tool = fixture.user_tool("user:owner", "Final expiry race").await;
     let (agent, _) = agent_scope(&fixture, &tool.principal, &tool.workspace_id).await;
     let run = fixture.runs.start(&agent, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (e) { coral.emit('still computing'); return e.code; } return 'unexpected dispatch';",
@@ -567,11 +541,12 @@ async fn post_enforcement_agent_loss_commits_during_upstream_send_and_blocks_onl
             200,
             serde_json::json!({}),
         )));
-        let fixture = TestModules::with_upstream(
+        let mut fixture = TestModules::with_upstream(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             upstream.clone(),
         )
         .await;
+        fixture.serve().await;
         let tool = fixture
             .user_tool("user:owner", "Post-enforcement race")
             .await;
@@ -625,17 +600,14 @@ async fn post_enforcement_agent_loss_commits_during_upstream_send_and_blocks_onl
 async fn rotation_during_a_pending_invocation_changes_neither_authority_nor_history() {
     let (gate, release) = EnforcementGate::blocking();
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
-    let fixture = TestModules::with_invocation_adapters(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream.clone(),
-        gate.clone(),
-    )
-    .await;
+    let mut fixture =
+        TestModules::with_invocation_adapters(v8_engine(), upstream.clone(), gate.clone()).await;
+    fixture.serve().await;
     let tool = fixture.user_tool("user:owner", "Rotate during work").await;
     let (agent, registration) = agent_scope(&fixture, &tool.principal, &tool.workspace_id).await;
     let accepted = fixture
         .runs
-        .start(&agent, &tool.workspace_id, submission("invoke"))
+        .start(&agent, &tool.workspace_id, submission(INVOKE_WEATHER))
         .await
         .unwrap();
     wait_until(|| gate.entered()).await;

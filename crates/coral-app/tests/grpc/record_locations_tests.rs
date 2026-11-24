@@ -89,9 +89,9 @@ async fn record_run(
         coral_run::RuntimeLimits::default()
             .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
         coral_run::CoralInstanceId::generate(),
-        coral_run::RunInbox::table(database.clone()),
     )
     .unwrap();
+    let (runs, _serving) = coral_run::testing::serve_on_run_executor(runs).await;
     let run = runs
         .start(
             &principal,

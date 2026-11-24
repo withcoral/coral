@@ -179,8 +179,8 @@ fn the_checks_find_what_they_check() {
         use opentelemetry::KeyValue;
         let context = tracing_opentelemetry::OpenTelemetrySpanExt::context(&span);
         tracing::warn!(coral.run.status = "a".to_owned() + &text + "b", "fixed text");
-        tracing::warn!(coral.run.recovered = 1.max(count), "fixed text");
-        tracing::warn!(coral.run.recovered = 1_000x, "fixed text");
+        tracing::warn!(coral.shutdown.live_runs = 1.max(count), "fixed text");
+        tracing::warn!(coral.shutdown.live_runs = 1_000x, "fixed text");
         #[cfg(test)]
         mod tests {
             fn ignored() { tracing::warn!(misclassified = 1, "test {error}"); }

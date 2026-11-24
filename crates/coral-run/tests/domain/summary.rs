@@ -9,7 +9,7 @@ const DAY: i64 = 86_400 * 1_000_000_000;
 const CALL: &str = "try { await coral.providers.weather.getForecast({}); return 'sent'; } catch (e) { return e.code; }";
 
 async fn forecast_fixture() -> (TestModules, ToolFixture) {
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         Arc::new(ScriptedUpstream::json(
             200,
@@ -17,6 +17,7 @@ async fn forecast_fixture() -> (TestModules, ToolFixture) {
         )),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:summary", "Summarize activity")
         .await;

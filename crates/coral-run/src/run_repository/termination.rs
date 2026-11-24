@@ -33,14 +33,12 @@ pub(crate) async fn request_termination(
             request.termination.started_at_unix_nanos,
         );
     }
-    commit_chunk(transaction, chunk.termination(Some(request))).await
+    commit_chunk(transaction, chunk.termination(request)).await
 }
 
 /// The Run row columns a termination intent writes: the termination, and the
-/// cancellation's requester and instant when a Principal asked for it. The
-/// worker claim and its lease stay until the terminal chunk, so no other
-/// process's sweep takes the Run over while its owner settles. A chunk that
-/// carries the intent writes them in its head update.
+/// cancellation's requester and instant when a Principal asked for it. A
+/// chunk that carries the intent writes them in its head update.
 pub(super) fn request_values(request: &RequestedTermination) -> Vec<(ProgramRunRecords, Expr)> {
     let mut values = termination_values(&request.termination);
     if let Some(requester) = &request.requester {
@@ -60,24 +58,6 @@ pub(super) fn request_values(request: &RequestedTermination) -> Vec<(ProgramRunR
         ]);
     }
     values
-}
-
-pub(crate) async fn finish_unstarted_run(
-    transaction: &mut Transaction<'_>,
-    run: &RunRecord,
-    outcome: &RunTerminalOutcome,
-    terminal_at_unix_nanos: i64,
-) -> Result<(), Error> {
-    finish_terminal_run(
-        transaction,
-        run,
-        None,
-        &[],
-        outcome,
-        terminal_at_unix_nanos,
-        Vec::new(),
-    )
-    .await
 }
 
 /// Ends a taken Run that never started, under the take's claim, which it
@@ -148,54 +128,25 @@ pub(crate) async fn finish_termination(
     .await
 }
 
-/// A recovering writer's takeover of a Run: the claim id it mints, and the
-/// Coral Instance it runs in, which the row then records as the holder.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct Takeover<'a> {
-    pub(crate) claim_id: &'a str,
-    pub(crate) instance: &'a crate::CoralInstanceId,
-}
-
-/// The one chunk that interrupts a Run its owner can no longer run: the
-/// termination intent and the terminal outcome together, the worker claim
-/// released, the Events its writer applied (the `invocation.ended` Events of
-/// its ended Invocations among them), and `run.ended`. Predicated on the
-/// claim `run` holds (its execution claim, or the worker claim of a Run that
-/// never started). `takeover` carries the
-/// claim id a recovering writer mints when it takes the Run over from a
-/// started owner that can no longer write: every commit still in flight
-/// under the old claim then mismatches. The row then records the taking
-/// Coral Instance as the holder of that claim.
+/// The one chunk that ends a Run no stream ends: the termination intent and
+/// the terminal outcome together, the Events its writer applied (the
+/// `invocation.ended` Events of its ended Invocations among them), and
+/// `run.ended`. Predicated on the claim `run` holds, if any.
 pub(crate) async fn interrupt_run(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     events: &[OwnedEvent],
     termination: &RequestedTermination,
-    takeover: Option<Takeover<'_>>,
     terminal_at_unix_nanos: i64,
 ) -> Result<(), Error> {
     let mut values = request_values(termination);
-    // A Run that never started has no execution claim to take over: its row
-    // pairs the execution claim with the start mark, and the released worker
-    // claim is all the fence a late start mark needs. Its holder stays the
-    // Coral Instance that accepted it. A taken Run that never started keeps
-    // no claim once it has ended, so a late `Open` or start finds none.
-    match (takeover, run.execution_claim_id.as_deref()) {
-        (_, Some(_)) if !run.execution_started() => values.push((
+    // A taken Run that never started keeps no claim once it has ended, so a
+    // late `Open` or start finds none.
+    if run.execution_claim_id.is_some() && !run.execution_started() {
+        values.push((
             ProgramRunRecords::ExecutionClaimId,
             Expr::val(None::<String>),
-        )),
-        (Some(takeover), Some(_)) => {
-            values.push((
-                ProgramRunRecords::ExecutionClaimId,
-                Expr::val(takeover.claim_id),
-            ));
-            values.push((
-                ProgramRunRecords::HolderInstanceId,
-                Expr::val(takeover.instance.as_str()),
-            ));
-        }
-        _ => {}
+        ));
     }
     finish_terminal_run(
         transaction,
@@ -209,7 +160,7 @@ pub(crate) async fn interrupt_run(
     .await
 }
 
-/// The terminal chunk: the outcome, a released worker claim, and `run.ended`
+/// The terminal chunk: the outcome and `run.ended`
 /// after `invocation_events`. No Event follows it: a chunk built before it
 /// mismatches the head it moved, and a chunk built after it finds no running
 /// Run.
@@ -257,7 +208,6 @@ async fn finish_terminal_run(
             Expr::val(final_value_json),
         ),
     ]);
-    values.extend(released_worker_claim());
     let chunk = Chunk::new(run, execution_claim_id, terminal_at_unix_nanos)
         .owned_events(invocation_events)
         .event(
@@ -281,19 +231,6 @@ fn termination_values(termination: &RunTermination) -> Vec<(ProgramRunRecords, E
         (
             ProgramRunRecords::TerminationDeadlineAtUnixNanos,
             Expr::val(termination.deadline_at_unix_nanos),
-        ),
-    ]
-}
-
-fn released_worker_claim() -> [(ProgramRunRecords, Expr); 2] {
-    [
-        (
-            ProgramRunRecords::WorkerClaimId,
-            Expr::val(Option::<String>::None),
-        ),
-        (
-            ProgramRunRecords::WorkerClaimExpiresAtUnixNanos,
-            Expr::val(Option::<i64>::None),
         ),
     ]
 }

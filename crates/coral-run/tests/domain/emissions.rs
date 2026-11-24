@@ -3,10 +3,13 @@ use super::*;
 
 #[tokio::test]
 async fn binary_output_validation_and_cumulative_limits_preserve_earlier_emissions() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture
-        .live_runs(None)
-        .with_value_limits(coral_value::ValueLimits::new(5, 1024, 4096, 160).expect("limits"));
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs =
+        fixture
+            .served(fixture.live_runs(None).with_value_limits(
+                coral_value::ValueLimits::new(5, 1024, 4096, 160).expect("limits"),
+            ))
+            .await;
     let (workspace, principal) = fixture
         .user_scope("user:binary-output", "Bound output")
         .await;
@@ -40,8 +43,8 @@ async fn binary_output_validation_and_cumulative_limits_preserve_earlier_emissio
 
 #[tokio::test]
 async fn emissions_and_logs_are_durable_ordered_and_separate_after_program_failure() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.live_runs(None);
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:program-output", "Publish Program output")
         .await;
@@ -146,8 +149,8 @@ async fn invalid_emissions_fail_the_run_unless_the_program_catches_them() {
             &[serde_json::json!({"after": "caught invalid output"})],
         ),
     ];
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.live_runs(None);
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:invalid-emission", "Reject invalid Program output")
         .await;

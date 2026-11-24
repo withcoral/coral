@@ -27,16 +27,15 @@ impl Held {
     /// `upstream`, with `observer` on the stream's module. Only the wake-up
     /// reader tells the loop of an outside decision: the periodic precheck stays
     /// out, and no real timer fires before a test's wait for an answer runs
-    /// out (an Approval Request's deadline is 120 s away, the Run's 150 s,
-    /// the idle tick's 30 min); tests move the test clock instead. Neither
-    /// jump reaches the owner's self-interrupt bound, three one-hour leases.
+    /// out (an Approval Request's deadline is 120 s away, the Run's 150 s);
+    /// tests move the test clock instead.
     async fn new(
         upstream: Arc<dyn UpstreamSender>,
         observer: Arc<dyn ExecutionObserver>,
         approval: bool,
     ) -> Self {
         let mut fixture = TestModules::with_execution_adapters(
-            Arc::new(ImmediateEngine::default()),
+            Arc::new(ImmediateEngine),
             upstream,
             Arc::new(NoopInvocationObserver),
             observer,
@@ -44,7 +43,6 @@ impl Held {
         .await;
         fixture.runs.execution_policy =
             crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(120))
-                .with_claim_lease(Duration::from_secs(3600))
                 .with_wakeups(Duration::from_secs(3600), Duration::from_millis(50));
         let tool = fixture.user_tool("user:wakes", "Wake rows").await;
         if approval {
@@ -53,10 +51,9 @@ impl Held {
         let runs = fixture
             .runs
             .clone()
-            .with_fan_out_limit(crate::FanOutLimit::new(1).expect("a limit"))
-            .with_run_streams();
+            .with_fan_out_limit(crate::FanOutLimit::new(1).expect("a limit"));
         let other = if fixture.database.system() == coral_db::DatabaseSystem::Postgres {
-            fixture.next_process().with_run_streams()
+            fixture.next_process()
         } else {
             runs.clone()
         };
@@ -189,12 +186,6 @@ async fn a_decision_received_elsewhere_reaches_the_program_through_the_streams_l
         } else {
             assert!(failed_with(answered, answer), "{read:?}");
         }
-        assert_eq!(
-            held.fixture
-                .inbox_rows(&held.tool.workspace_id, &held.run_id)
-                .await,
-            0
-        );
         held.stream.request(2, finish_with("1"));
         held.stream
             .until(|read| read.contains(&ended(WireEnd::Succeeded)))
@@ -322,13 +313,42 @@ async fn a_cancellation_received_elsewhere_ends_the_run_with_its_invocations() {
         .filter(|event| matches!(event.kind(), RunEventKind::CancellationRequested { .. }))
         .count();
         assert_eq!(cancellations, 1);
-        assert_eq!(
-            held.fixture
-                .inbox_rows(&held.tool.workspace_id, &held.run_id)
-                .await,
-            0
-        );
     }
+}
+
+/// Catches: a loop whose Run another writer ended, and whose stream then
+/// closes without the Program's `Finish` (its Run Executor is gone), staying
+/// registered on its Coral Instance until the process exits.
+#[tokio::test]
+async fn a_loop_whose_run_ended_elsewhere_retires_when_its_stream_closes() {
+    let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
+        200,
+        serde_json::json!({}),
+    )));
+    let mut held = Held::new(upstream.clone(), Arc::new(NoopExecutionObserver), false).await;
+    held.stream.request(1, forecast(None));
+    wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
+    held.other
+        .cancel(
+            &held.tool.principal,
+            &held.tool.workspace_id,
+            &held.run_id,
+            &immediate(None, 100),
+        )
+        .await
+        .expect("the cancellation is recorded at once");
+    assert_eq!(held.terminated().await, TerminateReason::Canceled);
+    assert!(held.runs.has_owner(&held.run_id));
+
+    let Held {
+        runs,
+        run_id,
+        stream,
+        ..
+    } = held;
+    drop(stream);
+
+    wait_until(|| !runs.has_owner(&run_id)).await;
 }
 
 /// Catches: a cancellation of a Run a Run Executor has not started that
@@ -336,9 +356,9 @@ async fn a_cancellation_received_elsewhere_ends_the_run_with_its_invocations() {
 #[tokio::test]
 async fn a_cancellation_ends_a_run_executors_run_that_has_not_started_at_once() {
     for taken in [false, true] {
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
         let tool = fixture.user_tool("user:unstarted", "Unstarted").await;
-        let runs = fixture.runs.clone().with_run_streams();
+        let runs = fixture.runs.clone();
         let accepted = runs
             .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
             .await
@@ -458,7 +478,7 @@ async fn a_run_ended_under_the_loops_chunk_terminates_its_program_once() {
 /// loop on its Coral Instance.
 #[tokio::test]
 async fn a_wake_up_read_of_many_loops_sends_the_statements_of_one() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     // A peer handle counts only its own statements.
     let reads = fixture.test_database.connect_peer().await.unwrap();
     let workspace = coral_workspace::WorkspaceId::parse(&uuid::Uuid::new_v4().to_string())

@@ -6,14 +6,16 @@ use super::*;
 /// Program that catches its end, or a CPU end that ends another Run.
 #[tokio::test]
 async fn a_spent_cpu_budget_fails_only_its_own_run() {
-    let fixture = TestModules::new(Arc::new(
+    let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
+    fixture.serve().await;
     let runs = fixture
-        .runs
-        .clone()
-        .with_cpu_budget(crate::RunCpuBudget::new(Duration::from_millis(200)).expect("a budget"));
+        .served(fixture.runs.clone().with_cpu_budget(
+            crate::RunCpuBudget::new(Duration::from_millis(200)).expect("a budget"),
+        ))
+        .await;
     let (workspace, principal) = fixture.user_scope("user:cpu", "Spend the budget").await;
     let busy = runs
         .start(

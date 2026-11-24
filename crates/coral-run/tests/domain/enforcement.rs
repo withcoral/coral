@@ -1,18 +1,20 @@
 //! Final enforcement races observed through the Run interface. Private controls
 //! only schedule external changes or time; they do not supply authorization
 //! decisions.
+use super::run_streams::started;
 use super::*;
 
 #[tokio::test]
 async fn organization_ownership_neither_grants_nor_retains_workspace_authority() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
     let (gate, release) = EnforcementGate::blocking();
-    let fixture = TestModules::with_invocation_adapters(
+    let mut fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
         gate.clone(),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:owner", "Organization ownership race")
         .await;
@@ -87,12 +89,13 @@ async fn organization_ownership_neither_grants_nor_retains_workspace_authority()
 async fn workspace_membership_loss_at_the_enforcement_point_blocks_dispatch() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
     let (gate, release) = EnforcementGate::blocking();
-    let fixture = TestModules::with_invocation_adapters(
+    let mut fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
         gate.clone(),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:removed-member", "Workspace access race")
         .await;
@@ -141,7 +144,7 @@ async fn workspace_membership_loss_at_the_enforcement_point_blocks_dispatch() {
 #[tokio::test]
 async fn offboarding_ends_a_waiting_connection_and_rejoin_cannot_resume_it() {
     let server = MockServer::start().await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool_at(
             "user:offboarded-connection",
@@ -150,7 +153,7 @@ async fn offboarding_ends_a_waiting_connection_and_rejoin_cannot_resume_it() {
         )
         .await;
     let (_directory, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
-    let runs = fixture.live_runs(None).with_accounts(accounts.clone());
+    let runs = fixture.live(Some(accounts.clone())).await;
     let accepted = runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
     let request = wait_for_connection(&accounts, &tool).await;
     let context = change(tool.user.clone(), 40, '4');
@@ -242,12 +245,13 @@ async fn offboarding_ends_a_waiting_connection_and_rejoin_cannot_resume_it() {
 async fn an_organization_downgrade_keeps_current_explicit_workspace_authority() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
     let (gate, release) = EnforcementGate::blocking();
-    let fixture = TestModules::with_invocation_adapters(
+    let mut fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
         gate.clone(),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:explicit-owner", "Keep explicit authority")
         .await;
@@ -306,12 +310,13 @@ async fn an_organization_downgrade_keeps_current_explicit_workspace_authority() 
 async fn user_disablement_cannot_be_undone_by_stale_login_or_administration() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
     let (gate, release) = EnforcementGate::blocking();
-    let fixture = TestModules::with_invocation_adapters(
+    let mut fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
         gate.clone(),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:removed", "Organization removal")
         .await;
@@ -365,10 +370,11 @@ async fn user_disablement_cannot_be_undone_by_stale_login_or_administration() {
 
 #[tokio::test]
 async fn missing_organization_evidence_never_falls_back_to_authenticated_owner_claims() {
-    let fixture = TestModules::new(Arc::new(
+    let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:creator", "Missing authority evidence")
         .await;
@@ -398,12 +404,13 @@ async fn organization_loss_commits_while_permitted_upstream_work_is_blocked() {
     )));
     let (gate, release) = EnforcementGate::blocking();
     release.send(()).unwrap();
-    let fixture = TestModules::with_invocation_adapters(
+    let mut fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
         gate.clone(),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool(
             "user:post-enforcement-owner",
@@ -444,12 +451,13 @@ async fn organization_loss_commits_while_permitted_upstream_work_is_blocked() {
 async fn provider_disablement_at_the_enforcement_point_blocks_dispatch() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
     let (gate, release) = EnforcementGate::blocking();
-    let fixture = TestModules::with_invocation_adapters(
+    let mut fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
         gate.clone(),
     )
     .await;
+    fixture.serve().await;
     let (workspace, actor) = fixture
         .user_scope("user:workspace-owner", "Disablement race")
         .await;
@@ -523,10 +531,8 @@ async fn provider_disablement_at_the_enforcement_point_blocks_dispatch() {
 
 #[tokio::test]
 /// The Run deadline passing during the enforcement point's final checks refuses
-/// the dispatch. The worker lease lapsing there does not: the lease is
-/// ownership between processes, and the owner's own enforcement check rides a
-/// commit predicated on its claim, which the lapse leaves in place.
-async fn run_expiry_during_final_checks_prevents_dispatch_and_a_lapsed_lease_does_not() {
+/// the dispatch. Time that passes there short of the deadline does not.
+async fn run_expiry_during_final_checks_prevents_dispatch_and_earlier_time_does_not() {
     for (now, expected, sends) in [
         (2_000_000_000, RunState::Succeeded, 1),
         (61_000_000_000, RunState::TimedOut, 0),
@@ -539,6 +545,7 @@ async fn run_expiry_during_final_checks_prevents_dispatch_and_a_lapsed_lease_doe
         .await;
         let observer = AdvanceEnforcementTime::new(fixture.clock.clone(), now);
         fixture.runs.invocation_observer = observer.clone();
+        fixture.serve().await;
         let tool = fixture
             .user_tool("user:late-time", "Late enforcement time")
             .await;
@@ -589,11 +596,8 @@ async fn provider_disablement_and_deletion_after_the_enforcement_point_preserve_
             200,
             serde_json::json!({"temperature": 21}),
         )));
-        let fixture = TestModules::with_upstream(
-            Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-            upstream.clone(),
-        )
-        .await;
+        let mut fixture = TestModules::with_upstream(v8_engine(), upstream.clone()).await;
+        fixture.serve().await;
         let tool = fixture
             .user_tool(
                 "user:post-enforcement-lifecycle",
@@ -605,7 +609,7 @@ async fn provider_disablement_and_deletion_after_the_enforcement_point_preserve_
             .start(
                 &tool.principal,
                 &tool.workspace_id,
-                submission("invoke-tool"),
+                submission(INVOKE_WEATHER),
             )
             .await
             .expect("accept Program");
@@ -662,18 +666,15 @@ async fn an_in_flight_dispatch_cannot_be_marked_dispatched_again() {
         200,
         serde_json::json!({"temperature": 21}),
     )));
-    let fixture = TestModules::with_upstream(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream.clone(),
-    )
-    .await;
+    let mut fixture = TestModules::with_upstream(v8_engine(), upstream.clone()).await;
+    fixture.serve().await;
     let tool = fixture.user_tool("user:enforce-once", "Enforce once").await;
     let accepted = fixture
         .runs
         .start(
             &tool.principal,
             &tool.workspace_id,
-            submission("enforce-once"),
+            submission(INVOKE_WEATHER),
         )
         .await
         .expect("accept Program");
@@ -749,19 +750,17 @@ async fn losing_run_workspace_provider_access_or_policy_blocks_dispatch() {
             }),
         ));
         let (observer, release_enforcement) = EnforcementGate::blocking_at(point);
-        let fixture = TestModules::with_invocation_adapters(
-            Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-            upstream.clone(),
-            observer.clone(),
-        )
-        .await;
+        let mut fixture =
+            TestModules::with_invocation_adapters(v8_engine(), upstream.clone(), observer.clone())
+                .await;
+        fixture.serve().await;
         let tool = fixture.user_tool("user:race-runner", "Race dispatch").await;
         let accepted = fixture
             .runs
             .start(
                 &tool.principal,
                 &tool.workspace_id,
-                submission("invoke-tool"),
+                submission(INVOKE_WEATHER),
             )
             .await
             .expect("accept racing Program");
@@ -880,22 +879,16 @@ async fn an_invocation_dispatches_the_generation_it_resolved_after_provider_rege
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one journey through a regeneration, held at one gate point"
-)]
 async fn dispatches_the_resolved_generation_after_regeneration_at(point: GatePoint) {
     let upstream = Arc::new(ScriptedUpstream::json(
         200,
         serde_json::json!({"temperature": 21}),
     ));
     let (observer, release_enforcement) = EnforcementGate::blocking_at(point);
-    let fixture = TestModules::with_invocation_adapters(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream.clone(),
-        observer.clone(),
-    )
-    .await;
+    let mut fixture =
+        TestModules::with_invocation_adapters(v8_engine(), upstream.clone(), observer.clone())
+            .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool(
             "user:retained-generation",
@@ -907,7 +900,7 @@ async fn dispatches_the_resolved_generation_after_regeneration_at(point: GatePoi
         .start(
             &tool.principal,
             &tool.workspace_id,
-            submission("invoke-tool"),
+            submission(INVOKE_WEATHER),
         )
         .await
         .expect("accept Program");
@@ -1021,12 +1014,13 @@ async fn a_batch_of_ready_invocations_dispatches_in_one_chunk_commit_with_indepe
         serde_json::json!({}),
     )));
     let latch = EnforcementLatch::holding_arrivals_and_failures();
-    let fixture = TestModules::with_invocation_adapters(
+    let mut fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
         latch.clone(),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:batch-enforcement", "Batched enforcement")
         .await;
@@ -1159,12 +1153,13 @@ async fn a_revocation_that_commits_before_the_enforcement_point_denies_the_batch
     {
         let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
         let latch = EnforcementLatch::holding_arrivals();
-        let fixture = TestModules::with_invocation_adapters(
+        let mut fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             upstream.clone(),
             latch.clone(),
         )
         .await;
+        fixture.serve().await;
         let tool = fixture
             .user_tool("user:revoked-batch", "Revoked batch")
             .await;
@@ -1216,11 +1211,12 @@ async fn a_revocation_that_commits_before_the_enforcement_point_denies_the_batch
             200,
             serde_json::json!({}),
         )));
-        let fixture = TestModules::with_upstream(
+        let mut fixture = TestModules::with_upstream(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             upstream.clone(),
         )
         .await;
+        fixture.serve().await;
         let tool = fixture
             .user_tool("user:late-revocation", "Late revocation")
             .await;
@@ -1269,12 +1265,13 @@ async fn a_revocation_that_commits_before_the_enforcement_point_denies_the_batch
 async fn enforcement_checks_of_two_runs_share_their_locks_and_an_authority_writer_waits_for_both() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::json!({})));
     let latch = EnforcementLatch::holding_both();
-    let fixture = TestModules::with_invocation_adapters(
+    let mut fixture = TestModules::with_invocation_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
         latch.clone(),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:shared-enforcement", "Shared enforcement locks")
         .await;
@@ -1417,17 +1414,11 @@ async fn the_precheck_and_the_enforcement_point_reach_the_same_decision_on_the_s
         )
     }
 
-    let (engine, _release) = BlockingEngine::new();
-    let fixture = TestModules::new(Arc::new(engine)).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture.user_tool("user:same-facts", "One evaluator").await;
-    let run = fixture
-        .runs
-        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
-        .await
-        .unwrap();
-    wait_until_started(&fixture, &tool.workspace_id, run.run_id()).await;
-    let record = fixture.run_record(&tool.workspace_id, run.run_id()).await;
-    let admitted = admitted_invocation(&fixture, &tool, run.run_id()).await;
+    let (run_id, _stream) = started(&fixture.runs, &tool).await;
+    let record = fixture.run_record(&tool.workspace_id, &run_id).await;
+    let admitted = admitted_invocation(&fixture, &tool, &run_id).await;
     let invoker = test_invoker(&fixture, &tool, &record);
     let deadline = record.deadline_at_unix_nanos.expect("started");
     let context = change(tool.user.clone(), 100, 'a');
@@ -1529,21 +1520,15 @@ async fn a_batch_verifies_each_retained_provider_access_not_one_per_tool() {
         ApprovalFact, Decision, EnforcementTarget, InvocationFacts, SharedFacts,
     };
 
-    let (engine, _release) = BlockingEngine::new();
-    let fixture = TestModules::new(Arc::new(engine)).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool("user:retained-access", "Retained access")
         .await;
-    let run = fixture
-        .runs
-        .start(&tool.principal, &tool.workspace_id, submission("return 1;"))
-        .await
-        .unwrap();
-    wait_until_started(&fixture, &tool.workspace_id, run.run_id()).await;
-    let record = fixture.run_record(&tool.workspace_id, run.run_id()).await;
-    let stale = admitted_invocation(&fixture, &tool, run.run_id()).await;
+    let (run_id, _stream) = started(&fixture.runs, &tool).await;
+    let record = fixture.run_record(&tool.workspace_id, &run_id).await;
+    let stale = admitted_invocation(&fixture, &tool, &run_id).await;
     move_to_caller_route(&fixture, &tool).await;
-    let current = admitted_invocation(&fixture, &tool, run.run_id()).await;
+    let current = admitted_invocation(&fixture, &tool, &run_id).await;
     assert_ne!(
         stale.target.provider_access().version(),
         current.target.provider_access().version(),
@@ -1657,7 +1642,7 @@ async fn a_refresh_wait_parked_by_the_enforcement_point_resumes_on_the_next_chec
             .mount(&server)
             .await;
         let latch = EnforcementLatch::holding_arrivals();
-        let fixture = TestModules::with_invocation_adapters(
+        let mut fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             Arc::new(
                 crate::invocation::ProductionUpstream::new(
@@ -1669,6 +1654,7 @@ async fn a_refresh_wait_parked_by_the_enforcement_point_resumes_on_the_next_chec
             latch.clone(),
         )
         .await;
+        fixture.serve().await;
         let tool = fixture
             .user_tool_at(
                 "user:enforced-refresh-wait",
@@ -1677,7 +1663,9 @@ async fn a_refresh_wait_parked_by_the_enforcement_point_resumes_on_the_next_chec
             )
             .await;
         let (_directory, accounts) = oauth_account(&fixture, &tool, &server, &endpoint.url).await;
-        let runs = fixture.runs.clone().with_accounts(accounts);
+        let runs = fixture
+            .served(fixture.runs.clone().with_accounts(accounts))
+            .await;
         let run = runs
             .start(
                 &tool.principal,

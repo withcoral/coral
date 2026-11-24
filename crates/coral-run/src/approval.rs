@@ -10,17 +10,13 @@
 //! its own clock sample, from the decision the held gate recorded: an approval
 //! never changes once made.
 //!
-//! A decision is authorized and concealed here. On an owned Run it then waits
-//! in the Run's Run Inbox until the Run's owner, in whichever Coral Instance
-//! holds the Run, records it in its next chunk. On a Run a Run Executor holds,
-//! this Coral Instance records it itself, under the Run's claim and head,
-//! and the Run's stream loop sees the head move. The first
-//! decision wins, and a repeat receives the recorded answer. The decision
-//! reads no policy: the Policy Enforcement Point judges the approval when the
-//! Invocation dispatches. A request's deadline is the owner's timer: it
-//! expires the request in a chunk of its own, in mailbox order with the
-//! decisions that race it. Only the owner records an expiry, or, for a Run a
-//! Run Executor holds, its stream's loop or the sweeper. The first terminal
+//! A decision is authorized and concealed here, then the Coral Instance that
+//! receives it records it, under the Run's claim and head, and the Run's
+//! stream loop sees the head move. The first decision wins, and a repeat
+//! receives the recorded answer. The decision reads no policy: the Policy
+//! Enforcement Point judges the approval when the Invocation dispatches. A
+//! request's deadline is the loop's timer: it expires the request in a chunk
+//! of its own. Only the loop or the sweeper records an expiry. The first terminal
 //! transition and its safe lifecycle event commit together; a lost response can be recovered by reading
 //! or deciding again. Invocation owns live gate ordering and Promise
 //! settlement. Approval owns only request validity, decisions and evidence,
@@ -29,7 +25,6 @@
 use crate::lifecycle::RunRecord;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use coral_db::{Database, Transaction};
 use coral_provider::ProviderId;
@@ -39,7 +34,6 @@ use coral_workspace::TraceId;
 use coral_workspace::{
     AuthenticatedPrincipal, Principal, WorkspaceAction, WorkspaceId, WorkspaceModule, WorkspaceRole,
 };
-use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::approval_repository::{self, StoredApproval};
@@ -47,13 +41,9 @@ use crate::enforcement::ApprovalFact;
 use crate::engine::{Clock, SystemClock};
 use crate::invocation::AdmittedInvocation;
 use crate::owner::{ChunkWork, DecisionRequest};
-use crate::run_inbox::{InboxRequest, OutsideRequest, RunInbox};
 use crate::run_repository::OwnedEvent;
 use crate::run_wake::RunWakes;
 use crate::{CoralFailure, Error, InvocationId, RunId, invocation_repository, run_repository};
-
-/// How long a decision waits for its Run Owner to record it (ADR 0025).
-const DECISION_WAIT: Duration = Duration::from_secs(5);
 
 /// Opaque, non-authorizing Approval Request identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -203,27 +193,22 @@ pub struct ApprovalModule {
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     clock: Arc<dyn Clock>,
-    /// Where a decision waits for its Run's owner.
-    inbox: RunInbox,
     /// The wake-up reader a decision on a Run a Run Executor holds wakes.
     wakes: RunWakes,
 }
 impl ApprovalModule {
     /// Builds the Approval module against the Run domain's migrated database,
-    /// deciding through `inbox` for an owned Run, and raising `wakes` for a
-    /// Run a Run Executor holds.
+    /// raising `wakes` for the Run a decision changes.
     #[must_use]
     pub(crate) fn new(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
-        inbox: RunInbox,
         wakes: RunWakes,
     ) -> Self {
         Self {
             database,
             workspaces,
             clock: Arc::new(SystemClock),
-            inbox,
             wakes,
         }
     }
@@ -319,10 +304,9 @@ impl ApprovalModule {
         Ok(request)
     }
 
-    /// Decides one Approval Request and returns the request as recorded. An
-    /// owned Run's decision goes through its Run Inbox, whichever Coral
-    /// Instance owns the Run; a Run a Run Executor holds has it committed
-    /// here, under its claim and head.
+    /// Decides one Approval Request and returns the request as recorded.
+    /// Whichever Coral Instance receives the decision commits it, under the
+    /// Run's claim and head.
     ///
     /// Authentication supplies current Organization Membership; Workspace supplies
     /// the User's Workspace Membership authority. Comments are limited to 1024 UTF-8 bytes.
@@ -330,13 +314,12 @@ impl ApprovalModule {
     /// The first decision on a request wins; a repeat, and a loser, receive
     /// the recorded answer: the decision, who made it and when. A request
     /// decided or closed already, or one of a terminal Run, is answered from
-    /// the record and puts nothing in the Run Inbox. The wait for the owner
-    /// to record the decision ends early when the Run ends: the record
-    /// answers.
+    /// the record and writes nothing.
     /// # Errors
     /// Conceals unauthorized targets; rejects invalid comments and persistence faults.
-    /// [`Error::RunRequestNotYetRecorded`] when an owned Run's owner has not
-    /// recorded the decision within the wait: retry.
+    /// [`Error::RunRequestNotYetRecorded`] when other writers moved the Run
+    /// under every attempt, or for a Run that an older release's Run Owner
+    /// still holds: retry.
     pub async fn decide(
         &self,
         actor: &AuthenticatedPrincipal,
@@ -346,7 +329,6 @@ impl ApprovalModule {
         comment: Option<&str>,
         trace: &TraceId,
     ) -> Result<ApprovalRequest, Error> {
-        let arrived = Instant::now();
         if comment.is_some_and(|text| text.len() > 1024 || text.contains('\0')) {
             return Err(Error::InvalidInput(
                 "approval comment must be at most 1024 bytes without null characters".into(),
@@ -390,7 +372,6 @@ impl ApprovalModule {
         }
         let decision = DecisionRequest {
             approval: id.clone(),
-            deadline_at_unix_nanos: request.deadline_at_unix_nanos,
             decision,
             actor: actor.principal().clone(),
             comment: comment.map(str::to_owned),
@@ -401,29 +382,9 @@ impl ApprovalModule {
                 .await?;
             return self.get(actor, workspace, id).await;
         }
-        let inbox_request = InboxRequest {
-            workspace_id: workspace.clone(),
-            run_id: run.id.clone(),
-            request: OutsideRequest::Decide(decision),
-        };
-        // The Run's visibility to the caller is read again in the transaction
-        // that inserts the row, which holds no Run row. The snapshot's
-        // inspection and Agent-owner checks are not repeated.
-        let mut tx = self.database.begin().await?;
-        self.visible_run(&mut tx, actor, workspace, &run.id).await?;
-        self.inbox
-            .submit(&mut tx, &inbox_request, self.now()?)
-            .await?;
-        tx.commit().await?;
-        self.inbox.wake_for(&run.id);
-        if !self
-            .inbox
-            .recorded(&inbox_request, arrived + DECISION_WAIT)
-            .await?
-        {
-            return Err(Error::RunRequestNotYetRecorded);
-        }
-        self.get(actor, workspace, id).await
+        // An older release's Run Owner holds it, and only that owner writes
+        // it: its Coral Instance ends the Run when it stops.
+        Err(Error::RunRequestNotYetRecorded)
     }
 
     /// Commits `decision` on the Run a Run Executor holds, in one chunk under
@@ -463,7 +424,9 @@ impl ApprovalModule {
     ) -> Result<(), Error> {
         let mut tx = self.database.begin().await?;
         let run = self.visible_run(&mut tx, actor, workspace, run_id).await?;
-        let row = approval_repository::load(&mut tx, workspace, &decision.approval).await?;
+        // Held: a racing decision or expiry that wrote first is read here,
+        // and this attempt writes nothing.
+        let row = approval_repository::load_held(&mut tx, workspace, &decision.approval).await?;
         if run.state.is_terminal() || row.state != ApprovalState::Pending {
             tx.commit().await?;
             return Ok(());
@@ -797,17 +760,6 @@ fn request(
     }
 }
 
-/// The Run's Approval Requests still undecided whose deadline passed by
-/// `by_unix_nanos`, each with its deadline: the expired-lease sweep queues
-/// their timers for the Run's recovered owner.
-pub(crate) async fn undecided_by(
-    tx: &mut Transaction<'_>,
-    run: &RunRecord,
-    by_unix_nanos: i64,
-) -> Result<Vec<(ApprovalId, i64)>, Error> {
-    approval_repository::undecided_by(tx, &run.workspace_id, &run.id, by_unix_nanos).await
-}
-
 /// The undecided Approval Requests past their deadline by `by_unix_nanos`
 /// on the running Runs that Run Executors hold, each with its Run, earliest
 /// deadline first, up to `limit`: the Run sweeper expires them.
@@ -1026,11 +978,9 @@ pub(super) async fn expire_for_timeout(
         .ok_or(Error::HeadMismatch)
 }
 
-/// What the Run Owner decided for one Approval Request, as the pure `apply`
-/// decided it in mailbox order.
+/// What a writer records for one Approval Request.
 enum Decided {
-    /// A human's decision, recorded as made, dated when the owner applied
-    /// it.
+    /// A human's decision, recorded as made, dated when it was applied.
     Decision {
         request: DecisionRequest,
         applied_at_unix_nanos: i64,
@@ -1044,17 +994,17 @@ enum Decided {
     Expire,
 }
 
-/// One decision as the Run Owner records it in a chunk: the Approval
-/// Request's transition and its lifecycle event, and the end of a declined
-/// or expired Invocation. A request no longer pending records nothing: the
-/// first decision won, and the record answers. The owner runs its decisions
-/// one at a time, so the read before the write decides every outcome the
-/// request can have; a write that still fails with a definite answer fails
-/// the chunk, as any row work's does. Nothing here compares the clock with
-/// the request's deadline: the owner applied the expiry when its timer
-/// fired, or a decision came first. A decision is dated when the owner
-/// applied it, not when its chunk commits, so a decision that came first
-/// stays decided before the deadline.
+/// One decision as a writer records it in a chunk (the receiver of a
+/// decision, the loop's or the sweeper's expiry): the Approval Request's
+/// transition and its lifecycle event, and the end of a declined or expired
+/// Invocation. A request no longer pending records nothing: the first
+/// decision won, and the record answers. The request's row is held, so a
+/// racing writer reads the first one's outcome; a write that still fails
+/// with a definite answer fails the chunk, as any row work's does. Nothing
+/// here compares the clock with the request's deadline: the loop or the
+/// sweeper applies the expiry, or a decision came first. A decision is
+/// dated when it was applied, so one that came first stays decided before
+/// the deadline.
 pub(crate) struct DecideWork {
     approval: ApprovalId,
     decided: Decided,
@@ -1096,7 +1046,9 @@ impl DecideWork {
         run: &RunRecord,
         now: i64,
     ) -> Result<Vec<OwnedEvent>, Error> {
-        let row = approval_repository::load(tx, &run.workspace_id, &self.approval).await;
+        // Held: a decision and an expiry that race each other on two writers
+        // are recorded once, and the second reads the first as a repeat.
+        let row = approval_repository::load_held(tx, &run.workspace_id, &self.approval).await;
         let mut row = match row {
             Ok(row) => row,
             Err(Error::ApprovalNotFound) => return Ok(Vec::new()),
@@ -1168,7 +1120,7 @@ impl ChunkWork for DecideWork {
             .await
     }
 
-    /// The requester reads the record once the chunk deleted its row.
+    /// The requester reads the record once the chunk lands.
     fn settle(self: Box<Self>, _recorded: Result<(), Error>) {}
 }
 

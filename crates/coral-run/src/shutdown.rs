@@ -1,15 +1,10 @@
-//! Graceful shutdown (ADR 0018, Rollout): the process refuses new Runs, lets
-//! its live Runs end on their own for the Shutdown Drain, then interrupts
-//! the rest of the Runs it runs in its own isolates and waits the commit
-//! grace for them to record it. A Run whose owner records nothing keeps its
-//! lease, and the next process's expired-lease sweep ends it after expiry.
-//!
-//! A Run that a dialed Run Executor runs is never interrupted here (ADR
-//! 0027, Reconnect): the drain closes the pull streams and moves each Run
-//! stream once no dispatch is in flight on it, and the Run goes on on
-//! another Coral Instance. A local child's stream can reopen only here, so
-//! its Run keeps dispatching and, at the drain's length, ends interrupted,
-//! or timed out past its deadline.
+//! Graceful shutdown (ADR 0027, Reconnect): the Coral Instance refuses new
+//! Runs, closes its pull streams, and moves each Run stream once no dispatch
+//! is in flight on it, so the Run goes on on another Coral Instance. A Run
+//! that a dialed Run Executor runs is never interrupted here. A local
+//! child's stream can reopen only here, so its Run keeps dispatching and, at
+//! the drain's length, ends interrupted, or timed out past its deadline. A
+//! Run whose loop records nothing by then is the sweeper's.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,9 +24,9 @@ pub(crate) struct Admission(Arc<AdmissionState>);
 #[derive(Default)]
 struct AdmissionState {
     closed: AtomicBool,
-    /// Admissions between their check and their owner's registration (or
-    /// their failure): a Run being accepted and launched, or a recovered
-    /// owner being registered.
+    /// Admissions between their check and their registration (or their
+    /// failure): a Run being accepted and launched, or a reopened stream's
+    /// loop being registered.
     in_flight: watch::Sender<usize>,
 }
 
@@ -87,15 +82,7 @@ impl Drop for Admitted {
 
 impl RunModule {
     /// Shuts the Run module down gracefully. Every new Run is refused with
-    /// [`Error::ShuttingDown`] from now on, while the live Run Owners keep
-    /// working: their Runs end on their own and their requests are served.
-    /// Once every owner retired, or the Shutdown Drain is out, every owner
-    /// still live is interrupted (its Run ends `interrupted`, or `timed_out`
-    /// past its deadline) and given the commit grace to record that. Returns
-    /// then; an owner that recorded nothing by then keeps its lease, and the
-    /// next process's expired-lease sweep ends its Run.
-    ///
-    /// The Run streams drain instead. The pull streams close and no new
+    /// [`Error::ShuttingDown`] from now on. The pull streams close and no new
     /// stream opens. Each stream's owner starts no new dispatch, and once
     /// this Coral Instance holds no pull stream and no dispatch is in flight
     /// on the stream, it commits what it applied and ends the stream cleanly:
@@ -157,13 +144,13 @@ impl RunModule {
         tracing::warn!(
             coral.shutdown.live_runs = safe::number(self.owners.live().len()),
             coral.shutdown.drain_ms = safe::number(drain.as_millis()),
-            "the Shutdown Drain is out: moving the Run streams and interrupting the other Runs still live"
+            "the Shutdown Drain is out: moving the Run streams and interrupting the local children's Runs"
         );
         let end_live = || self.drain_owners(DrainStep::MoveNow);
         end_live();
         let committed = timeout(self.execution_policy.commit_grace(), async {
-            // An owner registered by a late admission moves or is
-            // interrupted too.
+            // A loop registered by a late admission moves or is interrupted
+            // too.
             self.admission.settled().await;
             end_live();
             self.owners.retired().await;
@@ -172,8 +159,7 @@ impl RunModule {
         if committed.is_err() {
             tracing::warn!(
                 coral.shutdown.live_runs = safe::number(self.owners.live().len()),
-                "Runs still live after the commit grace keep their lease; \
-                 the next process's expired-lease sweep ends them"
+                "Run streams still live after the commit grace are left to the Run sweeper"
             );
         }
     }

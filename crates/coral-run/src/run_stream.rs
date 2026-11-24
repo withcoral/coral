@@ -24,7 +24,7 @@ use tokio_stream::StreamExt as _;
 use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::execution::until_answered;
 use crate::lifecycle::{RunRecord, RunTerminationKind};
-use crate::owner::{self, Message, OwnerHandle, OwnerStart, StartedExecution};
+use crate::owner::{self, Message, OwnerHandle, StartedExecution};
 use crate::trace::RunEnd;
 use crate::types::{AcceptedRun, HeldRunId, LinkedTool};
 
@@ -225,9 +225,9 @@ impl RunModule {
         )
         .await;
         let (run, package, linked) = match read {
-            Ok(Some((run, Some((package, linked))))) if run.execution_started() => {
+            Ok(Some((run, Some((_package, linked))))) if run.execution_started() => {
                 return self
-                    .reopen_stream(requests, link, run, claim, package, linked, open.awaited)
+                    .reopen_stream(requests, link, run, claim, linked, open.awaited)
                     .await;
             }
             Ok(Some((run, Some((package, linked))))) => (run, package, linked),
@@ -253,7 +253,7 @@ impl RunModule {
             // attempt the database did not answer reads it again.
             || {
                 let reread = attempted.swap(true, Ordering::SeqCst);
-                self.start_stream(&run, &claim, &package, reread, &started_at)
+                self.start_stream(&run, &claim, reread, &started_at)
             },
         )
         .await;
@@ -364,18 +364,13 @@ impl RunModule {
         &self,
         taken: &RunRecord,
         claim_id: &str,
-        package: &ProgramPackage,
         reread: bool,
         started_at: &std::sync::atomic::AtomicI64,
     ) -> Result<Start, Error> {
-        match self
-            .start_on(taken, claim_id, package, reread, started_at)
-            .await
-        {
+        match self.start_on(taken, claim_id, reread, started_at).await {
             // The row moved since `Open` read it: read it again.
             Err(Error::HeadMismatch | Error::RunEnded) if !reread => {
-                self.start_on(taken, claim_id, package, true, started_at)
-                    .await
+                self.start_on(taken, claim_id, true, started_at).await
             }
             Err(Error::ClaimMismatch) => Ok(Start::Ended(WireEnd::NotHeld)),
             started => started,
@@ -390,7 +385,6 @@ impl RunModule {
         &self,
         taken: &RunRecord,
         claim_id: &str,
-        package: &ProgramPackage,
         reread: bool,
         started_at: &std::sync::atomic::AtomicI64,
     ) -> Result<Start, Error> {
@@ -469,7 +463,6 @@ impl RunModule {
             return Ok(Start::Started(Box::new((
                 actor,
                 StartedExecution {
-                    package: package.clone(),
                     head: run.chunk_sequence,
                     deadline_at_unix_nanos,
                 },
@@ -493,7 +486,6 @@ impl RunModule {
         Ok(Start::Started(Box::new((
             actor,
             StartedExecution {
-                package: package.clone(),
                 head: run.chunk_sequence + 1,
                 deadline_at_unix_nanos,
             },
@@ -613,8 +605,6 @@ impl RunModule {
             shutdown_grace_nanos: run.shutdown_grace_nanos,
             value_limits: run.value_limits,
             claim_id: claim_id.clone(),
-            // A Run Executor's Run has no worker lease.
-            worker_claim_expires_at_unix_nanos: run.accepted_at_unix_nanos,
             linked_snapshots,
             trace: run.trace,
             time_limit_nanos: run.time_limit_nanos,
@@ -626,8 +616,7 @@ impl RunModule {
             local_child,
         );
         // Decisions and cancellations reach it from their receiver through
-        // the Run's head; one an older release put in the Run Inbox reaches
-        // it there.
+        // the Run's head.
         let registration = self.register_stream_owner(&handle);
         drop(admitted);
         handle.send(Message::Started(Ok(Some(started))));
@@ -640,7 +629,7 @@ impl RunModule {
         owner::host(
             self.clone(),
             accepted,
-            OwnerStart::Stream(stream),
+            stream,
             handle,
             mailbox,
             registration,

@@ -142,7 +142,7 @@ impl ApprovalGatedTool {
     pub(crate) async fn new(user_id: &str) -> Self {
         let (gate, release) = EnforcementGate::blocking();
         let fixture = TestModules::with_invocation_adapters(
-            Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
+            v8_engine(),
             Arc::new(RejectingUpstream),
             Arc::new(ApprovalWaitGate(gate.clone())),
         )
@@ -160,15 +160,16 @@ impl ApprovalGatedTool {
     /// Starts a Run as `actor` and holds it at its approval wait.
     pub(crate) async fn hold(self, actor: AuthenticatedPrincipal) -> HeldApproval {
         let Self {
-            fixture,
+            mut fixture,
             tool,
             gate,
             release,
         } = self;
+        fixture.serve().await;
         let approvals = fixture.approvals();
         let accepted = fixture
             .runs
-            .start(&actor, &tool.workspace_id, submission("invoke"))
+            .start(&actor, &tool.workspace_id, submission(INVOKE_WEATHER))
             .await
             .unwrap();
         wait_until(|| gate.entered()).await;
@@ -206,22 +207,7 @@ pub(crate) struct HeldApproval {
 impl HeldApproval {
     /// Holds a Run that the Tool's User started.
     pub(crate) async fn new(user_id: &str) -> Self {
-        Self::under(user_id, crate::execution::ExecutionPolicy::testing()).await
-    }
-
-    /// Holds a Run whose Approval Request expires `approval_wait` after its
-    /// creation, by the owner's timer.
-    pub(crate) async fn expiring(user_id: &str, approval_wait: Duration) -> Self {
-        Self::under(
-            user_id,
-            crate::execution::ExecutionPolicy::testing_with_approval_wait(approval_wait),
-        )
-        .await
-    }
-
-    async fn under(user_id: &str, policy: crate::execution::ExecutionPolicy) -> Self {
-        let mut setup = ApprovalGatedTool::new(user_id).await;
-        setup.fixture.runs.execution_policy = policy;
+        let setup = ApprovalGatedTool::new(user_id).await;
         let owner = setup.tool.principal.clone();
         setup.hold(owner).await
     }

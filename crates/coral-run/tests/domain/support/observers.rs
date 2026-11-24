@@ -8,47 +8,6 @@ pub(crate) async fn until_released(gate: &watch::Sender<bool>) {
     let _released = released.wait_for(|released| *released).await;
 }
 
-/// Holds the first Run Owner before its start mark until released; every
-/// later one passes.
-pub(crate) struct ClaimGate {
-    claims: AtomicUsize,
-    pub(crate) finished: AtomicUsize,
-    pub(crate) entered: AtomicBool,
-    released: watch::Sender<bool>,
-}
-
-impl Default for ClaimGate {
-    fn default() -> Self {
-        Self {
-            claims: AtomicUsize::new(0),
-            finished: AtomicUsize::new(0),
-            entered: AtomicBool::new(false),
-            released: watch::channel(false).0,
-        }
-    }
-}
-
-impl ClaimGate {
-    /// Lets the held owner commit its start mark.
-    pub(crate) fn release(&self) {
-        self.released.send_replace(true);
-    }
-}
-
-#[async_trait]
-impl ExecutionObserver for ClaimGate {
-    async fn owner_starting(&self, _run_id: &crate::RunId, _claim_id: &str) {
-        if self.claims.fetch_add(1, Ordering::SeqCst) == 0 {
-            self.entered.store(true, Ordering::SeqCst);
-            until_released(&self.released).await;
-        }
-    }
-
-    fn execution_attempt_finished(&self) {
-        self.finished.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
 /// Records every timer the Run Owner armed, with how long after its arming
 /// it fires.
 #[derive(Default)]
@@ -110,18 +69,26 @@ impl BlockingGate {
     }
 }
 
-/// Holds the first chunk commit (a Run Owner's after its start mark, or a
-/// recovered owner's one chunk) until released; every later commit passes.
-pub(crate) struct CommitGate(BlockingGate);
+/// Holds a Run stream loop's first chunk commit until released; every
+/// later commit passes. Counts the messages the loop dequeued.
+pub(crate) struct CommitGate {
+    gate: BlockingGate,
+    dequeued: AtomicUsize,
+}
 
 impl CommitGate {
     pub(crate) fn blocking() -> (Arc<Self>, oneshot::Sender<()>) {
         let (gate, release) = BlockingGate::new();
-        (Arc::new(Self(gate)), release)
+        let dequeued = AtomicUsize::new(0);
+        (Arc::new(Self { gate, dequeued }), release)
     }
 
     pub(crate) fn entered(&self) -> bool {
-        self.0.entered.load(Ordering::SeqCst)
+        self.gate.entered.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn dequeued(&self) -> usize {
+        self.dequeued.load(Ordering::SeqCst)
     }
 }
 
@@ -129,44 +96,11 @@ impl CommitGate {
 impl ExecutionObserver for CommitGate {
     async fn before_chunk_commit(&self) {
         // A dropped sender releases the commit too.
-        let _released = self.0.hold().await;
-    }
-}
-
-/// Holds the first chunk commit like [`CommitGate`] and counts the
-/// requests the Run Inbox reader delivers.
-pub(crate) struct InboxProbe {
-    gate: BlockingGate,
-    delivered: AtomicUsize,
-}
-
-impl InboxProbe {
-    pub(crate) fn holding_the_first_commit() -> (Arc<Self>, oneshot::Sender<()>) {
-        let (gate, release) = BlockingGate::new();
-        let probe = Self {
-            gate,
-            delivered: AtomicUsize::new(0),
-        };
-        (Arc::new(probe), release)
-    }
-
-    pub(crate) fn entered(&self) -> bool {
-        self.gate.entered.load(Ordering::SeqCst)
-    }
-
-    pub(crate) fn delivered(&self) -> usize {
-        self.delivered.load(Ordering::SeqCst)
-    }
-}
-
-#[async_trait]
-impl ExecutionObserver for InboxProbe {
-    async fn before_chunk_commit(&self) {
         let _released = self.gate.hold().await;
     }
 
-    fn inbox_delivered(&self) {
-        self.delivered.fetch_add(1, Ordering::SeqCst);
+    fn owner_message_dequeued(&self) {
+        self.dequeued.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -610,9 +544,8 @@ impl ExecutionObserver for WaitProbe {
     }
 }
 
-/// Watches the Run Owner's chunk commits: counts them, holds the next one
-/// when armed, loses the next one's answer when armed, and panics the
-/// owner's task on its next message when armed.
+/// Watches a Run stream loop's chunk commits: counts them, holds the next
+/// one when armed, and loses the next one's answer when armed.
 pub(crate) struct CommitProbe {
     commits: AtomicUsize,
     /// Attempts still to fail as unanswered before they write.
@@ -621,13 +554,6 @@ pub(crate) struct CommitProbe {
     held: AtomicBool,
     lose: Mutex<Option<oneshot::Receiver<()>>>,
     lost: AtomicBool,
-    panic_on_next_message: AtomicBool,
-    /// Blocks the owner's task on its next dequeued message until released:
-    /// everything sent meanwhile is applied in one mailbox drain after it.
-    hold_message: Mutex<Option<mpsc::Receiver<()>>>,
-    message_held: AtomicBool,
-    /// Outside requests the Run Inbox reader has put in an owner's mailbox.
-    delivered: AtomicUsize,
 }
 
 impl CommitProbe {
@@ -639,10 +565,6 @@ impl CommitProbe {
             held: AtomicBool::new(false),
             lose: Mutex::new(None),
             lost: AtomicBool::new(false),
-            panic_on_next_message: AtomicBool::new(false),
-            hold_message: Mutex::new(None),
-            message_held: AtomicBool::new(false),
-            delivered: AtomicUsize::new(0),
         })
     }
 
@@ -683,31 +605,6 @@ impl CommitProbe {
     pub(crate) fn lost(&self) -> bool {
         self.lost.load(Ordering::SeqCst)
     }
-
-    /// Panics the owner's task when it dequeues its next message.
-    pub(crate) fn panic_on_next_message(&self) {
-        self.panic_on_next_message.store(true, Ordering::SeqCst);
-    }
-
-    /// Holds the owner's task at its next dequeued message until the sender
-    /// fires (or is dropped): the messages that arrive meanwhile are applied
-    /// in one mailbox drain with it, in arrival order.
-    pub(crate) fn hold_next_message(&self) -> mpsc::Sender<()> {
-        let (release, receiver) = mpsc::channel();
-        self.message_held.store(false, Ordering::SeqCst);
-        *self.hold_message.lock().expect("hold lock") = Some(receiver);
-        release
-    }
-
-    pub(crate) fn message_held(&self) -> bool {
-        self.message_held.load(Ordering::SeqCst)
-    }
-
-    /// Outside requests (a cancel, a decision) delivered to an owner's
-    /// mailbox so far.
-    pub(crate) fn delivered(&self) -> usize {
-        self.delivered.load(Ordering::SeqCst)
-    }
 }
 
 #[async_trait]
@@ -739,27 +636,5 @@ impl ExecutionObserver for CommitProbe {
             }
             None => false,
         }
-    }
-
-    fn owner_message_dequeued(&self) {
-        assert!(
-            !self.panic_on_next_message.swap(false, Ordering::SeqCst),
-            "scripted Run Owner task panic"
-        );
-        let release = self.hold_message.lock().expect("hold lock").take();
-        if let Some(release) = release {
-            self.message_held.store(true, Ordering::SeqCst);
-            // Blocks the owner's task on purpose, in `block_in_place`: a
-            // plain blocking call would also strand the task this worker
-            // woke last, which no other worker can take. That can be the
-            // Run Inbox reader, woken by the owner's own commit, and the
-            // test would then wait for a delivery that cannot come. Needs a
-            // multi-thread runtime.
-            let _released = tokio::task::block_in_place(|| release.recv());
-        }
-    }
-
-    fn inbox_delivered(&self) {
-        self.delivered.fetch_add(1, Ordering::SeqCst);
     }
 }

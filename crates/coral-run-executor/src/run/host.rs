@@ -431,12 +431,16 @@ impl RunHost {
         arguments_json: String,
         location: Option<AuthoredLocation>,
     ) -> ToolFuture {
-        self.ask(request::Kind::Invoke(Invoke {
+        let invoke = Invoke {
             call_path,
             arguments_json,
             location: self.location(location),
             parent,
-        }))
+        };
+        if !fits_the_link(&invoke) {
+            return Box::pin(async { Err(input_too_large()) });
+        }
+        self.ask(request::Kind::Invoke(invoke))
     }
 
     /// [`coral_v8::ProgramHost::perform`] for a call that the body of
@@ -455,6 +459,9 @@ impl RunHost {
             location: self.location(location),
             parent,
         };
+        if !fits_the_link(&perform) {
+            return Box::pin(async { Err(input_too_large()) });
+        }
         let sent = self.send(
             request::Kind::Perform(perform),
             0,
@@ -598,6 +605,13 @@ impl RunHost {
             Err(coral_v8::Error::InvalidProgramValue(message)) => {
                 failure("invalid_program_value", message, None)
             }
+            // Nothing is left that could settle what the Program awaits: no
+            // Tool call is in flight, and no other event source exists.
+            Err(coral_v8::Error::PendingProgram) => failure(
+                "program_execution_failed",
+                "Program awaited a Promise that nothing can settle".to_owned(),
+                None,
+            ),
             Err(_private_diagnostic) => failure(
                 "program_execution_failed",
                 "Program execution failed".to_owned(),
@@ -735,11 +749,40 @@ impl ToolCompletion for Performed {
                 tool_error,
             }),
         };
-        // Sent here, on the Program's thread, so the body has ended before
-        // any later call of its leftover work.
-        self.0.host.ask(request::Kind::Complete(Complete {
+        let mut complete = Complete {
             perform: self.0.perform,
             outcome: Some(outcome),
-        }))
+        };
+        // A result the link cannot carry: the call fails as Coral fails a
+        // result over its limit.
+        if !fits_the_link(&complete) {
+            complete.outcome = Some(complete::Outcome::Threw(Threw {
+                message: "Tool result exceeds its limit".to_owned(),
+                tool_error: Some("upstream_result_too_large".to_owned()),
+            }));
+        }
+        // Sent here, on the Program's thread, so the body has ended before
+        // any later call of its leftover work.
+        self.0.host.ask(request::Kind::Complete(complete))
+    }
+}
+
+/// Whether `kind`'s message, sent as a numbered request, stays within
+/// [`crate::MESSAGE_MAX_BYTES`]. One the link cannot carry would fail the
+/// stream on every resend. The request wraps it in two more length-delimited
+/// fields and a number: 23 bytes at most.
+fn fits_the_link(kind: &impl prost::Message) -> bool {
+    const ENVELOPE_BYTES: usize = 23;
+    kind.encoded_len().saturating_add(ENVELOPE_BYTES) <= crate::MESSAGE_MAX_BYTES
+}
+
+/// The failure of a call whose arguments the link cannot carry, as Coral
+/// fails a Tool input over its limit. The call is never sent.
+fn input_too_large() -> ToolHostError {
+    ToolHostError::Rejected {
+        code: "tool_input_too_large".into(),
+        message: "Tool input exceeds its limit".into(),
+        trace_id: None,
+        suggestions: Vec::new(),
     }
 }

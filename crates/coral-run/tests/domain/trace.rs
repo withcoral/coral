@@ -72,16 +72,6 @@ impl Telemetry {
             assert!(!telemetry.contains(canary), "telemetry holds {canary}");
         }
     }
-
-    /// The operational logs that left the host holding `text`, such as a
-    /// test's own Run ID, each record as text to search.
-    pub(super) fn logs_holding(&self, text: &str) -> Vec<String> {
-        self.logs
-            .log_records()
-            .into_iter()
-            .filter(|record| record.contains(text))
-            .collect()
-    }
 }
 
 /// What [`FailingExporter`] refused of each signal: the `coral.run.id` of a
@@ -191,29 +181,27 @@ fn span_names(spans: &[SpanData]) -> Vec<String> {
 #[tokio::test]
 async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
     let capture = capture();
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let (workspace_id, principal) = fixture.user_scope("user:run-trace", "Trace one Run").await;
 
     let request = tracing::info_span!("request");
     let request_trace = request.context().span().span_context().trace_id();
     let accepted = async {
-        let accepted = fixture
-            .runs
+        let accepted = runs
             .start(&principal, &workspace_id, submission("return 1;"))
             .await
             .expect("accept the Run");
-        fixture
-            .runs
-            .observe(
-                &principal,
-                &workspace_id,
-                accepted.run_id(),
-                &crate::RunObservation::initial(std::time::Duration::ZERO)
-                    .expect("observation")
-                    .without_trace_link(),
-            )
-            .await
-            .expect("observe the Run");
+        runs.observe(
+            &principal,
+            &workspace_id,
+            accepted.run_id(),
+            &crate::RunObservation::initial(std::time::Duration::ZERO)
+                .expect("observation")
+                .without_trace_link(),
+        )
+        .await
+        .expect("observe the Run");
         accepted
     }
     .instrument(request.clone())
@@ -256,7 +244,7 @@ async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
         attribute(accept, "coral.run.id").as_deref(),
         Some(accepted.run_id().as_str())
     );
-    for phase in ["coral.run.start", "coral.run.execute", "coral.run.complete"] {
+    for phase in ["coral.run.execute", "coral.run.complete"] {
         let phase = only(&spans, phase);
         assert_eq!(phase.span_context.trace_id(), run_trace, "{}", phase.name);
         assert_eq!(
@@ -273,66 +261,6 @@ async fn an_accepted_run_gets_its_own_trace_linked_to_the_request() {
         Some(run_trace.to_string()),
         "the Run row stores the accept span's context"
     );
-}
-
-/// Another Coral Instance that recovers a Run continues its Run Trace with a
-/// new span, a child of the accept span. A Run accepted before the Run Trace
-/// was stored is recovered in a new trace of its own.
-#[tokio::test]
-async fn a_recovered_run_continues_its_trace_on_another_coral_instance() {
-    for stored in [true, false] {
-        capture();
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-        let (workspace_id, principal) = fixture
-            .user_scope("user:recovered-trace", "Recover one Run")
-            .await;
-        let run_id = fixture
-            .staged_run(&principal, &workspace_id, "return 1;")
-            .await;
-        if !stored {
-            fixture
-                .inject_fault(&format!(
-                    "UPDATE program_run_records SET trace_parent = NULL WHERE id = '{run_id}'"
-                ))
-                .await;
-        }
-        fixture
-            .hand_to(&workspace_id, &run_id, "dead-holder", None)
-            .await;
-
-        assert_eq!(
-            fixture.next_process().sweep_expired_leases().await.unwrap(),
-            1
-        );
-        let run = fixture.terminal_record(&workspace_id, &run_id).await;
-        assert_eq!(run.state, RunState::Interrupted);
-        wait_until(|| !named(&of_run(&run_id), "coral.run.recover").is_empty()).await;
-
-        let spans = of_run(&run_id);
-        let accept = only(&spans, "coral.run.accept");
-        let recover = only(&spans, "coral.run.recover");
-        assert_eq!(
-            attribute(recover, "coral.run.status").as_deref(),
-            Some("interrupted")
-        );
-        assert!(matches!(
-            recover.status,
-            opentelemetry::trace::Status::Error { .. }
-        ));
-        if stored {
-            assert_eq!(
-                recover.span_context.trace_id(),
-                accept.span_context.trace_id()
-            );
-            assert_eq!(recover.parent_span_id, accept.span_context.span_id());
-        } else {
-            assert_ne!(
-                recover.span_context.trace_id(),
-                accept.span_context.trace_id()
-            );
-            assert_eq!(recover.parent_span_id, SpanId::INVALID);
-        }
-    }
 }
 
 /// The span status rules. The span that writes a Run's terminal state is an
@@ -481,18 +409,15 @@ async fn a_tool_invocation_traces_its_gates_enforcement_and_persistence_under_th
         500,
         serde_json::json!({"down": true}),
     ));
-    let fixture = TestModules::with_upstream(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream,
-    )
-    .await;
+    let mut fixture = TestModules::with_upstream(v8_engine(), upstream).await;
+    fixture.serve().await;
     let tool = fixture.user_tool("user:traced-tool", "Call weather").await;
     let accepted = fixture
         .runs
         .start(
             &tool.principal,
             &tool.workspace_id,
-            submission("invoke-tool"),
+            submission(INVOKE_WEATHER),
         )
         .await
         .expect("accept the Run");
@@ -558,8 +483,8 @@ async fn a_tool_invocation_traces_its_gates_enforcement_and_persistence_under_th
 #[tokio::test]
 async fn a_failed_run_and_its_coral_failure_name_the_run_trace() {
     capture();
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.live_runs(None);
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let tool = fixture
         .user_tool("user:failure-trace", "Name the trace")
         .await;
@@ -755,18 +680,15 @@ async fn a_run_ends_the_same_when_its_telemetry_fails_to_export() {
         200,
         serde_json::json!({"t": 21}),
     )));
-    let fixture = TestModules::with_upstream(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream,
-    )
-    .await;
+    let mut fixture = TestModules::with_upstream(v8_engine(), upstream).await;
+    fixture.serve().await;
     let tool = fixture.user_tool("user:export-fails", "Call weather").await;
     let accepted = fixture
         .runs
         .start(
             &tool.principal,
             &tool.workspace_id,
-            submission("invoke-tool"),
+            submission(INVOKE_WEATHER),
         )
         .await
         .expect("accept the Run");
@@ -819,64 +741,6 @@ async fn a_run_ends_the_same_when_its_telemetry_fails_to_export() {
     ));
 }
 
-/// A cancellation that the Run's owner has not recorded yet still links to
-/// the Run Trace: its caller was authorized and its request was inserted.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_unrecorded_cancellation_still_links_to_the_run_trace() {
-    let capture = capture();
-    let held = HeldApproval::new("user:unrecorded-cancel").await;
-    let (fixture, workspace_id, run_id) = (&held.fixture, &held.tool.workspace_id, &held.run);
-    let run_trace = fixture
-        .run_record(workspace_id, run_id)
-        .await
-        .trace
-        .expect("a stored Run Trace")
-        .trace_id();
-    fixture
-        .hand_to(workspace_id, run_id, "dead-holder", None)
-        .await;
-    let (gate, release) = CommitGate::blocking();
-    let next = fixture.next_process_observed(gate.clone());
-    assert_eq!(next.sweep_expired_leases().await.unwrap(), 1);
-    wait_until(|| gate.entered()).await;
-
-    let cancel = tracing::info_span!("request", request.kind = "cancel");
-    let cancel_trace = cancel.context().span().span_context().trace_id();
-    let unrecorded = next
-        .cancel(&held.actor, workspace_id, run_id, &immediate(None, 10))
-        .instrument(cancel)
-        .await;
-    assert!(
-        matches!(unrecorded, Err(Error::RunRequestNotYetRecorded)),
-        "{unrecorded:?}"
-    );
-    release
-        .send(())
-        .expect("release the recovered owner's chunk");
-
-    // The request's span ends when the last task that carries it does.
-    wait_until(|| {
-        capture
-            .finished()
-            .iter()
-            .any(|span| span.span_context.trace_id() == cancel_trace)
-    })
-    .await;
-    let spans = capture.finished();
-    let cancel = spans
-        .iter()
-        .find(|span| span.span_context.trace_id() == cancel_trace)
-        .expect("cancel span");
-    assert_eq!(
-        cancel
-            .links
-            .iter()
-            .map(|link| link.span_context.trace_id().to_string())
-            .collect::<Vec<_>>(),
-        vec![run_trace.as_str().to_string()]
-    );
-}
-
 /// A Run row whose Program never started, for recording an end with no
 /// database.
 fn unstarted_run() -> crate::lifecycle::RunRecord {
@@ -892,7 +756,6 @@ fn unstarted_run() -> crate::lifecycle::RunRecord {
         accepted_at_unix_nanos: 0,
         deadline_at_unix_nanos: None,
         worker_claim_id: None,
-        worker_claim_expires_at_unix_nanos: None,
         holder_instance_id: None,
         execution_claim_id: None,
         execution_started_at_unix_nanos: None,

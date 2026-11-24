@@ -1,7 +1,7 @@
 use coral_db::UnixNanos;
 use coral_outbound::{DestinationPolicy, NetworkAccess};
 use coral_provider::ProviderModule;
-use coral_run::{CoralInstanceId, RunInbox, RuntimeLimits};
+use coral_run::{CoralInstanceId, RuntimeLimits};
 use coral_search::UniversalSearchModule;
 use coral_task::TaskModule;
 use coral_test_support::{TEST_COMPILATION_TIMEOUT, TestDatabase, change, provision_user};
@@ -17,6 +17,9 @@ const POLICY: DestinationPolicy =
 /// Task of its own.
 struct Harness {
     _fixture: TestDatabase,
+    /// Serves the Runs on a Run Executor in this process.
+    _serving: coral_run::testing::Serving,
+
     tasks: TaskModule,
     tools: RunTools,
     caller: Caller,
@@ -41,15 +44,16 @@ impl Harness {
             providers,
             RuntimeLimits::default().with_compilation_timeout(TEST_COMPILATION_TIMEOUT),
             CoralInstanceId::generate(),
-            RunInbox::table(database.clone()),
         )
         .unwrap();
+        let (runs, serving) = coral_run::testing::serve_on_run_executor(runs).await;
         let tasks = TaskModule::new(database.clone(), workspaces.clone());
         let search = UniversalSearchModule::new(database.clone(), workspaces);
         let commands = TaskCommands::new(tasks.clone(), search, runs.clone());
         let principal = AuthenticatedPrincipal::user(user);
         let mut harness = Self {
             _fixture: fixture,
+            _serving: serving,
             tasks,
             tools: RunTools::new(database, commands, runs),
             caller: Caller {

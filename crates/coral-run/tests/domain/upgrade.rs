@@ -7,7 +7,7 @@ use super::*;
 #[tokio::test]
 async fn upgrade_moves_the_builtin_tools_and_private_tools_to_the_new_roots() {
     // The step that rewrites the stored roots; every other step has run.
-    let fixture = TestModules::without_migration(
+    let mut fixture = TestModules::without_migration(
         64,
         Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
@@ -15,6 +15,7 @@ async fn upgrade_moves_the_builtin_tools_and_private_tools_to_the_new_roots() {
         ),
     )
     .await;
+    fixture.serve().await;
     let (workspace_id, owner) = builtin_tools_a_rule_and_a_private_tool(&fixture).await;
     // What Coral stored before the move.
     for downgrade in [

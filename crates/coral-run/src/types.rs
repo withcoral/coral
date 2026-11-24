@@ -217,11 +217,6 @@ impl RunTimeout {
     pub(crate) const fn nanoseconds(self) -> i64 {
         self.nanoseconds
     }
-
-    /// The time limit as a duration, counted from the Run's start.
-    pub(crate) const fn duration(self) -> Duration {
-        Duration::from_nanos(self.nanoseconds.unsigned_abs())
-    }
 }
 
 /// Complete caller submission needed for core Program admission.
@@ -333,12 +328,6 @@ impl ProgramValue {
     ) -> Result<Self, Error> {
         Self::with_limits(encoded_json, limits)
             .map_err(|error| Error::CorruptData(format!("Run has invalid Program Value: {error}")))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_json(json: &Value) -> Result<Self, Error> {
-        let encoded_json = serde_json::to_string(json).map_err(Error::ProgramValueJson)?;
-        Self::from_encoded_json(encoded_json)
     }
 
     /// Returns the parsed JSON domain value.
@@ -1159,10 +1148,8 @@ pub(crate) struct AcceptedRun {
     pub(crate) accepted_at_unix_nanos: i64,
     pub(crate) shutdown_grace_nanos: i64,
     pub(crate) value_limits: coral_value::ValueLimits,
-    /// The Run Owner's claim, written as the worker claim by acceptance.
+    /// The execution claim a take gave the Run; acceptance writes none.
     pub(crate) claim_id: String,
-    /// The first lease, which the owner renews with every chunk it commits.
-    pub(crate) worker_claim_expires_at_unix_nanos: i64,
     /// Each linked Private or Shared Tool's complete Call Path, such as
     /// `coral.shared.mail.remind`, to the revision that acceptance retained
     /// for it, which a call performs.

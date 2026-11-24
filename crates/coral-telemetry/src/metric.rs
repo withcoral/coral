@@ -28,9 +28,9 @@ pub use attribute::{
     AcquisitionOperation, AcquisitionOutcome, ClaimKind, ClaimOutcome, CompactionOutcome,
     CompileOutcome, CompilerBuildOutcome, CompilerBuildReason, CompilerOperation, CompilerOutcome,
     CompilerRole, DbSystem, DropReason, EmbedBatchOutcome, GateKind, Interface, InvocationEnd,
-    ModelCallOutcome, OutputKind, PrincipalKind, ProviderProtocol, RecoveryOutcome, RequestOutcome,
-    RunPhase, RunStatus, SecretStoreRead, SignalKind, SubAgentTurnOutcome, TerminationReason,
-    TokenType, ToolEffect, TransactionOutcome, UpstreamOutcome, VisibilityPath,
+    ModelCallOutcome, OutputKind, PrincipalKind, ProviderProtocol, RequestOutcome, RunPhase,
+    RunStatus, SecretStoreRead, SignalKind, SubAgentTurnOutcome, TerminationReason, TokenType,
+    ToolEffect, TransactionOutcome, UpstreamOutcome, VisibilityPath,
 };
 
 /// Histogram bounds for a duration in seconds, from 5 ms to an hour.
@@ -102,8 +102,6 @@ struct Catalog {
     run_duration: Histogram<f64>,
     run_phase_duration: Histogram<f64>,
     run_active: Level,
-    run_queue_depth: Level,
-    run_recovery: Counter<u64>,
     invocation_started: Counter<u64>,
     invocation_ended: Counter<u64>,
     invocation_duration: Histogram<f64>,
@@ -439,18 +437,7 @@ impl Metrics {
                 &meter,
                 "coral.run.active",
                 "{run}",
-                "Program Runs whose Run Owner is live on this Coral Instance.",
-            ),
-            run_queue_depth: Level::new(
-                &meter,
-                "coral.run.queue.depth",
-                "{run}",
-                "Program Runs on this Coral Instance waiting for their start.",
-            ),
-            run_recovery: counter(
-                "coral.run.recovery",
-                "{run}",
-                "Program Runs a recovered Run Owner took over.",
+                "Program Runs whose Run stream is served on this Coral Instance.",
             ),
             invocation_started: counter(
                 "coral.invocation.started",
@@ -1048,28 +1035,11 @@ pub fn run_phase(phase: RunPhase) -> Timer {
     Timer::start(Timed::RunPhase(phase))
 }
 
-/// Counts one Run Owner live on this Coral Instance until the returned level
-/// drops.
+/// Counts one Run stream loop live on this Coral Instance until the
+/// returned level drops.
 #[must_use = "the Run counts as active until the level drops"]
 pub fn run_active() -> LevelGuard {
     LevelGuard::start(Live::Run)
-}
-
-/// Counts one accepted Program Run waiting for its start on this Coral
-/// Instance until the returned level drops.
-#[must_use = "the Run counts as queued until the level drops"]
-pub fn run_queued() -> LevelGuard {
-    LevelGuard::start(Live::Queued)
-}
-
-/// Counts one Program Run a recovered Run Owner took over, by how its one
-/// chunk ended.
-pub fn run_recovered(outcome: RecoveryOutcome) {
-    with(|catalog| {
-        catalog
-            .run_recovery
-            .add(1, &[KeyValue::new("outcome", outcome.as_str())]);
-    });
 }
 
 /// Counts one claim of `claim` kind to own a Program Run, by its outcome.
@@ -1373,7 +1343,6 @@ impl Drop for Timer {
 #[derive(Debug, Clone, Copy)]
 enum Live {
     Run,
-    Queued,
     SubAgentTurn,
 }
 
@@ -1398,7 +1367,6 @@ impl Metrics {
     fn level(&self, live: Live) -> &Level {
         match live {
             Live::Run => &self.0.run_active,
-            Live::Queued => &self.0.run_queue_depth,
             Live::SubAgentTurn => &self.0.sub_agent_turn_active,
         }
     }

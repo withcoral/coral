@@ -1,30 +1,18 @@
-//! Internal compiler and execution adapters for Run orchestration.
+//! Internal compiler adapters for Program Admission, and the host a Run's
+//! Program calls through its Run stream.
 //!
-//! [`execute`] takes an accepted package, Run-bound invoker and output writer,
-//! accepted value limits, and stop control. It runs the selected [`ProgramEngine`]
-//! on a blocking worker and returns [`ExecutionCompletion`], not a durable Run
-//! outcome. It requires a Tokio runtime; the Run Owner that hosts it retains
-//! the claim, the lease, child shutdown, and the final outcome transaction.
-//!
-//! The private host bridge owns Tool task spawning, JSON and console
-//! projection, safe host-error translation, synchronous output calls, and
-//! stop-on-panic behavior. Invocation tasks start independently of V8 polling.
-//! The invoker and the output writer ask the Run Owner, which answers at
-//! Applied, or at Recorded while the unrecorded output exceeds the Applied cap;
-//! a known Invocation failure is recorded before its Promise settles.
-//! Fatal Invocation errors and task panics request stop even while JavaScript
-//! does not yield. Host defects expose no private diagnostics; output errors
-//! retain their invalid-value, resource-limit, or uncatchable fatal
-//! classification.
-//!
-//! The existing scripted/V8 engine seam stays internal. V8 owns isolate mechanics
-//! and authored diagnostics; its compiler-only and execution isolates stay separate.
-//! Run retains admission, authority, persistence, and terminal outcome selection.
-//! For example, changing console-level projection or panic termination changes
-//! `engine/host.rs`, not the main Run orchestration module.
+//! [`ProgramEngine`] analyzes and compiles a submission through the Coral
+//! Instance's compiler client; a Run Executor executes the package (ADR
+//! 0027). The private host bridge in `engine/host.rs` owns Tool task
+//! spawning, JSON and console projection, safe host-error translation, and
+//! synchronous output calls. The invoker and the output writer ask the Run
+//! stream's loop, which answers at Applied, or at Recorded while the
+//! unrecorded output exceeds the Applied cap; a known Invocation failure is
+//! recorded before its Promise settles. Host defects expose no private
+//! diagnostics; output errors retain their invalid-value, resource-limit, or
+//! uncatchable fatal classification.
 
 pub(crate) mod host;
-pub(crate) use host::execute;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -34,7 +22,6 @@ use coral_run_executor::{AnalysisError, CompileError, CompilerClient, Diagnostic
 use coral_tools::{AuthoredToolPath, LinkedToolReference, LinkedToolSelection};
 use coral_v8::{BuiltinTools, CompileFailure};
 
-use crate::execution::ExecutionStop;
 use crate::{
     EMITTED_JAVASCRIPT_MAX_BYTES, Error, FinalValue, ProgramValue, RunFailure, RunFailureCode,
     SOURCE_MAP_MAX_BYTES,
@@ -136,13 +123,6 @@ pub(crate) trait ProgramEngine: Send + Sync {
         builtin_tools: &BuiltinTools,
         callable: Option<&[String]>,
     ) -> Result<ProgramPackage, PackageFailure>;
-
-    fn execute(
-        &self,
-        package: ProgramPackage,
-        host: Arc<dyn coral_v8::ProgramHost>,
-        stop: Arc<ExecutionStop>,
-    ) -> ExecutionCompletion;
 }
 
 /// The completion of a Program that returned `value_json`, as native JSON,
@@ -185,30 +165,23 @@ impl Clock for SystemClock {
     }
 }
 
+/// The engine that compiles through a V8 compiler client.
 pub(crate) struct V8ProgramEngine {
     compiler: Arc<dyn CompilerClient>,
-    executor: coral_v8::ProgramExecutor,
 }
 
 impl V8ProgramEngine {
-    /// Compiles through the process's one warm `compiler` and runs each
-    /// Program in a fresh isolate within `isolate_limits`.
-    pub(crate) fn with_compiler(
-        compiler: Arc<dyn CompilerClient>,
-        isolate_limits: coral_v8::IsolateLimits,
-    ) -> Self {
-        Self {
-            compiler,
-            executor: coral_v8::ProgramExecutor::new(isolate_limits),
-        }
+    /// Compiles through the process's one warm `compiler`.
+    pub(crate) fn with_compiler(compiler: Arc<dyn CompilerClient>) -> Self {
+        Self { compiler }
     }
 
-    /// An engine with a warm compiler of its own, for tests.
+    /// An engine with a warm compiler of its own in the test process.
     #[cfg(test)]
     pub(crate) fn new(isolate_limits: coral_v8::IsolateLimits) -> Result<Self, Error> {
         let compiler = coral_run_executor::InProcessCompiler::new(isolate_limits)
             .map_err(|error| Error::ProgramRuntimeUnavailable(error.to_string()))?;
-        Ok(Self::with_compiler(Arc::new(compiler), isolate_limits))
+        Ok(Self::with_compiler(Arc::new(compiler)))
     }
 }
 
@@ -216,12 +189,7 @@ impl V8ProgramEngine {
 impl ProgramEngine for V8ProgramEngine {
     async fn ready(&self) -> Result<Option<Arc<dyn ProgramEngine>>, CompileFailure> {
         let held = self.compiler.ready().await.map_err(CompileFailure::from)?;
-        Ok(held.map(|compiler| {
-            Arc::new(Self {
-                compiler,
-                executor: self.executor,
-            }) as Arc<dyn ProgramEngine>
-        }))
+        Ok(held.map(|compiler| Arc::new(Self { compiler }) as Arc<dyn ProgramEngine>))
     }
 
     async fn analyze(
@@ -294,52 +262,6 @@ impl ProgramEngine for V8ProgramEngine {
                 other => PackageFailure::Compile(other.into()),
             })?;
         Ok(package_from_compiled(&compiled)?)
-    }
-
-    fn execute(
-        &self,
-        package: ProgramPackage,
-        host: Arc<dyn coral_v8::ProgramHost>,
-        stop: Arc<ExecutionStop>,
-    ) -> ExecutionCompletion {
-        let limits = host.value_limits();
-        let program = coral_v8::CompiledProgram::restore(package.javascript, package.source_map);
-        match self
-            .executor
-            .execute_with_host_control(&program, host, stop.v8_control())
-        {
-            Ok(output) => match output.into_final_value_json() {
-                None => ExecutionCompletion::Succeeded(FinalValue::Absent),
-                Some(value) => final_value(value, limits),
-            },
-            Err(coral_v8::Error::MemoryLimitExceeded) => ExecutionCompletion::MemoryLimitExceeded,
-            Err(coral_v8::Error::CpuLimitExceeded) => ExecutionCompletion::CpuLimitExceeded,
-            Err(coral_v8::Error::ResourceLimitExceeded) => output_over_budget(),
-            Err(coral_v8::Error::ProgramHostTerminated) => {
-                ExecutionCompletion::ProgramHostTerminated
-            }
-            Err(coral_v8::Error::ProgramRejected(diagnostic)) => ExecutionCompletion::Failed(
-                RunFailure::new(RunFailureCode::ProgramRejected, diagnostic.summary())
-                    .with_error(*diagnostic),
-            ),
-            Err(coral_v8::Error::ProgramOutputRejected(error)) => ExecutionCompletion::Failed(
-                RunFailure::new(RunFailureCode::InvalidProgramValue, error.summary())
-                    .with_error(*error),
-            ),
-            Err(coral_v8::Error::InvalidProgramValue(message)) => ExecutionCompletion::Failed(
-                RunFailure::new(RunFailureCode::InvalidProgramValue, message),
-            ),
-            // Nothing is left that could settle what the Program awaits: no
-            // Tool call is in flight, and no other event source exists.
-            Err(coral_v8::Error::PendingProgram) => ExecutionCompletion::Failed(RunFailure::new(
-                RunFailureCode::ProgramExecutionFailed,
-                "Program awaited a Promise that nothing can settle".to_string(),
-            )),
-            Err(_private_diagnostic) => ExecutionCompletion::Failed(RunFailure::new(
-                RunFailureCode::ProgramExecutionFailed,
-                "Program execution failed".to_string(),
-            )),
-        }
     }
 }
 

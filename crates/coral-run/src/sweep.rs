@@ -13,7 +13,8 @@
 //! two sweepers write nothing twice. A Run Executor's Runs are released only
 //! under a hold of its row at the lease the pass read: a Run Executor that
 //! renewed it since is back, and its Runs are its own. The sweeper never
-//! touches a Run that a Run Owner holds: a worker claim fences each one.
+//! touches a Run that an older release's Run Owner holds: a worker claim
+//! fences each one.
 
 use std::ops::AddAssign;
 use std::time::Duration;
@@ -359,7 +360,7 @@ impl RunModule {
         now: i64,
     ) -> Result<bool, Error> {
         let now = now.max(run.accepted_at_unix_nanos);
-        let ended = unless_moved(commit_end(transaction, run, None, None, now).await)?;
+        let ended = unless_moved(commit_end(transaction, run, None, now).await)?;
         if ended.is_some() {
             self.wakes.wake_for(&run.id);
         }

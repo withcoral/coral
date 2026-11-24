@@ -16,16 +16,19 @@ struct RetainedConnection {
 
 impl RetainedConnection {
     async fn new() -> Self {
-        let fixture = TestModules::new(Arc::new(
+        let mut fixture = TestModules::new(Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
         ))
         .await;
+        fixture.serve().await;
         let tool = fixture
             .user_tool("user:retained-connection", "Retained connection selection")
             .await;
         let (directory, accounts) =
             configure_user_caller(&fixture, &tool, "https://upstream.example").await;
-        let runs = fixture.runs.clone().with_accounts(accounts.clone());
+        let runs = fixture
+            .served(fixture.runs.clone().with_accounts(accounts.clone()))
+            .await;
         let (run, original) = Self::waiting_run(&runs, &tool.principal, &tool.workspace_id).await;
         Self {
             fixture,
@@ -266,18 +269,23 @@ async fn connection_selection_never_retargets_to_a_replacement_request() {
 )]
 async fn required_actions_show_pending_approval_and_clear_without_a_run_event() {
     let (gate, release) = EnforcementGate::blocking();
-    let fixture = TestModules::with_invocation_adapters(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
+    let mut fixture = TestModules::with_invocation_adapters(
+        v8_engine(),
         Arc::new(RejectingUpstream),
         Arc::new(ApprovalWaitGate(gate.clone())),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture.user_tool("user:actions", "Required actions").await;
     fixture.require_approval(&tool).await;
     let approvals = fixture.approvals();
     let accepted = fixture
         .runs
-        .start(&tool.principal, &tool.workspace_id, submission("invoke"))
+        .start(
+            &tool.principal,
+            &tool.workspace_id,
+            submission(INVOKE_WEATHER),
+        )
         .await
         .unwrap();
     wait_until(|| gate.entered()).await;
@@ -458,10 +466,11 @@ async fn activity_observation_rereads_do_not_renew_retention() {
 /// predecessors never skips or repeats a later action.
 #[tokio::test(flavor = "multi_thread")]
 async fn action_window_cursor_survives_resolution_of_its_anchor_and_predecessor() {
-    let fixture = TestModules::new(Arc::new(
+    let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:action-window", "Action window")
         .await;
@@ -551,10 +560,11 @@ async fn action_window_cursor_survives_resolution_of_its_anchor_and_predecessor(
 /// current request and the cursor reaches the rest.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_run_action_window_is_bounded_but_counts_every_request() {
-    let fixture = TestModules::new(Arc::new(
+    let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
+    fixture.serve().await;
     let tool = fixture.user_tool("user:action-bound", "Action bound").await;
     publish_approval_provider(&fixture, &tool).await;
     let (actor, workspace) = (&tool.principal, &tool.workspace_id);
@@ -646,10 +656,11 @@ struct MixedActions {
 
 impl MixedActions {
     async fn new() -> Self {
-        let fixture = TestModules::new(Arc::new(
+        let mut fixture = TestModules::new(Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
         ))
         .await;
+        fixture.serve().await;
         let tool = fixture
             .user_tool("user:concurrent-actions", "Concurrent human actions")
             .await;
@@ -657,7 +668,9 @@ impl MixedActions {
             configure_user_caller(&fixture, &tool, "https://upstream.example").await;
         publish_approval_provider(&fixture, &tool).await;
         fixture.require_approval(&tool).await;
-        let runs = fixture.runs.clone().with_accounts(accounts.clone());
+        let runs = fixture
+            .served(fixture.runs.clone().with_accounts(accounts.clone()))
+            .await;
         let accepted = runs.start(&tool.principal, &tool.workspace_id, submission("await Promise.all([coral.providers.weather.getForecast({}), coral.providers.weather.getForecast({}), coral.providers.public.getForecast({}), coral.providers.public.getForecast({})]);"
         )).await.unwrap();
         let run = accepted.run_id().clone();
@@ -866,10 +879,11 @@ async fn a_workspace_count_reads_only_pending_invocations_on_sqlite() {
 /// does, though the request itself stays the same.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wait_returns_when_the_waiting_tools_provider_is_renamed() {
-    let fixture = TestModules::new(Arc::new(
+    let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:renamed-provider", "Rename while waiting")
         .await;
@@ -925,10 +939,11 @@ async fn a_wait_returns_when_the_waiting_tools_provider_is_renamed() {
 /// Tool, but still names its Provider.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_connection_request_shared_by_different_tools_names_no_tool() {
-    let fixture = TestModules::new(Arc::new(
+    let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:mixed-tools", "Calls to two Tools")
         .await;
@@ -942,7 +957,9 @@ async fn a_connection_request_shared_by_different_tools_names_no_tool() {
         }),
     )
     .await;
-    let runs = fixture.runs.clone().with_accounts(accounts);
+    let runs = fixture
+        .served(fixture.runs.clone().with_accounts(accounts))
+        .await;
     let (user, scope) = (&tool.principal, &tool.workspace_id);
     let accepted = runs
         .start(user, scope, submission(
@@ -1267,10 +1284,8 @@ async fn cancellation_clears_actions_but_keeps_each_invocations_requests() {
     reason = "one observation scenario proves Agent summaries, Owner visibility, and mid-wait authority loss"
 )]
 async fn required_actions_disclose_owner_work_to_agents_without_granting_approval_access() {
-    let fixture = TestModules::new(Arc::new(InvokingEngine::new(
-        "coral.providers.weather.getForecast",
-    )))
-    .await;
+    let mut fixture = TestModules::new(v8_engine()).await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:agent-owner", "Agent required actions")
         .await;
@@ -1278,7 +1293,7 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
     let agent = registered_agent(&fixture.workspaces, &tool.principal, &tool.workspace_id).await;
     let accepted = fixture
         .runs
-        .start(&agent, &tool.workspace_id, submission("invoke"))
+        .start(&agent, &tool.workspace_id, submission(INVOKE_WEATHER))
         .await
         .unwrap();
     wait_for_actions(
@@ -1459,19 +1474,19 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
 async fn required_actions_cleanup_shared_requests_under_termination_and_resolution_races() {
     for deadline in [false, true] {
         for expire in [false, true] {
-            let fixture = TestModules::new(Arc::new(
+            let mut fixture = TestModules::new(Arc::new(
                 crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
             ))
             .await;
+            fixture.serve().await;
             let tool = fixture
                 .user_tool("user:shared-actions", "Shared action cleanup")
                 .await;
             let (_directory, accounts) =
                 configure_user_caller(&fixture, &tool, "https://upstream.example").await;
-            let mut runs = fixture.runs.clone().with_accounts(accounts.clone());
-            runs.execution_policy = crate::execution::ExecutionPolicy::testing_with_claim_lease(
-                Duration::from_secs(30),
-            );
+            let runs = fixture
+                .served(fixture.runs.clone().with_accounts(accounts.clone()))
+                .await;
             let source = "try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }";
             let first = runs
                 .start(
@@ -1534,7 +1549,7 @@ async fn required_actions_cleanup_shared_requests_under_termination_and_resoluti
             let cancel_observation = immediate(Some(first_waiting.next_cursor().clone()), 1);
             let stop = async {
                 if deadline {
-                    // Advance the Run deadline, but stay within the 30-second worker lease.
+                    // Pass the Run deadline.
                     fixture.clock.next.store(20_000_000_000, Ordering::SeqCst);
                 }
                 runs.cancel(
@@ -1677,10 +1692,8 @@ async fn retained_activity(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_queue_lists_each_request_most_urgent_first_across_runs() {
-    let fixture = TestModules::new(Arc::new(InvokingEngine::new(
-        "coral.providers.weather.getForecast",
-    )))
-    .await;
+    let mut fixture = TestModules::new(v8_engine()).await;
+    fixture.serve().await;
     let tool = fixture.user_tool("user:queue-order", "Queue order").await;
     fixture.require_approval(&tool).await;
     let (user, workspace) = (&tool.principal, &tool.workspace_id);
@@ -1692,7 +1705,7 @@ async fn the_queue_lists_each_request_most_urgent_first_across_runs() {
                 user,
                 workspace,
                 RunSubmission::new(
-                    ProgramSource::parse("invoke").unwrap(),
+                    ProgramSource::parse(INVOKE_WEATHER).unwrap(),
                     RunTimeout::from_millis(timeout).unwrap(),
                 ),
             )
@@ -1807,10 +1820,11 @@ impl ManyRows {
     /// User declines, so that [`Self::LONG`] requests wait and more are
     /// settled.
     async fn new() -> Self {
-        let fixture = TestModules::new(Arc::new(
+        let mut fixture = TestModules::new(Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
         ))
         .await;
+        fixture.serve().await;
         let tool = fixture.user_tool("user:page-reads", "Page reads").await;
         publish_approval_provider(&fixture, &tool).await;
         let approvals = fixture.approvals();

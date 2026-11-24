@@ -132,8 +132,6 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
     ("coral.run.duration", "histogram", "s", &["run.status"]),
     ("coral.run.phase.duration", "histogram", "s", &["run.phase"]),
     ("coral.run.active", "gauge", "{run}", &[]),
-    ("coral.run.queue.depth", "gauge", "{run}", &[]),
-    ("coral.run.recovery", "counter", "{run}", &["outcome"]),
     (
         "coral.invocation.started",
         "counter",
@@ -307,9 +305,7 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
     );
     drop(run_phase(RunPhase::Execute));
     let active = run_active();
-    let queued = run_queued();
-    run_recovered(RecoveryOutcome::Ended);
-    run_claimed(ClaimKind::Recover, ClaimOutcome::Won);
+    run_claimed(ClaimKind::Accept, ClaimOutcome::Won);
     secret_store_read(
         "kv_v2",
         SecretStoreRead::EntryNotFound,
@@ -356,7 +352,7 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
     output_rejected(OutputKind::FinalValue);
     metrics.telemetry_dropped(SignalKind::Span, DropReason::QueueFull, 3);
     record_sub_agent();
-    drop((active, queued));
+    drop(active);
     (pool, search)
 }
 

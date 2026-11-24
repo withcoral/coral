@@ -838,7 +838,7 @@ mod tests {
             assert_eq!(status.code(), code, "{label}");
             assert!(!status.message().contains("private"), "{label}");
         }
-        // A request that waits in the Run Inbox is retryable, with its reason.
+        // A request not recorded yet is retryable, with its reason.
         let waiting = super::error(coral_task::Error::Run(
             coral_run::Error::RunRequestNotYetRecorded,
         ));

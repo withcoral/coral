@@ -459,11 +459,12 @@ impl coral_provider::ProviderRenamer for RenamedFirst {
 async fn a_rename_an_owner_raced_is_a_failure_the_program_catches() {
     let mut scope = unattended("user:update-rename-raced").await;
     create_weather(&scope, document_source()).await;
-    scope.fixture.runs = scope
+    let runs = scope
         .fixture
         .runs
         .clone()
         .with_provider_renamer(Arc::new(RenamedFirst(workflow(&scope.fixture))));
+    scope.fixture.replace_runs(runs).await;
 
     let mut result = call(
         &scope,
@@ -509,29 +510,20 @@ impl coral_provider::ProviderRenamer for StallingRenamer {
     }
 }
 
-/// Expires the worker claim on `run`, sweeps it as a lost worker, and returns
-/// how its one Invocation ended.
-async fn lose_worker(scope: &AdminScope, run: &crate::RunId) -> crate::InvocationResultKind {
-    let accepted_at = retained_events(&scope.fixture.runs, &scope.owner, &scope.workspace_id, run)
+/// Cancels `run` while its one call is in flight, and returns how that
+/// Invocation ended: the cancellation's terminal write ends it.
+async fn cancel_mid_call(scope: &AdminScope, run: &crate::RunId) -> crate::InvocationResultKind {
+    scope
+        .fixture
+        .runs
+        .cancel(
+            &scope.owner,
+            &scope.workspace_id,
+            run,
+            &immediate(None, 100),
+        )
         .await
-        .first()
-        .expect("run.started")
-        .occurred_at_unix_nanos();
-    scope
-        .fixture
-        .expire_worker_claim(&scope.workspace_id, run, accepted_at)
-        .await;
-    scope
-        .fixture
-        .clock
-        .next
-        .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
-    scope
-        .fixture
-        .next_process()
-        .sweep_expired_leases()
-        .await
-        .expect("sweep the lost worker's lapsed lease");
+        .expect("cancel the Run");
     wait_for_terminal(&scope.fixture.runs, &scope.owner, &scope.workspace_id, run).await;
     let ended: Vec<_> =
         retained_events(&scope.fixture.runs, &scope.owner, &scope.workspace_id, run)
@@ -548,10 +540,10 @@ async fn lose_worker(scope: &AdminScope, run: &crate::RunId) -> crate::Invocatio
     *ended
 }
 
-// Catches: a worker lost while Coral prepares a Setup leaving the call
+// Catches: a Run that ends while Coral prepares a Setup leaving the call
 // indeterminate, though it publishes nothing.
 #[tokio::test]
-async fn a_lost_setup_call_settles_as_the_run_ending_first() {
+async fn a_setup_call_cut_off_by_its_runs_end_settles_as_the_run_ending_first() {
     for tool in ["addProvider", "updateProvider"] {
         let scope = unattended("user:lost-setup").await;
         let server = MockServer::start().await;
@@ -580,7 +572,7 @@ async fn a_lost_setup_call_settles_as_the_run_ending_first() {
             .await;
         entered.notified().await;
 
-        let ended = lose_worker(&scope, &run).await;
+        let ended = cancel_mid_call(&scope, &run).await;
 
         assert_eq!(ended, crate::InvocationResultKind::RunTerminated, "{tool}");
         release.send(()).unwrap();
@@ -588,9 +580,10 @@ async fn a_lost_setup_call_settles_as_the_run_ending_first() {
     }
 }
 
-// Catches: a lost rename, which nothing records, claiming the Run ended first.
+// Catches: a rename cut off by its Run's end, which nothing records,
+// claiming the Run ended first.
 #[tokio::test]
-async fn a_lost_rename_is_indeterminate() {
+async fn a_rename_cut_off_by_its_runs_end_is_indeterminate() {
     let mut scope = unattended("user:lost-rename").await;
     scope.publish_weather().await;
     let renamer = Arc::new(StallingRenamer {
@@ -598,11 +591,12 @@ async fn a_lost_rename_is_indeterminate() {
         entered: AtomicBool::new(false),
         release: tokio::sync::Notify::new(),
     });
-    scope.fixture.runs = scope
+    let runs = scope
         .fixture
         .runs
         .clone()
         .with_provider_renamer(renamer.clone());
+    scope.fixture.replace_runs(runs).await;
     let run = scope
         .start(
             &scope.owner,
@@ -613,7 +607,7 @@ async fn a_lost_rename_is_indeterminate() {
         .await;
     wait_until(|| renamer.entered.load(Ordering::SeqCst)).await;
 
-    let ended = lose_worker(&scope, &run).await;
+    let ended = cancel_mid_call(&scope, &run).await;
 
     assert_eq!(ended, crate::InvocationResultKind::Indeterminate);
     renamer.release.notify_one();

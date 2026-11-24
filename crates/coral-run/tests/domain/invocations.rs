@@ -1,5 +1,8 @@
 //! Tool Invocation outcomes through real and scripted Programs.
+use super::run_stream_reconnect::{finish_with, forecast};
+use super::run_streams::{ended, started};
 use super::*;
+use coral_run_executor::wire::v1::RunEnd as WireEnd;
 
 #[tokio::test]
 async fn program_tool_settles_after_durable_invocation_completion() {
@@ -9,11 +12,8 @@ async fn program_tool_settles_after_durable_invocation_completion() {
             "temperature": 21
         }),
     ));
-    let fixture = TestModules::with_upstream(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream.clone(),
-    )
-    .await;
+    let mut fixture = TestModules::with_upstream(v8_engine(), upstream.clone()).await;
+    fixture.serve().await;
     let tool = fixture.user_tool("user:tool-runner", "Call weather").await;
 
     let accepted = fixture
@@ -21,7 +21,7 @@ async fn program_tool_settles_after_durable_invocation_completion() {
         .start(
             &tool.principal,
             &tool.workspace_id,
-            submission("invoke-tool"),
+            submission(INVOKE_WEATHER),
         )
         .await
         .expect("accept Program that invokes one Tool");
@@ -97,7 +97,7 @@ async fn program_tool_settles_after_durable_invocation_completion() {
 
 #[tokio::test]
 async fn coral_failure_is_coded_and_durable_before_program_continues() {
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
                 .expect("V8 engine"),
@@ -105,6 +105,7 @@ async fn coral_failure_is_coded_and_durable_before_program_continues() {
         Arc::new(ScriptedUpstream::json(200, serde_json::json!({}))),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:coral-failure", "Catch a safe failure")
         .await;
@@ -184,7 +185,7 @@ async fn builtin_scope(
 
 #[tokio::test]
 async fn builtin_add_provider_waits_for_approval_by_default() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let (workspace_id, owner) = builtin_scope(&fixture, "user:builtin-policy").await;
     let mut transaction = fixture.database.begin().await.unwrap();
     let target = fixture
@@ -221,7 +222,7 @@ async fn builtin_add_provider_waits_for_approval_by_default() {
 
 #[tokio::test]
 async fn program_calls_a_provider_named_workspace_at_its_owner_call_root() {
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
                 .expect("V8 engine"),
@@ -232,6 +233,7 @@ async fn program_calls_a_provider_named_workspace_at_its_owner_call_root() {
         )),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool_under(
             "user:workspace-namespace",
@@ -274,26 +276,20 @@ async fn terminal_persistence_failure_settles_neither_invocation_promise_nor_run
         serde_json::json!({"temperature": 21}),
     ));
     let observer = Arc::new(TerminalCommitFault::default());
-    let engine = Arc::new(CompletionAttemptingEngine::new(
-        "coral.providers.weather.getForecast",
-    ));
-    let fixture =
-        TestModules::with_invocation_adapters(engine.clone(), upstream.clone(), observer.clone())
-            .await;
+    let fixture = TestModules::with_invocation_adapters(
+        Arc::new(ImmediateEngine),
+        upstream.clone(),
+        observer.clone(),
+    )
+    .await;
     let tool = fixture
         .user_tool("user:persistence-fault", "Lose terminal commit")
         .await;
-    let accepted = fixture
-        .runs
-        .start(
-            &tool.principal,
-            &tool.workspace_id,
-            submission("invoke-tool"),
-        )
-        .await
-        .expect("accept Program");
+    let (run_id, stream) = started(&fixture.runs, &tool).await;
+    stream.request(1, forecast(None));
     wait_until(|| observer.attempted.load(Ordering::SeqCst)).await;
-    wait_until(|| engine.finished.load(Ordering::SeqCst)).await;
+    // The Program ends without the call's result.
+    stream.request(2, finish_with("null"));
     wait_until(|| observer.completion_checked.load(Ordering::SeqCst)).await;
 
     let update = fixture
@@ -301,7 +297,7 @@ async fn terminal_persistence_failure_settles_neither_invocation_promise_nor_run
         .observe(
             &tool.principal,
             &tool.workspace_id,
-            accepted.run_id(),
+            &run_id,
             &immediate(None, 100),
         )
         .await
@@ -330,7 +326,7 @@ async fn fatal_async_tool_stops_noncooperative_program_code() {
         (Arc::new(DefectiveUpstream { panic: true }), valid_call),
         (Arc::new(DefectiveUpstream { panic: false }), valid_call),
     ] {
-        let fixture = TestModules::with_invocation_adapters(
+        let mut fixture = TestModules::with_invocation_adapters(
             Arc::new(
                 crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
                     .expect("V8 engine"),
@@ -339,6 +335,7 @@ async fn fatal_async_tool_stops_noncooperative_program_code() {
             Arc::new(TerminalCommitFault::default()),
         )
         .await;
+        fixture.serve().await;
         let tool = fixture
             .user_tool("user:async-host-fatal", "Stop after host failure")
             .await;
@@ -393,11 +390,8 @@ async fn fatal_async_tool_stops_noncooperative_program_code() {
 #[tokio::test]
 async fn known_incomplete_response_is_a_durable_coral_failure() {
     let upstream = Arc::new(FailingUpstream::default());
-    let fixture = TestModules::with_upstream(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream.clone(),
-    )
-    .await;
+    let mut fixture = TestModules::with_upstream(v8_engine(), upstream.clone()).await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:incomplete-response", "Observe an incomplete response")
         .await;
@@ -406,7 +400,7 @@ async fn known_incomplete_response_is_a_durable_coral_failure() {
         .start(
             &tool.principal,
             &tool.workspace_id,
-            submission("invoke-tool"),
+            submission(INVOKE_WEATHER),
         )
         .await
         .expect("accept Program");
@@ -467,7 +461,7 @@ async fn upstream_send_failures_keep_their_cause_in_the_coral_failure() {
     ];
     for (failure, code, message) in cases {
         let upstream = Arc::new(FailingUpstream::new(failure));
-        let fixture = TestModules::with_upstream(
+        let mut fixture = TestModules::with_upstream(
             Arc::new(
                 crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
                     .expect("V8 engine"),
@@ -475,6 +469,7 @@ async fn upstream_send_failures_keep_their_cause_in_the_coral_failure() {
             upstream.clone(),
         )
         .await;
+        fixture.serve().await;
         let tool = fixture
             .user_tool("user:send-failure", "Catch an upstream send failure")
             .await;
@@ -667,11 +662,8 @@ fn each_dispatch_phase_error_has_one_invocation_outcome() {
 #[tokio::test]
 async fn unknown_call_path_creates_no_invocation_or_send() {
     let upstream = Arc::new(ScriptedUpstream::json(200, serde_json::Value::Null));
-    let fixture = TestModules::with_upstream(
-        Arc::new(InvokingEngine::new("coral.providers.weather.notPublished")),
-        upstream.clone(),
-    )
-    .await;
+    let mut fixture = TestModules::with_upstream(v8_engine(), upstream.clone()).await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:unknown-tool", "Call unknown Tool")
         .await;
@@ -680,7 +672,9 @@ async fn unknown_call_path_creates_no_invocation_or_send() {
         .start(
             &tool.principal,
             &tool.workspace_id,
-            submission("invoke-tool"),
+            submission(
+                "const key = 'not' + 'Published'; return await coral.providers.weather[key]({});",
+            ),
         )
         .await
         .expect("accept Program before host resolution");
@@ -708,7 +702,7 @@ async fn real_program_dispatches_concurrent_tools_and_waits_for_both() {
         200,
         serde_json::json!({"temperature": 21}),
     )));
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
                 .expect("V8 engine"),
@@ -716,6 +710,7 @@ async fn real_program_dispatches_concurrent_tools_and_waits_for_both() {
         upstream.clone(),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:parallel-program", "Concurrent Tools")
         .await;
@@ -765,11 +760,8 @@ async fn upstream_send_holds_no_database_transaction_or_lock() {
         200,
         serde_json::json!({"temperature": 21}),
     )));
-    let fixture = TestModules::with_upstream(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream.clone(),
-    )
-    .await;
+    let mut fixture = TestModules::with_upstream(v8_engine(), upstream.clone()).await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:unlocked-send", "Send without database lock")
         .await;
@@ -778,7 +770,7 @@ async fn upstream_send_holds_no_database_transaction_or_lock() {
         .start(
             &tool.principal,
             &tool.workspace_id,
-            submission("invoke-tool"),
+            submission(INVOKE_WEATHER),
         )
         .await
         .expect("accept Program");
@@ -815,21 +807,19 @@ async fn upstream_send_holds_no_database_transaction_or_lock() {
 /// and a call to a Private Tool each resolve from one read snapshot.
 #[tokio::test]
 async fn resolving_a_tool_call_begins_no_write_transaction() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool("user:resolve-beside-a-writer", "Resolve beside a writer")
         .await;
-    // A Run that has ended and whose owner has retired, so that this test
-    // makes every database call the capture below records.
-    let run = fixture
-        .runs
-        .start(&tool.principal, &tool.workspace_id, submission("null"))
-        .await
-        .expect("accept the Run");
-    let record = fixture
-        .terminal_record(&tool.workspace_id, run.run_id())
+    // A Run that has ended and whose stream's loop has retired, so that this
+    // test makes every database call the capture below records.
+    let (run_id, mut stream) = started(&fixture.runs, &tool).await;
+    stream.request(1, finish_with("null"));
+    stream
+        .until(|read| read.contains(&ended(WireEnd::Succeeded)))
         .await;
-    wait_until(|| !fixture.runs.has_owner(run.run_id())).await;
+    let record = fixture.terminal_record(&tool.workspace_id, &run_id).await;
+    wait_until(|| !fixture.runs.has_owner(&run_id)).await;
     let invoker = test_invoker(&fixture, &tool, &record);
 
     for (call, private_path) in [
@@ -888,8 +878,8 @@ async fn run_real_forecast(
     server: &MockServer,
     source: &str,
 ) -> (RunTerminalOutcome, crate::InvocationDetail) {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let runs = fixture.live_runs(None);
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let tool = fixture
         .user_tool_at(user_id, "Call real weather", &server.uri())
         .await;
@@ -1221,7 +1211,7 @@ async fn a_refused_connection_is_an_incomplete_send() {
 #[tokio::test]
 async fn blocked_destination_is_a_durable_catchable_tool_error() {
     let sink = wiremock::MockServer::start().await;
-    let fixture =
+    let mut fixture =
         TestModules::with_upstream(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             Arc::new(
@@ -1232,6 +1222,7 @@ async fn blocked_destination_is_a_durable_catchable_tool_error() {
             ),
         )
         .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool_at(
             "user:blocked-destination",

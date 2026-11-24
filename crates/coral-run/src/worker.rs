@@ -1,303 +1,35 @@
-//! One Run's execution under its Run Owner: the owner's first chunk (the
-//! execution-start mark under the claim acceptance wrote) and the terminal
-//! write once the Program has ended.
+//! One Run stream's execution writes outside its loop's chunk commits: the
+//! timeout of a Run whose deadline passed before its Program started, and
+//! the terminal write once the Program has ended.
 //!
-//! The owner's own writes outside its chunk commits (the start mark and the
-//! terminal write here, the Interrupted record and the settle beside them)
-//! read the Run row without holding it: the owner runs one write at a time,
-//! nothing writes a nonterminal Run's row from outside it while it lives
-//! (the expired-lease sweep recovers a Run whose owner retired without
-//! ending it, once its lease lapses), and every write is predicated on the
-//! claim and the head the row showed.
-
-use coral_telemetry::metric::{self, ClaimKind, ClaimOutcome};
-use coral_telemetry::safe;
-use coral_workspace::AuthenticatedPrincipal;
+//! Each reads the Run row without holding it and is predicated on the claim
+//! and the head the row showed, so that the Run's other writers (the Coral
+//! Instance that receives an outside request, and the sweeper) order with it
+//! by the head (ADR 0027).
 
 use crate::engine::ExecutionCompletion;
-use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
-use crate::owner::{self, OwnerHandle, OwnerStart, StartedExecution};
+use crate::lifecycle::{RunRecord, RunTerminationKind};
+use crate::owner::{self, OwnerHandle};
 use crate::termination::ShutdownAction;
 use crate::trace::RunEnd;
 use crate::types::AcceptedRun;
 use crate::{
     Error, FinalValue, RunFailure, RunFailureCode, RunModule, RunState, RunTerminalOutcome,
-    RunTimeout, invocation_repository, run_repository,
+    invocation_repository, run_repository,
 };
 
 impl RunModule {
-    /// Creates the Run Owner for a durably accepted Run. The owner is
-    /// registered before its task starts, so a stop that arrives first still
-    /// finds it; the Run deadline, `time_limit` from its start, is the
-    /// owner's own timer. An owner that retires without ending its Run (a
-    /// write it could not land, a claim it lost) renews nothing more, and the
-    /// expired-lease sweep ends the Run once its lease lapses, unless another
-    /// process took it.
-    pub(crate) fn schedule_execution(
-        &self,
-        run: AcceptedRun,
-        actor: AuthenticatedPrincipal,
-        time_limit: RunTimeout,
-    ) {
-        let (handle, mailbox) = OwnerHandle::new(run.held_id(), run.claim_id.clone());
-        let registration = self.register_owner(&handle);
-        let supervised = run.clone();
-        let owner_task = tokio::spawn(owner::host(
-            self.clone(),
-            run,
-            OwnerStart::Program { actor, time_limit },
-            handle,
-            mailbox,
-            registration,
-        ));
-        let supervisor = self.clone();
-        let _supervisor_task = tokio::spawn(async move {
-            if let Err(ended) = owner_task.await {
-                supervisor
-                    .recover_from_owner_failure(&supervised, &ended)
-                    .await;
-            }
-        });
-    }
-
-    /// Registers the owner `handle` names, before its task starts, so a stop
-    /// that arrives first still finds it, and starts the Run Inbox reader
-    /// that delivers its outside requests.
-    pub(crate) fn register_owner(&self, handle: &OwnerHandle) -> owner::OwnerRegistration {
-        self.registered(self.owners.register(handle.clone()))
-    }
-
-    /// [`Self::register_owner`] for a Run stream's owner, which detaches
-    /// the one it replaces ([`owner::Owners::register_stream`]).
+    /// Registers a Run stream's owner, which detaches the one it replaces
+    /// ([`owner::Owners::register_stream`]), and starts the wake-up reader
+    /// of this Coral Instance's loops.
     pub(crate) fn register_stream_owner(&self, handle: &OwnerHandle) -> owner::OwnerRegistration {
-        let registration = self.registered(self.owners.register_stream(handle.clone()));
+        let registration = self.owners.register_stream(handle.clone());
         self.wakes.loop_registered(
             &self.owners,
             #[cfg(test)]
             &self.execution_observer,
         );
         registration
-    }
-
-    fn registered(&self, registration: owner::OwnerRegistration) -> owner::OwnerRegistration {
-        self.inbox.owner_registered(
-            &self.owners,
-            &self.instance,
-            &self.clock,
-            #[cfg(test)]
-            &self.execution_observer,
-        );
-        registration
-    }
-
-    /// The supervisor's answer to an owner task that ended without retiring
-    /// (a panic unwound it): the Run has no writer, so the supervisor takes
-    /// the claim over with a new claim id and records the interruption in one
-    /// chunk, as the owner's self-interrupt would. Nothing still in flight
-    /// under the old claim can land afterwards.
-    async fn recover_from_owner_failure(&self, run: &AcceptedRun, ended: &tokio::task::JoinError) {
-        let span = crate::trace::phase_span(
-            run.trace.as_ref(),
-            &run.held_id(),
-            crate::trace::Phase::Complete,
-        );
-        span.instrument(self.interrupt_after_owner_failure(run, ended))
-            .await;
-    }
-
-    async fn interrupt_after_owner_failure(
-        &self,
-        run: &AcceptedRun,
-        ended: &tokio::task::JoinError,
-    ) {
-        let takeover_claim_id = uuid::Uuid::new_v4().hyphenated().to_string();
-        tracing::error!(
-            coral.run.id = safe::id(&run.held_id()),
-            coral.run.claim.id = crate::trace::claim(&run.claim_id).as_ref().map(safe::id),
-            coral.run.takeover_claim.id = crate::trace::claim(&takeover_claim_id).as_ref().map(safe::id),
-            error.type = safe::kind(owner_task_end_code(ended)),
-            "Run Owner task ended without retiring; interrupting its Run"
-        );
-        match self
-            .record_interruption(
-                &run.workspace_id,
-                &run.held_id(),
-                &run.claim_id,
-                Some(&takeover_claim_id),
-                None,
-                crate::termination::Interrupter::Owner,
-            )
-            .await
-        {
-            Ok(()) => metric::run_claimed(ClaimKind::Takeover, ClaimOutcome::Won),
-            Err(Error::ClaimMismatch | Error::RunEnded) => {
-                metric::run_claimed(ClaimKind::Takeover, ClaimOutcome::Lost);
-                tracing::warn!(
-                    coral.run.id = safe::id(&run.held_id()),
-                    "Run of a failed Run Owner was already ended, taken over, or moved to another Coral Instance"
-                );
-            }
-            Err(error) => {
-                tracing::error!(
-                    coral.run.id = safe::id(&run.held_id()),
-                    error.type = safe::kind(error.code()),
-                    "Run of a failed Run Owner could not be interrupted"
-                );
-            }
-        }
-    }
-
-    /// The owner's first chunk: rechecks the Run and the Principal's current
-    /// authority, then writes the execution-start mark with the Run deadline,
-    /// `time_limit` from the mark, and returns the package to execute with
-    /// the head and the deadline the mark left. `None` when there is nothing
-    /// to run: the Run ended or was terminated first, its lease lapsed, or
-    /// authority was lost (the Run fails here). Run again after an attempt
-    /// the database did not answer, it returns the package when that
-    /// attempt's start mark landed, so the Program starts exactly once, or
-    /// records the timeout when the deadline that mark recorded passed.
-    pub(crate) async fn start_execution(
-        &self,
-        accepted: &AcceptedRun,
-        actor: &AuthenticatedPrincipal,
-        time_limit: RunTimeout,
-    ) -> Result<Option<StartedExecution>, Error> {
-        let claim_id = accepted.claim_id.as_str();
-        let mut transaction = self.database.begin().await?;
-        let Some(run) = run_repository::find_exact_in_transaction(
-            &mut transaction,
-            &accepted.workspace_id,
-            &accepted.id,
-        )
-        .await?
-        else {
-            return Ok(None);
-        };
-        if run.state == RunState::Running
-            && run.termination.is_none()
-            && run.execution_claim_id.as_deref() == Some(claim_id)
-        {
-            return self.resume_start(transaction, &run, accepted).await;
-        }
-        if run.state != RunState::Running
-            || run.termination.is_some()
-            || run.execution_started()
-            || run.worker_claim_id.as_deref() != Some(claim_id)
-        {
-            transaction.commit().await?;
-            if run.state == RunState::Running && run.worker_claim_id.as_deref() != Some(claim_id) {
-                metric::run_claimed(ClaimKind::Start, ClaimOutcome::Lost);
-            }
-            return Ok(None);
-        }
-
-        let authority = self
-            .workspaces
-            .check_run_admission_in_transaction(
-                &mut transaction,
-                actor,
-                &accepted.workspace_id,
-                coral_db::UnixNanos::new(self.now()?),
-            )
-            .await
-            .map_err(Error::from)
-            .and_then(|evidence| {
-                (actor.principal() == &run.principal)
-                    .then_some(evidence)
-                    .ok_or(Error::RunNotFound)
-            });
-
-        let package = run_repository::load_package_in_transaction(
-            &mut transaction,
-            &accepted.workspace_id,
-            &accepted.id,
-        )
-        .await?
-        .ok_or_else(|| Error::CorruptData("accepted Run has no Program package".to_string()))?;
-        // The start mark is predicated on the lease at its own instant, after
-        // the authority and package reads under the hold.
-        let started_at = self.now()?.max(run.accepted_at_unix_nanos);
-        if run
-            .worker_claim_expires_at_unix_nanos
-            .is_none_or(|expires_at| started_at >= expires_at)
-        {
-            transaction.commit().await?;
-            metric::run_claimed(ClaimKind::Start, ClaimOutcome::Lost);
-            return Ok(None);
-        }
-        if let Err(error) = authority.and_then(|evidence| {
-            evidence.require_current_at(coral_db::UnixNanos::new(started_at))?;
-            Ok(())
-        }) {
-            // A database that failed, definitely or not, has not said
-            // anything about authority.
-            if error.database_error().is_some() {
-                return Err(error);
-            }
-            let outcome = RunTerminalOutcome::Failed(RunFailure::new(
-                RunFailureCode::RunAuthorityLost,
-                "Run authority was lost before Program execution started".to_string(),
-            ));
-            run_repository::finish_unstarted_run(&mut transaction, &run, &outcome, started_at)
-                .await?;
-            transaction.commit().await?;
-            crate::trace::record_run_end(&run, &RunEnd::Unstarted(&outcome), started_at);
-            return Ok(None);
-        }
-
-        let deadline_at_unix_nanos = started_at
-            .checked_add(time_limit.nanoseconds())
-            .ok_or_else(|| Error::Clock("Run deadline overflowed".to_string()))?;
-        let lease_until = self.execution_policy.lease_until(started_at)?;
-        run_repository::start_execution(
-            &mut transaction,
-            &run,
-            claim_id,
-            started_at,
-            deadline_at_unix_nanos,
-            lease_until,
-        )
-        .await?;
-        transaction.commit().await?;
-        metric::run_claimed(ClaimKind::Start, ClaimOutcome::Won);
-        Ok(Some(StartedExecution {
-            package,
-            head: run.chunk_sequence + 1,
-            deadline_at_unix_nanos,
-        }))
-    }
-
-    /// The package of a Run whose start mark this owner's earlier attempt
-    /// landed without an answer: the Program has not started yet, and this
-    /// is its one start. When the deadline that mark recorded passed
-    /// meanwhile, the timeout is recorded here instead.
-    async fn resume_start(
-        &self,
-        mut transaction: coral_db::Transaction<'_>,
-        run: &RunRecord,
-        accepted: &AcceptedRun,
-    ) -> Result<Option<StartedExecution>, Error> {
-        let now = self.now()?.max(run.accepted_at_unix_nanos);
-        let deadline_at_unix_nanos = run
-            .deadline_at_unix_nanos
-            .ok_or_else(|| Error::CorruptData("started Run has no deadline".to_string()))?;
-        if run.deadline_passed(now) {
-            return self.time_out_before_start(transaction, run, now).await;
-        }
-        let package = run_repository::load_package_in_transaction(
-            &mut transaction,
-            &accepted.workspace_id,
-            &accepted.id,
-        )
-        .await?
-        .ok_or_else(|| Error::CorruptData("started Run has no Program package".to_string()))?;
-        transaction.commit().await?;
-        metric::run_claimed(ClaimKind::Start, ClaimOutcome::Won);
-        Ok(Some(StartedExecution {
-            package,
-            head: run.chunk_sequence,
-            deadline_at_unix_nanos,
-        }))
     }
 
     /// Ends a Run whose deadline passed before its Program started: the
@@ -307,7 +39,7 @@ impl RunModule {
         mut transaction: coral_db::Transaction<'_>,
         run: &RunRecord,
         now_unix_nanos: i64,
-    ) -> Result<Option<StartedExecution>, Error> {
+    ) -> Result<(), Error> {
         let run = self
             .request_termination(
                 &mut transaction,
@@ -324,40 +56,23 @@ impl RunModule {
             &RunEnd::Unstarted(&RunTerminalOutcome::TimedOut),
             now_unix_nanos,
         );
-        Ok(None)
+        Ok(())
     }
 
-    /// Records the intent the owner applied but no chunk recorded (the
-    /// deadline, or a cancellation whose chunk did not land) before the
-    /// terminal write decides: it never records less than the owner decided.
-    /// A termination already on the row stands.
-    async fn record_owner_intent(
-        &self,
-        transaction: &mut coral_db::Transaction<'_>,
-        run: RunRecord,
-        intent: &RequestedTermination,
-    ) -> Result<RunRecord, Error> {
-        if run.termination.is_some() {
-            return Ok(run);
-        }
-        self.record_termination(transaction, &run, intent).await
-    }
-
-    /// The terminal write for the Program's completion, after the owner has
+    /// The terminal write for the Program's completion, after the loop has
     /// recorded every chunk it applied. Returns the shutdown still to settle
-    /// when a termination is recorded instead of a completion: one the
-    /// owner's chunks carried (a cancellation, the deadline), or one found
-    /// or recorded here, with the head the owner goes on from.
+    /// when a termination is recorded instead of a completion: one another
+    /// writer recorded, or one recorded here (a CPU or memory limit, a lost
+    /// Program host), with the head the loop goes on from.
     ///
     /// # Errors
     ///
     /// A Run cannot complete while a child Invocation is nonterminal; the Run
-    /// then keeps its claim for recovery.
+    /// then keeps its claim, and the sweeper ends it at its deadline.
     pub(crate) async fn complete_execution(
         &self,
         accepted: &AcceptedRun,
         completion: &ExecutionCompletion,
-        intent: Option<&RequestedTermination>,
     ) -> Result<Option<ShutdownAction>, Error> {
         let claim_id = accepted.claim_id.as_str();
         let mut transaction = self.database.begin().await?;
@@ -374,11 +89,6 @@ impl RunModule {
         if run.state != RunState::Running || run.execution_claim_id.as_deref() != Some(claim_id) {
             transaction.commit().await?;
             return Ok(None);
-        }
-        if let Some(intent) = intent {
-            run = self
-                .record_owner_intent(&mut transaction, run, intent)
-                .await?;
         }
         if let Some(kind) = termination_for_completion(&run, completion, claim_id, now) {
             run = self
@@ -503,15 +213,5 @@ fn termination_for_completion(
         Some(RunTerminationKind::CpuLimitExceeded)
     } else {
         None
-    }
-}
-
-/// How a Run Owner task ended without retiring, for an event's `error.type`:
-/// it panicked, or its runtime cancelled it.
-pub(crate) fn owner_task_end_code(ended: &tokio::task::JoinError) -> &'static str {
-    if ended.is_panic() {
-        "panic"
-    } else {
-        "cancelled"
     }
 }

@@ -1,26 +1,22 @@
-//! The task that hosts one Run Owner: it drains the mailbox, calls
-//! [`apply`], and runs the effects, holding the chunk commit, the Program
-//! execution, the terminal write, the settle of a recorded termination and
-//! the timers the owner arms, each a sleep on this process's clock that
-//! fires its [`Message::Timer`] into the mailbox (the idle tick, re-armed by
-//! every commit, is one sleep reset in place and fires into the loop). It
-//! also holds the change subscription the owner asks for while a connection
-//! wait is parked, ringing [`Message::Changed`] into the mailbox, and runs the
-//! snapshot checks of the parked waits, whose findings come back as
-//! [`Message::Prechecked`].
+//! The task that hosts one Run stream's loop: it drains the mailbox, calls
+//! [`apply`], and runs the effects, holding the chunk commit, the terminal
+//! write, the settle of a recorded termination and the timers the loop arms,
+//! each a sleep on this process's clock that fires its [`Message::Timer`]
+//! into the mailbox. While a connection wait is parked it listens to its
+//! Coral Instance's wake-up reader, and it runs the snapshot checks of the
+//! parked waits, whose findings come back as [`Message::Prechecked`].
 //!
-//! Every write the owner starts ends on an answer, never on the clock. A
+//! Every write the loop starts ends on an answer, never on the clock. A
 //! chunk commit the database does not answer is resolved by rereading the Run
-//! row under the owner's claim: landed (the row carries the lease this very
-//! attempt renewed), fenced (another claim, or an ended Run), not landed
-//! (recommit the chunk exactly as built), or corrupt (a head the owner did
-//! not move). The start mark, the terminal write, the settle and the
-//! Interrupted record retry the same way.
+//! row under the loop's claim: landed (the row carries the commit time and
+//! the watermark this very attempt wrote), fenced (another claim, or an
+//! ended Run), moved (another writer moved the head: the chunk is rebuilt on
+//! it), not landed (recommit the chunk exactly as built), or corrupt. The
+//! terminal write and the settle retry the same way.
 //!
-//! The owner is the only writer of its nonterminal Run's ledger, so no
-//! chunk commit holds the Run row: the commit's predicate on the claim and
-//! the head the owner tracks in memory is the fence, and the owner runs its
-//! writes one at a time.
+//! No chunk commit holds the Run row: the commit's predicate on the claim and
+//! the head the loop tracks in memory is the fence, and the loop runs its
+//! writes one at a time (ADR 0027).
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -28,59 +24,36 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tracing::Instrument as _;
 
-use coral_telemetry::metric::{ClaimKind, ClaimOutcome, RecoveryOutcome};
 use coral_telemetry::safe;
 use coral_workspace::AuthenticatedPrincipal;
+use std::sync::Arc;
 
 use crate::execution::{Backoff, until_answered};
 use crate::invocation::{EnforcementBatch, PrecheckBatch, ToolInvoker};
 use crate::lifecycle::{RunRecord, RunTerminationKind};
 use crate::owner::ChunkWork as _;
 use crate::owner::NO_DEADLINE;
-use crate::program_output::ProgramOutputWriter;
-use crate::recovery::RecoveryWrite;
 use crate::run_repository::{self, Chunk, OwnedEvent};
+use crate::run_stream::StreamRun;
 use crate::trace::{Phase, TimedSpan, phase_span};
 use crate::types::AcceptedRun;
-use crate::{Error, RunModule, RunTimeout, engine, nanos_duration};
+use crate::{Error, RunModule, nanos_duration};
 
 use super::chunk::{ChunkBuild, ChunkItem};
 use super::handle::{CommitRejection, Mailbox, Message, OwnerHandle, OwnerRegistration, Timer};
-use super::state::{Effect, OwnerLimits, OwnerState, Recovered, apply};
+use super::state::{Effect, OwnerLimits, OwnerState, apply};
 
 /// The wait between two settle attempts while a dispatch is still in flight
 /// within the shutdown grace.
 const SETTLE_RETRY: Duration = Duration::from_millis(10);
 
-/// How an owner begins.
-pub(crate) enum OwnerStart {
-    /// The owner of a Run this process accepted: it commits the start mark,
-    /// with the deadline `time_limit` from it, and runs the Program as
-    /// `actor`.
-    Program {
-        actor: AuthenticatedPrincipal,
-        time_limit: RunTimeout,
-    },
-    /// The owner the expired-lease sweep recreated, its mailbox queued: it
-    /// takes the Run over from the claim `taken` and the lease ending at
-    /// `lease_until` the Run row held when the sweep read it (`None`: none),
-    /// and ends it. `deadline` is the one the row recorded, if any.
-    Recovery {
-        taken: Option<String>,
-        lease_until: Option<i64>,
-        deadline: Option<i64>,
-    },
-    /// The owner of a Run a Run Executor runs: its start landed before the
-    /// owner exists and is queued in its mailbox, and the Run stream is its
-    /// Program.
-    Stream(std::sync::Arc<crate::run_stream::StreamRun>),
-}
-
-/// Hosts the owner of `accepted` until it retires.
+/// Hosts the loop of `accepted`, whose Program runs on `start`, until it
+/// retires. Its start landed before the loop exists and is queued in its
+/// mailbox.
 pub(crate) async fn host(
     module: RunModule,
     accepted: AcceptedRun,
-    start: OwnerStart,
+    start: Arc<StreamRun>,
     handle: OwnerHandle,
     mut mailbox: Mailbox,
     registration: OwnerRegistration,
@@ -90,8 +63,6 @@ pub(crate) async fn host(
     let (mut state, mut effects) = begin(&module, &accepted, &start);
     let mut timers = Timers::default();
     let mut subscription = Subscription::default();
-    let idle = tokio::time::sleep_until(unarmed());
-    tokio::pin!(idle);
     // The shutdown grace of a recorded termination, on this process's clock:
     // set by the first settle attempt, read by every later one.
     let mut settle_deadline: Option<Instant> = None;
@@ -109,18 +80,10 @@ pub(crate) async fn host(
                 Effect::ArmTimer { timer, after_nanos } => {
                     #[cfg(test)]
                     module.execution_observer.timer_armed(&timer, after_nanos);
-                    if timer == Timer::IdleTick {
-                        idle.as_mut()
-                            .reset(Instant::now() + nanos_duration(after_nanos));
-                    } else {
-                        timers.arm(&handle, timer, after_nanos);
-                    }
+                    timers.arm(&handle, timer, after_nanos);
                 }
-                Effect::Subscribe => subscription.subscribe(&module, &handle, &start),
+                Effect::Subscribe => subscription.subscribe(&module, &handle),
                 Effect::Unsubscribe => subscription.unsubscribe(),
-                Effect::Interrupt {
-                    last_commit_age_nanos,
-                } => interrupt(&module, &accepted, &handle, last_commit_age_nanos),
                 Effect::Settle { shutdown, again } => {
                     let deadline =
                         *settle_deadline.get_or_insert_with(|| grace_deadline(&module, &shutdown));
@@ -137,15 +100,6 @@ pub(crate) async fn host(
                     spawn_settle(&module, &accepted, &handle, shutdown, again, deadline, span);
                 }
                 Effect::TerminateProgram => terminate_program(&handle, &start, &state),
-                Effect::Recover(recovered) => {
-                    if let OwnerStart::Recovery {
-                        taken, lease_until, ..
-                    } = &start
-                    {
-                        let swept = (taken.clone(), *lease_until);
-                        spawn_recovery(&module, &accepted, &handle, swept, recovered);
-                    }
-                }
                 other => run_effect(&module, &accepted, &start, &handle, other),
             }
         }
@@ -153,12 +107,8 @@ pub(crate) async fn host(
             break;
         }
         // The handle outlives the loop, so the mailbox never closes first.
-        let message = tokio::select! {
-            Some(message) = mailbox.recv() => message,
-            () = &mut idle => {
-                idle.as_mut().reset(unarmed());
-                Message::Timer(Timer::IdleTick)
-            }
+        let Some(message) = mailbox.recv().await else {
+            break;
         };
         if matches!(message, Message::Timer(_)) {
             timers.fired();
@@ -214,124 +164,59 @@ fn publish_head(
 /// Terminates the Program and wakes every stop-aware wait; a Run Executor
 /// learns why on the Run stream, once a termination written first has
 /// landed ([`spawn_stream_end`]).
-fn terminate_program(handle: &OwnerHandle, start: &OwnerStart, state: &OwnerState) {
+fn terminate_program(handle: &OwnerHandle, start: &StreamRun, state: &OwnerState) {
     if state.terminated_as() == Some(RunTerminationKind::Canceled) {
         handle.stop().request_canceled();
     } else {
         handle.stop().request();
     }
-    if let Some(link) = stream_link(start)
-        && !state.ends_stream_first()
-    {
-        link.terminate(state.terminated_as());
+    if !state.ends_stream_first() {
+        start.link.terminate(state.terminated_as());
     }
 }
 
-/// The Run stream the owner's Program runs on, if it runs on one.
-fn stream_link(start: &OwnerStart) -> Option<std::sync::Arc<crate::run_stream::StreamLink>> {
-    match start {
-        OwnerStart::Stream(stream) => Some(stream.link.clone()),
-        OwnerStart::Program { .. } | OwnerStart::Recovery { .. } => None,
-    }
-}
-
-/// The owner's memory as it begins, and its first effects: a Program owner
-/// is launched; a recovered owner applies the mailbox the sweep queued.
+/// The loop's memory as it begins, rebuilt from what the stream's start
+/// resumed, and its first effects.
 fn begin(
     module: &RunModule,
     accepted: &AcceptedRun,
-    start: &OwnerStart,
+    start: &StreamRun,
 ) -> (OwnerState, Vec<Effect>) {
     let limits = OwnerLimits {
         run_output_bytes: accepted.value_limits.run_output_bytes(),
         applied_cap_bytes: module.applied_output_cap.bytes(),
         fan_out_invocations: module.fan_out_limit.invocations(),
-        // A Program owner's start records the deadline.
-        deadline_at_unix_nanos: match start {
-            OwnerStart::Program { .. } | OwnerStart::Stream(_) => NO_DEADLINE,
-            OwnerStart::Recovery { deadline, .. } => deadline.unwrap_or(NO_DEADLINE),
-        },
-        shutdown_grace_nanos: accepted.shutdown_grace_nanos,
-        idle_tick_nanos: module.execution_policy.idle_tick_nanos(),
-        suspect_after_nanos: module.execution_policy.suspect_after_nanos(),
-        self_interrupt_after_nanos: module.execution_policy.self_interrupt_after_nanos(),
+        // The start, queued in the mailbox, records the deadline.
+        deadline_at_unix_nanos: NO_DEADLINE,
         precheck_interval_nanos: module.execution_policy.precheck_interval_nanos(),
         wake_gap_nanos: module.execution_policy.wake_gap_nanos(),
     };
-    match start {
-        OwnerStart::Program { .. } => {
-            let mut state = OwnerState::new(limits, accepted.accepted_at_unix_nanos);
-            let effects = apply(&mut state, Message::Launch, launched_at(module, accepted));
-            (state, effects)
-        }
-        OwnerStart::Recovery { .. } => (
-            OwnerState::recovered(limits, accepted.accepted_at_unix_nanos),
-            Vec::new(),
-        ),
-        // The start landed already: its `Started` waits in the mailbox.
-        OwnerStart::Stream(stream) => {
-            let resumed = stream
-                .resume
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .map_or((0, 0), |resume| (resume.watermark, resume.output_total));
-            let mut state =
-                OwnerState::for_run_stream(limits, accepted.accepted_at_unix_nanos, resumed);
-            let mut effects = apply(&mut state, Message::Launch, launched_at(module, accepted));
-            effects.retain(|effect| !matches!(effect, Effect::Start));
-            (state, effects)
-        }
-    }
+    let resumed = start
+        .resume
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .map_or((0, 0), |resume| (resume.watermark, resume.output_total));
+    let state = OwnerState::for_run_stream(limits, resumed);
+    (state, Vec::new())
 }
 
-/// The change subscription the owner holds while a connection wait is
-/// parked: a task that rings [`Message::Changed`] into the mailbox once
-/// subscribed (so a request that ended before then is read too) and after
-/// changes, at most once per wake gap: the owner reads no more often, and
-/// the signal keeps a change that came meanwhile. During a notification
-/// outage it rings nothing and subscribes again once the signal is back, a
-/// wake gap apart; the periodic precheck covers the outage.
-///
-/// A Run stream's loop subscribes to nothing of its own: it listens to its
-/// Coral Instance's wake reader, which relays each ring.
+/// What the loop listens to while a connection wait is parked: its Coral
+/// Instance's wake-up reader, which relays each ring of the change signal.
+/// The loop subscribes to nothing of its own.
 #[derive(Default)]
 struct Subscription {
-    task: Option<tokio::task::JoinHandle<()>>,
     listening: Option<(crate::run_wake::RunWakes, OwnerHandle)>,
 }
 
 impl Subscription {
-    fn subscribe(&mut self, module: &RunModule, handle: &OwnerHandle, start: &OwnerStart) {
+    fn subscribe(&mut self, module: &RunModule, handle: &OwnerHandle) {
         self.unsubscribe();
-        if stream_link(start).is_some() {
-            module.wakes.listen(handle);
-            self.listening = Some((module.wakes.clone(), handle.clone()));
-            return;
-        }
-        let database = module.database.clone();
-        let gap = module.execution_policy.wake_gap();
-        let handle = handle.clone();
-        self.task = Some(tokio::spawn(async move {
-            loop {
-                if let Ok(mut changes) = database.subscribe_changes() {
-                    loop {
-                        handle.send(Message::Changed);
-                        tokio::time::sleep(gap).await;
-                        if changes.changed().await.is_err() {
-                            break;
-                        }
-                    }
-                }
-                tokio::time::sleep(gap).await;
-            }
-        }));
+        module.wakes.listen(handle);
+        self.listening = Some((module.wakes.clone(), handle.clone()));
     }
 
     fn unsubscribe(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
         if let Some((wakes, handle)) = self.listening.take() {
             wakes.unlisten(&handle);
         }
@@ -368,40 +253,8 @@ fn spawn_precheck(
     });
 }
 
-/// The owner gives its Run up: the Program and its dispatches stop, and the
-/// Interrupted chunk is written until the database answers.
-fn interrupt(
-    module: &RunModule,
-    accepted: &AcceptedRun,
-    handle: &OwnerHandle,
-    last_commit_age_nanos: i64,
-) {
-    tracing::warn!(
-        coral.run.id = safe::id(&accepted.held_id()),
-        coral.run.last_commit_age_ms = safe::number(last_commit_age_nanos / 1_000_000),
-        "Run Owner interrupts its Run: no commit succeeded within three leases"
-    );
-    handle.stop().request();
-    spawn_interruption(module, accepted, handle);
-}
-
-/// An instant the idle tick's sleep never reaches on its own: it is reset
-/// to the next tick by the owner's `ArmTimer`.
-fn unarmed() -> Instant {
-    Instant::now() + Duration::from_hours(24 * 365 * 30)
-}
-
-/// The clock sample the launch is applied at, like every message, so the
-/// idle tick is armed from now, not from acceptance; a clock that fails reads
-/// as acceptance.
-fn launched_at(module: &RunModule, accepted: &AcceptedRun) -> i64 {
-    module.now().map_or(accepted.accepted_at_unix_nanos, |now| {
-        now.max(accepted.accepted_at_unix_nanos)
-    })
-}
-
-/// The timers the owner armed, one sleep each on this process's clock,
-/// except the idle tick, which the loop keeps in place. Arming a timer
+/// The timers the loop armed, one sleep each on this process's clock.
+/// Arming a timer
 /// again replaces its sleep; a sleep that ended is forgotten at the next
 /// arm or fire (its message may be dequeued a moment before the task that
 /// sent it ends, and a message from a sleep since replaced must not forget
@@ -442,14 +295,14 @@ impl Drop for Timers {
     }
 }
 
-/// Runs every effect but the commit, the settle, the interruption, the
-/// timers, the change subscription and the retirement, which the loop owns.
+/// Runs every effect but the commit, the settle, the timers, the wake-up
+/// listening and the retirement, which the loop owns.
 /// A write retried past the owner's retirement answers a mailbox nobody
 /// reads.
 fn run_effect(
     module: &RunModule,
     accepted: &AcceptedRun,
-    start: &OwnerStart,
+    start: &Arc<StreamRun>,
     handle: &OwnerHandle,
     effect: Effect,
 ) {
@@ -458,63 +311,18 @@ fn run_effect(
             // The requester may have stopped waiting; the owner's decision stands.
             let _delivered = reply.send(result);
         }
-        Effect::Suspect {
-            last_commit_age_nanos,
-        } => tracing::warn!(
-            coral.run.id = safe::id(&accepted.held_id()),
-            coral.run.last_commit_age_ms = safe::number(last_commit_age_nanos / 1_000_000),
-            "Run Owner is suspect: no commit succeeded within a lease; \
-             Program requests answer once recorded"
-        ),
         Effect::Precheck(batch) => spawn_precheck(
             handle,
             batch,
             #[cfg(test)]
             module.execution_observer.clone(),
         ),
-        Effect::Start => {
-            let OwnerStart::Program { actor, time_limit } = start else {
-                return;
-            };
-            let module = module.clone();
-            let accepted = accepted.clone();
-            let actor = actor.clone();
-            let time_limit = *time_limit;
-            let handle = handle.clone();
-            let span = phase_span(accepted.trace.as_ref(), &accepted.held_id(), Phase::Start);
-            // The Run waits for its start mark.
-            let queued = coral_telemetry::metric::run_queued();
-            tokio::spawn(span.instrument(async move {
-                #[cfg(test)]
-                module
-                    .execution_observer
-                    .owner_starting(&accepted.id, &accepted.claim_id)
-                    .await;
-                let started = until_answered(
-                    &accepted.held_id(),
-                    "execution start",
-                    || !handle.is_retired(),
-                    || module.start_execution(&accepted, &actor, time_limit),
-                )
-                .await;
-                drop(queued);
-                handle.send(Message::Started(started));
-            }));
-        }
         Effect::StartProgram {
-            package,
             deadline_at_unix_nanos,
-        } => start_program(
-            module,
-            accepted,
-            start,
-            handle,
-            package,
-            deadline_at_unix_nanos,
-        ),
+        } => start_program(module, accepted, start, handle, deadline_at_unix_nanos),
         Effect::Wake(parked) => parked.wake(),
         Effect::Abandon(work, error) => work.settle(Err(error)),
-        Effect::CompleteExecution { completion, intent } => {
+        Effect::CompleteExecution { completion } => {
             let module = module.clone();
             let accepted = accepted.clone();
             let handle = handle.clone();
@@ -528,7 +336,7 @@ fn run_effect(
                     &accepted.held_id(),
                     "terminal write",
                     || !handle.is_retired(),
-                    || module.complete_execution(&accepted, &completion, intent.as_ref()),
+                    || module.complete_execution(&accepted, &completion),
                 )
                 .await;
                 handle.send(Message::Completed(completed));
@@ -541,15 +349,13 @@ fn run_effect(
         Effect::Commit { .. }
         | Effect::TerminateProgram
         | Effect::Settle { .. }
-        | Effect::Interrupt { .. }
-        | Effect::Recover(_)
         | Effect::ArmTimer { .. }
         | Effect::Subscribe
         | Effect::Unsubscribe
         | Effect::Retire => {
             debug_assert!(
                 false,
-                "the host loop runs commits, the interruption, timers, the subscription and retirement itself"
+                "the host loop runs commits, the settle, timers, the subscription and retirement itself"
             );
         }
     }
@@ -558,88 +364,33 @@ fn run_effect(
 /// Moves the Run's stream in the Shutdown Drain. The answers the detach
 /// releases never reach the Program: the Coral Instance the stream reopens
 /// on answers what it waits on.
-fn move_stream(start: &OwnerStart, handle: &OwnerHandle) {
-    if let Some(link) = stream_link(start) {
-        link.start_moving();
-    }
+fn move_stream(start: &StreamRun, handle: &OwnerHandle) {
+    start.link.start_moving();
     handle.detach();
 }
 
-/// Starts the Program: in this process's isolate, or on the Run stream of a
-/// Run a Run Executor runs. A recovered owner runs none.
+/// Starts the Program on the Run stream.
 fn start_program(
     module: &RunModule,
     accepted: &AcceptedRun,
-    start: &OwnerStart,
+    start: &Arc<StreamRun>,
     handle: &OwnerHandle,
-    package: engine::ProgramPackage,
     deadline_at_unix_nanos: i64,
 ) {
-    match start {
-        OwnerStart::Program { actor, time_limit } => execute_package(
+    crate::run_stream::start_program(
+        module,
+        accepted,
+        start,
+        handle,
+        invoker(
             module,
             accepted,
-            actor,
+            &start.actor,
             handle,
-            package,
-            deadline_at_unix_nanos,
-            *time_limit,
-        ),
-        OwnerStart::Stream(stream) => crate::run_stream::start_program(
-            module,
-            accepted,
-            stream,
-            handle,
-            invoker(
-                module,
-                accepted,
-                &stream.actor,
-                handle,
-                deadline_at_unix_nanos,
-            ),
             deadline_at_unix_nanos,
         ),
-        OwnerStart::Recovery { .. } => {}
-    }
-}
-
-/// Executes the accepted package with the Run's invoker and output, bound by
-/// the deadline its start recorded and by the Run CPU Budget when it is below
-/// `time_limit`, and reports its end into the mailbox.
-fn execute_package(
-    module: &RunModule,
-    accepted: &AcceptedRun,
-    actor: &AuthenticatedPrincipal,
-    handle: &OwnerHandle,
-    package: engine::ProgramPackage,
-    deadline_at_unix_nanos: i64,
-    time_limit: RunTimeout,
-) {
-    let invoker = invoker(module, accepted, actor, handle, deadline_at_unix_nanos);
-    let output = ProgramOutputWriter::new(handle.clone(), accepted.value_limits);
-    let engine = module.engine.clone();
-    let linked_snapshots = accepted.linked_snapshots.clone();
-    let limits = accepted.value_limits;
-    let cpu_budget = module
-        .cpu_budget
-        .and_then(|budget| budget.below(time_limit.duration()));
-    let stop = handle.stop();
-    let handle = handle.clone();
-    let span = phase_span(accepted.trace.as_ref(), &accepted.held_id(), Phase::Execute);
-    tokio::spawn(span.instrument(async move {
-        let completion = engine::execute(
-            engine,
-            package,
-            linked_snapshots,
-            invoker,
-            output,
-            limits,
-            cpu_budget,
-            stop,
-        )
-        .await;
-        handle.send(Message::ProgramEnded(completion));
-    }));
+        deadline_at_unix_nanos,
+    );
 }
 
 /// The Tool invoker of the Program `actor` runs for the owner of `accepted`.
@@ -677,8 +428,8 @@ fn invoker(
 /// clock, from how much of it is left on the domain clock.
 fn grace_deadline(module: &RunModule, shutdown: &crate::termination::ShutdownAction) -> Instant {
     // A clock that fails never extends the grace: the attempt that follows
-    // reads the same clock, fails on it, and retires the owner; the Run is
-    // recovery's then.
+    // reads the same clock, fails on it, and retires the loop; the Run is
+    // the sweeper's then.
     let now = module
         .now()
         .unwrap_or(shutdown.deadline_at_unix_nanos())
@@ -720,44 +471,6 @@ fn spawn_settle(
     );
 }
 
-fn spawn_interruption(module: &RunModule, accepted: &AcceptedRun, handle: &OwnerHandle) {
-    let module = module.clone();
-    let accepted = accepted.clone();
-    let handle = handle.clone();
-    let span = phase_span(
-        accepted.trace.as_ref(),
-        &accepted.held_id(),
-        Phase::Complete,
-    );
-    tokio::spawn(span.instrument(async move {
-        let recorded = module
-            .record_interruption(
-                &accepted.workspace_id,
-                &accepted.held_id(),
-                &accepted.claim_id,
-                None,
-                None,
-                crate::termination::Interrupter::Owner,
-            )
-            .await
-            .map_err(CommitRejection::from);
-        match &recorded {
-            Ok(()) => {
-                tracing::warn!(
-                    coral.run.id = safe::id(&accepted.held_id()),
-                    "Run Owner recorded its interruption"
-                );
-            }
-            Err(rejection) => tracing::warn!(
-                coral.run.id = safe::id(&accepted.held_id()),
-                error.type = safe::kind(rejection.code()),
-                "Run Owner's interruption was not written: the Run is no longer its own"
-            ),
-        }
-        handle.send(Message::Interrupted(recorded));
-    }));
-}
-
 /// A Run stream's termination, written in one chunk until the database
 /// answers; the Program hears of it on the stream only then, and the owner
 /// retires. A definite failure means another writer ended or took the Run
@@ -765,14 +478,14 @@ fn spawn_interruption(module: &RunModule, accepted: &AcceptedRun, handle: &Owner
 fn spawn_stream_end(
     module: &RunModule,
     accepted: &AcceptedRun,
-    start: &OwnerStart,
+    start: &StreamRun,
     handle: &OwnerHandle,
     termination: crate::lifecycle::RequestedTermination,
 ) {
     let module = module.clone();
     let accepted = accepted.clone();
     let handle = handle.clone();
-    let link = stream_link(start);
+    let link = start.link.clone();
     let span = phase_span(
         accepted.trace.as_ref(),
         &accepted.held_id(),
@@ -784,7 +497,6 @@ fn spawn_stream_end(
                 &accepted.workspace_id,
                 &accepted.held_id(),
                 &accepted.claim_id,
-                None,
                 Some(&termination),
                 crate::termination::Interrupter::Owner,
             )
@@ -796,78 +508,10 @@ fn spawn_stream_end(
                 "a Run stream's termination was not written: the Run is no longer its own"
             );
         }
-        if let (Some(link), Ok(())) = (link, ended) {
+        if ended.is_ok() {
             link.terminate(Some(termination.termination.kind));
         }
         handle.send(Message::Completed(Ok(None)));
-    }));
-}
-
-/// The recovered owner's one chunk, written until the database answers. Its
-/// outcome reaches the owner as [`Message::Interrupted`]: a definite failure
-/// leaves the Run to the next sweep.
-fn spawn_recovery(
-    module: &RunModule,
-    accepted: &AcceptedRun,
-    handle: &OwnerHandle,
-    (taken, lease_until): (Option<String>, Option<i64>),
-    recovered: Recovered,
-) {
-    let module = module.clone();
-    let accepted = accepted.clone();
-    let handle = handle.clone();
-    let span = phase_span(accepted.trace.as_ref(), &accepted.held_id(), Phase::Recover);
-    tokio::spawn(span.instrument(async move {
-        let write = RecoveryWrite {
-            workspace_id: &accepted.workspace_id,
-            run_id: &accepted.id,
-            taken: taken.as_deref(),
-            lease_until,
-            takeover_claim_id: &accepted.claim_id,
-            recovered: &recovered,
-        };
-        // A mass recovery writes a few chunks at a time.
-        let _permit = module.recovery_writes.acquire().await;
-        // A stop retired the owner while it waited: the Run is left to the
-        // next sweep.
-        if handle.is_retired() {
-            return;
-        }
-        let recorded = until_answered(
-            &accepted.held_id(),
-            "recovery",
-            || !handle.is_retired(),
-            || module.record_recovery(&write),
-        )
-        .await;
-        let (recovery, claim) = match &recorded {
-            Ok(()) => (RecoveryOutcome::Ended, Some(ClaimOutcome::Won)),
-            Err(Error::RunEnded) => (RecoveryOutcome::AlreadyEnded, None),
-            Err(Error::ClaimMismatch) => (RecoveryOutcome::Lost, Some(ClaimOutcome::Lost)),
-            Err(_) => (RecoveryOutcome::Failed, None),
-        };
-        coral_telemetry::metric::run_recovered(recovery);
-        if let Some(claim) = claim {
-            coral_telemetry::metric::run_claimed(ClaimKind::Recover, claim);
-        }
-        match &recorded {
-            Ok(()) => tracing::info!(
-                coral.run.id = safe::id(&accepted.held_id()),
-                "recovered Run Owner ended its Run"
-            ),
-            Err(Error::RunEnded) => tracing::info!(
-                coral.run.id = safe::id(&accepted.held_id()),
-                "recovered Run Owner found its Run ended"
-            ),
-            Err(error) => tracing::warn!(
-                coral.run.id = safe::id(&accepted.held_id()),
-                error.type = safe::kind(error.code()),
-                "recovered Run Owner wrote nothing: the Run is not its own, or the next sweep tries again"
-            ),
-        }
-        handle.send(Message::Interrupted(
-            recorded.map_err(CommitRejection::from),
-        ));
     }));
 }
 
@@ -875,26 +519,24 @@ fn spawn_commit(
     module: &RunModule,
     accepted: &AcceptedRun,
     handle: &OwnerHandle,
-    start: &OwnerStart,
+    start: &StreamRun,
     chunk: ChunkBuild,
     output_total: usize,
 ) {
     let module = module.clone();
     let accepted = accepted.clone();
     let handle = handle.clone();
-    let link = stream_link(start);
+    let link = start.link.clone();
     tokio::spawn(async move {
         let outcome = commit_until_answered(&module, &accepted, &handle, chunk, output_total).await;
         let message = match outcome {
             Some(Ok(request_number)) => {
-                if let Some(link) = link {
-                    link.committed(request_number);
-                }
+                link.committed(request_number);
                 Message::Committed
             }
-            // Another writer ended a Run stream's Run: its Program hears
-            // why in its `Terminate`.
-            Some(Err(CommitRejection::RunEnded)) if link.is_some() => {
+            // Another writer ended the Run: its Program hears why in its
+            // `Terminate`.
+            Some(Err(CommitRejection::RunEnded)) => {
                 let read = run_repository::find_exact(
                     &module.database,
                     &accepted.workspace_id,
@@ -920,40 +562,29 @@ fn spawn_commit(
 /// the Run row when an attempt gets no answer.
 #[derive(Debug, Clone, Copy)]
 struct Written {
-    /// The head the chunk is built on: the one the owner tracks.
+    /// The head the chunk is built on: the one the loop tracks.
     head_before: u64,
-    /// The lease the last attempt that got to write renewed. No other writer
-    /// renews the lease, and the owner commits one chunk at a time, so a row
-    /// that carries exactly this instant carries this chunk.
-    lease_until_unix_nanos: Option<i64>,
-    /// For a Run a Run Executor holds, which has no lease: the commit time
-    /// the last attempt that got to write stamped, made distinct the same way.
+    /// The commit time the last attempt that got to write stamped, distinct
+    /// from the one it found on the row, so a coarse clock cannot make the
+    /// previous chunk's mark pass for this one.
     committed_at_unix_nanos: Option<i64>,
     /// The highest Run stream request number that attempt wrote.
     request_number: Option<u64>,
 }
 
 impl Written {
-    /// Whether `run` carries the chunk: the lease an attempt renewed is on
-    /// the row, and the head has moved past the one the chunk is built on.
-    /// The commit makes its lease instant distinct from the one it found on
-    /// the row, so a coarse clock cannot make the previous chunk's lease pass
-    /// for this one.
+    /// Whether `run` carries the chunk: the commit time an attempt stamped
+    /// is on the row with the watermark it wrote (another writer may stamp
+    /// the same instant), and the head has moved past the one the chunk is
+    /// built on.
     fn landed_on(self, run: &RunRecord) -> bool {
-        let marked = if run.on_run_executor {
-            // Another writer may stamp the same instant; the watermark this
-            // attempt wrote must be on the row too.
-            self.committed_at_unix_nanos.is_some()
-                && run.last_commit_at_unix_nanos == self.committed_at_unix_nanos
-                && self.request_number.is_none_or(|number| {
-                    run.committed_request_number
-                        .is_some_and(|committed| committed >= number)
-                })
-        } else {
-            self.lease_until_unix_nanos.is_some()
-                && run.worker_claim_expires_at_unix_nanos == self.lease_until_unix_nanos
-        };
-        marked && run.chunk_sequence > self.head_before
+        self.committed_at_unix_nanos.is_some()
+            && run.last_commit_at_unix_nanos == self.committed_at_unix_nanos
+            && self.request_number.is_none_or(|number| {
+                run.committed_request_number
+                    .is_some_and(|committed| committed >= number)
+            })
+            && run.chunk_sequence > self.head_before
     }
 
     /// Whether another writer moved the head of a Run a Run Executor holds
@@ -966,12 +597,9 @@ impl Written {
     }
 }
 
-/// What a chunk records beside its items: the termination intent and the
-/// Run Output Budget total its head update writes, and the Run Inbox rows
-/// it deletes.
+/// What a chunk records beside its items: the Run Output Budget total its
+/// head update writes.
 struct Records {
-    termination: Option<crate::lifecycle::RequestedTermination>,
-    inbox_rows: Vec<crate::run_inbox::InboxRow>,
     output_total: usize,
     /// The highest Run stream request number the chunk commits.
     request_number: Option<u64>,
@@ -1029,14 +657,11 @@ async fn commit_until_answered(
     let mut numbers = request_numbers(items.len(), chunk.numbered);
     let mut enforcement = chunk.enforcement;
     let mut records = Records {
-        termination: chunk.termination,
-        inbox_rows: chunk.inbox_rows,
         output_total,
         request_number: chunk.request_number,
     };
     let mut written = Written {
         head_before: chunk.head,
-        lease_until_unix_nanos: None,
         committed_at_unix_nanos: None,
         request_number: None,
     };
@@ -1173,7 +798,6 @@ fn rebase(
     *numbers = kept_numbers;
     records.output_total = run.accumulated_output_bytes.saturating_add(*bytes);
     written.head_before = run.chunk_sequence;
-    written.lease_until_unix_nanos = None;
     written.committed_at_unix_nanos = None;
     Some(records.output_total.saturating_sub(original_bytes))
 }
@@ -1222,9 +846,8 @@ fn resolve(run: &RunRecord, claim_id: &str, written: Written) -> Resolution {
 
 /// Why the Run row as read no longer takes a chunk built on `head`, in the
 /// order the evidence is judged: a terminal Run, another execution claim, a
-/// row that refuses the owner's chunks (a released worker claim, the
-/// deadline), and a head the owner did not move, which one serial owner
-/// cannot cause and is corruption. `None` when the row takes the chunk.
+/// row that refuses the loop's chunks, and a head below the one the chunk is
+/// built on, which is corruption. `None` when the row takes the chunk.
 fn refusal(run: &RunRecord, claim_id: &str, head: u64) -> Option<CommitRejection> {
     if run.state.is_terminal() {
         return Some(CommitRejection::RunEnded);
@@ -1244,25 +867,16 @@ fn refusal(run: &RunRecord, claim_id: &str, head: u64) -> Option<CommitRejection
     None
 }
 
-/// The chunk `run` takes, marked so a reread recognizes it: by the renewed
-/// lease, or, for a Run a Run Executor holds, by its commit time, with the
-/// watermark it commits. Neither mark repeats the instant on the row.
+/// The chunk `run` takes, marked so a reread recognizes it: by its commit
+/// time, which never repeats the instant on the row, with the watermark it
+/// commits.
 fn marked_chunk<'a>(
-    module: &RunModule,
     run: &'a RunRecord,
     claim_id: &'a str,
     now: i64,
     records: &Records,
     written: &mut Written,
-) -> Result<Chunk<'a>, Error> {
-    if !run.on_run_executor {
-        let mut lease_until = module.execution_policy.lease_until(now)?;
-        if Some(lease_until) == run.worker_claim_expires_at_unix_nanos {
-            lease_until = lease_until.saturating_add(1);
-        }
-        written.lease_until_unix_nanos = Some(lease_until);
-        return Ok(Chunk::new(run, Some(claim_id), now).renew_lease(lease_until));
-    }
+) -> Chunk<'a> {
     let committed_at = run.commit_mark(now);
     written.committed_at_unix_nanos = Some(committed_at);
     // Never below the watermark another writer left.
@@ -1270,16 +884,15 @@ fn marked_chunk<'a>(
         .request_number
         .map(|number| number.max(run.committed_request_number.unwrap_or(0)));
     let chunk = Chunk::new(run, Some(claim_id), committed_at);
-    Ok(match written.request_number {
+    match written.request_number {
         Some(number) => chunk.request_number(number),
         None => chunk,
-    })
+    }
 }
 
 /// One attempt to commit the chunk, in one transaction that holds no Run
-/// row: the row work, then the enforcement point, the deletion of the Run Inbox
-/// rows it records, then the head update predicated on the owner's claim and
-/// the head it tracks. A recommit first checks whether the attempt it repeats
+/// row: the row work, then the enforcement point, then the head update
+/// predicated on the loop's claim and the head it tracks. A recommit first checks whether the attempt it repeats
 /// landed; a head update that matches no row is classified from the row read
 /// again.
 async fn commit_once(
@@ -1342,16 +955,6 @@ async fn commit_once(
         if let Some(batch) = enforcement.as_mut() {
             batch.run(&mut transaction, &run, now).await?;
         }
-        // The requests this chunk records leave the Run Inbox with it.
-        module
-            .inbox
-            .remove(
-                &mut transaction,
-                &run.workspace_id,
-                &run.id,
-                &records.inbox_rows,
-            )
-            .await?;
         let mut produced_by_work = produced.iter();
         let mut events: Vec<&OwnedEvent> = Vec::new();
         for item in items.iter() {
@@ -1360,10 +963,9 @@ async fn commit_once(
                 ChunkItem::Work(_) => events.extend(produced_by_work.next().into_iter().flatten()),
             }
         }
-        let chunk = marked_chunk(module, &run, claim_id, now, records, written)?
+        let chunk = marked_chunk(&run, claim_id, now, records, written)
             .owned_events(events)
-            .output_bytes(records.output_total)
-            .termination(records.termination.as_ref());
+            .output_bytes(records.output_total);
         run_repository::commit_chunk(&mut transaction, chunk).await?;
         transaction.commit().await.map_err(Error::from)?;
         #[cfg(test)]

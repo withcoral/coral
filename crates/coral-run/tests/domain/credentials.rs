@@ -62,6 +62,7 @@ async fn account_authority_loss_blocks_already_prepared_credentials_for_both_rou
                 .unwrap()
         };
         fixture.runs = fixture.runs.with_accounts(accounts.clone());
+        fixture.serve().await;
         let run = fixture.runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast(); } catch (e) { return e.code; } return 'unexpected dispatch';",
         )).await.unwrap();
         wait_until(|| gate.entered()).await;
@@ -96,7 +97,7 @@ async fn account_authority_loss_blocks_already_prepared_credentials_for_both_rou
 async fn reconnect_blocks_prepared_credentials_without_changing_account_or_route() {
     for fixed in [false, true] {
         let server = MockServer::start().await;
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
         let mut tool = fixture
             .user_tool_at("user:reconnect", "Reconnect", &server.uri())
             .await;
@@ -152,8 +153,9 @@ async fn reconnect_blocks_prepared_credentials_without_changing_account_or_route
             .await
             .unwrap();
         let (gate, release) = EnforcementGate::blocking();
-        let mut runs = fixture.live_runs(None).with_accounts(accounts.clone());
+        let mut runs = fixture.live_runs(Some(accounts.clone()));
         runs.invocation_observer = gate.clone();
+        let runs = fixture.served(runs).await;
         let pending = runs.start(&tool.principal, &tool.workspace_id, submission("try { await coral.providers.weather.getForecast({}); } catch (error) { return error.code; }")).await.unwrap();
         wait_until(|| gate.entered()).await;
         let reconnect = accounts
@@ -234,7 +236,9 @@ async fn reconnect_blocks_prepared_credentials_without_changing_account_or_route
             .expect(1)
             .mount(&server)
             .await;
+        let mut runs = runs;
         runs.invocation_observer = Arc::new(NoopInvocationObserver);
+        let runs = fixture.served(runs).await;
         let later = runs
             .start(
                 &tool.principal,
@@ -274,7 +278,7 @@ impl PublicClientAccount {
         use coral_provider::account::SetupOAuthClient;
         let telemetry = super::trace::telemetry();
         let server = MockServer::start().await;
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
         let tool = fixture
             .user_tool_at("user:client-failure", "Application repair", &server.uri())
             .await;
@@ -344,7 +348,7 @@ impl PublicClientAccount {
             .skip_search();
         let broken = Self::mount_token_endpoint(&server).await;
         let account_id = Self::connect(&accounts, &context, &tool).await;
-        let runs = fixture.live_runs(Some(accounts.clone()));
+        let runs = fixture.live(Some(accounts.clone())).await;
         fixture.require_approval(&tool).await;
         // Decisions are recorded by the Run's owner, which the live module holds.
         let approvals = runs.approvals();
@@ -657,6 +661,7 @@ async fn a_token_renewed_during_the_enforcement_check_is_the_one_dispatched() {
     account.forecast_with("latest-access-canary", 19).await;
     let (gate, release) = EnforcementGate::blocking();
     account.runs.invocation_observer = gate.clone();
+    account.runs = account.fixture.served(account.runs.clone()).await;
     let (run, approved) = account.start_approved().await;
     wait_until(|| gate.entered()).await;
     let owner = &account.tool.workspace_id;
@@ -703,13 +708,13 @@ async fn a_token_renewed_during_the_enforcement_check_is_the_one_dispatched() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_caller_route_without_accounts_is_a_catchable_account_required_failure() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool("user:unconfigured-caller", "Caller route")
         .await;
     let (_directory, _accounts) =
         configure_user_caller(&fixture, &tool, "https://upstream.example").await;
-    let runs = fixture.live_runs(None);
+    let runs = fixture.live(None).await;
     let accepted = runs
         .start(
             &tool.principal,
@@ -852,7 +857,7 @@ async fn shared_account_credentials_reach_the_upstream_but_never_run_history_or_
             .expect(1)
             .mount(&server)
             .await;
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
         let mut tool = fixture
             .user_tool_at(
                 "user:credential-scheme",
@@ -861,7 +866,7 @@ async fn shared_account_credentials_reach_the_upstream_but_never_run_history_or_
             )
             .await;
         let (_directory, accounts) = scheme.publish(&fixture, &mut tool, &server.uri()).await;
-        let runs = fixture.live_runs(Some(accounts));
+        let runs = fixture.live(Some(accounts)).await;
         let accepted = runs
             .start(
                 &tool.principal,
@@ -918,7 +923,7 @@ async fn a_path_argument_cannot_send_shared_credentials_to_an_undeclared_endpoin
         .expect(1)
         .mount(&server)
         .await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let mut tool = fixture
         .user_tool_at("user:path-traversal", "Path traversal", &server.uri())
         .await;
@@ -939,7 +944,7 @@ async fn a_path_argument_cannot_send_shared_credentials_to_an_undeclared_endpoin
         coral_credentials::CredentialValues::token(Secret::new("traversal-canary".into()).unwrap()),
     ))
     .await;
-    let runs = fixture.live_runs(Some(accounts));
+    let runs = fixture.live(Some(accounts)).await;
     // Unchecked, `/v1/cities/../forecast` would reach `/v1/forecast`.
     let accepted = runs
         .start(
@@ -1048,6 +1053,7 @@ async fn a_credential_that_collides_with_the_planned_request_makes_the_tool_unav
             .unwrap();
     }
     fixture.runs = fixture.runs.with_accounts(accounts);
+    fixture.serve().await;
     let accepted = fixture
         .runs
         .start(
@@ -1095,7 +1101,7 @@ async fn agent_caller_dispatch_uses_only_preprovisioned_credentials_without_inte
         .expect(1)
         .mount(&server)
         .await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture
         .user_tool_at("user:agent-operator", "Agent caller", &server.uri())
         .await;
@@ -1103,7 +1109,7 @@ async fn agent_caller_dispatch_uses_only_preprovisioned_credentials_without_inte
     let context = change(tool.user.clone(), 40, '4');
     let scope = tool.workspace_id.clone();
     let (_dir, accounts) = configure_user_caller(&fixture, &tool, &server.uri()).await;
-    let runs = fixture.live_runs(None).with_accounts(accounts.clone());
+    let runs = fixture.live(Some(accounts.clone())).await;
     let source = "try { return (await coral.providers.weather.getForecast({})).data; } catch (error) { return error.code; }";
     for (stage, expected) in [
         serde_json::json!("account_required"),

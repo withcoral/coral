@@ -13,12 +13,11 @@ pub(crate) struct RunRecord {
     /// The start mark's instant plus the Run's time limit; `None` before the
     /// Run starts, and a Run with none never times out.
     pub(crate) deadline_at_unix_nanos: Option<i64>,
+    /// The worker claim an older release's Run Owner wrote with acceptance;
+    /// a Run this release accepts has none (dropped by #2916).
     pub(crate) worker_claim_id: Option<String>,
-    pub(crate) worker_claim_expires_at_unix_nanos: Option<i64>,
-    /// The Coral Instance that minted the claim the row records: at
-    /// acceptance, or at a takeover that recorded a new execution claim.
-    /// Empty for a Run a previous release accepted; a previous release's
-    /// takeover leaves it as it was.
+    /// The Coral Instance that holds the Run's stream, which its start or
+    /// a reopen records.
     pub(crate) holder_instance_id: Option<crate::CoralInstanceId>,
     pub(crate) execution_claim_id: Option<String>,
     pub(crate) execution_started_at_unix_nanos: Option<i64>,
@@ -40,8 +39,7 @@ pub(crate) struct RunRecord {
     /// The time limit acceptance stored, which a Run stream's start adds
     /// to its own instant; `None` for a Run accepted before it was stored.
     pub(crate) time_limit_nanos: Option<i64>,
-    /// A take gave the Run to a Run Executor: no Run Owner's worker claim
-    /// ever fences it.
+    /// A take gave the Run to a Run Executor.
     pub(crate) on_run_executor: bool,
     /// The Run Executor that took it is a local child, so its Run stream
     /// reaches only its parent Coral Instance.
@@ -89,39 +87,28 @@ impl RunRecord {
         }
     }
 
-    /// Whether the Run row still takes the Run Owner's chunks: a running Run
-    /// that holds `claim_id` as its owner's claim ([`Self::holds_owner_claim`]:
-    /// both claim columns, or the execution claim alone for a Run a Run
-    /// Executor holds, which no worker claim fences). Never the clock: the owner
-    /// applies the Run deadline itself and records the timeout like a
-    /// cancellation. A lapsed lease does not end ownership (a local owner
-    /// continues while its commits show a matching claim), and a recorded
-    /// termination intent does not stop the owner recording what it applied
-    /// before the intent.
+    /// Whether the Run row still takes the loop's chunks: a running Run that
+    /// holds `claim_id` as its loop's claim ([`Self::holds_owner_claim`]).
+    /// Never the clock: the loop applies the Run deadline itself, and a
+    /// recorded termination intent does not stop the loop recording what it
+    /// applied before the intent.
     pub(crate) fn accepts_owner_chunk(&self, claim_id: &str) -> bool {
         self.state == RunState::Running && self.holds_owner_claim(claim_id)
     }
 
-    /// Whether `claim_id` is the Run's execution claim and, unless a Run
-    /// Executor holds the Run, its worker claim too.
+    /// Whether `claim_id` is the execution claim a take gave the Run for a
+    /// Run Executor. An older release's Run Owner's Run, which a worker
+    /// claim fences, takes no chunk of a loop.
     pub(crate) fn holds_owner_claim(&self, claim_id: &str) -> bool {
         self.execution_claim_id.as_deref() == Some(claim_id)
-            && (self.worker_claim_id.as_deref() == Some(claim_id)
-                || (self.on_run_executor && self.worker_claim_id.is_none()))
+            && self.on_run_executor
+            && self.worker_claim_id.is_none()
     }
 
-    /// Whether the owner holding `claim_id` may still do Program work on
+    /// Whether the loop holding `claim_id` may still do Program work on
     /// this Run. True when the Run is running, no termination is recorded,
-    /// it holds `claim_id` as its owner's claim ([`Self::holds_owner_claim`]),
+    /// it holds `claim_id` as its loop's claim ([`Self::holds_owner_claim`]),
     /// and the deadline has not passed.
-    ///
-    /// The lease is deliberately not part of this check. The lease decides
-    /// which process owns the Run; every commit renews it. Inside its own
-    /// process an owner keeps working after its lease lapsed, as long as
-    /// its commits still find its claim on the row. What ends such a Run is
-    /// the owner's own liveness bound (see the Run Owner), or another
-    /// process taking the claim, which the owner then sees as a claim
-    /// mismatch.
     pub(crate) fn program_work_is_current(&self, claim_id: &str, now_unix_nanos: i64) -> bool {
         self.state == RunState::Running
             && self.termination.is_none()
@@ -145,8 +132,8 @@ impl RunRecord {
 
     /// Whether a Run Executor waits for, has taken or holds the Run: it is
     /// running with no worker claim, and started only if a take gave it to a
-    /// Run Executor. A Run Owner's Run holds a worker claim until it ends,
-    /// unless an earlier release released it with its recorded interruption.
+    /// Run Executor. An older release's Run Owner's Run holds a worker claim
+    /// until it ends.
     pub(crate) fn runs_on_run_executor(&self) -> bool {
         self.state == RunState::Running
             && self.worker_claim_id.is_none()
@@ -157,17 +144,14 @@ impl RunRecord {
         self.execution_started_at_unix_nanos.is_some()
     }
 
-    /// The claim the Run row holds: its execution claim, or the worker claim
-    /// of a Run that has not started; `None` for a Run with no claim.
+    /// The claim the Run row holds: the one a take gave it; `None` for a
+    /// Run no take claimed.
     pub(crate) fn held_claim(&self) -> Option<&str> {
-        self.execution_claim_id
-            .as_deref()
-            .or(self.worker_claim_id.as_deref())
+        self.execution_claim_id.as_deref()
     }
 
     /// A termination intent no Principal asked for: the deadline, an
-    /// interruption, the memory limit, or the CPU limit. A cancellation's
-    /// intent is the Run Owner's to apply.
+    /// interruption, the memory limit, or the CPU limit.
     pub(crate) fn request_termination(
         &self,
         kind: RunTerminationKind,

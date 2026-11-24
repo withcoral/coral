@@ -17,11 +17,12 @@ async fn authoring_scope(user: &str) -> (AdminScope, coral_search::SearchIndex) 
     let module = private_tool_module(&scope);
     let index =
         coral_search::SearchIndex::new(scope.fixture.database.clone(), Duration::from_secs(3_600));
-    scope.fixture.runs = scope
+    let runs = scope
         .fixture
         .runs
         .clone()
         .with_private_tools(crate::PrivateTools::new(module, index.clone()));
+    scope.fixture.replace_runs(runs).await;
     (scope, index)
 }
 
@@ -323,11 +324,10 @@ async fn a_save_outlives_its_failed_run_and_search_finds_it() {
 #[tokio::test]
 async fn a_run_that_ends_while_its_save_compiles_saves_nothing() {
     let (mut scope, _index) = authoring_scope("user:functions-ended").await;
-    scope.fixture.runs.execution_policy =
-        crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_mins(15));
     scope.fixture.runs.invocation_observer = Arc::new(RunEndsAfterPreparation {
         clock: scope.fixture.clock.clone(),
     });
+    scope.fixture.serve().await;
     let run = scope.start(&scope.owner, add("people.greet", SOURCE)).await;
     assert_eq!(
         scope.terminal(&scope.owner, &run).await.state(),

@@ -402,8 +402,7 @@ The UI checks the endpoint, protocol and sampler values only when export is on.
 With `endpoint` set, you receive the `coral.*` metrics below. Their names, units and attributes are stable within a major version. No attribute holds an identifier, a provider name, a tool call path, a client or an endpoint. Durations are in seconds and sizes in bytes. Gauges show the value when Coral collects metrics, every 5 seconds.
 
 - On `coral.request.duration`, `operation` is the route template or the gRPC method. An MCP tool call is `tools/call` followed by the tool's name, such as `tools/call exec`.
-- On `coral.run.claims`, `operation` is the claim: `accept`, `start`, `recover` or `takeover`.
-- `coral.run.queue.depth` counts the program runs that this Coral instance accepted and that wait to start. A run starts right after Coral accepts it, so the value is usually 0. The gauge does not count a run that waits for recovery by another Coral instance.
+- On `coral.run.claims`, `operation` is the claim: `accept`.
 - Coral samples `coral.program.execution.heap.peak` each time a program waits and when it ends. A program that frees memory before it waits or ends shows less than its true peak.
 
 | Metric                                   | Kind      | Attributes                                                                   |
@@ -418,8 +417,6 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 | `coral.run.duration`                     | Histogram | `run.status`                                                                 |
 | `coral.run.phase.duration`               | Histogram | `run.phase`                                                                  |
 | `coral.run.active`                       | Gauge     | None                                                                         |
-| `coral.run.queue.depth`                  | Gauge     | None                                                                         |
-| `coral.run.recovery`                     | Counter   | `outcome`                                                                    |
 | `coral.run.claims`                       | Counter   | `operation`, `outcome`                                                       |
 | `coral.invocation.started`               | Counter   | `provider.protocol`, `tool.effect`                                           |
 | `coral.invocation.ended`                 | Counter   | `provider.protocol`, `tool.effect`, `invocation.result_kind`, `failure.code` |
