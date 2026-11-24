@@ -20,8 +20,9 @@ use crate::{
     Refused, StreamId, Unavailable,
 };
 
-/// How long [`CompilerClient::ready`] waits for a pull stream with room
-/// before no compiler is available. A Run Executor redials within 5 s.
+/// How long [`CompilerClient::ready`] waits for a pull stream with compile
+/// room before no compiler is available: no Run Executor is linked, or
+/// every one's compiler stays busy. A Run Executor redials within 5 s.
 pub(crate) const COMPILE_WAIT: Duration = Duration::from_secs(30);
 
 /// The time left a call keeps when it waits for room, so that it reports
@@ -41,9 +42,9 @@ const TOO_LARGE: &str = "The source and the declarations of the custom tools it 
 /// [`CompilerClient`] that sends each call down a pull stream as `Compile`
 /// and waits for its `Compiled` within the call's time left.
 ///
-/// [`PullStreams`] numbers each call, spends its unit of room, and reads
-/// each answer back. A call whose stream ends first is routed once more,
-/// since a compile changes nothing, while it has more time left than
+/// [`PullStreams`] numbers each call, spends its unit of compile room, and
+/// reads each answer back. A call whose stream ends first is routed once
+/// more, since a compile changes nothing, while it has more time left than
 /// `ROOM_WAIT_RESERVE`. It fails as a stopped compiler when no other stream
 /// takes it then, or when that stream ends first or runs out of time too,
 /// and as rejected when it is too large to send.
@@ -124,7 +125,8 @@ impl fmt::Debug for PullStreamCompiler {
 
 impl PullStreamCompiler {
     /// The client that sends each call to the stream in `streams` with the
-    /// most room, ties at random. With no room, [`CompilerClient::ready`]
+    /// most compile room, ties at random. A full set of Runs takes none of
+    /// it. With no room, [`CompilerClient::ready`]
     /// waits up to `COMPILE_WAIT` and a call waits within its time left,
     /// less `ROOM_WAIT_RESERVE`; both ask `children`, when there are
     /// local children, for room. A call no stream took fails as
@@ -182,7 +184,7 @@ impl PullStreamCompiler {
             Target::MostRoom { children, relay } => (children.as_ref(), relay.as_ref()),
         };
         loop {
-            if let Some(stream) = self.streams.most_room() {
+            if let Some(stream) = self.streams.most_compile_room() {
                 return Some(Route::Stream(stream));
             }
             if let Some(relay) = relay {
@@ -195,7 +197,9 @@ impl PullStreamCompiler {
             if left.is_zero() {
                 return None;
             }
-            self.streams.room_signalled(left.min(ASK_AGAIN)).await;
+            self.streams
+                .compile_room_signalled(left.min(ASK_AGAIN))
+                .await;
         }
     }
 
@@ -314,10 +318,10 @@ impl PullStreamCompiler {
 }
 
 impl PullStreamCompiler {
-    /// A client that holds one unit of `stream`'s room for its first call,
-    /// unless another caller took the room first.
+    /// A client that holds one unit of `stream`'s compile room for its first
+    /// call, unless another caller took the room first.
     fn hold(&self, stream: StreamId) -> Option<Arc<dyn CompilerClient>> {
-        self.streams.hold(stream).ok()?;
+        self.streams.hold_compile(stream).ok()?;
         let held = HeldUnit {
             streams: self.streams.clone(),
             stream: Mutex::new(Some(stream)),
@@ -427,8 +431,9 @@ mod tests {
     /// is sent on the stream.
     type Answering = fn(&PullStreams, StreamId, u64);
 
-    /// A case: its name, the stream's room, the call's time left, what
-    /// answers it (none sends nothing), and what the call returns.
+    /// A case: its name, the units of the stream's compile room held
+    /// before the call, the call's time left, what answers it (none sends
+    /// nothing), and what the call returns.
     type Case = (
         &'static str,
         u32,
@@ -443,7 +448,7 @@ mod tests {
         let cases: [Case; 5] = [
             (
                 "an answer",
-                1,
+                0,
                 TEST_COMPILATION_TIMEOUT,
                 Some(|streams, stream, number| {
                     streams.receive(stream, up(compiled(number))).unwrap();
@@ -452,7 +457,7 @@ mod tests {
             ),
             (
                 "a failure",
-                1,
+                0,
                 TEST_COMPILATION_TIMEOUT,
                 Some(|streams, stream, number| {
                     let failure = wire::CompileFailure {
@@ -467,35 +472,35 @@ mod tests {
             ),
             (
                 "no answer in time",
-                1,
+                0,
                 Duration::from_millis(100),
                 Some(|_, _, _| {}),
                 Err(CompileError::TimedOut),
             ),
             (
                 "the stream ends",
-                1,
+                0,
                 TEST_COMPILATION_TIMEOUT,
                 Some(|streams, stream, _| streams.end(stream, None)),
                 Err(stopped.clone()),
             ),
             (
-                "no room",
-                0,
+                "a busy compiler",
+                crate::pull::COMPILE_ROOM,
                 TEST_COMPILATION_TIMEOUT,
                 None,
                 Err(CompileError::Unavailable(Unavailable::Busy)),
             ),
         ];
-        for (name, free, time_left, answering, expected) in cases {
+        for (name, busy, time_left, answering, expected) in cases {
             let streams = PullStreams::default();
             let (outbound, mut sent) = mpsc::unbounded_channel();
-            let stream = streams.insert(
-                "a-run-executor".to_owned(),
-                dialed_admission(),
-                free,
-                outbound,
-            );
+            // No room for Runs: a compile needs none.
+            let stream =
+                streams.insert("a-run-executor".to_owned(), dialed_admission(), 0, outbound);
+            for _unit in 0..busy {
+                streams.hold_compile(stream).unwrap();
+            }
             let caller = PullStreamCompiler::for_stream(streams.clone(), stream);
             let calling = tokio::spawn(async move {
                 let builtin_tools = BuiltinTools::default();

@@ -34,7 +34,8 @@ message PullResponse {
     Welcome welcome = 1;
     // Runs taken for this Run Executor.
     Taken taken = 2;
-    // One compile, which holds one unit of room until Compiled answers it.
+    // One compile, which holds no room for Runs: Coral keeps a count of the
+    // compiles it sends each Run Executor's one compiler.
     Compile compile = 3;
   }
 }
@@ -46,7 +47,7 @@ message Hello {
   string run_executor_id = 1;
   // The Run Executor's protocol level.
   uint32 protocol_level = 2;
-  // The units of room free: Runs and compiles it is willing to hold.
+  // The units of room free: the Runs it is willing to hold.
   uint32 free = 3;
   // The limits it applies to each Run.
   Limits limits = 4;
@@ -76,7 +77,7 @@ message Welcome {
 
 // The Run Executor's count of free units, which replaces the last one.
 message Room {
-  // The units of room free.
+  // The units of room free for Runs.
   uint32 free = 1;
 }
 

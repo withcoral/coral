@@ -1,8 +1,9 @@
 //! Compiles relayed through the database: Coral Instances talk
-//! only through it. A Coral Instance that holds no pull stream with room
-//! writes a row and waits on the change signal for its answer; every Coral
-//! Instance that holds one with room, itself included, takes the oldest row
-//! it can serve, serves it on that stream, and writes the answer back.
+//! only through it. A Coral Instance that holds no pull stream with compile
+//! room writes a row and waits on the change signal for its answer; every
+//! Coral Instance that holds one with compile room, itself included, takes
+//! the oldest row it can serve, serves it on that stream, and writes the
+//! answer back.
 //!
 //! A row with no call is a probe: [`crate::CompilerClient::ready`] waits on
 //! one until some Coral Instance has room, before the compile's own time
@@ -254,24 +255,24 @@ impl CompileRelay {
         let mut promised = Promised::new(streams.clone(), self.promise_kept);
         loop {
             promised.lapse();
-            if streams.most_room().is_some() || !promised.is_empty() {
+            if streams.has_compile_room() || !promised.is_empty() {
                 self.serve_pending(&streams, &mut promised).await;
             }
             // A lapsing promise frees its room.
             let wait = promised
                 .next_lapse()
                 .map_or(LOOK_AGAIN, |lapse| lapse.min(LOOK_AGAIN));
-            if streams.most_room().is_some() {
+            if streams.has_compile_room() {
                 signalled(&mut changes, &self.database, wait).await;
             } else if !promised.is_empty() {
                 // Its promised calls come as rows; probes wait for room.
                 tokio::select! {
                     () = signalled(&mut changes, &self.database, wait) => {}
-                    () = streams.room_signalled(wait) => {}
+                    () = streams.compile_room_signalled(wait) => {}
                 }
             } else {
                 // A row written while no stream had room is taken once one has.
-                streams.room_signalled(LOOK_AGAIN).await;
+                streams.compile_room_signalled(LOOK_AGAIN).await;
             }
         }
     }
@@ -282,7 +283,7 @@ impl CompileRelay {
     async fn serve_pending(&self, streams: &PullStreams, promised: &mut Promised) {
         loop {
             promised.lapse();
-            let free = streams.most_room();
+            let free = streams.most_compile_room();
             let requesters = promised.requesters();
             let from = match free {
                 Some(_) => None,
@@ -370,7 +371,7 @@ impl CompileRelay {
         let sent = match via {
             Via::Free(stream) => streams.compile(stream, time_left_ms, call),
             Via::Held(stream) => {
-                let fallback = streams.most_room().map(|free| (free, call.clone()));
+                let fallback = streams.most_compile_room().map(|free| (free, call.clone()));
                 match (streams.compile_held(stream, time_left_ms, call), fallback) {
                     (Err(Refused::NoRoom | Refused::Closed), Some((free, call))) => {
                         streams.compile(free, time_left_ms, call)
@@ -493,7 +494,7 @@ impl Promised {
     /// Holds a unit of `stream` for `requester`'s call, unless another
     /// caller took the room first.
     fn hold(&mut self, requester: String, stream: StreamId) -> bool {
-        if self.streams.hold(stream).is_err() {
+        if self.streams.hold_compile(stream).is_err() {
             return false;
         }
         self.promises.push_back(Promise {

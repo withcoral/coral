@@ -682,8 +682,10 @@ impl CompilerClient for Gated {
     }
 }
 
+// Catches: a compile that takes room for Runs, so a Run Executor full of Runs
+// reports none for them while it compiles.
 #[tokio::test]
-async fn a_queued_compile_holds_its_room_and_its_time_runs_from_its_arrival() {
+async fn a_queued_compile_takes_no_room_and_its_time_runs_from_its_arrival() {
     let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
     let (entered, mut entries) = mpsc::unbounded_channel();
     let (release, released) = mpsc::unbounded_channel();
@@ -726,8 +728,8 @@ async fn a_queued_compile_holds_its_room_and_its_time_runs_from_its_arrival() {
     release.send(()).unwrap();
     assert_eq!(
         call.rooms.recv().await,
-        Some(7),
-        "the second holds its unit"
+        Some(8),
+        "the queued second takes no room"
     );
     assert_eq!(entries.recv().await, Some(Duration::ZERO), "no time left");
     release.send(()).unwrap();
