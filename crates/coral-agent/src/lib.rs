@@ -22,10 +22,11 @@ use coral_app::{SubAgentDependencies, SubAgentToolsFactory};
 use coral_run::SubAgentTools;
 use coral_secret_store::{BuildEnvironment, SettingError, StoreSettings, env_var_name};
 use serde::Deserialize;
+use serde_json::{Map, Value, json};
 use url::Url;
 
 use model::{ModelClient, Protocol};
-use sub_agents::SubAgents;
+use sub_agents::{ModelSource, SubAgents};
 use tools::AgentTools;
 
 /// Builds what `coral.agent` and `coral.cancelAgent` reach, from the
@@ -53,7 +54,7 @@ impl SubAgentToolsFactory for SubAgentFactory {
             modules.commands,
             modules.runs,
             modules.search,
-            model,
+            Arc::new(ConfiguredModel(Arc::new(model))),
             dependencies.clock,
             dependencies.stopping,
         );
@@ -130,15 +131,48 @@ impl Section {
         };
         let http = coral_outbound::Client::new(policy, MODEL_CALL_TIMEOUT)
             .map_err(|_error| SettingError::new("", "model client initialization failed"))?;
-        let (window, effort) = (self.context_window, self.reasoning_effort);
         Ok(ModelClient::new(
             http,
             self.protocol,
             &base_url,
             self.model,
             api_key,
-            window,
-            effort,
+            self.context_window,
+            effort_args(self.protocol, self.reasoning_effort.as_deref()),
         ))
+    }
+}
+
+/// The model that the config file sets, for the life of the process.
+struct ConfiguredModel(Arc<ModelClient>);
+
+#[async_trait::async_trait]
+impl ModelSource for ConfiguredModel {
+    async fn current(&self) -> Arc<ModelClient> {
+        Arc::clone(&self.0)
+    }
+}
+
+/// What `reasoning_effort` sends on each protocol (ADR 0040, decision 9).
+fn effort_args(protocol: Protocol, effort: Option<&str>) -> Map<String, Value> {
+    let Some(effort) = effort else {
+        return Map::new();
+    };
+    let args = match protocol {
+        Protocol::ChatCompletions => json!({"reasoning_effort": effort}),
+        Protocol::OpenAiResponses => json!({"reasoning": {"effort": effort}}),
+        Protocol::Anthropic if matches!(effort, "none" | "disabled") => {
+            json!({"thinking": {"type": "disabled"}})
+        }
+        Protocol::Anthropic => match effort.parse::<u32>() {
+            Ok(budget) => json!({"thinking": {"type": "enabled", "budget_tokens": budget}}),
+            Err(_word) => {
+                json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": effort}})
+            }
+        },
+    };
+    match args {
+        Value::Object(args) => args,
+        _ => Map::new(),
     }
 }

@@ -61,6 +61,7 @@ impl Lead {
             ),
             id: turn.unwrap().id,
             sub_agent_id: sub_agent_id.to_owned(),
+            model: Arc::new(model_client(&self.model)),
             caller: Caller {
                 principal: actor.clone(),
                 workspace_id: workspace_id.clone(),

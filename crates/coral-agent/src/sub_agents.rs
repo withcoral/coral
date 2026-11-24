@@ -39,6 +39,13 @@ const MODEL_CALLS_PER_TURN: usize = 60;
 /// on a Turn sees it end.
 pub(crate) const TURN_MAX: Duration = Duration::from_secs(600);
 
+/// The model that a Turn uses, looked up when it starts.
+#[async_trait::async_trait]
+pub(crate) trait ModelSource: Send + Sync {
+    /// The model set now. A Turn keeps it to its end.
+    async fn current(&self) -> Arc<ModelClient>;
+}
+
 /// Starts, reads and cancels Sub-agents, each for its own caller.
 #[derive(Clone)]
 pub(crate) struct SubAgents {
@@ -47,7 +54,7 @@ pub(crate) struct SubAgents {
     runs: RunModule,
     run_tools: Arc<RunTools>,
     search: UniversalSearchModule,
-    model: Arc<ModelClient>,
+    models: Arc<dyn ModelSource>,
     clock: Arc<dyn Clock>,
     stopping: tokio::sync::watch::Receiver<bool>,
 }
@@ -63,7 +70,7 @@ impl SubAgents {
         commands: TaskCommands,
         runs: RunModule,
         search: UniversalSearchModule,
-        model: ModelClient,
+        models: Arc<dyn ModelSource>,
         clock: Arc<dyn Clock>,
         stopping: tokio::sync::watch::Receiver<bool>,
     ) -> Self {
@@ -73,7 +80,7 @@ impl SubAgents {
             tasks,
             runs,
             search,
-            model: Arc::new(model),
+            models,
             clock,
             stopping,
         }
@@ -88,6 +95,7 @@ impl SubAgents {
         task_id: &TaskId,
         message: String,
     ) -> Result<String, Error> {
+        let model = self.models.current().await;
         let mut transaction = self.database.begin().await?;
         let (task, authority) = self
             .tasks
@@ -102,6 +110,7 @@ impl SubAgents {
             trace: TurnTrace::begin(&sub_agent_id, actor, workspace_id, task.telemetry_id()),
             id: uuid::Uuid::new_v4().to_string(),
             sub_agent_id: sub_agent_id.clone(),
+            model,
             caller: Caller {
                 principal: actor.clone(),
                 workspace_id: workspace_id.clone(),
@@ -480,6 +489,8 @@ pub(crate) struct RunningTurn {
     pub(crate) trace: TurnTrace,
     pub(crate) id: String,
     pub(crate) sub_agent_id: String,
+    /// The model that was set when the Turn started.
+    pub(crate) model: Arc<ModelClient>,
     pub(crate) caller: Caller,
 }
 
