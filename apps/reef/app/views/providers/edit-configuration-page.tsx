@@ -334,7 +334,7 @@ export function EditConfigurationPage({
                   <Radio.Item
                     variant="card"
                     value="shared-held"
-                    description={`${audience.sharedCallers} the account you signed in to.${
+                    description={`${audience.sharedCallers} the account you connected.${
                       setup.grantedScope ? ` Granted permissions: ${setup.grantedScope}.` : ''
                     }`}
                   >
@@ -344,7 +344,7 @@ export function EditConfigurationPage({
                 <Radio.Item
                   variant="card"
                   value="shared-connect"
-                  description={`You sign in${held ? ' again' : ' once'}. ${audience.sharedCallers} that account.`}
+                  description={`${oauth ? `You sign in${held ? ' again' : ' once'}.` : held ? 'You enter other credentials.' : 'You enter the credentials once.'} ${audience.sharedCallers} that account.`}
                 >
                   {held || currentAccount === 'fixed'
                     ? 'Connect another account'

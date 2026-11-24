@@ -11,6 +11,7 @@ import {
   defaultAnswers,
   filledRecipe,
   refilled,
+  sameServer,
   serverInputs,
   withRecipe,
   type RecipeAnswers,
@@ -359,6 +360,24 @@ export function ConfigurationStep({
     if (missing.length === 0)
       blockers.push({ field: ids.server(group.declaration), message: problem })
   const blocked = blockers.at(0)
+  // A server that holds the URL the recipe gives it needs nothing from the
+  // person, so it folds away until they open the list. One that differs, waits
+  // for an answer or has an error stays in view.
+  const suggestedServer = (group: ServerGroup) => {
+    const fromRecipe = filled?.values.servers?.find(
+      (server) => server.declaration === group.declaration && server.url,
+    )
+    const selection = value.servers.find((server) => server.declaration === group.declaration)
+    return (
+      fromRecipe !== undefined &&
+      sameServer(selection, fromRecipe) &&
+      !errors[group.declaration] &&
+      !serverProblem(group, selection)
+    )
+  }
+  const foldableServers = serverGroups.filter(suggestedServer).length
+  const [serversOpen, setServersOpen] = useState(false)
+  const folded = (group: ServerGroup) => !serversOpen && suggestedServer(group)
   const serverFieldsShowErrors =
     staleServers.length > 0 ||
     serverProblems.length > 0 ||
@@ -684,23 +703,43 @@ export function ConfigurationStep({
                   {/* Each field names the server it sets, so the group needs a
                     boundary rather than a title. */}
                   <div className={styles.groupRule} role="presentation" />
-                  {review.servers.map((group) => (
-                    <ServerField
-                      key={group.declaration}
-                      id={ids.server(group.declaration)}
-                      waitingFor={waitingFor(group)}
-                      group={group}
-                      selection={value.servers.find(
-                        (server) => server.declaration === group.declaration,
-                      )}
-                      error={errors[group.declaration]}
-                      onChange={(selection) =>
-                        selection
-                          ? setServer(group.declaration, selection)
-                          : clearServer(group.declaration)
-                      }
-                    />
-                  ))}
+                  {review.servers
+                    .filter((group) => !folded(group))
+                    .map((group) => (
+                      <ServerField
+                        key={group.declaration}
+                        id={ids.server(group.declaration)}
+                        waitingFor={waitingFor(group)}
+                        group={group}
+                        selection={value.servers.find(
+                          (server) => server.declaration === group.declaration,
+                        )}
+                        error={errors[group.declaration]}
+                        onChange={(selection) =>
+                          selection
+                            ? setServer(group.declaration, selection)
+                            : clearServer(group.declaration)
+                        }
+                      />
+                    ))}
+                  {foldableServers > 0 && (
+                    <div className={styles.foldedServers}>
+                      <Typography.BodySmall as="p" variant="secondary">
+                        {foldableServers === 1
+                          ? '1 server has the suggested URL.'
+                          : `${foldableServers} servers have the suggested URL.`}
+                      </Typography.BodySmall>
+                      <Button.TextButton
+                        type="button"
+                        variant="secondary"
+                        size="32"
+                        aria-expanded={serversOpen}
+                        onClick={() => setServersOpen(!serversOpen)}
+                      >
+                        {serversOpen ? 'Hide these servers' : 'Show these servers'}
+                      </Button.TextButton>
+                    </div>
+                  )}
                 </section>
               )}
             </div>

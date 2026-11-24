@@ -336,3 +336,76 @@ it('marks a saved server and method that the source dropped on their fields', as
     'This document does not support Bearer token. Choose a supported method.',
   ])
 })
+
+/** Two per-tool servers built from one site answer, as in Datadog's recipe. */
+const siteServers = ['/logs', '/metrics'].map(
+  (path) => `#/paths/~1v2${path.replace('/', '~1')}/servers`,
+)
+const site = { ...consoleId, name: 'site', label: 'Site', defaultValue: 'datadoghq.eu' }
+const siteRecipe: RecipeConfigurationView = {
+  id: 'datadog_v2',
+  inputs: [site],
+  suggestedMethods: ['none'],
+  values: {
+    authentication: 'none',
+    servers: siteServers.map((declaration) => ({
+      declaration,
+      url: 'https://api.{{input.site}}',
+      custom: true,
+      variables: {},
+    })),
+  },
+}
+const siteReview: ConfigurationReviewView = {
+  ...review,
+  servers: siteServers.map((declaration) => ({
+    declaration,
+    tools: ['submit'],
+    required: true,
+    options: [{ url: 'https://{subdomain}.{site}', variables: [] }],
+  })),
+}
+const shownServers = () =>
+  [...document.querySelectorAll('label')]
+    .map((label) => label.textContent)
+    .filter((text) => text?.startsWith('Server for'))
+
+// Catches: a list of servers that each hold the recipe's URL, every one shown,
+// so the part of Setup that needs nothing is the longest part of it.
+it.each<[string, ConfigurationReviewView, string[], string]>([
+  ['every server holds the suggested URL', siteReview, [], '2 servers have the suggested URL.'],
+  [
+    'one server has an error',
+    { ...siteReview, errors: { [siteServers[1]]: 'Enter a reachable URL.' } },
+    ['Server for /v2/metrics'],
+    '1 server has the suggested URL.',
+  ],
+])('folds the suggested servers when %s', async (_case, configuration, shown, summary) => {
+  await renderStep(siteRecipe, configuration)
+  expect(shownServers()).toEqual(shown)
+  expect(document.body.textContent).toContain(summary)
+
+  const toggle = button('Show these servers')
+  expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await act(async () => toggle.click())
+  // Opened, every server shows in its place, so changing one does not move it.
+  expect(shownServers()).toEqual(['Server for /v2/logs', 'Server for /v2/metrics'])
+  expect(button('Hide these servers')).toHaveAttribute('aria-expanded', 'true')
+})
+
+// Catches: a server the person changed folded away with the ones that need nothing.
+it('keeps a server whose URL differs from the suggested one in view', async () => {
+  await renderStep(siteRecipe, siteReview)
+  await act(async () => button('Show these servers').click())
+  await act(async () => {
+    const input = field('Server for /v2/logs')
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+      input,
+      'https://logs.example.test',
+    )
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await act(async () => button('Hide these servers').click())
+  expect(shownServers()).toEqual(['Server for /v2/logs'])
+  expect(document.body.textContent).toContain('1 server has the suggested URL.')
+})

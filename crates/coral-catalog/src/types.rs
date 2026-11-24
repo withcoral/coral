@@ -223,6 +223,28 @@ pub struct CatalogDiagnostic {
     severity: CatalogDiagnosticSeverity,
 }
 
+/// Caps a document location or key at 256 characters and replaces its control characters.
+fn bounded_structure_name(name: &str) -> String {
+    const MAX_CHARS: usize = 256;
+    let truncated = name.chars().nth(MAX_CHARS).is_some();
+    let kept = if truncated { MAX_CHARS - 1 } else { MAX_CHARS };
+    let mut shown = name
+        .chars()
+        .take(kept)
+        .map(|character| {
+            if character.is_control() {
+                char::REPLACEMENT_CHARACTER
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    if truncated {
+        shown.push('…');
+    }
+    shown
+}
+
 impl CatalogDiagnostic {
     /// Builds one stable blocking code and safe static message.
     #[must_use]
@@ -244,33 +266,25 @@ impl CatalogDiagnostic {
         }
     }
 
+    /// Builds one stable blocking code whose message names a document key, such as a media type.
+    ///
+    /// `message` holds one `{}`, which the key replaces. The key names document
+    /// structure, never a value, and is bounded like a location.
+    #[must_use]
+    pub(crate) fn stable_naming(code: &'static str, message: &'static str, key: &str) -> Self {
+        Self {
+            code: DiagnosticCode(code.to_string()),
+            message: message.replacen("{}", &bounded_structure_name(key), 1),
+            severity: CatalogDiagnosticSeverity::Error,
+        }
+    }
+
     /// Names the document location, such as a JSON pointer, that caused this diagnostic.
     ///
     /// A location names document structure (component and property names), never a value.
     #[must_use]
     pub(crate) fn at_location(mut self, location: &str) -> Self {
-        const MAX_LOCATION_CHARS: usize = 256;
-        let truncated = location.chars().nth(MAX_LOCATION_CHARS).is_some();
-        let kept = if truncated {
-            MAX_LOCATION_CHARS - 1
-        } else {
-            MAX_LOCATION_CHARS
-        };
-        let mut shown = location
-            .chars()
-            .take(kept)
-            .map(|character| {
-                if character.is_control() {
-                    char::REPLACEMENT_CHARACTER
-                } else {
-                    character
-                }
-            })
-            .collect::<String>();
-        if truncated {
-            shown.push('…');
-        }
-        self.message = format!("{} at {shown}", self.message);
+        self.message = format!("{} at {}", self.message, bounded_structure_name(location));
         self
     }
 

@@ -800,33 +800,39 @@ fn approved_http_corpus_retains_every_named_component_schema() {
 fn unsupported_serialization_or_media_makes_the_operation_unavailable() {
     let object = "{ type: object, properties: { state: { type: string } } }";
     // (method, the Tool's parameters or request body) → the diagnostic
-    // code, or `None` when the Tool stays available
+    // code and the start of its message, or `None` when the Tool stays available
     for (method, request, expected) in [
         // deepObject without explode has no defined encoding.
         (
             "get",
             format!("parameters:\n  - {{ name: filter, in: query, style: deepObject, schema: {object} }}"),
-            Some("unsupported_parameter_serialization"),
+            Some(("unsupported_parameter_serialization", "an OpenAPI parameter uses")),
         ),
         (
             "post",
             format!("requestBody:\n  content:\n    application/x-www-form-urlencoded:\n      schema: {{ type: object, properties: {{ filter: {object} }} }}\n      encoding: {{ filter: {{ style: deepObject }} }}"),
-            Some("unsupported_parameter_serialization"),
+            Some(("unsupported_parameter_serialization", "an OpenAPI parameter uses")),
         ),
         (
             "get",
             "parameters:\n  - { name: filter, in: query, content: { application/xml: { schema: { type: object } } } }".to_string(),
-            Some("unsupported_parameter_serialization"),
+            Some(("unsupported_parameter_serialization", "an OpenAPI parameter uses")),
         ),
         (
             "post",
             "requestBody:\n  content:\n    application/x-www-form-urlencoded:\n      schema: { type: object, properties: { payload: { type: object } } }\n      encoding: { payload: { contentType: application/xml } }".to_string(),
-            Some("unsupported_http_request_media_type"),
+            Some(("unsupported_http_request_media_type", "This tool cannot send a form field of type application/xml.")),
         ),
         (
             "post",
             format!("requestBody:\n  content:\n    text/xml:\n      schema: {object}"),
-            Some("unsupported_http_request_media_type"),
+            Some(("unsupported_http_request_media_type", "This tool cannot send its text/xml request body, because the body schema is not text.")),
+        ),
+        // A body type Coral has no encoder for names that type.
+        (
+            "post",
+            "requestBody:\n  content:\n    application/json:\n      schema: { type: object }\n    Application/Logplex-1; charset=utf-8:\n      schema: { type: string }".to_string(),
+            Some(("unsupported_http_request_media_type", "This tool cannot send a request body of type application/logplex-1.")),
         ),
         // A composed schema that is still a string stays available as text.
         (
@@ -861,9 +867,13 @@ paths:
                     .diagnostic()
                     .map(coral_catalog::CatalogDiagnostic::code)
             ),
-            (availability, expected),
+            (availability, expected.map(|(code, _)| code)),
             "{request}"
         );
+        if let Some((_, message)) = expected {
+            let shown = operation.diagnostic().expect("diagnostic").message();
+            assert!(shown.starts_with(message), "{shown}");
+        }
     }
 }
 

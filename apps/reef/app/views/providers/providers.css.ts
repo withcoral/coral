@@ -502,3 +502,11 @@ export const iconError = style({
   minWidth: 0,
   order: 1,
 })
+// The servers that hold their suggested URL, folded into one line under the rest.
+export const foldedServers = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 12,
+  justifyContent: 'space-between',
+})

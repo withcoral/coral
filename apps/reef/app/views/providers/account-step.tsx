@@ -140,6 +140,16 @@ export function AccountStep({
     held && setup.automaticRefresh === false
       ? ' This account cannot refresh automatically. Reconnect when access expires.'
       : ''
+  // A sign-in and typed credentials both connect an account; only OAuth signs in.
+  const connectAgain = oauth
+    ? {
+        shared: held ? 'You sign in again.' : 'You sign in once.',
+        own: held ? 'You sign in again' : 'You sign in now',
+      }
+    : {
+        shared: held ? 'You enter other credentials.' : 'You enter the credentials once.',
+        own: held ? 'You enter other credentials' : 'You enter the credentials now',
+      }
   const accountField = <input type="hidden" name="account" value={choice} />
   const back = (
     <Button.InternalLink size="small" to={backPath} variant="secondary">
@@ -210,9 +220,7 @@ export function AccountStep({
                   <Radio.Item
                     variant="card"
                     value="shared-keep"
-                    description={
-                      `${audience.sharedCallers} the account you signed in to.` + refresh
-                    }
+                    description={`${audience.sharedCallers} the account you connected.` + refresh}
                   >
                     Use this account
                   </Radio.Item>
@@ -220,7 +228,7 @@ export function AccountStep({
                 <Radio.Item
                   variant="card"
                   value="shared-connect"
-                  description={`${held ? 'You sign in again.' : 'You sign in once.'} ${audience.sharedCallers} that account.`}
+                  description={`${connectAgain.shared} ${audience.sharedCallers} that account.`}
                 >
                   {held ? 'Connect another account' : 'Connect an account'}
                 </Radio.Item>
@@ -243,7 +251,7 @@ export function AccountStep({
                 <Radio.Item
                   variant="card"
                   value="own-connect"
-                  description={`${held ? 'You sign in again' : 'You sign in now'}, and that account becomes yours. ${audience.others}`}
+                  description={`${connectAgain.own}, and that account becomes yours. ${audience.others}`}
                 >
                   {held ? 'Connect now with another account' : 'Connect now'}
                 </Radio.Item>

@@ -195,6 +195,17 @@ describe('the account step', () => {
     expect(html).not.toContain('Connect now with this account')
   })
 
+  // Catches: saying you signed in after you typed an API key, and asking you to
+  // sign in again to replace it.
+  it('says the account was connected, not signed in to, after typed credentials', () => {
+    const html = render(held)
+    expect(html).toContain('Use this account')
+    expect(html).toContain('the account you connected.')
+    expect(html).toContain('You enter other credentials.')
+    expect(html).not.toContain('signed in')
+    expect(html).not.toContain('You sign in')
+  })
+
   // Catches: offering an individual-account add that Coral would refuse,
   // because nobody could sign in to the provider afterwards.
   it('offers to connect later only when Coral says each person can', () => {
