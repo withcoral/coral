@@ -95,8 +95,8 @@ async fn a_call_takes_a_unit_of_compile_room_until_its_answer_and_no_room_for_ru
     assert_eq!(calling.await.unwrap().as_deref(), Ok("42"));
     assert_eq!(free(full), (0, room), "the answer frees its unit");
 
-    // A tie in compile room goes to the most room for Runs, which a retiring
-    // Run Executor reports as none.
+    // A tie in compile room goes to the stream with more room for Runs:
+    // `full` reports none, as a full or a retiring Run Executor does.
     streams.let_go(low);
     let _second = held(&caller).await;
     assert_eq!(free(low), (1, room - 1), "the tie goes to room for Runs");
