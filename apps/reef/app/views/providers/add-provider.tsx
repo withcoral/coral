@@ -2,10 +2,9 @@ import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Button } from '@/wax/components'
 import type { ButtonVariant } from '@/wax/components/button/button.css'
 import * as Dialog from '@/wax/components/dialog'
-import { sourceSearch, type SourceChoice } from '@/lib/provider-recipes/choice'
+import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import { ProviderCatalog } from './provider-catalog'
-import { Logo } from '@/wax/components/logo'
-import { SOURCE_VERB, SourceStep, type SourceTab } from './source-step'
+import { SourceDetailsDialog, SourceStep, type SourceTab } from './source-step'
 import { useReadRecipe } from './read-recipe'
 import type { FormContext, StepperResult } from './types'
 import * as styles from './providers.css'
@@ -62,7 +61,6 @@ export function AddProviderEntry({
   onReading,
 }: AddProviderEntryProps) {
   const sourceForm = useId()
-  const detailsForm = useId()
   const [tab, setTab] = useState<SourceTab>(initialTab)
   const [chosen, setChosen] = useState<SourceChoice | null>(initialRecipe)
   const { read, reading } = useReadRecipe(form, newPath)
@@ -79,52 +77,14 @@ export function AddProviderEntry({
     <>
       {/* A recipe that asks questions before its read asks them in a small dialog
           over the catalog, which stays where it was for Cancel. */}
-      <Dialog.Root
-        open={Boolean(chosen)}
-        onOpenChange={(open) => {
-          if (!open && !detailsReading) setChosen(null)
-        }}
-      >
-        {chosen && (
-          <Dialog.Portal>
-            <Dialog.Backdrop />
-            <Dialog.Popup size="m">
-              <Dialog.Title className={styles.recipeTitle}>
-                <Logo name={chosen.displayName} icons={chosen.icons} />
-                Add {chosen.displayName}
-              </Dialog.Title>
-              <SourceStep
-                key={chosen.id}
-                form={form}
-                pending={pending}
-                action={`${newPath}?${sourceSearch(chosen)}`}
-                recipe={chosen}
-                formId={detailsForm}
-                actionOutside
-                onReading={setDetailsReading}
-              />
-              <Dialog.Actions>
-                <Button.TextButton
-                  type="button"
-                  variant="secondary"
-                  disabled={detailsReading}
-                  onClick={() => setChosen(null)}
-                >
-                  Cancel
-                </Button.TextButton>
-                <Button.TextButton
-                  type="submit"
-                  form={detailsForm}
-                  disabled={detailsReading || pending}
-                  busy={detailsReading || pending}
-                >
-                  {SOURCE_VERB[chosen.kind]}
-                </Button.TextButton>
-              </Dialog.Actions>
-            </Dialog.Popup>
-          </Dialog.Portal>
-        )}
-      </Dialog.Root>
+      <SourceDetailsDialog
+        form={form}
+        pending={pending}
+        newPath={newPath}
+        recipe={chosen}
+        onClose={() => setChosen(null)}
+        onReading={setDetailsReading}
+      />
       <SourceStep
         form={form}
         pending={pending}

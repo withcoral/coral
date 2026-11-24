@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
 
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { createRoutesStub } from 'react-router'
 import { expect, test, vi } from 'vitest'
 
-import { SourceStep } from './source-step'
+import { SourceDetailsDialog, SourceStep } from './source-step'
 import { AddProviderEntry } from './add-provider'
 import type { StepperResult } from './types'
 import type { SourceChoice } from '@/lib/provider-recipes/choice'
@@ -87,20 +87,27 @@ test('an instance recipe waits for a valid address and reads the filled source U
       path: '/',
       action: read,
       Component: () => (
-        <SourceStep form={{ csrf: 'csrf', requestId: 'request' }} pending={false} recipe={recipe} />
+        <SourceDetailsDialog
+          form={{ csrf: 'csrf', requestId: 'request' }}
+          pending={false}
+          newPath="/"
+          recipe={recipe}
+          onClose={() => {}}
+        />
       ),
     },
   ])
   render(<Stub initialEntries={['/']} />)
-  await user.click(screen.getByRole('button', { name: 'Connect' }))
-  expect(screen.getByRole('alert')).toHaveTextContent('Enter the source details.')
+  const details = await screen.findByRole('dialog', { name: 'Add Instance' })
+  await user.click(within(details).getByRole('button', { name: 'Connect' }))
+  expect(within(details).getByRole('alert')).toHaveTextContent('Enter the source details.')
   expect(read).not.toHaveBeenCalled()
-  await user.type(screen.getByLabelText('Instance URL'), 'https://tenant.example.test')
-  expect(screen.getByLabelText('MCP server URL')).toHaveValue(
+  await user.type(within(details).getByLabelText('Instance URL'), 'https://tenant.example.test')
+  expect(within(details).getByLabelText('MCP server URL')).toHaveValue(
     'https://tenant.example.test/mcp-server/http',
   )
-  await user.click(screen.getByRole('button', { name: 'Connect' }))
-  expect(await screen.findByRole('alert')).toHaveTextContent(
+  await user.click(within(details).getByRole('button', { name: 'Connect' }))
+  expect(await within(details).findByRole('alert')).toHaveTextContent(
     'https://tenant.example.test/mcp-server/http',
   )
   expect(read).toHaveBeenCalledOnce()
@@ -142,11 +149,12 @@ test('choosing an instance recipe in the catalog asks for its source details bef
   ])
   render(<Stub initialEntries={['/']} />)
   await user.click(screen.getByRole('button', { name: 'Add Tenant service MCP' }))
-  expect(screen.getByLabelText('Service hostname')).toBeInTheDocument()
+  const details = await screen.findByRole('dialog', { name: 'Add Tenant service' })
+  expect(within(details).getByLabelText('Service hostname')).toBeInTheDocument()
   expect(read).not.toHaveBeenCalled()
 })
 
-test('a regional source picker has the input label as its accessible name', () => {
+test('a regional source picker has the input label as its accessible name', async () => {
   const recipe: SourceChoice = {
     id: 'regional',
     displayName: 'Regional',
@@ -168,10 +176,58 @@ test('a regional source picker has the input label as its accessible name', () =
     {
       path: '/',
       Component: () => (
-        <SourceStep form={{ csrf: 'csrf', requestId: 'request' }} pending={false} recipe={recipe} />
+        <SourceDetailsDialog
+          form={{ csrf: 'csrf', requestId: 'request' }}
+          pending={false}
+          newPath="/"
+          recipe={recipe}
+          onClose={() => {}}
+        />
       ),
     },
   ])
   render(<Stub initialEntries={['/']} />)
-  expect(screen.getByRole('button', { name: 'MCP region' })).toBeInTheDocument()
+  const details = await screen.findByRole('dialog', { name: 'Add Regional' })
+  expect(within(details).getByRole('button', { name: 'MCP region' })).toBeInTheDocument()
+})
+
+// Catches: the dialog's action looking ready while the page's own read is still
+// in flight, so a second press seems to do nothing.
+test('a recipe dialog holds its action while the page is pending', async () => {
+  const recipe: SourceChoice = {
+    id: 'regional',
+    displayName: 'Regional',
+    description: '',
+    kind: 'mcp',
+    url: 'https://mcp.{{input.region}}.example.test/mcp',
+    sourceInputs: [
+      {
+        name: 'region',
+        label: 'Region',
+        description: '',
+        type: 'hostname',
+        defaultValue: 'us',
+        choices: ['us', 'eu'],
+      },
+    ],
+  }
+  const Stub = createRoutesStub([
+    {
+      path: '/',
+      Component: () => (
+        <SourceDetailsDialog
+          form={{ csrf: 'csrf', requestId: 'request' }}
+          pending
+          newPath="/"
+          recipe={recipe}
+          onClose={() => {}}
+        />
+      ),
+    },
+  ])
+  render(<Stub initialEntries={['/']} />)
+  const details = await screen.findByRole('dialog', { name: 'Add Regional' })
+  const connect = within(details).getByRole('button', { name: /Connect/ })
+  expect(connect).toHaveAttribute('aria-busy', 'true')
+  expect(connect).toHaveAttribute('aria-disabled', 'true')
 })

@@ -3,6 +3,7 @@ import { useEffect, useId, useState, type KeyboardEvent, type ReactNode } from '
 import { flushSync } from 'react-dom'
 import { useFetcher } from 'react-router'
 import { Button, Card, Inputs, Tabs, Typography } from '@/wax/components'
+import * as Dialog from '@/wax/components/dialog'
 import { Picker } from '@/wax/components/picker'
 import { TextField } from './fields'
 import { Logo } from '@/wax/components/logo'
@@ -15,6 +16,7 @@ import {
   filledSourceUrl,
   recipeSource,
   recipeNamespace,
+  sourceSearch,
   type SourceChoice,
 } from '@/lib/provider-recipes/choice'
 import type { FormContext, StepperResult } from './types'
@@ -24,7 +26,7 @@ type Kind = 'mcp' | 'openapi'
 export type SourceTab = 'catalog' | 'custom'
 
 /** What the action does, in the words each kind uses for it. */
-export const SOURCE_VERB = { mcp: 'Connect', openapi: 'Read' } as const
+const SOURCE_VERB = { mcp: 'Connect', openapi: 'Read' } as const
 const DOCUMENT_FILE_TYPES =
   '.json,.yaml,.yml,.gz,application/json,application/yaml,application/gzip'
 
@@ -75,28 +77,99 @@ function enterReads(event: KeyboardEvent<HTMLDivElement>) {
  * namespace comes later, in Configuration, so this form is the same in a
  * launcher dialog and on the page.
  */
-export function SourceStep({
+export function SourceStep(props: Omit<SourceFormProps, 'recipe'>) {
+  return <SourceForm {...props} />
+}
+
+/**
+ * The questions a catalog recipe asks before its read, such as a region. They
+ * are only ever asked in this dialog, stacked on what chose the recipe, so
+ * Cancel returns to it. The form is private to this module, so no page can
+ * show the questions on their own.
+ */
+export function SourceDetailsDialog({
   form,
   pending,
-  result,
-  hidden,
-  action,
-  recipe = null,
-  formId,
-  catalog,
-  fill = false,
-  tab,
-  onTabChange,
+  newPath,
+  recipe,
+  onClose,
   onReading,
-  actionOutside = false,
 }: {
+  form: FormContext
+  pending: boolean
+  /** The add page for this scope; the read posts there. */
+  newPath: string
+  /** The recipe whose questions the open dialog asks; none closes it. */
+  recipe: SourceChoice | null
+  onClose: () => void
+  /** Told when the read starts and ends, so the dialog under it can stay open. */
+  onReading?: (reading: boolean) => void
+}) {
+  const formId = useId()
+  const [reading, setReading] = useState(false)
+  useEffect(() => {
+    onReading?.(reading)
+  }, [reading, onReading])
+  return (
+    <Dialog.Root
+      open={Boolean(recipe)}
+      onOpenChange={(open) => {
+        if (!open && !reading) onClose()
+      }}
+    >
+      {recipe && (
+        <Dialog.Portal>
+          <Dialog.Backdrop />
+          <Dialog.Popup size="m">
+            <Dialog.Title className={styles.recipeTitle}>
+              <Logo name={recipe.displayName} icons={recipe.icons} />
+              Add {recipe.displayName}
+            </Dialog.Title>
+            <SourceForm
+              key={recipe.id}
+              form={form}
+              pending={pending}
+              action={`${newPath}?${sourceSearch(recipe)}`}
+              recipe={recipe}
+              formId={formId}
+              onReading={setReading}
+            />
+            <Dialog.Actions>
+              <Button.TextButton
+                type="button"
+                variant="secondary"
+                disabled={reading}
+                onClick={onClose}
+              >
+                Cancel
+              </Button.TextButton>
+              <Button.TextButton
+                type="submit"
+                form={formId}
+                disabled={reading || pending}
+                busy={reading || pending}
+              >
+                {SOURCE_VERB[recipe.kind]}
+              </Button.TextButton>
+            </Dialog.Actions>
+          </Dialog.Popup>
+        </Dialog.Portal>
+      )}
+    </Dialog.Root>
+  )
+}
+
+interface SourceFormProps {
   form: FormContext
   pending: boolean
   result?: StepperResult
   hidden?: ReactNode
   /** Where the read posts; the current URL when absent. */
   action?: string
-  /** A recipe already chosen, shown read-only with the header values it asks for. */
+  /**
+   * A recipe already chosen: the form asks only its questions, and the dialog
+   * around it names the recipe and holds the action.
+   */
   recipe?: SourceChoice | null
   /** Names the form so a button outside it, such as in a dialog footer, can submit it. */
   formId?: string
@@ -109,12 +182,22 @@ export function SourceStep({
   onTabChange?: (tab: SourceTab) => void
   /** Told when this form's read starts and ends, so a dialog can stay open for it. */
   onReading?: (reading: boolean) => void
-  /**
-   * The caller names the recipe and holds the read action, such as a dialog's
-   * title and footer, so the form shows only the questions.
-   */
-  actionOutside?: boolean
-}) {
+}
+
+function SourceForm({
+  form,
+  pending,
+  result,
+  hidden,
+  action,
+  recipe = null,
+  formId,
+  catalog,
+  fill = false,
+  tab,
+  onTabChange,
+  onReading,
+}: SourceFormProps) {
   const [ownTab, setOwnTab] = useState<SourceTab>(catalog && !recipe ? 'catalog' : 'custom')
   const shownTab = tab ?? ownTab
   // Both custom kinds show at once; the one last typed in, or whose action was
@@ -225,8 +308,9 @@ export function SourceStep({
               }}
             />
           </div>
-          {/* The action belongs with the address it reads, unless the caller holds it. */}
-          {!actionOutside && (
+          {/* The action belongs with the address it reads. A recipe's dialog
+              holds it in its footer. */}
+          {!recipe && (
             <Button.TextButton
               type="submit"
               form={formId}
@@ -310,24 +394,16 @@ export function SourceStep({
       {recipe?.id && <input type="hidden" name="displayName" value={recipe.displayName} />}
       {recipe ? (
         <>
-          {!actionOutside && (
-            <div className={styles.chosenRecipe}>
-              <Logo name={recipe.displayName} icons={recipe.icons} />
-              <Typography.BodyStrong as="h3" variant="primary">
-                {recipe.displayName}
-              </Typography.BodyStrong>
-            </div>
-          )}
           {recipe.sourceInputs?.map((input) => (
             <div key={input.name} className={styles.field}>
               {input.choices.length > 0 ? (
                 <>
                   <Typography.BodySmallStrong as="span">{input.label}</Typography.BodySmallStrong>
-                  {/* As wide as its choices, not the form: a choice reads as a menu. */}
+                  {/* As wide as its choices, not the form: a choice reads as a menu.
+                      The label above names it, so the menu does not repeat it. */}
                   <div className={styles.fitContent}>
                     <Picker
                       ariaLabel={input.label}
-                      label={input.label}
                       value={sourceAnswers[input.name] ?? ''}
                       options={input.choices.map((choice) => ({ label: choice, value: choice }))}
                       onChange={(answer) => {

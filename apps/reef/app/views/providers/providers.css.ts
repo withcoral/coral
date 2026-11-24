@@ -222,12 +222,6 @@ export const catalogScrollContent = style({
   // margin), so the cards stop short of it.
   paddingInlineEnd: 14,
 })
-export const chosenRecipe = style({
-  alignItems: 'center',
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: 12,
-})
 /** Holds a control at its own width inside a column that stretches its children. */
 export const fitContent = style({ alignSelf: 'flex-start', maxWidth: '100%' })
 /** A recipe's name with its logo, as a dialog title. */
