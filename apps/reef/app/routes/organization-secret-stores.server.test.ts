@@ -17,7 +17,7 @@ const closed = 'workspaces/00000000-0000-4000-8000-000000000002'
 const requestId = '00000000-0000-4000-8000-0000000000aa'
 const load = () => loader(authRouteTestArgs(new Request(url), {}, null))
 let refuse: ConnectError | null
-/** A change Coral refuses, by its method, while it accepts the others. */
+/** A change Coral refuses, as its method and workspace, while it accepts the others. */
 let refuseChange: string | null
 let disabled: boolean
 let calls: { method: string; workspace: string; secretStore: string; requestId: string }[]
@@ -29,7 +29,7 @@ beforeEach(() => {
   calls = []
   const change = (method: string) => (request: Omit<(typeof calls)[number], 'method'>) => {
     if (refuse) throw refuse
-    if (refuseChange === method)
+    if (refuseChange === `${method} ${request.workspace}`)
       throw new ConnectError('SECRET_STORE_NOT_DEFINED', Code.FailedPrecondition)
     calls.push({
       method,
@@ -172,11 +172,11 @@ it('saves an edit as one change per workspace, grants first, each with a key of 
 
 // Catches: an edit that goes on after a refusal, so the page reports one failure but
 // saved changes after it that the dialog then offers again.
-it('stops at the first change Coral refuses', async () => {
-  refuseChange = 'grant'
-  const result = await submit({ ...grant, revoke: closed })
+it('stops at the first change Coral refuses, keeping the ones before it', async () => {
+  refuseChange = `revoke ${closed}`
+  const result = await submit({ ...grant, revoke: [closed, research] })
   expect(result.init?.status).toBe(409)
-  expect(calls).toEqual([])
+  expect(calls.map(({ method, workspace }) => [method, workspace])).toEqual([['grant', research]])
 })
 
 // Catches: a forged field reaching Coral as another kind of resource.

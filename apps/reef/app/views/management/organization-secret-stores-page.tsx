@@ -216,10 +216,10 @@ function WorkspaceGrants({
   // So a store config removed offers only its own grants, and an archived grant stays.
   const offered = store.kind !== null ? workspaces : store.workspaces.filter((w) => !w.archived)
   const labels = new Map(
-    workspaceOptions([...store.workspaces.filter((w) => w.archived), ...offered]).map((o) => [
-      o.value,
-      o.label,
-    ]),
+    workspaceOptions([
+      ...store.workspaces,
+      ...offered.filter((w) => !granted.includes(w.name)),
+    ]).map((o) => [o.value, o.label]),
   )
   const label = (name: string) => {
     const text = labels.get(name) ?? name

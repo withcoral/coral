@@ -1,7 +1,7 @@
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite'
 import { useSyncExternalStore } from 'react'
 import { createRoutesStub } from 'react-router'
-import { expect, screen, spyOn, userEvent, waitFor, within } from 'storybook/test'
+import { expect, fn, screen, spyOn, userEvent, waitFor, within, type Mock } from 'storybook/test'
 import { dismissAllToasts, ToastContainer } from '@/wax/components/toast'
 import { AgentActivityPage } from './agent-activity-page'
 import { AgentSettingsPage } from './agent-settings-page'
@@ -1500,11 +1500,16 @@ export const EditSecretStoreWorkspaces: Story = {
   },
 }
 // Catches: a revocation saved without asking, a confirmation that names the wrong
-// workspace, or a cancel that throws away the edit behind it.
+// workspace, a cancel that throws away the edit behind it, a confirm that does not submit
+// the edit, or a failed save whose error hides behind the confirmation.
 export const RevokeSecretStore: Story = {
   render: OrganizationSecretStores.render,
-  parameters: OrganizationSecretStores.parameters,
-  play: async ({ canvas }) => {
+  parameters: {
+    ...OrganizationSecretStores.parameters,
+    dialogError: 'Coral could not revoke this grant.',
+    onAction: fn(),
+  },
+  play: async ({ canvas, parameters }) => {
     const { body, dialog, save } = await editWorkspaces(canvas, 'platform')
     await userEvent.click(dialog.getByRole('button', { name: 'Remove Research' }))
     await expect(changes(save)).toEqual({
@@ -1521,6 +1526,15 @@ export const RevokeSecretStore: Story = {
     await waitFor(() => expect(body.queryByRole('dialog', { name: 'Revoke access?' })).toBeNull())
     await expect(save).toBeEnabled()
     await expect(dialog.queryByRole('button', { name: 'Remove Research' })).toBeNull()
+
+    await userEvent.click(save)
+    const again = within(await body.findByRole('dialog', { name: 'Revoke access?' }))
+    await userEvent.click(again.getByRole('button', { name: 'Revoke and save' }))
+    await waitFor(() => expect(parameters.onAction).toHaveBeenCalledOnce())
+    const sent = (parameters.onAction as Mock).mock.calls[0][0] as FormData
+    await expect(sent.getAll('revoke')).toEqual(['workspaces/research'])
+    await waitFor(() => expect(body.queryByRole('dialog', { name: 'Revoke access?' })).toBeNull())
+    await expect(dialog.getByText('Coral could not revoke this grant.')).toBeVisible()
   },
 }
 

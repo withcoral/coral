@@ -25,6 +25,11 @@ export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/man
  * Only an organization owner can list the secret stores; Coral denies anyone else.
  * The page does not exist where the deployment turned them off.
  */
+// A refused change can follow changes that saved, so reload after a failed save too.
+export function shouldRevalidate() {
+  return true
+}
+
 export async function loader({ context }: Route.LoaderArgs) {
   try {
     const api = management(context)
@@ -107,7 +112,7 @@ export async function action({ request, context }: Route.ActionArgs) {
       if (intent === 'grant') await api.grantSecretStore({ workspace, secretStore, requestId })
       else await api.revokeSecretStore({ workspace, secretStore, requestId })
     } catch (error) {
-      // The page reloads, so the dialog offers only the changes that did not save.
+      // The page reloads (see shouldRevalidate), so the dialog offers only what did not save.
       return actionFailure(
         error,
         intent === 'grant'
