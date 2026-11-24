@@ -744,9 +744,9 @@ async fn a_perform_waiting_for_its_approval_is_permitted_after_a_reopen() {
 }
 
 /// Catches: a reopen that leaves a termination intent an older build
-/// recorded unended, waits a grace for its dispatches, or ends it in more
-/// than one chunk or with another outcome. The intent is written as that
-/// build wrote it, after its loop is gone.
+/// recorded unended, or ends it in more than one chunk or with another
+/// outcome. The intent is written as that build wrote it, after its loop is
+/// gone.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reopen_ends_an_older_builds_termination_intent_in_one_chunk() {
     let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
