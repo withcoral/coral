@@ -1,3 +1,4 @@
+import { showsCredentialTable } from '@/views/management/credential-fields'
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Form, useFetcher, useRevalidator } from 'react-router'
 import { signInFormTarget } from '@/lib/device-sign-in'
@@ -8,7 +9,6 @@ import { oauthFailureMessage } from '@/views/accounts/oauth-failure'
 import type { AuthorizationView } from '@/views/accounts/types'
 import { DeviceCodePanel } from '@/views/accounts/device-code'
 import { DocumentSubmitButton } from '@/components/document-submit-button'
-import { CredentialEntry } from '@/views/accounts/credential-source'
 import { CredentialFields } from './credential-fields'
 import { Fields } from './forms'
 import type { FormContext } from './types'
@@ -77,6 +77,7 @@ export function ConnectAccountDialog({
   // connection starts the next attempt empty.
   const id = useId()
   const [attempt, setAttempt] = useState(0)
+  const [table, setTable] = useState(false)
   const start = useFetcher<Started>({ key: `connect-account-${id}-${attempt}` })
   const begin = () =>
     start.submit(
@@ -136,7 +137,7 @@ export function ConnectAccountDialog({
       {open && (
         <Dialog.Portal>
           <Dialog.Backdrop />
-          <Dialog.Popup>
+          <Dialog.Popup size={table ? 'xl' : undefined}>
             <Dialog.Title>
               {reconnect ? 'Reconnect' : 'Connect'} {providerName}
             </Dialog.Title>
@@ -169,6 +170,7 @@ export function ConnectAccountDialog({
                 progress={start.data.progress}
                 close={() => setOpen(false)}
                 retry={() => void begin()}
+                onTable={setTable}
               />
             )}
           </Dialog.Popup>
@@ -183,10 +185,13 @@ function AuthorizationStep({
   progress,
   close,
   retry,
+  onTable,
 }: {
   progress: string
   close: () => void
   retry: () => void
+  /** Told whether the credentials show as a table, which needs a wider dialog. */
+  onTable: (table: boolean) => void
 }) {
   const check = useFetcher<Progress>()
   const revalidator = useRevalidator()
@@ -203,6 +208,18 @@ function AuthorizationStep({
     !succeeded &&
     !signedOut &&
     (v?.state === 'exchanging' || (v?.state === 'pending' && v.userCode !== undefined))
+  // Only the typed-credential form, with a store on offer or a saved reference,
+  // shows the table; every other state of the step fits the usual width.
+  const table =
+    !signedOut &&
+    !succeeded &&
+    v?.state === 'pending' &&
+    !v.oauth &&
+    showsCredentialTable(v.secretStores, v.savedReferences)
+  useEffect(() => {
+    onTable(table)
+    return () => onTable(false)
+  }, [table, onTable])
   useEffect(() => {
     if (check.state === 'idle' && !check.data) void check.load(progress)
   }, [check, progress])
@@ -299,16 +316,12 @@ function AuthorizationStep({
       // A document form: the secret goes straight to Coral, never into router state.
       <form id={formId} method="post" action={v.path} className={styles.section}>
         <Fields form={v.form} intent="secret" />
-        <CredentialFields fields={v.credentialFields}>
-          {(input, field, label) => (
-            <CredentialEntry
-              value={<Inputs.CredentialInput {...input} />}
-              field={field}
-              label={label}
-              stores={v.secretStores}
-              saved={v.savedReferences[field]}
-            />
-          )}
+        <CredentialFields
+          fields={v.credentialFields}
+          stores={v.secretStores}
+          saved={v.savedReferences}
+        >
+          {(input) => <Inputs.CredentialInput {...input} />}
         </CredentialFields>
         <Typography.BodySmall as="p" variant="tertiary">
           Enter the credentials from {v.providerName}.

@@ -24,3 +24,11 @@ export const popup = style({
 export const invalid = style({
   boxShadow: `inset 0 0 0 1px ${theme.input.stroke.error}`,
 })
+
+// A trigger that fills its cell keeps its label at the start and the chevron at
+// the end, so a column of them lines up.
+export const fill = style({
+  justifyContent: 'space-between',
+  textAlign: 'start',
+  width: '100%',
+})

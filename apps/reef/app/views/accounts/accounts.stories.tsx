@@ -272,32 +272,34 @@ const sharedSecretEntry: AuthorizationView = {
     { name: 'research', blockers: ['Needs Enterprise'], form: pathAndKey },
   ],
 }
-// Catches: the typed input submitted beside a reference, a store never chosen, inputs
-// that do not follow the chosen store's kind, or source controls a screen reader cannot
-// tell apart from another field's.
+// Catches: the typed input submitted beside a reference, inputs that do not follow the
+// chosen store's kind, or source controls a screen reader cannot tell apart from
+// another field's.
 export const SecretEntryWithSecretStore: Story = {
   render: () => <AuthorizationPage view={sharedSecretEntry} />,
-  play: async ({ canvas }) => {
-    await expect(canvas.getByRole('radiogroup', { name: 'Value source for Token' })).toBeVisible()
-    await expect(canvas.getByLabelText('Token', { exact: true })).toBeInTheDocument()
-    await userEvent.click(canvas.getByRole('radio', { name: 'Use a secret store' }))
-    await expect(canvas.queryByLabelText('Token', { exact: true })).toBeNull()
-    await expect(canvas.getByRole('textbox', { name: 'Path' })).toBeRequired()
-    await expect(canvas.getByRole('textbox', { name: 'Key' })).toBeRequired()
-    // A store is always chosen, so the form cannot post without one.
-    await expect(canvas.getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
-      'platform',
+  play: async ({ canvas, canvasElement }) => {
+    const source = canvas.getByRole('button', { name: 'Source for Token' })
+    const typed = () => canvasElement.querySelector('input[name="credential.token"]')
+    await expect(source).toHaveTextContent('Typed value')
+    await expect(typed()).not.toBeNull()
+    await userEvent.click(source)
+    await userEvent.click(
+      await within(document.body).findByRole('menuitemradio', { name: 'platform' }),
     )
+    await expect(typed()).toBeNull()
+    await expect(canvas.getByRole('textbox', { name: 'Path for Token' })).toBeRequired()
+    await expect(canvas.getByRole('textbox', { name: 'Key for Token' })).toBeRequired()
+    await expect(source).toHaveTextContent('platform')
     // An env store's reference is one variable name, with its prefix as a hint.
-    await userEvent.click(canvas.getByRole('button', { name: 'Secret store for Token' }))
+    await userEvent.click(source)
     await userEvent.click(await within(document.body).findByRole('menuitemradio', { name: 'env' }))
-    const variable = await canvas.findByRole('textbox', { name: 'Variable name' })
+    const variable = await canvas.findByRole('textbox', { name: 'Variable name for Token' })
     await expect(variable).toBeRequired()
-    await expect(variable).toHaveAccessibleDescription('Starts with MYCO_')
-    await expect(canvas.queryByRole('textbox', { name: 'Path' })).toBeNull()
-    await expect(canvas.queryByRole('textbox', { name: 'Key' })).toBeNull()
+    await expect(variable).toHaveAccessibleDescription('Variable name Starts with MYCO_')
+    await expect(canvas.queryByRole('textbox', { name: 'Path for Token' })).toBeNull()
+    await expect(canvas.queryByRole('textbox', { name: 'Key for Token' })).toBeNull()
     // A store Coral cannot read now is still offered, and says why in words.
-    await userEvent.click(canvas.getByRole('button', { name: 'Secret store for Token' }))
+    await userEvent.click(source)
     await expect(
       await within(document.body).findByRole('menuitemradio', {
         name: 'research (Needs Enterprise)',
@@ -321,8 +323,7 @@ export const ReconnectAfterGrantRevoked: Story = {
     />
   ),
   play: async ({ canvas }) => {
-    await expect(canvas.getByRole('radio', { name: 'Use a secret store' })).toBeChecked()
-    await expect(canvas.getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
+    await expect(canvas.getByRole('button', { name: 'Source for Token' })).toHaveTextContent(
       'removed',
     )
   },
@@ -339,14 +340,15 @@ export const ReconnectWithSavedReference: Story = {
       }}
     />
   ),
-  play: async ({ canvas }) => {
-    await expect(canvas.getByRole('radio', { name: 'Use a secret store' })).toBeChecked()
-    await expect(canvas.getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
+  play: async ({ canvas, canvasElement }) => {
+    await expect(canvas.getByRole('button', { name: 'Source for Token' })).toHaveTextContent(
       'research',
     )
-    await expect(canvas.getByRole('textbox', { name: 'Path' })).toHaveValue('team/forecast')
-    await expect(canvas.getByRole('textbox', { name: 'Key' })).toHaveValue('token')
-    await expect(canvas.queryByLabelText('Token', { exact: true })).toBeNull()
+    await expect(canvas.getByRole('textbox', { name: 'Path for Token' })).toHaveValue(
+      'team/forecast',
+    )
+    await expect(canvas.getByRole('textbox', { name: 'Key for Token' })).toHaveValue('token')
+    await expect(canvasElement.querySelector('input[name="credential.token"]')).toBeNull()
   },
 }
 export const SecretEntryWithSecretStoreProblem: Story = {

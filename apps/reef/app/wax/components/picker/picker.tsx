@@ -1,3 +1,4 @@
+import classNames from 'classnames'
 import { Button, Menu, Typography } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import type { IconColor, IconName } from '@/wax/components/icon'
@@ -22,6 +23,8 @@ export interface PickerProps {
   disabled?: boolean
   /** The trigger's id, for a page that moves focus to it. */
   id?: string
+  /** Takes its container's width, its label at the start and the chevron at the end. */
+  fill?: boolean
   /** Draws the error border and marks the value invalid. */
   invalid?: boolean
   label?: string
@@ -38,6 +41,7 @@ export function Picker({
   disabled = false,
   id,
   invalid = false,
+  fill = false,
   label,
   onChange,
   options,
@@ -60,7 +64,7 @@ export function Picker({
             ariaLabel={ariaLabel}
             aria-invalid={invalid || undefined}
             aria-describedby={ariaDescribedBy}
-            className={invalid ? styles.invalid : undefined}
+            className={classNames(invalid && styles.invalid, fill && styles.fill)}
           />
         }
       >

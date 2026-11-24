@@ -16,6 +16,7 @@ export function CredentialInput({
   disabled = false,
   required = true,
   masked = true,
+  bare = false,
 }: {
   id: string
   name?: string
@@ -23,6 +24,8 @@ export function CredentialInput({
   required?: boolean
   /** Starts the value hidden; an account email, say, can start visible. */
   masked?: boolean
+  /** No border of its own, for a table cell that draws the edges. */
+  bare?: boolean
 }) {
   const [hidden, setHidden] = useState(masked)
   return (
@@ -42,7 +45,7 @@ export function CredentialInput({
         required={required}
         maxLength={4096}
         disabled={disabled}
-        className={classNames(base.input, styles.input)}
+        className={classNames(base.input, styles.input, bare && base.bareInput)}
       />
       <IconButton
         className={styles.reveal}
