@@ -178,7 +178,9 @@ impl<T> Merged<T> {
     /// Whether the entry is strong by its place in the vector list: among
     /// the manifest's strong count at its top. The count is a constant, so
     /// the strong entries are the same for every limit. A retriever's own
-    /// strong rule makes an entry strong too, wherever it came from.
+    /// strong rule makes an entry strong too, wherever it came from. Only
+    /// the Tool retriever reads it: a place makes no Authored Tool strong,
+    /// since the rerank step judges its distance (ADR 0044).
     pub(crate) fn strong_by_vector(&self) -> bool {
         self.vector_rank
             .is_some_and(|rank| rank <= MANIFEST.strong_count)

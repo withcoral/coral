@@ -4,7 +4,8 @@
 //! A retriever applies its owners' visibility rules once per request, puts
 //! the answer into its ranked statement over the search-owned table, and
 //! hands the engine its window in rank order, each Entity marked strong or
-//! weak by the retriever's own rule. When the request carries the query's
+//! weak by the retriever's own rule, and with its distance from the query
+//! when its vector list holds it. When the request carries the query's
 //! vector, the query has a word to rank, and some of what the caller may
 //! search is in the index, the retriever also runs a vector query with its
 //! own visibility rules and merges the two lists ([`vector_list`]). It

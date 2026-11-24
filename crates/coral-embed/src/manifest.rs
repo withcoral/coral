@@ -69,8 +69,9 @@ pub struct Manifest {
     pub query_text: QueryText,
     /// How a retriever merges its vector list with its lexical list.
     pub merge: Merge,
-    /// An entry is strong when its rank in the vector list is this number
-    /// or lower. It is a constant: it does not follow the request's limit.
+    /// A Provider Tool is strong when its rank in the vector list is this
+    /// number or lower. It is a constant: it does not follow the request's
+    /// limit. It makes no Authored Tool strong.
     pub strong_count: usize,
 }
 

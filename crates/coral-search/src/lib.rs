@@ -16,8 +16,10 @@
 //! - [`UniversalSearchModule::discover`] is the one discovery operation, which
 //!   the Built-in Tool `coral.search` reaches, each request in one
 //!   read snapshot. A query runs one ranked statement per Search Entity kind,
-//!   one retriever each, and fuses their windows by position, strong matches
-//!   first, into bounded pages of Search Hits with one status per retriever.
+//!   one retriever each; a rerank step settles the mark of each Authored
+//!   Tool, and the engine fuses the windows by position, strong matches
+//!   first and last matches at the end, into bounded pages of Search Hits
+//!   with one status per retriever.
 //!   An omitted query lists current items in Call Path order and reads no
 //!   index. Exact Call Paths resolve to their Authoring
 //!   Descriptions and read no index; `signature::abridge` shortens the
@@ -49,8 +51,9 @@
 //!
 //! The engine inside [`UniversalSearchModule`] normalizes the query, embeds
 //! it once when the vector side is on (ADR 0035), hands the same terms and
-//! vector to every retriever, fuses by position, and pages by a plain
-//! offset that authorizes nothing. It never names a Search Entity kind. Every search
+//! vector to every retriever, reranks, fuses by position, and pages by a
+//! plain offset that authorizes nothing. Only the rerank step names a Search
+//! Entity kind (ADR 0044). Every search
 //! page and exact description applies the owners' current visibility rules.
 //! Discovery never starts an interactive authorization or refreshes credentials.
 
@@ -260,7 +263,8 @@ impl UniversalSearchModule {
     /// the query mode of [`Self::discover`].
     ///
     /// Each retriever applies current visibility and ranks its own kind; the
-    /// engine fuses the windows by position, strong matches first. Only the
+    /// rerank step makes each Authored Tool strong or last, and the engine
+    /// fuses the windows by position: strong, then weak, then last. Only the
     /// page's items are hydrated, each into a hit with a signature line and
     /// the beginning of its description; a hit says nothing of why it
     /// matched. Every page carries one status per retriever. An omitted query
