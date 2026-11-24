@@ -1,5 +1,5 @@
 import { popup as menuPopup } from '@/wax/components/menu/menu.css'
-import { style } from '@/wax/css'
+import { globalStyle, style } from '@/wax/css'
 import { theme } from '@/wax/theme/theme.css'
 
 export const label = style({
@@ -25,10 +25,11 @@ export const invalid = style({
   boxShadow: `inset 0 0 0 1px ${theme.input.stroke.error}`,
 })
 
-// A trigger that fills its cell keeps its label at the start and the chevron at
-// the end, so a column of them lines up.
+// A trigger that fills its cell keeps its icon and label at the start and the
+// chevron at the end, so a column of them lines up.
 export const fill = style({
-  justifyContent: 'space-between',
+  justifyContent: 'flex-start',
   textAlign: 'start',
   width: '100%',
 })
+globalStyle(`${fill} > :last-child`, { marginInlineStart: 'auto' })

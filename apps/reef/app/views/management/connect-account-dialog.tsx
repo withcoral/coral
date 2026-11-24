@@ -1,5 +1,5 @@
 import { showsCredentialTable } from '@/views/management/credential-fields'
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { Form, useFetcher, useRevalidator } from 'react-router'
 import { signInFormTarget } from '@/lib/device-sign-in'
 import { Banner, Button, Inputs, Typography } from '@/wax/components'
@@ -216,7 +216,8 @@ function AuthorizationStep({
     v?.state === 'pending' &&
     !v.oauth &&
     showsCredentialTable(v.secretStores, v.savedReferences)
-  useEffect(() => {
+  // Before paint, so the dialog is wide when the table first shows.
+  useLayoutEffect(() => {
     onTable(table)
     return () => onTable(false)
   }, [table, onTable])
