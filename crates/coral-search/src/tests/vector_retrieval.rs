@@ -553,6 +553,82 @@ async fn an_authored_tool_is_strong_only_when_strictly_nearer_than_the_nearest_p
 }
 
 #[tokio::test]
+async fn a_rare_path_word_makes_an_authored_tool_strong_within_the_tenth_nearest_provider_tool() {
+    let world = World::with(Arc::new(Meanings::tides())).await;
+    // For `moon anchor`: ten Tides Tools and the Coast tide Tool mean what
+    // a text about tides means, so the tenth nearest Provider Tool is as
+    // near as a text about tides. The other Coast Tools and the forecast
+    // and GitHub Tools mean nothing of the query.
+    let levels = (1..=10)
+        .map(|number| (format!("level{number:02}"), format!("Water level {number}")))
+        .collect::<Vec<_>>();
+    world.publish_operations("tides", &levels, 50).await;
+    // Eight Coast Tools, fewer than ten, so that a filter on Coast leaves
+    // fewer than ten Provider distances and weak Provider Tools.
+    let coast = std::iter::once(("tideTables".to_owned(), "Tables of the water".to_owned()))
+        .chain((1..=7).map(|number| (format!("listBuoys{number}"), format!("List buoys {number}"))))
+        .collect::<Vec<_>>();
+    world.publish_operations("coast", &coast, 51).await;
+    // `anchor` starts a word of both paths and of no Provider Tool path, so
+    // it is rare. The depths Tool is exactly as near as the tenth nearest
+    // Provider Tool; the forecast Tool also means what `forecast` means, so
+    // it is farther.
+    world
+        .save(&world.principal, "anchor.depths", "Depth below the keel")
+        .await;
+    world
+        .save(&world.principal, "anchor.forecast", "Wind for one berth")
+        .await;
+    world.index_and_embed().await;
+    let semantic = world.semantic();
+    let forecast_vector = "DELETE FROM search_entity_embeddings WHERE doc_id IN \
+        (SELECT doc_id FROM search_entities WHERE call_path = 'coral.private.anchor.forecast')";
+    // Each case: the Provider filter, a change to the index before it, and
+    // the Authored Tools that follow every Provider Tool.
+    let cases = [
+        (
+            "no filter: the depths Tool is not farther than the tenth nearest Provider Tool, \
+             the forecast Tool is",
+            None,
+            None,
+            vec!["coral.private.anchor.forecast"],
+        ),
+        (
+            "the Coast filter: with fewer than ten Provider distances, the farthest counts",
+            Some("coast"),
+            None,
+            vec![],
+        ),
+        (
+            "the forecast Tool has no distance of its own: the rare word decides alone",
+            None,
+            Some(forecast_vector),
+            vec![],
+        ),
+    ];
+    for (case, filter, change, last) in cases {
+        if let Some(change) = change {
+            world.execute(change).await;
+        }
+
+        let page = world.anchor(&semantic, filter).await;
+
+        assert_eq!(
+            of_kind(&page, EntityKind::PrivateTool).len(),
+            2,
+            "{case}: {:?}",
+            paths(&page)
+        );
+        assert_eq!(
+            after_every_provider_tool(&page),
+            last,
+            "{case}: {:?}",
+            paths(&page)
+        );
+    }
+}
+
+#[tokio::test]
 async fn without_a_provider_distance_no_authored_tool_is_strong_by_distance() {
     let world = World::anchorage().await;
     // For `moon anchor water`: an Authored Tool whose text holds the query,
@@ -574,11 +650,19 @@ async fn without_a_provider_distance_no_authored_tool_is_strong_by_distance() {
         "coral.shared.quay.tides01".to_owned(),
     ];
     // Each case: the search, a change to the index before it, and the
-    // Authored Tools that follow every Provider Tool. A phrase and a rare path
-    // word keep their Authored Tools strong in every case.
-    let cases: [(&str, UniversalSearchModule, Option<String>, &[String]); 5] = [
+    // Authored Tools that follow every Provider Tool. A phrase keeps its
+    // Authored Tools strong in every case. So does the rare path word: with a
+    // Provider distance the anchor Tool is near enough, and without one the
+    // rare word decides alone.
+    let cases: [(&str, UniversalSearchModule, Option<String>, &[String]); 6] = [
         ("a Provider Tool distance", world.semantic(), None, &[]),
         ("the setting off", world.by_words(), None, &quay),
+        (
+            "the model not ready",
+            world.with_model(ModelLoad::Pending),
+            None,
+            &quay,
+        ),
         (
             "the vector queries fail",
             world.with_model(ModelLoad::Ready(Arc::new(ShortQueries))),
@@ -1481,25 +1565,48 @@ impl World {
         let operations = (1..=12)
             .map(|number| {
                 (
-                    format!("/notes/{number}"),
+                    format!("listNotes{number:02}"),
+                    format!("List notes {number}"),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.publish_operations("notes", &operations, 40).await;
+    }
+
+    /// Publishes the Provider `namespace` with one Tool per operation id
+    /// and summary, each described as `Returns notes.`. The index learns of
+    /// it at its next pass.
+    async fn publish_operations(&self, namespace: &str, operations: &[(String, String)], at: i64) {
+        let paths = operations
+            .iter()
+            .enumerate()
+            .map(|(number, (operation, summary))| {
+                (
+                    format!("/{namespace}/{number}"),
                     serde_json::json!({ "get": {
-                        "operationId": format!("listNotes{number:02}"),
-                        "summary": format!("List notes {number}"),
+                        "operationId": operation,
+                        "summary": summary,
                         "description": "Returns notes.",
                         "responses": { "200": { "description": "OK" } }
                     }}),
                 )
             })
             .collect::<serde_json::Map<_, _>>();
-        let notes = serde_json::json!({
+        let document = serde_json::json!({
             "openapi": "3.1.0",
-            "info": { "title": "Notes", "version": "1.0.0" },
-            "servers": [{ "url": "https://notes.example" }],
+            "info": { "title": namespace, "version": "1.0.0" },
+            "servers": [{ "url": format!("https://{namespace}.example") }],
             "security": [],
-            "paths": operations,
+            "paths": paths,
         });
         self.modules
-            .publish_openapi(&self.user, &self.workspace, &notes.to_string(), "notes", 40)
+            .publish_openapi(
+                &self.user,
+                &self.workspace,
+                &document.to_string(),
+                namespace,
+                at,
+            )
             .await;
     }
 

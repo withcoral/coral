@@ -90,8 +90,8 @@ use page::{Ranked, hydrate_page_in_transaction};
 use retriever::authored_tools::AuthoredToolRetriever;
 use retriever::tools::ToolRetriever;
 use retriever::{
-    Answer, AuthoredStrong, EntityRetriever, LexicalReason, QueryError, QueryRequest,
-    RequestContext, Semantic, WindowEntry, abandon_query, begin_query, count, end_query,
+    Answer, EntityRetriever, LexicalReason, QueryError, QueryRequest, RequestContext, Semantic,
+    WindowEntry, abandon_query, begin_query, count, end_query,
 };
 use tracing::Instrument as _;
 use tracing::field::Empty;
@@ -448,7 +448,6 @@ impl UniversalSearchModule {
         let mut statuses = Vec::with_capacity(self.retrievers.len());
         let mut applied = 0usize;
         let mut failed = 0usize;
-        let mut authored = AuthoredStrong::default();
         for (retriever_index, retriever) in self.retrievers.iter().enumerate() {
             begin_query(transaction).await?;
             let span = tracing::info_span!(
@@ -466,14 +465,9 @@ impl UniversalSearchModule {
                     window,
                     coverage,
                     semantic,
-                    authored_strong,
                 }) => {
                     if let Some(semantic) = semantic {
                         record_semantic(&span, semantic);
-                    }
-                    if let Some(strong) = authored_strong {
-                        authored.phrase += strong.phrase;
-                        authored.rare_path_word += strong.rare_path_word;
                     }
                     end_query(transaction).await?;
                     applied += 1;
@@ -505,7 +499,7 @@ impl UniversalSearchModule {
             return Err(Error::ServiceUnavailable);
         }
         let reranked = rerank::rerank(&mut windows);
-        record_marks(&tracing::Span::current(), authored, &reranked);
+        record_marks(&tracing::Span::current(), &reranked);
         Ok((fuse(windows), statuses))
     }
 
@@ -773,14 +767,14 @@ fn record_semantic(span: &tracing::Span, semantic: Semantic) {
 
 /// Records on the search span how many Authored Tools each rule made strong,
 /// and whether a Provider Tool distance was there to compare with.
-fn record_marks(span: &tracing::Span, authored: AuthoredStrong, reranked: &rerank::Reranked) {
+fn record_marks(span: &tracing::Span, reranked: &rerank::Reranked) {
     span.record(
         "coral.search.authored_strong.phrase",
-        safe::number(count(authored.phrase)),
+        safe::number(count(reranked.strong_by_phrase)),
     );
     span.record(
         "coral.search.authored_strong.rare_path_word",
-        safe::number(count(authored.rare_path_word)),
+        safe::number(count(reranked.strong_by_rare_path_word)),
     );
     span.record(
         "coral.search.authored_strong.distance",

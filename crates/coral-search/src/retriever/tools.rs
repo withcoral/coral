@@ -114,7 +114,6 @@ impl EntityRetriever for ToolRetriever {
                 window: Vec::new(),
                 coverage: RetrieverCoverage::new(count(eligible), count(eligible), 0, false),
                 semantic: Some(Semantic::of(&request.vector)),
-                authored_strong: None,
             });
         };
         let complete = repository::complete_generations(transaction, context.workspace_id)
@@ -188,7 +187,6 @@ impl EntityRetriever for ToolRetriever {
             ),
             window,
             semantic: Some(semantic),
-            authored_strong: None,
         })
     }
 
@@ -392,6 +390,7 @@ fn window_entry(
             strong_by_vector || strong_tool(plan, &tool.matched, named.contains(&tool.provider_id)),
         ),
         distance,
+        rare_path_word: false,
         entity: EntityRef::Tool(ToolRef {
             provider: Arc::clone(provider),
             tool_key: tool.tool_key,

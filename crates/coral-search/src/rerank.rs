@@ -1,13 +1,21 @@
 //! The rerank step: it runs between the retrievers and `fuse`, and sets the
 //! final mark of each Authored Tool in the windows (ADR 0044).
 //!
-//! An Authored Tool that its retriever's own rules do not make strong is
-//! strong by distance when it is strictly nearer to the query than the
-//! nearest Provider Tool of the same request. The Provider Tool window
-//! holds only the Tools inside the search's Provider filter, so the
-//! comparison is inside it too. Both distances come from one query vector
-//! and one model, so no tuned limit enters. Every other Authored Tool is
-//! last: it follows every weak entry.
+//! An Authored Tool that a phrase does not make strong is strong when:
+//!
+//! - a rare content word of the query starts a word of its path, and it is
+//!   no farther from the query than the Provider Tool of rank
+//!   [`RARE_WORD_PROVIDER_TOOL_RANK`] by distance, or the farthest Provider
+//!   Tool with a distance when fewer have one. The distance condition holds
+//!   only when both distances exist: without its own distance, or without
+//!   any Provider Tool distance, the rare word decides alone, as before the
+//!   step;
+//! - or it is strictly nearer to the query than the nearest Provider Tool.
+//!
+//! Every other Authored Tool is last: it follows every weak entry. The
+//! Provider Tool window holds only the Tools inside the search's Provider
+//! filter, so each comparison is inside it too. The distances come from one
+//! query vector and one model, so no tuned limit enters.
 //!
 //! The step changes marks only. It does not reorder a window and does not
 //! drop an entry. It reads the kind of an entry directly, the one place in
@@ -15,59 +23,99 @@
 
 use crate::retriever::{Distance, EntityRef, Mark, WindowEntry};
 
-/// What the rerank step did, for the search span.
+/// A rare path word makes an Authored Tool strong only when it is no
+/// farther than the Provider Tool of this rank by distance. On the #698
+/// bench a rare word alone put an Authored Tool in the first 3 places of
+/// half the Provider pages; at this rank, of 4 to 10% (#3427).
+const RARE_WORD_PROVIDER_TOOL_RANK: usize = 10;
+
+/// What the rerank step did, for the search span: how many Authored Tools
+/// each rule made strong, an entry under the first rule that holds, and
+/// whether a Provider Tool of the windows had a distance.
 pub(crate) struct Reranked {
-    /// How many Authored Tools the step made strong by distance.
+    pub(crate) strong_by_phrase: usize,
+    pub(crate) strong_by_rare_path_word: usize,
     pub(crate) strong_by_distance: usize,
-    /// Whether a Provider Tool of the windows had a distance.
     pub(crate) provider_tool_distance: bool,
 }
 
 /// Sets the final mark of each Authored Tool of `windows`.
 pub(crate) fn rerank(windows: &mut [(usize, Vec<WindowEntry>)]) -> Reranked {
-    let nearest = nearest_provider_tool(windows);
-    let mut strong_by_distance = 0;
+    let provider_tools = ProviderToolDistances::of(windows);
+    let mut reranked = Reranked {
+        strong_by_phrase: 0,
+        strong_by_rare_path_word: 0,
+        strong_by_distance: 0,
+        provider_tool_distance: provider_tools.nearest.is_some(),
+    };
     for entry in windows.iter_mut().flat_map(|(_retriever, window)| window) {
-        if !matches!(entry.entity, EntityRef::AuthoredTool(_)) || entry.mark == Mark::Strong {
+        if !matches!(entry.entity, EntityRef::AuthoredTool(_)) {
             continue;
         }
-        entry.mark = if nearer(entry.distance, nearest) {
-            strong_by_distance += 1;
+        entry.mark = if entry.mark == Mark::Strong {
+            reranked.strong_by_phrase += 1;
+            Mark::Strong
+        } else if entry.rare_path_word && provider_tools.admit_rare_word(entry.distance) {
+            reranked.strong_by_rare_path_word += 1;
+            Mark::Strong
+        } else if provider_tools.nearer(entry.distance) {
+            reranked.strong_by_distance += 1;
             Mark::Strong
         } else {
             Mark::Last
         };
     }
-    Reranked {
-        strong_by_distance,
-        provider_tool_distance: nearest.is_some(),
+    reranked
+}
+
+/// The two Provider Tool distances the rules compare with. Both are `None`
+/// when no Provider Tool entry has a distance: no Provider Tool in scope has
+/// a current vector, the Provider Tool vector query failed, or the request
+/// has no query vector.
+struct ProviderToolDistances {
+    nearest: Option<Distance>,
+    /// The distance of the Provider Tool of rank
+    /// [`RARE_WORD_PROVIDER_TOOL_RANK`], or of the farthest one with a
+    /// distance when fewer have one.
+    rare_word_limit: Option<Distance>,
+}
+
+impl ProviderToolDistances {
+    /// The distances of the Provider Tool entries of `windows`. The
+    /// Provider Tool window holds the first entries of its vector list: at
+    /// the manifest's merge weights and rank constant, at most 62 entries
+    /// rank before the entry of rank 10 there, fewer than the window holds.
+    /// A lower weight for the vector list could push it out of the window.
+    fn of(windows: &[(usize, Vec<WindowEntry>)]) -> Self {
+        let mut distances = windows
+            .iter()
+            .flat_map(|(_retriever, window)| window)
+            .filter(|entry| matches!(entry.entity, EntityRef::Tool(_)))
+            .filter_map(|entry| entry.distance)
+            .collect::<Vec<_>>();
+        distances.sort_by(|left, right| left.order(*right));
+        Self {
+            nearest: distances.first().copied(),
+            rare_word_limit: distances
+                .get(RARE_WORD_PROVIDER_TOOL_RANK - 1)
+                .or(distances.last())
+                .copied(),
+        }
     }
-}
 
-/// The distance of the nearest Provider Tool of `windows`, if any Provider
-/// Tool entry has one. It has none when no Provider Tool in scope has a
-/// current vector, the Provider Tool vector query failed, or the request
-/// has no query vector. The Provider Tool window holds the first entry of
-/// its vector list: at the manifest's merge weights and rank constant, at
-/// most 62 entries rank before it, fewer than the window holds. A lower
-/// weight for the vector list could push it out of the window.
-fn nearest_provider_tool(windows: &[(usize, Vec<WindowEntry>)]) -> Option<Distance> {
-    windows
-        .iter()
-        .flat_map(|(_retriever, window)| window)
-        .filter(|entry| matches!(entry.entity, EntityRef::Tool(_)))
-        .filter_map(|entry| entry.distance)
-        .reduce(|nearest, distance| {
-            if distance < nearest {
-                distance
-            } else {
-                nearest
-            }
-        })
-}
+    /// Whether a rare path word makes an Authored Tool at `distance` strong:
+    /// when it is no farther than the limit, or when either distance is
+    /// missing.
+    fn admit_rare_word(&self, distance: Option<Distance>) -> bool {
+        match (distance, self.rare_word_limit) {
+            (Some(distance), Some(limit)) => distance <= limit,
+            _ => true,
+        }
+    }
 
-/// Whether `distance` is strictly nearer than `nearest`, the nearest
-/// Provider Tool's. Without either distance it is not.
-fn nearer(distance: Option<Distance>, nearest: Option<Distance>) -> bool {
-    matches!((distance, nearest), (Some(distance), Some(nearest)) if distance < nearest)
+    /// Whether `distance` is strictly nearer than the nearest Provider
+    /// Tool's. Without either distance it is not.
+    fn nearer(&self, distance: Option<Distance>) -> bool {
+        matches!((distance, self.nearest), (Some(distance), Some(nearest)) if distance < nearest)
+    }
 }

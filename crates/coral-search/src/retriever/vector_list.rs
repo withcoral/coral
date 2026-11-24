@@ -132,6 +132,13 @@ pub(crate) struct NearestVector {
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub(crate) struct Distance(pub(crate) f64);
 
+impl Distance {
+    /// A total order, nearest first, for sorting distances.
+    pub(crate) fn order(self, other: Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
 /// One Search Entity's row as it stands now: its source stamp, and the
 /// retriever's entry for it.
 pub(crate) struct CurrentRow<T> {

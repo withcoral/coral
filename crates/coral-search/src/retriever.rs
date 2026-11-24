@@ -107,18 +107,6 @@ pub(crate) struct Answer {
     /// Whether the window merged a vector list; `None` for a retriever
     /// that keeps no vectors.
     pub(crate) semantic: Option<Semantic>,
-    /// How many entries of the window each of the Authored Tool rules made
-    /// strong, for the search span; `None` for the Tool retriever.
-    pub(crate) authored_strong: Option<AuthoredStrong>,
-}
-
-/// How many Authored Tools of a window each of their retriever's rules made
-/// strong. An entry counts under its first rule that holds: a phrase, then a
-/// rare path word.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct AuthoredStrong {
-    pub(crate) phrase: usize,
-    pub(crate) rare_path_word: usize,
 }
 
 /// One Entity of a ranked window and its mark. A retriever marks an Entity
@@ -132,6 +120,11 @@ pub(crate) struct WindowEntry {
     /// The Entity's distance from the query when its retriever's vector
     /// list holds it.
     pub(crate) distance: Option<Distance>,
+    /// A rare content word of the query starts a word of the Entity's path.
+    /// The Authored Tool retriever sets it for a weak entry; the rerank step
+    /// decides whether it makes the entry strong. Always false for a
+    /// Provider Tool.
+    pub(crate) rare_path_word: bool,
 }
 
 /// Where the engine puts a window entry: every strong entry of every window
