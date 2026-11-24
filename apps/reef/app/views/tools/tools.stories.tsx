@@ -11,6 +11,7 @@ import type {
   PrivateToolDetailView,
   PublishReviewResult,
   SharedToolDetailView,
+  SubAgentConsentRead,
 } from '@/views/tools/types'
 import { catalogRecipes, form, stripeRecipe, workspace } from '@/views/providers/story-fixtures'
 
@@ -27,6 +28,12 @@ const meta = {
               credential: null,
             }
       const Stub = createRoutesStub([
+        // The consent dialog reads the sub-agent's model here and sends its answer here.
+        {
+          path: '/workspaces/demo/sub-agent/consent',
+          loader: () => context.parameters.consent ?? null,
+          action,
+        },
         // The publish dialog reads its review here and sends its publish here.
         {
           path: '/workspaces/demo/shared-tools/publish',
@@ -1153,4 +1160,101 @@ export const TreeFilteredGroups: Story = {
 
 export const TreeProviderDisabled: Story = {
   render: () => <ToolsPage {...treeProps} selectedProvider="prov-hr" />,
+}
+
+// Once the organization has a model, Coral has the sub-agent's tool, which starts off.
+const coralWithAgent: ProviderView = {
+  ...coral,
+  tools: [
+    ...coralTools,
+    { ...weather.tools[0]!, key: 'agent', relativePath: 'agent', policy: 'disabled' },
+  ],
+}
+const consent: SubAgentConsentRead = {
+  model: {
+    id: 'model-1',
+    host: 'models.example.com',
+    name: 'large-1',
+    requestArgs: '{\n  "max_tokens": 4096,\n  "temperature": 0.2\n}',
+  },
+  problem: null,
+}
+async function askToTurnOn(canvasElement: HTMLElement) {
+  const row = within(
+    within(canvasElement)
+      .getByRole('checkbox', { name: 'Select agent' })
+      .closest<HTMLElement>('[role="row"]')!,
+  )
+  await userEvent.click(row.getByRole('radio', { name: 'Ask' }))
+  return screen.findByRole('dialog', { name: 'Turn on coral.agent' })
+}
+
+// An owner sees where the sub-agent sends their data before they turn it on.
+export const SubAgentConsent: Story = {
+  render: () => <ToolsPage {...treeProps} providers={[coralWithAgent, github]} />,
+  parameters: { consent, chromatic: { viewports: [390, 1440] } },
+  play: async ({ canvasElement }) => {
+    const dialog = within(await askToTurnOn(canvasElement))
+    await waitFor(() => expect(dialog.getByText('models.example.com')).toBeVisible())
+  },
+}
+// The model changed while the dialog was open: it says so, and shows the new one.
+export const SubAgentConsentModelChanged: Story = {
+  ...SubAgentConsent,
+  parameters: {
+    consent,
+    dialogError:
+      'The model changed after you opened this dialog. Read the new values before you turn on coral.agent.',
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = within(await askToTurnOn(canvasElement))
+    const submit = dialog.getByRole('button', { name: 'Turn on' })
+    await waitFor(() => expect(submit).toBeEnabled())
+    await userEvent.click(submit)
+    await waitFor(() => expect(dialog.getByRole('alert')).toBeVisible())
+  },
+}
+export const SubAgentConsentNoModel: Story = {
+  ...SubAgentConsent,
+  parameters: {
+    consent: {
+      model: null,
+      problem: 'The organization has no model for the sub-agent now. Reload the page.',
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const dialog = within(await askToTurnOn(canvasElement))
+    await waitFor(() => expect(dialog.getByRole('alert')).toBeVisible())
+  },
+}
+// Catches: on a phone, where the drawer is a modal, a dialog that the drawer covers, or that
+// takes the drawer with it when the owner cancels.
+export const SubAgentConsentFromDrawer: Story = {
+  render: () => (
+    <ToolsPage
+      {...treeProps}
+      providers={[coralWithAgent, github]}
+      selectedProvider="prov-coral"
+      selectedTool="agent"
+    />
+  ),
+  parameters: {
+    consent,
+    initialEntry: '/workspaces/demo/providers/prov-coral/tools/agent',
+    chromatic: { viewports: [390, 1440] },
+  },
+  play: async () => {
+    await resizeViewport(390, 844)
+    const drawer = await screen.findByRole('dialog', { name: 'agent' })
+    await userEvent.click(await within(drawer).findByRole('radio', { name: 'Allow' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Turn on coral.agent' })
+    await waitFor(() => expect(within(dialog).getByText('models.example.com')).toBeVisible())
+    await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Turn on coral.agent' })).toBeNull(),
+    )
+    await expect(screen.getByRole('dialog', { name: 'agent' })).toBeVisible()
+    await expect(within(drawer).getByRole('radio', { name: 'Block' })).toBeChecked()
+  },
 }

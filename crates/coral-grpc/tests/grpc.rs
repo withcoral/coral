@@ -305,7 +305,13 @@ impl Fixture {
         let server = TestServer::start(coral_grpc::routes(
             coral_grpc::Dependencies {
                 organization: OrganizationModule::new(database.clone()),
-                agent_models,
+                sub_agent_models: coral_administration::SubAgentModelWorkflow::new(
+                    agent_models,
+                    coral_administration::ProviderWorkflow::new(
+                        providers.clone(),
+                        search_index.clone(),
+                    ),
+                ),
                 providers: providers.clone(),
                 runs: runs.clone(),
                 accounts: Some(accounts),

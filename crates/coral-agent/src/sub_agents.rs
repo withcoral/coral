@@ -39,11 +39,45 @@ const MODEL_CALLS_PER_TURN: usize = 60;
 /// on a Turn sees it end.
 pub(crate) const TURN_MAX: Duration = Duration::from_secs(600);
 
-/// The model that a Turn uses, looked up when it starts.
+/// The model that a Turn uses, and whether it still may.
 #[async_trait::async_trait]
 pub(crate) trait ModelSource: Send + Sync {
-    /// The model set now. A Turn keeps it to its end.
-    async fn current(&self) -> Arc<ModelClient>;
+    /// The model that a Turn of the Workspace starts with now, and keeps.
+    async fn current(&self, workspace_id: &WorkspaceId) -> Result<TurnModel, ModelRefusal>;
+
+    /// Whether a Turn of the Workspace that started with the model `id` may go on.
+    async fn allows(&self, workspace_id: &WorkspaceId, id: uuid::Uuid) -> Result<(), ModelRefusal>;
+}
+
+/// The model that was set when a Turn started.
+#[derive(Clone)]
+pub(crate) struct TurnModel {
+    /// Names where the model's requests go.
+    pub(crate) id: uuid::Uuid,
+    pub(crate) client: Arc<ModelClient>,
+}
+
+/// Why a Workspace may not use the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("{}", self.text())]
+pub(crate) enum ModelRefusal {
+    NotSet,
+    TurnedOff,
+    Changed,
+    /// Coral could not read the answer, so it is no. The code names why, in the log alone.
+    Unreadable(&'static str),
+}
+
+impl ModelRefusal {
+    /// What the lead reads.
+    pub(crate) const fn text(self) -> &'static str {
+        match self {
+            Self::NotSet => "the agent has no model: do the work yourself",
+            Self::TurnedOff => "the agent is turned off in this workspace: do the work yourself",
+            Self::Changed => "the agent's model was moved or removed: do the work yourself",
+            Self::Unreadable(_code) => "the agent's model could not be read",
+        }
+    }
 }
 
 /// Starts, reads and cancels Sub-agents, each for its own caller.
@@ -95,7 +129,7 @@ impl SubAgents {
         task_id: &TaskId,
         message: String,
     ) -> Result<String, Error> {
-        let model = self.models.current().await;
+        let model = self.models.current(workspace_id).await?;
         let mut transaction = self.database.begin().await?;
         let (task, authority) = self
             .tasks
@@ -213,7 +247,7 @@ impl SubAgents {
         let workspace_id = &turn.caller.workspace_id;
         let answered = tokio::select! {
             answered = self.answer(&turn) => answered,
-            () = self.hold_lease(&turn) => Err(TurnFailure::Canceled),
+            stopped = self.hold_lease(&turn) => Err(stopped),
             () = tokio::time::sleep(TURN_MAX) => Err(TurnFailure::TimeLimit),
             () = self.interrupt_at_shutdown(&turn) => {
                 turn.trace.ended(TurnEnd::Interrupted);
@@ -221,7 +255,10 @@ impl SubAgents {
             }
         };
         let end = TurnEnd::of(&answered);
-        let out_of_time = matches!(answered, Err(TurnFailure::TimeLimit));
+        let stops_runs = matches!(
+            answered,
+            Err(TurnFailure::TimeLimit | TurnFailure::Withdrawn(_))
+        );
         let ending = match answered {
             Ok(answer) => TurnState::Completed { answer },
             Err(TurnFailure::Canceled) => TurnState::Canceled,
@@ -232,10 +269,11 @@ impl SubAgents {
         let ended = self.end_turn(workspace_id, &turn.sub_agent_id, &turn.id, &ending);
         match ended.await {
             // Its own ending stands, so the lead did not cancel it: its Runs
-            // keep running, unless the Turn ran out of time.
+            // keep running, unless the Turn ran out of time or may no longer
+            // use its model.
             Ok(true) => {
                 turn.trace.ended(end);
-                if out_of_time {
+                if stops_runs {
                     self.cancel_started_runs(&turn).await;
                 }
                 return;
@@ -264,9 +302,7 @@ impl SubAgents {
                 .await
                 .map_err(|error| TurnFailure::internal(error.code()))?;
         for _model_call in 0..MODEL_CALLS_PER_TURN {
-            if !self.task_usable(caller).await {
-                return Err(TurnFailure::Canceled);
-            }
+            self.may_go_on(turn).await?;
             self.read_messages(turn, &mut thread).await?;
             turn.trace.count_model_call();
             let reply = self.reply_within_window(turn, &system, &prompt::TOOLS, &mut thread);
@@ -332,21 +368,20 @@ impl SubAgents {
     }
 
     /// Renews the Turn's lease until a renewal finds that the Turn has ended,
-    /// as a cancellation ends it, or that its caller can no longer use its
-    /// Task.
-    async fn hold_lease(&self, turn: &RunningTurn) {
+    /// as a cancellation ends it, or that it may not go on. Returns why.
+    async fn hold_lease(&self, turn: &RunningTurn) -> TurnFailure {
         let workspace_id = &turn.caller.workspace_id;
         loop {
             tokio::time::sleep(TURN_LEASE / 3).await;
-            if !self.task_usable(&turn.caller).await {
-                return;
+            if let Err(stopped) = self.may_go_on(turn).await {
+                return stopped;
             }
             let lease_end = self.clock.now().saturating_add(TURN_LEASE);
             let renewed =
                 repository::renew_lease(&self.database, workspace_id, &turn.id, lease_end).await;
             match renewed {
                 Ok(true) => {}
-                Ok(false) => return,
+                Ok(false) => return TurnFailure::Canceled,
                 Err(error) => tracing::warn!(
                     error.type = safe::kind(error.code()),
                     "the lease of a Sub-agent Turn was not renewed"
@@ -373,6 +408,26 @@ impl SubAgents {
         }
         transaction.commit().await?;
         Ok(ended)
+    }
+
+    /// Whether the Turn may go on: its caller can still use its Task, and its
+    /// Workspace still lets it use its model. A model that cannot be read
+    /// stops the Turn, so that a failed read sends nothing.
+    async fn may_go_on(&self, turn: &RunningTurn) -> Result<(), TurnFailure> {
+        let caller = &turn.caller;
+        if !self.task_usable(caller).await {
+            return Err(TurnFailure::Canceled);
+        }
+        let allowed = self.models.allows(&caller.workspace_id, turn.model.id);
+        allowed.await.map_err(|refusal| {
+            if let ModelRefusal::Unreadable(code) = refusal {
+                tracing::warn!(
+                    error.type = safe::kind(code),
+                    "a Sub-agent Turn stopped because its model could not be read"
+                );
+            }
+            TurnFailure::Withdrawn(refusal)
+        })
     }
 
     /// Whether the caller can still use its Task: the Task is open and the
@@ -490,7 +545,7 @@ pub(crate) struct RunningTurn {
     pub(crate) id: String,
     pub(crate) sub_agent_id: String,
     /// The model that was set when the Turn started.
-    pub(crate) model: Arc<ModelClient>,
+    pub(crate) model: TurnModel,
     pub(crate) caller: Caller,
 }
 
@@ -500,6 +555,9 @@ pub(crate) enum Error {
     /// No Sub-agent of this caller has this id in this Workspace.
     #[error("Sub-agent was not found")]
     SubAgentNotFound,
+    /// The Workspace may not use the model.
+    #[error(transparent)]
+    Model(#[from] ModelRefusal),
     /// The Task module refused the caller or the Task.
     #[error(transparent)]
     Task(#[from] coral_task::Error),
@@ -521,6 +579,7 @@ impl Error {
     pub(crate) const fn code(&self) -> &'static str {
         match self {
             Self::SubAgentNotFound => "sub_agent_not_found",
+            Self::Model(_) => "model",
             Self::Task(_) => "task",
             Self::Run(_) => "run",
             Self::CursorOfAnotherTurn => "cursor_of_another_turn",
@@ -544,6 +603,9 @@ pub(crate) enum TurnFailure {
     NoAnswer,
     #[error("the Sub-agent reached its 10-minute limit: reply to continue")]
     TimeLimit,
+    /// The Workspace may no longer use the model.
+    #[error(transparent)]
+    Withdrawn(ModelRefusal),
     #[error("the Sub-agent stopped on an internal error")]
     Internal,
     /// The lead canceled the Turn or ended its Task, or the caller can no

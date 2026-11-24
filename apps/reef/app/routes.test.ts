@@ -57,8 +57,5 @@ it('puts every section of the settings nav under the settings layout', async () 
       .flatMap((entry) => [entry, settings(entry.children ?? [])])
       .find((entry) => entry?.file === 'routes/settings.tsx')
   const pages = settings(await routes)?.children?.map((entry) => `/${entry.path}`)
-  // The nav does not lead to the sub-agent page yet (#3444).
-  expect(pages?.toSorted()).toEqual(
-    [...Object.values(settingsPath), '/organization/sub-agent'].toSorted(),
-  )
+  expect(pages?.toSorted()).toEqual(Object.values(settingsPath).toSorted())
 })

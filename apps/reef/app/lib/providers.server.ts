@@ -454,6 +454,7 @@ const reasons: Record<string, string> = {
   INVALID_LIFECYCLE_STATE: 'The provider is already in that state. Reload the page.',
   BUILTIN_PROVIDER_MANAGED:
     'You cannot make this change to a provider Coral manages. Reload the page.',
+  SUB_AGENT_CONSENT_REQUIRED: 'coral.agent is off. Turn it on separately.',
   REQUEST_ID_CONFLICT:
     'Coral used this request for a different change. Reload the page. Start the change again.',
   SETUP_CONSUMED: 'This setup is complete. Start again to continue.',

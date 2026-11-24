@@ -18,6 +18,7 @@ import { Icon } from '@/wax/components/icon'
 import { KeyboardShortcut } from '@/wax/components/keyboard-shortcut'
 import { HighlightedMatches } from '@/wax/components/highlighted-matches'
 import { Logo } from '@/wax/components/logo'
+import { addToast } from '@/wax/components/toast'
 import { Markdown } from '@/wax/components/markdown'
 import { PageLayout } from '@/wax/components/page-layout'
 import { Picker } from '@/wax/components/picker'
@@ -74,6 +75,14 @@ import {
 } from './addresses'
 import { PrivateToolActions, PrivateToolDetail } from './private-tool-detail'
 import { SharedToolActions, SharedToolDetail, SharedToolProvenance } from './shared-tool-detail'
+import {
+  needsSubAgentConsent,
+  SUB_AGENT_CALL_PATH,
+  SubAgentConsent,
+  subAgentOf,
+  turnsOn,
+  useAskSubAgentConsent,
+} from './sub-agent-consent'
 import { ToolDrawerHeader, ToolIdentity } from './tool-drawer'
 import { PolicyMutations, usePolicyMutations } from '@/views/providers/policy-mutations'
 import { useReadRecipe } from '@/views/providers/read-recipe'
@@ -168,7 +177,9 @@ export function ToolsPage(props: ToolsPageProps) {
   return (
     <ProviderMarksContext value={marks}>
       <PolicyMutations catalog={props.providers}>
-        <ToolsContent {...props} />
+        <SubAgentConsent workspacePath={props.workspace.path} form={props.form}>
+          <ToolsContent {...props} />
+        </SubAgentConsent>
       </PolicyMutations>
     </ProviderMarksContext>
   )
@@ -631,6 +642,7 @@ function ToolsTableScreen({
 }) {
   const navigate = useNavigate()
   const mutations = usePolicyMutations()
+  const askSubAgentConsent = useAskSubAgentConsent()
   const [tableFilterInput, setTableFilterInput] = useState('')
   // The field echoes each keystroke at once; the table, which rebuilds
   // thousands of rows, follows with the deferred value when React has time.
@@ -1099,8 +1111,12 @@ function ToolsTableScreen({
       const mutation = mutations.state(provider.id, tool.key)
       if (mutation.pending) return
       const order = policyOptions.map((option) => option.value)
-      const next = order[order.indexOf(mutation.policy ?? tool.policy) + step]
-      if (next) mutations.submit(policyFormData(form, provider, tool, next), provider.path)
+      const policy = mutation.policy ?? tool.policy
+      const next = order[order.indexOf(policy) + step]
+      if (!next) return
+      if (needsSubAgentConsent(provider, tool, policy, next))
+        return askSubAgentConsent({ provider, tool, access: next })
+      mutations.submit(policyFormData(form, provider, tool, next), provider.path)
     }
   // Enter opens the cursor's tool, or collapses or expands its heading.
   const openCursor = (event: KeyboardEvent) => {
@@ -1750,6 +1766,25 @@ function GroupHeading({
   )
 }
 
+/**
+ * `coral.agent`, when the selection would turn it on. Its owner must see first where it sends
+ * their data, and Coral refuses every tool sent with it otherwise.
+ */
+function heldSubAgent(
+  providers: ProviderView[],
+  selected: ReadonlySet<SelectionKey>,
+  policies: ReturnType<typeof usePolicyMutations>['policies'],
+  access: PolicyState,
+) {
+  const found = subAgentOf(providers)
+  if (!found) return null
+  const { provider, tool } = found
+  const key = selectionKey(provider.id, tool.key)
+  return selected.has(key) && turnsOn(effectivePolicy(policies, provider, tool), access)
+    ? key
+    : null
+}
+
 function BulkPolicyForm({
   canChange,
   form,
@@ -1795,7 +1830,11 @@ function BulkPolicyForm({
         // input per tool: a whole-catalog selection is thousands of
         // inputs to mount and lay out on every selection change.
         const data = new FormData(event.currentTarget)
-        for (const key of selected) {
+        const held = heldSubAgent(providers, selected, mutations.policies, access)
+        if (held) addToast('warning', { title: `Turn on ${SUB_AGENT_CALL_PATH} separately.` })
+        const submitted = [...selected].filter((key) => key !== held)
+        if (submitted.length === 0) return
+        for (const key of submitted) {
           data.append(SELECTED_TOOL_FIELD, encodeSelectedTool(parseSelectionKey(key)))
         }
         mutations.submit(data, anyProviderPath, onConfirmed)
@@ -2053,6 +2092,7 @@ const PolicySelect = memo(function PolicySelect({
   tool: ToolView
 }) {
   const mutations = usePolicyMutations()
+  const askSubAgentConsent = useAskSubAgentConsent()
   const mutation = mutations.state(provider.id, tool.key)
   const policy = mutation.policy ?? tool.policy
   const ref = useRef<HTMLFormElement>(null)
@@ -2077,6 +2117,8 @@ const PolicySelect = memo(function PolicySelect({
         label={tool.agent ? `Policy for ${toolLabel(tool)}` : 'Policy'}
         value={policy}
         onChange={(value) => {
+          if (needsSubAgentConsent(provider, tool, policy, value))
+            return askSubAgentConsent({ provider, tool, access: value })
           const data = new FormData(ref.current!)
           data.set('access', value)
           mutations.submit(data, provider.path)

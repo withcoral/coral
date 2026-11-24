@@ -2,8 +2,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
+use coral_agent_model::AgentModels;
 use coral_app::{SubAgentDependencies, SubAgentToolsFactory as _};
 use coral_catalog::{ArgumentProblem, BuiltinArguments, BuiltinTool};
+use coral_credentials::CredentialVault;
 use coral_db::{Clock, Database, UnixNanos};
 use coral_mcp::{HumanInterfaceUrl, McpCaller, McpModules, ToolCallError};
 use coral_outbound::{DestinationPolicy, NetworkAccess};
@@ -31,12 +33,15 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 use crate::model::{Block, Message, ModelClient, Protocol, Role, ToolCall};
 use crate::run_tools::Caller;
 use crate::sub_agents::{
-    Error, ModelSource, RunningTurn, SubAgents, TURN_LEASE, TURN_MAX, TurnState,
+    Error, ModelRefusal, ModelSource, RunningTurn, SubAgents, TURN_LEASE, TURN_MAX, TurnModel,
+    TurnState,
 };
 use crate::telemetry::TurnTrace;
-use crate::{ConfiguredModel, MODEL_CALL_TIMEOUT, SubAgentFactory, repository};
+use crate::tools::AgentTools;
+use crate::{MODEL_CALL_TIMEOUT, SubAgentFactory, repository};
 
 mod compaction;
+mod consent;
 mod models;
 mod telemetry;
 
@@ -62,6 +67,8 @@ struct Lead {
     actor: AuthenticatedPrincipal,
     workspace_id: WorkspaceId,
     model: MockServer,
+    _vault_dir: tempfile::TempDir,
+    agent_models: AgentModels,
     clock: ManualClock,
     /// Shuts the Coral Instance down.
     stop: tokio::sync::watch::Sender<bool>,
@@ -91,7 +98,11 @@ impl Lead {
         let tasks = TaskModule::new(database.clone(), workspaces.clone());
         let search = UniversalSearchModule::new(database.clone(), workspaces.clone());
         let commands = TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
+        let vault_dir = tempfile::tempdir().unwrap();
+        let vault = CredentialVault::open(&vault_dir.path().join("key")).unwrap();
         Self {
+            agent_models: AgentModels::new(database.clone(), vault, POLICY),
+            _vault_dir: vault_dir,
             modules: McpModules::new(workspaces.clone(), tasks, commands, runs, search, reef),
             _serving: serving,
             workspaces,
@@ -105,14 +116,13 @@ impl Lead {
         }
     }
 
-    /// What bootstrap hands the factory, in an environment that sets only
-    /// `MODEL_KEY`.
+    /// What bootstrap hands the factory.
     fn dependencies(&self) -> SubAgentDependencies {
         SubAgentDependencies {
             database: self.database.clone(),
+            agent_models: self.agent_models.clone(),
             modules: self.modules.clone(),
             outbound_policy: POLICY,
-            env: Arc::new(|name: &str| Ok((name == "MODEL_KEY").then(|| "key".to_owned()))),
             clock: Arc::new(self.clock.clone()),
             stopping: self.stop.subscribe(),
         }
@@ -122,16 +132,24 @@ impl Lead {
         format!("{}/v1", self.model.uri())
     }
 
-    /// The Tools that the factory builds from a section that names the stub.
+    /// The Tools, which call the stub for every Workspace.
     fn tools(&self) -> Arc<dyn SubAgentTools> {
-        let section = format!("base_url = '{}'\nmodel = '{MODEL}'", self.base_url());
-        SubAgentFactory
-            .build(&toml::from_str(&section).unwrap(), self.dependencies())
-            .unwrap()
+        self.tools_with_window(None)
     }
 
-    /// The factory's Tools as a `[sub_agent]` section serves them: wired into
-    /// the lead's Runs, in a Workspace whose Built-in Provider holds them.
+    /// The Tools, over a stub whose context window is `window`.
+    fn tools_with_window(&self, window: Option<u32>) -> Arc<dyn SubAgentTools> {
+        let model = FixedModel::new(model_client_with_window(&self.model, window));
+        Arc::new(AgentTools {
+            database: self.database.clone(),
+            tasks: self.modules.tasks.clone(),
+            sub_agents: self.sub_agents_of(Arc::new(model)),
+            human_interface: self.modules.human_interface().clone(),
+        })
+    }
+
+    /// The Tools as a Workspace that has them serves them: wired into the
+    /// lead's Runs, in a Workspace whose Built-in Provider holds them.
     async fn served_tools(&self) -> Arc<dyn SubAgentTools> {
         let (database, workspaces) = (self.database.clone(), self.workspaces.clone());
         let catalog = coral_catalog::BuiltinCatalog::with_sub_agent().unwrap();
@@ -150,8 +168,7 @@ impl Lead {
 
     /// The Sub-agents of the same database, which call the same stub.
     fn sub_agents(&self) -> SubAgents {
-        let model = Arc::new(model_client(&self.model));
-        self.sub_agents_of(Arc::new(ConfiguredModel(model)))
+        self.sub_agents_of(Arc::new(FixedModel::new(model_client(&self.model))))
     }
 
     /// The Sub-agents of the same database, which call what `models` gives.
@@ -246,15 +263,42 @@ impl Lead {
     }
 }
 
+/// A model that every Workspace may use.
+struct FixedModel(TurnModel);
+
+impl FixedModel {
+    fn new(client: ModelClient) -> Self {
+        Self(TurnModel {
+            id: uuid::Uuid::nil(),
+            client: Arc::new(client),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl ModelSource for FixedModel {
+    async fn current(&self, _workspace: &WorkspaceId) -> Result<TurnModel, ModelRefusal> {
+        Ok(self.0.clone())
+    }
+
+    async fn allows(&self, _workspace: &WorkspaceId, _id: uuid::Uuid) -> Result<(), ModelRefusal> {
+        Ok(())
+    }
+}
+
 /// A client of the model that `server` stands in for.
 fn model_client(server: &MockServer) -> ModelClient {
+    model_client_with_window(server, None)
+}
+
+fn model_client_with_window(server: &MockServer, window: Option<u32>) -> ModelClient {
     ModelClient::new(
         coral_outbound::Client::new(POLICY, MODEL_CALL_TIMEOUT).unwrap(),
         Protocol::ChatCompletions,
         &format!("{}/v1", server.uri()).parse().unwrap(),
         MODEL.to_owned(),
         None,
-        None,
+        window,
         Map::new(),
     )
 }
@@ -425,84 +469,6 @@ fn refusal(called: Result<Value, ToolCallError>) -> String {
         Err(ToolCallError::Protocol(error)) => error.message.into_owned(),
         _ => panic!("the call is refused"),
     }
-}
-
-// Catches: a section that starts Coral with a setting it cannot use, and a
-// startup that needs the model to answer.
-#[tokio::test]
-async fn startup_checks_the_section_and_sends_the_model_nothing() {
-    let lead = Lead::new().await;
-    let factory = SubAgentFactory;
-    let named = format!("base_url = '{}'\nmodel = '{MODEL}'\n", lead.base_url());
-    for (section, refusal) in [
-        (named.clone(), None),
-        (
-            format!(
-                "{named}protocol = 'openai_responses'\napi_key_env = 'MODEL_KEY'\ncontext_window = 48000\nreasoning_effort = 'high'"
-            ),
-            None,
-        ),
-        (
-            format!("{named}protocol = 'anthropic'\nreasoning_effort = 'medium'"),
-            None,
-        ),
-        (
-            format!("{named}protocol = 'gemini'"),
-            Some("protocol: unsupported value"),
-        ),
-        (
-            format!(
-                "{named}api_key_env = 'MODEL_KEY'\ncontext_window = 48000\nreasoning_effort = 'none'"
-            ),
-            None,
-        ),
-        (
-            format!("{named}reasoning = 'high'"),
-            Some("unknown field `reasoning`"),
-        ),
-        ("model = 'm'".to_owned(), Some("missing field `base_url`")),
-        (
-            "base_url = 'sailfish.example/v1'\nmodel = 'm'".to_owned(),
-            Some("base_url: must be an absolute http or https URL"),
-        ),
-        (
-            "base_url = 'https://sailfish.example/v1?key=k'\nmodel = 'm'".to_owned(),
-            Some("base_url: must be an absolute http or https URL without a query or fragment"),
-        ),
-        (
-            "base_url = 'https://sailfish.example/v1#chat'\nmodel = 'm'".to_owned(),
-            Some("base_url: must be an absolute http or https URL without a query or fragment"),
-        ),
-        (
-            "base_url = 'https://sailfish.example/v1'\nmodel = ' '".to_owned(),
-            Some("model: must not be empty"),
-        ),
-        (
-            format!("{named}context_window = 47999"),
-            Some("context_window: must be at least 48000"),
-        ),
-        (
-            format!("{named}reasoning_effort = ''"),
-            Some("reasoning_effort: must not be empty"),
-        ),
-        (
-            format!("{named}api_key_env = 'UNSET_KEY'"),
-            Some("api_key_env: environment variable is not set"),
-        ),
-    ] {
-        let built = factory.build(&toml::from_str(&section).unwrap(), lead.dependencies());
-        let refused = built.err().map(|error| error.to_string());
-        match refusal {
-            Some(refusal) => assert!(
-                refused
-                    .as_deref()
-                    .is_some_and(|text| text.contains(refusal)),
-                "{section}: {refused:?}"
-            ),
-            None => assert_eq!(refused, None, "{section}"),
-        }
-    }
-    assert!(lead.model.received_requests().await.unwrap().is_empty());
 }
 
 // Catches: a Program that cannot reach the Sub-agent, a Sub-agent outside the
@@ -1145,8 +1111,7 @@ async fn a_wait_returns_once_the_lease_of_its_turn_lapses() {
     let mut dependencies = lead.dependencies();
     let lease_end = NOON.saturating_add(TURN_LEASE).get();
     dependencies.clock = Arc::new(Ticking(AtomicI64::new(lease_end - 1)));
-    let section = format!("base_url = '{}'\nmodel = '{MODEL}'", lead.base_url());
-    let other = SubAgentFactory.build(&toml::from_str(&section).unwrap(), dependencies);
+    let other = SubAgentFactory.build(dependencies);
 
     let wait = json!({"sub_agent_id": field(&started, "sub_agent_id"), "wait_ms": 30_000});
     let asked_at = tokio::time::Instant::now();
@@ -1226,7 +1191,7 @@ async fn an_interrupted_turn_closes_the_calls_it_left_without_results() {
     let task = task.await.unwrap();
     let running = RunningTurn {
         trace: TurnTrace::begin(&sub_agent_id, actor, workspace_id, task.telemetry_id()),
-        model: Arc::new(model_client(&lead.model)),
+        model: FixedModel::new(model_client(&lead.model)).0,
         id: turn.id,
         sub_agent_id: sub_agent_id.clone(),
         caller: Caller {

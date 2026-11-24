@@ -8,8 +8,8 @@ use coral_workspace::{
 
 use crate::agent_models::key_record;
 use crate::{
-    AgentModel, AgentModels, ApiKeyChange, EnteredSettings, Error, InvalidSetting, ModelProtocol,
-    ModelSettings,
+    AgentModel, AgentModels, ApiKeyChange, EnteredSettings, Error, InvalidSetting, ModelChange,
+    ModelProtocol, ModelSettings,
 };
 
 const URL_A: &str = "https://a.example/v1";
@@ -48,8 +48,7 @@ impl Fixture {
     }
 
     async fn set(&self, base_url: &str, key: Option<&str>) -> AgentModel {
-        self.models
-            .set(&at(&self.owner, 1), &settings(base_url), key.map(secret))
+        self.set_as(&at(&self.owner, 1), &settings(base_url), key.map(secret))
             .await
             .expect("set a model")
     }
@@ -60,22 +59,25 @@ impl Fixture {
         base_url: &str,
         key: ApiKeyChange,
     ) -> Result<AgentModel, Error> {
-        self.models
-            .change(&at(&self.owner, 2), &etag(read), &settings(base_url), key)
-            .await
+        let (context, if_match) = (at(&self.owner, 2), etag(read));
+        let changed = self
+            .change_as(&context, &if_match, &settings(base_url), key)
+            .await?;
+        assert_eq!(changed.moved, changed.model.id() != read.id());
+        Ok(changed.model)
     }
 
     async fn read(&self) -> Option<AgentModel> {
         self.models.read(&self.owner).await.expect("read the model")
     }
 
-    /// The stored key, opened for the model's own id and base URL.
+    /// The stored key, as a Turn opens it.
     async fn stored_key(&self) -> Option<String> {
-        let model = self.read().await.expect("a model is set");
-        let sealed = self.sealed_key().await?;
-        let record = key_record(model.id(), model.settings().base_url());
-        let opened = self.vault.open_sealed(&record, &sealed);
-        Some(opened.expect("the key opens").to_string())
+        let database = self.db.database();
+        let mut tx = database.begin_read_snapshot().await.expect("snapshot");
+        let active = self.models.active_in_transaction(&mut tx).await;
+        let active = active.expect("the key opens").expect("a model is set");
+        active.api_key.map(|key| key.expose().to_owned())
     }
 
     async fn sealed_key(&self) -> Option<String> {
@@ -84,6 +86,52 @@ impl Fixture {
         let stored = crate::repository::find(&mut tx, coral_db::RowLock::None).await;
         let stored = stored.expect("read the row").expect("a model is set");
         stored.sealed_api_key
+    }
+}
+
+/// Each change as a workflow commits it alone.
+impl Fixture {
+    async fn set_as(
+        &self,
+        context: &ChangeContext,
+        entered: &EnteredSettings,
+        key: Option<Secret>,
+    ) -> Result<AgentModel, Error> {
+        let database = self.db.database();
+        let mut tx = database.begin().await?;
+        let set = self
+            .models
+            .set_in_transaction(&mut tx, context, entered, key);
+        let set = set.await?;
+        tx.commit().await?;
+        Ok(set)
+    }
+
+    async fn change_as(
+        &self,
+        context: &ChangeContext,
+        if_match: &IfMatch,
+        entered: &EnteredSettings,
+        key: ApiKeyChange,
+    ) -> Result<ModelChange, Error> {
+        let database = self.db.database();
+        let mut tx = database.begin().await?;
+        let models = &self.models;
+        let changed = models.change_in_transaction(&mut tx, context, if_match, entered, key);
+        let changed = changed.await?;
+        tx.commit().await?;
+        Ok(changed)
+    }
+
+    async fn remove_as(&self, context: &ChangeContext, if_match: &IfMatch) -> Result<(), Error> {
+        let database = self.db.database();
+        let mut tx = database.begin().await?;
+        let removed = self
+            .models
+            .remove_in_transaction(&mut tx, context, if_match);
+        removed.await?;
+        tx.commit().await?;
+        Ok(())
     }
 }
 
@@ -134,17 +182,12 @@ async fn only_an_enabled_organization_owner_reads_or_changes_the_model() {
         let context = at(denied, 2);
         // A setting that is invalid is not reported to a caller who is denied.
         let settings = settings("not a URL");
-        let change = f
-            .models
-            .change(&context, &if_match, &settings, ApiKeyChange::Clear);
+        let change = f.change_as(&context, &if_match, &settings, ApiKeyChange::Clear);
         let outcomes = [
             f.models.read(denied).await.map(|_model| ()),
-            f.models
-                .set(&context, &settings, None)
-                .await
-                .map(|_model| ()),
+            f.set_as(&context, &settings, None).await.map(|_model| ()),
             change.await.map(|_model| ()),
-            f.models.remove(&context, &if_match).await,
+            f.remove_as(&context, &if_match).await,
         ];
         for outcome in outcomes {
             assert!(
@@ -180,10 +223,9 @@ async fn only_a_new_base_url_issues_a_new_id_and_drops_the_key() {
     };
     let context = at(&f.owner, 2);
     let renamed = f
-        .models
-        .change(&context, &etag(&respelled), &entered, ApiKeyChange::Keep)
+        .change_as(&context, &etag(&respelled), &entered, ApiKeyChange::Keep)
         .await;
-    let renamed = renamed.expect("change all but the URL");
+    let renamed = renamed.expect("change all but the URL").model;
     assert_eq!(renamed.id(), first.id());
 
     let moved = f.change(&renamed, URL_B, ApiKeyChange::Keep);
@@ -241,18 +283,17 @@ async fn a_stale_etag_changes_nothing_even_after_the_model_was_removed_and_set_a
 
     let stale = f.change(&first, URL_B, ApiKeyChange::Keep).await;
     assert!(matches!(stale, Err(Error::EtagMismatch)), "{stale:?}");
-    let stale = f.models.remove(&at(&f.owner, 3), &etag(&first)).await;
+    let stale = f.remove_as(&at(&f.owner, 3), &etag(&first)).await;
     assert!(matches!(stale, Err(Error::EtagMismatch)), "{stale:?}");
     assert_eq!(f.read().await.as_ref(), Some(&second));
 
-    f.models
-        .remove(&at(&f.owner, 3), &etag(&second))
+    f.remove_as(&at(&f.owner, 3), &etag(&second))
         .await
         .expect("remove");
     assert_eq!(f.read().await, None);
     let gone = f.change(&second, URL_A, ApiKeyChange::Keep).await;
     assert!(matches!(gone, Err(Error::NotSet)), "{gone:?}");
-    let gone = f.models.remove(&at(&f.owner, 3), &etag(&second)).await;
+    let gone = f.remove_as(&at(&f.owner, 3), &etag(&second)).await;
     assert!(matches!(gone, Err(Error::NotSet)), "{gone:?}");
 
     let again = f.set(URL_A, None).await;
@@ -297,12 +338,9 @@ async fn a_refused_setting_sets_and_changes_nothing() {
 #[tokio::test]
 async fn an_organization_has_one_model_and_the_first_set_stands() {
     let f = Fixture::new().await;
-    let set = |actor: &AuthenticatedUser, base_url: &str| {
-        let (models, context) = (f.models.clone(), at(actor, 1));
-        let settings = settings(base_url);
-        async move { models.set(&context, &settings, None).await }
-    };
-    let (one, two) = tokio::join!(set(&f.owner, URL_A), set(&f.other_owner, URL_B));
+    let (owner, other) = (at(&f.owner, 1), at(&f.other_owner, 1));
+    let (a, b) = (settings(URL_A), settings(URL_B));
+    let (one, two) = tokio::join!(f.set_as(&owner, &a, None), f.set_as(&other, &b, None));
     let (stood, refused) = if one.is_ok() { (one, two) } else { (two, one) };
     assert!(matches!(refused, Err(Error::AlreadySet)), "{refused:?}");
     assert_eq!(f.read().await, stood.ok());
@@ -328,10 +366,9 @@ async fn the_model_reads_back_as_saved_with_who_changed_it_and_when() {
     };
     let context = at(&f.other_owner, 9);
     let changed = f
-        .models
-        .change(&context, &etag(&model), &entered, ApiKeyChange::Keep)
+        .change_as(&context, &etag(&model), &entered, ApiKeyChange::Keep)
         .await;
-    let changed = changed.expect("change");
+    let changed = changed.expect("change").model;
     let saved = changed.settings();
     assert_eq!(saved.protocol(), entered.protocol);
     assert_eq!((saved.base_url(), saved.model()), (URL_A, "model-2"));

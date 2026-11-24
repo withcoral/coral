@@ -1062,6 +1062,7 @@ name = "coral-administration"
 version = "1.10.0"
 dependencies = [
  "async-trait",
+ "coral-agent-model",
  "coral-auth",
  "coral-catalog",
  "coral-credentials",
@@ -1092,6 +1093,8 @@ version = "1.10.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "coral-administration",
+ "coral-agent-model",
  "coral-app",
  "coral-catalog",
  "coral-credentials",
@@ -1103,7 +1106,6 @@ dependencies = [
  "coral-provider",
  "coral-run",
  "coral-search",
- "coral-secret-store",
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
@@ -1116,9 +1118,9 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "tempfile",
  "thiserror",
  "tokio",
- "toml",
  "tracing",
  "tracing-subscriber",
  "url",
@@ -1488,6 +1490,7 @@ dependencies = [
 name = "coral-policy"
 version = "1.10.0"
 dependencies = [
+ "coral-agent-model",
  "coral-catalog",
  "coral-db",
  "coral-outbound",
@@ -1511,6 +1514,7 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "coral-administration",
+ "coral-agent-model",
  "coral-catalog",
  "coral-credentials",
  "coral-db",

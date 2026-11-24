@@ -55,7 +55,7 @@ async fn programs_reach_the_wired_sub_agent_and_read_its_refusals() {
         coral_catalog::BuiltinCatalog::with_sub_agent().unwrap(),
         coral_catalog::SchemaGraphCache::with_default_budget(),
     );
-    let [outdated] = &configured.outdated_builtin_generations().await.unwrap()[..] else {
+    let [outdated] = &configured.outdated_builtin_generations(None).await.unwrap()[..] else {
         panic!("the Workspace pins the catalog without a Sub-agent");
     };
     let updated = configured.update_builtin_catalog(outdated, coral_db::UnixNanos::new(20));

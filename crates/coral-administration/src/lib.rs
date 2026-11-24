@@ -46,6 +46,10 @@
 //! ends access there and always runs cleanup. Organization removal hands each
 //! Workspace the User solely owns to a transfer target in the same transaction.
 //!
+//! [`SubAgentModelWorkflow`] owns the transaction that changes the model of the
+//! Organization's Sub-agents together with the rules that turn `coral.agent`
+//! off, and updates each Workspace's Built-in catalog after the commit.
+//!
 //! [`SecretStoreAdministration`] shows an Organization Owner the Secret Stores the
 //! operator defined and manages their grants to Workspaces, and shows a Workspace
 //! Owner the stores granted to their Workspace.
@@ -60,6 +64,7 @@ mod private_tools;
 mod providers;
 mod secret_stores;
 mod shared_tools;
+mod sub_agent_model;
 mod tool_rules;
 mod workspaces;
 
@@ -69,6 +74,7 @@ pub use secret_stores::{
     GrantedSecretStore, OrganizationSecretStoreGrant, SecretStoreAdministration,
 };
 pub use shared_tools::SharedToolWorkflow;
+pub use sub_agent_model::SubAgentModelWorkflow;
 pub use workspaces::WorkspaceWorkflow;
 
 use coral_db::{Database, Transaction};

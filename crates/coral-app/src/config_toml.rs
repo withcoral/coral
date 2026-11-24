@@ -4,9 +4,8 @@
 //! the rejected value or render its source line, so every `config.toml` parser
 //! decodes through [`decode`] or [`Document`], which name the key path instead.
 
-use serde::Deserialize as _;
 use serde::de::DeserializeOwned;
-use toml::de::{DeTable, ValueDeserializer};
+use toml::de::DeTable;
 
 /// Standard serde messages that quote the rejected input.
 ///
@@ -39,8 +38,7 @@ pub(crate) fn decode<T: DeserializeOwned>(raw: &str) -> Result<T, ConfigDecodeEr
     Document::parse(raw)?.decode()
 }
 
-/// A parsed `config.toml`. Take out the sections that another decoder owns,
-/// then decode the rest.
+/// A parsed `config.toml`, to decode.
 pub(crate) struct Document<'raw>(toml::Spanned<DeTable<'raw>>);
 
 impl<'raw> Document<'raw> {
@@ -55,21 +53,7 @@ impl<'raw> Document<'raw> {
         })
     }
 
-    /// Takes the top-level section `name` out of the document, undecoded.
-    /// None when the document has no such key.
-    pub(crate) fn take_section(
-        &mut self,
-        name: &str,
-    ) -> Result<Option<toml::Table>, ConfigDecodeError> {
-        let Some(section) = self.0.get_mut().remove(name) else {
-            return Ok(None);
-        };
-        toml::Table::deserialize(ValueDeserializer::from(section))
-            .map(Some)
-            .map_err(|_quotes_the_value| ConfigDecodeError(format!("{name}: unsupported value")))
-    }
-
-    /// Deserializes `T` from what is left of the document. A failure names
+    /// Deserializes `T` from the document. A failure names
     /// the key path of the rejected value.
     pub(crate) fn decode<T: DeserializeOwned>(self) -> Result<T, ConfigDecodeError> {
         serde_path_to_error::deserialize(toml::Deserializer::from(self.0)).map_err(|error| {

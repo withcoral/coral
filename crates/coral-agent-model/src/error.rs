@@ -78,11 +78,11 @@ impl From<coral_workspace::Error> for Error {
             Err(Workspace::CorruptData(_)) => {
                 Self::CorruptData("the Organization's authority is corrupt")
             }
+            // A Workspace that is concealed or archived offers no model.
+            Err(Workspace::WorkspaceNotFound | Workspace::WorkspaceArchived) => Self::NotSet,
             // Name every variant so a new one needs a decision here.
             Err(
-                Workspace::WorkspaceNotFound
-                | Workspace::WorkspaceArchived
-                | Workspace::AgentNotFound
+                Workspace::AgentNotFound
                 | Workspace::AgentDisabled
                 | Workspace::AgentRegistrationExpired
                 | Workspace::InvalidAgentCredential

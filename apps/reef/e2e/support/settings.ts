@@ -9,7 +9,7 @@ export const sidebarNav = (page: Page): Locator =>
 /** Opens the organization's settings from the account menu and shows one of their sections. */
 export async function openSettings(
   page: Page,
-  section: 'Members' | 'Workspaces' | 'Secret stores' | 'Usage data',
+  section: 'Members' | 'Workspaces' | 'Secret stores' | 'Sub-agent' | 'Usage data',
 ) {
   await page.getByRole('button', { name: /^Open account menu for / }).click()
   await page.getByRole('menuitem', { name: 'Settings', exact: true }).click()

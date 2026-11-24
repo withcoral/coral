@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use coral_app::SubAgentToolsFactory as _;
 use coral_telemetry::testing::{MetricCapture, SpanCapture, attribute, process_spans};
 use coral_test_support::EVENTUALLY;
 use opentelemetry::trace::SpanId;
@@ -11,7 +10,6 @@ use wiremock::matchers::any;
 use wiremock::{Mock, ResponseTemplate};
 
 use super::{Lead, MESSAGE, MODEL};
-use crate::SubAgentFactory;
 use crate::model::Block;
 
 const PROGRAM: &str = "return 'kestrel';";
@@ -160,13 +158,10 @@ async fn a_compacting_turn_records_bounded_metrics_and_its_compaction() {
     let captured = tracing_subscriber::registry().with(spans.layer());
     let _captured = tracing::subscriber::set_default(captured.with(metrics.layer()));
     let lead = Lead::new().await;
-    let base_url = lead.base_url();
-    let section = format!("base_url = '{base_url}'\nmodel = '{MODEL}'\ncontext_window = 48000");
-    let factory = SubAgentFactory;
-    let tools = factory.build(&toml::from_str(&section).unwrap(), lead.dependencies());
+    let tools = lead.tools_with_window(Some(48_000));
     super::compaction::stub(&lead, 3).await;
 
-    lead.turn(&*tools.unwrap(), &lead.task().await).await;
+    lead.turn(&*tools, &lead.task().await).await;
 
     // The Turn's span finishes after its metrics are recorded.
     let ended = || {

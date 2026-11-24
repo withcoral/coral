@@ -114,6 +114,22 @@ export type PublishReviewResult =
   | { review: PublishReviewView; refusal: null }
   | { review: null; refusal: string; path: string }
 
+/** What a workspace owner reads before they turn `coral.agent` on. */
+export interface SubAgentConsentModel {
+  /** Coral's name for where the model's requests go, which the answer names. */
+  id: string
+  /** The host that this workspace's data goes to. */
+  host: string
+  name: string
+  /** A JSON object, or empty for none. */
+  requestArgs: string
+}
+
+/** The model, or why the dialog has none to show. */
+export type SubAgentConsentRead =
+  | { model: SubAgentConsentModel; problem: null }
+  | { model: null; problem: string }
+
 /** What the drawer shows of the one tool the address names. */
 export type ToolDetailView = ProviderToolDetailView | PrivateToolDetailView | SharedToolDetailView
 

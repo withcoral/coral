@@ -45,6 +45,11 @@ export function sharedToolPublishPath(workspacePath: string) {
   return `${workspacePath}/shared-tools/publish`
 }
 
+/** Where the dialog that turns `coral.agent` on reads its model and sends the answer. */
+export function subAgentConsentPath(workspacePath: string) {
+  return `${workspacePath}/sub-agent/consent`
+}
+
 /**
  * Whether the group holds tools that a person or an agent wrote: the shared
  * or the private group. Its page has a fixed address, and its tools show

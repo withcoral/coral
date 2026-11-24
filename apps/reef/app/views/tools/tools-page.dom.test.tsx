@@ -18,7 +18,15 @@ import { selectionKey } from '@/views/providers/selection'
 import type { ToolCallCounts, ToolView, ProviderView, WorkspaceView } from '@/views/providers/types'
 import { toolPath } from './addresses'
 import { ToolsPage } from './tools-page'
-import type { PublishReviewResult, SharedToolDetailView, ToolDetailView } from './types'
+import type {
+  PublishReviewResult,
+  SharedToolDetailView,
+  SubAgentConsentRead,
+  ToolDetailView,
+} from './types'
+
+vi.mock('@/wax/components/toast', () => ({ addToast: vi.fn() }))
+const { addToast } = await import('@/wax/components/toast')
 
 // happy-dom lays nothing out, so the virtualizer would mount no tool
 // rows. Give the scroll port a viewport; row heights come from estimates.
@@ -1827,4 +1835,264 @@ test('blockers from an older policy change do not replace a later one', async ()
   answers.get('one')!([])
   await settle()
   expect(screen.getByRole('img', { name: 'No tools ready' })).toBeInTheDocument()
+})
+
+// Coral's own tools once the organization has a model: `coral.agent` is off in every workspace.
+const coral = (() => {
+  const view = builtinProvider('00000000-0000-4000-8000-0000000000cc')
+  return {
+    ...view,
+    tools: [
+      ...view.tools,
+      { ...view.tools[0]!, key: 'agent', relativePath: 'agent', policy: 'disabled' as const },
+    ],
+  }
+})()
+const agentTool = coral.tools.at(-1)!
+/** Coral's tools with another policy on `coral.agent`. */
+const coralWith = (policy: ToolView['policy']): ProviderView => ({
+  ...coral,
+  tools: coral.tools.map((tool) => (tool.key === 'agent' ? { ...tool, policy } : tool)),
+})
+const AGENT_OFF = coralWith('disabled')
+
+const firstModel = {
+  id: 'model-1',
+  host: 'models.example.com',
+  name: 'large-1',
+  requestArgs: '{\n  "max_tokens": 4096\n}',
+}
+
+/** The Tools page with the consent route beside it, and what reached each. */
+function renderConsent({
+  providers = [AGENT_OFF, github],
+  reads = [{ model: firstModel, problem: null }],
+  answer = () => ({ error: null, credential: null }),
+  policyAnswer = async () => ({ error: null, message: 'ok' }),
+  ...page
+}: {
+  providers?: ProviderView[]
+  /** What each read of the model answers; the last one repeats. */
+  reads?: SubAgentConsentRead[]
+  /** Coral's answer to each turn-on. */
+  answer?: (attempt: number) => object
+  /** Coral's answer to each policy change made without the dialog. */
+  policyAnswer?: Action
+} & Omit<Parameters<typeof renderPage>[0] & {}, 'action' | 'routes'> = {}) {
+  const policies: FormData[] = []
+  const turnedOn: Record<string, FormDataEntryValue>[] = []
+  let read = 0
+  const rendered = renderPage({
+    ...page,
+    providers,
+    action: async (request) => {
+      policies.push(await request.clone().formData())
+      return policyAnswer(request)
+    },
+    routes: [
+      {
+        path: '/workspaces/demo/sub-agent/consent',
+        loader: () => reads[Math.min(read++, reads.length - 1)],
+        action: async ({ request }) => {
+          turnedOn.push(Object.fromEntries(await request.formData()))
+          return answer(turnedOn.length)
+        },
+        // As the route does: only the dialog asks for the model.
+        shouldRevalidate: () => false,
+      },
+    ],
+  })
+  return { ...rendered, policies, turnedOn, reads: () => read }
+}
+const consentDialog = () => screen.findByRole('dialog', { name: 'Turn on coral.agent' })
+const noConsentDialog = () =>
+  expect(screen.queryByRole('dialog', { name: 'Turn on coral.agent' })).toBeNull()
+/** The dialog's facts, once they loaded. */
+async function shownFacts(dialog: HTMLElement) {
+  await within(dialog).findByText('Host')
+  const labels = [...dialog.querySelectorAll('dt')]
+  return Object.fromEntries(
+    labels.map((label) => [label.textContent, label.nextElementSibling!.textContent]),
+  )
+}
+const policyOf = (row: HTMLElement) =>
+  within(row)
+    .getAllByRole('radio', { checked: true })
+    .map((radio) => radio.getAttribute('aria-label'))
+
+// Catches: a way to turn coral.agent on that does not show an owner where their data goes, one
+// that sends the change before they confirm it, a dialog that shows or posts something else than
+// the model, a tool that shows as on after they cancel, or keys that stop working then.
+test.each([
+  ['its row, to Ask', 'Ask', 'approval_required', () => choosePolicy('agent', 'Ask')],
+  ['its row, to Allow', 'Allow', 'enabled', () => choosePolicy('agent', 'Allow')],
+  [
+    'the arrow keys',
+    'Ask',
+    'approval_required',
+    async () => {
+      for (let moves = 0; cursorName() !== 'agent' && moves < 20; moves++)
+        await user.keyboard('{ArrowDown}')
+      await user.keyboard('{ArrowLeft}')
+    },
+  ],
+])('turning coral.agent on from %s asks first', async (_, policy, access, turnOn) => {
+  const { policies, turnedOn, reads } = renderConsent()
+  expect(reads()).toBe(0)
+  await turnOn()
+  let dialog = await consentDialog()
+  expect(dialog).toHaveTextContent(
+    'Tool results from this workspace go to the host below. This includes conversations in progress.',
+  )
+  expect(await shownFacts(dialog)).toEqual({
+    Host: 'models.example.com',
+    Model: 'large-1',
+    Arguments: expect.stringMatching(/"max_tokens":\s*4096/),
+    Policy: policy,
+  })
+  within(dialog).getByRole('button', { name: 'Cancel' }).focus()
+  await user.keyboard('{Enter}')
+  await settle()
+  noConsentDialog()
+  expect(policyOf(rowOf('agent'))).toEqual(['Block'])
+  expect([policies, turnedOn]).toEqual([[], []])
+
+  await turnOn()
+  dialog = await consentDialog()
+  await shownFacts(dialog)
+  await user.click(within(dialog).getByRole('button', { name: 'Turn on' }))
+  await waitFor(noConsentDialog)
+  expect(policies).toEqual([])
+  expect(turnedOn).toMatchObject([{ modelId: 'model-1', access, csrf: 'test-csrf' }])
+  // Each opening reads the model; nothing else does.
+  expect(reads()).toBe(2)
+})
+
+// Catches: the drawer's toggle turning coral.agent on with no dialog.
+test('turning coral.agent on from its drawer asks first', async () => {
+  const { policies } = renderConsent({
+    entry: toolPath(AGENT_OFF, agentTool),
+    selectedTool: AGENT_OFF.tools.at(-1)!,
+  })
+  const drawer = screen.getByRole('dialog', { name: 'agent' })
+  await user.click(within(drawer).getByRole('radio', { name: 'Allow' }))
+  await shownFacts(await consentDialog())
+  expect(policies).toEqual([])
+})
+
+// Catches: a dialog, or a read of the model, before a change that needs neither: another tool,
+// a provider's own tool named `agent`, or coral.agent once it is on.
+test.each([
+  ['another Coral tool', AGENT_OFF, 'addProvider', 'Allow'],
+  [
+    'a provider tool named agent',
+    (() => {
+      const acme = provider('00000000-0000-4000-8000-000000000009', 'Acme', 'acme', ['agent'])
+      return { ...acme, tools: [{ ...acme.tools[0]!, key: 'agent', policy: 'disabled' as const }] }
+    })(),
+    'agent',
+    'Allow',
+  ],
+  ['coral.agent from Ask to Allow', coralWith('approval_required'), 'agent', 'Allow'],
+  ['coral.agent from Allow to Block', coralWith('enabled'), 'agent', 'Block'],
+])('a policy change on %s is sent at once', async (_, owner, tool, to) => {
+  const { policies, reads } = renderConsent({ providers: [owner] })
+  await choosePolicy(tool, to)
+  await settle()
+  noConsentDialog()
+  expect(policies).toHaveLength(1)
+  expect(reads()).toBe(0)
+})
+
+// Catches: a dialog that confirms a model the owner did not see, that changes the model under
+// them without a word, or that goes on showing the old one.
+test('a model that changed is shown before the owner can confirm it', async () => {
+  const changed =
+    'The model changed after you opened this dialog. Read the new values before you turn on coral.agent.'
+  const { turnedOn } = renderConsent({
+    reads: [
+      { model: firstModel, problem: null },
+      {
+        model: { id: 'model-2', host: 'other.example.com', name: 'small-2', requestArgs: '' },
+        problem: null,
+      },
+    ],
+    answer: (attempt) => ({ error: attempt === 1 ? changed : null, credential: null }),
+  })
+  await choosePolicy('agent', 'Ask')
+  const dialog = await consentDialog()
+  await shownFacts(dialog)
+  await user.click(within(dialog).getByRole('button', { name: 'Turn on' }))
+  await within(dialog).findByText('other.example.com')
+  expect(within(dialog).getByRole('alert')).toHaveTextContent(changed)
+  expect(await shownFacts(dialog)).toEqual({
+    Host: 'other.example.com',
+    Model: 'small-2',
+    Arguments: 'None',
+    Policy: 'Ask',
+  })
+  await user.click(within(dialog).getByRole('button', { name: 'Turn on' }))
+  await waitFor(noConsentDialog)
+  expect(turnedOn.map(({ modelId }) => modelId)).toEqual(['model-1', 'model-2'])
+})
+
+// Catches: a dialog that can be confirmed with no model to show, or that does not say why.
+test('a dialog with no model to show says why and confirms nothing', async () => {
+  const problem = 'The organization has no model for the sub-agent now. Reload the page.'
+  const { turnedOn } = renderConsent({ reads: [{ model: null, problem }] })
+  await choosePolicy('agent', 'Ask')
+  const dialog = await consentDialog()
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(problem)
+  expect(within(dialog).getByRole('button', { name: 'Turn on' })).toBeDisabled()
+  expect(turnedOn).toEqual([])
+})
+
+// Catches: a row that still says a change was refused after the owner turned the tool on.
+test('turning coral.agent on clears the refusal of a change made without the dialog', async () => {
+  // Another person changed the model, so the page still shows the tool as on.
+  const { rerenderProviders } = renderConsent({
+    providers: [coralWith('enabled')],
+    policyAnswer: async () => ({ error: 'coral.agent is off. Turn it on separately.' }),
+  })
+  await choosePolicy('agent', 'Ask')
+  await settle()
+  await rerenderProviders([AGENT_OFF])
+  expect(rowOf('agent')).toHaveTextContent('Not saved')
+  await choosePolicy('agent', 'Ask')
+  const dialog = await consentDialog()
+  await shownFacts(dialog)
+  await user.click(within(dialog).getByRole('button', { name: 'Turn on' }))
+  await waitFor(noConsentDialog)
+  expect(rowOf('agent')).not.toHaveTextContent('Not saved')
+})
+
+// Catches: a bulk change that turns coral.agent on, that loses the rest of the selection to
+// Coral's refusal of the batch, or that leaves the tool out without a word.
+test.each([
+  ['with other tools', ['agent', 'addProvider'], 'Ask', ['addProvider'], 1],
+  ['alone', ['agent'], 'Ask', [], 1],
+  ['with other tools, to Block', ['agent', 'addProvider'], 'Block', ['agent', 'addProvider'], 0],
+])('a bulk change with coral.agent %s', async (_, tools, to, sent, toasts) => {
+  vi.mocked(addToast).mockClear()
+  const { policies } = renderConsent({ providers: [AGENT_OFF] })
+  for (const tool of tools) await user.click(checkbox(`Select ${tool}`))
+  if (to !== 'Ask') {
+    await user.click(within(bulkForm()).getByRole('button', { name: 'Ask' }))
+    await user.click(await screen.findByRole('menuitemradio', { name: to }))
+  }
+  await user.click(within(bulkForm()).getByRole('button', { name: 'Apply' }))
+  await settle()
+  expect(policies).toHaveLength(sent.length > 0 ? 1 : 0)
+  expect(
+    policies.flatMap((form) =>
+      form
+        .getAll('selectedTool')
+        .map((tool) => (JSON.parse(String(tool)) as { tool: string }).tool),
+    ),
+  ).toEqual(sent)
+  expect(vi.mocked(addToast).mock.calls).toEqual(
+    Array.from({ length: toasts }, () => ['warning', { title: 'Turn on coral.agent separately.' }]),
+  )
+  // What was not sent stays selected.
+  if (toasts) expect(checkbox('Select agent')).toBeChecked()
 })

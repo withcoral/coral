@@ -805,7 +805,7 @@ async fn a_tool_this_version_does_not_perform_fails_before_approval() {
     );
     // A process of the newer Coral boots and updates the Workspace.
     let [outdated] = newer
-        .outdated_builtin_generations()
+        .outdated_builtin_generations(None)
         .await
         .unwrap()
         .try_into()
