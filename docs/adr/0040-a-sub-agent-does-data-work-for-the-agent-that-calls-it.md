@@ -281,9 +281,9 @@ does not call the model at startup, so an unreachable model does not stop Coral 
 
 The settings exist only in the config file. Reef has no form for them, and Coral does not store them in its database.
 
-We will add one optional reasoning setting, `reasoning_effort`, which decision 9 describes, and no limit other than a
-fixed number of model calls in one Turn. Without that setting, the model server's own defaults decide whether the model
-reasons. Limits on running Turns, tokens and duration wait until usage shows what they should be.
+We will add two optional reasoning settings, `reasoning_effort` and `chat_template_kwargs`, which decision 9 describes,
+and no limit other than a fixed number of model calls in one Turn. Without them, the model server's own defaults decide
+whether the model reasons. Limits on running Turns, tokens and duration wait until usage shows what they should be.
 
 **Rejected:**
 
@@ -332,10 +332,16 @@ The Sub-agent has one model client, which is Coral's own code, with three thin w
 | `openai_responses` | `{base_url}/responses` | OpenAI models from GPT-5.4 on refuse `tools` with reasoning on Chat Completions. The Responses API carries reasoning with tools statelessly (`store: false`, `include: ["reasoning.encrypted_content"]`) and automatic prompt caching. |
 | `anthropic` | `{base_url}/messages` | Anthropic's OpenAI-compatible endpoint does not support prompt caching or signed thinking blocks. The native Messages API supports ephemeral cache breakpoints on the system prompt and the rolling conversation prefix, plus signed `thinking` and `redacted_thinking` replay and `tool_result.is_error`. |
 
-`reasoning_effort` is the only reasoning setting. When it is not set, Coral sends no reasoning setting so the server's
-defaults decide. When the operator sets it:
+There are two reasoning settings, because model servers take two kinds of switch. When neither is set, Coral sends no
+reasoning setting, so the server's defaults decide.
 
-- on `chat_completions`, Coral sends `reasoning_effort` as written (leave it unset on vLLM for Qwen models);
+`chat_template_kwargs` is for a server that reads the switch in its chat template, as vLLM does for Qwen models. Coral
+sends the table as written, as `chat_template_kwargs`, with every Chat Completions request:
+`chat_template_kwargs = { enable_thinking = true }`. Coral refuses it at start-up with another protocol.
+
+`reasoning_effort` is for the other servers. When the operator sets it:
+
+- on `chat_completions`, Coral sends `reasoning_effort` as written (a Qwen model on vLLM does not read it);
 - on `openai_responses`, Coral sends `reasoning.effort` as written (and omits `include: ["reasoning.encrypted_content"]`
   when it is `"none"`);
 - on `anthropic`, `"none"` or `"disabled"` disables thinking, an unsigned integer sets `thinking.budget_tokens`, and
@@ -576,7 +582,8 @@ base_url = "https://sailfish.example/v1"    # required, no default
 model = "sailfish-1"                        # required
 api_key_env = "CORAL_SUB_AGENT_API_KEY"     # optional: the environment variable that holds the token
 context_window = 131072                     # optional: the model's context window, in tokens; compaction needs it
-# reasoning_effort = "none"                 # optional: sent with every request when set; leave it unset on vLLM
+# reasoning_effort = "none"                 # optional: sent with every request when set; vLLM's Qwen does not read it
+# chat_template_kwargs = { enable_thinking = true }  # optional: sent with every chat_completions request, as vLLM takes it
 ```
 
 - `api_key_env` names an environment variable, as every other secret in the config file does. If it is set and the
@@ -596,7 +603,7 @@ return tool calls in the `tool_calls` field should work, but they are not tested
 | --- | --- | --- |
 | Return tool calls in the `tool_calls` field of the reply | Coral does not parse tool calls out of the reply's text. | `--enable-auto-tool-choice` and `--tool-call-parser` |
 | For a reasoning model, return reasoning in the `reasoning` or `reasoning_content` field of the reply | Coral does not parse `<think>` tags out of the reply's text. Without this, Coral treats the reasoning as part of the Sub-agent's answer and can show it to the lead. | `--reasoning-parser` |
-| Turn reasoning on or off in the server's own defaults | Coral sends no reasoning setting unless the operator sets `reasoning_effort`. | `--default-chat-template-kwargs` |
+| Turn reasoning on or off in the server's own defaults, or set `chat_template_kwargs` in the section | Coral sends no reasoning setting unless the operator sets one. | `--default-chat-template-kwargs` |
 
 On `anthropic`, Coral places ephemeral `cache_control` breakpoints on the system prompt and on the last user message so
 the growing conversation prefix stays cached across steps. On `chat_completions` and `openai_responses`, Coral sends no

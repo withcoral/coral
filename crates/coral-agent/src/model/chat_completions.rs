@@ -8,8 +8,8 @@ use serde_json::Value;
 use crate::prompt::ToolText;
 
 use super::{
-    Block, Message, ModelCall, ModelError, Protocol, Reply, Role, ToolCall, Usage,
-    reasoning_matches, tool_parameters,
+    Block, ChatTemplateKwargs, Message, ModelCall, ModelError, Protocol, Reply, Role, ToolCall,
+    Usage, reasoning_matches, tool_parameters,
 };
 
 /// Serializes a Chat Completions request body.
@@ -20,6 +20,7 @@ pub(super) fn request_body(
     tools: &[ToolText],
     max_tokens: Option<u32>,
     reasoning_effort: Option<&str>,
+    chat_template_kwargs: Option<&ChatTemplateKwargs>,
 ) -> Result<Vec<u8>, ModelError> {
     let request = CompletionRequest {
         model,
@@ -27,6 +28,7 @@ pub(super) fn request_body(
         tools: tools.iter().map(ChatTool::from).collect(),
         max_completion_tokens: max_tokens,
         reasoning_effort,
+        chat_template_kwargs,
     };
     serde_json::to_vec(&request).map_err(|_error| ModelError::Misconfigured)
 }
@@ -64,6 +66,8 @@ struct CompletionRequest<'a> {
     max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chat_template_kwargs: Option<&'a ChatTemplateKwargs>,
 }
 
 /// The conversation as Chat Completions messages: a user's text as content parts, an assistant

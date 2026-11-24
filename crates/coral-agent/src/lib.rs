@@ -24,7 +24,7 @@ use coral_secret_store::{BuildEnvironment, SettingError, StoreSettings, env_var_
 use serde::Deserialize;
 use url::Url;
 
-use model::{ModelClient, Protocol};
+use model::{ChatTemplateKwargs, ModelClient, Protocol};
 use sub_agents::SubAgents;
 use tools::AgentTools;
 
@@ -82,6 +82,7 @@ struct Section {
     api_key_env: Option<String>,
     context_window: Option<u32>,
     reasoning_effort: Option<String>,
+    chat_template_kwargs: Option<ChatTemplateKwargs>,
 }
 
 impl Section {
@@ -115,6 +116,10 @@ impl Section {
         {
             return Err(SettingError::new("reasoning_effort", "must not be empty"));
         }
+        if self.chat_template_kwargs.is_some() && self.protocol != Protocol::ChatCompletions {
+            let reason = "is only for the chat_completions protocol";
+            return Err(SettingError::new("chat_template_kwargs", reason));
+        }
         let policy = dependencies.outbound_policy;
         let environment = BuildEnvironment::new(
             policy,
@@ -131,7 +136,7 @@ impl Section {
         let http = coral_outbound::Client::new(policy, MODEL_CALL_TIMEOUT)
             .map_err(|_error| SettingError::new("", "model client initialization failed"))?;
         let (window, effort) = (self.context_window, self.reasoning_effort);
-        Ok(ModelClient::new(
+        let model = ModelClient::new(
             http,
             self.protocol,
             &base_url,
@@ -139,6 +144,7 @@ impl Section {
             api_key,
             window,
             effort,
-        ))
+        );
+        Ok(model.with_chat_template_kwargs(self.chat_template_kwargs))
     }
 }

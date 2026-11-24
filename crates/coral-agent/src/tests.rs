@@ -442,6 +442,16 @@ async fn startup_checks_the_section_and_sends_the_model_nothing() {
             None,
         ),
         (
+            format!("{named}chat_template_kwargs = {{ enable_thinking = true }}"),
+            None,
+        ),
+        (
+            format!(
+                "{named}protocol = 'anthropic'\nchat_template_kwargs = {{ enable_thinking = true }}"
+            ),
+            Some("chat_template_kwargs: is only for the chat_completions protocol"),
+        ),
+        (
             format!("{named}reasoning = 'high'"),
             Some("unknown field `reasoning`"),
         ),

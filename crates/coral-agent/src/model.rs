@@ -57,8 +57,14 @@ pub(crate) struct ModelClient {
     context_window: Option<u32>,
     /// Sent as written on every request: servers accept different values.
     reasoning_effort: Option<String>,
+    /// Sent as written on every Chat Completions request: what the server's
+    /// chat template takes, such as vLLM's `enable_thinking`.
+    chat_template_kwargs: Option<ChatTemplateKwargs>,
     retry_waits: [Duration; 3],
 }
+
+/// The arguments a model server hands its chat template, as the operator wrote them.
+pub(crate) type ChatTemplateKwargs = serde_json::Map<String, serde_json::Value>;
 
 impl ModelClient {
     /// Reaches `model` under `base_url`, such as `https://host/v1`, speaking `protocol` through `http`.
@@ -81,8 +87,16 @@ impl ModelClient {
             api_key,
             context_window,
             reasoning_effort,
+            chat_template_kwargs: None,
             retry_waits: RETRY_WAITS,
         }
+    }
+
+    /// Sends `kwargs` as `chat_template_kwargs` on every Chat Completions request.
+    #[must_use]
+    pub(crate) fn with_chat_template_kwargs(mut self, kwargs: Option<ChatTemplateKwargs>) -> Self {
+        self.chat_template_kwargs = kwargs;
+        self
     }
 
     /// The model's context window in tokens, when the operator set it.
@@ -132,6 +146,7 @@ impl ModelClient {
                 tools,
                 max_tokens,
                 effort,
+                self.chat_template_kwargs.as_ref(),
             ),
             Protocol::OpenAiResponses => openai_responses::request_body(
                 &self.model,

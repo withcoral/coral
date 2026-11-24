@@ -184,18 +184,20 @@ async fn the_conversation_goes_as_chat_completions_and_the_reply_comes_back_as_b
     );
 }
 
-// Catches: a set reasoning_effort left off a reply's or a summary's request, or the field sent
-// when it is not set.
+// Catches: a set reasoning_effort or chat_template_kwargs left off a reply's or a summary's
+// request, changed on the way, or sent when it is not set.
 #[tokio::test]
-async fn reasoning_effort_goes_on_every_request_only_when_set() {
-    for (effort, expected) in [(Some("none"), Some(json!("none"))), (None, None)] {
+async fn the_reasoning_settings_go_on_every_request_only_when_set() {
+    let thinking = json!({"enable_thinking": true});
+    for (effort, kwargs) in [(Some(json!("none")), Some(thinking)), (None, None)] {
         let server = MockServer::start().await;
         Mock::given(any())
             .respond_with(answer("Hi."))
             .mount(&server)
             .await;
         let client = ModelClient {
-            reasoning_effort: effort.map(str::to_owned),
+            reasoning_effort: effort.as_ref().and_then(Value::as_str).map(str::to_owned),
+            chat_template_kwargs: kwargs.as_ref().and_then(Value::as_object).cloned(),
             ..client(&server, None)
         };
 
@@ -203,15 +205,17 @@ async fn reasoning_effort_goes_on_every_request_only_when_set() {
         let summary = client.summarize("Be brief.", &conversation(), 100).await;
         summary.unwrap();
 
-        let sent: Vec<Option<Value>> = received(&server)
+        let sent: Vec<_> = received(&server)
             .await
             .iter()
             .map(|request| {
                 let body: Value = request.body_json().unwrap();
-                body.get("reasoning_effort").cloned()
+                let setting = |name| body.get(name).cloned();
+                (setting("reasoning_effort"), setting("chat_template_kwargs"))
             })
             .collect();
-        assert_eq!(sent, [expected.clone(), expected], "{effort:?}");
+        let expected = (effort, kwargs);
+        assert_eq!(sent, [expected.clone(), expected]);
     }
 }
 
