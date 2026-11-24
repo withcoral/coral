@@ -1,0 +1,97 @@
+syntax = "proto3";
+package coral.management.v1;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// The one model that the Organization's Sub-agents use. Only an Organization
+// Owner can read or change it.
+service SubAgentModelService {
+  // Reads the model, when one is set.
+  rpc GetSubAgentModel(GetSubAgentModelRequest) returns (GetSubAgentModelResponse) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // Sets the model of an Organization that has none.
+  rpc CreateSubAgentModel(CreateSubAgentModelRequest) returns (SubAgentModel);
+  // Changes the model with an exact etag.
+  rpc UpdateSubAgentModel(UpdateSubAgentModelRequest) returns (SubAgentModel);
+  // Removes the model, and its API key, with an exact etag.
+  rpc DeleteSubAgentModel(DeleteSubAgentModelRequest) returns (google.protobuf.Empty);
+}
+
+// Asks for the model.
+message GetSubAgentModelRequest {}
+
+// The model, when one is set.
+message GetSubAgentModelResponse {
+  // Absent while the Organization has no model.
+  SubAgentModel model = 1;
+}
+
+// Sets the model.
+message CreateSubAgentModelRequest {
+  // What to set.
+  SubAgentModelSettings settings = 1;
+  // The API key. Absent for a model that takes none.
+  optional string api_key = 2;
+}
+
+// Changes the model.
+message UpdateSubAgentModelRequest {
+  // What to set, in full.
+  SubAgentModelSettings settings = 1;
+  // Required current etag.
+  string etag = 2;
+  // Absent keeps the stored API key, unless the base URL changes, which drops
+  // it. Empty removes it. Anything else replaces it.
+  optional string api_key = 3;
+}
+
+// Removes the model.
+message DeleteSubAgentModelRequest {
+  // Required current etag.
+  string etag = 1;
+}
+
+// A model as it is stored, without its API key.
+message SubAgentModel {
+  // Names where the model's requests go. A new base URL issues a new one, and
+  // so does a model that is removed and set again.
+  string id = 1;
+  // What an Organization Owner set.
+  SubAgentModelSettings settings = 2;
+  // Whether an API key is stored. Coral never returns it.
+  bool has_api_key = 3;
+  // The User who last changed the model, as `users/{user}`.
+  string changed_by = 4;
+  // When the model last changed.
+  google.protobuf.Timestamp change_time = 5;
+  // The current etag.
+  string etag = 6;
+}
+
+// What an Organization Owner sets, but the API key.
+message SubAgentModelSettings {
+  // The wire protocol of the endpoint.
+  SubAgentModelProtocol protocol = 1;
+  // Where the endpoint is, such as `https://host/v1`.
+  string base_url = 2;
+  // The model's name, as the endpoint knows it.
+  string model = 3;
+  // The model's context window in tokens. Absent leaves it to Coral.
+  optional uint32 context_window = 4;
+  // What Coral merges into each request: a JSON object, or empty for none.
+  string request_args_json = 5;
+}
+
+// The wire protocol that a model's endpoint speaks.
+enum SubAgentModelProtocol {
+  // Unknown: a newer runtime may send a protocol this client does not know.
+  SUB_AGENT_MODEL_PROTOCOL_UNSPECIFIED = 0;
+  // OpenAI-compatible Chat Completions.
+  SUB_AGENT_MODEL_PROTOCOL_CHAT_COMPLETIONS = 1;
+  // OpenAI's Responses API.
+  SUB_AGENT_MODEL_PROTOCOL_OPENAI_RESPONSES = 2;
+  // Anthropic's Messages API.
+  SUB_AGENT_MODEL_PROTOCOL_ANTHROPIC = 3;
+}

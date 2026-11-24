@@ -155,6 +155,7 @@ zeroize = "1.9"
 coral = { path = "crates/coral" }
 coral-administration = { path = "crates/coral-administration" }
 coral-agent = { path = "crates/coral-agent" }
+coral-agent-model = { path = "crates/coral-agent-model" }
 coral-app = { path = "crates/coral-app" }
 coral-auth = { path = "crates/coral-auth" }
 coral-aws = { path = "crates/coral-aws" }

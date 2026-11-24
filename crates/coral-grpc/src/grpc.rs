@@ -14,6 +14,7 @@ mod releases;
 mod secret_stores;
 mod shared_tools;
 mod status;
+mod sub_agent_models;
 mod usage_data;
 mod workspaces;
 use std::sync::Arc;
@@ -69,6 +70,8 @@ pub struct Dependencies {
     pub usage: Option<coral_usage::UsageData>,
     /// The Secret Stores the operator defined and their grants to Workspaces.
     pub secret_stores: coral_administration::SecretStoreAdministration,
+    /// The model that the Organization's Sub-agents use.
+    pub agent_models: coral_agent_model::AgentModels,
 }
 
 /// Resolved transport context supplied by application composition.
@@ -161,6 +164,11 @@ pub fn routes(dependencies: Dependencies, context: TransportContext) -> tonic::s
             ),
         )
         .add_service(
+            management::sub_agent_model_service_server::SubAgentModelServiceServer::new(
+                services.clone(),
+            ),
+        )
+        .add_service(
             management::private_tool_service_server::PrivateToolServiceServer::new(
                 services.clone(),
             ),
@@ -210,6 +218,7 @@ struct GrpcServices {
     edition: coral_edition::EditionInspection,
     usage: Option<coral_usage::UsageData>,
     secret_stores: coral_administration::SecretStoreAdministration,
+    agent_models: coral_agent_model::AgentModels,
 }
 
 impl GrpcServices {
@@ -244,6 +253,7 @@ impl GrpcServices {
             edition: dependencies.edition,
             usage: dependencies.usage,
             secret_stores: dependencies.secret_stores,
+            agent_models: dependencies.agent_models,
         }
     }
 

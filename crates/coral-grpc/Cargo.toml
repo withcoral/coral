@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 coral-administration.workspace = true
+coral-agent-model.workspace = true
 axum.workspace = true
 base64.workspace = true
 coral-auth.workspace = true
