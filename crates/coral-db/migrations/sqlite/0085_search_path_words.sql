@@ -7,8 +7,8 @@
 -- Tool-relative Path. Each row holds one word of one Generation and the
 -- number of the Generation's Tools whose path holds the word. The Tool
 -- indexer writes a Generation's rows in the transaction that writes its Tool
--- rows. It deletes them with those rows. A read adds the rows of the
--- Workspace's complete Generations.
+-- rows. It deletes them with those rows. A read adds the rows of each
+-- Provider's active Generation, while the index holds it complete.
 --
 -- `word` compares byte by byte (the BINARY collation). So the primary key
 -- serves the read's range of the words that start with a query word.
@@ -17,7 +17,8 @@
 -- Generation attempt wrote. The column is nullable. A failed attempt writes
 -- no count. A row that an earlier indexer wrote has no count until a
 -- reconcile pass indexes its Generation again under the new indexer
--- revision. Until then, that Generation adds no path and no word.
+-- revision. While an active Generation has no count, the read makes every
+-- word rare in its Workspace, as the rule before these counts did.
 CREATE TABLE search_path_words (
     workspace_id TEXT NOT NULL,
     provider_id TEXT NOT NULL,

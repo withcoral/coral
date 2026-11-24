@@ -1099,6 +1099,9 @@ pub(super) async fn complete_generations(
 pub(super) struct PathWordCounts {
     /// The Provider Tools of those Generations.
     pub(super) tools: i64,
+    /// How many of those Generations hold no counts: an earlier indexer
+    /// wrote them, and a reconcile pass has not indexed them again yet.
+    pub(super) uncounted: i64,
     /// Each word asked for, and at most how many of those Tools hold a word
     /// that starts with it.
     pub(super) words: Vec<PathWordCount>,
@@ -1135,6 +1138,7 @@ pub(super) async fn path_word_counts(
         word: String,
         tools_at_most: i64,
         tools: i64,
+        uncounted: i64,
     }
     let mut binds = Binds::new(transaction.system());
     let workspace = binds.push(workspace_id.to_string());
@@ -1164,12 +1168,16 @@ pub(super) async fn path_word_counts(
                      AND w.word < (q.word || {after}){collate} \
                      AND w.provider_generation_id IN (SELECT s.target_id {complete_states}) \
              ), 0) AS BIGINT) AS tools_at_most, \
-             CAST(coalesce((SELECT sum(s.tool_count) {complete_states}), 0) AS BIGINT) AS tools \
+             CAST(coalesce((SELECT sum(s.tool_count) {complete_states}), 0) AS BIGINT) AS tools, \
+             CAST(( \
+                 SELECT count(*) {complete_states} AND s.tool_count IS NULL \
+             ) AS BIGINT) AS uncounted \
          FROM ({asked}) AS q"
     );
     let rows: Vec<Row> = transaction.fetch_all_sql(&sql, binds.values).await?;
     Ok(PathWordCounts {
         tools: rows.first().map_or(0, |row| row.tools),
+        uncounted: rows.first().map_or(0, |row| row.uncounted),
         words: rows
             .into_iter()
             .map(|row| PathWordCount {

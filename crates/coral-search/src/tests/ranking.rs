@@ -572,6 +572,57 @@ async fn the_path_word_counts_follow_the_catalog_of_each_workspace() {
     );
 }
 
+/// After an upgrade, a Generation that the earlier indexer wrote has no
+/// counts until a reconcile pass indexes it again. Until then every word is
+/// rare in its Workspace, as before the counts: the Shop's counts alone would
+/// make `list` common.
+#[tokio::test]
+async fn every_path_word_is_rare_while_an_active_generation_has_no_counts() {
+    let modules = TestModules::new().await;
+    let user = organization_user(modules.search.database.clone(), USER).await;
+    let principal = AuthenticatedPrincipal::user(user.clone());
+    let workspace = modules.create_workspace(&user).await;
+    modules
+        .publish_openapi(&user, &workspace, SHOP, "shop", 20)
+        .await;
+    let ledger = modules
+        .publish_openapi(&user, &workspace, LEDGER, "ledger", 21)
+        .await;
+    modules
+        .save_private_tool(
+            &principal,
+            &workspace,
+            "weekly.listAll",
+            "Sum the orders of the week.",
+            30,
+        )
+        .await;
+    modules.converge().await;
+    for sql in [
+        format!(
+            "UPDATE search_index_states SET tool_count = NULL, indexer_revision = 3 \
+             WHERE kind = 'provider_tool' AND provider_id = '{ledger}'"
+        ),
+        format!("DELETE FROM search_path_words WHERE provider_id = '{ledger}'"),
+    ] {
+        modules.fixture.execute_fixture_sql(&sql).await.unwrap();
+    }
+    let strong = async || {
+        let ranked = ranked(&modules, &principal, &workspace, "list invoices").await;
+        before_a_strong_tool(&ranked, "coral.private.weekly.listAll", &SHOP_STRONG)
+    };
+
+    assert!(
+        strong().await,
+        "the earlier indexer wrote the Ledger, so every word is rare"
+    );
+    modules.converge().await;
+    assert!(
+        !strong().await,
+        "a reconcile pass wrote the Ledger's counts, so `list` is common"
+    );
+}
+
 /// Twenty Tools. Only `issues.getIssue` holds a word that starts with `get`,
 /// and it holds two: `get` and `getissue`. Two Tools are strong for
 /// `get invoices` by `invoices`.

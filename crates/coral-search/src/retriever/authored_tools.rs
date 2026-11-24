@@ -442,7 +442,9 @@ fn strong_authored_tool(
 /// statement when `words` is empty. A word's count is an upper bound
 /// (`repository::PathWordCount`), so a word near the limit counts as common
 /// rather than rare. In a Workspace with no Provider Tool every word is
-/// rare.
+/// rare, and so it is while an active Generation holds no counts: after an
+/// upgrade, until a reconcile pass indexes it again, as the rule before the
+/// counts did.
 async fn rare_path_words(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -468,7 +470,9 @@ async fn rare_path_words(
         .words
         .into_iter()
         .filter(|count| {
-            counts.tools == 0 || count.tools_at_most * 100 < counts.tools * RARE_PATH_WORD_PERCENT
+            counts.tools == 0
+                || counts.uncounted > 0
+                || count.tools_at_most * 100 < counts.tools * RARE_PATH_WORD_PERCENT
         })
         .map(|count| count.word)
         .collect())
