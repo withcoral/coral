@@ -336,7 +336,7 @@ async fn at_the_drains_length_a_local_childs_run_ends_interrupted() {
     );
 }
 
-/// Catches: a Run accepted once the Shutdown Drain started, which this
+/// Catches: a Run submitted once the Shutdown Drain started, which this
 /// Coral Instance would never serve: it is refused with `ShuttingDown`, and
 /// nothing is written.
 #[tokio::test]

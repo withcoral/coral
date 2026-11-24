@@ -187,18 +187,18 @@ async fn many_emissions_share_a_byte_budget_with_logs_and_survive_limit_failure(
     }
 }
 
-/// Two Invocation results reach the Run Owner before its next commit: the
-/// owner decides each against its exact in-memory total, so the second is
+/// Two Invocation results reach the Run stream's loop before its next
+/// commit: the loop decides each against its exact in-memory total, so the
+/// second is
 /// admitted or refused by the byte, and the recorded total is exactly what
 /// was admitted. Tool arguments never count.
 #[tokio::test]
 async fn invocation_results_share_the_output_budget_by_the_byte_but_arguments_do_not() {
-    let mut fixture = TestModules::with_upstream(
+    let fixture = TestModules::with_upstream(
         v8_engine(),
         Arc::new(ConcurrentUpstream(tokio::sync::Barrier::new(2))),
     )
     .await;
-    fixture.serve().await;
     let tool = fixture
         .user_tool("user:invocation-output-budget", "Bound Invocation output")
         .await;
@@ -315,7 +315,7 @@ impl crate::invocation::UpstreamSender for ConcurrentUpstream {
 
 #[tokio::test]
 async fn rejected_invocation_output_leaves_the_remaining_budget_for_program_output() {
-    let mut fixture = TestModules::with_upstream(
+    let fixture = TestModules::with_upstream(
         Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
                 .expect("V8 engine"),
@@ -323,7 +323,6 @@ async fn rejected_invocation_output_leaves_the_remaining_budget_for_program_outp
         Arc::new(ScriptedUpstream::json(200, json!(null))),
     )
     .await;
-    fixture.serve().await;
     let tool = fixture
         .user_tool(
             "user:remaining-output-budget",

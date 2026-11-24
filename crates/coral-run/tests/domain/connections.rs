@@ -500,14 +500,13 @@ async fn an_ended_request_records_one_terminal_event_and_replays_unchanged() {
 async fn the_owner_arms_a_timer_at_a_connection_requests_deadline() {
     let server = MockServer::start().await;
     let probe = Arc::new(TimerProbe::default());
-    let mut fixture = TestModules::with_execution_adapters(
+    let fixture = TestModules::with_execution_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         Arc::new(RejectingUpstream),
         Arc::new(NoopInvocationObserver),
         probe.clone(),
     )
     .await;
-    fixture.serve().await;
     let tool = fixture
         .user_tool_at("user:connection-timer", "Connection timer", &server.uri())
         .await;

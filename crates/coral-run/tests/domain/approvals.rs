@@ -1626,8 +1626,8 @@ async fn an_approval_counts_by_its_decision_time_whenever_the_dispatch_comes() {
         )
         .await;
         wait_until(|| wait.entered()).await;
-        // Isolate the request's deadline from the longer Run and worker-claim
-        // deadlines. During final checks, the enforcement point's clock
+        // Isolate the request's deadline from the longer Run deadline.
+        // During final checks, the enforcement point's clock
         // sample reaches the deadline the gate read; before the gate, every
         // later clock read is at or past the deadline.
         if during_final_checks {
@@ -2066,8 +2066,8 @@ async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_reque
 /// with no read, long before the periodic precheck. The wait parks once.
 #[tokio::test]
 async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
-    // Isolate approval expiry from the capped Run deadline and worker-claim
-    // expiry: the request expires two seconds after its creation, long
+    // Isolate approval expiry from the capped Run deadline: the request
+    // expires two seconds after its creation, long
     // before the periodic precheck.
     let (fixture, probe) = probed_fixture(
         crate::execution::ExecutionPolicy::testing_with_approval_wait(Duration::from_secs(2))

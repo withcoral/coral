@@ -4,8 +4,9 @@
 //! is timed from the Program's own clock (`Date.now()` inside the emitted
 //! value) to four points:
 //!
-//! - `emit_ack_ms`: `await coral.emit(...)` resolved in the Program: Applied,
-//!   once the Run stream's loop has the Emission in memory.
+//! - `emit_ack_ms`: `await coral.emit(...)` resolved in the Program, once the
+//!   Run Executor submitted the Emission to its stream within its Applied and
+//!   held caps.
 //! - `held_ms`: the Emission's `occurred_at`, the loop's apply time.
 //! - `recorded_ms`: a poller on the measurement connection first saw the Emission
 //!   row committed, at `RECORDED_POLL` resolution.

@@ -24,7 +24,8 @@ pub(super) fn run_error(error: coral_run::Error) -> Status {
         }
         // Other writers moved the Run under every attempt, or an older
         // release's Run Owner holds it. Retryable: a retry reads what was
-        // recorded meanwhile.
+        // recorded meanwhile; for an older release's Run, retries stay
+        // refused until that Coral Instance stops.
         coral_run::Error::RunRequestNotYetRecorded => {
             status::safe_status(tonic::Code::Unavailable, "RUN_REQUEST_NOT_YET_RECORDED")
         }

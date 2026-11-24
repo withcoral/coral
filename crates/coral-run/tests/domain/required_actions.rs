@@ -16,11 +16,10 @@ struct RetainedConnection {
 
 impl RetainedConnection {
     async fn new() -> Self {
-        let mut fixture = TestModules::new(Arc::new(
+        let fixture = TestModules::new(Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
         ))
         .await;
-        fixture.serve().await;
         let tool = fixture
             .user_tool("user:retained-connection", "Retained connection selection")
             .await;
@@ -656,11 +655,10 @@ struct MixedActions {
 
 impl MixedActions {
     async fn new() -> Self {
-        let mut fixture = TestModules::new(Arc::new(
+        let fixture = TestModules::new(Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
         ))
         .await;
-        fixture.serve().await;
         let tool = fixture
             .user_tool("user:concurrent-actions", "Concurrent human actions")
             .await;
@@ -939,11 +937,10 @@ async fn a_wait_returns_when_the_waiting_tools_provider_is_renamed() {
 /// Tool, but still names its Provider.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_connection_request_shared_by_different_tools_names_no_tool() {
-    let mut fixture = TestModules::new(Arc::new(
+    let fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))
     .await;
-    fixture.serve().await;
     let tool = fixture
         .user_tool("user:mixed-tools", "Calls to two Tools")
         .await;
@@ -1474,11 +1471,10 @@ async fn required_actions_disclose_owner_work_to_agents_without_granting_approva
 async fn required_actions_cleanup_shared_requests_under_termination_and_resolution_races() {
     for deadline in [false, true] {
         for expire in [false, true] {
-            let mut fixture = TestModules::new(Arc::new(
+            let fixture = TestModules::new(Arc::new(
                 crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
             ))
             .await;
-            fixture.serve().await;
             let tool = fixture
                 .user_tool("user:shared-actions", "Shared action cleanup")
                 .await;

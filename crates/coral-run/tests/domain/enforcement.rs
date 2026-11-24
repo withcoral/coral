@@ -1642,7 +1642,7 @@ async fn a_refresh_wait_parked_by_the_enforcement_point_resumes_on_the_next_chec
             .mount(&server)
             .await;
         let latch = EnforcementLatch::holding_arrivals();
-        let mut fixture = TestModules::with_invocation_adapters(
+        let fixture = TestModules::with_invocation_adapters(
             Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
             Arc::new(
                 crate::invocation::ProductionUpstream::new(
@@ -1654,7 +1654,6 @@ async fn a_refresh_wait_parked_by_the_enforcement_point_resumes_on_the_next_chec
             latch.clone(),
         )
         .await;
-        fixture.serve().await;
         let tool = fixture
             .user_tool_at(
                 "user:enforced-refresh-wait",
