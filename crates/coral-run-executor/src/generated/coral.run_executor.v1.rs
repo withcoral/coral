@@ -555,7 +555,8 @@ pub mod run_request {
         Request(super::Request),
         /// An output the Run Executor rejected, which Coral counts. It takes no
         /// request number and is never resent: one sent while the stream is down
-        /// is not counted.
+        /// is not counted. Send it before the Finish: Coral reads nothing after
+        /// the Finish.
         #[prost(message, tag = "4")]
         OutputRejected(super::OutputRejected),
     }

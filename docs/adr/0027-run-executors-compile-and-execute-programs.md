@@ -111,9 +111,11 @@ runtime.
   Finish. Coral answers an Invoke at Applied with the result, a rejection, an upstream error or a fatal. Nothing answers
   an Emit or a Log: the Run Executor checks the value against the package's value limits, counts the Run Output Budget
   and fails the Run when it is exceeded, and pauses the Program's next request while more than the Applied cap is
-  unconfirmed; Coral confirms at commit. Every kind of Run Executor settles Emit and Log the same way. For each output
-  it rejects, the Run Executor sends an unnumbered OutputRejected with the output's kind, and Coral counts it in its
-  metrics.
+  unconfirmed; Coral confirms at commit. Every kind of Run Executor settles Emit and Log the same way.
+- **A rejected output is counted in Coral.** For each Emission, Log, Final Value or Invoke result that the Run Executor
+  rejects (too large, invalid, or past the Run Output Budget), it sends an unnumbered OutputRejected with the output's
+  kind, before its Finish. Coral counts it in its metrics. It is never resent, so one sent while the stream is down is
+  not counted. Both sides read and send it from the first release that the Versions rule covers.
 - **A Private or Shared Tool call is a code-performed Invoke ([ADR 0034](0034-every-callable-is-a-tool.md)).**
   - **The Invoke** names the tool and, for a Shared Tool, its revision. Every Invoke that a tool's body makes carries
     its parent Invocation; an Invoke from the Program itself or from module-level code carries none. Coral refuses an

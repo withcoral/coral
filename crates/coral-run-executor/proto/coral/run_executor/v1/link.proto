@@ -431,7 +431,8 @@ message RunRequest {
     Request request = 3;
     // An output the Run Executor rejected, which Coral counts. It takes no
     // request number and is never resent: one sent while the stream is down
-    // is not counted.
+    // is not counted. Send it before the Finish: Coral reads nothing after
+    // the Finish.
     OutputRejected output_rejected = 4;
   }
 }

@@ -1493,7 +1493,7 @@ fn rejected_final_value(isolate: &v8::Isolate) -> Error {
 }
 
 /// Counts an output of `kind` that the isolate rejected, through the host.
-/// An isolate with no host slot runs no Program, so it has none to count.
+/// With no host slot, no host can receive the count.
 fn output_rejected(isolate: &v8::Isolate, kind: OutputKind) {
     if let Some(slot) = isolate.get_slot::<ProgramHostSlot>() {
         slot.host.output_rejected(kind);
