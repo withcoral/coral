@@ -6,7 +6,6 @@ import { withBrowserSession } from '../../../support/browser-session.ts'
 import { managementClients } from '../../../support/management.ts'
 import { listen } from '../../../support/provider-fixtures.ts'
 import {
-  checkRadio,
   expectArrivalToast,
   observeRun,
   openDialog,
@@ -94,10 +93,11 @@ test('A workspace owner turns on the sub-agent that an organization owner set up
       await openSettings(page, 'Sub-agent')
       await page.getByLabel('Base URL').fill(`${model.origin}/v1`)
       await page.getByLabel('Model name').fill('reel-1')
-      await page.getByLabel('Key to save').fill(KEY)
+      await page.getByLabel('API key').fill(KEY)
+      await page.getByText('Advanced', { exact: true }).click()
       await page.getByLabel('Arguments (JSON)').fill('{"temperature": 0.5}')
       await save(page)
-      await page.getByText('An API key is set.', { exact: true }).waitFor()
+      await page.getByText('A key is saved.', { exact: true }).waitFor()
     })
   })
 
@@ -124,10 +124,9 @@ test('A workspace owner turns on the sub-agent that an organization owner set up
         page,
         agentRow(page).getByRole('radio', { name: 'Allow', exact: true }),
       )
-      await dialog.getByRole('heading', { name: 'Turn on coral.agent', exact: true }).waitFor()
+      await dialog.getByRole('heading', { name: 'Turn on the sub-agent?', exact: true }).waitFor()
       await dialog.getByText(host, { exact: true }).waitFor()
       await dialog.getByText('reel-1', { exact: true }).waitFor()
-      await dialog.getByText('"temperature"', { exact: false }).waitFor()
       await dialog.getByRole('button', { name: 'Turn on', exact: true }).click()
       await agentRow(page)
         .getByRole('radio', { name: 'Allow', exact: true, checked: true })
@@ -152,11 +151,11 @@ test('A workspace owner turns on the sub-agent that an organization owner set up
       await openSettings(page, 'Sub-agent')
       await page.getByLabel('Base URL').fill(`${model.origin}/v2`)
       await page
-        .getByText('Saving a new base URL turns the sub-agent off in every workspace.')
+        .getByText('Saving a new base URL blocks the sub-agent in every workspace.')
         .waitFor()
-      await checkRadio(page.getByRole('radio', { name: 'Use no key', exact: true }))
+      await page.getByRole('button', { name: 'Use no key', exact: true }).click()
       await save(page)
-      await page.getByText('No API key is set.', { exact: true }).waitFor()
+      await page.getByRole('group', { name: 'API key' }).waitFor({ state: 'hidden' })
     })
   })
 

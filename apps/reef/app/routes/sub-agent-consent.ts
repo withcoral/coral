@@ -13,7 +13,6 @@ import {
 import { accessStateOf } from '@/lib/providers.server'
 import { authorizedWorkspace } from '@/lib/workspace-route.server'
 import type { SubAgentConsentRead } from '@/views/tools/types'
-import { formatJson } from '@/wax/components/code-block/format-json'
 
 /**
  * The dialog reads the model when it opens and after Coral refuses its answer. A read on any
@@ -47,7 +46,6 @@ async function consentRead(api: Api, workspace: string): Promise<SubAgentConsent
         id,
         host: new URL(settings.baseUrl).host,
         name: settings.model,
-        requestArgs: formatJson(settings.requestArgsJson),
       },
       problem: null,
     }
@@ -84,14 +82,14 @@ export async function action({ request, context, params }: Route.ActionArgs) {
       return data(
         {
           error:
-            'The model changed after you opened this dialog. Read the new values before you turn on coral.agent.',
+            'The model changed after you opened this dialog. Read the new values before you turn on the sub-agent.',
           credential: null,
         },
         { status: 409, headers: privateHeaders },
       )
     return actionFailure(
       error,
-      'Coral could not turn on coral.agent. ',
+      'Coral could not turn on the sub-agent. ',
       'This workspace does not have the tool now. Reload the page.',
     )
   }

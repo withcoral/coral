@@ -16,14 +16,12 @@ const workspace = '00000000-0000-4000-8000-000000000001'
 const modelId = '11111111-1111-4111-8111-111111111111'
 let role: WorkspaceRole
 let refuse: ConnectError | null
-let requestArgsJson: string
 /** Each call that reached the model service. */
 let calls: object[]
 
 beforeEach(() => {
   role = WorkspaceRole.OWNER
   refuse = null
-  requestArgsJson = '{"max_tokens":4096}'
   calls = []
   coral.transport = fakeManagementTransport({
     workspaces: {
@@ -39,7 +37,7 @@ beforeEach(() => {
             protocol: SubAgentModelProtocol.CHAT_COMPLETIONS,
             baseUrl: 'https://models.example.com:8443/v1',
             model: 'large-1',
-            requestArgsJson,
+            requestArgsJson: '{"max_tokens":4096}',
           },
         }
       },
@@ -68,15 +66,11 @@ const post = (fields: Record<string, string>) => {
   )
 }
 
-// Catches: a dialog that names another host than the one the requests go to, such as one with no
-// port, or that loses the arguments.
-it.each([
-  ['{"max_tokens":4096}', '{\n  "max_tokens": 4096\n}'],
-  ['', ''],
-])('reads the model with the arguments %j', async (json, requestArgs) => {
-  requestArgsJson = json
+// Catches: a host without its port, or a setting that says nothing of where the data goes, such as
+// the arguments, in the way of what does.
+it('reads where the model is and what it is called', async () => {
   expect(await load()).toEqual({
-    model: { id: modelId, host: 'models.example.com:8443', name: 'large-1', requestArgs },
+    model: { id: modelId, host: 'models.example.com:8443', name: 'large-1' },
     problem: null,
   })
   expect(calls).toEqual([{ read: `workspaces/${workspace}` }])
@@ -136,12 +130,12 @@ it.each([
   [
     coralRefusal(Code.Aborted, 'SUB_AGENT_MODEL_CHANGED'),
     409,
-    'The model changed after you opened this dialog. Read the new values before you turn on coral.agent.',
+    'The model changed after you opened this dialog. Read the new values before you turn on the sub-agent.',
   ],
   [
     new ConnectError('not found', Code.NotFound),
     404,
-    'Coral could not turn on coral.agent. This workspace does not have the tool now. Reload the page.',
+    'Coral could not turn on the sub-agent. This workspace does not have the tool now. Reload the page.',
   ],
   [
     coralRefusal(Code.FailedPrecondition, 'WORKSPACE_ARCHIVED'),

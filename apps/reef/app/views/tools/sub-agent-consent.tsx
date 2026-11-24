@@ -7,20 +7,16 @@ import { ActionDialog } from '@/views/management/forms'
 import { usePolicyMutations } from '@/views/providers/policy-mutations'
 import type { FormContext, ProviderView, ToolView } from '@/views/providers/types'
 import { Banner, Typography } from '@/wax/components'
-import { CodeBlock } from '@/wax/components/code-block'
 import * as DescriptionList from '@/wax/components/description-list'
 
 import { subAgentConsentPath } from './addresses'
 import type { SubAgentConsentRead } from './types'
 
-/** The call path of the tool, as people and programs name it. */
-export const SUB_AGENT_CALL_PATH = 'coral.agent'
-
 // The Tool Key that the catalog's `BuiltinTool::Agent` has.
 const SUB_AGENT_KEY = 'agent'
 
 /** Whether this is `coral.agent` itself. A provider can name a tool `agent` too. */
-function isSubAgent(provider: Pick<ProviderView, 'kind'>, tool: Pick<ToolView, 'key'>) {
+export function isSubAgent(provider: Pick<ProviderView, 'kind'>, tool: Pick<ToolView, 'key'>) {
   return provider.kind === 'coral' && tool.key === SUB_AGENT_KEY
 }
 
@@ -108,8 +104,8 @@ export function SubAgentConsent({
       <ActionDialog
         open={open}
         onOpenChange={setOpen}
-        title={`Turn on ${SUB_AGENT_CALL_PATH}`}
-        description="Tool results from this workspace go to the host below. This includes conversations in progress."
+        title="Turn on the sub-agent?"
+        description="Your agents can give it data work. Their questions and the tool results from this workspace go to the host below, conversations in progress included."
         submit="Turn on"
         form={form}
         intent="turnOn"
@@ -132,17 +128,14 @@ export function SubAgentConsent({
             <DescriptionList.List>
               <DescriptionList.Row label="Host">{shown.model.host}</DescriptionList.Row>
               <DescriptionList.Row label="Model">{shown.model.name}</DescriptionList.Row>
-              <DescriptionList.Row label="Arguments">
-                {shown.model.requestArgs ? (
-                  <CodeBlock value={shown.model.requestArgs} format="json" />
-                ) : (
-                  'None'
-                )}
-              </DescriptionList.Row>
               <DescriptionList.Row label="Policy">
                 {opening && policyLabels[opening.access]}
               </DescriptionList.Row>
             </DescriptionList.List>
+            <Typography.BodySmall as="p" variant="tertiary">
+              An organization owner set this model. A new base URL blocks the sub-agent until you
+              turn it on again.
+            </Typography.BodySmall>
           </>
         ) : (
           <Banner variant="error">{shown.problem}</Banner>

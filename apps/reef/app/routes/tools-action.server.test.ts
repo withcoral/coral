@@ -209,7 +209,7 @@ it('says to turn coral.agent on separately when Coral asks for consent', async (
       provider: providerA,
       tool: 'agent',
       status: 'failed',
-      reason: 'coral.agent is off. Turn it on separately.',
+      reason: 'The sub-agent is blocked. Turn it on separately.',
     },
   ])
 })

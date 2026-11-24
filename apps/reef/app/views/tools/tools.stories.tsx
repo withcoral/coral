@@ -1175,7 +1175,6 @@ const consent: SubAgentConsentRead = {
     id: 'model-1',
     host: 'models.example.com',
     name: 'large-1',
-    requestArgs: '{\n  "max_tokens": 4096,\n  "temperature": 0.2\n}',
   },
   problem: null,
 }
@@ -1186,7 +1185,7 @@ async function askToTurnOn(canvasElement: HTMLElement) {
       .closest<HTMLElement>('[role="row"]')!,
   )
   await userEvent.click(row.getByRole('radio', { name: 'Ask' }))
-  return screen.findByRole('dialog', { name: 'Turn on coral.agent' })
+  return screen.findByRole('dialog', { name: 'Turn on the sub-agent?' })
 }
 
 // An owner sees where the sub-agent sends their data before they turn it on.
@@ -1204,7 +1203,7 @@ export const SubAgentConsentModelChanged: Story = {
   parameters: {
     consent,
     dialogError:
-      'The model changed after you opened this dialog. Read the new values before you turn on coral.agent.',
+      'The model changed after you opened this dialog. Read the new values before you turn on the sub-agent.',
   },
   play: async ({ canvasElement }) => {
     const dialog = within(await askToTurnOn(canvasElement))
@@ -1247,12 +1246,12 @@ export const SubAgentConsentFromDrawer: Story = {
     await resizeViewport(390, 844)
     const drawer = await screen.findByRole('dialog', { name: 'agent' })
     await userEvent.click(await within(drawer).findByRole('radio', { name: 'Allow' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Turn on coral.agent' })
+    const dialog = await screen.findByRole('dialog', { name: 'Turn on the sub-agent?' })
     await waitFor(() => expect(within(dialog).getByText('models.example.com')).toBeVisible())
     await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
     await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'Turn on coral.agent' })).toBeNull(),
+      expect(screen.queryByRole('dialog', { name: 'Turn on the sub-agent?' })).toBeNull(),
     )
     await expect(screen.getByRole('dialog', { name: 'agent' })).toBeVisible()
     await expect(within(drawer).getByRole('radio', { name: 'Block' })).toBeChecked()

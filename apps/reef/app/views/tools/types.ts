@@ -121,8 +121,6 @@ export interface SubAgentConsentModel {
   /** The host that this workspace's data goes to. */
   host: string
   name: string
-  /** A JSON object, or empty for none. */
-  requestArgs: string
 }
 
 /** The model, or why the dialog has none to show. */

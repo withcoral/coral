@@ -76,8 +76,8 @@ import {
 import { PrivateToolActions, PrivateToolDetail } from './private-tool-detail'
 import { SharedToolActions, SharedToolDetail, SharedToolProvenance } from './shared-tool-detail'
 import {
+  isSubAgent,
   needsSubAgentConsent,
-  SUB_AGENT_CALL_PATH,
   SubAgentConsent,
   subAgentOf,
   turnsOn,
@@ -1831,7 +1831,7 @@ function BulkPolicyForm({
         // inputs to mount and lay out on every selection change.
         const data = new FormData(event.currentTarget)
         const held = heldSubAgent(providers, selected, mutations.policies, access)
-        if (held) addToast('warning', { title: `Turn on ${SUB_AGENT_CALL_PATH} separately.` })
+        if (held) addToast('warning', { title: 'Turn on the sub-agent separately.' })
         const submitted = [...selected].filter((key) => key !== held)
         if (submitted.length === 0) return
         for (const key of submitted) {
@@ -2532,6 +2532,11 @@ function ToolDetailsDrawer({
               {provider.searchIndex?.state === 'failed' && (
                 <Banner variant="info" title="Not in search">
                   Search cannot find this tool. Agents can still call it.
+                </Banner>
+              )}
+              {isSubAgent(provider, tool) && (policy ?? tool.policy) === 'disabled' && (
+                <Banner variant="info" title="Blocked">
+                  A workspace owner can turn it on. A new base URL for its model blocks it again.
                 </Banner>
               )}
               {!tool.available && (

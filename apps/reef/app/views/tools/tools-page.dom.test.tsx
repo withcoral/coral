@@ -1860,7 +1860,6 @@ const firstModel = {
   id: 'model-1',
   host: 'models.example.com',
   name: 'large-1',
-  requestArgs: '{\n  "max_tokens": 4096\n}',
 }
 
 /** The Tools page with the consent route beside it, and what reached each. */
@@ -1904,9 +1903,9 @@ function renderConsent({
   })
   return { ...rendered, policies, turnedOn, reads: () => read }
 }
-const consentDialog = () => screen.findByRole('dialog', { name: 'Turn on coral.agent' })
+const consentDialog = () => screen.findByRole('dialog', { name: 'Turn on the sub-agent?' })
 const noConsentDialog = () =>
-  expect(screen.queryByRole('dialog', { name: 'Turn on coral.agent' })).toBeNull()
+  expect(screen.queryByRole('dialog', { name: 'Turn on the sub-agent?' })).toBeNull()
 /** The dialog's facts, once they loaded. */
 async function shownFacts(dialog: HTMLElement) {
   await within(dialog).findByText('Host')
@@ -1942,12 +1941,11 @@ test.each([
   await turnOn()
   let dialog = await consentDialog()
   expect(dialog).toHaveTextContent(
-    'Tool results from this workspace go to the host below. This includes conversations in progress.',
+    'Your agents can give it data work. Their questions and the tool results from this workspace go to the host below, conversations in progress included.',
   )
   expect(await shownFacts(dialog)).toEqual({
     Host: 'models.example.com',
     Model: 'large-1',
-    Arguments: expect.stringMatching(/"max_tokens":\s*4096/),
     Policy: policy,
   })
   within(dialog).getByRole('button', { name: 'Cancel' }).focus()
@@ -1966,6 +1964,25 @@ test.each([
   expect(turnedOn).toMatchObject([{ modelId: 'model-1', access, csrf: 'test-csrf' }])
   // Each opening reads the model; nothing else does.
   expect(reads()).toBe(2)
+})
+
+// Catches: an owner who finds the sub-agent blocked and is not told why, or one told that it is
+// blocked while it is on.
+test.each([
+  ['disabled', true],
+  ['approval_required', false],
+  ['enabled', false],
+] as const)('its drawer, on %s, says why it is blocked: %s', (policy, says) => {
+  const listed = coralWith(policy)
+  renderConsent({
+    providers: [listed, github],
+    entry: toolPath(listed, agentTool),
+    selectedTool: listed.tools.at(-1)!,
+  })
+  const note = within(screen.getByRole('dialog', { name: 'agent' })).queryByText(
+    'A workspace owner can turn it on. A new base URL for its model blocks it again.',
+  )
+  expect(note !== null).toBe(says)
 })
 
 // Catches: the drawer's toggle turning coral.agent on with no dialog.
@@ -2008,12 +2025,12 @@ test.each([
 // them without a word, or that goes on showing the old one.
 test('a model that changed is shown before the owner can confirm it', async () => {
   const changed =
-    'The model changed after you opened this dialog. Read the new values before you turn on coral.agent.'
+    'The model changed after you opened this dialog. Read the new values before you turn on the sub-agent.'
   const { turnedOn } = renderConsent({
     reads: [
       { model: firstModel, problem: null },
       {
-        model: { id: 'model-2', host: 'other.example.com', name: 'small-2', requestArgs: '' },
+        model: { id: 'model-2', host: 'other.example.com', name: 'small-2' },
         problem: null,
       },
     ],
@@ -2028,7 +2045,6 @@ test('a model that changed is shown before the owner can confirm it', async () =
   expect(await shownFacts(dialog)).toEqual({
     Host: 'other.example.com',
     Model: 'small-2',
-    Arguments: 'None',
     Policy: 'Ask',
   })
   await user.click(within(dialog).getByRole('button', { name: 'Turn on' }))
@@ -2052,7 +2068,7 @@ test('turning coral.agent on clears the refusal of a change made without the dia
   // Another person changed the model, so the page still shows the tool as on.
   const { rerenderProviders } = renderConsent({
     providers: [coralWith('enabled')],
-    policyAnswer: async () => ({ error: 'coral.agent is off. Turn it on separately.' }),
+    policyAnswer: async () => ({ error: 'The sub-agent is blocked. Turn it on separately.' }),
   })
   await choosePolicy('agent', 'Ask')
   await settle()
@@ -2091,7 +2107,10 @@ test.each([
     ),
   ).toEqual(sent)
   expect(vi.mocked(addToast).mock.calls).toEqual(
-    Array.from({ length: toasts }, () => ['warning', { title: 'Turn on coral.agent separately.' }]),
+    Array.from({ length: toasts }, () => [
+      'warning',
+      { title: 'Turn on the sub-agent separately.' },
+    ]),
   )
   // What was not sent stays selected.
   if (toasts) expect(checkbox('Select agent')).toBeChecked()
