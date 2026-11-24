@@ -15,6 +15,9 @@ export const viewport = style({
   overscrollBehavior: 'contain',
   width: '100%',
   selectors: {
+    // A tab stop while it scrolls. The root clips anything outside the
+    // viewport, so the ring is drawn inside it.
+    '&:focus-visible': { outline: `2px solid ${theme.stroke.focused}`, outlineOffset: -2 },
     // Not a tab stop: only a click focuses it, and a later key press must not
     // outline the whole area as if the keyboard had.
     '&[tabindex="-1"]:focus-visible': { outline: 'none' },
