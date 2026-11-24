@@ -16,6 +16,8 @@ export const field = style({
   minWidth: 0,
 })
 
+export const actions = style({ alignItems: 'center', display: 'flex', flexWrap: 'wrap', gap: 12 })
+
 // The menu button sizes to its label, not to the field.
 export const picker = style({ display: 'flex' })
 

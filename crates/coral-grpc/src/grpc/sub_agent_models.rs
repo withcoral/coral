@@ -3,6 +3,7 @@ use super::workspaces::{change, timestamp, workspace_id};
 use super::{GrpcServices, management as wire, policies};
 use coral_agent_model::{
     AgentModel, ApiKeyChange, EnteredSettings, Error, InvalidSetting, ModelProtocol, ModelSettings,
+    TestFailure, TestKey,
 };
 use coral_credentials::Secret;
 use coral_workspace::IfMatch;
@@ -58,6 +59,7 @@ fn error(error: &Error) -> Status {
         Error::WorkspaceArchived => (Code::FailedPrecondition, "WORKSPACE_ARCHIVED"),
         Error::EtagMismatch => (Code::Aborted, "ETAG_MISMATCH"),
         Error::Sealing => return status::internal(),
+        Error::NoTester => (Code::Unimplemented, "UNIMPLEMENTED"),
         Error::Database(_) | Error::CorruptData(_) | Error::Unavailable => {
             return status::unavailable();
         }
@@ -153,6 +155,36 @@ impl wire::sub_agent_model_service_server::SubAgentModelService for GrpcServices
             .await;
         removed.map_err(|failure| error(&failure))?;
         Ok(Response::new(()))
+    }
+
+    #[tracing::instrument(skip_all, name = "coral.private.test_sub_agent_model")]
+    async fn test_sub_agent_model(
+        &self,
+        request: Request<wire::TestSubAgentModelRequest>,
+    ) -> Result<Response<wire::TestSubAgentModelResponse>, Status> {
+        let actor = self.management_user(&request).await?;
+        let input = request.into_inner();
+        let settings = entered(input.settings)?;
+        let key = match input.api_key {
+            None => TestKey::Stored,
+            Some(entered) if entered.is_empty() => TestKey::Absent,
+            Some(entered) => TestKey::Entered(api_key(entered)?),
+        };
+        let tested = self.sub_agent_models.test(&actor, &settings, key).await;
+        let (outcome, http_status) = match tested.map_err(|failure| error(&failure))? {
+            Ok(()) => (wire::SubAgentModelTestOutcome::Answered, None),
+            Err(TestFailure::Unreachable) => (wire::SubAgentModelTestOutcome::Unreachable, None),
+            Err(TestFailure::Refused(status)) => {
+                let status = u32::from(status);
+                (wire::SubAgentModelTestOutcome::Refused, Some(status))
+            }
+            Err(TestFailure::Forbidden) => (wire::SubAgentModelTestOutcome::Forbidden, None),
+            Err(TestFailure::Unreadable) => (wire::SubAgentModelTestOutcome::Unreadable, None),
+        };
+        Ok(Response::new(wire::TestSubAgentModelResponse {
+            outcome: outcome.into(),
+            http_status,
+        }))
     }
 
     #[tracing::instrument(skip_all, name = "coral.private.get_workspace_sub_agent_model")]

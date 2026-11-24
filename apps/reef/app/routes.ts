@@ -18,6 +18,7 @@ export default [
     route('workspaces/:workspace/approvals/history', 'routes/approvals-history.ts'),
     route('workspaces/:workspace/shared-tools/publish', 'routes/shared-tool-publish.ts'),
     route('workspaces/:workspace/sub-agent/consent', 'routes/sub-agent-consent.ts'),
+    route('organization/sub-agent/test', 'routes/organization-sub-agent-test.ts'),
     route('workspaces/:workspace/providers/:provider/icon', 'routes/provider-icon.ts'),
     route('provider-setup/oauth/callback', 'routes/provider-setup-oauth-callback.ts'),
     route(

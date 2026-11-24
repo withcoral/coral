@@ -19,6 +19,9 @@ service SubAgentModelService {
   rpc UpdateSubAgentModel(UpdateSubAgentModelRequest) returns (SubAgentModel);
   // Removes the model, and its API key, with an exact etag.
   rpc DeleteSubAgentModel(DeleteSubAgentModelRequest) returns (google.protobuf.Empty);
+  // Asks a model for one reply to a fixed prompt, with no Workspace data. It
+  // changes nothing, and the settings need not be saved.
+  rpc TestSubAgentModel(TestSubAgentModelRequest) returns (TestSubAgentModelResponse);
   // Reads what a Workspace Owner agrees to by turning `coral.agent` on.
   rpc GetWorkspaceSubAgentModel(GetWorkspaceSubAgentModelRequest) returns (WorkspaceSubAgentModel) {
     option idempotency_level = NO_SIDE_EFFECTS;
@@ -90,6 +93,39 @@ message SubAgentModelSettings {
   optional uint32 context_window = 4;
   // What Coral merges into each request: a JSON object, or empty for none.
   string request_args_json = 5;
+}
+
+// Tests a model.
+message TestSubAgentModelRequest {
+  // The settings as they are entered.
+  SubAgentModelSettings settings = 1;
+  // Absent uses the stored API key, if the base URL is the one it is stored
+  // for. Empty sends none. Anything else is sent.
+  optional string api_key = 2;
+}
+
+// How the model answered.
+message TestSubAgentModelResponse {
+  // What happened.
+  SubAgentModelTestOutcome outcome = 1;
+  // The HTTP status of a refusal.
+  optional uint32 http_status = 2;
+}
+
+// How a model answered a test.
+enum SubAgentModelTestOutcome {
+  // Unknown: a newer runtime may send an outcome this client does not know.
+  SUB_AGENT_MODEL_TEST_OUTCOME_UNSPECIFIED = 0;
+  // The model replied.
+  SUB_AGENT_MODEL_TEST_OUTCOME_ANSWERED = 1;
+  // The server could not be reached, or did not answer in time.
+  SUB_AGENT_MODEL_TEST_OUTCOME_UNREACHABLE = 2;
+  // The server answered with `http_status`.
+  SUB_AGENT_MODEL_TEST_OUTCOME_REFUSED = 3;
+  // The operator's destination policy forbids the server.
+  SUB_AGENT_MODEL_TEST_OUTCOME_FORBIDDEN = 4;
+  // The server's answer does not read as a reply of the protocol.
+  SUB_AGENT_MODEL_TEST_OUTCOME_UNREADABLE = 5;
 }
 
 // Asks what a Workspace Owner agrees to.

@@ -1,6 +1,6 @@
 //! The model, and the Organization Owner's changes to it.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use coral_credentials::{CredentialVault, Secret};
 use coral_db::{Database, RowLock, Transaction, UnixNanos, Version};
@@ -14,6 +14,7 @@ use uuid::Uuid;
 use crate::error::Error;
 use crate::repository::{self, StoredModel};
 use crate::settings::{EnteredSettings, ModelSettings};
+use crate::tester::{ModelTester, TestFailure, TestKey};
 
 /// The model that the Organization's Sub-agents use. It never holds the API
 /// key.
@@ -110,6 +111,8 @@ struct Inner {
     workspaces: WorkspaceModule,
     vault: CredentialVault,
     policy: DestinationPolicy,
+    /// Set once, when the Sub-agent is built.
+    tester: OnceLock<Arc<dyn ModelTester>>,
 }
 
 impl AgentModels {
@@ -124,6 +127,7 @@ impl AgentModels {
                 database,
                 vault,
                 policy,
+                tester: OnceLock::new(),
             }),
         }
     }
@@ -142,6 +146,49 @@ impl AgentModels {
         let stored = repository::find(&mut tx, RowLock::None).await?;
         tx.commit().await?;
         Ok(stored.map(|stored| stored.model))
+    }
+
+    /// Gives the module what tests a model. The Sub-agent's factory calls it
+    /// once; the first tester stays.
+    pub fn set_tester(&self, tester: Arc<dyn ModelTester>) {
+        self.inner.tester.get_or_init(|| tester);
+    }
+
+    /// Asks a model for one reply with the settings as entered, saved or not.
+    /// The outer error says why no request was sent, the inner one why the
+    /// model did not answer. It changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Denies a caller who is not an enabled Organization Owner, before it
+    /// checks the settings. Returns [`Error::Invalid`] with the setting to
+    /// correct, and [`Error::NoTester`] in a process with no Sub-agent.
+    pub async fn test(
+        &self,
+        actor: &AuthenticatedUser,
+        entered: &EnteredSettings,
+        key: TestKey,
+    ) -> Result<Result<(), TestFailure>, Error> {
+        let mut tx = self.inner.database.begin_read_snapshot().await?;
+        self.inner
+            .organization
+            .check_owner_inspection_in_transaction(&mut tx, actor)
+            .await?;
+        let settings = ModelSettings::parse(self.inner.policy, entered)?;
+        let key = match key {
+            TestKey::Entered(key) => Some(key),
+            TestKey::Absent => None,
+            // The stored key is only ever sent to the base URL that it was
+            // saved with.
+            TestKey::Stored => self
+                .active_in_transaction(&mut tx)
+                .await?
+                .filter(|active| active.settings.base_url == settings.base_url)
+                .and_then(|active| active.api_key),
+        };
+        tx.commit().await?;
+        let tester = self.inner.tester.get().ok_or(Error::NoTester)?;
+        Ok(tester.test(&settings, key).await)
     }
 
     /// The model, for a Workspace Owner to see what they agree to by turning

@@ -1,8 +1,9 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
 import { userEvent, within } from 'storybook/test'
+import { ModelTestOutcome } from './model-test'
 import { SubAgentPage } from './sub-agent-page'
-import type { RefusedSave, SubAgentModelView } from './types'
+import type { ModelTestResult, RefusedSave, SubAgentModelView } from './types'
 
 const model: SubAgentModelView = {
   values: {
@@ -34,6 +35,19 @@ const typed: RefusedSave = {
   keyChange: 'replace',
   message: '',
 }
+
+const testResults: ModelTestResult[] = [
+  { outcome: 'answered' },
+  { outcome: 'unreachable' },
+  { outcome: 'refused', status: 401 },
+  { outcome: 'refused', status: 404 },
+  { outcome: 'refused', status: 400 },
+  { outcome: 'refused', status: 503 },
+  { outcome: 'forbidden' },
+  { outcome: 'unreadable' },
+  { outcome: 'unknown' },
+  { outcome: 'failed', message: 'Coral is not available.' },
+]
 
 const meta = {
   title: 'Reef/Sub-agent',
@@ -145,4 +159,15 @@ export const CoralUnavailable: Story = {
   args: {
     refused: { ...typed, message: 'Coral is not available.' },
   },
+}
+
+/** Each way a test of the model can end. A refused setting shows at its field instead. */
+export const TestOutcomes: Story = {
+  render: () => (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 640, padding: 24 }}>
+      {testResults.map((result) => (
+        <ModelTestOutcome key={JSON.stringify(result)} result={result} />
+      ))}
+    </div>
+  ),
 }

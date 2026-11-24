@@ -1,14 +1,18 @@
 /** @vitest-environment happy-dom */
 
-import { screen, within } from '@testing-library/react'
+import { fireEvent, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
-import { expect, it } from 'vitest'
+import { expect, it, onTestFinished } from 'vitest'
 import { renderLivePage, renderRoute } from '@/test-support/route'
 import { SubAgentPage } from './sub-agent-page'
 import type { RefusedSave, SubAgentModelView } from './types'
 
 type Page = ComponentProps<typeof SubAgentPage>
+
+// Unless told to, happy-dom opens no frame and logs each one as a failure.
+const { happyDOM } = window as unknown as { happyDOM: { settings: object } }
+Object.assign(happyDOM.settings, { enableIframePageLoading: true })
 
 const form = { csrf: 'test-csrf', requestId: 'test-request' }
 const model: SubAgentModelView = {
@@ -289,4 +293,195 @@ it('asks before it removes the model', async () => {
     intent: 'remove',
     etag: 'etag-1',
   })
+})
+
+// Tests of the model. The browser submits the form into the frame itself; happy-dom does not, so
+// each test stops the submission and answers as the frame's document would.
+const testButton = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Test' })
+const frame = () => screen.getByTitle<HTMLIFrameElement>('Model test')
+const stop = (event: Event) => event.preventDefault()
+async function startTest() {
+  window.addEventListener('submit', stop)
+  onTestFinished(() => window.removeEventListener('submit', stop))
+  await userEvent.click(testButton())
+}
+function answerTest(text: string) {
+  Object.defineProperties(frame(), {
+    contentWindow: {
+      value: { location: { href: 'http://localhost/organization/sub-agent/test' } },
+    },
+    contentDocument: { value: { body: { textContent: text } } },
+  })
+  fireEvent.load(frame())
+}
+const details = () => screen.getByText('Advanced').closest('details')!
+async function typeKey() {
+  if (!keyInput()) await userEvent.click(button('Replace'))
+  await userEvent.type(keyInput()!, 'sk')
+}
+const answered = JSON.stringify({ outcome: 'answered' })
+const ANSWERED = 'The model answered, so you can save it.'
+
+// Catches: a test that leaves the page, or goes through the router and so through its state, one
+// that loses the key that the person typed, and one that does not say it runs.
+it('a test goes into a frame of the page, and the typed key stays in its field', async () => {
+  const routed: unknown[] = []
+  renderRoute(<SubAgentPage model={model} form={form} />, {
+    action: ({ request }) => {
+      routed.push(request)
+      return null
+    },
+  })
+  await userEvent.click(button('Replace'))
+  await userEvent.type(keyInput()!, 'sk-typed')
+  expect(testButton()).toHaveAttribute('formtarget', frame().name)
+  expect(new URL(testButton().formAction).pathname).toBe('/organization/sub-agent/test')
+  // A frame name that starts with an underscore names no frame.
+  expect(frame().name).toMatch(/^[^_]/)
+  // The same document form, so the same fields as a save.
+  expect(testButton().form).toBe(
+    screen.getByRole<HTMLButtonElement>('button', { name: 'Save' }).form,
+  )
+  expect(Object.fromEntries(new FormData(testButton().form!, testButton()))).toMatchObject({
+    keyChange: 'replace',
+    apiKey: 'sk-typed',
+  })
+
+  await startTest()
+  expect(screen.getByText('Testing the model…')).toBeInTheDocument()
+  expect(testButton()).toHaveAttribute('aria-busy', 'true')
+  answerTest(answered)
+  expect(screen.getByText(ANSWERED)).toBeInTheDocument()
+  expect(screen.queryByText('Testing the model…')).toBeNull()
+  expect(keyInput()).toHaveValue('sk-typed')
+  expect(routed).toEqual([])
+})
+
+// Catches: an outcome that does not say what to do, or that says the wrong thing.
+it.each([
+  [{ outcome: 'answered' }, ANSWERED],
+  [{ outcome: 'unreachable' }, 'Check the base URL and its server, which did not answer.'],
+  [
+    { outcome: 'forbidden' },
+    'Enter a different base URL, because this deployment does not permit this server.',
+  ],
+  [
+    { outcome: 'unreadable' },
+    'Check the protocol, because Coral cannot read the answer of this server.',
+  ],
+  [
+    { outcome: 'refused', status: 401 },
+    'Check the API key, which the server refused with status 401.',
+  ],
+  [
+    { outcome: 'refused', status: 404 },
+    'Check the base URL and the model name, which the server refused with status 404.',
+  ],
+  [
+    { outcome: 'refused', status: 429 },
+    'Test again later, because the server answered with status 429.',
+  ],
+  [
+    { outcome: 'refused', status: 503 },
+    'Test again later, because the server answered with status 503.',
+  ],
+  [
+    { outcome: 'refused', status: 400 },
+    'Check the model name and the arguments, which the server refused with status 400.',
+  ],
+  [{ outcome: 'unknown' }, 'Test the model again.'],
+  [{ outcome: 'failed', message: 'Coral is not available.' }, 'Coral is not available.'],
+  ['a sign-in page', 'Reload the page before you test again.'],
+  ['{"status":"unavailable"}', 'Reload the page before you test again.'],
+])('says what to do after %j', async (result, message) => {
+  render()
+  await startTest()
+  answerTest(typeof result === 'string' ? result : JSON.stringify(result))
+  expect(screen.getByText(message)).toBeInTheDocument()
+})
+
+// Catches: the empty document that a frame starts with read as an answer.
+it('waits for an answer, and not for the frame to open', async () => {
+  render()
+  await startTest()
+  Object.defineProperties(frame(), {
+    contentWindow: { value: { location: { href: 'about:blank' } }, configurable: true },
+  })
+  fireEvent.load(frame())
+  expect(screen.getByText('Testing the model…')).toBeInTheDocument()
+})
+
+// Catches: a setting that the test refused shown away from its field, or beside one that a save
+// refused before the person corrected it.
+it('shows a setting that the test refused at its field', async () => {
+  render({ refused: { ...typed, field: 'model', message: 'A save refused this.' } })
+  await userEvent.type(keyInput()!, 'sk-typed')
+  await startTest()
+  answerTest(JSON.stringify({ outcome: 'invalid', field: 'requestArgs', message: 'Correct this.' }))
+  expect(screen.getAllByRole('alert').map((alert) => alert.textContent)).toEqual(['Correct this.'])
+  expect(screen.getByLabelText(/^Arguments/)).toBeInvalid()
+  expect(screen.getByLabelText(/^Model name/)).not.toBeInvalid()
+})
+
+// Catches: a setting that the test refused where the form does not show it: the base URL of a known
+// service, or a closed section, also one that the person closed.
+it('shows a refusal of a base URL that the form fixes', async () => {
+  render({ model: null })
+  await pick('OpenAI')
+  await userEvent.type(screen.getByLabelText(/^Model name/), 'small-2')
+  await userEvent.type(keyInput()!, 'sk')
+  await startTest()
+  answerTest(JSON.stringify({ outcome: 'invalid', field: 'baseUrl', message: 'Not permitted.' }))
+  expect(screen.getByRole('alert')).toHaveTextContent('Not permitted.')
+})
+it('opens the advanced settings on one that the test refused', async () => {
+  render()
+  details().open = false
+  await startTest()
+  answerTest(JSON.stringify({ outcome: 'invalid', field: 'requestArgs', message: 'Correct this.' }))
+  expect(details().open).toBe(true)
+  const args = screen.getByLabelText(/^Arguments/)
+  expect(args).toHaveFocus()
+  // It stays open, and keeps the focus, once the person corrects it.
+  await userEvent.type(args, ' ')
+  expect(screen.queryByRole('alert')).toBeNull()
+  expect(details().open).toBe(true)
+  expect(args).toHaveFocus()
+})
+
+// Catches: an outcome that stays beside settings it was not about, also when it arrives after the
+// person changed one.
+it.each([
+  ['the model name', () => userEvent.type(screen.getByLabelText(/^Model name/), '2')],
+  ['the arguments', () => userEvent.type(screen.getByLabelText(/^Arguments/), ' ')],
+  ['the key', () => userEvent.type(keyInput()!, '2')],
+  ['the key choice', () => userEvent.click(button('Keep the saved key'))],
+  [
+    'the service',
+    () => pick(screen.queryByRole('radio', { name: 'OpenAI', checked: true }) ? 'Other' : 'OpenAI'),
+  ],
+  [
+    'the protocol',
+    async () => {
+      await userEvent.click(screen.getByRole('button', { name: /^Protocol/ }))
+      await userEvent.click(
+        await screen.findByRole('menuitemradio', { name: 'Responses (OpenAI)' }),
+      )
+    },
+  ],
+])('a change of %s clears the outcome, and leaves a test that runs', async (_, change) => {
+  render()
+  await typeKey()
+  await startTest()
+  answerTest(answered)
+  await change()
+  expect(screen.queryByText(ANSWERED)).toBeNull()
+
+  await typeKey()
+  await startTest()
+  const left = frame()
+  await change()
+  expect(screen.queryByText('Testing the model…')).toBeNull()
+  // The frame goes with its test, so its answer cannot arrive.
+  expect(left).not.toBeInTheDocument()
 })

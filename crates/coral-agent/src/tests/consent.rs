@@ -2,7 +2,9 @@
 //! over the real factory, settings and rules.
 
 use coral_administration::{ProviderWorkflow, SubAgentModelWorkflow};
-use coral_agent_model::{AgentModel, ApiKeyChange, EnteredSettings, ModelProtocol};
+use coral_agent_model::{
+    AgentModel, ApiKeyChange, EnteredSettings, ModelProtocol, TestFailure, TestKey,
+};
 use coral_policy::{ToolAccessState, ToolPolicyModule, ToolPolicyTarget};
 use coral_search::SearchIndex;
 
@@ -273,4 +275,92 @@ async fn a_change_of_the_model_name_or_args_lets_a_running_turn_finish() {
     let wait = json!({"sub_agent_id": field(&started, "sub_agent_id"), "wait_ms": 30_000});
     let waited = result(call(&*tools, &lead.caller(), "agent", wait).await);
     assert_eq!(waited.get("answer"), Some(&json!("Twelve.")), "{waited}");
+}
+
+// Catches: a test that reads as answered when the model did not answer, one that sends Workspace
+// data or a stored key to another base URL, and one that someone else can send.
+#[tokio::test]
+async fn a_test_says_how_the_model_answered_and_keeps_a_stored_key_to_its_base_url() {
+    let lead = Lead::new().await;
+    let (settings, _tools) = lead.settings().await;
+    lead.set_model(&settings).await;
+    let user = lead.user();
+    let test = async |entered: &EnteredSettings, key| {
+        let tested = settings.models.test(&user, entered, key).await;
+        tested.unwrap()
+    };
+    let refused = |status| ResponseTemplate::new(status).set_body_json(json!({"error": "no"}));
+    for (answer, expected) in [
+        (reply("ready"), Ok(())),
+        (refused(401), Err(TestFailure::Refused(401))),
+        (refused(503), Err(TestFailure::Refused(503))),
+        (
+            ResponseTemplate::new(200).set_body_string("<html>"),
+            Err(TestFailure::Unreadable),
+        ),
+    ] {
+        lead.model.reset().await;
+        lead.model_answers(answer).await;
+        assert_eq!(test(&lead.entered(), TestKey::Stored).await, expected);
+        let [request] = &lead.model.received_requests().await.unwrap()[..] else {
+            panic!("a test sends one request, and does not retry");
+        };
+        let key = request.headers.get("authorization").unwrap();
+        assert_eq!(key, &format!("Bearer {KEY}"));
+        let body: Value = request.body_json().unwrap();
+        assert_eq!(body.get("reasoning_effort"), Some(&json!("high")));
+        let workspace = lead.workspace_id.to_string();
+        assert!(!body.to_string().contains(&workspace), "{body}");
+    }
+
+    // Another base URL, the one the model would move to, is sent no stored key.
+    let other = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(reply("ready"))
+        .mount(&other)
+        .await;
+    let moved = EnteredSettings {
+        base_url: format!("{}/v1", other.uri()),
+        ..lead.entered()
+    };
+    let entered = coral_credentials::Secret::new("entered".to_owned()).unwrap();
+    for (key, sent) in [
+        (TestKey::Stored, None),
+        (TestKey::Absent, None),
+        (TestKey::Entered(entered), Some("Bearer entered")),
+    ] {
+        other.reset().await;
+        Mock::given(any())
+            .respond_with(reply("ready"))
+            .mount(&other)
+            .await;
+        assert_eq!(test(&moved, key).await, Ok(()));
+        let [request] = &other.received_requests().await.unwrap()[..] else {
+            panic!("one request");
+        };
+        let authorization = request.headers.get("authorization");
+        assert_eq!(authorization.map(|key| key.to_str().unwrap()), sent);
+    }
+
+    let gone = EnteredSettings {
+        base_url: "http://127.0.0.1:9/v1".to_owned(),
+        ..lead.entered()
+    };
+    assert_eq!(
+        test(&gone, TestKey::Absent).await,
+        Err(TestFailure::Unreachable)
+    );
+
+    let member = provision_user(lead.database.clone(), "member", OrganizationRole::Member).await;
+    lead.model.reset().await;
+    let denied = settings
+        .models
+        .test(&member, &lead.entered(), TestKey::Stored)
+        .await;
+    let permission = coral_agent_model::Error::PermissionDenied;
+    assert!(
+        matches!(&denied, Err(error) if error.code() == permission.code()),
+        "{denied:?}"
+    );
+    assert!(lead.model.received_requests().await.unwrap().is_empty());
 }
