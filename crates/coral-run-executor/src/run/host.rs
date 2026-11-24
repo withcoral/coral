@@ -76,6 +76,8 @@ struct State {
     /// The Perform each waiting `Complete` completes, by the `Complete`'s
     /// number.
     completes: HashMap<u64, u64>,
+    /// The outputs rejected since the last request sent, by kind.
+    rejected: BTreeMap<OutputKind, u32>,
 }
 
 /// One request above the committed watermark.
@@ -105,15 +107,22 @@ impl State {
         }
     }
 
-    /// Tells Coral of an output of `kind` the Program could not keep.
-    fn reject(&self, kind: OutputKind) {
-        self.transmit(run_request::Message::OutputRejected(OutputRejected {
-            kind: kind.into(),
-        }));
+    /// Counts an output of `kind` the Program could not keep. Coral is told
+    /// just before the next request.
+    fn reject(&mut self, kind: OutputKind) {
+        let count = self.rejected.entry(kind).or_default();
+        *count = count.saturating_add(1);
     }
 
-    /// Keeps request `number` above the watermark, and sends it.
+    /// Keeps request `number` above the watermark, and sends it after the
+    /// outputs rejected since the last.
     fn hold(&mut self, number: u64, kind: request::Kind, weight: usize) {
+        for (rejected, count) in std::mem::take(&mut self.rejected) {
+            self.transmit(run_request::Message::OutputRejected(OutputRejected {
+                kind: rejected.into(),
+                count,
+            }));
+        }
         self.transmit(numbered(number, kind.clone()));
         self.unconfirmed_bytes = self.unconfirmed_bytes.saturating_add(weight);
         self.unconfirmed.insert(number, Held { kind, weight });
@@ -342,7 +351,6 @@ impl RunHost {
         let over_budget = !self.fits(&state, bytes);
         state.output = state.output.saturating_add(bytes);
         if over_budget {
-            state.reject(OutputKind::Result);
             state.end.get_or_insert(FinishEnd::OutputBudget);
         }
         drop(state);
@@ -663,7 +671,10 @@ impl coral_v8::ProgramHost for RunHost {
     }
 
     fn output_rejected(&self, kind: coral_telemetry::metric::OutputKind) {
-        self.state().reject(kind.into());
+        // A Tool result is Coral's to count, and the isolate rejects none.
+        if let Ok(kind) = kind.try_into() {
+            self.state().reject(kind);
+        }
     }
 
     fn start(&self) -> bool {

@@ -429,10 +429,10 @@ message RunRequest {
     Loaded loaded = 2;
     // One of the Program's requests.
     Request request = 3;
-    // An output the Run Executor rejected, which Coral counts. It takes no
-    // request number and is never resent: one sent while the stream is down
-    // is not counted. Send it before the Finish: Coral reads nothing after
-    // the Finish.
+    // The outputs of one kind the Run Executor rejected since its last
+    // request, which Coral counts. It takes no request number, goes just
+    // before the next request (Coral reads nothing after the Finish), and is
+    // never resent: one sent while the stream is down is not counted.
     OutputRejected output_rejected = 4;
   }
 }
@@ -665,11 +665,13 @@ enum LogLevel {
   LOG_LEVEL_ERROR = 4;
 }
 
-// An output the Run Executor rejected: too large, invalid, or over the Run
+// Outputs the Run Executor rejected: too large, invalid, or over the Run
 // Output Budget. Nothing answers it.
 message OutputRejected {
   // What the Program could not keep.
   OutputKind kind = 1;
+  // How many, at least one.
+  uint32 count = 2;
 }
 
 // A kind of Program output.
@@ -682,8 +684,6 @@ enum OutputKind {
   OUTPUT_KIND_LOG = 2;
   // The Final Value.
   OUTPUT_KIND_FINAL_VALUE = 3;
-  // A Tool Invocation's result.
-  OUTPUT_KIND_RESULT = 4;
 }
 
 // An authored source location.

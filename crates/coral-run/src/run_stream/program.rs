@@ -207,10 +207,10 @@ impl Reader {
             let request = match next.map(|next| next.message) {
                 Some(Some(run_request::Message::Request(request))) => request,
                 Some(Some(run_request::Message::OutputRejected(rejected))) => {
-                    let Ok(kind) = rejected.kind().try_into() else {
+                    let (Ok(kind), 1..) = (rejected.kind().try_into(), rejected.count) else {
                         return self.violate();
                     };
-                    coral_telemetry::metric::output_rejected(kind);
+                    coral_telemetry::metric::outputs_rejected(kind, rejected.count.into());
                     continue;
                 }
                 Some(_) => return self.violate(),

@@ -553,10 +553,10 @@ pub mod run_request {
         /// One of the Program's requests.
         #[prost(message, tag = "3")]
         Request(super::Request),
-        /// An output the Run Executor rejected, which Coral counts. It takes no
-        /// request number and is never resent: one sent while the stream is down
-        /// is not counted. Send it before the Finish: Coral reads nothing after
-        /// the Finish.
+        /// The outputs of one kind the Run Executor rejected since its last
+        /// request, which Coral counts. It takes no request number, goes just
+        /// before the next request (Coral reads nothing after the Finish), and is
+        /// never resent: one sent while the stream is down is not counted.
         #[prost(message, tag = "4")]
         OutputRejected(super::OutputRejected),
     }
@@ -853,13 +853,16 @@ pub struct Log {
     #[prost(message, optional, tag = "3")]
     pub location: ::core::option::Option<Location>,
 }
-/// An output the Run Executor rejected: too large, invalid, or over the Run
+/// Outputs the Run Executor rejected: too large, invalid, or over the Run
 /// Output Budget. Nothing answers it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct OutputRejected {
     /// What the Program could not keep.
     #[prost(enumeration = "OutputKind", tag = "1")]
     pub kind: i32,
+    /// How many, at least one.
+    #[prost(uint32, tag = "2")]
+    pub count: u32,
 }
 /// An authored source location.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -1127,8 +1130,6 @@ pub enum OutputKind {
     Log = 2,
     /// The Final Value.
     FinalValue = 3,
-    /// A Tool Invocation's result.
-    Result = 4,
 }
 impl OutputKind {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -1141,7 +1142,6 @@ impl OutputKind {
             Self::Emission => "OUTPUT_KIND_EMISSION",
             Self::Log => "OUTPUT_KIND_LOG",
             Self::FinalValue => "OUTPUT_KIND_FINAL_VALUE",
-            Self::Result => "OUTPUT_KIND_RESULT",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -1151,7 +1151,6 @@ impl OutputKind {
             "OUTPUT_KIND_EMISSION" => Some(Self::Emission),
             "OUTPUT_KIND_LOG" => Some(Self::Log),
             "OUTPUT_KIND_FINAL_VALUE" => Some(Self::FinalValue),
-            "OUTPUT_KIND_RESULT" => Some(Self::Result),
             _ => None,
         }
     }
