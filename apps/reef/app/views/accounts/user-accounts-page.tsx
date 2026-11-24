@@ -44,27 +44,10 @@ const STATUS_FILTERS: CatalogFilterOptions<PersonalAccountState | 'all'> = [
 
 const FILTER_ID = 'accounts-filter'
 
-// One fixed locale, so the server and every browser put the rows in the same order when the
-// page hydrates. It ignores case, so "github" and "Zendesk" do not split by it.
-const compareText = (a: string, b: string) => a.localeCompare(b, 'en', { sensitivity: 'base' })
-const byName = (a: UserAccountRow, b: UserAccountRow) => compareText(a.name, b.name)
-// Statuses sort by the label you read, not by the state's key.
-const byStatus = (a: UserAccountRow, b: UserAccountRow) =>
-  compareText(states[a.state].label, states[b.state].label)
-
-type SortColumn = 'provider' | 'status'
-interface Sort {
-  column: SortColumn
-  direction: 'ascending' | 'descending'
-}
-const DEFAULT_SORT: Sort = { column: 'provider', direction: 'ascending' }
-
-/** Accounts with equal statuses stay in provider order, whichever way the statuses run. */
-function sorted(rows: UserAccountRow[], { column, direction }: Sort) {
-  const way = direction === 'ascending' ? 1 : -1
-  return rows.toSorted((a, b) =>
-    column === 'provider' ? way * byName(a, b) : way * byStatus(a, b) || byName(a, b),
-  )
+const SORT_COLUMNS = {
+  provider: Table.byText((row: UserAccountRow) => row.name),
+  // Statuses sort by the label you read, not by the state's key.
+  status: Table.byText((row: UserAccountRow) => states[row.state].label),
 }
 
 /** Your own account for each provider that uses individual accounts, in one workspace. */
@@ -78,20 +61,15 @@ export function UserAccountsPage({
   const [input, setInput] = useState('')
   const [state, setState] = useState<PersonalAccountState | 'all'>('all')
   const query = filterQuery(useDeferredValue(input))
-  // Page state, so the order starts again at provider name on each visit.
-  const [sort, setSort] = useState(DEFAULT_SORT)
-  const shown = sorted(
+  // Accounts with equal statuses stay in provider order, whichever way the statuses run.
+  const sort = Table.useSort({
+    columns: SORT_COLUMNS,
+    initial: 'provider',
+    tiebreak: SORT_COLUMNS.provider.compare,
+  })
+  const shown = sort.rows(
     v.accounts.filter((row) => query.matches(row.name) && (state === 'all' || row.state === state)),
-    sort,
   )
-  const sortOf = (column: SortColumn) => (sort.column === column ? sort.direction : 'none')
-  // A column you already sort by turns around. Another column starts ascending.
-  const sortBy = (column: SortColumn) =>
-    setSort((now) => ({
-      column,
-      direction:
-        now.column === column && now.direction === 'ascending' ? 'descending' : 'ascending',
-    }))
   const table = Table.useRowCursor({ filterId: FILTER_ID })
   // A new or ended connection request refreshes the rows in place, so the filter and an
   // open connect dialog stay.
@@ -136,24 +114,12 @@ export function UserAccountsPage({
       >
         <Table.Head>
           <Table.Row>
-            <Table.Heading sort={sortOf('provider')}>
-              <Table.SortButton
-                label="Sort by provider"
-                sort={sortOf('provider')}
-                onClick={() => sortBy('provider')}
-              >
-                Provider
-              </Table.SortButton>
-            </Table.Heading>
-            <Table.Heading sort={sortOf('status')}>
-              <Table.SortButton
-                label="Sort by status"
-                sort={sortOf('status')}
-                onClick={() => sortBy('status')}
-              >
-                Status
-              </Table.SortButton>
-            </Table.Heading>
+            <Table.SortHeading sort={sort} column="provider">
+              Provider
+            </Table.SortHeading>
+            <Table.SortHeading sort={sort} column="status">
+              Status
+            </Table.SortHeading>
             <Table.Heading ariaLabel="Actions" />
           </Table.Row>
         </Table.Head>
