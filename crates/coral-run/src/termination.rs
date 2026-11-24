@@ -149,7 +149,9 @@ impl RunModule {
     /// Coral Instance as its stream's holder (its stream reopened there),
     /// [`Error::RunEnded`] when the Run is
     /// terminal already; neither writes anything. An operational error leaves
-    /// the outcome unknown, and the next attempt's read reads which it was.
+    /// the outcome unknown, and the next attempt's read reads which it was:
+    /// `attempted` carries the end an earlier attempt of this interruption
+    /// wrote, as the attempt sets it before its commit.
     pub(crate) async fn interrupt_owned_run(
         &self,
         workspace_id: &WorkspaceId,
@@ -157,6 +159,7 @@ impl RunModule {
         claim_id: &str,
         decided: Option<&RequestedTermination>,
         by: Interrupter,
+        attempted: &mut Option<RunTerminationKind>,
     ) -> Result<(), Error> {
         let mut transaction = self.database.begin().await?;
         let run = run_repository::find_exact_in_transaction(&mut transaction, workspace_id, run_id)
@@ -165,15 +168,11 @@ impl RunModule {
         if run.state.is_terminal() {
             // An earlier attempt of this very interruption may have landed
             // without an answer: the row then carries the claim it wrote and
-            // the outcome it chose, the decided termination's, else the one
-            // an older build recorded. An older build also records the
-            // termination of a Run it ended itself, so the decided one is
-            // compared first.
-            let chosen = decided
-                .map(|end| end.termination.kind)
-                .or(run.termination.map(|recorded| recorded.kind));
+            // the outcome it chose. Only that attempt knows which end it
+            // chose, the decided one or one an older build recorded, since
+            // an older build also records the end of a Run it ended itself.
             let recorded_by_us = run.execution_claim_id.as_deref() == Some(claim_id)
-                && chosen.map_or(
+                && attempted.map_or(
                     matches!(run.state, RunState::Interrupted | RunState::TimedOut),
                     |kind| run.terminal_outcome == Some(kind.outcome()),
                 );
@@ -197,7 +196,10 @@ impl RunModule {
             return Err(Error::ClaimMismatch);
         }
         let now = self.now()?.max(run.accepted_at_unix_nanos);
-        commit_end(transaction, &run, decided.cloned(), now).await
+        let (kind, ended_at) =
+            end_in_one_chunk(&mut transaction, &run, decided.cloned(), now).await?;
+        *attempted = Some(kind);
+        commit_ended(transaction, &run, kind, ended_at).await
     }
 
     /// [`Self::interrupt_owned_run`] until it lands: the last write a Run
@@ -215,9 +217,10 @@ impl RunModule {
     ) -> Result<(), Error> {
         let run_id = held.run_id();
         let mut backoff = crate::execution::Backoff::new(held, "interruption");
+        let mut attempted = None;
         loop {
             match self
-                .interrupt_owned_run(workspace_id, run_id, claim_id, decided, by)
+                .interrupt_owned_run(workspace_id, run_id, claim_id, decided, by, &mut attempted)
                 .await
             {
                 Err(fenced @ (Error::ClaimMismatch | Error::RunEnded)) => return Err(fenced),
@@ -304,6 +307,17 @@ pub(crate) async fn commit_end(
     now_unix_nanos: i64,
 ) -> Result<(), Error> {
     let (kind, ended_at) = end_in_one_chunk(&mut transaction, run, decided, now_unix_nanos).await?;
+    commit_ended(transaction, run, kind, ended_at).await
+}
+
+/// Commits the chunk [`end_in_one_chunk`] built in `transaction`, and traces
+/// the Run's end (a Run that never started as unstarted).
+async fn commit_ended(
+    transaction: Transaction<'_>,
+    run: &RunRecord,
+    kind: RunTerminationKind,
+    ended_at: i64,
+) -> Result<(), Error> {
     transaction.commit().await?;
     let outcome = kind.outcome();
     let end = if run.execution_started() {

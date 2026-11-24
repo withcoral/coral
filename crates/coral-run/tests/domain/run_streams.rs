@@ -716,28 +716,50 @@ async fn a_programs_own_end_ends_its_run_in_one_chunk_with_no_grace() {
 }
 
 /// Catches: a retried end whose first write landed with no answer read as
-/// another writer's, so the stream never hears how its Run ended; or another
-/// writer's end read as its own, a cancellation an older build wrote with
-/// its termination among them.
+/// another writer's, so the stream never hears how its Run ended, the end of
+/// an older build's recorded intent among them; or another writer's end read
+/// as its own, a cancellation an older build wrote with its termination
+/// among them.
 #[tokio::test]
 async fn a_retried_end_recognizes_only_the_end_it_wrote() {
     use crate::lifecycle::{RequestedTermination, RunTerminationKind as Kind};
-    for (first, retried, recognized) in [
-        (Some(Kind::CpuLimitExceeded), Kind::CpuLimitExceeded, true),
+    /// How the Run ended before the retried attempt reads it.
+    #[derive(Debug)]
+    enum First {
+        /// An earlier attempt of the same end landed.
+        Ours(Kind),
+        /// Another end, written by another call.
+        Other(Kind),
+        /// An older build's cancellation, with its termination recorded.
+        OlderCancel,
+        /// An earlier attempt ended an older build's recorded intent.
+        OlderIntent(Kind),
+    }
+    for (first, decided, recognized) in [
         (
-            Some(Kind::MemoryLimitExceeded),
+            First::Ours(Kind::CpuLimitExceeded),
+            Kind::CpuLimitExceeded,
+            true,
+        ),
+        (
+            First::Ours(Kind::MemoryLimitExceeded),
             Kind::MemoryLimitExceeded,
             true,
         ),
-        (Some(Kind::TimedOut), Kind::TimedOut, true),
+        (First::Ours(Kind::TimedOut), Kind::TimedOut, true),
         (
-            Some(Kind::CpuLimitExceeded),
+            First::Other(Kind::CpuLimitExceeded),
             Kind::MemoryLimitExceeded,
             false,
         ),
-        (None, Kind::CpuLimitExceeded, false),
+        (First::OlderCancel, Kind::CpuLimitExceeded, false),
+        (
+            First::OlderIntent(Kind::CpuLimitExceeded),
+            Kind::MemoryLimitExceeded,
+            true,
+        ),
     ] {
-        let case = format!("{first:?}, then {retried:?}");
+        let case = format!("{first:?}, then {decided:?}");
         let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
         let runs = fixture.runs.clone();
         let tool = fixture.user_tool("user:retried-end", "A retried end").await;
@@ -745,7 +767,7 @@ async fn a_retried_end_recognizes_only_the_end_it_wrote() {
         let run = fixture.run_record(&tool.workspace_id, &run_id).await;
         let claim = run.execution_claim_id.clone().expect("a claimed Run");
         let at = run.execution_started_at_unix_nanos.expect("the start mark");
-        let end = async |kind: Kind| {
+        let end = async |kind: Kind, attempted: &mut Option<Kind>| {
             let decided = RequestedTermination::unrequested(kind, at).expect("an end");
             runs.interrupt_owned_run(
                 &tool.workspace_id,
@@ -753,33 +775,43 @@ async fn a_retried_end_recognizes_only_the_end_it_wrote() {
                 &claim,
                 Some(&decided),
                 crate::termination::Interrupter::Owner,
+                attempted,
             )
             .await
         };
-        if let Some(kind) = first {
-            end(kind).await.expect("the first write");
-        } else {
-            runs.cancel(
-                &tool.principal,
-                &tool.workspace_id,
-                &run_id,
-                &immediate(None, 100),
-            )
-            .await
-            .expect("cancel the Run");
-            // The termination an older build wrote with its cancellation.
+        let recorded = async |kind: &str| {
             assert_eq!(
                 fixture
                     .inject_fault(&format!(
-                        "UPDATE program_run_records SET termination_kind = 'canceled', \
+                        "UPDATE program_run_records SET termination_kind = '{kind}', \
                          termination_started_at_unix_nanos = {at}, \
                          termination_deadline_at_unix_nanos = {at} WHERE id = '{run_id}'"
                     ))
                     .await,
                 1
             );
+        };
+        let mut attempted = None;
+        match &first {
+            First::Ours(kind) => end(*kind, &mut attempted).await.expect("the first write"),
+            First::Other(kind) => end(*kind, &mut None).await.expect("another end"),
+            First::OlderCancel => {
+                runs.cancel(
+                    &tool.principal,
+                    &tool.workspace_id,
+                    &run_id,
+                    &immediate(None, 100),
+                )
+                .await
+                .expect("cancel the Run");
+                recorded("canceled").await;
+            }
+            First::OlderIntent(kind) => {
+                recorded(kind.as_storage_str()).await;
+                end(decided, &mut attempted).await.expect("the first write");
+            }
         }
-        let answer = end(retried).await;
+        let answer = end(decided, &mut attempted).await;
         if recognized {
             assert!(answer.is_ok(), "{case}: {answer:?}");
         } else {
@@ -908,6 +940,7 @@ async fn a_stream_owner_writes_no_interruption_once_another_instance_holds_the_s
             &claim,
             None,
             crate::termination::Interrupter::Owner,
+            &mut None,
         )
         .await;
 
