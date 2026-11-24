@@ -13,8 +13,8 @@ use crate::testing::{
 };
 use crate::wire::v1::{
     Awaited, Committed, Complete, CoralFailure, Emit, Fatal, Finish, FinishEnd, InvocationResult,
-    Invoke, LinkedSnapshot, LinkedToolRoot, Loaded, Location, Log, LogLevel, Permitted, Request,
-    Started, Terminate, TerminateReason, Threw, UpstreamOutcome, complete, finish,
+    Invoke, LinkedSnapshot, LinkedToolRoot, Loaded, Location, Log, LogLevel, OutputKind, Permitted,
+    Request, Started, Terminate, TerminateReason, Threw, UpstreamOutcome, complete, finish,
     invocation_result, request,
 };
 use crate::{CompilerClient as _, InProcessCompiler};
@@ -173,6 +173,15 @@ async fn next_request(run: &mut RunCall) -> (u64, request::Kind) {
             kind: Some(kind),
         })) => (number, kind),
         other => panic!("expected a request, got {other:?}"),
+    }
+}
+
+/// The kind and the count of the `OutputRejected` the Run Executor sends
+/// next.
+async fn next_rejected(run: &mut RunCall) -> (OutputKind, u32) {
+    match run.next().await {
+        Some(run_request::Message::OutputRejected(rejected)) => (rejected.kind(), rejected.count),
+        other => panic!("expected a rejected output, got {other:?}"),
     }
 }
 
@@ -485,20 +494,25 @@ async fn an_answer_of_the_wrong_kind_closes_the_stream() {
 }
 
 /// Catches: an Emission or Log over the package's limits that reaches Coral,
-/// or one the Program cannot catch.
+/// one the Program cannot catch, or one Coral is not told of, once per kind
+/// before the next request.
 #[tokio::test]
 async fn a_value_over_its_limit_throws_at_the_call() {
     let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
     let source = r#"const caught: string[] = [];
-try { await coral.emit("x".repeat(100)); } catch (error) { caught.push((error as Error).name); }
+for (let i = 0; i < 2; i++) {
+  try { await coral.emit("x".repeat(100)); } catch (error) { caught.push((error as Error).name); }
+}
 try { console.log("y".repeat(70_000)); } catch (error) { caught.push((error as Error).name); }
 return caught;"#;
     let mut package = compiled(source).await;
     package.value_limits.as_mut().unwrap().host_bytes = 64;
     let mut run = started(&mut coral, package, None).await;
     let value = finish(finish::Completion::ValueJson(
-        r#"["RangeError","RangeError"]"#.to_owned(),
+        r#"["RangeError","RangeError","RangeError"]"#.to_owned(),
     ));
+    assert_eq!(next_rejected(&mut run).await, (OutputKind::Emission, 2));
+    assert_eq!(next_rejected(&mut run).await, (OutputKind::Log, 1));
     assert_eq!(next_request(&mut run).await, (1, value));
 }
 
@@ -558,14 +572,15 @@ return await coral.private.big.make();"#;
 }
 
 /// Catches: an Output Budget that leaves out an `InvocationResult`'s bytes,
-/// or an end the Program can catch.
+/// an end the Program can catch, or an output over it that Coral is not
+/// told of.
 #[tokio::test]
 async fn output_over_the_run_output_budget_ends_the_run() {
-    let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
     let source = r#"await coral.providers.tracker.issues.list({});
 await coral.emit("12345");
 try { await coral.emit("1234567890"); } catch { return "caught"; }
 return "kept";"#;
+    let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
     let mut package = compiled(source).await;
     package.value_limits.as_mut().unwrap().run_output_bytes = 20;
     let mut run = started(&mut coral, package, None).await;
@@ -579,6 +594,7 @@ return "kept";"#;
     // 5 + 7 bytes fit in 20; 12 more do not, but without the result's 5
     // they would.
     assert_eq!(next_request(&mut run).await, (2, emit(r#""12345""#, 2)));
+    assert_eq!(next_rejected(&mut run).await, (OutputKind::Emission, 1));
     let end = finish_end(FinishEnd::OutputBudget);
     assert_eq!(next_request(&mut run).await, (3, end));
 }
@@ -590,12 +606,18 @@ async fn a_final_value_counts_against_the_run_output_budget() {
     let program = compiled("await coral.emit(\"12345\");\nreturn \"1234567\";").await;
     let value = finish(finish::Completion::ValueJson(r#""1234567""#.to_owned()));
     // The Emission's 7 bytes and the Final Value's 9 fill 16 exactly.
-    for (budget, expected) in [(16, value), (15, finish_end(FinishEnd::OutputBudget))] {
+    let over = finish_end(FinishEnd::OutputBudget);
+    for (budget, rejected, expected) in
+        [(16, None, value), (15, Some(OutputKind::FinalValue), over)]
+    {
         let (mut coral, _call, _retire) = linked(APPLIED_CAP_BYTES).await;
         let mut package = program.clone();
         package.value_limits.as_mut().unwrap().run_output_bytes = budget;
         let mut run = started(&mut coral, package, None).await;
         assert_eq!(next_request(&mut run).await, (1, emit(r#""12345""#, 1)));
+        if let Some(rejected) = rejected {
+            assert_eq!(next_rejected(&mut run).await, (rejected, 1));
+        }
         assert_eq!(
             next_request(&mut run).await,
             (2, expected),

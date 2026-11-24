@@ -116,6 +116,11 @@ runtime.
   an Emit or a Log: the Run Executor checks the value against the package's value limits, counts the Run Output Budget
   and fails the Run when it is exceeded, and pauses the Program's next request while more than the Applied cap is
   unconfirmed; Coral confirms at commit. Every kind of Run Executor settles Emit and Log the same way.
+- **A rejected output is counted in Coral.** The Run Executor counts each Emission, Log or Final Value it rejects (too
+  large, invalid, or past the Run Output Budget). Just before its next request, the Finish included, it sends one
+  unnumbered OutputRejected for each kind it rejected since its last request, with the count. Coral counts it in its
+  metrics. It is never resent, so one sent while the stream is down is not counted. Coral counts a Tool result it
+  refuses itself.
 - **A Private or Shared Tool call is a code-performed Invoke ([ADR 0034](0034-every-callable-is-a-tool.md)).**
   - **The Invoke** names the tool and, for a Shared Tool, its revision. Every Invoke that a tool's body makes carries
     its parent Invocation; an Invoke from the Program itself or from module-level code carries none. Coral refuses an
@@ -301,9 +306,10 @@ Executors roll apart from Coral.
   use a new global two releases after the Run Executor gains it, and stops two releases before the Run Executor drops
   it. Only a removed global matters, and the Run then fails as a Program that uses a missing global.
 - The rule applies from the release in which Coral accepts dial-ins from Run Executors it did not start, the first
-  after v1.10.0. Before it, every Run Executor is a child of the same binary. A Run Executor from v1.8.0 also reports
-  level 1 but has no Run stream, so it cannot execute a Run. An operator runs no Run Executor older than v1.9.0
-  beside a later Coral.
+  after v1.10.0. Before it, every Run Executor is a child of the same binary. A message or field added in that
+  release takes one step, because no earlier Coral serves a Run stream to a Run Executor that it did not start;
+  OutputRejected took one. A Run Executor from v1.8.0 also reports level 1 but has no Run stream, so it cannot execute
+  a Run. An operator runs no Run Executor older than v1.9.0 beside a later Coral.
 - `scripts/check-protocol-level.sh`, in `make rust-checks`, compares the messages, as Buf builds them, and the
   globals' allow-list with the newest release's, and fails unless a change raised the level by exactly one.
 
