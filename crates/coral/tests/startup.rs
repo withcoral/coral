@@ -667,10 +667,9 @@ fn a_dialed_run_executor_compiles_and_runs_with_local_children_off() {
     assert_no_child(&runtime);
 }
 
-/// Catches: a full fleet that starts a local child with children off, or
-/// work that a full Run Executor takes, or that never runs once room frees.
-/// A compile holds a unit of room too, so the new Program waits for room
-/// before it is a Run.
+/// Catches: a full fleet that starts a local child with children off, work
+/// that a full Run Executor takes or that never runs once room frees, or a
+/// new Program that waits for room to compile instead of waiting as a Run.
 #[cfg(unix)]
 #[test]
 fn a_full_fleet_leaves_work_waiting_and_starts_no_child() {
@@ -683,23 +682,30 @@ fn a_full_fleet_leaves_work_waiting_and_starts_no_child() {
         r#"{"goal":"Hold the room","intent":"Hold the room","program":"while (true) {}","wait_ms":200}"#,
     ));
     block_on(composed::started_on_a_run_executor(&state_root, &spinning));
-    let waiting = std::thread::spawn({
-        let url = url.clone();
-        move || {
-            exec_over_mcp(
-                url,
-                r#"{"goal":"Wait for room","intent":"Wait for room","program":"return 1;"}"#,
-            )
-        }
-    });
+    // The new Program compiles on the full fleet, and its Run waits: no
+    // wait for room to compile, which would fail it after 30 s (#3409).
+    let accepted = exec_over_mcp(
+        url.clone(),
+        r#"{"goal":"Wait for room","intent":"Wait for room","program":"return 1;","wait_ms":200}"#,
+    );
+    assert!(accepted.contains(r#""state":"running""#), "{accepted}");
+    let waiting = run_id_in(&accepted);
     // Several take periods and the children's request backstop pass.
-    std::thread::sleep(Duration::from_secs(3));
-    assert!(!waiting.is_finished(), "work ran on a full fleet");
+    let wait = |wait_ms: u32| {
+        let arguments = format!(r#"{{"run_id":"{waiting}","wait_ms":{wait_ms}}}"#);
+        call_over_mcp(url.clone(), "wait", &arguments)
+    };
+    let still = wait(3000);
+    assert!(
+        still.contains(r#""state":"running""#),
+        "work ran on a full fleet: {still}"
+    );
     assert_no_child(&runtime);
 
-    let cancelled = call_over_mcp(url, "cancel", &format!(r#"{{"run_id":"{spinning}"}}"#));
+    let cancel = format!(r#"{{"run_id":"{spinning}"}}"#);
+    let cancelled = call_over_mcp(url.clone(), "cancel", &cancel);
     assert!(!cancelled.contains(r#""isError":true"#), "{cancelled}");
-    let body = waiting.join().expect("the waiting exec");
+    let body = wait(30_000);
     assert!(
         body.contains(r#""final_value":{"kind":"value","value":1}"#),
         "{body}"

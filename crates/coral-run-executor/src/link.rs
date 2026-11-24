@@ -425,18 +425,16 @@ impl Link {
         }
     }
 
-    /// The units of room free while this stream's `compiling` compiles hold
-    /// a unit each: none while it retires. A `Taken` or a `Compile` that
-    /// crossed a report of none holds a unit above the room.
-    fn free(&self, compiling: u32) -> u32 {
+    /// The units of room free for Runs: none while it retires. Compiles
+    /// take none, since they run on the one warm compiler, not in a Run's
+    /// room. A `Taken` that crossed a report of none holds a unit above the
+    /// room.
+    fn free(&self) -> u32 {
         let holding = *self.runs.holding.borrow();
         if holding.retiring {
             return 0;
         }
-        self.hello
-            .free
-            .saturating_sub(holding.held)
-            .saturating_sub(compiling)
+        self.hello.free.saturating_sub(holding.held)
     }
 
     /// Opens the pull stream again each time it ends, until it has retired,
@@ -515,7 +513,7 @@ impl Link {
         let (outbound, requests) = mpsc::channel(1);
         let hello = PullRequest {
             message: Some(pull_request::Message::Hello(Hello {
-                free: self.free(0),
+                free: self.free(),
                 ..self.hello.clone()
             })),
         };
@@ -602,7 +600,7 @@ impl Link {
         let (queue, queued) = mpsc::unbounded_channel();
         let (answered, mut answers) = mpsc::unbounded_channel();
         tokio::spawn(serve(Arc::clone(&self.compiler), queued, answered));
-        // A compile holds one unit of room from Compile to Compiled.
+        // The compiles from Compile to Compiled, which the retire waits for.
         let mut compiling: u32 = 0;
         loop {
             let welcomed = *self.linked.borrow();
@@ -626,7 +624,7 @@ impl Link {
                 () = self.runs.freed.notified(), if welcomed && !retiring => {
                     let room = PullRequest {
                         message: Some(pull_request::Message::Room(Room {
-                            free: self.free(compiling),
+                            free: self.free(),
                         })),
                     };
                     if outbound.send(room).await.is_err() {
@@ -687,8 +685,13 @@ impl Link {
                         None => return End::Failed,
                     };
                     compiling = compiling.saturating_sub(1);
-                    // While it retires, the room stays none.
-                    let free = self.free(compiling);
+                    // While it retires, the room stays none. A Coral Instance
+                    // of the release before spends a unit of room on each
+                    // compile, and this report gives it back: it replaces that
+                    // count with the Runs this Run Executor can take. Such a
+                    // Coral can then queue another compile while one still
+                    // runs, which waits its turn within its own time left.
+                    let free = self.free();
                     for message in [
                         pull_request::Message::Compiled(compiled),
                         pull_request::Message::Room(Room { free }),

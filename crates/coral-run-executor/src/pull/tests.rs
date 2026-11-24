@@ -96,6 +96,26 @@ pub(crate) fn dialed_stream(streams: &PullStreams, free: u32) -> (StreamId, Sent
     streams.scripted("a-run-executor", free)
 }
 
+/// A dialed stream with room for no Run whose compiler is busy, as
+/// [`fill_compile`] leaves it. `let_go` frees a unit.
+pub(crate) fn busy_stream(streams: &PullStreams) -> (StreamId, Sent) {
+    let (stream, sent) = dialed_stream(streams, 0);
+    fill_compile(streams, stream);
+    (stream, sent)
+}
+
+/// Holds every unit of `stream`'s compile room still free, as callers that
+/// wait for a compiler do. The stream must take sends.
+pub(crate) fn fill_compile(streams: &PullStreams, stream: StreamId) {
+    loop {
+        match streams.hold_compile(stream) {
+            Ok(()) => {}
+            Err(Refused::NoRoom) => return,
+            Err(refused) => panic!("{stream:?} takes no hold: {refused}"),
+        }
+    }
+}
+
 /// What `answer` receives, or an error once its stream ends unanswered.
 async fn answer_within(answer: oneshot::Receiver<Read>) -> Result<Read, oneshot::error::RecvError> {
     timeout(Duration::from_secs(5), answer)
@@ -420,11 +440,14 @@ fn a_take_sends_on_the_units_it_held_and_frees_the_rest() {
     }
 }
 
+// Catches: a compile that spends the room the Run Executor reports for
+// Runs, so a full set of Runs stops every compile; or compile room that a
+// room report changes, or that an answer does not free.
 #[tokio::test]
-async fn sends_spend_the_room_and_a_report_replaces_it() {
+async fn runs_spend_the_reported_room_and_compiles_spend_their_own() {
     let link = start(Timing::default()).await;
     let channel = link.connect().await;
-    let hello = hello(PROTOCOL_LEVEL, 3);
+    let hello = hello(PROTOCOL_LEVEL, 2);
     let id = hello.run_executor_id.clone();
     let mut pull = link.welcomed(&channel, hello).await;
     let stream = link.held(&id, |_| true).await.stream;
@@ -434,29 +457,43 @@ async fn sends_spend_the_room_and_a_report_replaces_it() {
         runs: vec![run(1), run(2)],
     };
     assert_eq!(pull.next().await.unwrap(), Some(Down::Taken(taken)));
-    let answer = link.streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
-    let first = compile(1, TIME_LEFT_MS);
-    assert_eq!(pull.next().await.unwrap(), Some(Down::Compile(first)));
-    // Three units sent: nothing more goes.
-    assert_eq!(link.held(&id, |_| true).await.free, 0);
     assert_eq!(
         link.streams.take(stream, vec![run(3)]),
         Err(Refused::NoRoom)
     );
+    // The Runs fill the room, and the compiles still go, up to their own.
+    let mut answers = Vec::new();
+    for number in 1..=u64::from(COMPILE_ROOM) {
+        answers.push(link.streams.compile(stream, TIME_LEFT_MS, call()).unwrap());
+        let sent = compile(number, TIME_LEFT_MS);
+        assert_eq!(pull.next().await.unwrap(), Some(Down::Compile(sent)));
+    }
+    assert_eq!(link.held(&id, |_| true).await.free, 0);
+    assert_eq!(link.streams.compile_room(stream), 0);
     assert_eq!(
         link.streams.compile(stream, TIME_LEFT_MS, call()).err(),
         Some(Refused::NoRoom)
     );
 
-    pull.send(Up::Room(Room { free: 2 })).await;
-    link.held(&id, |held| held.free == 2).await;
+    pull.send(Up::Room(Room { free: 1 })).await;
+    link.held(&id, |held| held.free == 1).await;
+    assert_eq!(
+        link.streams.compile_room(stream),
+        0,
+        "a report leaves compile room"
+    );
     pull.send(Up::Compiled(compiled(1))).await;
-    assert!(matches!(answer_within(answer).await, Ok(Read::Package(_))));
-    // An answer frees nothing; the next report does.
+    assert!(matches!(
+        answer_within(answers.remove(0)).await,
+        Ok(Read::Package(_))
+    ));
+    // The answer reached its caller, so its unit is free.
+    assert_eq!(link.streams.compile_room(stream), 1);
+    let answered = link.held(&id, |_| true).await;
+    assert_eq!(answered.free, 1, "an answer frees no room for Runs");
     link.streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
-    assert_eq!(link.held(&id, |_| true).await.free, 1);
-    let second = compile(2, TIME_LEFT_MS);
-    assert_eq!(pull.next().await.unwrap(), Some(Down::Compile(second)));
+    let next = compile(u64::from(COMPILE_ROOM) + 1, TIME_LEFT_MS);
+    assert_eq!(pull.next().await.unwrap(), Some(Down::Compile(next)));
 }
 
 #[test]
@@ -479,7 +516,7 @@ fn a_compile_past_the_link_bound_is_refused_alone() {
         Some(mpsc::error::TryRecvError::Empty)
     );
     assert!(!streams.compiles_in_flight(stream));
-    assert_eq!(streams.held().first().map(|held| held.free), Some(1));
+    assert_eq!(streams.compile_room(stream), COMPILE_ROOM);
     streams.compile(stream, TIME_LEFT_MS, call()).unwrap();
     let next = sent.try_recv().unwrap().unwrap();
     assert_eq!(next.message, Some(Down::Compile(compile(1, TIME_LEFT_MS))));
