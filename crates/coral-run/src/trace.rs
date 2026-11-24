@@ -110,14 +110,12 @@ pub(crate) fn claim(claim_id: &str) -> Option<uuid::Uuid> {
     uuid::Uuid::parse_str(claim_id).ok()
 }
 
-/// Counts a Run accepted for `principal`, and its acceptance as an
-/// uncontested `accept` claim, which a take follows.
+/// Counts a Run accepted for `principal`.
 pub(crate) fn record_run_accepted(principal: &coral_workspace::Principal) {
     metric::run_accepted(match principal.kind() {
         coral_workspace::PrincipalKind::User => metric::PrincipalKind::User,
         coral_workspace::PrincipalKind::Agent => metric::PrincipalKind::Agent,
     });
-    metric::run_claimed(metric::ClaimKind::Accept, metric::ClaimOutcome::Won);
 }
 
 /// How a Run's committed terminal write ended it, as its end records it.

@@ -25,12 +25,12 @@ use opentelemetry::{InstrumentationScope, KeyValue};
 mod attribute;
 
 pub use attribute::{
-    AcquisitionOperation, AcquisitionOutcome, ClaimKind, ClaimOutcome, CompactionOutcome,
-    CompileOutcome, CompilerBuildOutcome, CompilerBuildReason, CompilerOperation, CompilerOutcome,
-    CompilerRole, DbSystem, DropReason, EmbedBatchOutcome, GateKind, Interface, InvocationEnd,
-    ModelCallOutcome, OutputKind, PrincipalKind, ProviderProtocol, RequestOutcome, RunPhase,
-    RunStatus, SecretStoreRead, SignalKind, SubAgentTurnOutcome, TerminationReason, TokenType,
-    ToolEffect, TransactionOutcome, UpstreamOutcome, VisibilityPath,
+    AcquisitionOperation, AcquisitionOutcome, CompactionOutcome, CompileOutcome,
+    CompilerBuildOutcome, CompilerBuildReason, CompilerOperation, CompilerOutcome, CompilerRole,
+    DbSystem, DropReason, EmbedBatchOutcome, GateKind, Interface, InvocationEnd, ModelCallOutcome,
+    OutputKind, PrincipalKind, ProviderProtocol, RequestOutcome, RunPhase, RunStatus,
+    SecretStoreRead, SignalKind, SubAgentTurnOutcome, TerminationReason, TokenType, ToolEffect,
+    TransactionOutcome, UpstreamOutcome, VisibilityPath,
 };
 
 /// Histogram bounds for a duration in seconds, from 5 ms to an hour.
@@ -127,7 +127,6 @@ struct Catalog {
     search_index_recovery_duration: Histogram<f64>,
     output_size: Histogram<u64>,
     output_rejections: Counter<u64>,
-    run_claims: Counter<u64>,
     secret_store_read_duration: Histogram<f64>,
     sub_agent_turn_ended: Counter<u64>,
     sub_agent_turn_duration: Histogram<f64>,
@@ -590,11 +589,6 @@ impl Metrics {
                 "coral.secret_store.read.duration",
                 "How long one read from a Secret Store took, by its outcome.",
             ),
-            run_claims: counter(
-                "coral.run.claims",
-                "{claim}",
-                "Claims a Coral Instance made to own a Program Run.",
-            ),
             sub_agent_turn_ended: counter(
                 "coral.sub_agent.turn.ended",
                 "{turn}",
@@ -1040,19 +1034,6 @@ pub fn run_phase(phase: RunPhase) -> Timer {
 #[must_use = "the Run counts as active until the level drops"]
 pub fn run_active() -> LevelGuard {
     LevelGuard::start(Live::Run)
-}
-
-/// Counts one claim of `claim` kind to own a Program Run, by its outcome.
-pub fn run_claimed(claim: ClaimKind, outcome: ClaimOutcome) {
-    with(|catalog| {
-        catalog.run_claims.add(
-            1,
-            &[
-                KeyValue::new("operation", claim.as_str()),
-                KeyValue::new("outcome", outcome.as_str()),
-            ],
-        );
-    });
 }
 
 /// Records one read from a Secret Store. Nothing here carries the store's name,

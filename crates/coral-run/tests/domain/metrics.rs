@@ -90,10 +90,6 @@ async fn a_run_records_its_acceptance_claims_phases_and_end() {
         owned(&[("outcome=ok", 1)])
     );
     assert_eq!(
-        counts(&metrics, "coral.run.claims"),
-        owned(&[("operation=accept,outcome=won", 1)])
-    );
-    assert_eq!(
         counts(&metrics, "coral.run.phase.duration"),
         owned(&[("run.phase=complete", 1), ("run.phase=execute", 1)])
     );

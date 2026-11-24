@@ -206,12 +206,6 @@ const CATALOG: &[(&str, &str, &str, &[&str])] = &[
         &["output.kind"],
     ),
     (
-        "coral.run.claims",
-        "counter",
-        "{claim}",
-        &["operation", "outcome"],
-    ),
-    (
         "coral.secret_store.read.duration",
         "histogram",
         "s",
@@ -305,7 +299,6 @@ fn record_each(metrics: &Metrics) -> (Option<PoolObservation>, Option<SearchObse
     );
     drop(run_phase(RunPhase::Execute));
     let active = run_active();
-    run_claimed(ClaimKind::Accept, ClaimOutcome::Won);
     secret_store_read(
         "kv_v2",
         SecretStoreRead::EntryNotFound,

@@ -1,5 +1,5 @@
 //! The bounded values of the catalog's attributes. A release can add a
-//! value, but never rename or remove one.
+//! value. Renaming or removing one is a breaking change.
 
 /// Declares a bounded attribute: an enum whose variants each name one value.
 macro_rules! attribute {
@@ -97,22 +97,6 @@ attribute! {
         Execute => "execute",
         Complete => "complete",
         Terminate => "terminate",
-    }
-}
-
-attribute! {
-    /// A claim to own a Program Run, for `operation`.
-    ClaimKind {
-        /// The Run's acceptance.
-        Accept => "accept",
-    }
-}
-
-attribute! {
-    /// Whether a claim won the Run, for `outcome`.
-    ClaimOutcome {
-        Won => "won",
-        Lost => "lost",
     }
 }
 
