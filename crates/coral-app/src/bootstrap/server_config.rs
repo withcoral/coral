@@ -235,7 +235,7 @@ impl LoadedServerConfig {
                 (mcp_http, auth_bind_addr, Some(session_auth))
             }
         };
-        let run_executor = listeners.run_executor.validate(session_auth.is_some())?;
+        let run_executor = listeners.run_executor.validate()?;
         let human_interface = human_interface(
             listeners.web,
             session_auth.is_some(),
@@ -1005,9 +1005,10 @@ struct RunExecutorListenerConfig {
 const RUN_EXECUTOR_TOKEN_ENV: &str = "listeners.run_executor.token_env";
 
 impl RunExecutorListenerSettings {
-    /// Checks the section without reading a token. Without `[auth]`
-    /// (`authenticated` false) its bind must be loopback.
-    fn validate(self, authenticated: bool) -> Result<RunExecutorListenerConfig, AppError> {
+    /// Checks the section without reading a token. Off loopback it needs an
+    /// operator token, with or without `[auth]`: Coral admits a Run Executor
+    /// by its token, never by the network it dials from (ADR 0027).
+    fn validate(self) -> Result<RunExecutorListenerConfig, AppError> {
         const SETTING: &str = RUN_EXECUTOR_TOKEN_ENV;
         const BIND: &str = "listeners.run_executor.bind";
         let names = match self.token_env {
@@ -1021,16 +1022,11 @@ impl RunExecutorListenerSettings {
                 ));
             }
         };
-        if !is_loopback_ip(self.bind.ip()) {
-            if !authenticated {
-                return Err(refused_without_auth(BIND, "must be loopback"));
-            }
-            if names.is_empty() {
-                return Err(refused(
-                    BIND,
-                    format_args!("off loopback requires {SETTING}"),
-                ));
-            }
+        if !is_loopback_ip(self.bind.ip()) && names.is_empty() {
+            return Err(refused(
+                BIND,
+                format_args!("off loopback requires {SETTING}"),
+            ));
         }
         let token_env = names
             .iter()
@@ -2690,10 +2686,8 @@ client_secret = 'test-secret'
         let env = [("TOKEN_A", token.as_str()), ("TOKEN_B", token.as_str())];
         let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
         let public = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 50052));
-        let remote = authenticated(
-            &format!("{MCP}{PUBLIC_RUN_EXECUTORS}token_env = 'TOKEN_A'\n"),
-            "",
-        );
+        let remote = format!("{PUBLIC_RUN_EXECUTORS}token_env = 'TOKEN_A'\n");
+        let remote_with_auth = authenticated(&format!("{MCP}{remote}"), "");
         for (raw, bind, tokens) in [
             (String::new(), loopback, 0),
             (
@@ -2707,6 +2701,7 @@ client_secret = 'test-secret'
                 2,
             ),
             (remote, public, 1),
+            (remote_with_auth, public, 1),
         ] {
             let listener = run_executor_listener(&raw, &env).expect(&raw);
             assert_eq!(
@@ -2718,8 +2713,7 @@ client_secret = 'test-secret'
     }
 
     #[test]
-    fn the_run_executor_listener_refuses_to_boot_without_a_usable_token_or_off_loopback_without_auth()
-     {
+    fn the_run_executor_listener_refuses_to_boot_without_a_usable_token() {
         let short = "t".repeat(31);
         let spaced = format!("{} t", "t".repeat(31));
         let env = [("SHORT", short.as_str()), ("SPACED", spaced.as_str())];

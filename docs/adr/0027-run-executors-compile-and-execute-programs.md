@@ -43,11 +43,11 @@ runtime.
   Compose network or a cluster and TLS-terminated in front of Coral where it leaves them. The Run Executor never learns how many Coral
   Instances there are, and Coral keeps no list of them. Every stream the Run Executor opens rides its current
   connection, and every call carries its credential as bearer metadata.
-- **Coral listens for Run Executors on a listener of its own**, with the rules of its other listeners. It closes each
-  connection after a maximum age: its HTTP/2 GOAWAY stops new streams on it, open Run streams finish where they are, and
-  the next streams open on a new connection, which may land on another Coral Instance. Coral moves one stream by ending
-  its side of it cleanly, with an OK status and no message; the Run Executor reopens that stream at once on its current
-  connection. Any other end means a redial with back-off.
+- **Coral listens for Run Executors on a listener of its own**, which admits a Run Executor by its credential alone
+  (see Authority). It closes each connection after a maximum age: its HTTP/2 GOAWAY stops new streams on it, open Run
+  streams finish where they are, and the next streams open on a new connection, which may land on another Coral
+  Instance. Coral moves one stream by ending its side of it cleanly, with an OK status and no message; the Run Executor
+  reopens that stream at once on its current connection. Any other end means a redial with back-off.
 - **Keepalive on both sides.** A peer that stops answering its keepalive closes the connection.
 - **The protocol level is checked on every stream open.** A side that sees a level more than one apart closes that
   stream and logs both levels; Coral keeps nothing per connection. A message that breaks the protocol ends the stream

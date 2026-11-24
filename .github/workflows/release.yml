@@ -626,8 +626,9 @@ jobs:
             echo "coral-web=${coral_web}"
           } >> "$GITHUB_OUTPUT"
 
-      # Runs the runtime, coral-web, and the pair with coral-web in the runtime's
-      # network namespace, against the pushed digests.
+      # Runs the runtime, coral-web, the pair with coral-web in the runtime's
+      # network namespace, and a Run Executor dialing the runtime across a
+      # container network, against the pushed digests.
       - name: Test the images alone and together
         env:
           CORAL_DIGEST: ${{ steps.build.outputs.coral }}
