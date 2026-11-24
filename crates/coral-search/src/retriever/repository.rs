@@ -1092,6 +1092,95 @@ pub(super) async fn complete_generations(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+/// How many of a Workspace's Provider Tool paths hold a word that starts
+/// with each of some words. It counts the paths of the Workspace's complete
+/// Generations: the last segment of each Provider Call Root and the
+/// Tool-relative Path.
+pub(super) struct PathWordCounts {
+    /// The Provider Tools of the complete Generations.
+    pub(super) tools: i64,
+    /// Each word asked for, and at most how many of those Tools hold a word
+    /// that starts with it.
+    pub(super) words: Vec<PathWordCount>,
+}
+
+/// One word's count in [`PathWordCounts`].
+pub(super) struct PathWordCount {
+    pub(super) word: String,
+    /// The sum of the Tool counts of the stored words that start with
+    /// `word`. A Tool whose path holds two such words counts twice, so the
+    /// sum is an upper bound, and it can be more than all the Tools. This is
+    /// usual: a camelCase run is a word and so is its first part, so
+    /// `getIssue` holds both `get` and `getissue`.
+    pub(super) tools_at_most: i64,
+}
+
+/// The byte after `z` and after each digit. Each stored word and each word
+/// asked for is ASCII letters and digits in lowercase, so the stored words
+/// that start with `w` are those from `w` up to, not including, `w` followed
+/// by this character, when words compare byte by byte.
+const AFTER_EVERY_WORD_CHARACTER: &str = "{";
+
+/// Counts the Workspace's Provider Tool paths for each of `words`, as
+/// [`PathWordCounts`] describes, in one statement. Each word reads only its
+/// own range of the primary key.
+///
+/// A Generation that an update replaced counts until its removal: the
+/// notified removal after the update, or the next reconcile pass. Until then
+/// its paths count twice, which makes words look more common, not rarer.
+pub(super) async fn path_word_counts(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    words: &[&str],
+) -> Result<PathWordCounts, Error> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        word: String,
+        tools_at_most: i64,
+        tools: i64,
+    }
+    let mut binds = Binds::new(transaction.system());
+    let workspace = binds.push(workspace_id.to_string());
+    let list = binds.push(json(words));
+    let tool = binds.push(TOOL);
+    let complete = binds.push(COMPLETE);
+    let after = binds.push(AFTER_EVERY_WORD_CHARACTER);
+    let (asked, collate) = match transaction.system() {
+        DatabaseSystem::Postgres => (
+            format!("SELECT jsonb_array_elements_text({list}::jsonb) AS word"),
+            " COLLATE \"C\"",
+        ),
+        DatabaseSystem::Sqlite => (format!("SELECT value AS word FROM json_each({list})"), ""),
+    };
+    let complete_states = format!(
+        "FROM search_index_states AS s \
+         WHERE s.workspace_id = {workspace} AND s.kind = {tool} AND s.state = {complete}"
+    );
+    let sql = format!(
+        "SELECT q.word AS word, \
+             CAST(coalesce(( \
+                 SELECT sum(w.tool_count) FROM search_path_words AS w \
+                 WHERE w.workspace_id = {workspace} \
+                     AND w.word >= q.word{collate} \
+                     AND w.word < (q.word || {after}){collate} \
+                     AND w.provider_generation_id IN (SELECT s.target_id {complete_states}) \
+             ), 0) AS BIGINT) AS tools_at_most, \
+             CAST(coalesce((SELECT sum(s.tool_count) {complete_states}), 0) AS BIGINT) AS tools \
+         FROM ({asked}) AS q"
+    );
+    let rows: Vec<Row> = transaction.fetch_all_sql(&sql, binds.values).await?;
+    Ok(PathWordCounts {
+        tools: rows.first().map_or(0, |row| row.tools),
+        words: rows
+            .into_iter()
+            .map(|row| PathWordCount {
+                word: row.word,
+                tools_at_most: row.tools_at_most,
+            })
+            .collect(),
+    })
+}
+
 /// The Authored Tools of the scope that have a row in the index.
 pub(super) async fn indexed_authored_tools(
     transaction: &mut Transaction<'_>,

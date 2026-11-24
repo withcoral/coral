@@ -7,12 +7,20 @@
 //! name. Each Private Tool shares one body word with a query that a Tool
 //! matches better.
 
-use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
+use coral_policy::ToolAccessState;
+use coral_provider::access::CredentialRoute;
+use coral_test_support::change;
+use coral_tools::{
+    AuthoredToolDescription, AuthoredToolSource, PrivateToolPath, SharedToolOrigin, SharedToolPath,
+    SharedToolPublish,
+};
+use coral_workspace::{AuthenticatedPrincipal, IfMatch, WorkspaceId};
 
-use super::{TestModules, organization_user};
+use super::{SMALL_TOOL_SOURCE, TestModules, organization_user};
 use crate::{SearchQuery, SearchRequest};
 
 const USER: &str = "user:search-ranking";
+const OTHER_USER: &str = "user:search-ranking-other";
 
 const GITHUB: &str = r#"{
   "openapi": "3.1.0",
@@ -265,6 +273,361 @@ async fn a_private_tool_between_two_tools_follows_both_when_it_is_weak() {
          order; the Private Tool's path starts no query word, so it is weak \
          and follows them"
     );
+}
+
+/// Ten Tools. Five hold a word that starts with `list` in their path, and
+/// none holds `list` itself. No Tool path holds a word that starts with
+/// `invoices`.
+const SHOP: &str = r#"{
+  "openapi": "3.1.0",
+  "info": { "title": "Shop", "version": "1.0.0" },
+  "servers": [{ "url": "https://api.shop.example" }],
+  "security": [],
+  "paths": {
+    "/a": { "get": { "operationId": "listings/get", "summary": "Get a listing",
+      "responses": { "200": { "description": "OK" } } } },
+    "/b": { "get": { "operationId": "listings/archive", "summary": "Archive a listing",
+      "responses": { "200": { "description": "OK" } } } },
+    "/c": { "get": { "operationId": "listings/count", "summary": "Count the listings",
+      "responses": { "200": { "description": "OK" } } } },
+    "/d": { "get": { "operationId": "listeners/add", "summary": "Add a webhook listener",
+      "responses": { "200": { "description": "OK" } } } },
+    "/e": { "get": { "operationId": "listed/orders", "summary": "Orders of listed goods",
+      "responses": { "200": { "description": "OK" } } } },
+    "/f": { "get": { "operationId": "orders/get", "summary": "Get an order",
+      "responses": { "200": { "description": "OK" } } } },
+    "/g": { "get": { "operationId": "carts/clear", "summary": "Clear a cart",
+      "responses": { "200": { "description": "OK" } } } },
+    "/h": { "get": { "operationId": "refunds/create", "summary": "Create a refund",
+      "responses": { "200": { "description": "OK" } } } },
+    "/i": { "get": { "operationId": "coupons/apply", "summary": "Apply a coupon",
+      "responses": { "200": { "description": "OK" } } } },
+    "/j": { "get": { "operationId": "stock/count", "summary": "Count the stock",
+      "responses": { "200": { "description": "OK" } } } }
+  }
+}"#;
+
+/// The Shop Tools that are strong for `list invoices` by the Tool rule:
+/// their names start a word with one of its two content words.
+const SHOP_STRONG: [&str; 5] = [
+    "coral.providers.shop.listings.get",
+    "coral.providers.shop.listings.archive",
+    "coral.providers.shop.listings.count",
+    "coral.providers.shop.listeners.add",
+    "coral.providers.shop.listed.orders",
+];
+
+/// An Authored Tool is strong by a path word only when the word is rare: in
+/// under 10% of the Workspace's Provider Tool paths. `list` starts a word of
+/// half the Shop paths, so it is common, though no path holds `list` itself.
+/// `invoices` starts a word of none. A phrase match stays strong.
+#[tokio::test]
+async fn an_authored_tool_is_strong_by_a_path_word_only_when_the_word_is_rare() {
+    let modules = TestModules::new().await;
+    let user = organization_user(modules.search.database.clone(), USER).await;
+    let principal = AuthenticatedPrincipal::user(user.clone());
+    let workspace = modules.create_workspace(&user).await;
+    modules
+        .publish_openapi(&user, &workspace, SHOP, "shop", 20)
+        .await;
+    for (path, description, at) in [
+        ("weekly.listAll", "Sum the orders of the week.", 30),
+        ("billing.invoices", "Sum the open amounts.", 31),
+        ("monthly.listTotals", "List invoices of the month.", 32),
+        ("drafts.alpha", "A first draft.", 33),
+        ("drafts.beta", "A second draft.", 34),
+    ] {
+        modules
+            .save_private_tool(&principal, &workspace, path, description, at)
+            .await;
+    }
+    for (path, origin) in [
+        ("team.listOpen", "drafts.alpha"),
+        ("finance.invoicesDue", "drafts.beta"),
+    ] {
+        modules
+            .publish_shared_tool(
+                &user,
+                &workspace,
+                SharedToolPublish::review(
+                    SharedToolPath::parse(path).unwrap(),
+                    SharedToolOrigin::PrivateTool {
+                        owner: principal.principal().clone(),
+                        path: PrivateToolPath::parse(origin).unwrap(),
+                    },
+                    AuthoredToolDescription::parse("Sum the open amounts.").unwrap(),
+                    AuthoredToolSource::parse(SMALL_TOOL_SOURCE).unwrap(),
+                    ToolAccessState::Enabled,
+                    0,
+                ),
+            )
+            .await;
+    }
+    modules.converge().await;
+
+    let ranked = ranked(&modules, &principal, &workspace, "list invoices").await;
+    let mut misranked = Vec::new();
+    for (path, strong, reason) in [
+        (
+            "coral.private.weekly.listAll",
+            false,
+            "a Private Tool whose path holds only the common word",
+        ),
+        (
+            "coral.private.billing.invoices",
+            true,
+            "a Private Tool whose path holds the rare word",
+        ),
+        (
+            "coral.private.monthly.listTotals",
+            true,
+            "a Private Tool whose path holds only the common word, and whose \
+             description holds the query's words in order",
+        ),
+        (
+            "coral.shared.team.listOpen",
+            false,
+            "a Shared Tool whose path holds only the common word",
+        ),
+        (
+            "coral.shared.finance.invoicesDue",
+            true,
+            "a Shared Tool whose path holds a word that starts with the rare word",
+        ),
+    ] {
+        if before_a_strong_tool(&ranked, path, &SHOP_STRONG) != strong {
+            misranked.push(format!(
+                "{path}: {reason}, so strong is {strong}; order {ranked:?}"
+            ));
+        }
+    }
+    assert!(misranked.is_empty(), "{misranked:#?}");
+}
+
+/// Ten Tools. Two are strong for `list invoices` by the Tool rule. No path
+/// holds a word that starts with `list`.
+const LEDGER: &str = r#"{
+  "openapi": "3.1.0",
+  "info": { "title": "Ledger", "version": "1.0.0" },
+  "servers": [{ "url": "https://api.ledger.example" }],
+  "security": [],
+  "paths": {
+    "/a": { "get": { "operationId": "invoices/find", "summary": "Find invoices",
+      "responses": { "200": { "description": "OK" } } } },
+    "/b": { "get": { "operationId": "invoices/void", "summary": "Void an invoice",
+      "responses": { "200": { "description": "OK" } } } },
+    "/c": { "get": { "operationId": "carts/clear", "summary": "Clear a cart",
+      "responses": { "200": { "description": "OK" } } } },
+    "/d": { "get": { "operationId": "refunds/create", "summary": "Create a refund",
+      "responses": { "200": { "description": "OK" } } } },
+    "/e": { "get": { "operationId": "coupons/apply", "summary": "Apply a coupon",
+      "responses": { "200": { "description": "OK" } } } },
+    "/f": { "get": { "operationId": "stock/count", "summary": "Count the stock",
+      "responses": { "200": { "description": "OK" } } } },
+    "/g": { "get": { "operationId": "orders/get", "summary": "Get an order",
+      "responses": { "200": { "description": "OK" } } } },
+    "/h": { "get": { "operationId": "orders/cancel", "summary": "Cancel an order",
+      "responses": { "200": { "description": "OK" } } } },
+    "/i": { "get": { "operationId": "rates/get", "summary": "Get the rates",
+      "responses": { "200": { "description": "OK" } } } },
+    "/j": { "get": { "operationId": "taxes/get", "summary": "Get the taxes",
+      "responses": { "200": { "description": "OK" } } } }
+  }
+}"#;
+
+/// [`SHOP`] with no path word that starts with `list`.
+fn shop_without_list_words() -> serde_json::Value {
+    serde_json::from_str(
+        &SHOP
+            .replace("listings/", "catalog/")
+            .replace("listeners/", "hooks/")
+            .replace("listed/", "sold/"),
+    )
+    .unwrap()
+}
+
+/// The counts follow the catalog: a Provider install, update and removal
+/// change whether `list` is rare. With the Ledger alone no path word starts
+/// with `list`; with the Shop as well, five of twenty paths hold one. The
+/// counts are per Workspace: a Shop in another Workspace changes nothing.
+#[tokio::test]
+async fn the_path_word_counts_follow_the_catalog_of_each_workspace() {
+    let modules = TestModules::new().await;
+    let user = organization_user(modules.search.database.clone(), USER).await;
+    let principal = AuthenticatedPrincipal::user(user.clone());
+    let workspace = modules.create_workspace(&user).await;
+    let other_user = organization_user(modules.search.database.clone(), OTHER_USER).await;
+    let other_workspace = modules.create_workspace(&other_user).await;
+    modules
+        .publish_openapi(&other_user, &other_workspace, SHOP, "shop", 20)
+        .await;
+    modules
+        .publish_openapi(&user, &workspace, LEDGER, "ledger", 21)
+        .await;
+    modules
+        .save_private_tool(
+            &principal,
+            &workspace,
+            "weekly.listAll",
+            "Sum the orders of the week.",
+            30,
+        )
+        .await;
+    let ledger_strong = [
+        "coral.providers.ledger.invoices.find",
+        "coral.providers.ledger.invoices.void",
+    ];
+    let strong = async |stage: &str| {
+        modules.converge().await;
+        assert_eq!(
+            path_word_generations(&modules, &workspace).await,
+            complete_generations(&modules, &workspace).await,
+            "{stage}: each complete Generation has path words, and no other one has"
+        );
+        let ranked = ranked(&modules, &principal, &workspace, "list invoices").await;
+        let strong = before_a_strong_tool(&ranked, "coral.private.weekly.listAll", &ledger_strong);
+        (stage.to_string(), strong)
+    };
+
+    let mut stages = vec![strong("the Shop is in another Workspace only").await];
+    let shop = modules
+        .publish_openapi(&user, &workspace, SHOP, "shop", 40)
+        .await;
+    stages.push(strong("the Shop is installed").await);
+    modules
+        .providers
+        .delete_provider(
+            &change(user.clone(), 50, '5'),
+            &workspace,
+            &shop,
+            &IfMatch::any(),
+        )
+        .await
+        .expect("delete the Shop")
+        .skip_search();
+    stages.push(strong("the Shop is removed").await);
+    let shop = modules
+        .publish_configured(
+            &change(user.clone(), 60, '6'),
+            &workspace,
+            &shop_without_list_words(),
+            "mart",
+            CredentialRoute::None,
+        )
+        .await;
+    stages.push(strong("a Shop with no `list` word is installed").await);
+    modules
+        .regenerate_workspace_provider(
+            &change(user.clone(), 70, '7'),
+            &workspace,
+            shop.id(),
+            &serde_json::from_str(SHOP).unwrap(),
+        )
+        .await;
+    stages.push(strong("that Shop is updated to the `list` words").await);
+
+    assert_eq!(
+        stages,
+        [
+            ("the Shop is in another Workspace only".to_string(), true),
+            ("the Shop is installed".to_string(), false),
+            ("the Shop is removed".to_string(), true),
+            ("a Shop with no `list` word is installed".to_string(), true),
+            (
+                "that Shop is updated to the `list` words".to_string(),
+                false
+            ),
+        ],
+        "a Private Tool whose path holds only `list` is strong while `list` is rare"
+    );
+}
+
+/// In a Workspace with no Provider Tool every path word is rare. The
+/// Private Tool with the phrase in its path heads the Private window, so the
+/// one whose path holds only `list` is second there. Strong, it comes before
+/// the weak Shared Tool at the head of the Shared window; weak, after it.
+#[tokio::test]
+async fn every_path_word_is_rare_in_a_workspace_with_no_provider_tool() {
+    let modules = TestModules::new().await;
+    let user = organization_user(modules.search.database.clone(), USER).await;
+    let principal = AuthenticatedPrincipal::user(user.clone());
+    let workspace = modules.create_workspace(&user).await;
+    for (path, description, at) in [
+        ("list.invoices", "Sum the open amounts.", 30),
+        ("weekly.listAll", "Sum the orders of the week.", 31),
+        ("drafts.alpha", "A first draft.", 32),
+    ] {
+        modules
+            .save_private_tool(&principal, &workspace, path, description, at)
+            .await;
+    }
+    modules
+        .publish_shared_tool(
+            &user,
+            &workspace,
+            SharedToolPublish::review(
+                SharedToolPath::parse("team.totals").unwrap(),
+                SharedToolOrigin::PrivateTool {
+                    owner: principal.principal().clone(),
+                    path: PrivateToolPath::parse("drafts.alpha").unwrap(),
+                },
+                AuthoredToolDescription::parse("Sum the invoices.").unwrap(),
+                AuthoredToolSource::parse(SMALL_TOOL_SOURCE).unwrap(),
+                ToolAccessState::Enabled,
+                0,
+            ),
+        )
+        .await;
+    modules.converge().await;
+
+    assert_eq!(
+        ranked(&modules, &principal, &workspace, "list invoices").await,
+        [
+            "coral.private.list.invoices",
+            "coral.private.weekly.listAll",
+            "coral.shared.team.totals",
+        ],
+        "no Provider Tool path holds `list`, so the Private Tool is strong by it"
+    );
+}
+
+/// The Generations of the Workspace that have path words.
+async fn path_word_generations(modules: &TestModules, workspace: &WorkspaceId) -> Vec<String> {
+    let mut transaction = modules.search.database.begin_read_snapshot().await.unwrap();
+    let generations =
+        crate::indexer::path_word_generations_in_workspace(&mut transaction, workspace)
+            .await
+            .unwrap();
+    transaction.rollback().await.unwrap();
+    generations
+}
+
+/// The Generations of the Workspace whose index state is `complete`, in id
+/// order.
+async fn complete_generations(modules: &TestModules, workspace: &WorkspaceId) -> Vec<String> {
+    let mut transaction = modules.search.database.begin_read_snapshot().await.unwrap();
+    let states = crate::indexer::generation_states_in_workspace(&mut transaction, workspace)
+        .await
+        .unwrap();
+    transaction.rollback().await.unwrap();
+    states
+        .into_iter()
+        .filter(|(_provider, _generation, state, _name)| state == "complete")
+        .map(|(_provider, generation, _state, _name)| generation)
+        .collect()
+}
+
+/// Whether `path` ranks before the last of `strong_tools`. The fusion puts
+/// a strong Authored Tool at the head of its window before the strong Tools
+/// behind the head of theirs, and a weak one after every strong Tool.
+fn before_a_strong_tool(ranked: &[String], path: &str, strong_tools: &[&str]) -> bool {
+    let position = |path: &str| {
+        ranked
+            .iter()
+            .position(|ranked| ranked == path)
+            .unwrap_or_else(|| panic!("{path} is not on the page {ranked:?}"))
+    };
+    Some(position(path)) < strong_tools.iter().map(|tool| position(tool)).max()
 }
 
 /// The Call Paths of the first page for `query`, in rank order.

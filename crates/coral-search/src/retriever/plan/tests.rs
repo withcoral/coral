@@ -1,4 +1,6 @@
-use super::{QueryPlan, Statistics, WordStatistics};
+use std::collections::BTreeSet;
+
+use super::{QueryPlan, Statistics, WordStatistics, path_words};
 
 /// The Workspace's words, as `search_terms` holds them.
 const CATALOG: [&str; 9] = [
@@ -145,39 +147,77 @@ fn a_query_names_a_provider_by_its_namespace_or_every_word_of_its_display_name()
 }
 
 #[test]
-fn a_content_word_counts_where_it_starts_a_word_of_a_field() {
-    for (query, field, count, reason) in [
+fn a_content_word_matches_where_it_starts_a_word_of_a_field() {
+    for (query, field, words, reason) in [
         (
             "open issues",
             "triage.openIssues",
-            2,
+            &["issues", "open"][..],
             "a camelCase edge and a separator end words",
         ),
         (
             "issues",
             "reissues",
-            0,
+            &[],
             "a word inside a longer word is none",
         ),
         (
             "deploy status",
             "deployments.listStatuses",
-            2,
+            &["deploy", "status"],
             "a word that starts a longer word counts, as the Tool statement's prefix match does",
         ),
-        ("issues", "ISSUES", 1, "case does not count"),
+        ("issues", "ISSUES", &["issues"], "case does not count"),
         (
             "the issues issues",
             "the issues",
-            1,
+            &["issues"],
             "a filler word counts nothing, and a repeated word counts once",
         ),
-        ("openissues", "openIssues", 1, "the whole run is a word too"),
+        (
+            "openissues",
+            "openIssues",
+            &["openissues"],
+            "the whole run is a word too",
+        ),
+        (
+            "list invoices",
+            "billing.invoicesDue",
+            &["invoices"],
+            "only the words that start a word of the field are named",
+        ),
     ] {
         assert_eq!(
             plan(query).content_words_starting([field]),
-            count,
+            words,
             "{query} in {field}: {reason}"
         );
+    }
+}
+
+#[test]
+fn a_path_holds_its_words_of_three_or_more_characters() {
+    for (path, words, reason) in [
+        (
+            "github.pulls.listReviews",
+            &["github", "list", "listreviews", "pulls", "reviews"][..],
+            "the namespace and each segment, camelCase parts and the whole run",
+        ),
+        (
+            "ab.v2.getById",
+            &["get", "getbyid"][..],
+            "a word of under three characters can start no content word",
+        ),
+        (
+            "issues.getIssue",
+            &["get", "getissue", "issue", "issues"][..],
+            "each word once",
+        ),
+    ] {
+        let expected = words
+            .iter()
+            .map(|word| (*word).to_string())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(path_words(path), expected, "{path}: {reason}");
     }
 }

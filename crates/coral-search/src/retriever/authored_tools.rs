@@ -14,7 +14,7 @@
 //! Principal's rule. Another Principal's Private Tool and a hidden Shared
 //! Tool never take a place in either list.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use async_trait::async_trait;
 use coral_catalog::AuthoredToolKind;
@@ -143,6 +143,14 @@ impl EntityRetriever for AuthoredToolRetriever {
             |tool: &repository::RankedAuthoredTool| tool.id.clone(),
             request.window,
         );
+        let rare = rare_path_words(
+            transaction,
+            context.workspace_id,
+            &plan,
+            merged.iter().map(|entry| &entry.entry.matched),
+        )
+        .await
+        .map_err(QueryError::retrieval)?;
         let mut window = Vec::new();
         for entry in merged {
             let strong_by_vector = entry.strong_by_vector();
@@ -158,7 +166,7 @@ impl EntityRetriever for AuthoredToolRetriever {
                     material: material.clone(),
                     call_path: ranked.call_path,
                 }),
-                strong: strong_by_vector || strong_authored_tool(&plan, &ranked.matched),
+                strong: strong_by_vector || strong_authored_tool(&plan, &ranked.matched, &rare),
             });
         }
         Ok(Answer {
@@ -392,12 +400,60 @@ pub(crate) async fn explain_vector_query(
     .await
 }
 
+/// A content word of the query is rare when fewer than this percent of the
+/// Workspace's Provider Tool paths hold a word that starts with it. Words
+/// such as `get` and `list` start a word of most Provider Tool paths; on
+/// real searches they made Authored Tools strong where the agent wanted a
+/// Provider Tool. The result moves little between 2% and 10% (#3412).
+const RARE_PATH_WORD_PERCENT: i64 = 10;
+
 /// Whether a ranked Authored Tool is a strong match, by its retriever's own
 /// rule: a field holds the query's words in order, or a word of its path
-/// starts with a content word of the query. One that shares only description
-/// words with the query is weak, so it follows every strong Tool.
-fn strong_authored_tool(plan: &QueryPlan, matched: &repository::RowMatch) -> bool {
-    matched.phrase_points > 0 || plan.content_words_starting([matched.name.as_str()]) > 0
+/// starts with a content word of the query that is in `rare`. One that
+/// shares only description words or common path words with the query is
+/// weak, so it follows every strong Tool.
+fn strong_authored_tool(
+    plan: &QueryPlan,
+    matched: &repository::RowMatch,
+    rare: &HashSet<String>,
+) -> bool {
+    matched.phrase_points > 0
+        || plan
+            .content_words_starting([matched.name.as_str()])
+            .into_iter()
+            .any(|word| rare.contains(word))
+}
+
+/// The content words of the query that start a word of the path of one of
+/// `matched` and are rare, as [`RARE_PATH_WORD_PERCENT`] decides. Reads the
+/// Workspace's Provider Tool path counts once, and not at all when no
+/// content word starts a word of these paths. A word's count is an upper
+/// bound (`repository::PathWordCount`), so a word near the limit counts as
+/// common rather than rare. In a Workspace with no Provider Tool every word
+/// is rare.
+async fn rare_path_words<'a>(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    plan: &QueryPlan,
+    matched: impl Iterator<Item = &'a repository::RowMatch>,
+) -> Result<HashSet<String>, coral_db::Error> {
+    let words = matched
+        .flat_map(|matched| plan.content_words_starting([matched.name.as_str()]))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if words.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let counts = repository::path_word_counts(transaction, workspace_id, &words).await?;
+    Ok(counts
+        .words
+        .into_iter()
+        .filter(|count| {
+            counts.tools == 0 || count.tools_at_most * 100 < counts.tools * RARE_PATH_WORD_PERCENT
+        })
+        .map(|count| count.word)
+        .collect())
 }
 
 /// How the Authored Tools of one kind are decided for the caller, read once

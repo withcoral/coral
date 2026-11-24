@@ -3,7 +3,7 @@
 //! Every function joins the caller's transaction; [`crate::SearchIndex`] owns
 //! when each transaction begins, commits, or rolls back.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use coral_catalog::AuthoredToolKind;
 use coral_catalog::{ProviderGenerationId, ToolKey};
@@ -84,6 +84,21 @@ enum SearchIndexStates {
     FailedCoralVersion,
     /// The revision a failed Authored Tool attempt tried.
     FailedAuthoredToolRevision,
+    /// The number of Tools a complete Generation attempt wrote.
+    ToolCount,
+}
+
+/// The `search_path_words` table and its columns, for sea-query. Each row
+/// holds one word of a Generation's Tool paths and the number of the
+/// Generation's Tools whose path holds it.
+#[derive(Clone, Copy, Iden)]
+enum SearchPathWords {
+    Table,
+    WorkspaceId,
+    ProviderId,
+    ProviderGenerationId,
+    Word,
+    ToolCount,
 }
 
 /// The columns of a failed attempt's [`RetryRule`], in [`retry_values`]
@@ -273,12 +288,24 @@ impl ToolRow<'_> {
 
 /// The outcome an index attempt records.
 pub(super) enum AttemptState {
-    Complete,
+    /// The attempt wrote `tool_count` Tool rows.
+    Complete { tool_count: usize },
     Failed {
         error: String,
         failure: Option<SearchIndexFailure>,
         retry: RetryRule,
     },
+}
+
+impl AttemptState {
+    /// The number of Tool rows a complete attempt wrote, as its state row
+    /// stores it; `None` for a failed attempt.
+    fn tool_count(&self) -> Option<i64> {
+        match self {
+            Self::Complete { tool_count } => Some(count_value(*tool_count)),
+            Self::Failed { .. } => None,
+        }
+    }
 }
 
 /// One Generation's row in `search_index_states`.
@@ -380,12 +407,67 @@ pub(super) async fn delete_rows_not_written(
     Ok(())
 }
 
-/// Deletes every Tool row of the Generation. Returns the rows it deleted.
+/// Replaces the Generation's path word rows with `words`: each word of its
+/// Tool paths and the number of its Tools whose path holds it.
+pub(super) async fn write_path_words(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    provider_id: &ProviderId,
+    generation_id: &ProviderGenerationId,
+    words: &BTreeMap<String, usize>,
+) -> Result<(), Error> {
+    transaction
+        .execute(generation_path_words(workspace_id, generation_id))
+        .await?;
+    let words = words.iter().collect::<Vec<_>>();
+    for chunk in words.chunks(CHUNK_ROWS) {
+        let mut statement = Query::insert();
+        statement.into_table(SearchPathWords::Table).columns([
+            SearchPathWords::WorkspaceId,
+            SearchPathWords::ProviderId,
+            SearchPathWords::ProviderGenerationId,
+            SearchPathWords::Word,
+            SearchPathWords::ToolCount,
+        ]);
+        for (word, tool_count) in chunk {
+            statement.values_panic([
+                workspace_id.to_string().into(),
+                provider_id.to_string().into(),
+                generation_id.to_string().into(),
+                word.as_str().into(),
+                count_value(**tool_count).into(),
+            ]);
+        }
+        transaction.execute(statement).await?;
+    }
+    Ok(())
+}
+
+fn generation_path_words(
+    workspace_id: &WorkspaceId,
+    generation_id: &ProviderGenerationId,
+) -> DeleteStatement {
+    Query::delete()
+        .from_table(SearchPathWords::Table)
+        .and_where(Expr::col(SearchPathWords::WorkspaceId).eq(workspace_id.to_string()))
+        .and_where(Expr::col(SearchPathWords::ProviderGenerationId).eq(generation_id.to_string()))
+        .to_owned()
+}
+
+fn count_value(count: usize) -> i64 {
+    i64::try_from(count).unwrap_or(i64::MAX)
+}
+
+/// Deletes every Tool row and path word row of the Generation. Returns the
+/// Tool rows it deleted.
 pub(super) async fn delete_generation_rows(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     generation_id: &ProviderGenerationId,
 ) -> Result<u64, Error> {
+    transaction
+        .execute(generation_path_words(workspace_id, generation_id))
+        .await?;
     transaction
         .execute(generation_rows(workspace_id, generation_id))
         .await
@@ -407,8 +489,9 @@ pub(super) async fn write_generation_state(
     transaction: &mut Transaction<'_>,
     state: GenerationState<'_>,
 ) -> Result<(), Error> {
+    let tool_count = state.state.tool_count();
     let (name, error, error_kind, retry) = match state.state {
-        AttemptState::Complete => (COMPLETE, None, None, None),
+        AttemptState::Complete { .. } => (COMPLETE, None, None, None),
         AttemptState::Failed {
             error,
             failure,
@@ -416,35 +499,7 @@ pub(super) async fn write_generation_state(
         } => (FAILED, Some(error), failure.map(failure_kind), Some(retry)),
     };
     let complete = name == COMPLETE;
-    let ever_visible: SimpleExpr = if complete {
-        Expr::val(true)
-    } else {
-        Expr::case(
-            Expr::col((SearchIndexStates::Table, SearchIndexStates::State)).eq(COMPLETE),
-            true,
-        )
-        .finally(Expr::col((
-            SearchIndexStates::Table,
-            SearchIndexStates::EverVisible,
-        )))
-        .into()
-    };
-    let unavailable_since: SimpleExpr = if complete {
-        Expr::val(Option::<UnixNanos>::None)
-    } else {
-        Expr::case(
-            Expr::col((SearchIndexStates::Table, SearchIndexStates::State)).eq(COMPLETE),
-            state.attempted_at,
-        )
-        .finally(Func::coalesce([
-            Expr::col((
-                SearchIndexStates::Table,
-                SearchIndexStates::UnavailableSinceUnixNanos,
-            )),
-            Expr::val(state.attempted_at),
-        ]))
-        .into()
-    };
+    let (ever_visible, unavailable_since) = visibility_updates(complete, state.attempted_at);
     transaction
         .execute(
             Query::insert()
@@ -463,6 +518,7 @@ pub(super) async fn write_generation_state(
                     SearchIndexStates::IndexerRevision,
                     SearchIndexStates::EverVisible,
                     SearchIndexStates::UnavailableSinceUnixNanos,
+                    SearchIndexStates::ToolCount,
                 ]))
                 .values_panic(
                     [
@@ -479,6 +535,7 @@ pub(super) async fn write_generation_state(
                         INDEXER_REVISION.into(),
                         complete.into(),
                         (!complete).then_some(state.attempted_at).into(),
+                        tool_count.into(),
                     ]
                     .into_iter()
                     .chain(retry_values(retry.as_ref())),
@@ -492,6 +549,7 @@ pub(super) async fn write_generation_state(
                             SearchIndexStates::Error,
                             SearchIndexStates::ErrorKind,
                             SearchIndexStates::IndexerRevision,
+                            SearchIndexStates::ToolCount,
                         ]))
                         .value(SearchIndexStates::EverVisible, ever_visible)
                         .value(
@@ -506,10 +564,38 @@ pub(super) async fn write_generation_state(
     Ok(())
 }
 
-/// Deletes one Generation's Tool rows and state row. Returns the Workspace
-/// its state row named when Tool rows went, `None` when none went or the
-/// index held no state for the Generation: the next reconcile pass then sees
-/// the changed rows.
+/// The values a state row's update gives `ever_visible` and
+/// `unavailable_since`. A complete attempt makes the Generation visible and
+/// available. A failed one keeps whether it was ever visible, and keeps or
+/// starts the time it became unavailable.
+fn visibility_updates(complete: bool, attempted_at: UnixNanos) -> (SimpleExpr, SimpleExpr) {
+    if complete {
+        return (Expr::val(true), Expr::val(Option::<UnixNanos>::None));
+    }
+    let was_complete =
+        || Expr::col((SearchIndexStates::Table, SearchIndexStates::State)).eq(COMPLETE);
+    let ever_visible = Expr::case(was_complete(), true)
+        .finally(Expr::col((
+            SearchIndexStates::Table,
+            SearchIndexStates::EverVisible,
+        )))
+        .into();
+    let unavailable_since = Expr::case(was_complete(), attempted_at)
+        .finally(Func::coalesce([
+            Expr::col((
+                SearchIndexStates::Table,
+                SearchIndexStates::UnavailableSinceUnixNanos,
+            )),
+            Expr::val(attempted_at),
+        ]))
+        .into();
+    (ever_visible, unavailable_since)
+}
+
+/// Deletes one Generation's Tool rows, path word rows and state row. Returns
+/// the Workspace its state row named when Tool rows went, `None` when none
+/// went or the index held no state for the Generation: the next reconcile
+/// pass then sees the changed rows.
 pub(super) async fn delete_generation(
     transaction: &mut Transaction<'_>,
     generation_id: &ProviderGenerationId,
@@ -522,6 +608,16 @@ pub(super) async fn delete_generation(
                 .from(SearchIndexStates::Table)
                 .and_where(Expr::col(SearchIndexStates::Kind).eq(TOOL))
                 .and_where(Expr::col(SearchIndexStates::TargetId).eq(generation_id.as_str()))
+                .to_owned(),
+        )
+        .await?;
+    transaction
+        .execute(
+            Query::delete()
+                .from_table(SearchPathWords::Table)
+                .and_where(
+                    Expr::col(SearchPathWords::ProviderGenerationId).eq(generation_id.as_str()),
+                )
                 .to_owned(),
         )
         .await?;
@@ -553,8 +649,8 @@ pub(super) async fn delete_generation(
         .transpose()
 }
 
-/// Deletes the Tool rows and state rows of every Generation of one
-/// Provider. Returns the Tool rows it deleted.
+/// Deletes the Tool rows, path word rows and state rows of every Generation
+/// of one Provider. Returns the Tool rows it deleted.
 pub(super) async fn delete_provider(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -562,6 +658,15 @@ pub(super) async fn delete_provider(
 ) -> Result<u64, Error> {
     let workspace_id = workspace_id.to_string();
     let provider_id = provider_id.to_string();
+    transaction
+        .execute(
+            Query::delete()
+                .from_table(SearchPathWords::Table)
+                .and_where(Expr::col(SearchPathWords::WorkspaceId).eq(workspace_id.as_str()))
+                .and_where(Expr::col(SearchPathWords::ProviderId).eq(provider_id.as_str()))
+                .to_owned(),
+        )
+        .await?;
     let removed = transaction
         .execute(
             Query::delete()
@@ -1175,6 +1280,27 @@ pub(crate) async fn tool_rows_in_workspace(
         .await
 }
 
+/// Reads the Generations that have path word rows in a Workspace, each once,
+/// in id order.
+#[cfg(test)]
+pub(crate) async fn path_word_generations_in_workspace(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<Vec<String>, Error> {
+    let rows: Vec<(String,)> = transaction
+        .fetch_all(
+            Query::select()
+                .distinct()
+                .column(SearchPathWords::ProviderGenerationId)
+                .from(SearchPathWords::Table)
+                .and_where(Expr::col(SearchPathWords::WorkspaceId).eq(workspace_id.to_string()))
+                .order_by(SearchPathWords::ProviderGenerationId, sea_query::Order::Asc)
+                .to_owned(),
+        )
+        .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 /// Reads a Workspace's Generation state rows as `(provider id, Generation
 /// id, state, indexed display name)`, in Generation id order, for tests in
 /// crates that start Coral.
@@ -1204,7 +1330,9 @@ pub(crate) async fn generation_states_in_workspace(
         .await
 }
 
-/// Reads every Generation that has Tool rows, each once.
+/// Reads every Generation that has Tool rows or path word rows, each once.
+/// An older release, during a rolling update, deletes a Generation's Tool
+/// rows and state row but not its path words.
 pub(super) async fn generations_with_rows(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<WorkspaceGeneration>, IndexError> {
@@ -1218,6 +1346,16 @@ pub(super) async fn generations_with_rows(
                 ])
                 .from(SearchEntities::Table)
                 .and_where(Expr::col(SearchEntities::Kind).eq(TOOL))
+                .union(
+                    sea_query::UnionType::Distinct,
+                    Query::select()
+                        .columns([
+                            SearchPathWords::WorkspaceId,
+                            SearchPathWords::ProviderGenerationId,
+                        ])
+                        .from(SearchPathWords::Table)
+                        .to_owned(),
+                )
                 .to_owned(),
         )
         .await?;
@@ -1226,16 +1364,14 @@ pub(super) async fn generations_with_rows(
         .collect()
 }
 
-/// Deletes one Generation's Tool rows and state row within its
-/// Workspace. Returns the Tool rows it deleted.
+/// Deletes one Generation's Tool rows, path word rows and state row within
+/// its Workspace. Returns the Tool rows it deleted.
 pub(super) async fn delete_generation_in_workspace(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     generation_id: &ProviderGenerationId,
 ) -> Result<u64, Error> {
-    let removed = transaction
-        .execute(generation_rows(workspace_id, generation_id))
-        .await?;
+    let removed = delete_generation_rows(transaction, workspace_id, generation_id).await?;
     transaction
         .execute(
             Query::delete()
