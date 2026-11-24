@@ -20,6 +20,9 @@ use crate::arguments::{
     self, CancelArguments, EndTaskArguments, ExecArguments, ShowRequiredActionsArguments,
     TaskOutcomeArgument, ToolArguments, WaitArguments,
 };
+use coral_run::approval::ApprovalDecision;
+use rmcp::model::InputResponses;
+
 use crate::client_prompt::{self, Shown, WaitCursor};
 use crate::interface::{McpCaller, McpInterface, Progress, ToolCallError};
 use crate::projection::{self, Reporter, ToolFailure};
@@ -265,6 +268,13 @@ impl CoreInterface {
     }
 }
 
+/// What a client sends back when it repeats a call that asked a Client
+/// Prompt: the state Coral gave it, and the person's answers.
+struct Repeat {
+    state: Option<String>,
+    answers: Option<InputResponses>,
+}
+
 /// Core's tools for one caller.
 struct CoreTools {
     runtime: McpRuntime,
@@ -347,11 +357,14 @@ impl CoreTools {
                 return self.exec(arguments).await;
             }
             WaitArguments::NAME => {
-                let state = request.request_state;
+                let repeat = Repeat {
+                    state: request.request_state,
+                    answers: request.input_responses,
+                };
                 let arguments = arguments::parse::<WaitArguments>(request.arguments)?;
                 let ask =
                     client_prompt::Ask::of(self.runtime.modules.elicitation, capabilities.as_ref());
-                return self.wait(arguments, state.as_deref(), progress, ask).await;
+                return self.wait(arguments, repeat, progress, ask).await;
             }
             ShowRequiredActionsArguments::NAME => {
                 let arguments =
@@ -468,15 +481,17 @@ impl CoreTools {
     /// Observes a Run, holding up to `wait_ms` for a change. When `ask`
     /// allows a Client Prompt and a Required Action names the invoking User
     /// that no prompt asked about yet, the call asks for it instead of
-    /// returning the Run Update. The client repeats the call with `state`,
-    /// which this call then counts as asked, whatever the answer: a link
-    /// prompt decides nothing, and a dismissed one leaves the assistant's
-    /// link, as before. A prompt after the hold leaves the cursor where it
-    /// was, so the repeated call reads the same Events again.
+    /// returning the Run Update. The client repeats the call with the state
+    /// in `repeat`, which this call then counts as asked. A form's Approve or
+    /// Decline decides its approval before the call reads the Run; any other
+    /// answer decides nothing: a link prompt's page decides, and a dismissed
+    /// prompt leaves the assistant's link, as before. A prompt after the hold
+    /// leaves the cursor where it was, so the repeated call reads the same
+    /// Events again.
     async fn wait(
         &self,
         arguments: WaitArguments,
-        state: Option<&str>,
+        repeat: Repeat,
         progress: Option<Progress>,
         ask: Option<client_prompt::Ask>,
     ) -> Result<CallToolResponse, ToolCallError> {
@@ -488,10 +503,22 @@ impl CoreTools {
             }
             None => (None, Shown::default()),
         };
-        let shown = state
-            .and_then(|state| client_prompt::shown_in_state(state, &run_id))
-            .map_or(shown.clone(), |asked| shown.union(asked));
+        let prompted = repeat
+            .state
+            .as_deref()
+            .and_then(|state| client_prompt::prompted_in_state(state, &run_id))
+            .unwrap_or_default();
         let wait_ms = validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_WAIT_MS))?;
+        // The call's own input is checked first, so a call it refuses
+        // decides nothing.
+        if let (Some(ask), Some(answers)) = (ask, &repeat.answers)
+            && let Some((approval, decision)) = ask.decision(answers, &prompted)
+        {
+            self.decide(&approval, decision)
+                .await
+                .map_err(run_failure)?;
+        }
+        let shown = shown.union(prompted.shown);
         let human_interface = &self.runtime.modules.human_interface;
         // A Required Action already waiting would not end the hold, so it is
         // asked before. Otherwise, a client that asked for progress shows the
@@ -505,8 +532,8 @@ impl CoreTools {
                 .map_err(invalid_input)?
                 .without_trace_link();
             let current = self.observe(&run_id, &peek).await.map_err(run_failure)?;
-            if let Some(prompt) =
-                ask.and_then(|ask| client_prompt::prompt(&current, &shown, ask, human_interface))
+            if let Some(ask) = ask
+                && let Some(prompt) = self.prompt(&current, &shown, ask).await
             {
                 return Ok(prompt.into());
             }
@@ -525,14 +552,79 @@ impl CoreTools {
             .observe(&run_id, &observation)
             .await
             .map_err(run_failure)?;
-        if let Some(prompt) =
-            ask.and_then(|ask| client_prompt::prompt(&update, &shown, ask, human_interface))
+        if let Some(ask) = ask
+            && let Some(prompt) = self.prompt(&update, &shown, ask).await
         {
             return Ok(prompt.into());
         }
         self.run_update(&update, Reporter::Observer, &shown)
             .map(Into::into)
             .map_err(ToolCallError::Tool)
+    }
+
+    /// The Client Prompt `wait` asks for `update`, if any. A form shows the
+    /// approval's exact arguments; one whose arguments it cannot show whole,
+    /// or cannot read, is asked as a link where `ask` allows one.
+    async fn prompt(
+        &self,
+        update: &coral_run::RunUpdate,
+        shown: &Shown,
+        ask: client_prompt::Ask,
+    ) -> Option<rmcp::model::InputRequiredResult> {
+        let (action, mode) = client_prompt::next(update, shown, ask)?;
+        let arguments = match (mode, &action.request) {
+            (
+                client_prompt::Mode::Form,
+                coral_run::RequiredActionRequest::InvocationApproval(id),
+            ) => self
+                .runtime
+                .modules
+                .runs
+                .approvals()
+                .get(&self.runtime.principal, &self.workspace_id, id)
+                .await
+                .ok()
+                .and_then(|request| client_prompt::form_arguments(&request.arguments)),
+            _ => None,
+        };
+        let mode = match (mode, &arguments) {
+            (client_prompt::Mode::Form, None) => ask.instead_of_form()?,
+            (mode, _) => mode,
+        };
+        client_prompt::prompt(
+            update.run_id(),
+            action,
+            mode,
+            arguments.as_deref(),
+            shown,
+            &self.runtime.modules.human_interface,
+        )
+    }
+
+    /// Records the invoking User's decision from a form, through the same
+    /// decision path as Reef's, which authorizes the person. A decision that
+    /// fails ends the call with its error. The approval then stays pending,
+    /// and since only the request state of the failed call counted it as
+    /// asked, the next `wait` asks again.
+    async fn decide(
+        &self,
+        approval: &coral_run::approval::ApprovalId,
+        decision: ApprovalDecision,
+    ) -> Result<(), coral_run::Error> {
+        self.runtime
+            .modules
+            .runs
+            .approvals()
+            .decide(
+                &self.runtime.principal,
+                &self.workspace_id,
+                approval,
+                decision,
+                Some(client_prompt::FORM_COMMENT),
+                &coral_workspace::TraceId::current_or_new(),
+            )
+            .await
+            .map(drop)
     }
 
     async fn observe(

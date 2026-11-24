@@ -61,7 +61,9 @@ holds the check.
   every Run Update name the Required Actions already asked, so each is asked once while the assistant passes the
   latest cursor on. Neither is signed: they hold only what a client could send anyway, every observation is
   authorized as before, and an answer decides only through the same decision path as Reef's, which checks the
-  person. A client that edits them can only be asked again, or not at all.
+  person. A client that edits them can only be asked again, or not at all. The state also names the approval its
+  prompt asked as a form, and only an answer for that one decides; a client that edits it gains no more than a form
+  already gives it, and only where the deployment allows forms.
 - **An answer decides only through the form.** An Approve or Decline from the form is that User's decision, recorded
   through the same decision path as Reef's, and the first answer wins. A link prompt's accept means only that the
   person opened the page or said they were done; the call goes on waiting for the decision made in Reef. A dismissed

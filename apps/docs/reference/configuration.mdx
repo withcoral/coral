@@ -130,9 +130,15 @@ With `false`, Coral loads no model, downloads nothing and does not check for pgv
 
 A run can wait for a person: to approve a tool call, or to connect an account. Coral always gives the AI app a link to the page where the person acts. An AI app that supports MCP elicitation can also show its own prompt. Claude Code is one such app. This setting controls that prompt for the whole deployment.
 
-| Key           | Description                                                                                                                                                                           | Required | Default |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------- |
-| `elicitation` | `form` or `url`: an AI app that supports link prompts shows a prompt that opens the page where the person acts. `none`: Coral asks for no prompt. Coral reads the setting at startup. | No       | `form`  |
+| Key           | Description                                                                                                      | Required | Default |
+| ------------- | ---------------------------------------------------------------------------------------------------------------- | -------- | ------- |
+| `elicitation` | How the AI app asks the person: `form`, `url` or `none`. See the list below. Coral reads the setting at startup. | No       | `form`  |
+
+- **`form`**: The AI app shows an approval in its own prompt, with the tool's exact arguments. The person approves or declines it there. If the arguments are too long to show, the prompt opens the approval page instead. For an account connection, the prompt opens the account page.
+- **`url`**: Every prompt opens the page where the person acts. The person decides only in Coral.
+- **`none`**: Coral asks for no prompt.
+
+With `form`, the AI app records the person's decision, not Coral. An AI app, or a hook in it, can answer a prompt without a person. Set `url` if you do not accept this.
 
 Set `none` if an AI app says that it supports elicitation but shows no prompt. In that case, the run waits until its time limit ends.
 

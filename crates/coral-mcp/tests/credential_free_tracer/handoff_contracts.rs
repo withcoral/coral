@@ -1,7 +1,7 @@
 //! The handoff of a required action to the invoking User, through the public
 //! SDK and the raw wire on each protocol version: every client learns where
-//! the User acts, and a 2026-07-28 client that declares the URL mode of
-//! elicitation is also asked in a Client Prompt (ADR 0029).
+//! the User acts, and a 2026-07-28 client that declares elicitation is also
+//! asked in a Client Prompt, as far as the deployment allows (ADR 0029).
 #![expect(
     clippy::indexing_slicing,
     reason = "assert known Run Update JSON members"
@@ -27,8 +27,8 @@ use coral_mcp::SUPPORTED_PROTOCOL_VERSIONS;
 const PROGRAM: &str = "return await coral.providers.weather.getForecast({});";
 
 /// A client that declares form elicitation only and records every prompt it
-/// gets, answering none. Coral asks only in a link prompt, which this client
-/// cannot show, so the record stays empty.
+/// gets, answering none. In a deployment that allows links only, Coral asks
+/// it nothing, so the record stays empty.
 #[derive(Clone)]
 struct HandoffClient {
     version: ProtocolVersion,
@@ -305,13 +305,15 @@ async fn a_wait_reports_the_link_as_progress_for_a_client_that_asks() {
         .await;
 }
 
-/// A client that cannot show a link prompt is not asked: before 2026-07-28
-/// there is no prompt without a session, and from it this client declares
-/// form mode only. The Run Update names the action and the Approvals Page,
-/// where the User decides, and a later `wait` reads the same action.
+/// A client that cannot be asked is not: before 2026-07-28 there is no prompt
+/// without a session, and from it this client declares form mode only, in a
+/// deployment that allows links only. The Run Update names the action and the
+/// Approvals Page, where the User decides, and a later `wait` reads the same
+/// action.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_client_without_link_prompts_learns_where_to_act_and_is_not_prompted() {
-    let tracer = approval_tracer().await;
+async fn a_client_that_cannot_be_asked_learns_where_to_act() {
+    let tracer = super::Tracer::start_with(coral_mcp::Elicitation::Url).await;
+    tracer.require_approval().await;
     let endpoint = tracer.endpoint();
     for version in SUPPORTED_PROTOCOL_VERSIONS {
         let session = Session::open(&endpoint, version, None).await;
@@ -362,8 +364,7 @@ async fn only_wait_takes_a_repeated_call() {
         .iter()
         .filter(|version| !super::is_legacy(version.as_str()))
     {
-        let mut session = super::RawSession::open(&endpoint, version).await;
-        session.client_capabilities = json!({"elicitation": {"form": {}}});
+        let session = super::RawSession::open(&endpoint, version).await;
         let task = session.start_task("Retry on the wire").await;
         let arguments = json!({
             "task_id":task, "intent":"Invoke an approval-gated Tool",
@@ -456,8 +457,8 @@ async fn agents_are_never_prompted(endpoint: &str, version: &ProtocolVersion, cr
     session.close().await;
 }
 
-/// A 2026-07-28 client that declares the URL mode is asked about the approval
-/// in a link prompt that opens the Approvals Page. `exec` never asks; `wait`
+/// A 2026-07-28 client that declares only the URL mode is asked about the
+/// approval in a link prompt that opens the Approvals Page. `exec` never asks; `wait`
 /// does, before it holds, since the approval would not end the hold. Whatever
 /// the person answers, the repeated call goes on as a `wait`, and a link
 /// prompt decides nothing. Its cursor then carries what was asked, so the
@@ -471,7 +472,7 @@ async fn a_link_prompt_asks_once_and_any_answer_goes_on_waiting() {
         .find(|version| !super::is_legacy(version.as_str()))
         .expect("a version with Client Prompts");
     let mut session = super::RawSession::open(&endpoint, version).await;
-    session.client_capabilities = json!({"elicitation": {"form": {}, "url": {}}});
+    session.client_capabilities = json!({"elicitation": {"url": {}}});
     let task = session.start_task("Answer a link prompt").await;
     for answer in ["accept", "decline", "cancel"] {
         let update = session
@@ -587,5 +588,202 @@ async fn no_client_is_prompted_when_the_operator_turns_prompts_off() {
     );
     session
         .tool("cancel", json!({"run_id":update["run_id"]}))
+        .await;
+}
+
+/// A 2026-07-28 client that declares the form mode, in a deployment that
+/// allows forms, is asked about the approval in a form that shows its exact
+/// arguments and links its page. Approve and Decline decide it through the
+/// decision path Reef uses, which records where it was decided, and the Run
+/// goes on: the approval leaves the Run Update.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_form_prompt_decides_the_approval_it_shows() {
+    let tracer = approval_tracer().await;
+    let endpoint = tracer.endpoint();
+    let version = SUPPORTED_PROTOCOL_VERSIONS
+        .iter()
+        .find(|version| !super::is_legacy(version.as_str()))
+        .expect("a version with Client Prompts");
+    let mut session = super::RawSession::open(&endpoint, version).await;
+    session.client_capabilities = json!({"elicitation": {"form": {}, "url": {}}});
+    let task = session.start_task("Answer a form").await;
+    let actor = coral_workspace::AuthenticatedPrincipal::user(tracer.local_user.clone());
+    for (answer, decided) in [
+        ("accept", coral_run::approval::ApprovalState::Approved),
+        ("decline", coral_run::approval::ApprovalState::Declined),
+    ] {
+        let update = session
+            .tool(
+                "exec",
+                json!({
+                    "task_id":task, "intent":"Invoke an approval-gated Tool",
+                    "wait_ms":5000, "program":PROGRAM
+                }),
+            )
+            .await;
+        let update = &update["structuredContent"];
+        let action = &update["required_actions"][0];
+        let wait = json!({"run_id":update["run_id"], "cursor":update["next_cursor"], "wait_ms":0});
+        let asked = session
+            .result("tools/call", json!({"name":"wait", "arguments":wait}))
+            .await
+            .expect("wait asks");
+        assert_eq!(asked["resultType"], "input_required", "{answer}: {asked}");
+        let requests = asked["inputRequests"].as_object().expect("input requests");
+        let [(key, request)] = requests.iter().collect::<Vec<_>>()[..] else {
+            panic!("{answer}: one form for one approval: {asked}")
+        };
+        assert_eq!(request["params"]["mode"], "form");
+        assert_eq!(
+            request["params"]["requestedSchema"]["properties"],
+            json!({})
+        );
+        let message = request["params"]["message"].as_str().expect("message");
+        assert!(
+            message.contains("Arguments:\n{}"),
+            "the form shows the exact arguments: {message}"
+        );
+        assert!(
+            message.contains(&approval_url(&endpoint, &action["request_id"])),
+            "the form links the approval's page: {message}"
+        );
+
+        let repeated = session
+            .result(
+                "tools/call",
+                json!({
+                    "name":"wait",
+                    "arguments":{"run_id":update["run_id"], "cursor":update["next_cursor"], "wait_ms":30_000},
+                    "requestState":asked["requestState"],
+                    "inputResponses":{key.as_str():{"action":answer}}
+                }),
+            )
+            .await
+            .expect("the repeated wait is served");
+        assert_eq!(repeated["resultType"], "complete", "{answer}: {repeated}");
+        assert_eq!(
+            repeated["structuredContent"]["required_actions"],
+            json!([]),
+            "{answer}: the form decided the approval"
+        );
+        let id = coral_run::approval::ApprovalId::parse(
+            action["request_id"].as_str().expect("request identity"),
+        )
+        .expect("approval identity");
+        let recorded = tracer
+            .approvals
+            .get(&actor, &tracer.workspace_a, &id)
+            .await
+            .expect("the approval");
+        assert_eq!(recorded.state, decided, "{answer}");
+        assert_eq!(
+            recorded.comment.as_deref(),
+            Some("Decided in the AI app's prompt."),
+            "{answer}: the record says where it was decided"
+        );
+        session
+            .tool("cancel", json!({"run_id":update["run_id"]}))
+            .await;
+    }
+}
+
+/// An answer decides only for the User the approval names: the decision path
+/// authorizes the caller, as Reef's does. An Agent that repeats the User's
+/// form prompt with an Approve gets the decision's own refusal, which hides
+/// the approval. Neither that nor a call the User repeats with input `wait`
+/// refuses decides anything: the approval stays pending for the User, who is
+/// still asked.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_answer_from_anyone_but_the_named_user_decides_nothing() {
+    let tracer = approval_tracer().await;
+    let endpoint = tracer.endpoint();
+    let version = SUPPORTED_PROTOCOL_VERSIONS
+        .iter()
+        .find(|version| !super::is_legacy(version.as_str()))
+        .expect("a version with Client Prompts");
+    let capabilities = json!({"elicitation": {"form": {}, "url": {}}});
+    let mut user = super::RawSession::open(&endpoint, version).await;
+    user.client_capabilities = capabilities.clone();
+    let mut agent =
+        super::RawSession::open_as(&endpoint, version, Some(&tracer.agent_credential)).await;
+    agent.client_capabilities = capabilities;
+    let task = user.start_task("Answer for someone else").await;
+    let update = user
+        .tool(
+            "exec",
+            json!({
+                "task_id":task, "intent":"Invoke an approval-gated Tool",
+                "wait_ms":5000, "program":PROGRAM
+            }),
+        )
+        .await;
+    let update = &update["structuredContent"];
+    let action = &update["required_actions"][0];
+    let wait = json!({"run_id":update["run_id"], "cursor":update["next_cursor"], "wait_ms":0});
+    let asked = user
+        .result("tools/call", json!({"name":"wait", "arguments":wait}))
+        .await
+        .expect("wait asks");
+    let key = asked["inputRequests"]
+        .as_object()
+        .and_then(|requests| requests.keys().next())
+        .expect("one prompt")
+        .clone();
+
+    // The call checks its own input before it decides anything.
+    let invalid = user
+        .result(
+            "tools/call",
+            json!({
+                "name":"wait",
+                "arguments":{"run_id":update["run_id"], "cursor":update["next_cursor"], "wait_ms":u64::MAX},
+                "requestState":asked["requestState"],
+                "inputResponses":{key.as_str():{"action":"accept"}}
+            }),
+        )
+        .await
+        .expect_err("a wait_ms past the bound is refused");
+    assert_eq!(invalid["code"], -32602, "{invalid}");
+
+    let refused = agent
+        .result(
+            "tools/call",
+            json!({
+                "name":"wait", "arguments":wait, "requestState":asked["requestState"],
+                "inputResponses":{key.as_str():{"action":"accept"}}
+            }),
+        )
+        .await
+        .expect("the repeated wait is answered");
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert_eq!(
+        refused["structuredContent"]["code"], "approval_not_found",
+        "the decision's refusal, not the observation's: {refused}"
+    );
+
+    let id = coral_run::approval::ApprovalId::parse(
+        action["request_id"].as_str().expect("request identity"),
+    )
+    .expect("approval identity");
+    let actor = coral_workspace::AuthenticatedPrincipal::user(tracer.local_user.clone());
+    let recorded = tracer
+        .approvals
+        .get(&actor, &tracer.workspace_a, &id)
+        .await
+        .expect("the approval");
+    assert_eq!(
+        recorded.state,
+        coral_run::approval::ApprovalState::Pending,
+        "neither refused answer decided anything"
+    );
+    let again = user
+        .result("tools/call", json!({"name":"wait", "arguments":wait}))
+        .await
+        .expect("wait asks");
+    assert_eq!(
+        again["resultType"], "input_required",
+        "the User is still asked: {again}"
+    );
+    user.tool("cancel", json!({"run_id":update["run_id"]}))
         .await;
 }

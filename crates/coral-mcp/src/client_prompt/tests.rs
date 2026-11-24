@@ -1,9 +1,9 @@
 use base64::Engine as _;
 use coral_run::{RequiredAction, RequiredActionRequest, RequiredActor, RunCursor, RunId};
-use rmcp::model::ClientCapabilities;
+use rmcp::model::{ClientCapabilities, InputResponses};
 use serde_json::json;
 
-use super::{Ask, Shown, WaitCursor, shown_in_state};
+use super::{Ask, Mode, Prompted, Shown, WaitCursor, prompted_in_state};
 use crate::Elicitation;
 
 /// A Run cursor as `coral-run` issues one: format 4 and 56 bytes of position.
@@ -29,11 +29,19 @@ fn approval(id: &str) -> RequiredAction {
 const FIRST: &str = "12345678-1234-4123-8123-123456789abc";
 const SECOND: &str = "87654321-4321-4321-8321-cba987654321";
 
-// Catches: a prompt sent to a client that did not declare the mode, which
-// rmcp refuses before 2026-07-28 and a client cannot show; or one sent when
-// the operator turned prompts off.
+fn connection(id: &str) -> RequiredAction {
+    RequiredAction {
+        request: RequiredActionRequest::parse(&format!("connection/{id}")).expect("connection"),
+        ..approval(id)
+    }
+}
+
+// Catches: a prompt the client did not declare, which rmcp refuses before
+// 2026-07-28 and a client cannot show; a form when the operator chose links
+// or none; or a form for a connection, which happens at the Provider's
+// sign-in.
 #[test]
-fn a_link_prompt_needs_the_declared_url_mode_and_a_setting_that_allows_it() {
+fn each_request_is_asked_only_as_the_client_declares_and_the_setting_allows() {
     let declared = |capabilities: serde_json::Value| {
         serde_json::from_value::<ClientCapabilities>(capabilities).expect("capabilities")
     };
@@ -41,21 +49,96 @@ fn a_link_prompt_needs_the_declared_url_mode_and_a_setting_that_allows_it() {
     let url = declared(json!({"elicitation": {"url": {}}}));
     let form = declared(json!({"elicitation": {"form": {}}}));
     let none = declared(json!({}));
+    let (approval, connection) = (approval(FIRST), connection(FIRST));
     for (setting, capabilities, expected) in [
-        (Elicitation::Form, Some(&both), Some(Ask::Link)),
-        (Elicitation::Url, Some(&both), Some(Ask::Link)),
-        (Elicitation::Form, Some(&url), Some(Ask::Link)),
-        (Elicitation::Off, Some(&both), None),
-        (Elicitation::Form, Some(&form), None),
-        (Elicitation::Form, Some(&none), None),
+        (
+            Elicitation::Form,
+            Some(&both),
+            (Some(Mode::Form), Some(Mode::Link)),
+        ),
+        (Elicitation::Form, Some(&form), (Some(Mode::Form), None)),
+        (
+            Elicitation::Form,
+            Some(&url),
+            (Some(Mode::Link), Some(Mode::Link)),
+        ),
+        (
+            Elicitation::Url,
+            Some(&both),
+            (Some(Mode::Link), Some(Mode::Link)),
+        ),
+        (Elicitation::Url, Some(&form), (None, None)),
+        (Elicitation::Off, Some(&both), (None, None)),
+        (Elicitation::Form, Some(&none), (None, None)),
         // A request before 2026-07-28 declares nothing of its own.
-        (Elicitation::Form, None, None),
+        (Elicitation::Form, None, (None, None)),
     ] {
-        assert_eq!(
-            Ask::of(setting, capabilities),
-            expected,
-            "{setting:?} {capabilities:?}"
+        let ask = Ask::of(setting, capabilities);
+        let modes = (
+            ask.and_then(|ask| ask.mode(&approval)),
+            ask.and_then(|ask| ask.mode(&connection)),
         );
+        assert_eq!(modes, expected, "{setting:?} {capabilities:?}");
+    }
+}
+
+/// The request state that `prompt` returns for `action` asked as `mode`, as
+/// the client sends it back.
+fn prompted(action: &RequiredAction, mode: Mode) -> Prompted {
+    let run_id = RunId::parse("play-length-height-type").expect("Run id");
+    let human_interface =
+        crate::HumanInterfaceUrl::parse("https://coral.example").expect("human interface");
+    let prompt = super::prompt(
+        &run_id,
+        action,
+        mode,
+        Some("{}"),
+        &Shown::default(),
+        &human_interface,
+    )
+    .expect("prompt");
+    let state = prompt.request_state.expect("request state");
+    prompted_in_state(&state, &run_id).expect("Coral's own state")
+}
+
+// Catches: a link prompt's accept approving a tool call, as when an approval
+// whose arguments are too long for a form is asked as a link under the
+// `form` setting; an answer to a request this prompt did not ask deciding
+// it; or a dismissed form declining.
+#[test]
+fn only_an_answer_to_the_form_this_prompt_asked_decides() {
+    let declared = serde_json::from_value::<ClientCapabilities>(
+        json!({"elicitation": {"form": {}, "url": {}}}),
+    )
+    .expect("capabilities");
+    let form = Ask::of(Elicitation::Form, Some(&declared)).expect("form");
+    let links = Ask::of(Elicitation::Url, Some(&declared)).expect("links");
+    let answers = |action: &str| -> InputResponses {
+        [
+            (format!("approval/{FIRST}"), json!({"action": action})),
+            (format!("approval/{SECOND}"), json!({"action": action})),
+            (format!("connection/{SECOND}"), json!({"action": action})),
+        ]
+        .into_iter()
+        .collect()
+    };
+    let first = coral_run::approval::ApprovalId::parse(FIRST).expect("approval identity");
+    let asked_as_form = prompted(&approval(FIRST), Mode::Form);
+    let asked_as_link = prompted(&approval(FIRST), Mode::Link);
+    for (ask, state, action, expected) in [
+        (form, &asked_as_form, "accept", Some("Approve")),
+        (form, &asked_as_form, "decline", Some("Decline")),
+        (form, &asked_as_form, "cancel", None),
+        (form, &asked_as_link, "accept", None),
+        (form, &asked_as_link, "decline", None),
+        (links, &asked_as_form, "accept", None),
+        (form, &Prompted::default(), "accept", None),
+    ] {
+        let decided = ask
+            .decision(&answers(action), state)
+            .map(|(id, decision)| (id, format!("{decision:?}")));
+        let expected = expected.map(|decision| (first.clone(), decision.to_owned()));
+        assert_eq!(decided, expected, "{ask:?} {state:?} {action}");
     }
 }
 
@@ -118,13 +201,14 @@ fn the_request_state_counts_only_for_its_own_run() {
         serde_json::to_vec(&super::RequestState {
             run: run_id.to_string(),
             shown: Shown::default().with(&approval(FIRST)).encode(),
+            form: None,
         })
         .expect("state"),
     );
     assert_eq!(
-        shown_in_state(&state, &run_id),
+        prompted_in_state(&state, &run_id).map(|prompted| prompted.shown),
         Some(Shown::default().with(&approval(FIRST)))
     );
-    assert_eq!(shown_in_state(&state, &other), None);
-    assert_eq!(shown_in_state("never-issued", &run_id), None);
+    assert_eq!(prompted_in_state(&state, &other), None);
+    assert_eq!(prompted_in_state("never-issued", &run_id), None);
 }
