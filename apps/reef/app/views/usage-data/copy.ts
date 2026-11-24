@@ -11,14 +11,14 @@ export function place(kind: UsageDataView['kind']): string {
   return kind === 'desktop' ? 'your computer' : 'this server'
 }
 
-/** Why sharing is off and the switch takes no change. */
+/** Why the switch shows off and takes no change. */
 export function blockReason(block: SendBlock, kind: UsageDataView['kind']): string {
   switch (block.kind) {
     case 'build':
-      return 'Sharing is off in a source build.'
+      return 'You cannot turn on sharing in a source build.'
     case 'unknown':
-      return `Sharing is off on ${place(kind)}.`
+      return `You cannot turn on sharing for ${place(kind)}.`
     case 'environment':
-      return `Sharing is off while ${block.variable} is set on ${place(kind)}.`
+      return `You cannot turn on sharing while ${block.variable} is set on ${place(kind)}.`
   }
 }

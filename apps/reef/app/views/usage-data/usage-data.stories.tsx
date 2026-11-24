@@ -208,7 +208,7 @@ export const TurnedOffByDoNotTrack: Story = {
     // The tooltip renders outside the canvas, apart from the reason kept for screen readers.
     await waitFor(() => {
       const popup = screen
-        .getAllByText('Sharing is off while DO_NOT_TRACK is set on your computer.')
+        .getAllByText('You cannot turn on sharing while DO_NOT_TRACK is set on your computer.')
         .find((element) => !canvasElement.contains(element))
       expect(popup).toBeVisible()
     })
@@ -229,21 +229,27 @@ export const TurnedOffByCoralDisableUsageData: Story = {
   play: async ({ canvasElement }) => {
     await expect(
       within(canvasElement).getByText(
-        'Sharing is off while CORAL_DISABLE_USAGE_DATA is set on this server.',
+        'You cannot turn on sharing while CORAL_DISABLE_USAGE_DATA is set on this server.',
       ),
     ).toBeInTheDocument()
   },
 }
 
 /** A reason from a newer Coral that this Reef cannot name still turns the switch off. */
+// Catches: a reason that a tap does not show, as a touch screen opens no tooltip.
 export const TurnedOffForAnUnknownReason: Story = {
   args: { view: { ...sharing, block: { kind: 'unknown' } } },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await expect(
-      canvas.getByRole('switch', { name: 'Share anonymous usage data' }),
-    ).toHaveAttribute('aria-disabled', 'true')
-    await expect(canvas.getByText('Sharing is off on your computer.')).toBeInTheDocument()
+    const toggle = canvas.getByRole('switch', { name: 'Share anonymous usage data' })
+    await expect(toggle).toHaveAttribute('aria-disabled', 'true')
+    await userEvent.pointer({ keys: '[TouchA]', target: toggle })
+    await waitFor(() => {
+      const popup = screen
+        .getAllByText('You cannot turn on sharing for your computer.')
+        .find((element) => !canvasElement.contains(element))
+      expect(popup).toBeVisible()
+    })
   },
 }
 

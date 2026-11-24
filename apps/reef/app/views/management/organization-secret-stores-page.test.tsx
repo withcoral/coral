@@ -27,7 +27,22 @@ const store = (
 const STORES = [
   store('vault', 'Vault KV v2', [], ['Support']),
   store('retired', null, ['Removed from config']),
-  store('Aws', 'AWS Secrets Manager'),
+  {
+    // Two workspaces share a name, so each label adds the start of its ID.
+    ...store('Aws', 'AWS Secrets Manager'),
+    workspaces: [
+      {
+        name: 'workspaces/1a2b3c4d-0000-4000-8000-000000000001',
+        displayName: 'Ops',
+        archived: false,
+      },
+      {
+        name: 'workspaces/9f8e7d6c-0000-4000-8000-000000000002',
+        displayName: 'Ops',
+        archived: false,
+      },
+    ],
+  },
   store('research', 'Vault KV v2', ['Needs Enterprise']),
 ]
 
@@ -70,11 +85,15 @@ it.each([
   expect(shown()).toEqual(order)
 })
 
-// Catches: a filter that misses a store by its kind or a granted workspace, or a status
-// filter that keeps a store Coral cannot read among the available ones.
+// Catches: a filter that misses a store by the kind or the workspace label its row shows,
+// or a status filter that keeps a store Coral cannot read among the available ones.
 it.each([
   ['retired', 'All statuses', ['retired']],
   ['secrets manager', 'All statuses', ['Aws']],
+  // The kind a store config removed shows.
+  ['unknown', 'All statuses', ['retired']],
+  // The ID start that tells two workspaces of one name apart.
+  ['9f8e7d6c', 'All statuses', ['Aws']],
   ['support', 'All statuses', ['vault']],
   ['', 'Available', ['Aws', 'vault']],
   ['', 'Blocked', ['research', 'retired']],

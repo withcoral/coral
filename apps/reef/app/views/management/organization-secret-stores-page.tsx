@@ -37,9 +37,14 @@ interface ActiveWorkspace {
   displayName: string
 }
 
+/** The kind a row shows. A store that config no longer defines has none. */
+function kindLabel(store: SecretStoreRow) {
+  return store.kind ?? 'Unknown'
+}
+
 const SORT_COLUMNS = {
   name: Table.byText((store: SecretStoreRow) => store.name),
-  kind: Table.byText((store: SecretStoreRow) => store.kind ?? 'Unknown'),
+  kind: Table.byText(kindLabel),
   // The stores Coral cannot read from come first, then each status by the label you read.
   status: {
     compare: (a: SecretStoreRow, b: SecretStoreRow) =>
@@ -79,11 +84,16 @@ export function OrganizationSecretStoresPage({
     initial: 'name',
     tiebreak: SORT_COLUMNS.name.compare,
   })
-  // The filter matches the store's name, its kind and the workspaces that hold a grant.
+  // The filter matches the text a row shows: the store's name, its kind and the labels of
+  // the workspaces that hold a grant.
   const shown = stores.filter(
     (store) =>
       (status === 'all' || (status === 'blocked') === store.blockers.length > 0) &&
-      query.matches(store.name, store.kind, ...store.workspaces.map((w) => w.displayName)),
+      query.matches(
+        store.name,
+        kindLabel(store),
+        ...workspaceOptions(store.workspaces).map((option) => option.label),
+      ),
   )
   return (
     <ManagementLayout breadcrumbs={trail([], 'Secret stores')} titled compact>
@@ -135,7 +145,7 @@ export function OrganizationSecretStoresPage({
               fullSize={false}
               iconName="KeyRound"
               title="No secret stores yet"
-              description="The secret stores that you define in config.toml show here."
+              description="Define secret stores in config.toml to see them here."
             />
           </Table.Status>
         ) : (
@@ -149,7 +159,7 @@ export function OrganizationSecretStoresPage({
           {sort.rows(shown).map((store) => (
             <Table.Row key={store.name}>
               <Table.Cell title={store.name}>{store.name}</Table.Cell>
-              <Table.Cell>{store.kind ?? 'Unknown'}</Table.Cell>
+              <Table.Cell>{kindLabel(store)}</Table.Cell>
               <Table.Cell>
                 <Status blockers={store.blockers} ready="Available" />
               </Table.Cell>

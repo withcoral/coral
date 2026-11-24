@@ -47,8 +47,9 @@ export function UsageDataPage({
         description={`${contents} This applies to the whole organization.`}
         action={
           blocked ? (
-            // The disabled switch takes no focus, so its wrapper takes it and shows the reason.
-            <Tooltip content={blocked}>
+            // The disabled switch takes no focus, so its wrapper takes it and shows the reason,
+            // on a tap too.
+            <Tooltip content={blocked} openOnTap>
               <span className={styles.blockedSwitch} tabIndex={0}>
                 {toggle}
                 <span className={visuallyHidden}>{blocked}</span>
