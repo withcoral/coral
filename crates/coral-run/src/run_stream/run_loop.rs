@@ -33,6 +33,11 @@
 //! transaction: the Run row read without a hold, the row work, the Events,
 //! and the head update that asserts the loop's claim and the head it tracks
 //! in memory and stamps the commit time.
+//!
+//! Two writes of a Run stream go outside the loop's chunks (`completion`):
+//! the timeout of a Run whose deadline passed before its Program started,
+//! which the stream writes before any loop exists, and the terminal write
+//! once the Program has ended.
 
 mod chunk;
 mod completion;

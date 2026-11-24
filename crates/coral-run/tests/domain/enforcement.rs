@@ -999,7 +999,7 @@ enum EnforcementRace {
     Policy,
 }
 
-/// The three parallel calls of one Run ask the owner for the enforcement point
+/// The three parallel calls of one Run ask the loop for the enforcement point
 /// together; one enforcement check decides them, each on its own facts, and
 /// records the two permitted dispatch starts in one chunk commit at one clock
 /// sample.
@@ -1355,7 +1355,7 @@ async fn enforcement_checks_of_two_runs_share_their_locks_and_an_authority_write
 }
 
 /// The parked-wait precheck (a snapshot, no holds) and the enforcement point
-/// (the owner's commit, shared holds) load the same facts through one loader
+/// (the loop's commit, shared holds) load the same facts through one loader
 /// and decide them through one evaluator, so they agree in every situation.
 #[tokio::test]
 #[expect(

@@ -139,24 +139,24 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - A Run executes on a Run Executor over a Run stream
   ([ADR 0027](docs/adr/0027-run-executors-compile-and-execute-programs.md)).
   The Coral Instance that holds the stream hosts the Run's loop (the
-  `run_stream::run_loop` module of `coral-run`). The loop applies the stream's
-  requests in number order, commits each chunk under the claim and the head
-  and marks it by its commit time, and rebuilds a chunk on a head that another
-  writer moved under the claim, dropping the requests that writer committed.
-  At the Run's deadline, at a CPU or memory limit, or when its Program host is
-  lost, it commits what it applied, then ends the Run and its open Invocations
-  in one chunk, and only then does the stream hear of it. A reopen of the
+  `run_stream::run_loop` module of `coral-run`). The loop applies the stream's requests in number
+  order, commits each chunk under the claim and the head and marks it by its
+  commit time, and rebuilds a chunk on a head that another writer moved
+  under the claim, dropping the requests that writer committed. At the Run's
+  deadline, at a CPU or memory limit, or when its Program host is lost, it
+  commits what it applied, then ends the Run and its open Invocations in one
+  chunk, and only then does the stream hear of it. A reopen of the
   stream starts a new loop, rebuilt from the ledger; the loop it replaces
-  rebuilds nothing, and its chunk is refused. A loop writes its Run only while
-  the row names its Coral Instance as the stream's holder. In the Shutdown
-  Drain, a loop dispatches no call the Program makes after the drain starts,
-  and once its Coral Instance holds no pull stream and no dispatch is in
-  flight, it detaches and ends the stream cleanly. At the drain's length it
-  moves the stream at once, and the Coral Instance the stream reopens on ends
-  the calls still in flight `indeterminate`. A local child's stream can reopen
-  only on its parent, so its loop keeps dispatching through the drain, and at
-  the drain's length it ends the Run Interrupted, or TimedOut past its
-  deadline.
+  rebuilds nothing, and its chunk is refused. A loop writes its Run only
+  while the row names its Coral Instance as the stream's holder. In the
+  Shutdown Drain, a loop dispatches no call the Program makes after the
+  drain starts, and once its Coral Instance holds no pull stream and no
+  dispatch is in flight, it detaches and ends the stream cleanly. At the
+  drain's length it moves the stream at once, and the Coral Instance the
+  stream reopens on ends the calls still in flight `indeterminate`. A local
+  child's stream can reopen only on its parent, so
+  its loop keeps dispatching through the drain, and at the drain's length
+  it ends the Run Interrupted, or TimedOut past its deadline.
 - A nonterminal Run has three writers: its loop, the Coral Instance that
   receives an outside request for it (a decision on one of its Approval
   Requests, or a cancellation), and the Run sweeper, one Coral Instance at a

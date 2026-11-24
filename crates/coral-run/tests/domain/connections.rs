@@ -492,7 +492,7 @@ async fn an_ended_request_records_one_terminal_event_and_replays_unchanged() {
     }
 }
 
-/// The owner arms a timer at each connection request's deadline when an
+/// The loop arms a timer at each connection request's deadline when an
 /// Invocation parks on it, beside the Run deadline's; when it fires, the
 /// loop sends the parked Invocation back to its held recheck, which records
 /// what the request became.
@@ -538,7 +538,7 @@ async fn the_loop_arms_a_timer_at_a_connection_requests_deadline() {
         probe
             .armed(&crate::run_stream::run_loop::Timer::RunDeadline)
             .is_some(),
-        "the Run deadline is the owner's timer too"
+        "the Run deadline is the loop's timer too"
     );
     let terminal = runs
         .cancel(
@@ -1257,7 +1257,7 @@ async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_afte
 
 /// A wake-up is a hint: with the change listener down, the periodic
 /// precheck still finds a completed connection and the Invocation
-/// dispatches. During the outage the owner's subscription rings nothing and
+/// dispatches. During the outage the loop's subscription rings nothing and
 /// subscribes again only a wake gap apart, which here outlasts the finding.
 /// The test cuts the listener only after the check from the subscription's
 /// first ring.
@@ -1289,7 +1289,7 @@ async fn with_the_change_listener_down_the_periodic_precheck_still_finds_a_compl
         .unwrap();
     wait_for_connection(&accounts, &tool).await;
     probe.until_parked(1).await;
-    // The owner's subscription rings once as it starts, and that ring's
+    // The loop's subscription rings once as it starts, and that ring's
     // check of the connection waits could otherwise read after the
     // connection completes below and find it first.
     wait_until(|| {

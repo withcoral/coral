@@ -776,7 +776,7 @@ impl LicenseSettings {
 struct RuntimeSettings {
     execution_heap_bytes: usize,
     compiler_heap_bytes: usize,
-    /// Program output a Run Owner may hold applied but not yet recorded before
+    /// Program output a Run's loop may hold applied but not yet recorded before
     /// Program requests wait for their chunk to commit. At least twice the
     /// chunk bytes cap; 8 MiB by default.
     #[serde(rename = "applied_output_cap_bytes")]

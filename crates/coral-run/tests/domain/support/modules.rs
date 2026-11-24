@@ -205,7 +205,7 @@ impl TestModules {
     }
 
     /// A production-wired Run Module (real V8 and upstream) over this fixture's
-    /// database, optionally resolving caller and shared Accounts. Its owners
+    /// database, optionally resolving caller and shared Accounts. Its loops
     /// precheck their parked waits on the test cadence, so a wait that became
     /// moot is found within a test's wait for the Run's end.
     pub(crate) fn live_runs(&self, accounts: Option<AccountModule>) -> RunModule {

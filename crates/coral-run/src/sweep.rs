@@ -194,7 +194,7 @@ impl RunModule {
     /// deadline still passed as the transaction reads it.
     async fn end_on_deadline(&self, held: &HeldRun, now: i64) -> Result<bool, Error> {
         let mut transaction = self.database.begin().await?;
-        match unowned(&mut transaction, &held.workspace_id, &held.run_id).await? {
+        match find_without_worker_claim(&mut transaction, &held.workspace_id, &held.run_id).await? {
             Some(run) if run.deadline_passed(now) => self.end(transaction, &run, now).await,
             _ => Ok(false),
         }
@@ -225,7 +225,8 @@ impl RunModule {
         now: i64,
     ) -> Result<bool, Error> {
         let mut transaction = self.database.begin().await?;
-        let Some(run) = unowned(&mut transaction, workspace_id, run_id).await? else {
+        let Some(run) = find_without_worker_claim(&mut transaction, workspace_id, run_id).await?
+        else {
             return Ok(false);
         };
         if run.termination.is_some()
@@ -332,10 +333,13 @@ impl RunModule {
         }
         // A take mints a new claim: the same one means the same take, so the
         // Run still names this Run Executor.
-        let run = match unowned(&mut transaction, &held.workspace_id, &held.run_id).await? {
-            Some(run) if run.execution_claim_id.as_deref() == Some(held.claim.as_str()) => run,
-            _ => return Ok(Released::Skipped),
-        };
+        let run =
+            match find_without_worker_claim(&mut transaction, &held.workspace_id, &held.run_id)
+                .await?
+            {
+                Some(run) if run.execution_claim_id.as_deref() == Some(held.claim.as_str()) => run,
+                _ => return Ok(Released::Skipped),
+            };
         let written = if run.execution_started() {
             self.end(transaction, &run, now)
                 .await?
@@ -371,7 +375,7 @@ impl RunModule {
 
 /// The Run as `transaction` reads it, while it is running with no worker
 /// claim: no older release's Run Owner fences it.
-async fn unowned(
+async fn find_without_worker_claim(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     run_id: &RunId,

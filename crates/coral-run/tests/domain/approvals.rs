@@ -760,7 +760,7 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
     );
 }
 
-/// The owner's timer for an Approval Request expires it: the request is
+/// The loop's timer for an Approval Request expires it: the request is
 /// recorded Expired with no approver, dated at its deadline, its Invocation
 /// ends `approval_expired`, every reader shows the record (no action, not
 /// actionable), and a decision that arrives after the timer fired is
@@ -768,7 +768,7 @@ async fn approval_deadline_follows_the_run_timeout_and_stays_decidable_until_it(
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "one journey follows the owner's expiry through every reader of the request"
+    reason = "one journey follows the loop's expiry through every reader of the request"
 )]
 async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_reads_expired() {
     let mut fixture = TestModules::new(Arc::new(
@@ -805,7 +805,7 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     );
     // The timer's message arrives once the pending set is read: a real
     // timer would race that read. The test clock stays before the deadline,
-    // so nothing but the owner's record can show the expiry.
+    // so nothing but the loop's record can show the expiry.
     let read = || approvals.get(&tool.principal, &tool.workspace_id, &request.id);
     let pending = approval_revision(&fixture.runs, &tool.principal, &tool.workspace_id).await;
     fixture
@@ -895,7 +895,7 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     assert_eq!(event.occurred_at_unix_nanos, request.deadline_at_unix_nanos);
 }
 
-/// A request whose deadline passed on the clock but whose timer the owner
+/// A request whose deadline passed on the clock but whose timer the loop
 /// has not applied reads as recorded: pending, with its deadline, in the
 /// request itself, the required actions and the Run's action page. No
 /// reader derives Expired from the clock.
@@ -934,7 +934,7 @@ async fn a_request_past_its_deadline_reads_pending_until_the_loop_records_its_ex
         run.run_id(),
     )
     .await;
-    // The owner arms the request's timer when it parks the Invocation, for
+    // The loop arms the request's timer when it parks the Invocation, for
     // the time its clock then leaves until the deadline: a clock moved before
     // that would fire the timer at once.
     let timer = crate::run_stream::run_loop::Timer::Approval(request.id.clone());
@@ -1916,7 +1916,7 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
 /// loop and holds nothing. Commits elsewhere ring the content-free
 /// change signal, but a loop subscribes only for a connection wait, so
 /// they wake nothing, read nothing and enforce nothing: the decision comes
-/// through the owner, and the periodic precheck (15 s away here) is the
+/// through the loop, and the periodic precheck (15 s away here) is the
 /// ceiling for everything else. Polling a snapshot per parked wait on every
 /// commit used to starve the pool.
 #[tokio::test]
@@ -1977,7 +1977,7 @@ async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_enforcement_
 /// decision is pending) is found by the periodic precheck alone: its
 /// snapshot finds the authority lost, and the Invocation goes back to its
 /// held gate, which refuses it under the enforcement point's shared holds and
-/// closes the request. No enforcement check ever runs. The owner's timers run
+/// closes the request. No enforcement check ever runs. The loop's timers run
 /// on the host clock, so the test shortens the precheck's period instead of
 /// advancing a clock 15 s.
 #[tokio::test]
@@ -2058,7 +2058,7 @@ async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_reque
     );
 }
 
-/// A parked approval wait ends when the owner's timer records the expiry:
+/// A parked approval wait ends when the loop's timer records the expiry:
 /// the chunk that records it ends the Invocation and wakes the parked wait,
 /// with no read, long before the periodic precheck. The wait parks once.
 #[tokio::test]

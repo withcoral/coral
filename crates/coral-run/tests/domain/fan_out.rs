@@ -4,8 +4,8 @@
 //! action, and starts its dispatch in readiness order when an earlier one
 //! ends; a wait for an approval or a refresh holds no slot, so every Approval
 //! Request is visible at once; a Run terminated while a call waits for a slot
-//! ends it as `run_terminated`. The owner's in-memory rule has its own rows in
-//! the `apply` table (`owner.rs`).
+//! ends it as `run_terminated`. The loop's in-memory rule has its own rows in
+//! the `apply` table (`run_loop.rs`).
 use super::*;
 
 use std::sync::atomic::AtomicU64;

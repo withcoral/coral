@@ -376,7 +376,7 @@ impl Termination {
                 .cancel(principal, workspace, run, &immediate(None, 100))
                 .await
                 .expect("cancel in-flight work"),
-            // The owner's own timer applies the deadline on the host clock.
+            // The loop's own timer applies the deadline on the host clock.
             Self::Deadline => {
                 wait_until_async(async || {
                     fixture.run_record(workspace, run).await.state.is_terminal()

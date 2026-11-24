@@ -421,13 +421,13 @@ pub(crate) struct RequestTicket(Option<(u64, LoopHandle)>);
 
 impl RequestTicket {
     pub(crate) fn number(&self) -> Option<u64> {
-        self.0.as_ref().map(|(number, _owner)| *number)
+        self.0.as_ref().map(|(number, _run_loop)| *number)
     }
 
     /// `message` as the request it answers, once.
     fn carry(&mut self, message: Message) -> Message {
         match self.0.take() {
-            Some((number, _owner)) => Message::Request {
+            Some((number, _run_loop)) => Message::Request {
                 number,
                 message: Some(Box::new(message)),
             },

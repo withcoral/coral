@@ -334,7 +334,7 @@ async fn waiting_observation_wakes_when_the_loop_records_an_actions_expiry() {
         ));
     let update = tokio::time::timeout(EVENTUALLY, pending)
         .await
-        .expect("the owner's expiry chunk ends the wait long before its deadline")
+        .expect("the loop's expiry chunk ends the wait long before its deadline")
         .unwrap();
     assert_eq!(update.required_actions(), []);
 }

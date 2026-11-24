@@ -144,7 +144,7 @@ impl RunModule {
     /// # Errors
     ///
     /// [`Error::ClaimMismatch`] when the Run row no longer holds `claim_id`
-    /// (another writer took the Run) or, for a [`Interrupter::Loop`]
+    /// (another writer took the Run) or, for an [`Interrupter::Loop`]
     /// on a Run a Run Executor holds, names another
     /// Coral Instance as its stream's holder (its stream reopened there),
     /// [`Error::RunEnded`] when the Run is
