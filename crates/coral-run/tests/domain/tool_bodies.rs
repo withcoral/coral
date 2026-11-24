@@ -149,11 +149,11 @@ impl BodyScope {
         }
     }
 
-    /// Waits until `run` records its termination, or has ended.
-    async fn termination_is_recorded(&self, run: &crate::RunId) {
+    /// Waits until `run` has ended.
+    async fn run_has_ended(&self, run: &crate::RunId) {
         wait_until_async(async || {
             let record = self.fixture.run_record(&self.tool.workspace_id, run).await;
-            record.termination.is_some() || record.state != RunState::Running
+            record.state != RunState::Running
         })
         .await;
     }
@@ -295,7 +295,7 @@ async fn a_run_that_ends_during_a_tool_body_ends_its_call_as_run_terminated() {
         let cancel = scope.end(ending, &run);
         if !matches!(ending, Ending::CpuLimitExceeded) {
             // The body's call answers only after the Run ended.
-            scope.termination_is_recorded(&run).await;
+            scope.run_has_ended(&run).await;
             scope.upstream.release();
         }
 
@@ -932,7 +932,7 @@ async fn a_run_that_ends_while_a_call_waits_for_its_children_ends_it_as_run_term
     wait_until(|| scope.upstream.entered.load(Ordering::SeqCst)).await;
 
     let cancel = scope.end(Ending::Canceled, &run).expect("a cancel");
-    scope.termination_is_recorded(&run).await;
+    scope.run_has_ended(&run).await;
     scope.upstream.release();
 
     let terminal = scope.terminal(&run).await;

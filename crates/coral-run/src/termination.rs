@@ -165,12 +165,13 @@ impl RunModule {
         if run.state.is_terminal() {
             // An earlier attempt of this very interruption may have landed
             // without an answer: the row then carries the claim it wrote and
-            // the outcome it chose, the recorded termination's before the
-            // decided one's.
-            let chosen = run
-                .termination
-                .map(|recorded| recorded.kind)
-                .or(decided.map(|end| end.termination.kind));
+            // the outcome it chose, the decided termination's, else the one
+            // an older build recorded. An older build also records the
+            // termination of a Run it ended itself, so the decided one is
+            // compared first.
+            let chosen = decided
+                .map(|end| end.termination.kind)
+                .or(run.termination.map(|recorded| recorded.kind));
             let recorded_by_us = run.execution_claim_id.as_deref() == Some(claim_id)
                 && chosen.map_or(
                     matches!(run.state, RunState::Interrupted | RunState::TimedOut),
@@ -228,9 +229,9 @@ impl RunModule {
 }
 
 /// The one chunk that ends `run`, as read in `transaction`. The Run ends
-/// with the termination its row records, else the `cancellation` the
-/// writer applied (a Principal's, with its `cancellation.requested`, or a
-/// Run stream owner's decided end), else timed out at
+/// with the termination an older build recorded on its row, else the one
+/// the writer `decided` (a Principal's cancellation, with its
+/// `cancellation.requested`, or a Run stream loop's end), else timed out at
 /// `now_unix_nanos` past its deadline (as every deadline path records), else
 /// interrupted then. Every nonterminal Invocation ends (`run_terminated`
 /// before its dispatch, `indeterminate` once dispatching, `run_terminated`
@@ -243,20 +244,20 @@ impl RunModule {
 pub(crate) async fn end_in_one_chunk(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
-    cancellation: Option<RequestedTermination>,
+    decided: Option<RequestedTermination>,
     now_unix_nanos: i64,
 ) -> Result<(RunTerminationKind, i64), Error> {
     let mut events = Vec::new();
-    let termination = match (run.termination, cancellation) {
+    let termination = match (run.termination, decided) {
         (Some(recorded), _) => RequestedTermination::recorded(recorded),
-        (None, Some(cancellation)) => {
-            events.extend(cancellation.requester.clone().map(|requester| {
+        (None, Some(decided)) => {
+            events.extend(decided.requester.clone().map(|requester| {
                 OwnedEvent::new(
                     OwnedEventKind::CancellationRequested(requester),
-                    cancellation.termination.started_at_unix_nanos,
+                    decided.termination.started_at_unix_nanos,
                 )
             }));
-            cancellation
+            decided
         }
         (None, None) if run.deadline_passed(now_unix_nanos) => {
             RequestedTermination::unrequested(RunTerminationKind::TimedOut, now_unix_nanos)?
@@ -299,11 +300,10 @@ pub(crate) enum Interrupter {
 pub(crate) async fn commit_end(
     mut transaction: Transaction<'_>,
     run: &RunRecord,
-    cancellation: Option<RequestedTermination>,
+    decided: Option<RequestedTermination>,
     now_unix_nanos: i64,
 ) -> Result<(), Error> {
-    let (kind, ended_at) =
-        end_in_one_chunk(&mut transaction, run, cancellation, now_unix_nanos).await?;
+    let (kind, ended_at) = end_in_one_chunk(&mut transaction, run, decided, now_unix_nanos).await?;
     transaction.commit().await?;
     let outcome = kind.outcome();
     let end = if run.execution_started() {

@@ -2406,7 +2406,7 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
         .await;
         fixture.serve().await;
         let tool = fixture
-            .user_tool("user:decide-settling", "Decide while settling")
+            .user_tool("user:decide-dispatching", "Decide while dispatching")
             .await;
         fixture.require_approval(&tool).await;
         let approvals = fixture.approvals();

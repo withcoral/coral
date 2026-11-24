@@ -154,7 +154,7 @@ fn returned_outcome(
         ExecutionCompletion::ProgramHostTerminated
         | ExecutionCompletion::MemoryLimitExceeded
         | ExecutionCompletion::CpuLimitExceeded => {
-            unreachable!("host termination creates durable interruption evidence before completion")
+            unreachable!("a limit or a lost Program host ends the Run before this write")
         }
     };
     let over_budget = matches!(&outcome, RunTerminalOutcome::Succeeded {

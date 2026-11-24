@@ -143,8 +143,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   order, commits each chunk under the claim and the head and marks it by its
   commit time, and rebuilds a chunk on a head that another writer moved
   under the claim, dropping the requests that writer committed. At the Run's
-  deadline, it commits what it applied, then ends the Run and its open
-  Invocations in one chunk, and only then sends `Terminate`. A reopen of the
+  deadline, at a CPU or memory limit, or when its Program host is lost, it
+  commits what it applied, then ends the Run and its open Invocations in one
+  chunk, and only then does the stream hear of it. A reopen of the
   stream starts a new loop, rebuilt from the ledger; the loop it replaces
   rebuilds nothing, and its chunk is refused. A loop writes its Run only
   while the row names its Coral Instance as the stream's holder. In the
@@ -182,10 +183,12 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   retired, and a definite answer (a rejection, a claim mismatch, an ended
   Run, a corrupt head) stops it. The loop's own end of its Run (at its
   deadline, at a CPU or memory limit or a lost Program host, at the drain's
-  length for a local child, or on a reopen that finds its Principal gone or
-  an older build's termination intent) alone retries every answer but a
-  claim mismatch or an ended Run. No write records a termination intent or
-  waits a grace: the chunk that decides a termination ends the Run.
+  length for a local child, or on a reopen that finds its Principal gone)
+  alone retries every answer but a claim mismatch or an ended Run. An end
+  that reaches a loop whose commit was refused goes through the terminal
+  write instead, which stops on a definite answer and leaves the Run to the
+  sweeper. No write records a termination intent or waits a grace: the
+  chunk that decides a termination ends the Run.
 - A write to a source never touches the Universal Search tables, and they keep
   no foreign key to a source but the Workspace (the vector table keeps none).
   Notify `SearchIndex` after the commit with ids alone; its reconcile pass

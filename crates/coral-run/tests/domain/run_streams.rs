@@ -715,6 +715,79 @@ async fn a_programs_own_end_ends_its_run_in_one_chunk_with_no_grace() {
     }
 }
 
+/// Catches: a retried end whose first write landed with no answer read as
+/// another writer's, so the stream never hears how its Run ended; or another
+/// writer's end read as its own, a cancellation an older build wrote with
+/// its termination among them.
+#[tokio::test]
+async fn a_retried_end_recognizes_only_the_end_it_wrote() {
+    use crate::lifecycle::{RequestedTermination, RunTerminationKind as Kind};
+    for (first, retried, recognized) in [
+        (Some(Kind::CpuLimitExceeded), Kind::CpuLimitExceeded, true),
+        (
+            Some(Kind::MemoryLimitExceeded),
+            Kind::MemoryLimitExceeded,
+            true,
+        ),
+        (Some(Kind::TimedOut), Kind::TimedOut, true),
+        (
+            Some(Kind::CpuLimitExceeded),
+            Kind::MemoryLimitExceeded,
+            false,
+        ),
+        (None, Kind::CpuLimitExceeded, false),
+    ] {
+        let case = format!("{first:?}, then {retried:?}");
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+        let runs = fixture.runs.clone();
+        let tool = fixture.user_tool("user:retried-end", "A retried end").await;
+        let (run_id, _stream) = started(&runs, &tool).await;
+        let run = fixture.run_record(&tool.workspace_id, &run_id).await;
+        let claim = run.execution_claim_id.clone().expect("a claimed Run");
+        let at = run.execution_started_at_unix_nanos.expect("the start mark");
+        let end = async |kind: Kind| {
+            let decided = RequestedTermination::unrequested(kind, at).expect("an end");
+            runs.interrupt_owned_run(
+                &tool.workspace_id,
+                &run_id,
+                &claim,
+                Some(&decided),
+                crate::termination::Interrupter::Owner,
+            )
+            .await
+        };
+        if let Some(kind) = first {
+            end(kind).await.expect("the first write");
+        } else {
+            runs.cancel(
+                &tool.principal,
+                &tool.workspace_id,
+                &run_id,
+                &immediate(None, 100),
+            )
+            .await
+            .expect("cancel the Run");
+            // The termination an older build wrote with its cancellation.
+            assert_eq!(
+                fixture
+                    .inject_fault(&format!(
+                        "UPDATE program_run_records SET termination_kind = 'canceled', \
+                         termination_started_at_unix_nanos = {at}, \
+                         termination_deadline_at_unix_nanos = {at} WHERE id = '{run_id}'"
+                    ))
+                    .await,
+                1
+            );
+        }
+        let answer = end(retried).await;
+        if recognized {
+            assert!(answer.is_ok(), "{case}: {answer:?}");
+        } else {
+            assert!(matches!(answer, Err(Error::RunEnded)), "{case}: {answer:?}");
+        }
+    }
+}
+
 /// Catches: an Approval Request's deadline the loop does not record, or
 /// one that overrides a decision committed before it.
 #[tokio::test]

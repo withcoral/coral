@@ -1181,9 +1181,8 @@ impl OwnerState {
                 effects
             }
             // A refused or failed commit leaves the terminal write to decide;
-            // a lost or
-            // ended Run has nothing left to write, and a corrupt one gets
-            // nothing more written.
+            // a lost or ended Run has nothing left to write, and a corrupt one
+            // gets nothing more written.
             (Phase::Stopped(CommitRejection::Refused | CommitRejection::Failed), _) => {
                 self.phase = Phase::Completing;
                 vec![Effect::CompleteExecution { completion }]

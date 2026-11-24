@@ -803,7 +803,7 @@ async fn a_reopen_ends_an_older_builds_termination_intent_in_one_chunk() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_reopen_ends_a_run_whose_termination_the_loop_before_recorded() {
+async fn a_reopen_of_a_canceled_run_answers_how_it_ended() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let runs = fixture.runs.clone();
     let (workspace_id, principal) = fixture.user_scope("user:ending", "Reopen end").await;

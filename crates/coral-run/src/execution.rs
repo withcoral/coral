@@ -9,6 +9,8 @@ use crate::types::HeldRunId;
 
 /// How long the end of the Shutdown Drain waits for the loops it moves or
 /// interrupts: each one's own end write, retried until the database answers.
+/// It is the 5 s dispatch grace this release removed plus the 1 s margin
+/// that followed it, so the drain's timing does not change.
 const COMMIT_GRACE: Duration = Duration::from_secs(6);
 /// How long an Approval Request waits for a decision at most; the Run
 /// deadline bounds it further.
