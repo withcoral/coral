@@ -1093,11 +1093,11 @@ pub(super) async fn complete_generations(
 }
 
 /// How many of a Workspace's Provider Tool paths hold a word that starts
-/// with each of some words. It counts the paths of the Workspace's complete
-/// Generations: the last segment of each Provider Call Root and the
-/// Tool-relative Path.
+/// with each of some words. It counts the paths of the given Generations
+/// that the index holds complete: the last segment of each Provider Call
+/// Root and the Tool-relative Path.
 pub(super) struct PathWordCounts {
-    /// The Provider Tools of the complete Generations.
+    /// The Provider Tools of those Generations.
     pub(super) tools: i64,
     /// Each word asked for, and at most how many of those Tools hold a word
     /// that starts with it.
@@ -1121,16 +1121,13 @@ pub(super) struct PathWordCount {
 /// by this character, when words compare byte by byte.
 const AFTER_EVERY_WORD_CHARACTER: &str = "{";
 
-/// Counts the Workspace's Provider Tool paths for each of `words`, as
-/// [`PathWordCounts`] describes, in one statement. Each word reads only its
-/// own range of the primary key.
-///
-/// A Generation that an update replaced counts until its removal: the
-/// notified removal after the update, or the next reconcile pass. Until then
-/// its paths count twice, which makes words look more common, not rarer.
+/// Counts the Provider Tool paths of `generations`, Generations of the
+/// Workspace, for each of `words`, as [`PathWordCounts`] describes, in one
+/// statement. Each word reads only its own range of the primary key.
 pub(super) async fn path_word_counts(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
+    generations: &[String],
     words: &[&str],
 ) -> Result<PathWordCounts, Error> {
     #[derive(sqlx::FromRow)]
@@ -1145,6 +1142,7 @@ pub(super) async fn path_word_counts(
     let tool = binds.push(TOOL);
     let complete = binds.push(COMPLETE);
     let after = binds.push(AFTER_EVERY_WORD_CHARACTER);
+    let counted = binds.list(generations);
     let (asked, collate) = match transaction.system() {
         DatabaseSystem::Postgres => (
             format!("SELECT jsonb_array_elements_text({list}::jsonb) AS word"),
@@ -1154,7 +1152,8 @@ pub(super) async fn path_word_counts(
     };
     let complete_states = format!(
         "FROM search_index_states AS s \
-         WHERE s.workspace_id = {workspace} AND s.kind = {tool} AND s.state = {complete}"
+         WHERE s.workspace_id = {workspace} AND s.kind = {tool} AND s.state = {complete} \
+             AND s.target_id IN ({counted})"
     );
     let sql = format!(
         "SELECT q.word AS word, \

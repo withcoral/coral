@@ -451,6 +451,10 @@ fn shop_without_list_words() -> serde_json::Value {
 /// with `list`; with the Shop as well, five of twenty paths hold one. The
 /// counts are per Workspace: a Shop in another Workspace changes nothing.
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one catalog goes through each install, update and removal in order"
+)]
 async fn the_path_word_counts_follow_the_catalog_of_each_workspace() {
     let modules = TestModules::new().await;
     let user = organization_user(modules.search.database.clone(), USER).await;
@@ -477,23 +481,27 @@ async fn the_path_word_counts_follow_the_catalog_of_each_workspace() {
         "coral.providers.ledger.invoices.find",
         "coral.providers.ledger.invoices.void",
     ];
-    let strong = async |stage: &str| {
-        modules.converge().await;
-        assert_eq!(
-            path_word_generations(&modules, &workspace).await,
-            complete_generations(&modules, &workspace).await,
-            "{stage}: each complete Generation has path words, and no other one has"
-        );
+    // Each stage converges the index first, unless it asks for the index as
+    // the catalog change left it.
+    let strong = async |stage: &str, converge: bool| {
+        if converge {
+            modules.converge().await;
+            assert_eq!(
+                path_word_generations(&modules, &workspace).await,
+                complete_generations(&modules, &workspace).await,
+                "{stage}: each complete Generation has path words, and no other one has"
+            );
+        }
         let ranked = ranked(&modules, &principal, &workspace, "list invoices").await;
         let strong = before_a_strong_tool(&ranked, "coral.private.weekly.listAll", &ledger_strong);
         (stage.to_string(), strong)
     };
 
-    let mut stages = vec![strong("the Shop is in another Workspace only").await];
+    let mut stages = vec![strong("the Shop is in another Workspace only", true).await];
     let shop = modules
         .publish_openapi(&user, &workspace, SHOP, "shop", 40)
         .await;
-    stages.push(strong("the Shop is installed").await);
+    stages.push(strong("the Shop is installed", true).await);
     modules
         .providers
         .delete_provider(
@@ -505,7 +513,8 @@ async fn the_path_word_counts_follow_the_catalog_of_each_workspace() {
         .await
         .expect("delete the Shop")
         .skip_search();
-    stages.push(strong("the Shop is removed").await);
+    stages.push(strong("the Shop is removed; the index still holds its rows", false).await);
+    stages.push(strong("the Shop is removed", true).await);
     let shop = modules
         .publish_configured(
             &change(user.clone(), 60, '6'),
@@ -515,7 +524,7 @@ async fn the_path_word_counts_follow_the_catalog_of_each_workspace() {
             CredentialRoute::None,
         )
         .await;
-    stages.push(strong("a Shop with no `list` word is installed").await);
+    stages.push(strong("a Shop with no `list` word is installed", true).await);
     modules
         .regenerate_workspace_provider(
             &change(user.clone(), 70, '7'),
@@ -524,21 +533,133 @@ async fn the_path_word_counts_follow_the_catalog_of_each_workspace() {
             &serde_json::from_str(SHOP).unwrap(),
         )
         .await;
-    stages.push(strong("that Shop is updated to the `list` words").await);
+    stages.push(strong("that Shop is updated to the `list` words", true).await);
+    modules
+        .regenerate_workspace_provider(
+            &change(user.clone(), 80, '8'),
+            &workspace,
+            shop.id(),
+            &shop_without_list_words(),
+        )
+        .await;
+    stages.push(
+        strong(
+            "that Shop is updated back; the index still holds the replaced Generation",
+            false,
+        )
+        .await,
+    );
+    stages.push(strong("that Shop is updated back", true).await);
 
     assert_eq!(
         stages,
         [
-            ("the Shop is in another Workspace only".to_string(), true),
-            ("the Shop is installed".to_string(), false),
-            ("the Shop is removed".to_string(), true),
-            ("a Shop with no `list` word is installed".to_string(), true),
+            ("the Shop is in another Workspace only", true),
+            ("the Shop is installed", false),
+            ("the Shop is removed; the index still holds its rows", true),
+            ("the Shop is removed", true),
+            ("a Shop with no `list` word is installed", true),
+            ("that Shop is updated to the `list` words", false),
             (
-                "that Shop is updated to the `list` words".to_string(),
-                false
+                "that Shop is updated back; the index still holds the replaced Generation",
+                true
             ),
-        ],
-        "a Private Tool whose path holds only `list` is strong while `list` is rare"
+            ("that Shop is updated back", true),
+        ]
+        .map(|(stage, strong)| (stage.to_string(), strong)),
+        "a Private Tool whose path holds only `list` is strong while `list` is rare in the \
+         active Generations"
+    );
+}
+
+/// Twenty Tools. Only `issues.getIssue` holds a word that starts with `get`,
+/// and it holds two: `get` and `getissue`. Two Tools are strong for
+/// `get invoices` by `invoices`.
+const DESK: &str = r#"{
+  "openapi": "3.1.0",
+  "info": { "title": "Desk", "version": "1.0.0" },
+  "servers": [{ "url": "https://api.desk.example" }],
+  "security": [],
+  "paths": {
+    "/a": { "get": { "operationId": "issues/getIssue", "summary": "Read an issue",
+      "responses": { "200": { "description": "OK" } } } },
+    "/b": { "get": { "operationId": "invoices/find", "summary": "Find invoices",
+      "responses": { "200": { "description": "OK" } } } },
+    "/c": { "get": { "operationId": "invoices/void", "summary": "Void an invoice",
+      "responses": { "200": { "description": "OK" } } } },
+    "/d": { "get": { "operationId": "carts/clear", "summary": "Clear a cart",
+      "responses": { "200": { "description": "OK" } } } },
+    "/e": { "get": { "operationId": "refunds/create", "summary": "Create a refund",
+      "responses": { "200": { "description": "OK" } } } },
+    "/f": { "get": { "operationId": "coupons/apply", "summary": "Apply a coupon",
+      "responses": { "200": { "description": "OK" } } } },
+    "/g": { "get": { "operationId": "stock/count", "summary": "Count the stock",
+      "responses": { "200": { "description": "OK" } } } },
+    "/h": { "get": { "operationId": "orders/cancel", "summary": "Cancel an order",
+      "responses": { "200": { "description": "OK" } } } },
+    "/i": { "get": { "operationId": "rates/read", "summary": "Read the rates",
+      "responses": { "200": { "description": "OK" } } } },
+    "/j": { "get": { "operationId": "taxes/read", "summary": "Read the taxes",
+      "responses": { "200": { "description": "OK" } } } },
+    "/k": { "get": { "operationId": "teams/add", "summary": "Add a team",
+      "responses": { "200": { "description": "OK" } } } },
+    "/l": { "get": { "operationId": "teams/remove", "summary": "Remove a team",
+      "responses": { "200": { "description": "OK" } } } },
+    "/m": { "get": { "operationId": "notes/write", "summary": "Write a note",
+      "responses": { "200": { "description": "OK" } } } },
+    "/n": { "get": { "operationId": "notes/erase", "summary": "Erase a note",
+      "responses": { "200": { "description": "OK" } } } },
+    "/o": { "get": { "operationId": "tags/attach", "summary": "Attach a tag",
+      "responses": { "200": { "description": "OK" } } } },
+    "/p": { "get": { "operationId": "tags/detach", "summary": "Detach a tag",
+      "responses": { "200": { "description": "OK" } } } },
+    "/q": { "get": { "operationId": "users/invite", "summary": "Invite a user",
+      "responses": { "200": { "description": "OK" } } } },
+    "/r": { "get": { "operationId": "users/block", "summary": "Block a user",
+      "responses": { "200": { "description": "OK" } } } },
+    "/s": { "get": { "operationId": "files/upload", "summary": "Upload a file",
+      "responses": { "200": { "description": "OK" } } } },
+    "/t": { "get": { "operationId": "files/share", "summary": "Share a file",
+      "responses": { "200": { "description": "OK" } } } }
+  }
+}"#;
+
+/// A word's count is the sum of the Tool counts of the stored words that
+/// start with it, an upper bound. One of twenty Desk paths holds a word that
+/// starts with `get`, but it holds two such words, so `get` counts as in 10%
+/// of the paths: not under 10%, so common.
+#[tokio::test]
+async fn a_path_with_two_words_that_start_with_a_query_word_counts_twice() {
+    let modules = TestModules::new().await;
+    let user = organization_user(modules.search.database.clone(), USER).await;
+    let principal = AuthenticatedPrincipal::user(user.clone());
+    let workspace = modules.create_workspace(&user).await;
+    modules
+        .publish_openapi(&user, &workspace, DESK, "desk", 20)
+        .await;
+    modules
+        .save_private_tool(
+            &principal,
+            &workspace,
+            "weekly.getAll",
+            "Sum the orders of the week.",
+            30,
+        )
+        .await;
+    modules.converge().await;
+
+    let ranked = ranked(&modules, &principal, &workspace, "get invoices").await;
+    assert!(
+        !before_a_strong_tool(
+            &ranked,
+            "coral.private.weekly.getAll",
+            &[
+                "coral.providers.desk.issues.getIssue",
+                "coral.providers.desk.invoices.find",
+                "coral.providers.desk.invoices.void",
+            ],
+        ),
+        "`get` counts as common, so the Private Tool is weak; order {ranked:?}"
     );
 }
 
