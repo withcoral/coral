@@ -216,6 +216,7 @@ export const TurnedOffByDoNotTrack: Story = {
 }
 
 /** On a server, the reason names the variable and this server. */
+// Catches: a reason that keyboard focus does not show, as the disabled switch takes no focus.
 export const TurnedOffByCoralDisableUsageData: Story = {
   args: {
     view: {
@@ -227,11 +228,20 @@ export const TurnedOffByCoralDisableUsageData: Story = {
     },
   },
   play: async ({ canvasElement }) => {
-    await expect(
-      within(canvasElement).getByText(
-        'You cannot turn on sharing while CORAL_DISABLE_USAGE_DATA is set on this server.',
-      ),
-    ).toBeInTheDocument()
+    const reason =
+      'You cannot turn on sharing while CORAL_DISABLE_USAGE_DATA is set on this server.'
+    const toggle = within(canvasElement).getByRole('switch', { name: 'Share anonymous usage data' })
+    const wrapper = toggle.closest<HTMLElement>('[tabindex="0"]')!
+    for (let step = 0; step < 10 && document.activeElement !== wrapper; step++)
+      await userEvent.tab()
+    await expect(wrapper).toHaveFocus()
+    // The popover renders outside the canvas, apart from the reason kept for screen readers.
+    await waitFor(() => {
+      const popup = screen.getAllByText(reason).find((element) => !canvasElement.contains(element))
+      expect(popup).toBeVisible()
+    })
+    // Focus stays on the switch, so the next Tab moves on from it.
+    await expect(wrapper).toHaveFocus()
   },
 }
 
