@@ -1,7 +1,7 @@
 //! The Run sweeper: ends what no Run stream decided in time.
 //!
-//! A Run that a Run Executor holds has no Run Owner while no stream is open
-//! for it, and a loop that holds its stream may hang. One sweeper at a time,
+//! A Run that a Run Executor holds has no loop while no stream is open for
+//! it, and a loop that holds its stream may hang. One sweeper at a time,
 //! elected by a lease row, covers both. Each pass, bounded and oldest first,
 //! it ends the Runs past their deadline, expires the Approval Requests past
 //! theirs, puts back the taken Runs that never started, and releases the Run

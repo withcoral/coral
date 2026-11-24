@@ -175,8 +175,12 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   database ended or refused, a pool timeout, a lock race) means a reread and
   a retry with bounded backoff until the answer comes or the loop has
   retired, and a definite answer (a rejection, a claim mismatch, an ended
-  Run, a corrupt head) stops it. A Run stream's end at its deadline alone
-  retries every answer but a claim mismatch or an ended Run.
+  Run, a corrupt head) stops it. The loop's own end of its Run (at its
+  deadline, at the drain's length for a local child, or on a reopen that
+  finds its Principal gone) alone retries every answer but a claim mismatch
+  or an ended Run. A termination the Run stream itself records (a CPU or
+  memory limit, a lost Program host) still settles within the Run's
+  shutdown grace until #3405.
 - A write to a source never touches the Universal Search tables, and they keep
   no foreign key to a source but the Workspace (the vector table keeps none).
   Notify `SearchIndex` after the commit with ids alone; its reconcile pass
@@ -403,7 +407,7 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - Do not race a real timer against database work: the database is slower on
   CI, most of all on Postgres. Give the Run a long real deadline and send the
   timer's message to the loop yourself. Order messages by waiting on an
-  observer signal, such as `CommitProbe::delivered`, never on `sleep`.
+  observer signal, such as `CommitGate::dequeued`, never on `sleep`.
 - A test hook that blocks a Tokio task blocks in `tokio::task::block_in_place`,
   and its tests use `#[tokio::test(flavor = "multi_thread")]`: it panics on
   the default current-thread runtime. A plain blocking call also strands the

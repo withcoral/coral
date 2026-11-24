@@ -1,6 +1,6 @@
 //! Transaction-compatible execution-history retention facets, not a cleanup scheduler.
 //! Retention holds and deletes terminal Runs only; a nonterminal Run's rows are its
-//! Run Owner's.
+//! writers': its loop, the receiver of an outside request, and the sweeper.
 use crate::{Error, RunId, RunState, run_repository};
 use coral_db::Transaction;
 use coral_workspace::{Principal, WorkspaceId};
@@ -38,7 +38,8 @@ impl RunRetentionEvidence {
 
 /// Returns owning evidence for retention eligibility, holding the Run only
 /// when it is terminal. A nonterminal Run is read without a hold, since its
-/// row is its Run Owner's alone, and protects its retention unit.
+/// row is its writers' and never retention's, and protects its retention
+/// unit.
 /// # Errors
 /// Returns persistence failure; absence remains explicitly unavailable.
 pub async fn hold_in_transaction(

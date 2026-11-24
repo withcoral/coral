@@ -576,8 +576,9 @@ impl Engine {
     }
 
     /// The domain modules the private gRPC API serves. Its Run module is the
-    /// one MCP's Runs start in, so a cancel or decision from either surface
-    /// reaches the Run Owner that the other's Run registered.
+    /// one MCP's Runs start in: a Run either surface starts is taken by the
+    /// same take loop, and a cancel or decision from either surface is
+    /// committed under the Run's claim and head.
     pub(crate) fn grpc_dependencies(&self) -> coral_grpc::Dependencies {
         let database = &self.modules.database;
         let workspaces = &self.modules.workspaces;
