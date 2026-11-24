@@ -2,7 +2,7 @@
 status: accepted
 ---
 
-# MCP requests are served without sessions, and a Required Action reaches its User through the assistant's link
+# MCP requests are served without sessions, and a Required Action reaches its User through the assistant's link and the client's own prompt
 
 Coral's MCP Adapter used to open one RMCP session per client that sent `initialize`, keyed by Workspace and Principal
 and held in the memory of the Coral Instance that answered. Every later request had to reach that instance: the
@@ -25,20 +25,62 @@ URL, the Organization MCP Endpoint takes it from the credential, and a credentia
 endpoint acts as the implicit local User, as before). The protocol made the same move: revision 2026-07-28 removed
 sessions and server-initiated requests (SEP-2567 and SEP-2322).
 
-With the session goes the prompt. Coral calls a request that a Run waits on a **Required Action**, and every Required
-Action of a Run that a User invoked reaches that User one way, through the assistant's link: the tool call that observes
-the Run returns the Run Update with the Required Action and the link to the page where that User decides it, the
-assistant passes the link and the Run identifier to the person, the waiting call shows the link to a client that asks
-for progress, a client that renders MCP Apps shows the request as one, and the person decides on that page, signed in
-to Reef. An
-approval's page shows the exact Tool arguments. Reef is the standing place: the Approvals Page holds every Approval
-Request, the person's account pages their Account Connection Requests, and the Run Status Page every Required Action
-of its Run, from the moment it exists, and the first answer counts wherever it comes from. Coral sends no MCP
-elicitation and no notification apart from the waiting call's progress message, and it offers the assistant no tool,
-argument or path by which to decide: the assistant can only pass the request on. Nothing
-in the request (protocol revision, declared capabilities, client name) chooses anything, so Coral keeps no list of
-known clients, and a client it has never seen is served the same way. The map that decided this is
-[#2732](https://github.com/withcoral/coral/issues/2732); the parent of the implementation is #2825.
+Coral calls a request that a Run waits on a **Required Action**. Every Required Action of a Run that a User invoked
+reaches that User through the assistant's link: the tool call that observes the Run returns the Run Update with the
+Required Action and the link to the page where that User decides it, the assistant passes the link and the Run
+identifier to the person, the waiting call shows the link to a client that asks for progress, a client that renders
+MCP Apps shows the request as one, and the person decides on that page, signed in to Reef. An approval's page shows the
+exact Tool arguments. Reef is the standing place: the Approvals Page holds every Approval Request, the person's account
+pages their Account Connection Requests, and the Run Status Page every Required Action of its Run, from the moment it
+exists, and the first answer counts wherever it comes from. A client that declares MCP elicitation on the request is
+also asked in its own prompt, as the section below states; the link stays the way that works in every client. Coral
+sends no notification apart from the waiting call's progress message, and it offers the assistant no tool, argument or
+path by which to decide: the assistant can only pass the request on. Only the capabilities a request declares and one
+deployment setting choose anything, so Coral keeps no list of known clients, and a client it has never seen is served
+by what it declares. The map that decided the link is [#2732](https://github.com/withcoral/coral/issues/2732); the
+parent of its implementation is #2825.
+
+## A client that declares elicitation is asked in its own prompt
+
+The link alone proved easy to miss: nothing stops the person, and a Required Action nobody reads waits until the Run
+times out. Protocol revision 2026-07-28 lets a server ask a client without a session: each request declares the
+client's capabilities, and a tool call can answer that it needs input, carrying the questions and an opaque state; the
+client asks the person and repeats the call with the answers and the state. Any Coral Instance serves the repeat, so
+the prompt keeps every request standing on its own. Claude Code negotiates that revision, declares both elicitation
+modes on every tool call, shows the prompt and repeats the call; [#3415](https://github.com/withcoral/coral/issues/3415)
+holds the check.
+
+- **What the client declares chooses the prompt.** When the observing tool call that waits finds a Required Action that
+  names the invoking User and the request declares elicitation, the call asks for input instead of returning the Run
+  Update. The tool call that runs a Program never asks: a client answers by repeating the call, and a repeated run
+  would run the Program again; its Run Update reaches the waiting call, which asks. An
+  Approval Request is asked as a form with Approve and Decline when the client declares form mode and the deployment
+  allows it; otherwise as a link to its page. An Account Connection Request is always asked as a link, because the
+  connection happens at the Provider's sign-in. A client that declares neither mode gets the assistant's link alone.
+- **What was asked travels with the client, and grants nothing.** The state of the repeated call and the cursor of
+  every Run Update name the Required Actions already asked, so each is asked once while the assistant passes the
+  latest cursor on. Neither is signed: they hold only what a client could send anyway, every observation is
+  authorized as before, and an answer decides only through the same decision path as Reef's, which checks the
+  person. A client that edits them can only be asked again, or not at all.
+- **An answer decides only through the form.** An Approve or Decline from the form is that User's decision, recorded
+  through the same decision path as Reef's, and the first answer wins. A link prompt's accept means only that the
+  person opened the page or said they were done; the call goes on waiting for the decision made in Reef. A dismissed
+  prompt falls back to the assistant's link, so a client that cannot show the prompt, such as Claude Code without a
+  terminal, which answers at once, loses nothing.
+- **The link prompt carries the link as text.** A client opens a link on the host where it runs, which over SSH is not
+  the person's, so the message names the link too.
+- **The assistant sees the outcome.** A request decided in a form leaves the Run Update as one decided in Reef does,
+  and a decline reaches the Program as its error, so the assistant's account of the Run stays true. A dismissed
+  prompt leaves the Run Update as it was: the action still waits there with its link. No field says that a prompt was
+  asked or how it was answered, though #3415 asked for one: the assistant is told, not asked (below), and the Run
+  Update already shows what still waits.
+- **The deployment chooses how far to trust the client.** An approval decided in the form is recorded by the MCP
+  client, not by a person signed in to Reef, and a client or one of its hooks can answer without anyone reading it. One
+  operator setting chooses for the whole deployment: form prompts for approvals (the default), link prompts only, or
+  no prompts. Form is the default because the client holds the User's own credential and the person asked for the
+  prompt; an operator who does not accept that chooses link prompts. No prompts exists because a client can declare
+  elicitation and then neither show the prompt nor repeat the call, which Coral cannot see:
+  the Run then waits until its deadline. Remove that choice once no supported client does this.
 
 ## What changes so the assistant's link is reliable
 
@@ -111,7 +153,7 @@ summary. Codex wrote the link as text before its first wait. Making the link the
   message rides the waiting call's response, and the next Run Update shows a decision made elsewhere.
 - **A stale session header is ignored.** A request that still names a session is served like any other.
 - **The assistant is told, not asked.** Nothing from the arguments or the Account travels in the Run Update, and no
-  field says whether the person saw anything; what the assistant receives is fixed above.
+  field says whether the person saw the link or a prompt; what the assistant receives is fixed above.
 - **One clock.** The **Run Deadline**, the Run's accepted time plus its timeout, bounds every wait for a person;
   nothing pauses or extends it, and a Run that waits past it ends `TimedOut` for the person to run again. An Approval
   Request has no deadline of its own, so an approval never expires while its Run lives: a decline is the Program's
@@ -119,9 +161,10 @@ summary. Codex wrote the link as text before its first wait. Making the link the
   Update shows for it is the earlier of that expiry and the Run Deadline. A decision that arrives after the Run ended
   does nothing for that Run. The maximum timeout is one deployment-wide constant with no operator setting; if one is ever added it is
   deployment-wide, never per Workspace ([time limits](https://github.com/withcoral/coral/issues/2738#issuecomment-6520221759)).
-- **Where a Required Action reaches the person is never policy.** The Tool Access State keeps its three values: a Tool
-  is enabled, needs approval, or is disabled, and nothing about it decides where or how the person is asked
-  ([no setting](https://github.com/withcoral/coral/issues/2742#issuecomment-6521367372)).
+- **Where a Required Action reaches the person is never Tool policy.** The Tool Access State keeps its three values: a
+  Tool is enabled, needs approval, or is disabled, and nothing about it decides where or how the person is asked
+  ([no setting](https://github.com/withcoral/coral/issues/2742#issuecomment-6521367372)). Only the deployment's
+  elicitation setting and what the client declares choose that, as stated above.
 - **The accepted cost.** A Required Action nobody reads waits to the Run Deadline, the Run ends `TimedOut`, and the
   person reruns. An assistant running unattended with a person's credential gets no other way in: the person changes the
   Tool's policy in Reef beforehand ([no notification](https://github.com/withcoral/coral/issues/2740#issuecomment-6521160022)).
@@ -162,9 +205,13 @@ lists its Required Actions.
   request lives in the first instance's memory, so an answer that lands elsewhere is lost until the prompt's deadline.
 - **Routing client messages to the instance that holds the session.** A second Run Inbox for MCP traffic, built to keep
   a feature the current protocol revision removed.
-- **MCP elicitation, chosen per client.** It renders in one client today, blinds that client's model to what
-  was asked and answered, and outlives the Run Deadline. It returns only when a client renders every elicitation mode
-  and tells its model what was asked and answered ([the elicitation decision](https://github.com/withcoral/coral/issues/2737#issuecomment-6602262606)).
+- **MCP elicitation in protocol revisions before 2026-07-28.** There a client declares its capabilities only when it
+  connects, and the prompt is a request from the server that the instance holding the connection must answer, so it
+  needs the session this decision removed. A client on an earlier revision gets the assistant's link alone. The first
+  look at elicitation also found that it blinded the client's model and outlived the Run Deadline
+  ([the elicitation decision](https://github.com/withcoral/coral/issues/2737#issuecomment-6602262606)); the Run Update
+  after a prompt and the fallback on a dismissed prompt answer the first, and an answer after the Run ended does
+  nothing for that Run.
 - **Ending the assistant's turn on each Required Action.** Tried on 2026-11-04 after the Claude Code check: the
   final reply is the one thing every client shows, so the link reached the person, but the Run then went on without
   its assistant until the person wrote back, and the person had to. It returns only for a client that shows no
@@ -177,5 +224,6 @@ lists its Required Actions.
 - **Looking ahead at a Program to announce the approvals and connections it will need.** Coral asks only when an
   Invocation asks.
 - **The assistant answering for the person**, and treating the AI app's own "allow this tool?" prompt as the approval.
-  The assistant holds the User's credential, so the only trusted path to a decision is one a person operates: a
-  signed-in Reef page.
+  The assistant holds the User's credential, so the only trusted paths to a decision are ones a person operates: a
+  signed-in Reef page, and, where the deployment allows it, the form the client shows the person when Coral asks. The
+  AI app's own prompt approves the client's call to Coral, not the Invocation the Program makes.

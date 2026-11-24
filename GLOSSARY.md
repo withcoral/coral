@@ -783,7 +783,7 @@ Approval Request or an Account Connection Request. Any later kind (a Provider's 
 the same shape: one request with a deadline, decided by the person or role the Run names, and the first answer counts. A
 Run Update's `required_actions` lists the Run's current Required Actions.
 
-A Required Action of a Run that a User invoked reaches that User one way:
+A Required Action of a Run that a User invoked reaches that User through the assistant's link:
 
 - The observing tool call returns it with the link to the page where the User decides it (an Approval Request's own
   address on the Approvals Page, or the person's account page for the Provider for a connection request).
@@ -791,13 +791,20 @@ A Required Action of a Run that a User invoked reaches that User one way:
 - The waiting call shows it to a client that asks for progress.
 - A client that renders MCP Apps shows it as one, when the assistant calls the tool that links the app.
 
-Reef holds the request from the moment it exists, so a page is never a second way in, and the assistant has no path to
-decide. Coral sends no MCP elicitation for a Required Action, and no notification apart from the waiting call's progress
-message. An Account Connection Request that several Runs wait on is one Required Action in each of their Run Updates.
+When the observing call's request declares MCP elicitation, and the deployment allows it,
+the client also asks the User in its own prompt: a Client Prompt. Reef holds the request from the moment it exists,
+so a page is never a second way in, and the assistant has no path to decide. Coral sends no notification apart from the
+waiting call's progress message. An Account Connection Request that several Runs wait on is one Required Action in each of their Run Updates.
 Each assistant passes it on, and the first answer settles it for all of them.
 
-_Avoid_: pending action, human action, elicitation, prompt, in-band prompt, notification, per-client route, assistant
-approval, allow-tool prompt as approval, Run preflight
+_Avoid_: pending action, human action, notification, assistant approval, allow-tool prompt as approval, Run preflight
+
+**Client Prompt**: The MCP client's own dialog that asks the invoking User about one Required Action, through MCP
+elicitation. The tool call that waits on a Run answers that it needs input, and the
+client repeats the call with the User's answer. A form prompt decides an Approval Request with Approve or Decline. A
+link prompt opens the Required Action's page, and the decision happens there. Each Required Action is asked once while
+the assistant passes the latest cursor on. A dismissed prompt falls back to the assistant's link. What the request declares and the deployment's setting choose the
+prompt; the client's name never does. _Avoid_: in-band prompt, session elicitation, per-client route
 
 **Run Status Page**: The directly linked detail of one Program Run within Reef's activity interface, at one stable,
 non-secret URL. It is not a required standalone page. Every supported local or hosted deployment provides this
@@ -821,7 +828,8 @@ If policy becomes `disabled`, Coral settles the Invocation with `tool_disabled`.
 closes the Request and continues after its other checks. A later Invocation can create a new request.
 
 The person that the Request names decides it on the Approvals Page. For a Run that a User invoked, that person is the
-invoking User, and the assistant's link opens the page with the Request in review. For a Run that an Agent invoked, that
+invoking User, and the assistant's link opens the page with the Request in review. That User can also decide it in a
+form Client Prompt, when their client declares form elicitation and the deployment allows it. For a Run that an Agent invoked, that
 person is a Workspace Owner. Reef remains available for every Request. An active browser is not required, and existing
 Requests survive a temporary Reef outage.
 

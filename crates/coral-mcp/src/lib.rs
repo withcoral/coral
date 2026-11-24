@@ -47,9 +47,27 @@ pub use urls::{
 const RUN_UPDATE_PAGE_BYTES: NonZeroUsize =
     NonZeroUsize::new(64 << 20).expect("the default page target is positive");
 
+/// How far the deployment lets an MCP client's own prompt, a Client Prompt,
+/// reach the person a Required Action names (ADR 0029). A request that
+/// declares no elicitation gets the assistant's link alone, whatever this says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Elicitation {
+    /// An Approval Request is asked as a form that decides it; an Account
+    /// Connection Request as a link to its page. What [`McpModules::new`]
+    /// selects.
+    Form,
+    /// Every Client Prompt is a link to the Required Action's page, so a
+    /// decision is made only in Reef.
+    Url,
+    /// No Client Prompt: the assistant's link alone, for a client that declares
+    /// elicitation and then shows nothing.
+    Off,
+}
+
 /// Domain Modules required by the MCP Adapter, independent of authentication mode,
 /// and the projection settings: the human interface where projections send
-/// people to act, and the Run Update page target.
+/// people to act, the Run Update page target, and the Client Prompts the
+/// deployment allows.
 #[derive(Clone)]
 pub struct McpModules {
     /// Checks each request's authority in its Workspace.
@@ -64,6 +82,7 @@ pub struct McpModules {
     pub search: UniversalSearchModule,
     pub(crate) human_interface: HumanInterfaceUrl,
     pub(crate) run_update_page_bytes: NonZeroUsize,
+    pub(crate) elicitation: Elicitation,
 }
 impl McpModules {
     /// Receives initialized Modules, including Task commands assembled by bootstrap.
@@ -84,7 +103,21 @@ impl McpModules {
             search,
             human_interface,
             run_update_page_bytes: RUN_UPDATE_PAGE_BYTES,
+            elicitation: Elicitation::Form,
         }
+    }
+
+    /// Selects the Client Prompts the deployment allows.
+    #[must_use]
+    pub const fn with_elicitation(mut self, elicitation: Elicitation) -> Self {
+        self.elicitation = elicitation;
+        self
+    }
+
+    /// The Client Prompts the deployment allows.
+    #[must_use]
+    pub const fn elicitation(&self) -> Elicitation {
+        self.elicitation
     }
 
     /// Selects the target size of one encoded `exec`, `wait` or `cancel`

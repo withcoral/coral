@@ -31,6 +31,7 @@ struct ServerConfigFile {
     runtime: RuntimeSettings,
     outbound: OutboundSettings,
     search: SearchSettings,
+    mcp: McpSettings,
     credentials: CredentialSettings,
     updates: UpdateSettings,
     license: Option<LicenseSettings>,
@@ -178,6 +179,7 @@ impl LoadedServerConfig {
             runtime,
             outbound,
             search,
+            mcp,
             credentials,
             updates,
             license,
@@ -254,6 +256,7 @@ impl LoadedServerConfig {
             search_reconcile_interval,
             semantic_search_enabled: search.semantic_search_enabled,
             embedder_cores,
+            elicitation: mcp.elicitation.into(),
             update_check: updates.check,
             credential_key_env,
             license,
@@ -287,6 +290,7 @@ pub(crate) struct DeploymentConfig {
     search_reconcile_interval: std::time::Duration,
     semantic_search_enabled: bool,
     embedder_cores: std::num::NonZeroUsize,
+    elicitation: coral_mcp::Elicitation,
     update_check: bool,
     credential_key_env: Option<String>,
     /// Where the License is. None without `[license]`.
@@ -535,6 +539,7 @@ impl DeploymentConfig {
             auth_bind_addr: self.auth_bind_addr,
             session_auth: self.resolve_session_auth()?,
             human_interface: self.human_interface.clone(),
+            elicitation: self.elicitation,
         })
     }
 
@@ -949,6 +954,34 @@ impl SearchSettings {
     }
 }
 
+/// The MCP Adapter's settings.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct McpSettings {
+    /// The Client Prompts the deployment allows (ADR 0029).
+    elicitation: ElicitationSetting,
+}
+
+/// Operator spelling of [`coral_mcp::Elicitation`].
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum ElicitationSetting {
+    #[default]
+    Form,
+    Url,
+    None,
+}
+
+impl From<ElicitationSetting> for coral_mcp::Elicitation {
+    fn from(value: ElicitationSetting) -> Self {
+        match value {
+            ElicitationSetting::Form => Self::Form,
+            ElicitationSetting::Url => Self::Url,
+            ElicitationSetting::None => Self::Off,
+        }
+    }
+}
+
 /// Peer listener settings, not an extensible listener registry.
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -1196,6 +1229,7 @@ pub struct ServeSettings {
     auth_bind_addr: SocketAddr,
     pub(super) session_auth: Option<SessionAuthSettings>,
     human_interface: coral_mcp::HumanInterfaceUrl,
+    elicitation: coral_mcp::Elicitation,
 }
 
 impl ServeSettings {
@@ -1203,6 +1237,12 @@ impl ServeSettings {
     #[must_use]
     pub fn human_interface(&self) -> &coral_mcp::HumanInterfaceUrl {
         &self.human_interface
+    }
+
+    /// The Client Prompts the MCP Adapter may ask for.
+    #[must_use]
+    pub const fn elicitation(&self) -> coral_mcp::Elicitation {
+        self.elicitation
     }
 
     /// Returns the destination permissions selected at process bootstrap.
@@ -1886,6 +1926,31 @@ client_secret = 'test-secret'
             &error,
             Refused::Decode("search.semantic_search_enabled: unsupported value"),
             "a string",
+        );
+    }
+
+    #[test]
+    fn client_prompts_are_forms_unless_the_operator_limits_them() {
+        use coral_mcp::Elicitation;
+        for (raw, expected) in [
+            ("", Elicitation::Form),
+            ("[mcp]", Elicitation::Form),
+            ("[mcp]\nelicitation = \"form\"", Elicitation::Form),
+            ("[mcp]\nelicitation = \"url\"", Elicitation::Url),
+            ("[mcp]\nelicitation = \"none\"", Elicitation::Off),
+        ] {
+            let settings = section(raw)
+                .expect(raw)
+                .serve_settings(coral_outbound::DestinationPolicy::default())
+                .expect(raw);
+            assert_eq!(settings.elicitation(), expected, "{raw:?}");
+        }
+        let error =
+            section("[mcp]\nelicitation = \"sometimes\"").expect_err("an unknown value is refused");
+        assert_refused(
+            &error,
+            Refused::Decode("mcp.elicitation: unsupported value"),
+            "an unknown value",
         );
     }
 

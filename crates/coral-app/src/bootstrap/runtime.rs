@@ -534,7 +534,9 @@ async fn start_mcp_http(
 ) -> Result<RunningMcpHttpServer, McpStartError> {
     let engine = grpc.engine();
     let readiness = engine.readiness().probe();
-    let modules = engine.mcp_modules(settings.human_interface().clone());
+    let modules = engine
+        .mcp_modules(settings.human_interface().clone())
+        .with_elicitation(settings.elicitation());
     let modules = with_registered_sub_agent(modules, settings, grpc, &clock)?;
     let server = match settings.mcp_http().clone() {
         McpHttpServeConfig::AuthDisabled { bind_addr } => {
