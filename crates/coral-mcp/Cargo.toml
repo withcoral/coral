@@ -29,6 +29,7 @@ coral-telemetry.workspace = true
 coral-workspace.workspace = true
 rmcp.workspace = true
 schemars.workspace = true
+base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_path_to_error.workspace = true
@@ -38,6 +39,7 @@ tower.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+sea-query.workspace = true
 coral-catalog.workspace = true
 coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-outbound.workspace = true

@@ -248,14 +248,27 @@ impl Tracer {
         Self::start_at(Arc::new(coral_db::SystemClock)).await
     }
 
+    /// The tracer over a server whose deployment allows `elicitation`.
+    async fn start_with(elicitation: coral_mcp::Elicitation) -> Self {
+        Self::start_on(Arc::new(coral_db::SystemClock), elicitation).await
+    }
+
     /// The tracer over a server that reads `clock`, for a test that moves
     /// time. The Task, search and Private Tool modules read it too; the Run
     /// Module reads the host's clock.
+    async fn start_at(clock: Arc<dyn coral_db::Clock>) -> Self {
+        Self::start_on(clock, coral_mcp::Elicitation::Form).await
+    }
+
+    /// The tracer over a server that reads `clock` and allows `elicitation`.
     #[expect(
         clippy::too_many_lines,
         reason = "composes the real domain graph and the tracer's Workspace and Agent once"
     )]
-    async fn start_at(clock: Arc<dyn coral_db::Clock>) -> Self {
+    async fn start_on(
+        clock: Arc<dyn coral_db::Clock>,
+        elicitation: coral_mcp::Elicitation,
+    ) -> Self {
         let upstream = TestUpstream::start().await;
         let database = TestDatabase::new(coral_db::migration_plan())
             .await
@@ -380,7 +393,8 @@ impl Tracer {
         )
         .with_run_update_page_bytes(
             std::num::NonZeroUsize::new(RUN_UPDATE_PAGE_BYTES).expect("positive page target"),
-        );
+        )
+        .with_elicitation(elicitation);
         let server = start_local(
             McpHttpConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
                 .expect("loopback MCP config"),
@@ -412,6 +426,25 @@ impl Tracer {
     /// Workspace A's MCP endpoint.
     fn endpoint(&self) -> String {
         self.endpoint_for(&self.workspace_a)
+    }
+
+    /// How many Runs the database holds, so a test can show that a refused
+    /// call started none.
+    async fn run_count(&self) -> i64 {
+        let database = self.database.database();
+        let mut tx = database.begin_read_snapshot().await.expect("read snapshot");
+        let [(count,)] = tx
+            .fetch_all_sql::<(i64,)>(
+                "SELECT COUNT(*) FROM program_run_records",
+                sea_query::Values(Vec::new()),
+            )
+            .await
+            .expect("count Runs")[..]
+        else {
+            panic!("one count")
+        };
+        tx.commit().await.expect("end read snapshot");
+        count
     }
 
     fn endpoint_for(&self, workspace: &WorkspaceId) -> String {
@@ -3082,6 +3115,11 @@ impl RawSession {
     /// returns its `result`, or its `error`.
     fn interpret(&self, method: &str, params: &Value, message: &Value) -> Result<Value, Value> {
         match message.get("result") {
+            // A tool call that asks a Client Prompt has no output of its own.
+            Some(result) if method == "tools/call" && result["resultType"] == "input_required" => {
+                assert_conforms(&self.protocol_version, "InputRequiredResult", result);
+                Ok(result.clone())
+            }
             Some(result) => {
                 assert_conforms(&self.protocol_version, result_definition(method), result);
                 if method == "tools/call" {

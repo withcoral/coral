@@ -4,7 +4,8 @@ use coral_db::UnixNanos;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 use rmcp::ErrorData;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, ProgressNotificationParam, ProgressToken, Tool,
+    CallToolRequestParams, CallToolResponse, ClientCapabilities, ProgressNotificationParam,
+    ProgressToken, Tool,
 };
 use rmcp::service::{Peer, RoleServer};
 
@@ -19,12 +20,14 @@ pub trait McpInterface: Send + Sync {
     /// The tools `caller` is served.
     async fn tools(&self, caller: &McpCaller) -> Result<Vec<Tool>, ErrorData>;
 
-    /// Runs one tool call for `caller`.
+    /// Runs one tool call for `caller`. `capabilities` are what the request
+    /// declares of its client, present from protocol 2026-07-28 on.
     async fn call(
         &self,
         caller: &McpCaller,
         request: CallToolRequestParams,
         progress: Option<Progress>,
+        capabilities: Option<ClientCapabilities>,
     ) -> Result<CallToolResponse, ToolCallError>;
 }
 

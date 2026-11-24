@@ -157,7 +157,7 @@ async fn wait(server: &CoreTools, run_id: &RunId, wait_ms: Option<Value>) -> Val
     }
     let request =
         CallToolRequestParams::new("wait").with_arguments(arguments.as_object().unwrap().clone());
-    let Ok(CallToolResponse::Complete(result)) = server.dispatch(request, None).await else {
+    let Ok(CallToolResponse::Complete(result)) = server.dispatch(request, None, None).await else {
         panic!("wait completes")
     };
     assert_ne!(result.is_error, Some(true));
@@ -214,7 +214,7 @@ async fn call(
 ) -> Result<Value, &'static str> {
     let request =
         CallToolRequestParams::new(tool).with_arguments(arguments.as_object().unwrap().clone());
-    match server.dispatch(request, None).await {
+    match server.dispatch(request, None, None).await {
         Ok(CallToolResponse::Complete(result)) => {
             assert_ne!(result.is_error, Some(true));
             Ok(result.structured_content.unwrap())

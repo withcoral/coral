@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 
 use super::diagnostics::{ProgramError, SafeInteger};
 use super::{ToolFailure, success};
+use crate::client_prompt::{Shown, WaitCursor};
 
 /// Current observation, with terminal data only on the last output page.
 #[derive(Serialize, JsonSchema)]
@@ -260,6 +261,7 @@ pub(crate) fn run_update(
     reporter: Reporter<'_>,
     human_interface: &crate::HumanInterfaceUrl,
     page_bytes: usize,
+    shown: &Shown,
 ) -> Result<CallToolResult, ToolFailure> {
     match reporter {
         Reporter::Exec(started) => {
@@ -267,9 +269,9 @@ pub(crate) fn run_update(
             let task = StartedTask {
                 task_id: started.as_deref(),
             };
-            paged(update, task, human_interface, page_bytes)
+            paged(update, task, human_interface, page_bytes, shown)
         }
-        Reporter::Observer => paged(update, NoTask {}, human_interface, page_bytes),
+        Reporter::Observer => paged(update, NoTask {}, human_interface, page_bytes, shown),
     }
 }
 
@@ -282,6 +284,7 @@ fn paged<Task: Serialize + Copy>(
     task: Task,
     human_interface: &crate::HumanInterfaceUrl,
     page_bytes: usize,
+    shown: &Shown,
 ) -> Result<CallToolResult, ToolFailure> {
     let mut events = PageEvents::default();
     for event in update.events() {
@@ -292,7 +295,7 @@ fn paged<Task: Serialize + Copy>(
             break;
         }
     }
-    largest_page(update, &events, task, human_interface, page_bytes)?.into_result(events)
+    largest_page(update, &events, task, human_interface, page_bytes, shown)?.into_result(events)
 }
 
 /// Chooses the page of `update` to deliver from the Events projected so far.
@@ -302,9 +305,10 @@ fn largest_page<'a, Task: Serialize + Copy>(
     task: Task,
     human_interface: &crate::HumanInterfaceUrl,
     page_bytes: usize,
+    shown: &Shown,
 ) -> Result<Page<'a, Task>, ToolFailure> {
     let all = update.events().len();
-    let project = |page| project_page(page, task, human_interface, events);
+    let project = |page| project_page(page, task, human_interface, events, shown);
     // The whole update is a candidate only when every Event was projected.
     if events.len() == all {
         let whole = update.event_prefix(all);
@@ -487,6 +491,7 @@ fn project_page<'a, Task: Serialize>(
     task: Task,
     human_interface: &crate::HumanInterfaceUrl,
     events: &PageEvents<'a>,
+    shown: &Shown,
 ) -> Result<Page<'a, Task>, ToolFailure> {
     let count = page.events().len();
     let (final_value, final_block, failure) = match page.terminal_outcome() {
@@ -541,7 +546,7 @@ fn project_page<'a, Task: Serialize>(
         state: page.state().into(),
         required_actions: required_actions(page.required_actions(), human_interface),
         events: Vec::new(),
-        next_cursor: page.next_cursor().to_string(),
+        next_cursor: WaitCursor::format(&page.next_cursor(), shown, page.required_actions()),
         has_more: page.has_more(),
         final_value,
         failure,

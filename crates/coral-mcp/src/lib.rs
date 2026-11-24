@@ -6,6 +6,7 @@
 mod app;
 mod arguments;
 mod authentication;
+mod client_prompt;
 mod http;
 mod instructions;
 mod interface;

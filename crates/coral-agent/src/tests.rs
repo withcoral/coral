@@ -315,7 +315,7 @@ async fn call(
     let Some(tool) = BuiltinTool::from_key(name) else {
         let request = CallToolRequestParams::new(name).with_arguments(arguments);
         let core = caller.modules.core_interface();
-        return match core.call(&caller.mcp, request, None).await? {
+        return match core.call(&caller.mcp, request, None, None).await? {
             CallToolResponse::Complete(result) => Ok(result.structured_content.unwrap()),
             _ => panic!("{name} completes"),
         };

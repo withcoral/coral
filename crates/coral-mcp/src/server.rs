@@ -2,15 +2,16 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
-use coral_run::{RUN_EVENT_PAGE_MAX, RunCursor, RunId, RunObservation};
+use coral_run::{RUN_EVENT_PAGE_MAX, RunId, RunObservation};
 use coral_task::{TaskId, TaskIntent, TaskOutcome};
 use coral_telemetry::safe;
 use coral_workspace::WorkspaceId;
 use rmcp::model::{
-    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, DiscoverResult,
-    Implementation, InitializeRequestParams, InitializeResult, ListResourceTemplatesResult,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
-    ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities, ServerConfig, Tool,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities,
+    DiscoverResult, Implementation, InitializeRequestParams, InitializeResult,
+    ListResourceTemplatesResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
+    ServerConfig, Tool,
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 use rmcp::{ErrorData, ServerHandler};
@@ -19,6 +20,7 @@ use crate::arguments::{
     self, CancelArguments, EndTaskArguments, ExecArguments, ShowRequiredActionsArguments,
     TaskOutcomeArgument, ToolArguments, WaitArguments,
 };
+use crate::client_prompt::{self, Shown, WaitCursor};
 use crate::interface::{McpCaller, McpInterface, Progress, ToolCallError};
 use crate::projection::{self, Reporter, ToolFailure};
 use crate::{McpModules, McpRuntime};
@@ -153,7 +155,10 @@ impl ServerHandler for McpServer {
             token,
             peer: context.peer.clone(),
         });
-        let called = self.interface.call(&self.caller, request, progress);
+        let capabilities = context.meta.client_capabilities();
+        let called = self
+            .interface
+            .call(&self.caller, request, progress, capabilities);
         call.run(called).await
     }
 
@@ -234,8 +239,11 @@ impl McpInterface for CoreInterface {
         caller: &McpCaller,
         request: CallToolRequestParams,
         progress: Option<Progress>,
+        capabilities: Option<ClientCapabilities>,
     ) -> Result<CallToolResponse, ToolCallError> {
-        self.for_caller(caller).dispatch(request, progress).await
+        self.for_caller(caller)
+            .dispatch(request, progress, capabilities)
+            .await
     }
 }
 
@@ -321,24 +329,29 @@ impl CoreTools {
         &self,
         request: CallToolRequestParams,
         progress: Option<Progress>,
+        capabilities: Option<ClientCapabilities>,
     ) -> Result<CallToolResponse, ToolCallError> {
-        // Coral asks a client no in-band question, so no call is a retry that
-        // answers one: a Run that waits on a person reports it in the Run
-        // Update, and the person decides on the page its link opens.
-        if request.request_state.is_some() || request.input_responses.is_some() {
+        let name = request.name.as_ref();
+        // Only `wait` asks a Client Prompt, so only `wait` is repeated with
+        // its answer.
+        if name != WaitArguments::NAME
+            && (request.request_state.is_some() || request.input_responses.is_some())
+        {
             return Err(invalid_input_message(
                 "tool does not accept requestState or inputResponses".to_owned(),
             ));
         }
-        let name = request.name.as_ref();
         let complete = match name {
             ExecArguments::NAME => {
                 let arguments = arguments::parse::<ExecArguments>(request.arguments)?;
                 return self.exec(arguments).await;
             }
             WaitArguments::NAME => {
+                let state = request.request_state;
                 let arguments = arguments::parse::<WaitArguments>(request.arguments)?;
-                return self.wait(arguments, progress).await;
+                let ask =
+                    client_prompt::Ask::of(self.runtime.modules.elicitation, capabilities.as_ref());
+                return self.wait(arguments, state.as_deref(), progress, ask).await;
             }
             ShowRequiredActionsArguments::NAME => {
                 let arguments =
@@ -446,35 +459,59 @@ impl CoreTools {
         self.run_update(
             observed.as_ref().unwrap_or(&accepted),
             Reporter::Exec(started),
+            &Shown::default(),
         )
         .map(Into::into)
         .map_err(|failure| accepted_run_failure(failure, accepted.run_id(), started))
     }
 
+    /// Observes a Run, holding up to `wait_ms` for a change. When `ask`
+    /// allows a Client Prompt and a Required Action names the invoking User
+    /// that no prompt asked about yet, the call asks for it instead of
+    /// returning the Run Update. The client repeats the call with `state`,
+    /// which this call then counts as asked, whatever the answer: a link
+    /// prompt decides nothing, and a dismissed one leaves the assistant's
+    /// link, as before. A prompt after the hold leaves the cursor where it
+    /// was, so the repeated call reads the same Events again.
     async fn wait(
         &self,
         arguments: WaitArguments,
+        state: Option<&str>,
         progress: Option<Progress>,
+        ask: Option<client_prompt::Ask>,
     ) -> Result<CallToolResponse, ToolCallError> {
         let run_id = RunId::parse(&arguments.run_id).map_err(invalid_input)?;
-        let cursor = arguments
-            .cursor
-            .as_deref()
-            .map(RunCursor::parse)
-            .transpose()
-            .map_err(invalid_input)?;
+        let (cursor, shown) = match arguments.cursor.as_deref() {
+            Some(cursor) => {
+                let cursor = WaitCursor::parse(cursor).map_err(invalid_input)?;
+                (Some(cursor.run), cursor.shown)
+            }
+            None => (None, Shown::default()),
+        };
+        let shown = state
+            .and_then(|state| client_prompt::shown_in_state(state, &run_id))
+            .map_or(shown.clone(), |asked| shown.union(asked));
         let wait_ms = validated_wait(arguments.wait_ms.unwrap_or(arguments::DEFAULT_WAIT_MS))?;
-        // A client that asked for progress shows the person what the Run
-        // waits for while this call holds, so the link reaches them even
-        // when the assistant writes nothing between its calls.
-        if let Some(progress) = progress.filter(|_| wait_ms > 0) {
+        let human_interface = &self.runtime.modules.human_interface;
+        // A Required Action already waiting would not end the hold, so it is
+        // asked before. Otherwise, a client that asked for progress shows the
+        // person what the Run waits for while this call holds, so the link
+        // reaches them even when the assistant writes nothing between its
+        // calls.
+        let progress = progress.filter(|_| wait_ms > 0);
+        if ask.is_some() || progress.is_some() {
             // The observation below links this request to the Run Trace.
             let peek = RunObservation::immediate(cursor.clone(), RUN_EVENT_PAGE_MAX)
                 .map_err(invalid_input)?
                 .without_trace_link();
             let current = self.observe(&run_id, &peek).await.map_err(run_failure)?;
-            if let Some(message) =
-                projection::handoff_progress(&current, &self.runtime.modules.human_interface)
+            if let Some(prompt) =
+                ask.and_then(|ask| client_prompt::prompt(&current, &shown, ask, human_interface))
+            {
+                return Ok(prompt.into());
+            }
+            if let Some(progress) = progress
+                && let Some(message) = projection::handoff_progress(&current, human_interface)
             {
                 progress.report(message).await;
             }
@@ -484,24 +521,16 @@ impl CoreTools {
             .batching_output()
             .with_wait(Duration::from_millis(wait_ms))
             .map_err(invalid_input)?;
-        self.observe_update(&run_id, &observation, Reporter::Observer)
-            .await
-    }
-
-    /// Observes a Run and projects what it found. A Run that waits on a
-    /// person reports it in the update's required actions; nothing is asked
-    /// of the client.
-    async fn observe_update(
-        &self,
-        run_id: &RunId,
-        observation: &RunObservation,
-        reporter: Reporter<'_>,
-    ) -> Result<CallToolResponse, ToolCallError> {
         let update = self
-            .observe(run_id, observation)
+            .observe(&run_id, &observation)
             .await
             .map_err(run_failure)?;
-        self.run_update(&update, reporter)
+        if let Some(prompt) =
+            ask.and_then(|ask| client_prompt::prompt(&update, &shown, ask, human_interface))
+        {
+            return Ok(prompt.into());
+        }
+        self.run_update(&update, Reporter::Observer, &shown)
             .map(Into::into)
             .map_err(ToolCallError::Tool)
     }
@@ -547,9 +576,12 @@ impl CoreTools {
         let cursor = arguments
             .cursor
             .as_deref()
-            .map(RunCursor::parse)
+            .map(WaitCursor::parse)
             .transpose()
             .map_err(invalid_input)?;
+        let (cursor, shown) = cursor.map_or((None, Shown::default()), |cursor| {
+            (Some(cursor.run), cursor.shown)
+        });
         let observation =
             RunObservation::immediate(cursor, RUN_EVENT_PAGE_MAX).map_err(invalid_input)?;
         let update = self
@@ -564,7 +596,7 @@ impl CoreTools {
             )
             .await
             .map_err(run_failure)?;
-        self.run_update(&update, Reporter::Observer)
+        self.run_update(&update, Reporter::Observer, &shown)
             .map_err(ToolCallError::Tool)
     }
 
@@ -599,10 +631,13 @@ impl CoreTools {
         .map_err(ToolCallError::Tool)
     }
 
+    /// Projects `update`. Its cursor keeps whichever of `shown` the Run still
+    /// waits on.
     fn run_update(
         &self,
         update: &coral_run::RunUpdate,
         reporter: Reporter<'_>,
+        shown: &Shown,
     ) -> Result<CallToolResult, ToolFailure> {
         let modules = &self.runtime.modules;
         projection::run_update(
@@ -610,6 +645,7 @@ impl CoreTools {
             reporter,
             &modules.human_interface,
             modules.run_update_page_bytes.get(),
+            shown,
         )
     }
 
