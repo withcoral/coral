@@ -42,7 +42,9 @@ exclusions and the Provider filter. It reads only vectors of the current Embedde
 retriever drops each vector entry whose source stamp differs from its Search Entity's, so a vector of an old model or
 of old text never ranks. Both queries return the window depth from the same read snapshot. The retriever merges them
 by reciprocal rank with equal weight and cuts the result to the window. An entry is strong when the retriever's own
-strong rule holds for it, wherever it came from, or when it is among a fixed number at the top of the vector list. The
+strong rule holds for it, wherever it came from, or when it is among a fixed number at the top of the vector list.
+[ADR 0044](0044-a-rerank-step-decides-by-distance-whether-an-authored-tool-is-strong.md) keeps the fixed number for
+Provider Tools only: an Authored Tool is strong by distance when it is nearer than the nearest Provider Tool. The
 engine's strong-first fusion across kinds ([ADR 0011](0011-universal-search-engine-and-retrievers.md)) does not
 change. The manifest holds the merge constants; [#3050](https://github.com/withcoral/coral/issues/3050) has their
 values.

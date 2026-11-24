@@ -496,80 +496,63 @@ async fn authored_tools_farther_than_the_nearest_tool_follow_every_weak_tool() {
 }
 
 #[tokio::test]
-async fn an_authored_tool_strictly_nearer_than_the_nearest_tool_is_strong() {
+async fn an_authored_tool_is_strong_only_when_strictly_nearer_than_the_nearest_tool_in_scope() {
     let world = World::anchorage().await;
-    // No word of `moon anchor` is in these Tools' texts. A quay Tool is as
-    // near to it as a Tool can be. A harbour Tool means what the tide Tool
-    // means, so it is exactly as near as the nearest Tool.
+    // No word of `moon anchor` is in these Tools' texts. The quay Tools
+    // are as near to it as a Tool can be. The harbour Tools mean what the
+    // Tides Tool means, so they are exactly as near as it, and nearer than
+    // every Notes Tool.
     world.save_and_publish("quay.tides01", QUAY).await;
     world.save_and_publish("harbour.tideTimes", HARBOUR).await;
     world.index_and_embed().await;
-
-    let all = world.anchor(&world.semantic(), None).await;
-
-    assert_eq!(
-        paths(&all).get(..3),
-        Some(
+    let semantic = world.semantic();
+    let strong = [
+        EntityKind::ProviderTool,
+        EntityKind::PrivateTool,
+        EntityKind::SharedTool,
+    ];
+    // Each case: the Provider filter, and the kinds of the page in order.
+    let cases = [
+        (
+            "no filter: an equal distance is not strong, so the harbour Tools \
+             follow every weak Tool",
+            None,
             [
-                "coral.providers.tides.getTides",
+                strong.as_slice(),
+                &[EntityKind::ProviderTool; 14],
+                &[EntityKind::PrivateTool, EntityKind::SharedTool],
+            ]
+            .concat(),
+        ),
+        (
+            "the Notes filter: the harbour Tools are nearer than every Tool in it",
+            Some("notes"),
+            [
+                strong.as_slice(),
+                &strong,
+                &[EntityKind::ProviderTool; 10],
+            ]
+            .concat(),
+        ),
+    ];
+    for (case, filter, expected) in cases {
+        let page = world.anchor(&semantic, filter).await;
+
+        assert_eq!(kinds(&page), expected, "{case}: {:?}", paths(&page));
+        assert_eq!(
+            paths(&page)
+                .into_iter()
+                .filter(|path| !path.starts_with("coral.providers."))
+                .collect::<Vec<_>>(),
+            [
                 "coral.private.quay.tides01",
                 "coral.shared.quay.tides01",
-            ]
-            .as_slice()
-        ),
-        "the quay Tools are strong: {:?}",
-        paths(&all)
-    );
-    assert_eq!(
-        kinds(&all),
-        [
-            [
-                EntityKind::ProviderTool,
-                EntityKind::PrivateTool,
-                EntityKind::SharedTool
-            ]
-            .as_slice(),
-            &[EntityKind::ProviderTool; 14],
-            &[EntityKind::PrivateTool, EntityKind::SharedTool],
-        ]
-        .concat(),
-        "an equal distance is not strong, so the harbour Tools follow every weak Tool: {:?}",
-        paths(&all)
-    );
-}
-
-#[tokio::test]
-async fn with_a_provider_filter_an_authored_tool_is_compared_with_the_nearest_tool_inside_it() {
-    let world = World::anchorage().await;
-    // As near as the Tides Tool, and nearer than every Notes Tool.
-    world.save_and_publish("harbour.tideTimes", HARBOUR).await;
-    world.index_and_embed().await;
-    let semantic = world.semantic();
-
-    let all = world.anchor(&semantic, None).await;
-    let notes = world.anchor(&semantic, Some("notes")).await;
-
-    assert_eq!(
-        kinds(&all).get(15..),
-        Some([EntityKind::PrivateTool, EntityKind::SharedTool].as_slice()),
-        "without a filter, the Tides Tool is as near: {:?}",
-        paths(&all)
-    );
-    assert_eq!(
-        kinds(&notes),
-        [
-            [
-                EntityKind::ProviderTool,
-                EntityKind::PrivateTool,
-                EntityKind::SharedTool
-            ]
-            .as_slice(),
-            &[EntityKind::ProviderTool; 11],
-        ]
-        .concat(),
-        "inside the Notes filter, the harbour Tools are nearer than every Tool: {:?}",
-        paths(&notes)
-    );
+                "coral.private.harbour.tideTimes",
+                "coral.shared.harbour.tideTimes",
+            ],
+            "{case}"
+        );
+    }
 }
 
 #[tokio::test]

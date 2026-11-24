@@ -26,6 +26,9 @@ query's words in order in a field, a query word that starts a word of its name, 
 near the top of its vector list. A kind can therefore judge by fields another kind lacks, and each rule can be tested
 alone; the cost is that the rules can disagree about how good a match must be, and only measuring them on one labelled
 set keeps them in step. The rules are in [#2792](https://github.com/withcoral/coral/pull/2792).
+[ADR 0044](0044-a-rerank-step-decides-by-distance-whether-an-authored-tool-is-strong.md) amends this for Authored Tools:
+a rerank step reads each entry's kind and distance, and marks an Authored Tool that no rule makes strong last, after
+every weak entry.
 
 At equal position a strong Provider Tool comes before a strong Private Tool, and a Private Tool before a Shared Tool. A
 Private Tool used to win every tie, because people wrote Private Tools for this Workspace and no model has them
