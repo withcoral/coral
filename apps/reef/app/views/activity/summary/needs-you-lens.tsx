@@ -135,10 +135,19 @@ export function NeedsYouLens({
           >
             <Table.Head>
               <Table.Row>
-                <Table.SortHeading sort={notAllowedSort} column="tool">
+                {/* The To fix table above has a Tool column too. */}
+                <Table.SortHeading
+                  sort={notAllowedSort}
+                  column="tool"
+                  label="Sort calls not allowed by tool"
+                >
                   Tool
                 </Table.SortHeading>
-                <Table.SortHeading sort={notAllowedSort} column="calls">
+                <Table.SortHeading
+                  sort={notAllowedSort}
+                  column="calls"
+                  label="Sort calls not allowed by count"
+                >
                   Not allowed
                 </Table.SortHeading>
               </Table.Row>

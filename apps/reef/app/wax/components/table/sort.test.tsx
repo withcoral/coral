@@ -85,7 +85,8 @@ function runtimeLocale(locale: string) {
 }
 
 // Catches: an order that follows the runtime's locale, so the server and a browser in
-// another language disagree when the page hydrates. Swedish puts Ö after Z.
+// another language disagree when the page hydrates. Swedish puts Ö after Z. English gives
+// the same order either way, so in that runtime only the check on the locales catches it.
 it.each(['en', 'sv'])('sorts text in one order in a runtime set to %s', (locale) => {
   const compared = runtimeLocale(locale)
   const { result } = renderHook(() =>

@@ -82,19 +82,25 @@ export function SortHeading<C extends string>({
   sort,
   column,
   align,
+  label,
   children,
 }: {
   sort: SortControl<C>
   column: C
   align?: TableAlign
-  /** The column's label. The button reads "Sort by" and the label. */
+  /**
+   * The button's accessible name. By default it reads "Sort by" and the column's label.
+   * Name the table too when another table beside it has a column of the same label.
+   */
+  label?: string
+  /** The column's label. */
   children: string
 }) {
   const order = sort.of(column)
   return (
     <Heading align={align} sort={order}>
       <SortButton
-        label={`Sort by ${children.toLowerCase()}`}
+        label={label ?? `Sort by ${children.toLowerCase()}`}
         sort={order}
         onClick={() => sort.by(column)}
       >

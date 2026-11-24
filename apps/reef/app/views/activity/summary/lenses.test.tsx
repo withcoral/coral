@@ -15,17 +15,20 @@ const called = (path: string, calls: number) => ({
   daily: [],
   callers: [],
 })
-const stopped = (path: string, stops: { blocked?: number; needsSetup?: number }) => ({
+const stopped = (
+  path: string,
+  stops: { blocked?: number; notAllowed?: number; needsSetup?: number },
+) => ({
   tool: `${path}#tool`,
   callPath: `coral.providers.${path}`,
   blocked: stops.blocked ?? 0,
-  notAllowed: 0,
+  notAllowed: stops.notAllowed ?? 0,
   needsSetup: stops.needsSetup ?? 0,
 })
 
 /** With no providers in the workspace, each tool reads as its namespace, then its name. */
 const SUMMARY: ActivitySummaryData = {
-  calls: { answered: 14, blocked: 4, notAllowed: 0, needsSetup: 2, failed: 0, canceled: 0 },
+  calls: { answered: 14, blocked: 4, notAllowed: 5, needsSetup: 2, failed: 0, canceled: 0 },
   tools: [
     called('slack.postMessage', 5),
     called('github.mergePullRequest', 5),
@@ -33,9 +36,10 @@ const SUMMARY: ActivitySummaryData = {
     called('asana.listTasks', 1),
   ],
   stopped: [
-    stopped('slack.postMessage', { blocked: 3 }),
+    stopped('slack.postMessage', { blocked: 3, notAllowed: 2 }),
     stopped('github.mergePullRequest', { blocked: 1 }),
-    stopped('asana.listTasks', { needsSetup: 2 }),
+    stopped('github.getPullRequest', { notAllowed: 2 }),
+    stopped('asana.listTasks', { needsSetup: 2, notAllowed: 1 }),
   ],
   callers: [],
   approvals: { approved: 0, declined: 0, medianWaitSeconds: null },
@@ -59,10 +63,11 @@ function shown(table: string) {
     })
 }
 
+/** Clicks the sort button of each column in turn: "Sort by tool", "Sort … by tool". */
 async function sortBy(table: string, columns: string[]) {
   const heading = within(screen.getByRole('table', { name: table }))
   for (const column of columns) {
-    await userEvent.click(heading.getByRole('button', { name: `Sort by ${column.toLowerCase()}` }))
+    await userEvent.click(heading.getByRole('button', { name: new RegExp(`by ${column}$`, 'i') }))
   }
 }
 
@@ -70,6 +75,7 @@ async function sortBy(table: string, columns: string[]) {
 const VIEWS = {
   Tools: () => <CallsLens summary={SUMMARY} />,
   'To fix': () => <NeedsYouLens summary={SUMMARY} />,
+  'Calls not allowed': () => <NeedsYouLens summary={SUMMARY} />,
   'Context by caller': () => <ContextLens entries={CONTEXT} />,
 }
 
@@ -89,11 +95,23 @@ it.each<[keyof typeof VIEWS, string[], string[]]>([
   [
     'Tools',
     ['Stopped'],
-    ['slack.postMessage', 'asana.listTasks', 'github.mergePullRequest', 'github.getPullRequest'],
+    ['slack.postMessage', 'asana.listTasks', 'github.getPullRequest', 'github.mergePullRequest'],
   ],
   ['To fix', [], ['slack.postMessage', 'asana.listTasks', 'github.mergePullRequest']],
   // Blocked by a rule, then Needs setup.
   ['To fix', ['Reason'], ['github.mergePullRequest', 'slack.postMessage', 'asana.listTasks']],
+  ['Calls not allowed', [], ['github.getPullRequest', 'slack.postMessage', 'asana.listTasks']],
+  [
+    'Calls not allowed',
+    ['Tool'],
+    ['asana.listTasks', 'github.getPullRequest', 'slack.postMessage'],
+  ],
+  [
+    'Calls not allowed',
+    // The column already sorts, so it turns around. Equal counts stay in tool order.
+    ['Count'],
+    ['asana.listTasks', 'github.getPullRequest', 'slack.postMessage'],
+  ],
   ['Context by caller', [], ['You', 'Review agent', 'Digest agent']],
   ['Context by caller', ['Share'], ['You', 'Review agent', 'Digest agent']],
   ['Context by caller', ['Caller'], ['Digest agent', 'Review agent', 'You']],

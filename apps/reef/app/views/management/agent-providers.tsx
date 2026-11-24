@@ -34,7 +34,7 @@ const SORT_COLUMNS = {
   },
 } satisfies Record<string, Table.SortColumn<AgentProviderView>>
 
-/** The accounts this agent uses, one row per provider. Those that need you come first until you sort. */
+/** The accounts this agent uses, one row per provider. By default, those that need you come first. */
 export function AgentProviders({
   providers,
   form,
