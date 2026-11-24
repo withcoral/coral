@@ -1,21 +1,21 @@
-//! Run-bound Program Emission and Program Log requests to the Run Owner.
+//! Run-bound Program Emission and Program Log requests to the loop.
 
 use coral_telemetry::metric::{self, OutputKind};
 
-use crate::owner::OwnerHandle;
+use crate::run_stream::run_loop::LoopHandle;
 use crate::{Error, PROGRAM_LOG_MESSAGE_MAX_BYTES, ProgramLogLevel, ProgramValue, SourceLocation};
 
-/// Validates Program output and asks the Run Owner to apply it. The owner
+/// Validates Program output and asks the loop to apply it. The loop
 /// decides the Run Output Budget against its exact total and answers at
 /// Applied; above the Applied cap it answers once the chunk is recorded.
 pub(crate) struct ProgramOutputWriter {
-    owner: OwnerHandle,
+    run_loop: LoopHandle,
     limits: coral_value::ValueLimits,
 }
 
 impl ProgramOutputWriter {
-    pub(crate) const fn new(owner: OwnerHandle, limits: coral_value::ValueLimits) -> Self {
-        Self { owner, limits }
+    pub(crate) const fn new(run_loop: LoopHandle, limits: coral_value::ValueLimits) -> Self {
+        Self { run_loop, limits }
     }
 
     pub(crate) async fn emit(
@@ -54,7 +54,10 @@ impl ProgramOutputWriter {
                     error => ProgramOutputWriteError::Fatal(error),
                 }
             })?;
-        self.owner.emit(value, location).await.map_err(output_error)
+        self.run_loop
+            .emit(value, location)
+            .await
+            .map_err(output_error)
     }
 
     async fn write_log(
@@ -66,7 +69,7 @@ impl ProgramOutputWriter {
         if message.len() > PROGRAM_LOG_MESSAGE_MAX_BYTES {
             return Err(ProgramOutputWriteError::LimitExceeded);
         }
-        self.owner
+        self.run_loop
             .log(level, message.to_string(), location)
             .await
             .map_err(output_error)

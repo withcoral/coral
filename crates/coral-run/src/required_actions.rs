@@ -377,7 +377,7 @@ pub(crate) async fn populate_summaries(
 
 /// Whether the Run still takes human actions, as recorded: running, with no
 /// termination intent. A Run past its deadline keeps its actions until its
-/// owner records the timeout; readers never derive it from the clock.
+/// loop records the timeout; readers never derive it from the clock.
 pub(crate) fn run_accepts_actions(run: &RunRecord) -> bool {
     !run.state.is_terminal() && run.termination.is_none()
 }

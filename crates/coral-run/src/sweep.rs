@@ -26,8 +26,8 @@ use coral_workspace::WorkspaceId;
 
 use crate::approval::{self, ApprovalId, DecideWork};
 use crate::lifecycle::RunRecord;
-use crate::owner::ChunkWork as _;
 use crate::run_repository::{self, Chunk, HeldRun, UndecodableRun};
+use crate::run_stream::run_loop::ChunkWork as _;
 use crate::termination::commit_end;
 use crate::types::HeldRunId;
 use crate::{Error, RunId, RunModule};
@@ -237,7 +237,8 @@ impl RunModule {
         let events = DecideWork::expiry(approval.clone())
             .run(&mut transaction, &run, now)
             .await?;
-        let chunk = Chunk::new(&run, run.execution_claim_id.as_deref(), now).owned_events(&events);
+        let chunk =
+            Chunk::new(&run, run.execution_claim_id.as_deref(), now).pending_events(&events);
         if unless_moved(run_repository::commit_chunk(&mut transaction, chunk).await)?.is_none() {
             return Ok(false);
         }
@@ -369,7 +370,7 @@ impl RunModule {
 }
 
 /// The Run as `transaction` reads it, while it is running with no worker
-/// claim: no Run Owner fences it.
+/// claim: no older release's Run Owner fences it.
 async fn unowned(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,

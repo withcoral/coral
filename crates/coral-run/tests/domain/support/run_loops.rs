@@ -2,7 +2,7 @@
 //! settled.
 use crate::tests::*;
 
-use crate::owner::ChunkWork;
+use crate::run_stream::run_loop::ChunkWork;
 use coral_db::Transaction;
 
 /// How a [`ProbeWork`] was settled, once it was.
@@ -21,7 +21,7 @@ impl ChunkWork for ProbeWork {
         _transaction: &mut Transaction<'_>,
         _run: &crate::lifecycle::RunRecord,
         _now_unix_nanos: i64,
-    ) -> Result<Vec<crate::run_repository::OwnedEvent>, Error> {
+    ) -> Result<Vec<crate::run_repository::PendingEvent>, Error> {
         Ok(Vec::new())
     }
 

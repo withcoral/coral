@@ -25,7 +25,7 @@ mod usage;
 pub(crate) use acceptance::insert_acceptance;
 use events::last_event_sequence;
 pub(crate) use events::{
-    NewEvent, OwnedEvent, OwnedEventKind, event_page_in_transaction, output_page_in_transaction,
+    NewEvent, PendingEvent, PendingEventKind, event_page_in_transaction, output_page_in_transaction,
 };
 pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention_activity};
@@ -237,14 +237,14 @@ fn base_run_select() -> sea_query::SelectStatement {
 /// has taken or holds. An older release's Run Owner's Run holds a worker
 /// claim until it ends.
 /// The state is a literal, so each plan can use an index that `state` leads.
-fn running_without_owner() -> Condition {
+fn running_without_worker_claim() -> Condition {
     Condition::all()
         .add(Expr::col(ProgramRunRecords::State).eq(Expr::cust("'running'")))
         .add(Expr::col(ProgramRunRecords::WorkerClaimId).is_null())
 }
 
-/// [`running_without_owner`] for the Run row a query names `alias`.
-pub(crate) fn running_without_owner_as(alias: &str) -> Condition {
+/// [`running_without_worker_claim`] for the Run row a query names `alias`.
+pub(crate) fn running_without_worker_claim_as(alias: &str) -> Condition {
     let alias = sea_query::Alias::new(alias);
     Condition::all()
         .add(Expr::col((alias.clone(), ProgramRunRecords::State)).eq(Expr::cust("'running'")))

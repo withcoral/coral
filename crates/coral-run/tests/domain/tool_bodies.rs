@@ -1,8 +1,8 @@
 //! Private Tool calls whose body Coral performs in the Program, over the
 //! real V8 engine: the outer call holds no slot under the Fan-out Limit, and
 //! a Run that ends during a body ends the outer call as `run_terminated`,
-//! while the calls the body made keep their own outcomes. The owner's in-memory slot rule has its own row
-//! in the `apply` table (`owner.rs`).
+//! while the calls the body made keep their own outcomes. The loop's
+//! in-memory slot rule has its own row in the `apply` table (`run_loop.rs`).
 use super::*;
 
 use crate::InvocationResultKind;
@@ -322,7 +322,7 @@ async fn a_run_that_ends_during_a_tool_body_ends_its_call_as_run_terminated() {
             assert_eq!(canceled.state(), RunState::Canceled);
         }
         scope.upstream.release();
-        wait_until(|| !scope.fixture.runs.has_owner(&run)).await;
+        wait_until(|| !scope.fixture.runs.has_loop(&run)).await;
     }
 }
 
@@ -800,9 +800,9 @@ async fn a_call_waiting_on_a_child_that_never_settles_holds_its_run_until_the_de
         })
     })
     .await;
-    if let Some(owner) = scope.fixture.runs.owners.get(&run) {
-        owner.send(crate::owner::Message::Timer(
-            crate::owner::Timer::RunDeadline,
+    if let Some(run_loop) = scope.fixture.runs.loops.get(&run) {
+        run_loop.send(crate::run_stream::run_loop::Message::Timer(
+            crate::run_stream::run_loop::Timer::RunDeadline,
         ));
     }
 

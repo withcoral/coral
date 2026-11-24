@@ -35,6 +35,7 @@
 //! in memory and stamps the commit time.
 
 mod chunk;
+mod completion;
 mod handle;
 mod host;
 mod state;
@@ -43,7 +44,7 @@ pub(crate) use chunk::ChunkWork;
 #[cfg(test)]
 pub(crate) use chunk::{CHUNK_WORK_CAP, ChunkBuildView, ENFORCEMENT_BATCH_CAP};
 pub(crate) use handle::{
-    Check, DecisionRequest, DrainStep, Message, OwnerHandle, OwnerRegistration, Owners, ParkedWait,
+    Check, DecisionRequest, DrainStep, LoopHandle, LoopRegistration, Loops, Message, ParkedWait,
     RequestTicket, StartedExecution,
 };
 #[cfg(test)]
@@ -51,4 +52,19 @@ pub(crate) use handle::{CommitRejection, Reply, Timer};
 pub(crate) use host::host;
 pub(crate) use state::NO_DEADLINE;
 #[cfg(test)]
-pub(crate) use state::{Effect, OwnerLimits, OwnerState, Phase, apply};
+pub(crate) use state::{Effect, LoopLimits, LoopState, Phase, apply};
+
+impl crate::RunModule {
+    /// Registers a Run stream's loop, which detaches the one it replaces
+    /// ([`Loops::register_stream`]), and starts the wake-up reader of this
+    /// Coral Instance's loops.
+    pub(crate) fn register_loop(&self, handle: &LoopHandle) -> LoopRegistration {
+        let registration = self.loops.register_stream(handle.clone());
+        self.wakes.loop_registered(
+            &self.loops,
+            #[cfg(test)]
+            &self.execution_observer,
+        );
+        registration
+    }
+}

@@ -810,12 +810,12 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
     let pending = approval_revision(&fixture.runs, &tool.principal, &tool.workspace_id).await;
     fixture
         .runs
-        .owners
+        .loops
         .get(run.run_id())
-        .expect("live owner")
-        .send(crate::owner::Message::Timer(crate::owner::Timer::Approval(
-            request.id.clone(),
-        )));
+        .expect("live loop")
+        .send(crate::run_stream::run_loop::Message::Timer(
+            crate::run_stream::run_loop::Timer::Approval(request.id.clone()),
+        ));
     wait_until_async(async || read().await.unwrap().state != ApprovalState::Pending).await;
     assert_ne!(
         approval_revision(&fixture.runs, &tool.principal, &tool.workspace_id).await,
@@ -900,7 +900,7 @@ async fn an_approval_deadline_timer_expires_the_request_and_a_later_decision_rea
 /// request itself, the required actions and the Run's action page. No
 /// reader derives Expired from the clock.
 #[tokio::test]
-async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_expiry() {
+async fn a_request_past_its_deadline_reads_pending_until_the_loop_records_its_expiry() {
     let timers = Arc::new(TimerProbe::default());
     let mut fixture = TestModules::with_execution_adapters(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
@@ -909,8 +909,8 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
         timers.clone(),
     )
     .await;
-    // Isolate the request's deadline from the Run's, and keep the owner from
-    // recording the expiry while the test reads. Two owner paths would: the
+    // Isolate the request's deadline from the Run's, and keep the loop from
+    // recording the expiry while the test reads. Two loop paths would: the
     // request's timer (30 s on the host clock), and the periodic precheck of
     // parked waits, which reads the test clock and wakes the Invocation, whose
     // held recheck records the expiry. An hour keeps the precheck out of this
@@ -937,7 +937,7 @@ async fn a_request_past_its_deadline_reads_pending_until_the_owner_records_its_e
     // The owner arms the request's timer when it parks the Invocation, for
     // the time its clock then leaves until the deadline: a clock moved before
     // that would fire the timer at once.
-    let timer = crate::owner::Timer::Approval(request.id.clone());
+    let timer = crate::run_stream::run_loop::Timer::Approval(request.id.clone());
     wait_until(|| timers.armed(&timer).is_some()).await;
     // The clock passes the deadline; neither the request's timer nor the
     // precheck runs within this test.
@@ -1913,8 +1913,8 @@ async fn first_durable_decision_wins_against_policy_changes_before_the_worker_ob
 }
 
 /// While an Approval Request is pending, its Invocation is parked with its
-/// Run Owner and holds nothing. Commits elsewhere ring the content-free
-/// change signal, but an owner subscribes only for a connection wait, so
+/// loop and holds nothing. Commits elsewhere ring the content-free
+/// change signal, but a loop subscribes only for a connection wait, so
 /// they wake nothing, read nothing and enforce nothing: the decision comes
 /// through the owner, and the periodic precheck (15 s away here) is the
 /// ceiling for everything else. Polling a snapshot per parked wait on every
@@ -1950,7 +1950,7 @@ async fn an_unrelated_commit_while_an_approval_is_pending_causes_no_enforcement_
     for at in 0..3 {
         commit_elsewhere(&fixture, &bystander, at).await;
     }
-    // Past the wake gap: a subscribed owner would have read by now.
+    // Past the wake gap: a subscribed loop would have read by now.
     tokio::time::sleep(wake_gap + Duration::from_millis(500)).await;
 
     assert_eq!(probe.held() - held, 0, "held rechecks");
@@ -2034,12 +2034,12 @@ async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_reque
     assert!(
         prechecks
             .iter()
-            .all(|(check, _)| *check == crate::owner::Check::Periodic),
+            .all(|(check, _)| *check == crate::run_stream::run_loop::Check::Periodic),
         "no change wake-up reads an approval wait: {prechecks:?}"
     );
     assert_eq!(
         prechecks.last(),
-        Some(&(crate::owner::Check::Periodic, 1)),
+        Some(&(crate::run_stream::run_loop::Check::Periodic, 1)),
         "the periodic precheck found the moot wait: {prechecks:?}"
     );
     assert_eq!(
@@ -2062,7 +2062,7 @@ async fn a_wait_that_became_moot_is_found_by_the_periodic_precheck_and_its_reque
 /// the chunk that records it ends the Invocation and wakes the parked wait,
 /// with no read, long before the periodic precheck. The wait parks once.
 #[tokio::test]
-async fn a_pending_approval_expires_at_its_deadline_by_the_owners_timer() {
+async fn a_pending_approval_expires_at_its_deadline_by_the_loops_timer() {
     // Isolate approval expiry from the capped Run deadline: the request
     // expires two seconds after its creation, long
     // before the periodic precheck.
@@ -2154,11 +2154,11 @@ async fn a_run_timeout_expires_its_pending_approval() {
     probe.until_parked(1).await;
     fixture
         .runs
-        .owners
+        .loops
         .get(run.run_id())
-        .expect("live owner")
-        .send(crate::owner::Message::Timer(
-            crate::owner::Timer::RunDeadline,
+        .expect("live loop")
+        .send(crate::run_stream::run_loop::Message::Timer(
+            crate::run_stream::run_loop::Timer::RunDeadline,
         ));
     let terminal = wait_for_terminal(
         &fixture.runs,
@@ -2343,7 +2343,7 @@ async fn settled_approvals_list_decisions_and_expiries_newest_first_and_page_sta
     }
 }
 
-/// A fixture under `policy` whose Invocations and Run Owners one
+/// A fixture under `policy` whose Invocations and loops one
 /// [`WaitProbe`] watches; approval-gated calls go to an upstream that
 /// rejects them.
 async fn probed_fixture(

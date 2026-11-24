@@ -40,8 +40,8 @@ use crate::approval_repository::{self, StoredApproval};
 use crate::enforcement::ApprovalFact;
 use crate::engine::{Clock, SystemClock};
 use crate::invocation::AdmittedInvocation;
-use crate::owner::{ChunkWork, DecisionRequest};
-use crate::run_repository::OwnedEvent;
+use crate::run_repository::PendingEvent;
+use crate::run_stream::run_loop::{ChunkWork, DecisionRequest};
 use crate::run_wake::RunWakes;
 use crate::{CoralFailure, Error, InvocationId, RunId, invocation_repository, run_repository};
 
@@ -439,7 +439,7 @@ impl ApprovalModule {
             run.execution_claim_id.as_deref(),
             run.commit_mark(now),
         )
-        .owned_events(&events);
+        .pending_events(&events);
         run_repository::commit_chunk(&mut tx, chunk).await?;
         tx.commit().await?;
         self.wakes.wake_for(run_id);
@@ -802,17 +802,17 @@ pub(crate) enum Gate {
     /// ready.
     Ready(ApprovalFact),
     /// A decision is still pending. The request expires at this instant
-    /// unless decided first: the owner's timer records the expiry.
+    /// unless decided first: the loop's timer records the expiry.
     Pending {
         id: ApprovalId,
         deadline_at_unix_nanos: i64,
     },
 }
 
-// All private facets join the Run Owner's chunk transaction; an Invocation
+// All private facets join the loop's chunk transaction; an Invocation
 // this settles appends its `invocation.ended` to `events`. A request this
 // creates waits at most `approval_wait_nanos`, bounded by the Run deadline.
-// The gate never judges a deadline: the owner's timer expires a pending
+// The gate never judges a deadline: the loop's timer expires a pending
 // request, and the enforcement point judges an approved one by its decision
 // time.
 pub(super) async fn gate(
@@ -822,7 +822,7 @@ pub(super) async fn gate(
     required: bool,
     approval_wait_nanos: i64,
     now: i64,
-    events: &mut Vec<OwnedEvent>,
+    events: &mut Vec<PendingEvent>,
 ) -> Result<Gate, Error> {
     let row =
         approval_repository::find_for_invocation(tx, &admitted.workspace_id, &admitted.id).await?;
@@ -956,7 +956,7 @@ pub(super) async fn expire_for_timeout(
     run: &RunRecord,
     invocation: &InvocationId,
     now: i64,
-) -> Result<Option<OwnedEvent>, Error> {
+) -> Result<Option<PendingEvent>, Error> {
     let row = approval_repository::find_for_invocation(tx, &run.workspace_id, invocation).await?;
     let Some(mut row) = row.filter(|row| row.state == ApprovalState::Pending) else {
         return Ok(None);
@@ -1011,9 +1011,9 @@ pub(crate) struct DecideWork {
 }
 
 impl DecideWork {
-    /// A human's decision, which the owner applied at
+    /// A human's decision, which the loop applied at
     /// `applied_at_unix_nanos`; `decide: false` closes the request instead,
-    /// the Run no longer accepting actions when the owner applied it.
+    /// the Run no longer accepting actions when the loop applied it.
     pub(crate) fn decision(
         request: DecisionRequest,
         decide: bool,
@@ -1032,7 +1032,7 @@ impl DecideWork {
         }
     }
 
-    /// The owner's timer for the request fired: the request expires.
+    /// The loop's timer for the request fired: the request expires.
     pub(crate) fn expiry(approval: ApprovalId) -> Self {
         Self {
             approval,
@@ -1045,7 +1045,7 @@ impl DecideWork {
         tx: &mut Transaction<'_>,
         run: &RunRecord,
         now: i64,
-    ) -> Result<Vec<OwnedEvent>, Error> {
+    ) -> Result<Vec<PendingEvent>, Error> {
         // Held: a decision and an expiry that race each other on two writers
         // are recorded once, and the second reads the first as a repeat.
         let row = approval_repository::load_held(tx, &run.workspace_id, &self.approval).await;
@@ -1068,7 +1068,7 @@ impl DecideWork {
                 request.trace.clone(),
             ),
             Decided::Close(request) => (ApprovalState::Closed, now, None, request.trace.clone()),
-            // The expiry is dated at the deadline, not when the owner
+            // The expiry is dated at the deadline, not when the loop
             // recorded it.
             Decided::Expire => (
                 ApprovalState::Expired,
@@ -1115,7 +1115,7 @@ impl ChunkWork for DecideWork {
         tx: &mut Transaction<'_>,
         run: &RunRecord,
         now_unix_nanos: i64,
-    ) -> Result<Vec<OwnedEvent>, Error> {
+    ) -> Result<Vec<PendingEvent>, Error> {
         self.record(tx, run, now_unix_nanos.max(run.accepted_at_unix_nanos))
             .await
     }
@@ -1131,7 +1131,7 @@ async fn settle_rejection(
     run: &RunRecord,
     row: &StoredApproval,
     now: i64,
-) -> Result<Option<OwnedEvent>, Error> {
+) -> Result<Option<PendingEvent>, Error> {
     let failure = match row.state {
         ApprovalState::Declined => CoralFailure::ApprovalDeclined,
         ApprovalState::Expired => CoralFailure::ApprovalExpired,

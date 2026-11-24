@@ -89,18 +89,18 @@ impl RunRecord {
     }
 
     /// Whether the Run row still takes the loop's chunks: a running Run that
-    /// holds `claim_id` as its loop's claim ([`Self::holds_owner_claim`]).
+    /// holds `claim_id` as its loop's claim ([`Self::holds_loop_claim`]).
     /// Never the clock: the loop applies the Run deadline itself, and an
     /// older build's recorded termination intent does not stop the loop
     /// recording what it applied before the intent.
-    pub(crate) fn accepts_owner_chunk(&self, claim_id: &str) -> bool {
-        self.state == RunState::Running && self.holds_owner_claim(claim_id)
+    pub(crate) fn accepts_loop_chunk(&self, claim_id: &str) -> bool {
+        self.state == RunState::Running && self.holds_loop_claim(claim_id)
     }
 
     /// Whether `claim_id` is the execution claim a take gave the Run for a
     /// Run Executor. An older release's Run Owner's Run, which a worker
     /// claim fences, takes no chunk of a loop.
-    pub(crate) fn holds_owner_claim(&self, claim_id: &str) -> bool {
+    pub(crate) fn holds_loop_claim(&self, claim_id: &str) -> bool {
         self.execution_claim_id.as_deref() == Some(claim_id)
             && self.on_run_executor
             && self.worker_claim_id.is_none()
@@ -108,12 +108,12 @@ impl RunRecord {
 
     /// Whether the loop holding `claim_id` may still do Program work on
     /// this Run. True when the Run is running, no termination is recorded,
-    /// it holds `claim_id` as its loop's claim ([`Self::holds_owner_claim`]),
+    /// it holds `claim_id` as its loop's claim ([`Self::holds_loop_claim`]),
     /// and the deadline has not passed.
     pub(crate) fn program_work_is_current(&self, claim_id: &str, now_unix_nanos: i64) -> bool {
         self.state == RunState::Running
             && self.termination.is_none()
-            && self.holds_owner_claim(claim_id)
+            && self.holds_loop_claim(claim_id)
             && !self.deadline_passed(now_unix_nanos)
     }
 

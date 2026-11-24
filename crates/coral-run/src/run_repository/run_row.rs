@@ -173,7 +173,7 @@ impl RunRow {
         let released_on_interruption = self.worker_claim_id.is_none()
             && termination
                 .is_some_and(|termination| termination.kind == RunTerminationKind::Interrupted);
-        // A taken Run has its claim and no Run Owner yet, and a Run that a
+        // A taken Run has its claim and no worker claim, and a Run that a
         // Run Executor holds never has one.
         let taken = self.worker_claim_id.is_none()
             && (self.execution_started_at_unix_nanos.is_none() || self.run_executor_kind.is_some());

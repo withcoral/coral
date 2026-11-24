@@ -19,7 +19,7 @@ use coral_telemetry::safe;
 use tokio::sync::Notify;
 
 use crate::observation::{Cadence, Turn};
-use crate::owner::{Message, OwnerHandle, Owners};
+use crate::run_stream::run_loop::{LoopHandle, Loops, Message};
 use crate::{Error, RunId, run_repository};
 
 /// How many times the receiver of a decision or a cancellation for a Run a
@@ -62,7 +62,7 @@ pub(crate) struct RunWakes {
 
 /// The Run stream loops here that wait for a ring of the change signal:
 /// those parked on a connection request.
-type Listeners = Arc<Mutex<HashMap<RunId, OwnerHandle>>>;
+type Listeners = Arc<Mutex<HashMap<RunId, LoopHandle>>>;
 
 impl RunWakes {
     pub(crate) fn new(database: Arc<Database>) -> Self {
@@ -78,14 +78,14 @@ impl RunWakes {
     /// of the change signal as [`Message::Changed`], once at once as a
     /// subscription of its own would, until [`Self::unlisten`]. Its reader
     /// runs: the loop registered first.
-    pub(crate) fn listen(&self, handle: &OwnerHandle) {
+    pub(crate) fn listen(&self, handle: &LoopHandle) {
         self.lock().insert(handle.run_id().clone(), handle.clone());
         handle.send(Message::Changed);
     }
 
     /// The loop `handle` names waits for no ring any more. A loop that
     /// replaced it for the same Run keeps listening.
-    pub(crate) fn unlisten(&self, handle: &OwnerHandle) {
+    pub(crate) fn unlisten(&self, handle: &LoopHandle) {
         let mut listeners = self.lock();
         if listeners
             .get(handle.run_id())
@@ -95,17 +95,17 @@ impl RunWakes {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<RunId, OwnerHandle>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<RunId, LoopHandle>> {
         self.listeners
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// A Run stream's loop registered in `owners`: starts this Coral
+    /// A Run stream's loop registered in `loops`: starts this Coral
     /// Instance's reader on the first, and has it read at once.
     pub(crate) fn loop_registered(
         &self,
-        owners: &Owners,
+        loops: &Loops,
         #[cfg(test)] observer: &Arc<dyn crate::execution::ExecutionObserver>,
     ) {
         self.reader.get_or_init(|| {
@@ -113,7 +113,7 @@ impl RunWakes {
                 self.database.clone(),
                 self.woken.clone(),
                 self.listeners.clone(),
-                owners.clone(),
+                loops.clone(),
                 #[cfg(test)]
                 observer.clone(),
             )
@@ -128,7 +128,7 @@ impl RunWakes {
         if self
             .reader
             .get()
-            .is_some_and(|reader| reader.owners.contains(run_id))
+            .is_some_and(|reader| reader.loops.contains(run_id))
         {
             self.woken.notify_one();
         }
@@ -138,7 +138,7 @@ impl RunWakes {
 /// The reader; the last handle on it stops it.
 struct Reader {
     task: tokio::task::JoinHandle<()>,
-    owners: Owners,
+    loops: Loops,
 }
 
 impl Reader {
@@ -146,10 +146,10 @@ impl Reader {
         database: Arc<Database>,
         woken: Arc<Notify>,
         listeners: Listeners,
-        owners: Owners,
+        loops: Loops,
         #[cfg(test)] observer: Arc<dyn crate::execution::ExecutionObserver>,
     ) -> Self {
-        let registered = owners.clone();
+        let registered = loops.clone();
         let task = tokio::spawn(async move {
             let mut cadence = Cadence::default();
             loop {
@@ -166,14 +166,14 @@ impl Reader {
                 }
                 #[cfg(test)]
                 observer.before_wake_read().await;
-                let loops = owners.streams();
+                let streams = loops.streams();
                 // A registration wakes the next read.
-                if loops.is_empty() {
+                if streams.is_empty() {
                     continue;
                 }
-                let runs: Vec<_> = loops
+                let runs: Vec<_> = streams
                     .iter()
-                    .map(|(workspace, owner)| (workspace.clone(), owner.run_id().clone()))
+                    .map(|(workspace, run_loop)| (workspace.clone(), run_loop.run_id().clone()))
                     .collect();
                 let heads = match run_repository::heads(&database, &runs).await {
                     Ok(heads) => heads,
@@ -185,11 +185,11 @@ impl Reader {
                         continue;
                     }
                 };
-                for (_, owner) in &loops {
-                    if let Some(run) = heads.get(owner.run_id())
-                        && owner.behind(run.head, run.running)
+                for (_, run_loop) in &streams {
+                    if let Some(run) = heads.get(run_loop.run_id())
+                        && run_loop.behind(run.head, run.running)
                     {
-                        owner.send(Message::Woken(*run));
+                        run_loop.send(Message::Woken(*run));
                         #[cfg(test)]
                         observer.wake_delivered(turn);
                     }
@@ -198,7 +198,7 @@ impl Reader {
         });
         Self {
             task,
-            owners: registered,
+            loops: registered,
         }
     }
 }

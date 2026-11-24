@@ -21,12 +21,12 @@ pub(crate) struct Claimed {
     pub(crate) claim_id: String,
 }
 
-/// A waiting Run: running, with no claim and no start mark. A Run Owner's
-/// Run is never one: it holds a worker claim from its acceptance until its
-/// start writes the execution claim. The state is a literal, so every plan
-/// can use the partial index of waiting Runs.
+/// A waiting Run: running, with no claim and no start mark. An older
+/// release's Run Owner's Run is never one: it holds a worker claim from
+/// its acceptance until its start writes the execution claim. The state is
+/// a literal, so every plan can use the partial index of waiting Runs.
 fn waiting() -> Condition {
-    super::running_without_owner()
+    super::running_without_worker_claim()
         .add(Expr::col(ProgramRunRecords::ExecutionClaimId).is_null())
         .add(Expr::col(ProgramRunRecords::ExecutionStartedAtUnixNanos).is_null())
 }

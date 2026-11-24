@@ -283,7 +283,11 @@ async fn a_cancel_and_the_run_deadline_record_the_first_applied_kind() {
         if deadline_first {
             // The clock stays before the deadline, so only the timer's
             // order decides.
-            fire(&fixture.runs, &run_id, crate::owner::Timer::RunDeadline);
+            fire(
+                &fixture.runs,
+                &run_id,
+                crate::run_stream::run_loop::Timer::RunDeadline,
+            );
             fixture.terminal_record(&workspace_id, &run_id).await;
         }
         let terminal = fixture
@@ -549,7 +553,7 @@ async fn termination_ends_waiting_invocations_and_marks_unfinished_dispatches_in
             );
             assert_eq!(in_flight.sends(), sends, "{case}");
             in_flight.finish_late(termination).await;
-            wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
+            wait_until(|| !fixture.runs.has_loop(accepted.run_id())).await;
             let after_late_work = fixture
                 .runs
                 .observe(
@@ -752,7 +756,7 @@ async fn durable_cancellation_wins_completion_and_preserves_principal_confidenti
 
     // The Program's completion crosses the cancellation and loses.
     stream.request(1, finish_with("null"));
-    wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
+    wait_until(|| !fixture.runs.has_loop(accepted.run_id())).await;
     let still_canceled = fixture
         .runs
         .observe(

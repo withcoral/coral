@@ -13,7 +13,7 @@ const ACTIVITY_HEARTBEAT: Duration = Duration::from_secs(5);
 pub enum ActivityWake {
     /// A committed change, or the expiry of the invoking authority behind
     /// an action. Reread authorized activity. A Run's or a request's
-    /// deadline wakes nothing by itself: its owner's record of the timeout
+    /// deadline wakes nothing by itself: its loop's record of the timeout
     /// or the expiry is a committed change.
     Changed,
     /// Authority still holds and nothing changed. Do not reread activity.

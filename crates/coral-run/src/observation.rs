@@ -1,6 +1,6 @@
 //! Non-consuming Run observation: one authorized snapshot per read, with
 //! bounded waiting on committed changes. A deadline wakes nothing by itself:
-//! the Run Owner's record of a timeout or an expiry is a committed change.
+//! the loop's record of a timeout or an expiry is a committed change.
 
 use std::time::Duration;
 

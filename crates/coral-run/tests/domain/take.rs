@@ -1,5 +1,5 @@
 //! The take (ADR 0027): a Run accepted for Run streams waits with no Run
-//! Owner until the take loop claims it for the pull stream with the most
+//! stream loop until the take loop claims it for the pull stream with the most
 //! room and sends it there in one `Taken`.
 use super::*;
 use coral_run_executor::wire::v1::{PullResponse, TakenRun, pull_response};
@@ -157,7 +157,7 @@ async fn take_row(
 }
 
 #[tokio::test]
-async fn a_run_accepted_for_run_streams_waits_running_with_no_owner() {
+async fn a_run_accepted_for_run_streams_waits_running_with_no_loop() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let runs = fixture.runs.clone();
     let (workspace_id, principal) = fixture.user_scope("waiter", "Waiting").await;
@@ -176,7 +176,7 @@ async fn a_run_accepted_for_run_streams_waits_running_with_no_owner() {
         ),
         (None, None, None)
     );
-    assert!(runs.owners.get(update.run_id()).is_none());
+    assert!(runs.loops.get(update.run_id()).is_none());
 }
 
 /// Catches: a decode that rejects a taken Run, or accepts a take's claim
