@@ -1,6 +1,7 @@
 import { createContainer, globalStyle, style } from '@vanilla-extract/css'
 
 import { theme } from '@/wax/theme/theme.css'
+import { inputHeight } from '@/wax/components/inputs/base-input.css'
 import { visuallyHiddenRules } from '@/wax/components/visually-hidden.css'
 
 export const layout = style({
@@ -153,11 +154,14 @@ export const toolbar = style({
   justifyContent: 'space-between',
   minWidth: 0,
 })
+// Each group is as tall as the filter's input, with or without one beside it,
+// so a title sits at one height on every page, and when the controls wrap below.
 export const toolbarGroup = style({
   alignItems: 'center',
   display: 'flex',
   flexWrap: 'wrap',
   gap: 12,
+  minHeight: inputHeight,
   minWidth: 0,
 })
 // A toolbar with an action lays itself out by its own width, since the rail
@@ -214,7 +218,8 @@ export const toolbarActionLabel = style({
     [COMPACT_TOOLBAR]: visuallyHiddenRules,
   },
 })
-export const toolbarTitle = style({ alignItems: 'center', display: 'flex', gap: 8, minWidth: 0 })
+// Text beside the title, such as a docs link, sits on the title's baseline.
+export const toolbarTitle = style({ alignItems: 'baseline', display: 'flex', gap: 8, minWidth: 0 })
 // The basis decides when the group wraps; on its own line the filter then
 // shrinks to fit a phone.
 export const toolbarFilter = style({

@@ -237,9 +237,10 @@ function usePickerPlacement(enabled: boolean) {
 }
 
 /**
- * The one row above the table: `leading` controls at the start, then any
- * other controls, a `picker`, the filter's input, and the page's `action` at
- * the end.
+ * The page's title row, above its table or cards: `leading` controls at the
+ * start, then any other controls, a `picker`, the filter's input, and the
+ * page's `action` at the end. It is as tall without a filter as with one, so
+ * the title does not move between pages.
  */
 export function CatalogToolbar({
   title,
@@ -255,9 +256,10 @@ export function CatalogToolbar({
    * `titled`, so its breadcrumb is not a second h1.
    */
   title?: string
-  /** An info tip beside the title, such as what a member can see. */
+  /** Beside the title, such as an info tip on what a member can see or a link to the docs. */
   titleInfo?: ReactNode
-  filter: FilterFieldProps & {
+  /** Absent on a page with nothing to filter. */
+  filter?: FilterFieldProps & {
     /** A shortcut, such as "$mod+f", that focuses the filter from anywhere on the page. */
     shortcut?: string
     /** Takes the rest of the row, for a toolbar in a narrow column such as a card. */
@@ -279,7 +281,7 @@ export function CatalogToolbar({
    */
   action?: ReactNode
 }) {
-  const { shortcut, fill, ...field } = filter
+  const fill = filter?.fill
   const input = useRef<HTMLInputElement>(null)
   const { toolbar, titleItem, pickerItem, actionItem, pickerBelow } = usePickerPlacement(
     Boolean(picker),
@@ -289,16 +291,16 @@ export function CatalogToolbar({
     input.current?.focus()
     input.current?.select()
   }, [])
-  const filterField = (
+  const filterField = filter && (
     <div
       className={classNames(
         styles.toolbarFilter,
         fill && styles.toolbarFilterFill,
-        field.className,
+        filter.className,
       )}
     >
-      <FilterInput {...field} ref={input} />
-      {shortcut && <KeyboardShortcut shortcut={shortcut} handler={focusFilter} />}
+      <FilterInput {...filter} ref={input} />
+      {filter.shortcut && <KeyboardShortcut shortcut={filter.shortcut} handler={focusFilter} />}
     </div>
   )
   const pickerSlot = picker && (
@@ -328,23 +330,28 @@ export function CatalogToolbar({
           {leading}
         </div>
       )}
-      <div className={classNames(styles.toolbarGroup, styles.toolbarControls)}>
-        {children}
-        {!pickerBelow && pickerSlot}
-        {action ? (
-          // One unit, so a wrapping row never leaves the action on a line alone.
-          <div
-            className={classNames(styles.toolbarFilterAndAction, fill && styles.toolbarFilterFill)}
-          >
-            {filterField}
-            <div ref={actionItem} className={styles.toolbarAction}>
-              {action}
+      {(children || picker || filter || action) && (
+        <div className={classNames(styles.toolbarGroup, styles.toolbarControls)}>
+          {children}
+          {!pickerBelow && pickerSlot}
+          {action ? (
+            // One unit, so a wrapping row never leaves the action on a line alone.
+            <div
+              className={classNames(
+                styles.toolbarFilterAndAction,
+                fill && styles.toolbarFilterFill,
+              )}
+            >
+              {filterField}
+              <div ref={actionItem} className={styles.toolbarAction}>
+                {action}
+              </div>
             </div>
-          </div>
-        ) : (
-          filterField
-        )}
-      </div>
+          ) : (
+            filterField
+          )}
+        </div>
+      )}
       {pickerBelow && pickerSlot}
     </div>
   )

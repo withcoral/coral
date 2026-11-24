@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { createRoutesStub } from 'react-router'
-import { expect, userEvent, within } from 'storybook/test'
+import { expect, screen, userEvent, waitFor, within } from 'storybook/test'
 import type { UsageDataView } from './types'
 import { UsageDataPage } from './usage-data-page'
 
@@ -191,12 +191,31 @@ export const NotSharing: Story = {
   args: { view: { ...sharing, choice: 'off' } },
 }
 
-/** DO_NOT_TRACK or CORAL_DISABLE_USAGE_DATA stops sending from one Coral process, whatever the switch shows. */
+/**
+ * DO_NOT_TRACK or CORAL_DISABLE_USAGE_DATA stops sending from one Coral process. A change would
+ * not take effect, so the switch shows off and takes none, whatever the choice is.
+ */
+// Catches: a switch that shows the stored "on" or takes a change while a block holds, or a
+// reason that a hover on the switch does not show.
 export const TurnedOffByDoNotTrack: Story = {
   args: { view: { ...sharing, block: { kind: 'environment', variable: 'DO_NOT_TRACK' } } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const toggle = canvas.getByRole('switch', { name: 'Share anonymous usage data' })
+    await expect(toggle).not.toBeChecked()
+    await expect(toggle).toHaveAttribute('aria-disabled', 'true')
+    await userEvent.hover(toggle)
+    // The tooltip renders outside the canvas, apart from the reason kept for screen readers.
+    await waitFor(() => {
+      const popup = screen
+        .getAllByText('Sharing is off while DO_NOT_TRACK is set on your computer.')
+        .find((element) => !canvasElement.contains(element))
+      expect(popup).toBeVisible()
+    })
+  },
 }
 
-/** On a server, the banner names the variable and this server. */
+/** On a server, the reason names the variable and this server. */
 export const TurnedOffByCoralDisableUsageData: Story = {
   args: {
     view: {
@@ -210,21 +229,21 @@ export const TurnedOffByCoralDisableUsageData: Story = {
   play: async ({ canvasElement }) => {
     await expect(
       within(canvasElement).getByText(
-        'CORAL_DISABLE_USAGE_DATA is set. Coral sends no usage data from this server, even when sharing is on.',
+        'Sharing is off while CORAL_DISABLE_USAGE_DATA is set on this server.',
       ),
-    ).toBeVisible()
+    ).toBeInTheDocument()
   },
 }
 
-/** A reason from a newer Coral that this Reef cannot name still shows a banner. */
+/** A reason from a newer Coral that this Reef cannot name still turns the switch off. */
 export const TurnedOffForAnUnknownReason: Story = {
   args: { view: { ...sharing, block: { kind: 'unknown' } } },
   play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
     await expect(
-      within(canvasElement).getByText(
-        'Coral sends no usage data from your computer, even when sharing is on.',
-      ),
-    ).toBeVisible()
+      canvas.getByRole('switch', { name: 'Share anonymous usage data' }),
+    ).toHaveAttribute('aria-disabled', 'true')
+    await expect(canvas.getByText('Sharing is off on your computer.')).toBeInTheDocument()
   },
 }
 
@@ -241,7 +260,7 @@ export const ChangeFailed: Story = {
   },
 }
 
-/** Source and dev builds show the report but never send it. */
+/** Source and dev builds show the report as a preview but never send it. */
 export const SourceBuild: Story = {
   args: {
     view: {

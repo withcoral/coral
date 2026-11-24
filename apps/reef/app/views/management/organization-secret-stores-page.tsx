@@ -1,9 +1,11 @@
-import { useRef, useState } from 'react'
+import { useDeferredValue, useRef, useState } from 'react'
+import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOptions } from '@/components/catalog'
+import { EmptyPage } from '@/components/empty-page'
+import { filterQuery } from '@/utils/filter-query'
 import { Button, Table, Typography } from '@/wax/components'
 import { Picker } from '@/wax/components/picker'
 import { Pill } from '@/wax/components/pill'
 import { Status } from '@/wax/components/status'
-import { TextLink } from '@/wax/components/text-link'
 import { ActionDialog } from './forms'
 import { ManagementLayout, trail } from './layout'
 import type { FormContext } from './types'
@@ -47,6 +49,17 @@ const SORT_COLUMNS = {
   },
 } satisfies Record<string, Table.SortColumn<SecretStoreRow>>
 
+type StatusFilter = 'all' | 'available' | 'blocked'
+
+const STATUS_FILTERS: CatalogFilterOptions<StatusFilter> = [
+  { value: 'all', label: 'All statuses', icon: 'ListFilter' },
+  { value: 'available', label: 'Available', icon: 'CircleCheck' },
+  // The same shape a blocked row's status shows.
+  { value: 'blocked', label: 'Blocked', icon: 'TriangleAlert' },
+]
+
+const FILTER_ID = 'secret-stores-filter'
+
 /** The secret stores the operator defined in deployment config, and their grants. */
 export function OrganizationSecretStoresPage({
   stores,
@@ -57,14 +70,44 @@ export function OrganizationSecretStoresPage({
   workspaces: ActiveWorkspace[]
   form: FormContext
 }) {
+  const [input, setInput] = useState('')
+  const [status, setStatus] = useState<StatusFilter>('all')
+  const query = filterQuery(useDeferredValue(input))
   // Stores with equal values stay in name order, whichever way the column runs.
   const sort = Table.useSort({
     columns: SORT_COLUMNS,
     initial: 'name',
     tiebreak: SORT_COLUMNS.name.compare,
   })
+  // The filter matches the store's name, its kind and the workspaces that hold a grant.
+  const shown = stores.filter(
+    (store) =>
+      (status === 'all' || (status === 'blocked') === store.blockers.length > 0) &&
+      query.matches(store.name, store.kind, ...store.workspaces.map((w) => w.displayName)),
+  )
   return (
-    <ManagementLayout breadcrumbs={trail([], 'Secret stores')} compact>
+    <ManagementLayout breadcrumbs={trail([], 'Secret stores')} titled compact>
+      {/* The toolbar holds the page's title, so it stays when no rows do. */}
+      <CatalogToolbar
+        title="Secret stores"
+        titleInfo={
+          <Button.ExternalLink href={secretStoresDocsUrl}>Read the docs</Button.ExternalLink>
+        }
+        filter={{
+          id: FILTER_ID,
+          label: 'Filter secret stores',
+          shortcut: '$mod+f',
+          value: input,
+          onChange: setInput,
+        }}
+      >
+        <CatalogFilterMenu
+          ariaLabel="Filter secret stores by status"
+          options={STATUS_FILTERS}
+          value={status}
+          onChange={setStatus}
+        />
+      </CatalogToolbar>
       <Table.Container
         ariaLabel="Secret stores"
         variant="card"
@@ -86,17 +129,24 @@ export function OrganizationSecretStoresPage({
             <Table.Heading>Workspaces</Table.Heading>
           </Table.Row>
         </Table.Head>
-        {stores.length === 0 && (
+        {stores.length === 0 ? (
           <Table.Status>
-            No secret stores defined.{' '}
-            <TextLink href={secretStoresDocsUrl} external>
-              Read the secret store docs
-            </TextLink>
-            .
+            <EmptyPage
+              fullSize={false}
+              iconName="KeyRound"
+              title="No secret stores yet"
+              description="The secret stores that you define in config.toml show here."
+            />
           </Table.Status>
+        ) : (
+          shown.length === 0 && (
+            <Table.Status>
+              {query.text ? `No secret stores match “${query.text}”.` : 'No secret stores match.'}
+            </Table.Status>
+          )
         )}
         <Table.Body>
-          {sort.rows(stores).map((store) => (
+          {sort.rows(shown).map((store) => (
             <Table.Row key={store.name}>
               <Table.Cell title={store.name}>{store.name}</Table.Cell>
               <Table.Cell>{store.kind ?? 'Unknown'}</Table.Cell>

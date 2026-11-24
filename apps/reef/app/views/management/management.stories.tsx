@@ -1369,6 +1369,7 @@ export const OrganizationSecretStores: Story = {
   parameters: { initialEntry: '/organization/secret-stores' },
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('heading', { level: 1, name: 'Secret stores' })).toBeVisible()
+    await expect(canvas.getByRole('link', { name: /Read the docs/ })).toBeVisible()
     const row = within(canvas.getByRole('row', { name: /platform/ }))
     await expect(row.getByText(secretStoreKind)).toBeVisible()
     await expect(row.getByText('Closed · Archived')).toBeVisible()
@@ -1384,6 +1385,11 @@ export const OrganizationSecretStores: Story = {
 export const OrganizationSecretStoresEmpty: Story = {
   render: () => <OrganizationSecretStoresPage form={form} workspaces={[]} stores={[]} />,
   parameters: { initialEntry: '/organization/secret-stores' },
+  // The docs link stays under the title when no store exists.
+  play: async ({ canvas }) => {
+    await expect(canvas.getByText('No secret stores yet')).toBeVisible()
+    await expect(canvas.getByRole('link', { name: /Read the docs/ })).toBeVisible()
+  },
 }
 // Catches: granting to a workspace that holds the grant, a submit with no workspace,
 // a grant offered for a store config removed, two workspaces of one name that look

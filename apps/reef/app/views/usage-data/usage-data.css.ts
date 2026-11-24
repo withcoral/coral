@@ -1,11 +1,7 @@
 import { style } from '@/wax/css'
 
-export const heading = style({
-  display: 'flex',
-  flexDirection: 'column',
-  alignItems: 'flex-start',
-  gap: '6px',
-})
+// Holds the disabled switch, so a hover or focus on it shows why sharing is off.
+export const blockedSwitch = style({ borderRadius: 100, display: 'inline-flex' })
 
 export const report = style({
   display: 'flex',
