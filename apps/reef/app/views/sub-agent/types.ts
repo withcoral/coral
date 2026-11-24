@@ -4,6 +4,10 @@ import type { PersonView } from '@/views/management/types'
 export const PROTOCOLS = ['chat_completions', 'openai_responses', 'anthropic'] as const
 export type Protocol = (typeof PROTOCOLS)[number]
 
+/** Who serves the model. All but `other` fix the protocol and the base URL. */
+export const SERVICES = ['anthropic', 'openai', 'other'] as const
+export type Service = (typeof SERVICES)[number]
+
 /** The model's settings as form text. The API key is not one: no response carries it. */
 export interface ModelValues {
   protocol: Protocol
@@ -26,8 +30,8 @@ export interface SubAgentModelView {
   etag: string
 }
 
-/** What a save does to the API key. Only a saved key can be kept. */
-export const KEY_CHANGES = ['keep', 'replace', 'clear'] as const
+/** What a save does to the API key. Only a saved key can be kept. An optional one can be empty. */
+export const KEY_CHANGES = ['keep', 'replace', 'clear', 'optional'] as const
 export type KeyChange = (typeof KEY_CHANGES)[number]
 
 /** A field that Coral can refuse on its own. */

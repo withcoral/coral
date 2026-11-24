@@ -29,12 +29,9 @@ const render = (page: Partial<Page> = {}) =>
 
 const baseUrl = () => screen.getByLabelText(/^Base URL/)
 /** The input that holds a key to save, or null while the form asks for none. */
-const keyInput = () => screen.queryByLabelText(/^Key to save/)
-const keyChoices = () =>
-  within(screen.getByRole('radiogroup', { name: 'API key' }))
-    .getAllByRole('radio')
-    .map((radio) => `${radio.getAttribute('aria-checked') === 'true' ? '*' : ''}${nameOf(radio)}`)
-const nameOf = (radio: HTMLElement) => radio.closest('label')!.textContent
+const keyInput = () => screen.queryByLabelText(/^API key/, { selector: 'input' })
+const button = (name: string) => screen.getByRole('button', { name })
+const pick = (service: string) => userEvent.click(screen.getByRole('radio', { name: service }))
 /** What Save posts. */
 const posted = () => {
   const save = screen.getByRole<HTMLButtonElement>('button', { name: 'Save' })
@@ -45,9 +42,9 @@ const retype = async (input: HTMLElement, text: string) => {
   await userEvent.type(input, text)
 }
 
-const turnsOff = 'Saving a new base URL turns the sub-agent off in every workspace.'
+const blocks = 'Saving a new base URL blocks the sub-agent in every workspace.'
 
-// Catches: a new base URL that drops the saved key, or turns the sub-agent off, without a word,
+// Catches: a new base URL that drops the saved key, or blocks the sub-agent, without a word,
 // and a slash at the end that asks for the key though Coral keeps it.
 it.each([
   ['https://api.example.com/v1', false],
@@ -58,14 +55,9 @@ it.each([
 ])('for the base URL "%s", asks for the key again: %s', async (url, again) => {
   render()
   await retype(baseUrl(), url)
-  expect(screen.queryByText(turnsOff) !== null).toBe(again)
+  expect(screen.queryByText(blocks) !== null).toBe(again)
   expect(keyInput() !== null).toBe(again)
   if (keyInput()) expect(keyInput()).toBeRequired()
-  expect(keyChoices()).toEqual(
-    again
-      ? ['*Enter a key', 'Use no key']
-      : ['*Keep the saved key', 'Replace the saved key', 'Clear the saved key'],
-  )
   expect(posted()).toMatchObject({ keyChange: again ? 'replace' : 'keep', etag: 'etag-1' })
 })
 
@@ -78,32 +70,106 @@ it('keeps the saved key again when the saved base URL comes back', async () => {
   expect(posted()).not.toHaveProperty('apiKey')
 })
 
-// Catches: a form that says nothing of the key, or that shows one, and a choice that posts
-// something else.
+// Catches: a form that says nothing of the key, or that shows one, a choice that posts something
+// else, and one that a person cannot take back.
 it.each([
-  ['Keep the saved key', { keyChange: 'keep' }, false],
-  ['Replace the saved key', { keyChange: 'replace', apiKey: '' }, true],
-  ['Clear the saved key', { keyChange: 'clear' }, false],
-])('posts "%s"', async (choice, fields, asks) => {
+  ['Replace', { keyChange: 'replace', apiKey: '' }, true],
+  ['Remove', { keyChange: 'clear' }, false],
+])('posts "%s" for the saved key, until the person keeps it', async (choice, fields, asks) => {
   render()
-  expect(screen.getByText('An API key is set.')).toBeInTheDocument()
-  await userEvent.click(screen.getByRole('radio', { name: choice }))
+  expect(screen.getByRole('group', { name: 'API key' })).toHaveTextContent('A key is saved.')
+  expect(posted()).toMatchObject({ keyChange: 'keep' })
+  await userEvent.click(button(choice))
   expect(keyInput() !== null).toBe(asks)
   expect(posted()).toMatchObject(fields)
   expect('apiKey' in posted()).toBe(asks)
+  await userEvent.click(button('Keep the saved key'))
+  expect(posted()).toMatchObject({ keyChange: 'keep' })
+  expect(posted()).not.toHaveProperty('apiKey')
 })
 
-// Catches: a model that takes no key asked for one at each save, and a first model that posts
-// an etag, or that can keep a key it never had.
+// Catches: a server that takes no key asked for one at each save, and a first model that posts an
+// etag, or that can keep a key it never had.
 it.each([
-  ['a model with no key', { ...model, hasApiKey: false }, ['Enter a key', '*Use no key']],
-  ['no model', null, ['*Enter a key', 'Use no key']],
-])('asks for a key on %s', (_, current, choices) => {
+  ['a model with no key', { ...model, hasApiKey: false }],
+  ['no model', null],
+])('lets a person leave the key empty on %s', (_, current) => {
   render({ model: current })
-  expect(keyChoices()).toEqual(choices)
-  expect(screen.queryByText('No API key is set.') !== null).toBe(current !== null)
+  expect(keyInput()).not.toBeRequired()
+  expect(posted()).toMatchObject({ keyChange: 'optional', apiKey: '' })
+  expect(screen.queryByRole('button', { name: 'Keep the saved key' })).toBeNull()
   expect('etag' in posted()).toBe(current !== null)
-  expect(screen.queryByText(turnsOff)).toBeNull()
+  expect(screen.queryByText(blocks)).toBeNull()
+})
+
+// Catches: a saved key dropped by a new base URL with no way to say that the server takes none.
+it('lets a person use no key for a new base URL', async () => {
+  render()
+  await retype(baseUrl(), 'https://other.example.com')
+  await userEvent.click(button('Use no key'))
+  expect(posted()).toMatchObject({ keyChange: 'clear' })
+  expect(posted()).not.toHaveProperty('apiKey')
+  await userEvent.click(button('Enter a key'))
+  expect(keyInput()).toBeRequired()
+})
+
+// Catches: a service that posts another host or protocol than the page shows, and a host that
+// nobody entered.
+it.each([
+  ['Anthropic', 'anthropic', 'https://api.anthropic.com/v1'],
+  ['OpenAI', 'openai_responses', 'https://api.openai.com/v1'],
+])('fills in where %s serves its models', async (service, protocol, url) => {
+  render({ model: null })
+  expect(posted()).toMatchObject({ baseUrl: '' })
+  await pick(service)
+  expect(screen.getByText(url)).toBeInTheDocument()
+  expect(screen.queryByLabelText(/^Base URL/)).toBeNull()
+  expect(posted()).toMatchObject({ protocol, baseUrl: url })
+  // It takes a key, so there is no way past one.
+  expect(keyInput()).toBeRequired()
+  expect(screen.queryByRole('button', { name: 'Use no key' })).toBeNull()
+  await pick('Other')
+  expect(posted()).toMatchObject({ protocol: 'chat_completions', baseUrl: '' })
+})
+
+// Catches: a change of service, which changes the host, that blocks the sub-agent without a word.
+it('warns when another service is chosen, and opens on the service that is saved', async () => {
+  render({
+    model: {
+      ...model,
+      values: { ...model.values, baseUrl: 'https://api.anthropic.com/v1' },
+    },
+  })
+  expect(screen.getByRole('radio', { name: 'Anthropic' })).toBeChecked()
+  await pick('OpenAI')
+  expect(screen.getByText(blocks)).toBeInTheDocument()
+  expect(keyInput()).toBeRequired()
+  await pick('Anthropic')
+  expect(screen.queryByText(blocks)).toBeNull()
+  expect(posted()).toMatchObject({ keyChange: 'keep' })
+})
+
+// Catches: advanced settings in the way of a person who uses none, hidden from one who does, or
+// closed over a field that a person empties.
+it('opens the advanced settings only where they hold something', async () => {
+  const bare = { ...model.values, contextWindow: '', requestArgs: '' }
+  const { unmount } = render({ model: { ...model, values: bare } })
+  expect(screen.getByText('Advanced').closest('details')).not.toHaveAttribute('open')
+  unmount()
+  render({ model: { ...model, values: { ...bare, contextWindow: '200000' } } })
+  const details = screen.getByText('Advanced').closest('details')
+  expect(details).toHaveAttribute('open')
+  await userEvent.clear(screen.getByLabelText(/^Context window/))
+  expect(details).toHaveAttribute('open')
+})
+
+// Catches: a page that does not say what the model is for, or what a person must do next.
+it.each([
+  [null, 'The sub-agent is a model that does data work for your agents.'],
+  [model, 'blocked in each workspace until a workspace owner turns it on, on the Tools page.'],
+])('says what comes next', (current, text) => {
+  render({ model: current })
+  expect(screen.getByText(text, { exact: false })).toBeInTheDocument()
 })
 
 const typed: RefusedSave = {
@@ -123,7 +189,7 @@ const typed: RefusedSave = {
 it.each([
   ['baseUrl', /^Base URL/],
   ['model', /^Model name/],
-  ['apiKey', /^Key to save/],
+  ['apiKey', /^API key/],
   ['contextWindow', /^Context window/],
   ['requestArgs', /^Arguments/],
 ] as const)('shows a refusal at %s and keeps what the person typed', (field, label) => {
@@ -141,17 +207,25 @@ it.each([
   expect(keyInput()).toBeRequired()
 })
 
-// Catches: a retry that keeps a key the person cleared or replaced, and a person who typed a key
+// Catches: a retry that keeps a key the person removed or replaced, and a person who typed a key
 // not told to type it again, or told so though they typed none.
 it.each(['replace', 'clear', 'keep'] as const)(
   'after a refused save, still has the choice to %s the key',
   async (keyChange) => {
     render({ refused: { ...typed, values: model.values, keyChange, field: 'model' } })
     expect(posted()).toMatchObject({ keyChange })
-    await userEvent.click(screen.getByRole('radio', { name: 'Replace the saved key' }))
+    if (keyChange === 'keep') await userEvent.click(button('Replace'))
     expect(screen.queryByText('Enter the key again.') !== null).toBe(keyChange === 'replace')
   },
 )
+
+// Catches: a first save that Coral refused, whose retry sets the model without the key that the
+// person typed.
+it('asks again for the key that a refused first save left behind', () => {
+  render({ model: null, refused: { ...typed, field: 'model' } })
+  expect(keyInput()).toBeRequired()
+  expect(screen.getByText('Enter the key again.')).toBeInTheDocument()
+})
 
 // Catches: a save that lost to another person's change replacing it unseen, with the values
 // that are saved now hidden or the old etag posted.

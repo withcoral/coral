@@ -75,15 +75,22 @@ export const SavedWithNoKey: Story = {
 
 export const ReplacingTheKey: Story = {
   play: async ({ canvasElement }) => {
-    await userEvent.click(
-      within(canvasElement).getByRole('radio', { name: 'Replace the saved key' }),
-    )
+    await userEvent.click(within(canvasElement).getByRole('button', { name: 'Replace' }))
   },
 }
 
-/** A new base URL asks for the key again and says what the save turns off. */
+/** A known service fills in the protocol and the base URL. */
+export const KnownService: Story = {
+  args: { model: null },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(within(canvasElement).getByRole('radio', { name: 'OpenAI' }))
+  },
+}
+
+/** A new base URL asks for the key again and says what the save blocks. */
 export const NewBaseUrl: Story = {
   play: async ({ canvasElement }) => {
+    await userEvent.click(within(canvasElement).getByRole('radio', { name: 'Other' }))
     const baseUrl = within(canvasElement).getByLabelText(/^Base URL/)
     await userEvent.clear(baseUrl)
     await userEvent.type(baseUrl, typed.values.baseUrl)

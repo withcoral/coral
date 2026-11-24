@@ -182,6 +182,10 @@ it.each([
   ['a cleared key', { etag, keyChange: 'clear' }, 'update', ''],
   ['a first key', { keyChange: 'replace', apiKey: 'sk-new' }, 'create', 'sk-new'],
   ['no first key', { keyChange: 'clear' }, 'create', undefined],
+  ['an optional first key', { keyChange: 'optional', apiKey: 'sk-new' }, 'create', 'sk-new'],
+  ['an empty optional key', { keyChange: 'optional', apiKey: '' }, 'create', undefined],
+  ['an optional key of a set model', { etag, keyChange: 'optional', apiKey: 'sk' }, 'update', 'sk'],
+  ['an empty one of a set model', { etag, keyChange: 'optional', apiKey: '' }, 'update', ''],
 ])('saves %s', async (_, fields, method, apiKey) => {
   const result = await post({ ...form, ...fields })
   expect(result).toBeInstanceOf(Response)
@@ -280,6 +284,18 @@ it.each([
     'message',
     expect.stringContaining(`Another person ${message} after you opened this page.`),
   )
+  expect(JSON.stringify(result)).not.toContain('sk-secret')
+})
+
+// Catches: a retry of a refused save that leaves out, without a word, the optional key that a
+// person typed, and one that asks for a key though they typed none.
+it.each([
+  ['sk-secret', 'replace'],
+  ['', 'optional'],
+])('asks again for the optional key "%s" after a refusal', async (apiKey, keyChange) => {
+  refuse = coralRefusal(Code.InvalidArgument, 'INVALID_MODEL')
+  const result = await refused({ ...form, keyChange: 'optional', apiKey })
+  expect(result.data).toMatchObject({ field: 'model', keyChange })
   expect(JSON.stringify(result)).not.toContain('sk-secret')
 })
 

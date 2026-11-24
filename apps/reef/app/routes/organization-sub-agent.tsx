@@ -71,11 +71,15 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   const values = modelValues(form)
   const keyChange = oneOf(KEY_CHANGES, field(form, 'keyChange'))
-  const key = keyChange === 'replace' ? field(form, 'apiKey') : ''
+  const key = keyChange === 'replace' || keyChange === 'optional' ? field(form, 'apiKey') : ''
   const etag = form.has('etag') ? field(form, 'etag') : null
   const contextWindow = windowTokens(values.contextWindow)
   const refuse = (status: number, refusal: Refusal) =>
-    data({ ...refusal, values, keyChange }, { status, headers: privateHeaders })
+    // The page does not get the key back, so a person who typed one must type it again.
+    data(
+      { ...refusal, values, keyChange: keyChange === 'optional' && key ? 'replace' : keyChange },
+      { status, headers: privateHeaders },
+    )
   // A window that is no number has no place on the wire, and an empty key would clear the saved one.
   if (contextWindow === null) return refuse(400, refusals.INVALID_CONTEXT_WINDOW)
   if (keyChange === 'replace' && key === '')

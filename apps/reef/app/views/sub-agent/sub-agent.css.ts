@@ -21,3 +21,13 @@ export const picker = style({ display: 'flex' })
 
 // A saved value keeps its lines and breaks anywhere, as a URL or JSON needs.
 export const savedNow = style({ overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' })
+
+// The state of the saved key, and the buttons that change it.
+export const saved = style({ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 })
+
+export const advanced = style({
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 16,
+  paddingTop: 8,
+})

@@ -1,4 +1,19 @@
-import type { Protocol } from './types'
+import type { Protocol, Service } from './types'
+
+export const serviceLabels: Record<Service, string> = {
+  anthropic: 'Anthropic',
+  openai: 'OpenAI',
+  other: 'Other',
+}
+
+/** Where each known service serves its models, and how. */
+export const servicePresets: Record<
+  Exclude<Service, 'other'>,
+  { protocol: Protocol; baseUrl: string }
+> = {
+  anthropic: { protocol: 'anthropic', baseUrl: 'https://api.anthropic.com/v1' },
+  openai: { protocol: 'openai_responses', baseUrl: 'https://api.openai.com/v1' },
+}
 
 export const protocolLabels: Record<Protocol, string> = {
   chat_completions: 'Chat Completions (OpenAI-compatible)',
