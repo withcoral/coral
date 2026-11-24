@@ -2,8 +2,8 @@ import { useDeferredValue, useRef, useState } from 'react'
 import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOptions } from '@/components/catalog'
 import { EmptyPage } from '@/components/empty-page'
 import { filterQuery } from '@/utils/filter-query'
-import { Button, Table, Typography } from '@/wax/components'
-import { Picker } from '@/wax/components/picker'
+import { Button, Combobox, Table, Typography } from '@/wax/components'
+import { Tooltip } from '@/wax/components/tooltip'
 import { Pill } from '@/wax/components/pill'
 import { Status } from '@/wax/components/status'
 import { ActionDialog } from './forms'
@@ -190,12 +190,12 @@ function workspaceOptions(workspaces: { name: string; displayName: string }[]) {
   }))
 }
 
-type Change = { kind: 'grant' } | { kind: 'revoke'; workspace: GrantedWorkspace }
+/** How many workspaces a cell shows before it counts the rest. */
+const SHOWN_GRANTS = 2
 
 /**
- * The workspaces that hold a grant, each with a button that revokes it unless the
- * workspace is archived. Then, when a workspace can still take the store, a button
- * that grants it.
+ * The workspaces that hold a grant, then a button that edits them when a grant can
+ * change. The cell shows the first few and counts the rest.
  */
 function WorkspaceGrants({
   store,
@@ -206,82 +206,151 @@ function WorkspaceGrants({
   workspaces: ActiveWorkspace[]
   form: FormContext
 }) {
-  const [change, setChange] = useState<Change | null>(null)
-  const [chosen, setChosen] = useState('')
-  const grantButton = useRef<HTMLButtonElement>(null)
-  const granted = new Set(store.workspaces.map((w) => w.name))
+  const [editing, setEditing] = useState(false)
+  const [chosen, setChosen] = useState<string[]>([])
+  const [query, setQuery] = useState('')
+  const editButton = useRef<HTMLButtonElement>(null)
+  const granted = store.workspaces.map((w) => w.name)
+  const archived = new Set(store.workspaces.filter((w) => w.archived).map((w) => w.name))
   // Coral refuses a store config does not define, and any change to an archived workspace.
-  const grantable = store.kind !== null ? workspaces.filter((w) => !granted.has(w.name)) : []
-  const labels = new Map(workspaceOptions(store.workspaces).map((o) => [o.value, o.label]))
-  const label = (w: GrantedWorkspace) => labels.get(w.name) ?? w.displayName
-  const revoking = change?.kind === 'revoke' ? change.workspace : null
-  if (store.workspaces.length === 0 && grantable.length === 0) return 'No workspaces'
+  // So a store config removed offers only its own grants, and an archived grant stays.
+  const offered = store.kind !== null ? workspaces : store.workspaces.filter((w) => !w.archived)
+  const labels = new Map(
+    workspaceOptions([...store.workspaces.filter((w) => w.archived), ...offered]).map((o) => [
+      o.value,
+      o.label,
+    ]),
+  )
+  const label = (name: string) => {
+    const text = labels.get(name) ?? name
+    return archived.has(name) ? `${text} · Archived` : text
+  }
+  const added = chosen.filter((name) => !granted.includes(name))
+  const removed = granted.filter((name) => !chosen.includes(name))
+
+  const shown = store.workspaces.slice(0, SHOWN_GRANTS)
+  const hidden = store.workspaces.slice(SHOWN_GRANTS)
+  const pills = (
+    <>
+      {store.workspaces.length === 0 && <span className={styles.grantsEmpty}>No workspaces</span>}
+      {shown.map((w) => (
+        <Pill key={w.name}>{label(w.name)}</Pill>
+      ))}
+      {hidden.length > 0 && (
+        <Tooltip content={hidden.map((w) => label(w.name)).join(', ')}>
+          <Pill
+            as="button"
+            type="button"
+            aria-label={`${hidden.length} more: ${hidden.map((w) => label(w.name)).join(', ')}`}
+          >
+            {`+${hidden.length}`}
+          </Pill>
+        </Tooltip>
+      )}
+    </>
+  )
+  if (offered.length === 0) return <div className={styles.grants}>{pills}</div>
+
   return (
     <div className={styles.grants}>
-      {store.workspaces.map((w) =>
-        w.archived ? (
-          <Pill key={w.name}>{`${label(w)} · Archived`}</Pill>
-        ) : (
-          <Pill
-            key={w.name}
-            remove={{
-              label: `Revoke ${store.name} from ${label(w)}`,
-              onClick: () => setChange({ kind: 'revoke', workspace: w }),
-            }}
-          >
-            {label(w)}
-          </Pill>
-        ),
-      )}
-      {grantable.length > 0 && (
-        <Button.Container
-          ref={grantButton}
-          ariaLabel={`Grant ${store.name} to a workspace`}
-          size="22"
-          variant="bare"
-          onClick={() => {
-            setChosen('')
-            setChange({ kind: 'grant' })
-          }}
-        >
-          <Button.Icon name="Plus" />
-          <Button.Text>Grant</Button.Text>
-        </Button.Container>
-      )}
-      <ActionDialog
-        open={change !== null}
-        onOpenChange={(next) => {
-          if (!next) setChange(null)
+      {pills}
+      <Button.IconButton
+        ref={editButton}
+        className={styles.grantsEdit}
+        name="Pencil"
+        size="22"
+        variant="bare"
+        tooltipText={`Edit the workspaces of ${store.name}`}
+        onClick={() => {
+          setChosen(granted)
+          setQuery('')
+          setEditing(true)
         }}
-        finalFocus={revoking ? undefined : grantButton}
-        title={revoking ? 'Revoke grant' : 'Grant secret store'}
-        description={
-          revoking
-            ? `${label(revoking)} loses access to ${store.name}.`
-            : `Choose a workspace to grant ${store.name} to.`
-        }
-        submit={revoking ? 'Revoke' : 'Grant'}
-        intent={revoking ? 'revoke' : 'grant'}
+      />
+      <ActionDialog
+        open={editing}
+        onOpenChange={setEditing}
+        finalFocus={editButton}
+        title="Edit workspaces"
+        description={`Choose the workspaces that can use ${store.name}.`}
+        submit="Save changes"
+        intent="update"
         name={`secretStores/${store.name}`}
         form={form}
-        destructive={revoking !== null}
-        disabled={revoking === null && chosen === ''}
+        disabled={added.length === 0 && removed.length === 0}
+        confirm={
+          removed.length === 0
+            ? null
+            : {
+                title: 'Revoke access?',
+                description:
+                  removed.length === 1
+                    ? `${label(removed[0])} loses access to ${store.name}.`
+                    : `${removed.map(label).join(', ')} lose access to ${store.name}.`,
+                submit: 'Revoke and save',
+              }
+        }
       >
-        {revoking ? (
-          <input type="hidden" name="workspace" value={revoking.name} />
-        ) : (
-          <div className={styles.field}>
-            <Typography.BodySmallStrong as="span">Workspace</Typography.BodySmallStrong>
-            <input type="hidden" name="workspace" value={chosen} />
-            <Picker
-              ariaLabel="Workspace"
-              placeholder="Choose a workspace"
-              options={workspaceOptions(grantable)}
-              value={chosen}
-              onChange={setChosen}
-            />
-          </div>
-        )}
+        {added.map((name) => (
+          <input key={name} type="hidden" name="grant" value={name} />
+        ))}
+        {removed.map((name) => (
+          <input key={name} type="hidden" name="revoke" value={name} />
+        ))}
+        <div className={styles.addField}>
+          <Typography.BodySmallStrong as="label" htmlFor={`${store.name}-workspaces`}>
+            Workspaces
+          </Typography.BodySmallStrong>
+          <Combobox.Root
+            autoHighlight
+            hideWhenEmpty
+            items={offered.map((w) => w.name)}
+            itemToStringLabel={label}
+            multiple
+            inputValue={query}
+            onInputValueChange={setQuery}
+            value={chosen}
+            onValueChange={(next) => {
+              const picked = Array.isArray(next) ? next : []
+              // An archived workspace keeps its grant: Coral refuses to revoke it.
+              setChosen([...archived].filter((n) => !picked.includes(n)).concat(picked))
+              setQuery('')
+            }}
+          >
+            <Combobox.InputGroup>
+              <Combobox.Chips>
+                <Combobox.Value>
+                  {(value) =>
+                    Array.isArray(value)
+                      ? value.map((name: string) => (
+                          <Combobox.Chip key={name}>
+                            <Combobox.ChipLabel>{label(name)}</Combobox.ChipLabel>
+                            {!archived.has(name) && (
+                              <Combobox.ChipRemove aria-label={`Remove ${label(name)}`} />
+                            )}
+                          </Combobox.Chip>
+                        ))
+                      : null
+                  }
+                </Combobox.Value>
+                <Combobox.Input
+                  id={`${store.name}-workspaces`}
+                  bare
+                  placeholder={chosen.length > 0 ? '' : 'Find a workspace'}
+                />
+              </Combobox.Chips>
+            </Combobox.InputGroup>
+            <Combobox.Content>
+              <Combobox.List>
+                {(name: string) => (
+                  <Combobox.Item key={name} value={name}>
+                    {label(name)}
+                  </Combobox.Item>
+                )}
+              </Combobox.List>
+            </Combobox.Content>
+          </Combobox.Root>
+        </div>
       </ActionDialog>
     </div>
   )

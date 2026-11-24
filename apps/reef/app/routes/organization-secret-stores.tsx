@@ -75,39 +75,51 @@ export async function loader({ context }: Route.LoaderArgs) {
   }
 }
 
-const done: Record<string, string> = {
-  grant: 'Secret store granted.',
-  revoke: 'Grant revoked.',
-}
-const failed: Record<string, string> = {
-  grant: 'Coral could not grant this secret store. ',
-  revoke: 'Coral could not revoke this grant. ',
+/** The workspaces a form names in one field, each checked to be a workspace. */
+function workspacesIn(form: FormData, name: 'grant' | 'revoke') {
+  return form.getAll(name).map((value) => {
+    if (typeof value !== 'string' || !/^workspaces\/[^/]+$/.test(value))
+      throw new Response('Invalid target', { status: 400, headers: privateHeaders })
+    return value
+  })
 }
 
+/** Saves one edit of a store's workspaces: its grants first, then its revocations. */
 export async function action({ request, context }: Route.ActionArgs) {
   const form = await mutationForm(request, context)
-  const intent = field(form, 'intent')
-  if (!Object.hasOwn(done, intent)) throw new Response('Invalid action', { status: 400 })
+  if (field(form, 'intent') !== 'update') throw new Response('Invalid action', { status: 400 })
   const secretStore = field(form, 'name')
-  const workspace = field(form, 'workspace')
-  if (!/^secretStores\/[^/]+$/.test(secretStore) || !/^workspaces\/[^/]+$/.test(workspace))
+  if (!/^secretStores\/[^/]+$/.test(secretStore))
     throw new Response('Invalid target', { status: 400 })
-  // Every row on the page shares the form's key, so the change is part of this one.
-  const requestId = requestIdFor(
-    field(form, 'requestId'),
-    `${intent}\0${secretStore}\0${workspace}`,
-  )
+  const changes = [
+    ...workspacesIn(form, 'grant').map((workspace) => ({ intent: 'grant' as const, workspace })),
+    ...workspacesIn(form, 'revoke').map((workspace) => ({ intent: 'revoke' as const, workspace })),
+  ]
+  if (changes.length === 0) throw new Response('Invalid form', { status: 400 })
   const api = management(context).secretStores
-  try {
-    if (intent === 'grant') await api.grantSecretStore({ workspace, secretStore, requestId })
-    else await api.revokeSecretStore({ workspace, secretStore, requestId })
-    return data(
-      { error: null, credential: null, message: done[intent] },
-      { headers: privateHeaders },
+  for (const { intent, workspace } of changes) {
+    // Every row on the page shares the form's key, so each change is part of this one.
+    const requestId = requestIdFor(
+      field(form, 'requestId'),
+      `${intent}\0${secretStore}\0${workspace}`,
     )
-  } catch (error) {
-    return actionFailure(error, failed[intent])
+    try {
+      if (intent === 'grant') await api.grantSecretStore({ workspace, secretStore, requestId })
+      else await api.revokeSecretStore({ workspace, secretStore, requestId })
+    } catch (error) {
+      // The page reloads, so the dialog offers only the changes that did not save.
+      return actionFailure(
+        error,
+        intent === 'grant'
+          ? 'Coral could not grant this secret store. '
+          : 'Coral could not revoke this grant. ',
+      )
+    }
   }
+  return data(
+    { error: null, credential: null, message: 'Workspaces saved.' },
+    { headers: privateHeaders },
+  )
 }
 
 export default function OrganizationSecretStoresRoute({ loaderData }: Route.ComponentProps) {
