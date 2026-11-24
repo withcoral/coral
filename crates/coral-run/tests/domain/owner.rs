@@ -6,11 +6,11 @@ use super::*;
 
 use super::run_stream_reconnect::finish_with;
 use super::run_streams::{ended, started as started_on_a_stream};
+use crate::lifecycle::RunTerminationKind;
 use crate::owner::{
     CHUNK_WORK_CAP, Check, CommitRejection, DrainStep, Effect, Message, OwnerLimits, OwnerState,
     ParkedWait, Phase, StartedExecution, Timer, apply,
 };
-use crate::termination::ShutdownAction;
 use crate::{AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, CoralFailure, FanOutLimit};
 use coral_run_executor::wire::v1::RunEnd as WireEnd;
 
@@ -221,7 +221,7 @@ fn started(limits: OwnerLimits) -> OwnerState {
 }
 
 /// The termination a Run stream's end writes, when `effects` end with it.
-fn ended_as(effects: &[Effect]) -> Option<crate::lifecycle::RunTerminationKind> {
+fn ended_as(effects: &[Effect]) -> Option<RunTerminationKind> {
     match effects {
         [.., Effect::EndStreamRun(end)] => Some(end.termination.kind),
         _ => None,
@@ -569,7 +569,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         );
         assert_eq!(state.phase(), Phase::Completing);
         assert!(matches!(
-            apply(&mut state, Message::Completed(Ok(None)), 63).as_slice(),
+            apply(&mut state, Message::Completed(Ok(())), 63).as_slice(),
             [Effect::Retire]
         ));
     }
@@ -637,76 +637,63 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert_eq!(state.phase(), Phase::Retired);
     }
 
-    // A recorded termination is settled between the owner's commits, never
-    // beside one: a result pending at the terminal write commits first, a
-    // settle attempt follows each commit, a result that arrives during an
-    // attempt commits before the next attempt, and the attempt that ends
-    // the Run retires the owner, which accepts nothing more.
-    {
-        let mut state = started(LIMITS);
-        deliver(apply(
-            &mut state,
-            Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
+    // The Run Executor's own end of the Program (a limit, a lost Program
+    // host) is written first, as the deadline is: what is pending commits,
+    // then one chunk ends the Run and its open Invocations, with no grace
+    // and no `Terminate` before it. Past the deadline the Run times out. A
+    // result that arrives after the end is refused.
+    for (completion, now, kind) in [
+        (
+            ExecutionCompletion::CpuLimitExceeded,
             90,
-        ));
-        let (effects, _, _) = result(&mut state, 10, 91);
+            RunTerminationKind::CpuLimitExceeded,
+        ),
+        (
+            ExecutionCompletion::MemoryLimitExceeded,
+            90,
+            RunTerminationKind::MemoryLimitExceeded,
+        ),
+        (
+            ExecutionCompletion::ProgramHostTerminated,
+            90,
+            RunTerminationKind::Interrupted,
+        ),
+        (
+            ExecutionCompletion::CpuLimitExceeded,
+            LIMITS.deadline_at_unix_nanos,
+            RunTerminationKind::TimedOut,
+        ),
+    ] {
+        let mut state = started(LIMITS);
+        let (effects, _, _) = result(&mut state, 10, now - 1);
         deliver(effects);
-        let effects = apply(
-            &mut state,
-            Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
-            92,
-        );
-        assert!(
-            matches!(effects.as_slice(), [Effect::Commit { .. }]),
-            "{effects:?}"
-        );
-        assert_eq!(state.phase(), Phase::Settling);
+        let effects = apply(&mut state, Message::ProgramEnded(completion.clone()), now);
         assert!(
             matches!(
-                apply(&mut state, Message::Committed, 93).as_slice(),
-                [Effect::Settle { again: false, .. }]
+                effects.as_slice(),
+                [Effect::TerminateProgram, Effect::Commit { .. }]
             ),
-            "the settle is attempted once the pending result is recorded"
+            "{completion:?}: the pending result commits first: {effects:?}"
         );
-        let (effects, mut late, late_work) = result(&mut state, 10, 94);
+        assert!(state.ends_stream_first(), "{completion:?}");
+        let effects = apply(&mut state, Message::Committed, now + 1);
+        assert_eq!(
+            ended_as(&effects),
+            Some(kind),
+            "{completion:?}: {effects:?}"
+        );
+        assert_eq!(state.phase(), Phase::Completing);
+        let (effects, _, late_work) = result(&mut state, 10, now + 2);
         assert!(deliver(effects).is_empty());
-        assert!(matches!(answered(&mut late), Some(Ok(()))));
-        assert!(
-            apply(&mut state, Message::Drained, 95).is_empty(),
-            "nothing commits during a settle attempt"
-        );
-        let effects = apply(&mut state, Message::SettleAttempted(Ok(false)), 96);
-        assert!(
-            matches!(effects.as_slice(), [Effect::Commit { .. }]),
-            "the late result commits before the next attempt: {effects:?}"
-        );
-        assert!(matches!(
-            apply(&mut state, Message::Committed, 97).as_slice(),
-            [Effect::Settle { again: false, .. }]
-        ));
-        assert!(late_work.lock().expect("settle").is_none());
+        let rest = deliver(apply(&mut state, Message::Completed(Ok(())), now + 3));
+        assert!(matches!(rest.as_slice(), [Effect::Retire]), "{rest:?}");
         assert!(
             matches!(
-                apply(&mut state, Message::SettleAttempted(Ok(false)), 98).as_slice(),
-                [Effect::Settle { again: true, .. }]
+                late_work.lock().expect("settle").as_ref(),
+                Some(Err(Error::ProgramHostTerminated))
             ),
-            "with nothing to commit the next attempt waits a moment"
+            "{completion:?}: a result after the end is never recorded"
         );
-        assert!(matches!(
-            apply(&mut state, Message::SettleAttempted(Ok(true)), 99).as_slice(),
-            [Effect::Retire]
-        ));
-        assert_eq!(state.phase(), Phase::Retired);
-        let (effects, mut refused, refused_work) = result(&mut state, 10, 100);
-        assert!(deliver(effects).is_empty());
-        assert!(matches!(
-            answered(&mut refused),
-            Some(Err(Error::InvocationPersistence(_)))
-        ));
-        assert!(matches!(
-            refused_work.lock().expect("settle").as_ref(),
-            Some(Err(Error::ProgramHostTerminated))
-        ));
     }
 
     // A corrupt ledger: the owner stops loudly, pending work learns it, and
@@ -1607,7 +1594,7 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
             head: state.head() + 1,
             recorded_total: 0,
             running: true,
-            termination: None,
+            ended_as: None,
         };
         let effects = apply(&mut state, Message::Woken(moved), 10);
         assert!(prechecks(&effects, Check::Approvals, &[1]), "{effects:?}");

@@ -21,8 +21,9 @@ pub(crate) struct RunRecord {
     pub(crate) holder_instance_id: Option<crate::CoralInstanceId>,
     pub(crate) execution_claim_id: Option<String>,
     pub(crate) execution_started_at_unix_nanos: Option<i64>,
+    /// A termination an older build recorded. This release records none:
+    /// it ends a Run in the chunk that decides its termination.
     pub(crate) termination: Option<RunTermination>,
-    pub(crate) shutdown_grace_nanos: i64,
     /// The Run Ledger head: the number of chunk commits since acceptance.
     pub(crate) chunk_sequence: u64,
     /// The last Event sequence on the Run as of the read, `0` before
@@ -89,9 +90,9 @@ impl RunRecord {
 
     /// Whether the Run row still takes the loop's chunks: a running Run that
     /// holds `claim_id` as its loop's claim ([`Self::holds_owner_claim`]).
-    /// Never the clock: the loop applies the Run deadline itself, and a
-    /// recorded termination intent does not stop the loop recording what it
-    /// applied before the intent.
+    /// Never the clock: the loop applies the Run deadline itself, and an
+    /// older build's recorded termination intent does not stop the loop
+    /// recording what it applied before the intent.
     pub(crate) fn accepts_owner_chunk(&self, claim_id: &str) -> bool {
         self.state == RunState::Running && self.holds_owner_claim(claim_id)
     }
@@ -150,20 +151,10 @@ impl RunRecord {
     pub(crate) fn held_claim(&self) -> Option<&str> {
         self.execution_claim_id.as_deref()
     }
-
-    /// A termination intent no Principal asked for: the deadline, an
-    /// interruption, the memory limit, or the CPU limit.
-    pub(crate) fn request_termination(
-        &self,
-        kind: RunTerminationKind,
-        started_at_unix_nanos: i64,
-    ) -> Result<RequestedTermination, Error> {
-        RequestedTermination::new(kind, None, started_at_unix_nanos, self.shutdown_grace_nanos)
-    }
 }
 
-/// A termination intent as a writer records it: the termination and the
-/// Principal who asked for a cancellation.
+/// A termination as a writer decides it, for the chunk that ends the Run:
+/// the termination and the Principal who asked for a cancellation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RequestedTermination {
     pub(crate) termination: RunTermination,
@@ -184,24 +175,28 @@ impl RequestedTermination {
         kind: RunTerminationKind,
         requester: Option<Principal>,
         started_at_unix_nanos: i64,
-        shutdown_grace_nanos: i64,
     ) -> Result<Self, Error> {
         if (kind == RunTerminationKind::Canceled) != requester.is_some() {
             return Err(Error::CorruptData(
                 "Run termination has inconsistent requester evidence".into(),
             ));
         }
-        let deadline_at_unix_nanos = started_at_unix_nanos
-            .checked_add(shutdown_grace_nanos)
-            .ok_or_else(|| Error::CorruptData("Run termination deadline overflowed".into()))?;
         Ok(Self {
             termination: RunTermination {
                 kind,
                 started_at_unix_nanos,
-                deadline_at_unix_nanos,
             },
             requester,
         })
+    }
+
+    /// A termination no Principal asked for: the deadline, an interruption,
+    /// the memory limit, or the CPU limit.
+    pub(crate) fn unrequested(
+        kind: RunTerminationKind,
+        started_at_unix_nanos: i64,
+    ) -> Result<Self, Error> {
+        Self::new(kind, None, started_at_unix_nanos)
     }
 }
 
@@ -215,6 +210,18 @@ pub(crate) enum RunTerminationKind {
 }
 
 impl RunTerminationKind {
+    /// How a Run in `state` ended, as the reason its Program's `Terminate`
+    /// gives: `None` for a running Run, and for one that succeeded or
+    /// failed (a limit's failure among them).
+    pub(crate) const fn of_ended(state: RunState) -> Option<Self> {
+        match state {
+            RunState::Canceled => Some(Self::Canceled),
+            RunState::TimedOut => Some(Self::TimedOut),
+            RunState::Interrupted => Some(Self::Interrupted),
+            RunState::Running | RunState::Succeeded | RunState::Failed => None,
+        }
+    }
+
     pub(crate) fn outcome(self) -> RunTerminalOutcome {
         match self {
             Self::Canceled => RunTerminalOutcome::Canceled,
@@ -236,5 +243,4 @@ impl RunTerminationKind {
 pub(crate) struct RunTermination {
     pub(crate) kind: RunTerminationKind,
     pub(crate) started_at_unix_nanos: i64,
-    pub(crate) deadline_at_unix_nanos: i64,
 }

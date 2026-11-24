@@ -743,6 +743,65 @@ async fn a_perform_waiting_for_its_approval_is_permitted_after_a_reopen() {
         .await;
 }
 
+/// Catches: a reopen that leaves a termination intent an older build
+/// recorded unended, waits a grace for its dispatches, or ends it in more
+/// than one chunk or with another outcome. The intent is written as that
+/// build wrote it, after its loop is gone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reopen_ends_an_older_builds_termination_intent_in_one_chunk() {
+    let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
+        200,
+        serde_json::json!({}),
+    )));
+    let fixture = TestModules::with_execution_adapters(
+        Arc::new(ImmediateEngine),
+        upstream.clone(),
+        Arc::new(NoopInvocationObserver),
+        Arc::new(NoopExecutionObserver),
+    )
+    .await;
+    let runs = fixture.runs.clone();
+    let tool = fixture
+        .user_tool("user:older-intent", "An older intent")
+        .await;
+    let (run_id, stream) = super::run_streams::started(&runs, &tool).await;
+    stream.request(1, super::run_streams::invoke_forecast());
+    wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
+    drop(stream);
+    wait_until(|| runs.owners.get(&run_id).is_none()).await;
+    let before = fixture.run_record(&tool.workspace_id, &run_id).await;
+    let claim = before.execution_claim_id.clone().expect("a claimed Run");
+    let at = before
+        .execution_started_at_unix_nanos
+        .expect("the start mark");
+    let kind = crate::lifecycle::RunTerminationKind::CpuLimitExceeded.as_storage_str();
+    assert_eq!(
+        fixture
+            .inject_fault(&format!(
+                "UPDATE program_run_records SET termination_kind = '{kind}', \
+                 termination_started_at_unix_nanos = {at}, \
+                 termination_deadline_at_unix_nanos = {} WHERE id = '{run_id}'",
+                at + 5_000_000_000
+            ))
+            .await,
+        1
+    );
+
+    let mut stream = Scripted::open(&runs, &run_id.to_string(), &claim);
+    assert_eq!(stream.next().await, ended(WireEnd::Failed));
+    let run = fixture.run_record(&tool.workspace_id, &run_id).await;
+    let Some(crate::RunTerminalOutcome::Failed(failure)) = &run.terminal_outcome else {
+        panic!("the recorded limit fails the Run: {run:?}");
+    };
+    assert_eq!(failure.code(), RunFailureCode::CpuLimitExceeded);
+    assert_eq!(run.chunk_sequence, before.chunk_sequence + 1, "one chunk");
+    assert_eq!(
+        result_kinds(&fixture, &tool, &run_id).await,
+        [Some(InvocationResultKind::Indeterminate)]
+    );
+    upstream.release();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reopen_ends_a_run_whose_termination_the_loop_before_recorded() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;

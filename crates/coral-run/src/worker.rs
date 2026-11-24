@@ -8,9 +8,9 @@
 //! by the head (ADR 0027).
 
 use crate::engine::ExecutionCompletion;
-use crate::lifecycle::{RunRecord, RunTerminationKind};
+use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
 use crate::owner::{self, OwnerHandle};
-use crate::termination::ShutdownAction;
+use crate::termination::{commit_end, end_in_one_chunk};
 use crate::trace::RunEnd;
 use crate::types::AcceptedRun;
 use crate::{
@@ -33,37 +33,29 @@ impl RunModule {
     }
 
     /// Ends a Run whose deadline passed before its Program started: the
-    /// timeout and its terminal chunk, committed here, and nothing to run.
+    /// timeout in one terminal chunk, committed here, and nothing to run.
     pub(crate) async fn time_out_before_start(
         &self,
         mut transaction: coral_db::Transaction<'_>,
         run: &RunRecord,
         now_unix_nanos: i64,
     ) -> Result<(), Error> {
-        let run = self
-            .request_termination(
-                &mut transaction,
-                run,
-                RunTerminationKind::TimedOut,
-                now_unix_nanos,
-            )
-            .await?;
-        self.finish_termination_in_transaction(&mut transaction, &run, now_unix_nanos)
-            .await?;
+        let timeout =
+            RequestedTermination::unrequested(RunTerminationKind::TimedOut, now_unix_nanos)?;
+        let (kind, ended_at) =
+            end_in_one_chunk(&mut transaction, run, Some(timeout), now_unix_nanos).await?;
         transaction.commit().await?;
-        crate::trace::record_run_end(
-            &run,
-            &RunEnd::Unstarted(&RunTerminalOutcome::TimedOut),
-            now_unix_nanos,
-        );
+        crate::trace::record_run_end(run, &RunEnd::Unstarted(&kind.outcome()), ended_at);
         Ok(())
     }
 
     /// The terminal write for the Program's completion, after the loop has
-    /// recorded every chunk it applied. Returns the shutdown still to settle
-    /// when a termination is recorded instead of a completion: one another
-    /// writer recorded, or one recorded here (a CPU or memory limit, a lost
-    /// Program host), with the head the loop goes on from.
+    /// recorded every chunk it applied. A Run that ends otherwise ends in
+    /// one chunk with its open Invocations, and no grace (ADR 0027): a
+    /// termination an older build recorded and did not end the Run with, or
+    /// one decided here (past the deadline, a claim no longer current, a
+    /// limit or a lost Program host that reached a loop whose commit was
+    /// refused).
     ///
     /// # Errors
     ///
@@ -73,32 +65,30 @@ impl RunModule {
         &self,
         accepted: &AcceptedRun,
         completion: &ExecutionCompletion,
-    ) -> Result<Option<ShutdownAction>, Error> {
+    ) -> Result<(), Error> {
         let claim_id = accepted.claim_id.as_str();
         let mut transaction = self.database.begin().await?;
-        let Some(mut run) = run_repository::find_exact_in_transaction(
+        let Some(run) = run_repository::find_exact_in_transaction(
             &mut transaction,
             &accepted.workspace_id,
             &accepted.id,
         )
         .await?
         else {
-            return Ok(None);
+            return Ok(());
         };
         let now = self.now()?.max(run.accepted_at_unix_nanos);
         if run.state != RunState::Running || run.execution_claim_id.as_deref() != Some(claim_id) {
             transaction.commit().await?;
-            return Ok(None);
+            return Ok(());
         }
-        if let Some(kind) = termination_for_completion(&run, completion, claim_id, now) {
-            run = self
-                .request_termination(&mut transaction, &run, kind, now)
-                .await?;
-        }
-        if run.termination.is_some() {
-            let shutdown = ShutdownAction::from_run(&run)?;
-            transaction.commit().await?;
-            return Ok(Some(shutdown));
+        // An older build's recorded termination precedes the decided one.
+        let decided = termination_for_completion(&run, completion, claim_id, now);
+        if run.termination.is_some() || decided.is_some() {
+            let end = decided
+                .map(|kind| RequestedTermination::unrequested(kind, now))
+                .transpose()?;
+            return commit_end(transaction, &run, end, now).await;
         }
 
         let has_nonterminal_invocation = invocation_repository::has_nonterminal_for_run(
@@ -117,18 +107,10 @@ impl RunModule {
             ));
         }
         let completed_at = self.now()?.max(run.accepted_at_unix_nanos);
-        if run.deadline_passed(completed_at) || !run.program_work_is_current(claim_id, completed_at)
-        {
-            let kind = if run.deadline_passed(completed_at) {
-                RunTerminationKind::TimedOut
-            } else {
-                RunTerminationKind::Interrupted
-            };
-            let run = self
-                .request_termination(&mut transaction, &run, kind, completed_at)
-                .await?;
-            self.finish_termination_in_transaction(&mut transaction, &run, completed_at)
-                .await?;
+        if let Some(kind) = termination_for_completion(&run, completion, claim_id, completed_at) {
+            let end = RequestedTermination::unrequested(kind, completed_at)?;
+            let (kind, ended_at) =
+                end_in_one_chunk(&mut transaction, &run, Some(end), completed_at).await?;
             transaction.commit().await?;
             crate::trace::record_run_end(
                 &run,
@@ -136,9 +118,9 @@ impl RunModule {
                     outcome: &kind.outcome(),
                     final_value_over_budget: false,
                 },
-                completed_at,
+                ended_at,
             );
-            return Ok(None);
+            return Ok(());
         }
         let (outcome, final_value_over_budget) = returned_outcome(&run, completion);
         run_repository::finish_run(&mut transaction, &run, claim_id, &outcome, completed_at)
@@ -152,7 +134,7 @@ impl RunModule {
             },
             completed_at,
         );
-        Ok(None)
+        Ok(())
     }
 }
 
@@ -189,29 +171,21 @@ fn returned_outcome(
     }
 }
 
-/// The termination the terminal write records for a Run with none: the
-/// timeout past its deadline, an interruption when the Program host ended
-/// it or its claim is no longer current, the memory limit, the CPU limit;
-/// `None` for a Program that completed on its own.
+/// The termination the terminal write decides: the timeout past the Run's
+/// deadline, an interruption when its claim is no longer current, else the
+/// one the Program's end names ([`ExecutionCompletion::termination`]);
+/// `None` for a Program that completed on its own within its deadline.
 fn termination_for_completion(
     run: &RunRecord,
     completion: &ExecutionCompletion,
     claim_id: &str,
     now_unix_nanos: i64,
 ) -> Option<RunTerminationKind> {
-    if run.termination.is_some() {
-        None
-    } else if run.deadline_passed(now_unix_nanos) {
+    if run.deadline_passed(now_unix_nanos) {
         Some(RunTerminationKind::TimedOut)
-    } else if *completion == ExecutionCompletion::ProgramHostTerminated
-        || !run.program_work_is_current(claim_id, now_unix_nanos)
-    {
+    } else if !run.program_work_is_current(claim_id, now_unix_nanos) {
         Some(RunTerminationKind::Interrupted)
-    } else if *completion == ExecutionCompletion::MemoryLimitExceeded {
-        Some(RunTerminationKind::MemoryLimitExceeded)
-    } else if *completion == ExecutionCompletion::CpuLimitExceeded {
-        Some(RunTerminationKind::CpuLimitExceeded)
     } else {
-        None
+        completion.termination()
     }
 }

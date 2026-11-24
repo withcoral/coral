@@ -15,6 +15,9 @@ use crate::{
     SOURCE_MAP_MAX_BYTES,
 };
 
+/// The shutdown grace the previous release wrote on every Run, 5 s.
+const PREVIOUS_RELEASE_SHUTDOWN_GRACE_NANOS: i64 = 5_000_000_000;
+
 #[cfg(test)]
 mod tests;
 
@@ -190,7 +193,9 @@ async fn insert_record(
             Expr::val(run.principal.kind().as_storage_str()),
             Expr::val(RunState::Running.as_storage_str()),
             Expr::val(run.accepted_at_unix_nanos),
-            Expr::val(run.shutdown_grace_nanos),
+            // The previous release's shutdown grace, which its row decode
+            // requires positive: this release never reads it.
+            Expr::val(PREVIOUS_RELEASE_SHUTDOWN_GRACE_NANOS),
             Expr::val(run.trace.as_ref().map(|trace| trace.as_str().to_string())),
             Expr::val(serde_json::to_string(&run.value_limits).map_err(Error::ProgramValueJson)?),
             // The previous release's Event counter: this release advances it per

@@ -400,3 +400,18 @@ pub(crate) enum ExecutionCompletion {
     MemoryLimitExceeded,
     CpuLimitExceeded,
 }
+
+impl ExecutionCompletion {
+    /// The termination of a Program that the Run Executor ended without
+    /// the Program's say: a lost Program host interrupts the Run, and a
+    /// limit fails it. `None` for a Program that returned or threw.
+    pub(crate) const fn termination(&self) -> Option<crate::lifecycle::RunTerminationKind> {
+        use crate::lifecycle::RunTerminationKind;
+        match self {
+            Self::ProgramHostTerminated => Some(RunTerminationKind::Interrupted),
+            Self::MemoryLimitExceeded => Some(RunTerminationKind::MemoryLimitExceeded),
+            Self::CpuLimitExceeded => Some(RunTerminationKind::CpuLimitExceeded),
+            Self::Succeeded(_) | Self::Failed(_) => None,
+        }
+    }
+}

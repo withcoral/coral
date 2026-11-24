@@ -181,11 +181,11 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   a retry with bounded backoff until the answer comes or the loop has
   retired, and a definite answer (a rejection, a claim mismatch, an ended
   Run, a corrupt head) stops it. The loop's own end of its Run (at its
-  deadline, at the drain's length for a local child, or on a reopen that
-  finds its Principal gone) alone retries every answer but a claim mismatch
-  or an ended Run. A termination the Run stream itself records (a CPU or
-  memory limit, a lost Program host) still settles within the Run's
-  shutdown grace until #3405.
+  deadline, at a CPU or memory limit or a lost Program host, at the drain's
+  length for a local child, or on a reopen that finds its Principal gone or
+  an older build's termination intent) alone retries every answer but a
+  claim mismatch or an ended Run. No write records a termination intent or
+  waits a grace: the chunk that decides a termination ends the Run.
 - A write to a source never touches the Universal Search tables, and they keep
   no foreign key to a source but the Workspace (the vector table keeps none).
   Notify `SearchIndex` after the commit with ids alone; its reconcile pass

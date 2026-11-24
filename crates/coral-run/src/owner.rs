@@ -13,9 +13,8 @@
 //! connection request's deadline), which parked Invocations to wake and when
 //! to read their waits, and what a lost commit means. The hosting task in
 //! [`host`] drains the mailbox in arrival order, calls `apply`, and runs the
-//! effects: it holds the chunk commit, the terminal write, the settle of a
-//! recorded termination, the timers and the snapshot checks of the parked
-//! waits, one write at a time. A timer fires back into the mailbox, so a
+//! effects: it holds the chunk commit, the terminal write, the timers and
+//! the snapshot checks of the parked waits, one write at a time. A timer fires back into the mailbox, so a
 //! passed deadline is applied in order with the request that races it.
 //!
 //! A parked Invocation holds nothing while it waits: the loop keeps it and

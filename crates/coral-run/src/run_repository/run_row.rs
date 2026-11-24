@@ -29,7 +29,6 @@ pub(super) struct RunRow {
     termination_kind: Option<String>,
     termination_started_at_unix_nanos: Option<i64>,
     termination_deadline_at_unix_nanos: Option<i64>,
-    shutdown_grace_nanos: i64,
     cancellation_requested_at_unix_nanos: Option<i64>,
     cancellation_principal_id: Option<String>,
     cancellation_principal_kind: Option<String>,
@@ -80,6 +79,8 @@ pub(super) fn decode_program_error(json: &str) -> Result<crate::ProgramError, Er
 }
 
 impl RunTerminationKind {
+    /// How an older build stored the kind; tests write such a row with it.
+    #[cfg(test)]
     pub(crate) const fn as_storage_str(self) -> &'static str {
         match self {
             Self::Canceled => "canceled",
@@ -140,7 +141,6 @@ impl RunRow {
         if self
             .deadline_at_unix_nanos
             .is_some_and(|deadline| deadline < self.accepted_at_unix_nanos)
-            || self.shutdown_grace_nanos <= 0
             || self.worker_claim_id.is_some() != self.worker_claim_expires_at_unix_nanos.is_some()
             // A take writes the claim before the start mark (ADR 0027), so
             // only a running Run has a claim and no start mark.
@@ -225,7 +225,6 @@ impl RunRow {
             execution_claim_id: self.execution_claim_id,
             execution_started_at_unix_nanos: self.execution_started_at_unix_nanos,
             termination,
-            shutdown_grace_nanos: self.shutdown_grace_nanos,
             chunk_sequence,
             last_event_sequence,
             accumulated_output_bytes,
@@ -314,7 +313,6 @@ fn decode_termination(row: &RunRow, state: RunState) -> Result<Option<RunTermina
     Ok(Some(RunTermination {
         kind,
         started_at_unix_nanos,
-        deadline_at_unix_nanos,
     }))
 }
 

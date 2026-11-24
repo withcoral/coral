@@ -1,6 +1,6 @@
 //! The task that hosts one Run stream's loop: it drains the mailbox, calls
 //! [`apply`], and runs the effects, holding the chunk commit, the terminal
-//! write, the settle of a recorded termination and the timers the loop arms,
+//! write and the timers the loop arms,
 //! each a sleep on this process's clock that fires its [`Message::Timer`]
 //! into the mailbox. While a connection wait is parked it listens to its
 //! Coral Instance's wake-up reader, and it runs the snapshot checks of the
@@ -13,17 +13,13 @@
 //! the watermark this very attempt wrote), fenced (another claim, or an
 //! ended Run), moved (another writer moved the head: the chunk is rebuilt on
 //! it), not landed (recommit the chunk exactly as built), or corrupt. The
-//! terminal write and the settle retry the same way.
+//! terminal write retries the same way.
 //!
 //! No chunk commit holds the Run row: the commit's predicate on the claim and
 //! the head the loop tracks in memory is the fence, and the loop runs its
 //! writes one at a time (ADR 0027).
 
 use std::collections::HashMap;
-use std::time::Duration;
-
-use tokio::time::Instant;
-use tracing::Instrument as _;
 
 use coral_telemetry::safe;
 use coral_workspace::AuthenticatedPrincipal;
@@ -36,17 +32,13 @@ use crate::owner::ChunkWork as _;
 use crate::owner::NO_DEADLINE;
 use crate::run_repository::{self, Chunk, OwnedEvent};
 use crate::run_stream::StreamRun;
-use crate::trace::{Phase, TimedSpan, phase_span};
+use crate::trace::{Phase, phase_span};
 use crate::types::AcceptedRun;
 use crate::{Error, RunModule, nanos_duration};
 
 use super::chunk::{ChunkBuild, ChunkItem};
 use super::handle::{CommitRejection, Mailbox, Message, OwnerHandle, OwnerRegistration, Timer};
 use super::state::{Effect, OwnerLimits, OwnerState, apply};
-
-/// The wait between two settle attempts while a dispatch is still in flight
-/// within the shutdown grace.
-const SETTLE_RETRY: Duration = Duration::from_millis(10);
 
 /// Hosts the loop of `accepted`, whose Program runs on `start`, until it
 /// retires. Its start landed before the loop exists and is queued in its
@@ -64,11 +56,6 @@ pub(crate) async fn host(
     let (mut state, mut effects) = begin(&module, &accepted, &start);
     let mut timers = Timers::default();
     let mut subscription = Subscription::default();
-    // The shutdown grace of a recorded termination, on this process's clock:
-    // set by the first settle attempt, read by every later one.
-    let mut settle_deadline: Option<Instant> = None;
-    // One `coral.run.terminate` span covers every settle attempt.
-    let mut terminate: Option<TimedSpan> = None;
     loop {
         let mut retired = false;
         for effect in effects.drain(..) {
@@ -85,21 +72,6 @@ pub(crate) async fn host(
                 }
                 Effect::Subscribe => subscription.subscribe(&module, &handle),
                 Effect::Unsubscribe => subscription.unsubscribe(),
-                Effect::Settle { shutdown, again } => {
-                    let deadline =
-                        *settle_deadline.get_or_insert_with(|| grace_deadline(&module, &shutdown));
-                    let span = terminate
-                        .get_or_insert_with(|| {
-                            phase_span(
-                                accepted.trace.as_ref(),
-                                &accepted.held_id(),
-                                Phase::Terminate,
-                            )
-                        })
-                        .span()
-                        .clone();
-                    spawn_settle(&module, &accepted, &handle, shutdown, again, deadline, span);
-                }
                 Effect::TerminateProgram => terminate_program(&handle, &start, &state),
                 other => run_effect(&module, &accepted, &start, &handle, other),
             }
@@ -296,7 +268,7 @@ impl Drop for Timers {
     }
 }
 
-/// Runs every effect but the commit, the settle, the timers, the wake-up
+/// Runs every effect but the commit, the timers, the wake-up
 /// listening and the retirement, which the loop owns.
 /// A write retried past the owner's retirement answers a mailbox nobody
 /// reads.
@@ -349,14 +321,13 @@ fn run_effect(
         Effect::MoveStream => move_stream(start, handle),
         Effect::Commit { .. }
         | Effect::TerminateProgram
-        | Effect::Settle { .. }
         | Effect::ArmTimer { .. }
         | Effect::Subscribe
         | Effect::Unsubscribe
         | Effect::Retire => {
             debug_assert!(
                 false,
-                "the host loop runs commits, the settle, timers, the subscription and retirement itself"
+                "the host loop runs commits, timers, the subscription and retirement itself"
             );
         }
     }
@@ -425,53 +396,6 @@ fn invoker(
     )
 }
 
-/// The end of a recorded termination's shutdown grace on this process's
-/// clock, from how much of it is left on the domain clock.
-fn grace_deadline(module: &RunModule, shutdown: &crate::termination::ShutdownAction) -> Instant {
-    // A clock that fails never extends the grace: the attempt that follows
-    // reads the same clock, fails on it, and retires the loop; the Run is
-    // the sweeper's then.
-    let now = module
-        .now()
-        .unwrap_or(shutdown.deadline_at_unix_nanos())
-        .max(shutdown.accepted_at_unix_nanos());
-    Instant::now() + crate::duration_until(shutdown.deadline_at_unix_nanos(), now)
-}
-
-/// One settle attempt, after a moment when the previous one found a
-/// dispatch in flight; `deadline` is the end of the shutdown grace on this
-/// process's clock, after which the attempt ends the Run whatever is still
-/// dispatching.
-fn spawn_settle(
-    module: &RunModule,
-    accepted: &AcceptedRun,
-    handle: &OwnerHandle,
-    shutdown: crate::termination::ShutdownAction,
-    again: bool,
-    deadline: Instant,
-    span: tracing::Span,
-) {
-    let module = module.clone();
-    let accepted = accepted.clone();
-    let handle = handle.clone();
-    tokio::spawn(
-        async move {
-            if again {
-                tokio::time::sleep(SETTLE_RETRY).await;
-            }
-            let attempted = until_answered(
-                &accepted.held_id(),
-                "settle",
-                || !handle.is_retired(),
-                || module.settle_termination(&shutdown, Instant::now() >= deadline),
-            )
-            .await;
-            handle.send(Message::SettleAttempted(attempted));
-        }
-        .instrument(span),
-    );
-}
-
 /// A Run stream's termination, written in one chunk until the database
 /// answers; the Program hears of it on the stream only then, and the owner
 /// retires. A definite failure means another writer ended or took the Run
@@ -512,7 +436,7 @@ fn spawn_stream_end(
         if ended.is_ok() {
             link.terminate(Some(termination.termination.kind));
         }
-        handle.send(Message::Completed(Ok(None)));
+        handle.send(Message::Completed(Ok(())));
     }));
 }
 
@@ -547,7 +471,7 @@ fn spawn_commit(
                 if let Ok(Some(run)) = read
                     && run.state.is_terminal()
                 {
-                    let kind = run.termination.map(|termination| termination.kind);
+                    let kind = RunTerminationKind::of_ended(run.state);
                     handle.send(Message::EndedOutside(kind));
                 }
                 Message::CommitRejected(CommitRejection::RunEnded)

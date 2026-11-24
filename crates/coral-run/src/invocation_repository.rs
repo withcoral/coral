@@ -819,36 +819,6 @@ pub(super) async fn has_nonterminal_for_run(
     .await
 }
 
-/// The Generations whose Tools the run's dispatches that started and have
-/// not ended called, each once.
-pub(super) async fn dispatching_generations_for_run(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    run_id: &RunId,
-) -> Result<Vec<coral_catalog::ProviderGenerationId>, Error> {
-    let rows: Vec<(String,)> = transaction
-        .fetch_all(
-            Query::select()
-                .distinct()
-                .column(ToolInvocations::ProviderGenerationId)
-                .from(ToolInvocations::Table)
-                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(ToolInvocations::RunId).eq(run_id.to_string()))
-                .and_where(
-                    Expr::col(ToolInvocations::State)
-                        .eq(InvocationState::Dispatching.as_storage_str()),
-                )
-                .to_owned(),
-        )
-        .await?;
-    rows.into_iter()
-        .map(|(generation,)| {
-            coral_catalog::ProviderGenerationId::parse(&generation)
-                .map_err(|error| coral_provider::Error::from(error).into())
-        })
-        .collect()
-}
-
 async fn has_for_run(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,

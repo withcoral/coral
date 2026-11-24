@@ -49,7 +49,8 @@ enum Reopen {
     Ended(WireEnd),
     /// No actor can be rebuilt for the Run: its Principal is gone.
     Unowned,
-    /// A termination is recorded, and the loop that recorded it is gone.
+    /// An older build recorded a termination, and the loop that recorded it
+    /// is gone.
     Terminating(Box<RunRecord>),
     Unavailable(&'static str),
 }
@@ -102,7 +103,9 @@ impl RunModule {
                     Err(_unanswered) => link.close(Closing::Unavailable("the end is not written")),
                 };
             }
-            Ok(Reopen::Terminating(run)) => return self.end_terminating(&run, link).await,
+            Ok(Reopen::Terminating(run)) => {
+                return self.end_terminating(&run, &claim_id, link).await;
+            }
             Ok(Reopen::Unavailable(reason)) => return link.close(Closing::Unavailable(reason)),
             Err(_unanswered) => {
                 return link.close(Closing::Unavailable("the reopen is not written"));
@@ -132,23 +135,22 @@ impl RunModule {
         self.close_served(link, &workspace_id, &id).await;
     }
 
-    /// Ends a Run whose termination the loop before recorded and did not
-    /// settle: its terminal chunk ends its open Invocations, whose dispatches
-    /// were lost with that loop, and the Run Executor learns how it ended.
-    async fn end_terminating(&self, run: &RunRecord, link: &StreamLink) {
-        let settled = match crate::termination::ShutdownAction::from_run(run) {
-            Ok(shutdown) => {
-                until_answered(
-                    &run.held_id(),
-                    "Run stream reopen settle",
-                    || !link.responses.is_closed(),
-                    || self.settle_termination(&shutdown, true),
-                )
-                .await
-            }
-            Err(error) => Err(error),
-        };
-        if settled.is_err() {
+    /// Ends a Run whose termination an older build's loop recorded and did
+    /// not end the Run with: one chunk ends its open Invocations, whose
+    /// dispatches were lost with that loop, and the Run with the recorded
+    /// termination, under the claim and the head; no grace. The Run Executor
+    /// then learns how it ended.
+    async fn end_terminating(&self, run: &RunRecord, claim_id: &str, link: &StreamLink) {
+        let ended = self
+            .record_interruption(
+                &run.workspace_id,
+                &run.held_id(),
+                claim_id,
+                None,
+                crate::termination::Interrupter::Reopen,
+            )
+            .await;
+        if !matches!(ended, Ok(()) | Err(Error::RunEnded)) {
             return link.close(Closing::Unavailable("the end is not written"));
         }
         self.close_served(link, &run.workspace_id, &run.id).await;
