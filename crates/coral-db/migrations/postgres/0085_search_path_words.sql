@@ -20,9 +20,9 @@
 -- revision. Until then, that Generation adds no path and no word.
 --
 -- Adding a nullable column changes only the catalog, but it takes an
--- exclusive lock. lock_timeout bounds the wait for that lock to five
--- seconds: reads queue behind the waiting step for at most that long, and
--- then the step fails.
+-- exclusive lock. Reads and writes queue behind the ALTER while it waits for
+-- that lock. lock_timeout limits that wait to five seconds; then the
+-- migration fails and the queue clears.
 SET LOCAL lock_timeout = '5s';
 
 CREATE TABLE search_path_words (
@@ -43,6 +43,8 @@ CREATE TABLE search_path_words (
 
 CREATE INDEX search_path_words_generation_idx
     ON search_path_words (provider_generation_id);
+CREATE INDEX search_path_words_provider_idx
+    ON search_path_words (workspace_id, provider_id);
 
 ALTER TABLE search_index_states
     ADD COLUMN tool_count BIGINT;

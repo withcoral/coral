@@ -36,6 +36,8 @@ CREATE TABLE search_path_words (
 
 CREATE INDEX search_path_words_generation_idx
     ON search_path_words (provider_generation_id);
+CREATE INDEX search_path_words_provider_idx
+    ON search_path_words (workspace_id, provider_id);
 
 ALTER TABLE search_index_states
     ADD COLUMN tool_count BIGINT;
