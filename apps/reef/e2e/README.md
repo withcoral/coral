@@ -38,12 +38,12 @@ npm run e2e:serve --prefix apps/reef
 
 ### One product suite, plus small tests for the differences
 
-| Suite            | What it proves                                                                                           | Discovery                               |
-| ---------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| `main` (default) | Provider, Account, Workspace, Agent, activity, identity and permission journeys, with genuine sign-in    | `scenarios/main/**/*.test.ts`           |
-| `local-mode`     | No sign-in ceremony, implicit Owner Membership, lifecycle fences, loopback access and parity scenarios   | `scenarios/local-mode/**/*.test.ts`     |
-| `desktop`        | The packaged Desktop app: its supervisor, its window, background, quit and relaunch                      | `scenarios/desktop/**/*.test.ts`        |
-| `multi-instance` | Two Coral Instances on one Postgres database: a pending request through either one reaches the Run Owner | `scenarios/multi-instance/**/*.test.ts` |
+| Suite            | What it proves                                                                                         | Discovery                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------- |
+| `main` (default) | Provider, Account, Workspace, Agent, activity, identity and permission journeys, with genuine sign-in  | `scenarios/main/**/*.test.ts`           |
+| `local-mode`     | No sign-in ceremony, implicit Owner Membership, lifecycle fences, loopback access and parity scenarios | `scenarios/local-mode/**/*.test.ts`     |
+| `desktop`        | The packaged Desktop app: its supervisor, its window, background, quit and relaunch                    | `scenarios/desktop/**/*.test.ts`        |
+| `multi-instance` | Two Coral Instances and two dialed Run Executors on one Postgres database share its waiting Runs       | `scenarios/multi-instance/**/*.test.ts` |
 
 `main` is the default; `--suite main` selects it explicitly. `local-mode` means the
 no-sign-in deployment, not tests running on your machine.
@@ -310,10 +310,11 @@ The restart scenario for boot recovery is separate, open work.
 ## Several Coral Instances
 
 `--suite multi-instance` runs two Coral Instances on one disposable Postgres
-database behind a round-robin proxy. It proves that an outside request made
-through one Coral Instance reaches the Run Owner on the other, when the record
-does not already answer it
-([ADR 0025](../../../docs/adr/0025-outside-run-requests-reach-the-run-owner-through-the-run-inbox.md)).
+database behind a round-robin proxy, each with one Run Executor that dials it
+([ADR 0027](../../../docs/adr/0027-run-executors-compile-and-execute-programs.md)).
+It proves that a Run accepted through one Coral Instance waits in the shared
+queue for either Run Executor, and that a decision or a cancellation made
+through one Coral Instance reaches a Program whose Run stream the other holds.
 It signs in as the main suite does. Postgres is the suite's only database, so it
 takes no `--database`.
 
@@ -329,24 +330,37 @@ takes no `--database`.
   credential key (`[credentials] key_env`). Only their listener ports and state
   roots differ. The second instance starts once the first is ready, so it never
   reads a half-migrated database. Each writes `coral-1.log` or `coral-2.log`.
+- Both instances set `local_run_executors = false` and bind a loopback Run
+  Executor listener with an operator token. Once an instance is ready, the stack
+  starts `coral run-executor` from the same binary to dial it, and waits until
+  its health service reports it linked. Each writes `run-executor-1.log` or
+  `run-executor-2.log`.
+- Each Run Executor holds at most one Run. A Run that waits for approval fills
+  one, so a journey can tell which Run Executor takes the next Run. A Run left
+  running would leave the next journey no room, so a journey passes each Run it
+  starts to `endAfterTest` (`waiting-run.ts`), which cancels it when the test
+  ends, failed or not.
 
 A scenario steers the proxy with `coralInstances()` from `support/instances.ts`:
 
-- `startOn(i, start)` starts a Run through instance `i`. The instance that
-  accepts a Run holds it.
-- `holder(run)` reads the Run row's `holder_instance_id` with `psql` and returns
-  the instance's index. Coral shows an instance's id only there, so the harness
-  learns each id from the first Run started through that instance.
+- `startOn(i, start)` starts a Run through instance `i`. Either instance may
+  then hold its Run stream: the one whose Run Executor took it.
+- `holder(run)` waits for the Run's start mark, checks that a dialed Run
+  Executor runs it, and returns the index of the instance in the row's
+  `holder_instance_id`, read with `psql`. The harness learns each instance's id
+  from its startup output.
 - `on(i, act)` sends every request to instance `i` while `act` runs.
 - `during(act)` returns the requests forwarded meanwhile, each with its client
   connection, the instance that served it and its gRPC status.
 - `expectNoUnavailable(requests)` fails on any HTTP 503 or gRPC UNAVAILABLE.
 
-Each cross-instance journey is one file in `scenarios/multi-instance/`: an Account
-connected through one instance continues a Run that the other owns; Reef cancels
-such a Run over its one connection; Reef approves a call on one; and an MCP client
-on 2026-07-28 answers an approval prompt through the instance that does not own
-the Run. A native run needs `psql` on `PATH`; the container has it.
+Each cross-instance journey is one file in `scenarios/multi-instance/`: a Run
+accepted through the instance whose Run Executor is full runs on the other's; an
+Account connected through one instance continues a Run that the other holds;
+Reef cancels such a Run over its one connection; Reef approves a call on one;
+and an MCP client on 2026-07-28 answers an approval prompt through the instance
+that does not hold the Run. A native run needs `psql` on `PATH`; the container
+has it.
 
 ## Authenticated multi-User fixture
 

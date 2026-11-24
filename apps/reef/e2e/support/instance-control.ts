@@ -48,10 +48,13 @@ export async function startInstanceControl(
       { env, timeout: 10_000 },
     )
     query.child.stdin?.end(
-      "SELECT holder_instance_id FROM program_run_records WHERE workspace_id = :'workspace' AND id = :'run';",
+      'SELECT holder_instance_id, execution_started_at_unix_nanos IS NOT NULL, run_executor_kind' +
+        " FROM program_run_records WHERE workspace_id = :'workspace' AND id = :'run';",
     )
     const { stdout } = await query
-    return stdout.trim() || undefined
+    // Unaligned output separates columns with `|` and prints NULL as nothing.
+    const [holder, started, kind] = stdout.trim().split('|')
+    return { holder: holder || null, started: started === 't', kind: kind || null }
   }
   const server = createServer(async (request, response) => {
     const reply = (status: number, value: unknown) => {
@@ -68,9 +71,9 @@ export async function startInstanceControl(
       if (request.method === 'GET' && url.pathname === '/requests')
         return reply(200, proxy.requests())
       if (request.method === 'GET' && url.pathname === '/holder') {
-        const holder = await holderOf(url.searchParams.get('run') ?? '')
-        const instance = holder ? ids.indexOf(holder) : -1
-        return reply(200, { holder: holder ?? null, instance: instance === -1 ? null : instance })
+        const row = await holderOf(url.searchParams.get('run') ?? '')
+        const instance = row.holder ? ids.indexOf(row.holder) : -1
+        return reply(200, { ...row, instance: instance === -1 ? null : instance })
       }
       reply(404, { error: 'Unknown control' })
     } catch (error) {

@@ -9,6 +9,7 @@ import {
   type RunUpdate,
 } from '../../support/providers.ts'
 import { withOwner } from '../../support/topology.ts'
+import { endAfterTest } from './waiting-run.ts'
 
 test('An account connected through one Coral Instance continues a Run that the other owns', async (context) => {
   const instances = coralInstances()
@@ -44,7 +45,10 @@ test('An account connected through one Coral Instance continues a Run that the o
             update = (
               await program.exec('return await coral.providers.connections.listEntries({});')
             ).structuredContent
-            return `workspaces/${workspace}/runs/${update.run_id}`
+            const name = `workspaces/${workspace}/runs/${update.run_id}`
+            // It ends waiting for approval: the test's end cancels it.
+            endAfterTest(accessToken, name)
+            return name
           })
           await expect.poll(pendingConnections, { timeout: 15_000 }).toBe(1)
           owner = await instances.holder(run)

@@ -5,6 +5,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
+import { createClient } from '@connectrpc/connect'
+import { createGrpcTransport } from '@connectrpc/connect-node'
+
 import { reefRoot, repoRoot, type FixtureAddress, type Target } from './config.ts'
 import {
   prepareAuthenticatedTarget,
@@ -134,6 +137,26 @@ export async function ready(origin: string) {
   throw new Error(`Readiness failed: ${origin}/readyz`)
 }
 
+/** Waits until the Run Executor whose health service is at `url` has linked to its Coral. */
+async function linked(url: string) {
+  // Imported here: the harness's own Node tests import this module, and Node's
+  // type stripping rejects the enums in generated code. Vitest loads them.
+  const { Health, HealthCheckResponse_ServingStatus } =
+    await import('../generated/grpc/health/v1/health_pb.ts')
+  const health = createClient(Health, createGrpcTransport({ baseUrl: url }))
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    try {
+      const { status } = await health.check({ service: 'coral.readiness' }, { timeoutMs: 2000 })
+      if (status === HealthCheckResponse_ServingStatus.SERVING) return
+    } catch {
+      /* Startup can briefly refuse connections. */
+    }
+    await delay(100)
+  }
+  throw new Error(`The Run Executor at ${url} did not link`)
+}
+
 export async function startStack(options: {
   coralBinary: string
   childEnv: NodeJS.ProcessEnv
@@ -230,8 +253,14 @@ export async function startStack(options: {
       : undefined
     // Instances share one credential key, or none could read what another sealed.
     const credentialKey = options.multiInstance ? randomBytes(32).toString('base64') : undefined
+    // Several instances start no local Run Executor: each one's only Run
+    // Executor dials it with the operator token, as an operator runs them.
+    const runExecutorToken = options.multiInstance
+      ? randomBytes(32).toString('base64url')
+      : undefined
     const coralEnv = {
       ...childEnv,
+      ...(runExecutorToken ? { E2E_RUN_EXECUTOR_TOKEN: runExecutorToken } : {}),
       ...(localWeb ? { CORAL_LOCAL_WEB_URL: localWeb.url } : {}),
       ...(options.postgresURL ? { E2E_STACK_POSTGRES_URL: options.postgresURL } : {}),
       ...(credentialKey ? { E2E_CREDENTIAL_KEY: credentialKey } : {}),
@@ -249,6 +278,10 @@ export async function startStack(options: {
         // The stack stops Coral within 5 s: Runs still live are interrupted at
         // once instead of draining.
         '[runtime]\nshutdown_drain_seconds = 0\n' +
+          (runExecutorToken
+            ? 'local_run_executors = false\n' +
+              "[listeners.run_executor]\nbind = '127.0.0.1:0'\ntoken_env = 'E2E_RUN_EXECUTOR_TOKEN'\n"
+            : '') +
           // With semantic search on, each instance downloads the model
           // (133 MB) from GitHub and runs the Embedder.
           '[search]\nsemantic_search_enabled = false\n' +
@@ -282,6 +315,7 @@ bind = '127.0.0.1:0'
         [
           options.postgresURL ?? '',
           credentialKey ?? '',
+          runExecutorToken ?? '',
           ...(authentication ? Object.values(authentication.coralEnv) : []),
           ...(secretStore ? [secretStore.secretId, ...Object.values(envSecretStore.env)] : []),
         ],
@@ -297,6 +331,25 @@ bind = '127.0.0.1:0'
       )
       // The next instance starts once this one has migrated the shared database.
       await ready(mcpURL)
+      if (runExecutorToken) {
+        const listener = await coral.match(/Coral Run Executor listener on (\S+)/)
+        const health = await reservePort()
+        await health.release()
+        // It holds one Run at a time, so a journey can fill it with one waiting Run.
+        const runExecutor = startProcess(
+          options.coralBinary,
+          ['run-executor', '--coral-address', `http://${listener}`, '--max-runs-held', '1'],
+          {
+            ...childEnv,
+            CORAL_RUN_EXECUTOR_TOKEN: runExecutorToken,
+            CORAL_RUN_EXECUTOR_HEALTH_LISTEN: `127.0.0.1:${health.port}`,
+          },
+          join(options.runDir, `run-executor-${index + 1}.log`),
+          [runExecutorToken],
+        )
+        processes.push(runExecutor)
+        await linked(health.url)
+      }
       instances.push({ grpcURL, mcpURL, authURL: authentication?.authOrigins[index] ?? '' })
     }
     const [{ grpcURL, mcpURL }] = instances
