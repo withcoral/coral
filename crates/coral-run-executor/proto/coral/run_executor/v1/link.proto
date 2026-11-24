@@ -95,7 +95,8 @@ message TakenRun {
   string claim_id = 2;
 }
 
-// One compile call, which holds one unit of room until Compiled answers it.
+// One compile call, which holds one unit of compile room until Compiled
+// answers it, and no room for Runs.
 // It carries source and no Workspace, Principal or credential.
 message Compile {
   // This call's number on this pull stream, which Compiled repeats.

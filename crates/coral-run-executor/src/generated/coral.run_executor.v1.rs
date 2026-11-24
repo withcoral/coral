@@ -114,7 +114,8 @@ pub struct TakenRun {
     #[prost(string, tag = "2")]
     pub claim_id: ::prost::alloc::string::String,
 }
-/// One compile call, which holds one unit of room until Compiled answers it.
+/// One compile call, which holds one unit of compile room until Compiled
+/// answers it, and no room for Runs.
 /// It carries source and no Workspace, Principal or credential.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Compile {

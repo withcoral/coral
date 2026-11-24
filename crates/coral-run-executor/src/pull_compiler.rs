@@ -125,8 +125,8 @@ impl fmt::Debug for PullStreamCompiler {
 
 impl PullStreamCompiler {
     /// The client that sends each call to the stream in `streams` with the
-    /// most compile room, ties at random. A full set of Runs takes none of
-    /// it. With no room, [`CompilerClient::ready`]
+    /// most compile room, ties as [`PullStreams`] breaks them. A full set of
+    /// Runs takes none of it. With no room, [`CompilerClient::ready`]
     /// waits up to `COMPILE_WAIT` and a call waits within its time left,
     /// less `ROOM_WAIT_RESERVE`; both ask `children`, when there are
     /// local children, for room. A call no stream took fails as

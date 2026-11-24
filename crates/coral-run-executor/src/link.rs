@@ -687,7 +687,10 @@ impl Link {
                     compiling = compiling.saturating_sub(1);
                     // While it retires, the room stays none. A Coral Instance
                     // of the release before spends a unit of room on each
-                    // compile, and this report gives it back.
+                    // compile, and this report gives it back: it replaces that
+                    // count with the Runs this Run Executor can take. Such a
+                    // Coral can then queue another compile while one still
+                    // runs, which waits its turn within its own time left.
                     let free = self.free();
                     for message in [
                         pull_request::Message::Compiled(compiled),

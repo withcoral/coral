@@ -105,9 +105,15 @@ pub(crate) fn busy_stream(streams: &PullStreams) -> (StreamId, Sent) {
 }
 
 /// Holds every unit of `stream`'s compile room still free, as callers that
-/// wait for a compiler do.
+/// wait for a compiler do. The stream must take sends.
 pub(crate) fn fill_compile(streams: &PullStreams, stream: StreamId) {
-    while streams.hold_compile(stream).is_ok() {}
+    loop {
+        match streams.hold_compile(stream) {
+            Ok(()) => {}
+            Err(Refused::NoRoom) => return,
+            Err(refused) => panic!("{stream:?} takes no hold: {refused}"),
+        }
+    }
 }
 
 /// What `answer` receives, or an error once its stream ends unanswered.

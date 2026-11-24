@@ -1163,8 +1163,9 @@ V8 isolate, and compiles Programs with the Program Compiler. It dials Coral at o
 one the operator gave it, or, for a local child, one Coral wrote to its stdin at start. Coral admits it by that
 credential, never by the network it dials from. It is identified by a random id it generates each time it starts.
 
-On one pull stream it reports its room, a count of the Runs and compiles it is willing to hold, and Coral sends it Runs
-and compiles against that count. It opens one stream per Run it holds. A Run starts when Coral records that the Run
+On one pull stream it reports its room, a count of the Runs it is willing to hold, and Coral sends it Runs against that
+count. Coral sends it compiles against its compile room, a small count Coral keeps for its one Program Compiler, so a
+full set of Runs does not stop a compile. It opens one stream per Run it holds. A Run starts when Coral records that the Run
 Executor loaded it, and its deadline runs from its start. The Run Executor numbers its Program's requests, keeps the
 ones Coral has not yet committed, and reconnects a Run to any Coral Instance after a lost link. A lost link or a lapsed
 lease never ends a Program. The Program runs until it finishes, exceeds a limit of its own, reaches the Run's deadline,

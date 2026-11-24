@@ -94,8 +94,8 @@ body with a module and cannot test the function before it saves it; and `source`
   the Run is still current after the compile and before the write, so a Run that ended while its save compiled commits
   nothing. A Run that ends between that check and the commit keeps the save, as with `updateProvider`.
 - **A save's compile must not wait on its own Run.** A Program waits while its save compiles. Under ADR 0027 a compile
-  holds a unit of a Run Executor's room, so it must not wait for room its own Run holds: on an executor with room for one
-  Run, every save would wait out its bound and fail.
+  holds a unit of a Run Executor's compile room, never of the room its Runs hold, so it never waits for room its own Run
+  holds: on an executor with room for one Run, a save that did would wait out its bound and fail.
 - **A tool that does not compile fails its Program's admission.** A syntax error or an import in it is the
   Program's to correct. A path that cannot hold the function still fails the save.
 - **A save's record carries its Run Trace**, which links the request that started the Run, as every change a Program

@@ -279,7 +279,7 @@ struct Held {
     compiles_sent: u64,
     /// Units of room held for a take while it claims Runs. `free` leaves
     /// them out.
-    kept_for_callers: u32,
+    kept_for_takes: u32,
     /// Units of compile room held for callers that wait for room, and for
     /// the calls a relay pickup promised another Coral Instance, until each
     /// sends its compile or lets the unit go.
@@ -478,7 +478,7 @@ impl PullStreams {
         let mut held = lock(&self.held);
         let held = held.get_mut(&stream).ok_or(Refused::Closed)?;
         held.spend(units)?;
-        held.kept_for_callers += units;
+        held.kept_for_takes += units;
         Ok(())
     }
 
@@ -504,7 +504,7 @@ impl PullStreams {
             Some(sent) if !held.closing => sent,
             _ => 0,
         };
-        held.kept_for_callers = held.kept_for_callers.saturating_sub(units);
+        held.kept_for_takes = held.kept_for_takes.saturating_sub(units);
         held.view.free += units - sent;
         if units > sent {
             self.signal_room();
@@ -646,7 +646,7 @@ impl PullStreams {
             closing: false,
             outbound,
             compiles_sent: 0,
-            kept_for_callers: 0,
+            kept_for_takes: 0,
             kept_for_compiles: 0,
             compiles: HashMap::new(),
         };
@@ -677,7 +677,7 @@ impl PullStreams {
         match request.message {
             Some(pull_request::Message::Room(room)) => {
                 if let Some(held) = lock(&self.held).get_mut(&stream) {
-                    held.view.free = room.free.saturating_sub(held.kept_for_callers);
+                    held.view.free = room.free.saturating_sub(held.kept_for_takes);
                     held.view.last_work = Some(Instant::now());
                 }
                 // Only room wakes the calls that wait for it.

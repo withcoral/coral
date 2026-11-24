@@ -6,9 +6,10 @@
 //! answer back.
 //!
 //! A row with no call is a probe: [`crate::CompilerClient::ready`] waits on
-//! one until some Coral Instance has room, before the compile's own time
-//! starts. A pickup holds one unit of its room for each probe it answers
-//! for another Coral Instance, which that Coral Instance's next call spends.
+//! one until some Coral Instance has compile room, before the compile's own
+//! time starts. A pickup holds one unit of its compile room for each probe it
+//! answers for another Coral Instance, which that Coral Instance's next call
+//! spends.
 
 use std::collections::VecDeque;
 use std::convert::Infallible;
