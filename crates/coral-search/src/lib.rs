@@ -16,7 +16,7 @@
 //! - [`UniversalSearchModule::discover`] is the one discovery operation, which
 //!   the Built-in Tool `coral.search` reaches, each request in one
 //!   read snapshot. A query runs one ranked statement per Search Entity kind,
-//!   one retriever each; a rerank step settles the mark of each Authored
+//!   one retriever each; a rerank step sets the final mark of each Authored
 //!   Tool, and the engine fuses the windows by position, strong matches
 //!   first and last matches at the end, into bounded pages of Search Hits
 //!   with one status per retriever.
@@ -52,8 +52,8 @@
 //! The engine inside [`UniversalSearchModule`] normalizes the query, embeds
 //! it once when the vector side is on (ADR 0035), hands the same terms and
 //! vector to every retriever, reranks, fuses by position, and pages by a
-//! plain offset that authorizes nothing. Only the rerank step names a Search
-//! Entity kind (ADR 0044). Every search
+//! plain offset that authorizes nothing. Only the rerank step reads the kind
+//! of an entry (ADR 0044). Every search
 //! page and exact description applies the owners' current visibility rules.
 //! Discovery never starts an interactive authorization or refreshes credentials.
 
@@ -187,27 +187,11 @@ impl UniversalSearchModule {
             workspaces,
             ToolRetriever {
                 fail_ranking: kinds.contains(&EntityKind::ProviderTool),
-                ..ToolRetriever::default()
             },
             |kind| AuthoredToolRetriever {
                 fail_ranking: kinds.contains(&EntityKind::authored(kind)),
                 ..AuthoredToolRetriever::new(kind)
             },
-        )
-    }
-
-    /// Builds discovery whose Tool retriever's vector query fails, through
-    /// the same path a failing vector query takes.
-    #[cfg(test)]
-    fn with_failing_tool_vector_query(database: Arc<Database>, workspaces: WorkspaceModule) -> Self {
-        Self::with_retrievers(
-            database,
-            workspaces,
-            ToolRetriever {
-                fail_vector_query: true,
-                ..ToolRetriever::default()
-            },
-            AuthoredToolRetriever::new,
         )
     }
 
@@ -263,7 +247,7 @@ impl UniversalSearchModule {
     /// the query mode of [`Self::discover`].
     ///
     /// Each retriever applies current visibility and ranks its own kind; the
-    /// rerank step makes each Authored Tool strong or last, and the engine
+    /// rerank step sets each Authored Tool's mark to strong or last, and the engine
     /// fuses the windows by position: strong, then weak, then last. Only the
     /// page's items are hydrated, each into a hit with a signature line and
     /// the beginning of its description; a hit says nothing of why it
@@ -295,7 +279,7 @@ impl UniversalSearchModule {
                 coral.search.authored_strong.phrase = Empty,
                 coral.search.authored_strong.rare_path_word = Empty,
                 coral.search.authored_strong.distance = Empty,
-                coral.search.provider_tool_distance = Empty,
+                coral.search.provider_tool_distance_present = Empty,
             ))
             .await
     }
@@ -803,8 +787,8 @@ fn record_marks(span: &tracing::Span, authored: AuthoredStrong, reranked: &reran
         safe::number(count(reranked.strong_by_distance)),
     );
     span.record(
-        "coral.search.provider_tool_distance",
-        safe::flag(reranked.tool_distance),
+        "coral.search.provider_tool_distance_present",
+        safe::flag(reranked.provider_tool_distance),
     );
 }
 

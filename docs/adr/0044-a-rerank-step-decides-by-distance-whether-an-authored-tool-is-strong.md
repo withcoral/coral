@@ -8,9 +8,10 @@ Universal Search has a rerank step between the retrievers and fusion. It sets th
 Private Tool or a Shared Tool. An Authored Tool is strong when one of these rules holds:
 
 1. **Phrase:** a field holds the query's words in order.
-2. **Rare path word:** a content word of the query starts a word of the Tool's path, and under 10% of the Workspace's
+2. **Rare path word:** a content word of the query starts a word of the Tool's path, and few of the Workspace's
    Provider Tool paths hold a word that starts with it
-   ([#3426](https://github.com/withcoral/coral/issues/3426)).
+   ([#3426](https://github.com/withcoral/coral/issues/3426)). Words such as `get` and `list` start a word of most
+   Provider Tool paths, so they make no Authored Tool strong.
 3. **Distance:** the Tool is strictly nearer to the query than the nearest Provider Tool of the same request. The
    Provider Tool window holds only the Tools inside the search's Provider filter, so the comparison is inside it too.
 
@@ -18,18 +19,18 @@ The Authored Tool retriever applies rules 1 and 2, and the rerank step applies r
 makes strong gets a third mark, **last**: fusion puts it after every weak entry. Fusion orders strong, weak and last
 entries, each group by position and then by retriever order. A Provider Tool keeps the rules of
 [ADR 0011](0011-universal-search-engine-and-retrievers.md) and
-[ADR 0035](0035-universal-search-adds-a-vector-list-from-a-bundled-cpu-model.md), the first 5 of its vector list
-included.
+[ADR 0035](0035-universal-search-adds-a-vector-list-from-a-bundled-cpu-model.md), its place near the top of its vector
+list included.
 
 ## Why the fixed count fails for Authored Tools
 
-ADR 0035 made the first 5 entries of each kind's vector list strong, and read no distance. A vector list has nearest
-entries for every query. So with semantic search on, 5 Private Tools and the nearest Shared Tools were strong on every
-search, whatever the query asked. In one team Workspace with real use, Private and Shared Tools became half of all hits,
+ADR 0035 made a fixed number of entries at the top of each kind's vector list strong, and read no distance. A vector
+list has nearest entries for every query. So with semantic search on, that many Private Tools and Shared Tools were
+strong on every search, whatever the query asked. In one team Workspace with real use, Private and Shared Tools became half of all hits,
 and the called Provider Tool fell out of the first 3 places of the page: 93.2% before, 87.0% after
 ([#3412](https://github.com/withcoral/coral/issues/3412)). The one Shared Tool of that Workspace was on 97.6% of the
-pages. For Provider Tools, ADR 0035 measured that the first 5 gain 2.1 to 3.8 points. The Authored Tools of one caller
-are few (up to 38 for one principal in that Workspace), and their first 5 are only the least far of them.
+pages. For Provider Tools, ADR 0035 measured that the fixed count gains 2.1 to 3.8 points. The Authored Tools of one
+caller are few (up to 38 for one principal in that Workspace), and the nearest of them are only the least far.
 
 Removing the strong mark alone does not end the crowding. Fusion merges by position, so a weak Authored Tool at
 position 1 still comes before a weak Provider Tool at position 2. Hence the third mark.
@@ -41,7 +42,7 @@ Tools with three written queries each.
 
 | Strong rule for an Authored Tool                       | False alarm | Hit, 3 words | Hit, sentence | Hit, no shared word |
 | ------------------------------------------------------ | ----------: | -----------: | ------------: | ------------------: |
-| First 5 of its own vector list (before)                |      100.0% |       100.0% |        100.0% |               84.0% |
+| Fixed count at the top of its own vector list (before) |      100.0% |       100.0% |        100.0% |               84.0% |
 | Rare path word                                         |        9.5% |        90.1% |         95.1% |                0.0% |
 | Nearer than the nearest Provider Tool                  |        1.3% |        67.9% |         82.7% |               11.1% |
 | Rare path word, or nearer than the nearest Provider Tool |      9.6% |        93.8% |         97.5% |               11.1% |
@@ -51,23 +52,23 @@ Set A and Set B with stubs of the same Workspace's Authored Tools; the scoreboar
 
 <!-- BENCH -->
 
-## What changes in ADR 0011 and ADR 0035
+## Exceptions to ADR 0011 and ADR 0035
 
-- **A distance crosses into the engine.** ADR 0011 lets only a position and a mark cross. A window entry now also
-  carries its distance from the query when its retriever's vector list holds it. Both stores compute the cosine
-  distance from one query vector, so two kinds' distances compare. Only the rerank step reads them. Scores, ranks and
-  merge scores still never compare across kinds.
-- **One place in the engine reads the kind.** ADR 0011 says the engine never branches on kind. The rerank step reads
-  the kind of an entry directly, and it is the only place in the engine that does. Rejected: a role that each
-  retriever gives its entries, which adds a concept for one exception.
-- **Fusion does not weigh Authored Tools equally.** ADR 0011 weights retrievers equally. A last Authored Tool now
-  follows every weak Provider Tool. Strong entries of every kind still merge by position, and at equal position the
-  retriever order of ADR 0011 still decides.
-- **The fixed count is for Provider Tools only.** ADR 0035 makes an entry strong when it is among the first 5 of its
-  vector list. That rule no longer applies to Authored Tools. The vector list still adds Authored Tools to the window,
-  and the merge of the two lists does not change.
-- **Still no merge across kinds.** ADR 0035 rejects a merge in the engine across kinds. The rerank step changes marks
-  only: it does not reorder a window, drops no entry, and does not order the page by distance across kinds.
+This decision amends ADR 0011 (what crosses into the engine, kind in the engine, equal fusion) and ADR 0035 (the fixed
+count for every kind). Both now state the current rules; this section gives the reasons.
+
+- **A distance crosses into the engine.** A window entry carries its distance from the query when its retriever's
+  vector list holds it. Both stores compute the cosine distance from one query vector and one model, so the distances
+  of two kinds compare, where their scores do not. Only the rerank step reads them. Scores, ranks and merge scores
+  still never compare across kinds.
+- **One place in the engine reads the kind.** The rerank step reads the kind of an entry directly. Rejected: a role
+  that each retriever gives its entries, which adds a concept for one exception.
+- **Fusion does not weigh Authored Tools equally.** A last Authored Tool follows every weak Provider Tool. Strong
+  entries of every kind still merge by position, and at equal position the retriever order still decides.
+- **The fixed count is for Provider Tools only.** The vector list still adds Authored Tools to the window, and the
+  merge of the two lists does not change.
+- **Still no merge across kinds.** The rerank step changes marks only: it does not reorder a window, drops no entry,
+  and does not order the page by distance across kinds.
 
 ## Details
 
@@ -75,16 +76,15 @@ Set A and Set B with stubs of the same Workspace's Authored Tools; the scoreboar
   by distance; rules 1 and 2 still apply. This happens when no Provider Tool in scope has a current vector, the nearest
   vectors are stale, the Provider Tool vector query fails, or semantic search is off.
 - **An equal distance is not strong.** An Authored Tool exactly as near as the nearest Provider Tool is last.
-- **An Authored Tool outside its vector list has no distance.** The list holds the window's depth (100) of the nearest
-  Authored Tools of one kind.
+- **An Authored Tool outside its vector list has no distance.** The list holds as many of the nearest Authored Tools of
+  one kind as the window holds.
 - **The Provider filter keeps its rule.** It does not narrow Authored Tools, as the `coral.search` description says. An
   Authored Tool that does not fit the filter's Providers is last unless a rule makes it strong.
 - **Paging does not change.** The window size, `has_more`, the coverage and `next_offset` stay. The order is the same
-  for every limit and offset ([ADR 0028](0028-search-pages-by-a-plain-offset.md)). At `limit` 50, a last Authored Tool
-  follows up to 100 Provider Tools of the window, so it starts on page 2 or 3.
-- **Telemetry.** The `coral.search` span records how many Authored Tools each rule made strong
-  (`coral.search.authored_strong.phrase`, `.rare_path_word`, `.distance`; an entry counts under its first rule in that
-  order) and whether a Provider Tool distance was there (`coral.search.provider_tool_distance`).
+  for every limit and offset ([ADR 0028](0028-search-pages-by-a-plain-offset.md)). A last Authored Tool follows every
+  Provider Tool of the window, so at the largest page size it starts on page 2 or 3.
+- **Telemetry.** The search span records how many Authored Tools each rule made strong (an entry counts under its first
+  rule: phrase, rare path word, distance) and whether a Provider Tool distance was there.
 
 ## Known losses
 
@@ -92,7 +92,7 @@ Set A and Set B with stubs of the same Workspace's Authored Tools; the scoreboar
   fixed count made it strong in 84% (and on every other search too). When the page has room, it stays as a last entry.
   The model often finds the right Authored Tool (first of its own list in 53.1% of these cases), but it cannot tell that
   the Tool beats the Provider Tools.
-- **At `limit` 50** a last Authored Tool starts on page 2 or 3.
+- **At the largest page size** a last Authored Tool starts on page 2 or 3.
 
 ## Candidates not chosen
 

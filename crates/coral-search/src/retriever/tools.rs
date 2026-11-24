@@ -19,7 +19,7 @@ use coral_workspace::WorkspaceId;
 
 use super::plan::QueryPlan;
 use super::repository;
-use super::vector_list::{self, VectorList};
+use super::vector_list::{self, Merged, VectorList};
 use super::{
     Answer, EntityRef, EntityRetriever, Hydrated, LexicalReason, Listing, Mark, QueryError,
     QueryRequest, RequestContext, RetrievalError, Semantic, ToolRef, WindowEntry, count,
@@ -38,9 +38,6 @@ pub(crate) struct ToolRetriever {
     /// Makes the ranked statement fail, for tests of a retriever error.
     #[cfg(test)]
     pub(crate) fail_ranking: bool,
-    /// Makes the vector query fail, for tests of a vector side failure.
-    #[cfg(test)]
-    pub(crate) fail_vector_query: bool,
 }
 
 #[async_trait]
@@ -168,9 +165,9 @@ impl EntityRetriever for ToolRetriever {
             excluded: &excluded,
             named: &named,
         };
-        let (lexical, vector) = self
-            .lexical_and_vector_lists(transaction, context.workspace_id, &scope, &plan, request)
-            .await?;
+        let (lexical, vector) =
+            lexical_and_vector_lists(transaction, context.workspace_id, &scope, &plan, request)
+                .await?;
         let semantic = Semantic::of(&vector);
         let (merged, has_more) = vector_list::merged_window(
             lexical,
@@ -178,30 +175,10 @@ impl EntityRetriever for ToolRetriever {
             |tool: &repository::RankedTool| tool.doc_id.clone(),
             request.window,
         );
-        let mut window = Vec::new();
-        for entry in merged {
-            let strong_by_vector = entry.strong_by_vector();
-            let distance = entry.distance;
-            let tool = entry.entry;
-            let provider = searched
-                .get(&tool.provider_id)
-                .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
-                    "a ranked Tool's Provider was not searched",
-                )))?;
-            window.push(WindowEntry {
-                mark: Mark::of(
-                    strong_by_vector
-                        || strong_tool(&plan, &tool.matched, named.contains(&tool.provider_id)),
-                ),
-                distance,
-                entity: EntityRef::Tool(ToolRef {
-                    provider: Arc::clone(provider),
-                    tool_key: tool.tool_key,
-                    rules: Arc::clone(&rules),
-                    call_path: tool.call_path,
-                }),
-            });
-        }
+        let window = merged
+            .into_iter()
+            .map(|entry| window_entry(entry, &plan, &named, &searched, &rules))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Answer {
             coverage: RetrieverCoverage::new(
                 count(eligible),
@@ -273,63 +250,56 @@ impl EntityRetriever for ToolRetriever {
     }
 }
 
-impl ToolRetriever {
-    /// The lexical list, with one row past the window, and the vector list,
-    /// or why the vector side gave none.
-    async fn lexical_and_vector_lists(
-        &self,
-        transaction: &mut Transaction<'_>,
-        workspace_id: &WorkspaceId,
-        scope: &repository::ToolScope<'_>,
-        plan: &QueryPlan,
-        request: &QueryRequest<'_>,
-    ) -> Result<
-        (
-            Vec<repository::RankedTool>,
-            Result<VectorList<repository::RankedTool>, LexicalReason>,
-        ),
-        QueryError,
-    > {
-        if scope.providers.is_empty() {
-            // No Provider is searched, so neither list can hold a Tool.
-            let nothing = request.vector.map(|_vector| VectorList {
-                entries: Vec::new(),
-                has_more: false,
-            });
-            return Ok((Vec::new(), nothing));
-        }
-        let lexical =
-            repository::rank_tools(transaction, workspace_id, scope, plan, request.window + 1)
-                .await
-                .map_err(QueryError::Retriever)?;
-        let vector = match request.vector {
-            Ok(vector) => {
-                vector_list::vector_side(
-                    transaction,
-                    workspace_id,
-                    EntityKind::ProviderTool,
-                    async |transaction| {
-                        #[cfg(test)]
-                        if self.fail_vector_query {
-                            repository::failing_statement(transaction).await?;
-                        }
-                        nearest_current_tools(
-                            transaction,
-                            workspace_id,
-                            scope,
-                            plan,
-                            vector,
-                            request.window,
-                        )
-                        .await
-                    },
-                )
-                .await?
-            }
-            Err(reason) => Err(reason),
-        };
-        Ok((lexical, vector))
+/// The lexical list, with one row past the window, and the vector list, or
+/// why the vector side gave none.
+async fn lexical_and_vector_lists(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    scope: &repository::ToolScope<'_>,
+    plan: &QueryPlan,
+    request: &QueryRequest<'_>,
+) -> Result<
+    (
+        Vec<repository::RankedTool>,
+        Result<VectorList<repository::RankedTool>, LexicalReason>,
+    ),
+    QueryError,
+> {
+    if scope.providers.is_empty() {
+        // No Provider is searched, so neither list can hold a Tool.
+        let nothing = request.vector.map(|_vector| VectorList {
+            entries: Vec::new(),
+            has_more: false,
+        });
+        return Ok((Vec::new(), nothing));
     }
+    let lexical =
+        repository::rank_tools(transaction, workspace_id, scope, plan, request.window + 1)
+            .await
+            .map_err(QueryError::Retriever)?;
+    let vector = match request.vector {
+        Ok(vector) => {
+            vector_list::vector_side(
+                transaction,
+                workspace_id,
+                EntityKind::ProviderTool,
+                async |transaction| {
+                    nearest_current_tools(
+                        transaction,
+                        workspace_id,
+                        scope,
+                        plan,
+                        vector,
+                        request.window,
+                    )
+                    .await
+                },
+            )
+            .await?
+        }
+        Err(reason) => Err(reason),
+    };
+    Ok((lexical, vector))
 }
 
 /// The vector list: the `window` Tools of the scope whose vectors of the
@@ -398,6 +368,37 @@ pub(crate) async fn explain_vector_query(
         &vector,
     )
     .await
+}
+
+/// The window entry of one merged Tool: its mark by the Tool retriever's
+/// rules, its distance, and what hydration needs.
+fn window_entry(
+    entry: Merged<repository::RankedTool>,
+    plan: &QueryPlan,
+    named: &[ProviderId],
+    searched: &HashMap<ProviderId, Arc<ActiveProvider>>,
+    rules: &Arc<ExactToolRules>,
+) -> Result<WindowEntry, QueryError> {
+    let strong_by_vector = entry.strong_by_vector();
+    let distance = entry.distance();
+    let tool = entry.entry;
+    let provider = searched
+        .get(&tool.provider_id)
+        .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
+            "a ranked Tool's Provider was not searched",
+        )))?;
+    Ok(WindowEntry {
+        mark: Mark::of(
+            strong_by_vector || strong_tool(plan, &tool.matched, named.contains(&tool.provider_id)),
+        ),
+        distance,
+        entity: EntityRef::Tool(ToolRef {
+            provider: Arc::clone(provider),
+            tool_key: tool.tool_key,
+            rules: Arc::clone(rules),
+            call_path: tool.call_path,
+        }),
+    })
 }
 
 /// Whether a ranked Tool is a strong match, by the Tool retriever's own

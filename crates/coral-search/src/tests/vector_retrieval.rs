@@ -439,10 +439,11 @@ async fn the_vector_list_holds_only_tools_the_caller_may_see_and_the_filter_name
 }
 
 #[tokio::test]
-async fn authored_tools_farther_than_the_nearest_tool_follow_every_weak_tool() {
+async fn authored_tools_farther_than_the_nearest_provider_tool_follow_every_weak_provider_tool() {
     let world = World::new().await;
-    // Fourteen Tools: the forecast Tool, nearest to `rain`, and thirteen of
-    // no meaning, so the vector list marks five strong and nine weak.
+    // Fourteen Provider Tools: the forecast Tool, nearest to `rain`, and
+    // thirteen of no meaning, so their vector list marks five strong and
+    // nine weak.
     world.publish_notes().await;
     // Six Private Tools and one Shared Tool of no meaning and no word of
     // the query: each is farther from it than the forecast Tool.
@@ -462,7 +463,7 @@ async fn authored_tools_farther_than_the_nearest_tool_follow_every_weak_tool() {
         .publish(
             "notes.archive",
             "Archive old notes",
-            &archives[0],
+            archives.first().expect("an archive Tool"),
             ToolAccessState::Enabled,
         )
         .await;
@@ -479,7 +480,7 @@ async fn authored_tools_farther_than_the_nearest_tool_follow_every_weak_tool() {
     assert_eq!(
         kinds(&first),
         [EntityKind::ProviderTool; 10],
-        "Tools fill the first page: {:?}",
+        "Provider Tools fill the first page: {:?}",
         paths(&first)
     );
     assert_eq!(
@@ -490,18 +491,19 @@ async fn authored_tools_farther_than_the_nearest_tool_follow_every_weak_tool() {
             &[EntityKind::PrivateTool; 5],
         ]
         .concat(),
-        "with room, the Authored Tools follow every weak Tool: {:?}",
+        "with room, the Authored Tools follow every weak Provider Tool: {:?}",
         paths(&all)
     );
 }
 
 #[tokio::test]
-async fn an_authored_tool_is_strong_only_when_strictly_nearer_than_the_nearest_tool_in_scope() {
+async fn an_authored_tool_is_strong_only_when_strictly_nearer_than_the_nearest_provider_tool_in_scope()
+ {
     let world = World::anchorage().await;
-    // No word of `moon anchor` is in these Tools' texts. The quay Tools
-    // are as near to it as a Tool can be. The harbour Tools mean what the
-    // Tides Tool means, so they are exactly as near as it, and nearer than
-    // every Notes Tool.
+    // No word of `moon anchor` is in these Authored Tools' texts. The quay
+    // Tools are as near to it as a Tool can be. The harbour Tools mean what
+    // the Tides Tool means, so they are exactly as near as it, and nearer
+    // than every Notes Tool.
     world.save_and_publish("quay.tides01", QUAY).await;
     world.save_and_publish("harbour.tideTimes", HARBOUR).await;
     world.index_and_embed().await;
@@ -515,7 +517,7 @@ async fn an_authored_tool_is_strong_only_when_strictly_nearer_than_the_nearest_t
     let cases = [
         (
             "no filter: an equal distance is not strong, so the harbour Tools \
-             follow every weak Tool",
+             follow every weak Provider Tool",
             None,
             [
                 strong.as_slice(),
@@ -525,14 +527,9 @@ async fn an_authored_tool_is_strong_only_when_strictly_nearer_than_the_nearest_t
             .concat(),
         ),
         (
-            "the Notes filter: the harbour Tools are nearer than every Tool in it",
+            "the Notes filter: the harbour Tools are nearer than every Provider Tool in it",
             Some("notes"),
-            [
-                strong.as_slice(),
-                &strong,
-                &[EntityKind::ProviderTool; 10],
-            ]
-            .concat(),
+            [strong.as_slice(), &strong, &[EntityKind::ProviderTool; 10]].concat(),
         ),
     ];
     for (case, filter, expected) in cases {
@@ -558,10 +555,11 @@ async fn an_authored_tool_is_strong_only_when_strictly_nearer_than_the_nearest_t
 #[tokio::test]
 async fn without_a_provider_distance_no_authored_tool_is_strong_by_distance() {
     let world = World::anchorage().await;
-    // For `moon anchor water`: a Tool whose text holds the query, one whose
-    // path starts a word with `anchor`, which no Tool path does, and the
-    // quay Tool, which shares only `water` with it and is as near to it as
-    // a Tool can be. The Tides Tool shares `water`, so every page holds it.
+    // For `moon anchor water`: an Authored Tool whose text holds the query,
+    // one whose path starts a word with `anchor`, which no Provider Tool path
+    // does, and the quay Tool, which shares only `water` with it and is as
+    // near to it as a Tool can be. The Tides Tool shares `water`, so every
+    // page holds it.
     world
         .save_and_publish("watch.log", "Log of moon anchor water")
         .await;
@@ -570,38 +568,38 @@ async fn without_a_provider_distance_no_authored_tool_is_strong_by_distance() {
         .await;
     world.save_and_publish("quay.tides01", QUAY).await;
     world.index_and_embed().await;
-    let tool_docs = "(SELECT doc_id FROM search_entities WHERE kind = 'provider_tool')";
+    let provider_tool_docs = "(SELECT doc_id FROM search_entities WHERE kind = 'provider_tool')";
     let quay = [
         "coral.private.quay.tides01".to_owned(),
         "coral.shared.quay.tides01".to_owned(),
     ];
     // Each case: the search, a change to the index before it, and the
-    // Authored Tools that follow every Tool. A phrase and a rare path word
-    // keep their Tools strong in every case.
+    // Authored Tools that follow every Provider Tool. A phrase and a rare path
+    // word keep their Authored Tools strong in every case.
     let cases: [(&str, UniversalSearchModule, Option<String>, &[String]); 5] = [
-        ("a Tool distance", world.semantic(), None, &[]),
+        ("a Provider Tool distance", world.semantic(), None, &[]),
         ("the setting off", world.by_words(), None, &quay),
         (
-            "the Tool vector query fails",
-            world.failing_tool_vector_query(),
+            "the vector queries fail",
+            world.with_model(ModelLoad::Ready(Arc::new(ShortQueries))),
             None,
             &quay,
         ),
         (
-            "no Tool vector",
+            "no Provider Tool vector",
             world.semantic(),
             Some(format!(
-                "DELETE FROM search_entity_embeddings WHERE doc_id IN {tool_docs}"
+                "DELETE FROM search_entity_embeddings WHERE doc_id IN {provider_tool_docs}"
             )),
             &quay,
         ),
         (
-            "Tool vectors of other text",
+            "Provider Tool vectors of other text",
             world.semantic(),
             Some(format!(
                 "UPDATE search_entity_embeddings \
                  SET source_indexed_at_unix_nanos = source_indexed_at_unix_nanos - 1 \
-                 WHERE doc_id IN {tool_docs}"
+                 WHERE doc_id IN {provider_tool_docs}"
             )),
             &quay,
         ),
@@ -622,8 +620,8 @@ async fn without_a_provider_distance_no_authored_tool_is_strong_by_distance() {
 
         let mut authored = [EntityKind::PrivateTool, EntityKind::SharedTool]
             .into_iter()
-        .flat_map(|kind| of_kind(&page, kind))
-        .collect::<Vec<_>>();
+            .flat_map(|kind| of_kind(&page, kind))
+            .collect::<Vec<_>>();
         authored.sort_unstable();
         assert_eq!(
             authored,
@@ -639,7 +637,7 @@ async fn without_a_provider_distance_no_authored_tool_is_strong_by_distance() {
             paths(&page)
         );
         assert_eq!(
-            after_every_tool(&page),
+            after_every_provider_tool(&page),
             last,
             "{case}: {:?}",
             paths(&page)
@@ -799,7 +797,7 @@ async fn a_fused_search_exports_the_query_embedding_and_each_ranking_under_the_s
             "coral.search.authored_strong.distance",
             "coral.search.authored_strong.phrase",
             "coral.search.authored_strong.rare_path_word",
-            "coral.search.provider_tool_distance",
+            "coral.search.provider_tool_distance_present",
         ],
         "the export filter passes the search span's counts and nothing else"
     );
@@ -835,7 +833,11 @@ async fn the_search_span_counts_the_authored_tools_each_rule_makes_strong() {
     // distance was there.
     let cases = [
         ("a fused search", world.semantic(), ["2", "2", "2", "true"]),
-        ("the setting off", world.by_words(), ["2", "2", "0", "false"]),
+        (
+            "the setting off",
+            world.by_words(),
+            ["2", "2", "0", "false"],
+        ),
     ];
     for (case, search, expected) in cases {
         let before = exported.spans().len();
@@ -865,7 +867,7 @@ async fn the_search_span_counts_the_authored_tools_each_rule_makes_strong() {
                 "coral.search.authored_strong.phrase",
                 "coral.search.authored_strong.rare_path_word",
                 "coral.search.authored_strong.distance",
-                "coral.search.provider_tool_distance",
+                "coral.search.provider_tool_distance_present",
             ]
             .map(|key| attribute(search, key)),
             expected.map(|value| Some(value.to_owned())),
@@ -1021,7 +1023,7 @@ fn kinds(page: &SearchPage) -> Vec<EntityKind> {
 }
 
 /// The Call Paths of the hits that follow every Tool on `page`, sorted.
-fn after_every_tool(page: &SearchPage) -> Vec<String> {
+fn after_every_provider_tool(page: &SearchPage) -> Vec<String> {
     let start = page
         .hits()
         .iter()
@@ -1497,13 +1499,7 @@ impl World {
             "paths": operations,
         });
         self.modules
-            .publish_openapi(
-                &self.user,
-                &self.workspace,
-                &notes.to_string(),
-                "notes",
-                40,
-            )
+            .publish_openapi(&self.user, &self.workspace, &notes.to_string(), "notes", 40)
             .await;
     }
 
@@ -1518,17 +1514,6 @@ impl World {
             self.modules.search.database.clone(),
             self.modules.workspaces.clone(),
         )
-    }
-
-    /// Discovery whose engine embeds each query with the World's model, and
-    /// whose Tool retriever's vector query fails.
-    fn failing_tool_vector_query(&self) -> UniversalSearchModule {
-        let (_ready, model) = watch::channel(ModelLoad::Ready(Arc::clone(&self.model)));
-        UniversalSearchModule::with_failing_tool_vector_query(
-            self.modules.search.database.clone(),
-            self.modules.workspaces.clone(),
-        )
-        .with_model(model)
     }
 
     /// Discovery whose model slot holds `model`.

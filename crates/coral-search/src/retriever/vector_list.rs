@@ -165,13 +165,18 @@ pub(crate) struct VectorList<T> {
     pub(crate) has_more: bool,
 }
 
-/// One entry of a retriever's window, its rank in the vector list, from 1,
-/// and its distance there.
+/// One entry of a retriever's window, and its place in the vector list
+/// when the list holds it.
 pub(crate) struct Merged<T> {
     pub(crate) entry: T,
-    vector_rank: Option<usize>,
-    /// The entry's distance from the query when the vector list holds it.
-    pub(crate) distance: Option<Distance>,
+    vector: Option<VectorPlace>,
+}
+
+/// An entry's place in a vector list: its rank, from 1, and its distance.
+#[derive(Clone, Copy)]
+struct VectorPlace {
+    rank: usize,
+    distance: Distance,
 }
 
 impl<T> Merged<T> {
@@ -182,8 +187,13 @@ impl<T> Merged<T> {
     /// the Tool retriever reads it: a place makes no Authored Tool strong,
     /// since the rerank step judges its distance (ADR 0044).
     pub(crate) fn strong_by_vector(&self) -> bool {
-        self.vector_rank
-            .is_some_and(|rank| rank <= MANIFEST.strong_count)
+        self.vector
+            .is_some_and(|place| place.rank <= MANIFEST.strong_count)
+    }
+
+    /// The entry's distance from the query, when the vector list holds it.
+    pub(crate) fn distance(&self) -> Option<Distance> {
+        self.vector.map(|place| place.distance)
     }
 }
 
@@ -210,8 +220,7 @@ pub(crate) fn merged_window<T, K: Eq + Hash>(
             .into_iter()
             .map(|entry| Merged {
                 entry,
-                vector_rank: None,
-                distance: None,
+                vector: None,
             })
             .collect(),
     };
@@ -240,28 +249,24 @@ fn merge<T, K: Eq + Hash>(
             slots.push(Slot {
                 entry,
                 lexical_rank: Some(rank),
-                vector_rank: None,
-                distance: None,
+                vector: None,
             });
             slots.len() - 1
         });
     }
     for (rank, (entry, distance)) in (1..).zip(vector) {
+        let place = VectorPlace { rank, distance };
         if let Some(slot) = positions
             .get(&key(&entry))
             .and_then(|position| slots.get_mut(*position))
         {
-            if slot.vector_rank.is_none() {
-                slot.vector_rank = Some(rank);
-                slot.distance = Some(distance);
-            }
+            slot.vector.get_or_insert(place);
         } else {
             positions.insert(key(&entry), slots.len());
             slots.push(Slot {
                 entry,
                 lexical_rank: None,
-                vector_rank: Some(rank),
-                distance: Some(distance),
+                vector: Some(place),
             });
         }
     }
@@ -272,8 +277,7 @@ fn merge<T, K: Eq + Hash>(
         .take(window)
         .map(|slot| Merged {
             entry: slot.entry,
-            vector_rank: slot.vector_rank,
-            distance: slot.distance,
+            vector: slot.vector,
         })
         .collect()
 }
@@ -281,15 +285,14 @@ fn merge<T, K: Eq + Hash>(
 struct Slot<T> {
     entry: T,
     lexical_rank: Option<usize>,
-    vector_rank: Option<usize>,
-    distance: Option<Distance>,
+    vector: Option<VectorPlace>,
 }
 
 impl<T> Slot<T> {
     fn score(&self, weights: Merge) -> Score {
         [
             (self.lexical_rank, weights.lexical_weight),
-            (self.vector_rank, weights.vector_weight),
+            (self.vector.map(|place| place.rank), weights.vector_weight),
         ]
         .into_iter()
         .filter_map(|(rank, weight)| {

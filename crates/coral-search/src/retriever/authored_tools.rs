@@ -25,7 +25,7 @@ use coral_workspace::WorkspaceId;
 
 use super::plan::QueryPlan;
 use super::repository;
-use super::vector_list::{self, VectorList};
+use super::vector_list::{self, Merged, VectorList};
 use super::{
     Answer, AuthoredStrong, AuthoredToolRef, EntityRef, EntityRetriever, Hydrated, LexicalReason,
     Listing, Mark, QueryError, QueryRequest, RequestContext, RetrievalError, Semantic, WindowEntry,
@@ -171,26 +171,9 @@ impl EntityRetriever for AuthoredToolRetriever {
         let mut window = Vec::new();
         let mut strong = AuthoredStrong::default();
         for (entry, words) in marked {
-            let distance = entry.distance;
-            let ranked = entry.entry;
-            let material =
-                current
-                    .get(&ranked.id)
-                    .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
-                        "a ranked Authored Tool is not one the caller discovers",
-                    )))?;
-            let rule = strong_rule(&ranked.matched, &words, &rare);
-            if let Some(rule) = rule {
-                strong.count(rule);
-            }
-            window.push(WindowEntry {
-                mark: Mark::of(rule.is_some()),
-                distance,
-                entity: EntityRef::AuthoredTool(AuthoredToolRef {
-                    material: material.clone(),
-                    call_path: ranked.call_path,
-                }),
-            });
+            let (entry, rule) = window_entry(entry, &words, &rare, &current)?;
+            strong.count(rule);
+            window.push(entry);
         }
         Ok(Answer {
             coverage: RetrieverCoverage::new(
@@ -459,13 +442,46 @@ enum StrongRule {
 }
 
 impl AuthoredStrong {
-    /// Counts one entry that `rule` made strong.
-    const fn count(&mut self, rule: StrongRule) {
+    /// Counts one entry under the rule that made it strong, if any.
+    const fn count(&mut self, rule: Option<StrongRule>) {
         match rule {
-            StrongRule::Phrase => self.phrase += 1,
-            StrongRule::RarePathWord => self.rare_path_word += 1,
+            Some(StrongRule::Phrase) => self.phrase += 1,
+            Some(StrongRule::RarePathWord) => self.rare_path_word += 1,
+            None => {}
         }
     }
+}
+
+/// The window entry of one merged Authored Tool whose content words that
+/// start a word of its path are `path_words`: its mark by the retriever's
+/// own rules, its distance and its hydration handle, and the rule that made
+/// it strong.
+fn window_entry(
+    entry: Merged<repository::RankedAuthoredTool>,
+    path_words: &[&str],
+    rare: &HashSet<String>,
+    current: &HashMap<coral_tools::AuthoredToolId, AuthoredToolSearchMaterial>,
+) -> Result<(WindowEntry, Option<StrongRule>), QueryError> {
+    let distance = entry.distance();
+    let ranked = entry.entry;
+    let material =
+        current
+            .get(&ranked.id)
+            .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
+                "a ranked Authored Tool is not one the caller discovers",
+            )))?;
+    let rule = strong_rule(&ranked.matched, path_words, rare);
+    Ok((
+        WindowEntry {
+            mark: Mark::of(rule.is_some()),
+            distance,
+            entity: EntityRef::AuthoredTool(AuthoredToolRef {
+                material: material.clone(),
+                call_path: ranked.call_path,
+            }),
+        },
+        rule,
+    ))
 }
 
 /// Which of `words`, distinct content words of the query that start a word
