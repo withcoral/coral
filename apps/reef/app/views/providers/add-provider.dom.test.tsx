@@ -6,7 +6,7 @@ import { afterEach, expect, test, vi } from 'vitest'
 import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import { renderRoute } from '@/test-support/route'
 
-import { AddProviderLauncher } from './add-provider'
+import { AddProviderEntry, AddProviderLauncher } from './add-provider'
 
 vi.mock('@/wax/components/toast', () => ({ addToast: vi.fn() }))
 const { addToast } = await import('@/wax/components/toast')
@@ -197,7 +197,8 @@ const keyed: SourceChoice = {
 }
 
 // Catches: a read posted by the source form, not the catalog, letting the
-// dialog close mid-read and losing the refusal with the unmounted form.
+// dialog close mid-read and losing the refusal with the unmounted form. A recipe
+// that asks questions asks them in a dialog stacked on the catalog.
 test.each([
   {
     path: 'a typed address',
@@ -207,12 +208,14 @@ test.each([
         within(dialog).getByLabelText('MCP server URL'),
         'https://delta.example/mcp',
       )
+      return dialog
     },
   },
   {
     path: 'a recipe that asks for a header value',
     choose: async (dialog: HTMLElement) => {
       await userEvent.click(within(dialog).getByRole('button', { name: 'Add Gamma MCP' }))
+      return screen.findByRole('dialog', { name: 'Add Gamma' })
     },
   },
 ])('a refused read of $path stays in the open dialog', async ({ choose }) => {
@@ -237,22 +240,101 @@ test.each([
   )
   await userEvent.click(screen.getByRole('button', { name: 'Add provider' }))
   const dialog = await screen.findByRole('dialog')
-  await choose(dialog)
-  await userEvent.click(within(dialog).getByRole('button', { name: 'Connect' }))
+  const reading = await choose(dialog)
+  await userEvent.click(within(reading).getByRole('button', { name: 'Connect' }))
   await vi.waitFor(() =>
-    expect(within(dialog).getByRole('form', { name: 'New source' })).toHaveAttribute(
+    expect(within(reading).getByRole('form', { name: 'New source' })).toHaveAttribute(
       'aria-busy',
       'true',
     ),
   )
   await userEvent.keyboard('{Escape}')
-  expect(screen.getByRole('dialog')).toBe(dialog)
+  expect(reading).toBeInTheDocument()
+  expect(dialog).toBeInTheDocument()
 
   await act(async () => refuse())
   // The form says why next to the address, so no toast repeats it.
   await vi.waitFor(() =>
-    expect(within(dialog).getByText('The server did not answer.')).toBeInTheDocument(),
+    expect(within(reading).getByText('The server did not answer.')).toBeInTheDocument(),
   )
   expect(addToast).not.toHaveBeenCalled()
-  expect(screen.getByRole('dialog')).toBe(dialog)
+  expect(reading).toBeInTheDocument()
 })
+
+// Catches: a ?recipe= link to a recipe that asks for details opening without the
+// question, or the question replacing the catalog that Cancel returns to.
+test('a link to a recipe with source details opens its dialog over the catalog', async () => {
+  renderRoute(
+    <AddProviderEntry
+      form={{ csrf: 'test-csrf', requestId: 'test-request' }}
+      pending={false}
+      newPath="/workspaces/demo/providers/new"
+      recipes={[regional]}
+      initialRecipe={regional}
+    />,
+    { entry: '/workspaces/demo/providers/new?recipe=delta' },
+  )
+  const details = await screen.findByRole('dialog', { name: 'Add Delta' })
+  expect(within(details).getByRole('button', { name: 'Region' })).toHaveTextContent('us-east-1')
+  await userEvent.click(within(details).getByRole('button', { name: 'Cancel' }))
+  await vi.waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  expect(screen.getByRole('button', { name: 'Add Delta MCP' })).toBeInTheDocument()
+})
+
+// Catches: Setup naming a recipe with source details after the host its answers
+// point to, not the recipe, and Cancel closing the catalog with the question.
+test('a recipe with source details asks in a stacked dialog and posts its name', async () => {
+  const posted: FormData[] = []
+  renderRoute(
+    <AddProviderLauncher
+      form={{ csrf: 'test-csrf', requestId: 'test-request' }}
+      pending={false}
+      newPath="/workspaces/demo/providers/new"
+      recipes={[regional]}
+    />,
+    {
+      entry: '/workspaces/demo/providers',
+      action: async ({ request }) => {
+        posted.push(await request.formData())
+        return { error: 'The server did not answer.' }
+      },
+    },
+  )
+  await userEvent.click(screen.getByRole('button', { name: 'Add provider' }))
+  const catalog = await screen.findByRole('dialog', { name: 'Add a provider' })
+  await userEvent.click(within(catalog).getByRole('button', { name: 'Add Delta MCP' }))
+  const details = await screen.findByRole('dialog', { name: 'Add Delta' })
+  await userEvent.click(within(details).getByRole('button', { name: 'Cancel' }))
+  await vi.waitFor(() =>
+    expect(screen.queryByRole('dialog', { name: 'Add Delta' })).not.toBeInTheDocument(),
+  )
+  expect(catalog).toBeInTheDocument()
+
+  await userEvent.click(within(catalog).getByRole('button', { name: 'Add Delta MCP' }))
+  const again = await screen.findByRole('dialog', { name: 'Add Delta' })
+  await userEvent.click(within(again).getByRole('button', { name: 'Connect' }))
+  await vi.waitFor(() => expect(posted).toHaveLength(1))
+  expect(Object.fromEntries(posted[0])).toMatchObject({
+    recipe: 'delta',
+    displayName: 'Delta',
+    sourceUrl: 'https://mcp.us-east-1.delta.example/mcp',
+  })
+})
+
+const regional: SourceChoice = {
+  id: 'delta',
+  displayName: 'Delta',
+  description: '',
+  kind: 'mcp',
+  url: 'https://mcp.{{input.region}}.delta.example/mcp',
+  sourceInputs: [
+    {
+      name: 'region',
+      label: 'Region',
+      description: '',
+      type: 'hostname',
+      defaultValue: 'us-east-1',
+      choices: ['us-east-1', 'eu-central-1'],
+    },
+  ],
+}

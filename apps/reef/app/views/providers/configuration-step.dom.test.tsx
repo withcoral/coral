@@ -6,7 +6,12 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, expect, it } from 'vitest'
 
 import { ConfigurationStep } from './configuration-step'
-import type { ConfigurationReviewView, RecipeConfigurationView, SetupView } from './types'
+import type {
+  ConfigurationReviewView,
+  RecipeConfigurationView,
+  SetupView,
+  StepperResult,
+} from './types'
 
 const roots: Root[] = []
 const routers: ReturnType<typeof createMemoryRouter>[] = []
@@ -120,7 +125,11 @@ const headerRecipe: RecipeConfigurationView = {
   },
 }
 
-async function renderStep(recipe: RecipeConfigurationView | null, configuration = review) {
+async function renderStep(
+  recipe: RecipeConfigurationView | null,
+  configuration = review,
+  result?: StepperResult,
+) {
   // The step's form reloads the document, so a router action never sees it post.
   let submitted = false
   const router = createMemoryRouter(
@@ -133,6 +142,7 @@ async function renderStep(recipe: RecipeConfigurationView | null, configuration 
             form={{ csrf: 'test-csrf', requestId: 'test-request' }}
             pending={false}
             recipe={recipe}
+            result={result}
           />
         ),
       },
@@ -408,4 +418,50 @@ it('keeps a server whose URL differs from the suggested one in view', async () =
   await act(async () => button('Hide these servers').click())
   expect(shownServers()).toEqual(['Server for /v2/logs'])
   expect(document.body.textContent).toContain('1 server has the suggested URL.')
+})
+
+// Catches: a refused automatic client setup shown as a banner at the foot of the
+// page, far from the Client ID field that gets the person past it, with no word
+// on how to get a client ID.
+it('shows a refused automatic client setup on Client ID, in place of its hint', async () => {
+  const message =
+    'Automatic client setup did not work for this service. ' +
+    'Register an OAuth application with auth.example.test. ' +
+    'Add the callback URL to its allowed redirect URLs. Then enter its client ID here.'
+  await renderStep(
+    null,
+    {
+      ...review,
+      authenticationMethods: ['oauth'],
+      servers: [],
+      values: {
+        ...review.values,
+        authentication: 'oauth',
+        authorizationUrl: 'https://auth.example.test/authorize',
+        tokenUrl: 'https://auth.example.test/token',
+      },
+    },
+    {
+      error: null,
+      credential: null,
+      configurationErrors: {
+        'application.client_id':
+          'Automatic client setup did not work for this service. ' +
+          'Register an OAuth application with the service, and give its client ID.',
+      },
+    },
+  )
+  const clientId = field('Client ID')
+  expect(clientId.getAttribute('aria-invalid')).toBe('true')
+  expect(clientId.required).toBe(true)
+  expect(document.activeElement).toBe(clientId)
+  expect(
+    clientId
+      .getAttribute('aria-describedby')!
+      .split(' ')
+      .map((id) => document.getElementById(id)?.textContent),
+  ).toEqual([message])
+  // Said once, in the hint's place: no hint beside it and no banner repeats it.
+  expect(document.body.textContent).not.toContain('Leave empty to use automatic client setup.')
+  expect(alerts()).toEqual([message])
 })

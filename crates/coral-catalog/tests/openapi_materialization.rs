@@ -806,17 +806,17 @@ fn unsupported_serialization_or_media_makes_the_operation_unavailable() {
         (
             "get",
             format!("parameters:\n  - {{ name: filter, in: query, style: deepObject, schema: {object} }}"),
-            Some(("unsupported_parameter_serialization", "an OpenAPI parameter uses")),
+            Some(("unsupported_parameter_serialization", "This tool cannot send one of its parameters")),
         ),
         (
             "post",
             format!("requestBody:\n  content:\n    application/x-www-form-urlencoded:\n      schema: {{ type: object, properties: {{ filter: {object} }} }}\n      encoding: {{ filter: {{ style: deepObject }} }}"),
-            Some(("unsupported_parameter_serialization", "an OpenAPI parameter uses")),
+            Some(("unsupported_parameter_serialization", "This tool cannot send one of its parameters")),
         ),
         (
             "get",
             "parameters:\n  - { name: filter, in: query, content: { application/xml: { schema: { type: object } } } }".to_string(),
-            Some(("unsupported_parameter_serialization", "an OpenAPI parameter uses")),
+            Some(("unsupported_parameter_serialization", "This tool cannot send one of its parameters")),
         ),
         (
             "post",

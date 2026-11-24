@@ -6,6 +6,7 @@ import { StepperPage } from './stepper-page'
 import type { RecipeConfigurationView, ReviewToolView, SetupView } from './types'
 import { UpdatePage } from './update-page'
 import { EditConfigurationPage } from './edit-configuration-page'
+import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import { catalogRecipes, form, githubRecipe, workspace } from './story-fixtures'
 
 const meta = {
@@ -256,6 +257,40 @@ export const ConfigurationOAuthFieldErrors: Story = {
             'authentication.token_url':
               'Enter a valid token URL without credentials or OAuth request parameters.',
           },
+        },
+      }}
+    />
+  ),
+}
+
+// Automatic client setup failed: the error and the way past it sit on Client ID,
+// which takes focus.
+export const ConfigurationRefusedAutomaticClient: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      setup={{
+        ...configurationSetup,
+        configuration: {
+          ...configurationSetup.configuration!,
+          authenticationStatus: 'supported',
+          documentDisplayName: 'Example API',
+          values: {
+            ...configurationSetup.configuration!.values,
+            authentication: 'oauth',
+            authorizationUrl: 'https://accounts.example.test/authorize',
+            tokenUrl: 'https://accounts.example.test/token',
+            scopes: ['read'],
+          },
+        },
+      }}
+      result={{
+        error: null,
+        credential: null,
+        configurationErrors: {
+          'application.client_id':
+            'Automatic client setup did not work for this service. ' +
+            'Register an OAuth application with the service, and give its client ID.',
         },
       }}
     />
@@ -647,6 +682,36 @@ const stepperWorkspace = {
 const workspaceEntry = { initialEntry: '/workspaces/demo/providers/new' }
 export const StepWhereIsIt: Story = {
   render: () => <StepperPage {...stepperWorkspace} setup={null} />,
+  parameters: workspaceEntry,
+}
+const regionalRecipe: SourceChoice = {
+  id: 'aws_api',
+  displayName: 'AWS',
+  description: 'Resources, Athena queries, S3 objects and Redshift services from AWS.',
+  kind: 'mcp',
+  url: 'https://aws-mcp.{{input.region}}.api.aws/mcp?oauth=initialize',
+  sourceInputs: [
+    {
+      name: 'region',
+      label: 'AWS MCP region',
+      description: '',
+      type: 'hostname',
+      defaultValue: 'us-east-1',
+      choices: ['us-east-1', 'eu-central-1'],
+    },
+  ],
+}
+// A recipe that asks for source details asks in a small dialog stacked on the
+// catalog, here as a ?recipe= link opens the page.
+export const SourceDetailsDialog: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      setup={null}
+      recipes={[regionalRecipe]}
+      recipe={regionalRecipe}
+    />
+  ),
   parameters: workspaceEntry,
 }
 export const SourcePickerRecipes: Story = {

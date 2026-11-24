@@ -579,7 +579,14 @@ impl AccountModule {
                 .providers
                 .review_setup_configuration(context.actor(), owner, id)
                 .await?;
-            review.errors = vec![coral_catalog::ConfigurationFieldError { field: "application".into(), message: "Coral could not configure this public OAuth application. Use a supported client ID.".into() }];
+            // Named for the client ID: giving one is how the caller gets past it. An
+            // agent's addProvider reads this too, so it names no field on a page.
+            review.errors = vec![coral_catalog::ConfigurationFieldError {
+                field: "application.client_id".into(),
+                message: "Automatic client setup did not work for this service. Register an \
+                          OAuth application with the service, and give its client ID."
+                    .into(),
+            }];
             return Ok(review);
         };
         if application.explicit_client_id.is_none() {

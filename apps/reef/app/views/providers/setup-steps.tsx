@@ -88,7 +88,8 @@ export function SetupSecretForm({
       </CredentialFields>
       {hosts.length > 0 && (
         <Typography.BodySmall as="p" variant="tertiary">
-          Coral sends what you enter here to {hosts.join(', ')}.
+          Only {new Intl.ListFormat('en', { type: 'conjunction' }).format(hosts)}{' '}
+          {hosts.length === 1 ? 'receives' : 'receive'} what you enter here.
         </Typography.BodySmall>
       )}
       {children}

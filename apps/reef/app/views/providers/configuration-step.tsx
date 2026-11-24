@@ -212,6 +212,17 @@ export function ConfigurationStep({
   }
   const review = setup.configuration!
   const errors = result?.configurationErrors ?? review.errors
+  // A refused Next names the fields at fault, which can be far down the page:
+  // bring the first one into view and put the caret in it.
+  const refused = result?.configurationErrors
+  useEffect(() => {
+    if (!refused || Object.keys(refused).length === 0) return
+    const first = formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')
+    if (!first) return
+    const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    first.scrollIntoView?.({ block: 'center', behavior: still ? 'auto' : 'smooth' })
+    first.focus({ preventScroll: true })
+  }, [refused])
   const mcp = setup.kind === 'mcp'
   // A recipe fills in only a first configuration, never a confirmed one.
   const applied = review.confirmed ? null : recipe
@@ -649,6 +660,8 @@ export function ConfigurationStep({
                 }
                 callbackUrl={callbackUrl}
                 clientConfigHintMarkdown={applied?.clientConfigHintMarkdown}
+                applicationError={errors.application}
+                clientIdRefused={Boolean(errors['application.client_id'])}
                 configuring
                 clientSecretInput={
                   <>
@@ -756,6 +769,8 @@ export function ConfigurationStep({
                 'authentication.device_authorization_url',
                 'authentication.token_url',
                 'authentication.scopes',
+                // The OAuth application block shows these beside its own fields.
+                ...(oauth ? ['application', 'application.client_id'] : []),
               ].includes(field) &&
               !isCredentialsError(field) &&
               !review.servers.some((group) => group.declaration === field) &&

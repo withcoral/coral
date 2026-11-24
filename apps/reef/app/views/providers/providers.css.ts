@@ -228,6 +228,10 @@ export const chosenRecipe = style({
   flexWrap: 'wrap',
   gap: 12,
 })
+/** Holds a control at its own width inside a column that stretches its children. */
+export const fitContent = style({ alignSelf: 'flex-start', maxWidth: '100%' })
+/** A recipe's name with its logo, as a dialog title. */
+export const recipeTitle = style({ alignItems: 'center', display: 'flex', gap: 10 })
 export const checklist = style({
   display: 'flex',
   flexDirection: 'column',

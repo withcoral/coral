@@ -2168,7 +2168,7 @@ fn unsupported_http_request_media_type(media_type: &str) -> CatalogDiagnostic {
 fn unsupported_parameter_serialization() -> CatalogDiagnostic {
     diagnostic(
         "unsupported_parameter_serialization",
-        "an OpenAPI parameter uses a serialization style that is invalid for its location",
+        "This tool cannot send one of its parameters in the style that its operation declares.",
     )
 }
 

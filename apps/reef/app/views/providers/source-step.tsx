@@ -24,7 +24,7 @@ type Kind = 'mcp' | 'openapi'
 export type SourceTab = 'catalog' | 'custom'
 
 /** What the action does, in the words each kind uses for it. */
-const SOURCE_VERB = { mcp: 'Connect', openapi: 'Read' } as const
+export const SOURCE_VERB = { mcp: 'Connect', openapi: 'Read' } as const
 const DOCUMENT_FILE_TYPES =
   '.json,.yaml,.yml,.gz,application/json,application/yaml,application/gzip'
 
@@ -88,6 +88,7 @@ export function SourceStep({
   tab,
   onTabChange,
   onReading,
+  actionOutside = false,
 }: {
   form: FormContext
   pending: boolean
@@ -108,6 +109,11 @@ export function SourceStep({
   onTabChange?: (tab: SourceTab) => void
   /** Told when this form's read starts and ends, so a dialog can stay open for it. */
   onReading?: (reading: boolean) => void
+  /**
+   * The caller names the recipe and holds the read action, such as a dialog's
+   * title and footer, so the form shows only the questions.
+   */
+  actionOutside?: boolean
 }) {
   const [ownTab, setOwnTab] = useState<SourceTab>(catalog && !recipe ? 'catalog' : 'custom')
   const shownTab = tab ?? ownTab
@@ -219,17 +225,19 @@ export function SourceStep({
               }}
             />
           </div>
-          {/* The action belongs with the address it reads. */}
-          <Button.TextButton
-            type="submit"
-            form={formId}
-            disabled={reading}
-            busy={reading && active}
-            className={styles.readAction}
-            onClick={() => readAs(of)}
-          >
-            {SOURCE_VERB[of]}
-          </Button.TextButton>
+          {/* The action belongs with the address it reads, unless the caller holds it. */}
+          {!actionOutside && (
+            <Button.TextButton
+              type="submit"
+              form={formId}
+              disabled={reading}
+              busy={reading && active}
+              className={styles.readAction}
+              onClick={() => readAs(of)}
+            >
+              {SOURCE_VERB[of]}
+            </Button.TextButton>
+          )}
         </div>
         <Typography.BodySmall
           as="p"
@@ -298,30 +306,37 @@ export function SourceStep({
       <input type="hidden" name="source" value={source} />
       {recipe?.id && <input type="hidden" name="namespace" value={recipeNamespace(recipe)} />}
       {recipe?.id && <input type="hidden" name="recipe" value={recipe.id} />}
+      {/* Setup offers the recipe's name, not the host its answers point to. */}
+      {recipe?.id && <input type="hidden" name="displayName" value={recipe.displayName} />}
       {recipe ? (
         <>
-          <div className={styles.chosenRecipe}>
-            <Logo name={recipe.displayName} icons={recipe.icons} />
-            <Typography.BodyStrong as="h3" variant="primary">
-              {recipe.displayName}
-            </Typography.BodyStrong>
-          </div>
+          {!actionOutside && (
+            <div className={styles.chosenRecipe}>
+              <Logo name={recipe.displayName} icons={recipe.icons} />
+              <Typography.BodyStrong as="h3" variant="primary">
+                {recipe.displayName}
+              </Typography.BodyStrong>
+            </div>
+          )}
           {recipe.sourceInputs?.map((input) => (
             <div key={input.name} className={styles.field}>
               {input.choices.length > 0 ? (
                 <>
                   <Typography.BodySmallStrong as="span">{input.label}</Typography.BodySmallStrong>
-                  <Picker
-                    ariaLabel={input.label}
-                    label={input.label}
-                    value={sourceAnswers[input.name] ?? ''}
-                    options={input.choices.map((choice) => ({ label: choice, value: choice }))}
-                    onChange={(answer) => {
-                      clearFailure()
-                      setProblem('')
-                      setSourceAnswers((current) => ({ ...current, [input.name]: answer }))
-                    }}
-                  />
+                  {/* As wide as its choices, not the form: a choice reads as a menu. */}
+                  <div className={styles.fitContent}>
+                    <Picker
+                      ariaLabel={input.label}
+                      label={input.label}
+                      value={sourceAnswers[input.name] ?? ''}
+                      options={input.choices.map((choice) => ({ label: choice, value: choice }))}
+                      onChange={(answer) => {
+                        clearFailure()
+                        setProblem('')
+                        setSourceAnswers((current) => ({ ...current, [input.name]: answer }))
+                      }}
+                    />
+                  </div>
                   {input.description && (
                     <Typography.BodySmall as="p" variant="tertiary">
                       {input.description}

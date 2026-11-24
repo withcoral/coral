@@ -4,7 +4,8 @@ import type { ButtonVariant } from '@/wax/components/button/button.css'
 import * as Dialog from '@/wax/components/dialog'
 import { sourceSearch, type SourceChoice } from '@/lib/provider-recipes/choice'
 import { ProviderCatalog } from './provider-catalog'
-import { SourceStep, type SourceTab } from './source-step'
+import { Logo } from '@/wax/components/logo'
+import { SOURCE_VERB, SourceStep, type SourceTab } from './source-step'
 import { useReadRecipe } from './read-recipe'
 import type { FormContext, StepperResult } from './types'
 import * as styles from './providers.css'
@@ -61,71 +62,93 @@ export function AddProviderEntry({
   onReading,
 }: AddProviderEntryProps) {
   const sourceForm = useId()
+  const detailsForm = useId()
   const [tab, setTab] = useState<SourceTab>(initialTab)
   const [chosen, setChosen] = useState<SourceChoice | null>(initialRecipe)
   const { read, reading } = useReadRecipe(form, newPath)
-  // The catalog reads a recipe here; the source form reads what it holds itself.
+  // The catalog reads a recipe here; each source form reads what it holds itself.
   const [formReading, setFormReading] = useState(false)
-  const busy = Boolean(reading) || formReading
+  const [detailsReading, setDetailsReading] = useState(false)
+  const busy = Boolean(reading) || formReading || detailsReading
   useEffect(() => {
     onReading?.(busy)
     // An entry that goes away mid-read must not leave its dialog held open.
     return () => onReading?.(false)
   }, [busy, onReading])
-  const back = (
-    <Button.TextButton
-      type="button"
-      variant="secondary"
-      disabled={formReading}
-      onClick={() => setChosen(null)}
-    >
-      Back
-    </Button.TextButton>
-  )
-  if (chosen)
-    return (
-      <>
-        <SourceStep
-          key={chosen.id}
-          form={form}
-          pending={pending}
-          action={`${newPath}?${sourceSearch(chosen)}`}
-          recipe={chosen}
-          formId={sourceForm}
-          fill={fill}
-          onReading={setFormReading}
-        />
-        {fill ? (
-          <Dialog.Actions>{back}</Dialog.Actions>
-        ) : (
-          <div className={styles.stepActions}>{back}</div>
-        )}
-      </>
-    )
   return (
-    <SourceStep
-      form={form}
-      pending={pending}
-      result={result}
-      action={newPath}
-      formId={fill ? sourceForm : undefined}
-      fill={fill}
-      tab={tab}
-      onTabChange={setTab}
-      onReading={setFormReading}
-      catalog={
-        <section className={fill ? styles.catalogPane : styles.stack} aria-label="Catalog">
-          <ProviderCatalog
-            recipes={recipes}
-            reading={reading}
-            onRecipe={(recipe) => (needsSourceDetails(recipe) ? setChosen(recipe) : read(recipe))}
-            onCustom={() => setTab('custom')}
-            scroll={fill}
-            initialQuery={catalogQuery}
-          />
-        </section>
-      }
-    />
+    <>
+      {/* A recipe that asks questions before its read asks them in a small dialog
+          over the catalog, which stays where it was for Cancel. */}
+      <Dialog.Root
+        open={Boolean(chosen)}
+        onOpenChange={(open) => {
+          if (!open && !detailsReading) setChosen(null)
+        }}
+      >
+        {chosen && (
+          <Dialog.Portal>
+            <Dialog.Backdrop />
+            <Dialog.Popup size="m">
+              <Dialog.Title className={styles.recipeTitle}>
+                <Logo name={chosen.displayName} icons={chosen.icons} />
+                Add {chosen.displayName}
+              </Dialog.Title>
+              <SourceStep
+                key={chosen.id}
+                form={form}
+                pending={pending}
+                action={`${newPath}?${sourceSearch(chosen)}`}
+                recipe={chosen}
+                formId={detailsForm}
+                actionOutside
+                onReading={setDetailsReading}
+              />
+              <Dialog.Actions>
+                <Button.TextButton
+                  type="button"
+                  variant="secondary"
+                  disabled={detailsReading}
+                  onClick={() => setChosen(null)}
+                >
+                  Cancel
+                </Button.TextButton>
+                <Button.TextButton
+                  type="submit"
+                  form={detailsForm}
+                  disabled={detailsReading}
+                  busy={detailsReading}
+                >
+                  {SOURCE_VERB[chosen.kind]}
+                </Button.TextButton>
+              </Dialog.Actions>
+            </Dialog.Popup>
+          </Dialog.Portal>
+        )}
+      </Dialog.Root>
+      <SourceStep
+        form={form}
+        pending={pending}
+        result={result}
+        action={newPath}
+        formId={fill ? sourceForm : undefined}
+        fill={fill}
+        tab={tab}
+        onTabChange={setTab}
+        onReading={setFormReading}
+        catalog={
+          <section className={fill ? styles.catalogPane : styles.stack} aria-label="Catalog">
+            <ProviderCatalog
+              recipes={recipes}
+              reading={reading}
+              onRecipe={(recipe) => (needsSourceDetails(recipe) ? setChosen(recipe) : read(recipe))}
+              onCustom={() => setTab('custom')}
+              scroll={fill}
+              initialQuery={catalogQuery}
+            />
+          </section>
+        }
+      />
+    </>
   )
 }
 
