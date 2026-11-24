@@ -51,7 +51,7 @@ async fn hello_carries_the_token_and_a_move_reopens_on_a_fresh_connection() {
     };
     assert_eq!(
         (hello.protocol_level, hello.free, hello.limits),
-        (1, 8, Some(limits))
+        (PROTOCOL_LEVEL, 8, Some(limits))
     );
     let mut previous = None;
     // Three moves, then the fourth stream Coral holds.

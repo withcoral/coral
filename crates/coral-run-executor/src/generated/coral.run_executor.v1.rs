@@ -536,7 +536,7 @@ pub struct ReferenceRejection {
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct RunRequest {
     /// The message.
-    #[prost(oneof = "run_request::Message", tags = "1, 2, 3")]
+    #[prost(oneof = "run_request::Message", tags = "1, 2, 3, 4")]
     pub message: ::core::option::Option<run_request::Message>,
 }
 /// Nested message and enum types in `RunRequest`.
@@ -553,6 +553,11 @@ pub mod run_request {
         /// One of the Program's requests.
         #[prost(message, tag = "3")]
         Request(super::Request),
+        /// An output the Run Executor rejected, which Coral counts. It takes no
+        /// request number and is never resent: one sent while the stream is down
+        /// is not counted.
+        #[prost(message, tag = "4")]
+        OutputRejected(super::OutputRejected),
     }
 }
 /// A message Coral sends on a Run stream.
@@ -847,6 +852,14 @@ pub struct Log {
     #[prost(message, optional, tag = "3")]
     pub location: ::core::option::Option<Location>,
 }
+/// An output the Run Executor rejected: too large, invalid, or over the Run
+/// Output Budget. Nothing answers it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct OutputRejected {
+    /// What the Program could not keep.
+    #[prost(enumeration = "OutputKind", tag = "1")]
+    pub kind: i32,
+}
 /// An authored source location.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Location {
@@ -1097,6 +1110,47 @@ impl LogLevel {
             "LOG_LEVEL_INFO" => Some(Self::Info),
             "LOG_LEVEL_WARN" => Some(Self::Warn),
             "LOG_LEVEL_ERROR" => Some(Self::Error),
+            _ => None,
+        }
+    }
+}
+/// A kind of Program output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum OutputKind {
+    /// Not set; breaks the protocol.
+    Unspecified = 0,
+    /// A Program Emission.
+    Emission = 1,
+    /// A Program Log.
+    Log = 2,
+    /// The Final Value.
+    FinalValue = 3,
+    /// A Tool Invocation's result.
+    Result = 4,
+}
+impl OutputKind {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "OUTPUT_KIND_UNSPECIFIED",
+            Self::Emission => "OUTPUT_KIND_EMISSION",
+            Self::Log => "OUTPUT_KIND_LOG",
+            Self::FinalValue => "OUTPUT_KIND_FINAL_VALUE",
+            Self::Result => "OUTPUT_KIND_RESULT",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "OUTPUT_KIND_UNSPECIFIED" => Some(Self::Unspecified),
+            "OUTPUT_KIND_EMISSION" => Some(Self::Emission),
+            "OUTPUT_KIND_LOG" => Some(Self::Log),
+            "OUTPUT_KIND_FINAL_VALUE" => Some(Self::FinalValue),
+            "OUTPUT_KIND_RESULT" => Some(Self::Result),
             _ => None,
         }
     }

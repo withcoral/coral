@@ -429,6 +429,10 @@ message RunRequest {
     Loaded loaded = 2;
     // One of the Program's requests.
     Request request = 3;
+    // An output the Run Executor rejected, which Coral counts. It takes no
+    // request number and is never resent: one sent while the stream is down
+    // is not counted.
+    OutputRejected output_rejected = 4;
   }
 }
 
@@ -658,6 +662,27 @@ enum LogLevel {
   LOG_LEVEL_WARN = 3;
   // `console.error`.
   LOG_LEVEL_ERROR = 4;
+}
+
+// An output the Run Executor rejected: too large, invalid, or over the Run
+// Output Budget. Nothing answers it.
+message OutputRejected {
+  // What the Program could not keep.
+  OutputKind kind = 1;
+}
+
+// A kind of Program output.
+enum OutputKind {
+  // Not set; breaks the protocol.
+  OUTPUT_KIND_UNSPECIFIED = 0;
+  // A Program Emission.
+  OUTPUT_KIND_EMISSION = 1;
+  // A Program Log.
+  OUTPUT_KIND_LOG = 2;
+  // The Final Value.
+  OUTPUT_KIND_FINAL_VALUE = 3;
+  // A Tool Invocation's result.
+  OUTPUT_KIND_RESULT = 4;
 }
 
 // An authored source location.

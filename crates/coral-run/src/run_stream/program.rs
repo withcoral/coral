@@ -204,17 +204,21 @@ impl Reader {
                     request = requests.next() => request,
                 }
             });
-            let Some(RunRequest {
-                message: Some(run_request::Message::Request(request)),
-            }) = next
-            else {
-                return if next.is_some() {
-                    self.violate()
-                } else {
+            let request = match next.map(|next| next.message) {
+                Some(Some(run_request::Message::Request(request))) => request,
+                Some(Some(run_request::Message::OutputRejected(rejected))) => {
+                    let Ok(kind) = rejected.kind().try_into() else {
+                        return self.violate();
+                    };
+                    coral_telemetry::metric::output_rejected(kind);
+                    continue;
+                }
+                Some(_) => return self.violate(),
+                None => {
                     // Before the open Performs drop: their bodies run on.
                     self.owner.detach();
-                    Read::Detached
-                };
+                    return Read::Detached;
+                }
             };
             // Number 0 is no request: the check below refuses it.
             if (1..=self.covered).contains(&request.number) {

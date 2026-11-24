@@ -47,7 +47,7 @@ type Outbound = mpsc::Sender<PullRequest>;
 
 /// The level of the link's messages and the Program Runtime Surface. A
 /// release that changes either raises it by exactly one.
-pub const PROTOCOL_LEVEL: u32 = 1;
+pub const PROTOCOL_LEVEL: u32 = 2;
 /// The largest message either side of the link sends or accepts: the Run
 /// Executor's client and Coral's listener, [`crate::LinkServer`], both set
 /// it. It holds a compile's TypeScript, at most 512 KiB in all, and a

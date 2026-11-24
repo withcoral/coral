@@ -18,8 +18,8 @@ use super::PROGRAM_LOG_MESSAGE_MAX_BYTES;
 use crate::link::HeldUnit;
 use crate::wire::v1::{
     Awaited, Complete, Emit, Failure, Finish, FinishEnd, InvocationResult, Invoke, LinkedToolRoot,
-    Location, Log, LogLevel, NotData, Perform, Request, RunRequest, Started, Threw, complete,
-    finish, invocation_result, request, run_request,
+    Location, Log, LogLevel, NotData, OutputKind, OutputRejected, Perform, Request, RunRequest,
+    Started, Threw, complete, finish, invocation_result, request, run_request,
 };
 
 /// What Coral's answer settles for one request.
@@ -103,6 +103,13 @@ impl State {
                 message: Some(message),
             }));
         }
+    }
+
+    /// Tells Coral of an output of `kind` the Program could not keep.
+    fn reject(&self, kind: OutputKind) {
+        self.transmit(run_request::Message::OutputRejected(OutputRejected {
+            kind: kind.into(),
+        }));
     }
 
     /// Keeps request `number` above the watermark, and sends it.
@@ -335,6 +342,7 @@ impl RunHost {
         let over_budget = !self.fits(&state, bytes);
         state.output = state.output.saturating_add(bytes);
         if over_budget {
+            state.reject(OutputKind::Result);
             state.end.get_or_insert(FinishEnd::OutputBudget);
         }
         drop(state);
@@ -384,15 +392,24 @@ impl RunHost {
     }
 
     /// Numbers and sends one of the Program's requests once the caps let it
-    /// go, and counts its output `bytes` against the Run Output Budget and
-    /// the Applied cap. Its number, or `None` when the Program must stop
-    /// instead.
-    fn send(&self, kind: request::Kind, bytes: usize, awaiting: Option<Awaiting>) -> Option<u64> {
+    /// go, and counts its `output`, a kind and its bytes, against the Run
+    /// Output Budget and the Applied cap. Its number, or `None` when the
+    /// Program must stop instead.
+    fn send(
+        &self,
+        kind: request::Kind,
+        output: Option<(OutputKind, usize)>,
+        awaiting: Option<Awaiting>,
+    ) -> Option<u64> {
+        let bytes = output.map_or(0, |(_kind, bytes)| bytes);
         let mut state = self.below_caps();
         if state.stopped {
             return None;
         }
         if !self.fits(&state, bytes) {
+            if let Some((rejected, _bytes)) = output {
+                state.reject(rejected);
+            }
             state.end.get_or_insert(FinishEnd::OutputBudget);
             drop(state);
             self.stop();
@@ -415,7 +432,7 @@ impl RunHost {
     /// Coral answers.
     fn ask(&self, kind: request::Kind) -> ToolFuture {
         let (answer, answered) = oneshot::channel();
-        let sent = self.send(kind, 0, Some(Awaiting::Value(answer)));
+        let sent = self.send(kind, None, Some(Awaiting::Value(answer)));
         Box::pin(async move {
             sent.ok_or(ToolHostError::Fatal)?;
             answered.await.unwrap_or(Err(ToolHostError::Fatal))
@@ -464,7 +481,7 @@ impl RunHost {
         }
         let sent = self.send(
             request::Kind::Perform(perform),
-            0,
+            None,
             Some(Awaiting::Permit(answer)),
         );
         let host = self.clone();
@@ -528,6 +545,7 @@ impl RunHost {
         let mut state = self.below_caps();
         let completion = match completion {
             finish::Completion::ValueJson(json) if !self.fits(&state, json.len()) => {
+                state.reject(OutputKind::FinalValue);
                 finish::Completion::End(FinishEnd::OutputBudget.into())
             }
             completion => completion,
@@ -560,8 +578,13 @@ impl RunHost {
         })
     }
 
-    fn output(&self, kind: request::Kind, bytes: usize) -> Result<(), ProgramOutputHostError> {
-        self.send(kind, bytes, None)
+    fn output(
+        &self,
+        kind: request::Kind,
+        output: OutputKind,
+        bytes: usize,
+    ) -> Result<(), ProgramOutputHostError> {
+        self.send(kind, Some((output, bytes)), None)
             .map(|_number| ())
             .ok_or(ProgramOutputHostError::Fatal)
     }
@@ -639,6 +662,10 @@ impl coral_v8::ProgramHost for RunHost {
         self.state().cpu_budget
     }
 
+    fn output_rejected(&self, kind: coral_telemetry::metric::OutputKind) {
+        self.state().reject(kind.into());
+    }
+
     fn start(&self) -> bool {
         let mut state = self.state();
         state.loaded = true;
@@ -675,7 +702,7 @@ impl coral_v8::ProgramHost for RunHost {
             value_json: value_json.to_owned(),
             location: self.location(location),
         });
-        self.output(emit, value_json.len())
+        self.output(emit, OutputKind::Emission, value_json.len())
     }
 
     fn log(
@@ -685,6 +712,7 @@ impl coral_v8::ProgramHost for RunHost {
         location: Option<AuthoredLocation>,
     ) -> Result<(), ProgramOutputHostError> {
         if message.len() > PROGRAM_LOG_MESSAGE_MAX_BYTES {
+            self.state().reject(OutputKind::Log);
             return Err(ProgramOutputHostError::LimitExceeded);
         }
         let level = match level {
@@ -698,7 +726,7 @@ impl coral_v8::ProgramHost for RunHost {
             message: message.to_owned(),
             location: self.location(location),
         });
-        self.output(log, message.len())
+        self.output(log, OutputKind::Log, message.len())
     }
 }
 

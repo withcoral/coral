@@ -237,6 +237,13 @@ pub trait ProgramHost: Send + Sync {
         true
     }
 
+    /// Counts one output of `kind` that the isolate rejected before it
+    /// reached the host, because it was too large or invalid. A host whose
+    /// Run is counted in another process tells that process instead.
+    fn output_rejected(&self, kind: coral_telemetry::metric::OutputKind) {
+        coral_telemetry::metric::output_rejected(kind);
+    }
+
     /// Invokes one Tool by complete Call Path and native-JSON arguments.
     ///
     /// `location` is the authored call site captured before the call returns

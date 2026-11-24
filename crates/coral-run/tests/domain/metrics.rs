@@ -279,36 +279,57 @@ async fn a_canceled_run_records_its_program_termination() {
     );
 }
 
-/// Coral records what a Run keeps: each Emission and Log by size. The Run
-/// Executor keeps the Run's output budget, so the Emission over it never
-/// reaches Coral and is not counted here (#3406).
+/// Coral records what a Run keeps, each Emission and Log by size, and
+/// counts each output that the Run Executor rejected, by its kind.
 #[tokio::test]
-async fn program_output_records_what_the_run_keeps() {
-    let (metrics, _guard) = measured();
+async fn program_output_records_what_the_run_keeps_and_rejects() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:output-metrics", "Measure output")
         .await;
-    // The log keeps two UTF-8 bytes and each Emission four, so the 64th
-    // Emission is over the budget.
+    // An Emission may hold 1,024 bytes, and the Run's output 257: the log
+    // keeps two UTF-8 bytes and each Emission four, so the 64th Emission is
+    // over the budget.
     let runs =
         fixture
             .served(fixture.live_runs(None).with_value_limits(
                 coral_value::ValueLimits::new(5, 1024, 4096, 257).expect("limits"),
             ))
             .await;
-    let accepted = runs
-        .start(
-            &principal,
-            &workspace_id,
-            submission("console.log('é'); for (let i = 0; i < 64; i++) await coral.emit('é');"),
-        )
-        .await
-        .expect("accept the Run");
-    wait_for_terminal(&runs, &principal, &workspace_id, accepted.run_id()).await;
+    for (source, kept, rejected) in [
+        (
+            "console.log('é'); for (let i = 0; i < 64; i++) await coral.emit('é');",
+            &[("output.kind=emission", 63), ("output.kind=log", 1)][..],
+            "output.kind=emission",
+        ),
+        (
+            "try { await coral.emit('x'.repeat(2048)); } catch {}",
+            &[],
+            "output.kind=emission",
+        ),
+        (
+            "try { console.log('x'.repeat(64 * 1024 + 1)); } catch {}",
+            &[],
+            "output.kind=log",
+        ),
+        ("return 'x'.repeat(300);", &[], "output.kind=final_value"),
+    ] {
+        let (metrics, _guard) = measured();
+        let accepted = runs
+            .start(&principal, &workspace_id, submission(source))
+            .await
+            .expect("accept the Run");
+        wait_for_terminal(&runs, &principal, &workspace_id, accepted.run_id()).await;
 
-    assert_eq!(
-        counts(&metrics, "coral.output.size"),
-        owned(&[("output.kind=emission", 63), ("output.kind=log", 1)])
-    );
+        assert_eq!(
+            counts(&metrics, "coral.output.size"),
+            owned(kept),
+            "{source}"
+        );
+        assert_eq!(
+            counts(&metrics, "coral.output.rejections"),
+            owned(&[(rejected, 1)]),
+            "{source}"
+        );
+    }
 }

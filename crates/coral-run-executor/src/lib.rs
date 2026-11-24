@@ -77,5 +77,34 @@ pub mod wire {
     )]
     pub mod v1 {
         include!("generated/coral.run_executor.v1.rs");
+
+        use coral_telemetry::metric::OutputKind as Counted;
+
+        impl From<Counted> for OutputKind {
+            fn from(kind: Counted) -> Self {
+                match kind {
+                    Counted::Emission => Self::Emission,
+                    Counted::Log => Self::Log,
+                    Counted::FinalValue => Self::FinalValue,
+                    Counted::Result => Self::Result,
+                }
+            }
+        }
+
+        /// The kind Coral's metrics count; `Err` when it breaks the
+        /// protocol.
+        impl TryFrom<OutputKind> for Counted {
+            type Error = OutputKind;
+
+            fn try_from(kind: OutputKind) -> Result<Self, OutputKind> {
+                match kind {
+                    OutputKind::Emission => Ok(Self::Emission),
+                    OutputKind::Log => Ok(Self::Log),
+                    OutputKind::FinalValue => Ok(Self::FinalValue),
+                    OutputKind::Result => Ok(Self::Result),
+                    OutputKind::Unspecified => Err(kind),
+                }
+            }
+        }
     }
 }
