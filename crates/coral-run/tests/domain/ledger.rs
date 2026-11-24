@@ -285,15 +285,31 @@ async fn writers_racing_on_one_head_land_once_and_the_rest_write_nothing() {
 async fn no_chunk_lands_after_run_ended() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let (workspace_id, run_id, claim) = arranged_run(&fixture, "ended", true).await;
+    let claim = claim.expect("the take's claim");
     let mut transaction = fixture.database.begin().await.expect("begin");
     let run = find_exact_in_transaction(&mut transaction, &workspace_id, &run_id)
         .await
         .expect("read")
         .expect("Run exists");
-    crate::run_repository::finish_taken_run(
+    crate::run_repository::start_taken(
         &mut transaction,
         &run,
-        claim.as_deref().expect("the take's claim"),
+        &claim,
+        1_500,
+        1_000_000,
+        &crate::CoralInstanceId::generate(),
+    )
+    .await
+    .expect("the start chunk commits");
+    let run = find_exact_in_transaction(&mut transaction, &workspace_id, &run_id)
+        .await
+        .expect("read")
+        .expect("Run exists");
+    // A started Run ends under the take's claim and keeps it.
+    crate::run_repository::finish_run(
+        &mut transaction,
+        &run,
+        &claim,
         &RunTerminalOutcome::Succeeded {
             final_value: FinalValue::Absent,
         },

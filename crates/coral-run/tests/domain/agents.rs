@@ -99,6 +99,9 @@ async fn deleting_agent_removes_current_work_but_retains_attribution() {
         .await,
         Err(ToolsError::NotFound(AuthoredToolKind::Private))
     ));
+    // The Run Executor runs the Program from the package it holds; here the
+    // scripted stream stands in for it. What Coral owns is asserted: the Run
+    // started before the deletion still ends, under its Agent's attribution.
     stream.request(1, finish_with("42"));
     stream
         .until(|read| read.contains(&ended(WireEnd::Succeeded)))

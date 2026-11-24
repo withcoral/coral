@@ -184,11 +184,12 @@ fn outcomes(rows: &[InvocationRow]) -> Vec<(&str, Option<InvocationResultKind>)>
 async fn tool_bodies_that_make_more_concurrent_calls_than_the_fan_out_limit_complete() {
     let mut scope = BodyScope::new("user:tool-bodies-fan-out").await;
     scope.upstream.release();
-    scope.fixture.runs = scope
+    let runs = scope
         .fixture
         .runs
         .clone()
         .with_fan_out_limit(crate::FanOutLimit::new(1).expect("a limit"));
+    scope.fixture.replace_runs(runs).await;
     scope
         .save(
             "weather.inner",

@@ -351,6 +351,49 @@ async fn a_loop_whose_run_ended_elsewhere_retires_when_its_stream_closes() {
     wait_until(|| !runs.has_owner(&run_id)).await;
 }
 
+/// Catches: a cancellation that writes a Run an older release's Run Owner
+/// holds, which only that owner writes: the receiver answers that it is not
+/// recorded, and the Run is unchanged.
+#[tokio::test]
+async fn a_cancellation_of_an_older_releases_owned_run_writes_nothing() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let tool = fixture.user_tool("user:legacy-owner", "Legacy owner").await;
+    let run_id = fixture
+        .staged_run(&tool.principal, &tool.workspace_id, "return 1;")
+        .await;
+    fixture
+        .inject_fault(&format!(
+            "UPDATE program_run_records SET worker_claim_id = 'owner-claim', \
+             worker_claim_expires_at_unix_nanos = accepted_at_unix_nanos WHERE id = '{run_id}'"
+        ))
+        .await;
+    let before = fixture.run_record(&tool.workspace_id, &run_id).await;
+    let events_before = fixture.events_after(&tool.workspace_id, &run_id, 0).await;
+
+    let refused = fixture
+        .runs
+        .cancel(
+            &tool.principal,
+            &tool.workspace_id,
+            &run_id,
+            &immediate(None, 100),
+        )
+        .await;
+
+    assert!(
+        matches!(refused, Err(Error::RunRequestNotYetRecorded)),
+        "{refused:?}"
+    );
+    assert_eq!(
+        fixture.run_record(&tool.workspace_id, &run_id).await,
+        before
+    );
+    assert_eq!(
+        fixture.events_after(&tool.workspace_id, &run_id, 0).await,
+        events_before
+    );
+}
+
 /// Catches: a cancellation of a Run a Run Executor has not started that
 /// waits for a loop no Run will get: a waiting Run, and a taken one.
 #[tokio::test]

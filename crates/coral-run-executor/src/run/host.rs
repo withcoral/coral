@@ -775,9 +775,10 @@ impl ToolCompletion for Performed {
 /// Whether `kind`'s message, sent as a numbered request, stays within
 /// [`crate::MESSAGE_MAX_BYTES`]. One the link cannot carry would fail the
 /// stream on every resend. The request wraps it in two more length-delimited
-/// fields and a number: 23 bytes at most.
+/// fields and a number: 21 bytes at most below this size (two tags and
+/// two 4-byte lengths, one tag and a 10-byte number).
 fn fits_the_link(kind: &impl prost::Message) -> bool {
-    const ENVELOPE_BYTES: usize = 23;
+    const ENVELOPE_BYTES: usize = 21;
     kind.encoded_len().saturating_add(ENVELOPE_BYTES) <= crate::MESSAGE_MAX_BYTES
 }
 

@@ -474,14 +474,22 @@ async fn a_pass_ends_the_oldest_deadlines_first_up_to_its_limit() {
 #[tokio::test]
 async fn a_pass_skips_a_run_it_cannot_decode_and_still_ends_the_rest() {
     let sweep = Sweep::new().await;
-    // The pass reads in acceptance order: the undecodable Run is first.
+    // The pass reads by deadline: the undecodable Run, accepted first, has
+    // the strictly earlier one.
     let undecodable = sweep.started(LIVE, Kind::Dialed).await;
     let decodable = sweep.started(LIVE, Kind::Dialed).await;
-    for run_id in [&undecodable, &decodable] {
-        sweep
-            .set(run_id, "deadline_at_unix_nanos = accepted_at_unix_nanos")
-            .await;
-    }
+    sweep
+        .set(
+            &undecodable,
+            "deadline_at_unix_nanos = accepted_at_unix_nanos",
+        )
+        .await;
+    sweep
+        .set(
+            &decodable,
+            "deadline_at_unix_nanos = accepted_at_unix_nanos + 1",
+        )
+        .await;
     let before = sweep.run(&undecodable).await;
     // A build that knows one more limit wrote it.
     let limits = "value_limits_json = replace(value_limits_json, '}', ',\"mcp_result_bytes\":1}')";

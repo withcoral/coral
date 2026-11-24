@@ -98,8 +98,9 @@ impl<'a> Chunk<'a> {
         self
     }
 
-    /// Records `intent` in this chunk's head update, a cancellation's beside
-    /// its `cancellation.requested` Event.
+    /// Records the termination `intent` in this chunk's head update. A
+    /// cancellation's intent is recorded beside its `cancellation.requested`
+    /// Event.
     pub(crate) const fn termination(mut self, intent: &'a RequestedTermination) -> Self {
         self.termination = Some(intent);
         self

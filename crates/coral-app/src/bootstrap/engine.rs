@@ -645,8 +645,8 @@ impl Engine {
 
     /// The domain modules MCP serves, without selecting authentication or
     /// Principal. They are this `Engine`'s, so the process has one search
-    /// module, one index, one set of Run Owners and one warm compiler that
-    /// every surface reaches.
+    /// module, one index, one Run module and one warm compiler that every
+    /// surface reaches.
     pub(crate) fn mcp_modules(
         &self,
         human_interface: coral_mcp::HumanInterfaceUrl,
@@ -864,9 +864,10 @@ fn private_tools(
 }
 
 /// The Run sweeper's first pass, before any listener serves and before any
-/// but the Run Executor listener binds. On SQLite it ends the Runs that an
-/// earlier process's local children held, up to its pass limit: later
-/// passes end the rest once their Run Executors' leases lapse. A pass that
+/// but the Run Executor listener binds. On SQLite it releases the local
+/// children an earlier process started, up to its pass limit: their started
+/// Runs end, and their unstarted ones wait again. Later passes release the
+/// rest once their Run Executors' leases lapse. A pass that
 /// fails is logged, the listeners bind anyway, and its next pass reads
 /// again.
 async fn sweep_at_boot(runs: &coral_run::RunModule) {

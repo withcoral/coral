@@ -26,7 +26,9 @@ pub(crate) type Reply = oneshot::Sender<Result<(), Error>>;
 /// on its own clock). It fires back into the mailbox as [`Message::Timer`],
 /// applied in arrival order with every other message, so the clock decides
 /// nothing outside `apply`: a passed deadline is one ordered decision
-/// against the Program request that races it.
+/// against the Program request that races it. An outside writer's decision
+/// or cancellation races it through the database instead, ordered by the
+/// held rows and the Run's head.
 ///
 /// [`Effect::ArmTimer`]: super::state::Effect::ArmTimer
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
