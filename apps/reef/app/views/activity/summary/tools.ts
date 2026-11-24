@@ -1,6 +1,7 @@
 import type { ProviderLogo } from '@/views/providers/types'
 import type { ActivitySummaryData, CallerCalls, StopReason } from '@/lib/activity-summary'
 import { toolOwner } from '@/lib/call-root'
+import { compareText, type SortColumn } from '@/wax/components/table'
 
 export const STOP_REASONS: readonly StopReason[] = ['blocked', 'notAllowed', 'needsSetup']
 
@@ -30,6 +31,15 @@ export interface ToolRow {
   callers: readonly CallerCalls[]
   stops: Record<StopReason, number>
   stopped: number
+}
+
+/** A column of tools, in the order their cells read: provider, namespace, then tool. */
+export const TOOL_ORDER: SortColumn<ToolRow> = {
+  compare: (a, b) =>
+    compareText(a.provider, b.provider) ||
+    compareText(a.namespace, b.namespace) ||
+    compareText(a.relativePath, b.relativePath),
+  first: 'ascending',
 }
 
 /** A removed provider leaves only its Call Path: `coral.providers.<namespace>.<tool>`. */

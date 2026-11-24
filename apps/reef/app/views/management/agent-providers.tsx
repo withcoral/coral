@@ -22,7 +22,19 @@ export interface AgentProviderView {
 
 const ACCOUNT_KIND = { none: 'None', shared: 'Shared', separate: 'Individual' } as const
 
-/** The accounts this agent uses, one row per provider, those that need you first. */
+const SORT_COLUMNS = {
+  provider: Table.byText((row: AgentProviderView) => row.name),
+  account: Table.byText((row: AgentProviderView) => ACCOUNT_KIND[row.account.kind]),
+  // The providers that need you come first, then each status by the label you read.
+  status: {
+    compare: (a: AgentProviderView, b: AgentProviderView) =>
+      Number(needsYou(b)) - Number(needsYou(a)) ||
+      Table.compareText(statusLabel(a), statusLabel(b)),
+    first: 'ascending',
+  },
+} satisfies Record<string, Table.SortColumn<AgentProviderView>>
+
+/** The accounts this agent uses, one row per provider. Those that need you come first until you sort. */
 export function AgentProviders({
   providers,
   form,
@@ -35,8 +47,13 @@ export function AgentProviders({
   canConnect: boolean
 }) {
   const heading = useId()
-  // A stable sort keeps the server's order within each half.
-  const rows = (providers ?? []).toSorted((a, b) => Number(needsYou(b)) - Number(needsYou(a)))
+  // Providers with equal values stay in name order, whichever way the column runs.
+  const sort = Table.useSort({
+    columns: SORT_COLUMNS,
+    initial: 'status',
+    tiebreak: SORT_COLUMNS.provider.compare,
+  })
+  const rows = sort.rows(providers ?? [])
   return (
     <section className={styles.agentAccounts} aria-labelledby={heading}>
       <div className={styles.intro}>
@@ -52,13 +69,26 @@ export function AgentProviders({
         staticRows
         variant="card"
         columns={[
-          { label: 'Provider', width: { fill: 2 } },
-          { label: 'Account', width: 'fill' },
-          { label: 'Status', width: { fill: 1.5 } },
-          { ariaLabel: 'Actions', width: 112, align: 'right' },
+          { width: { fill: 2 } },
+          { width: 'fill' },
+          { width: { fill: 1.5 } },
+          { width: 112, align: 'right' },
         ]}
       >
-        <Table.Head />
+        <Table.Head>
+          <Table.Row>
+            <Table.SortHeading sort={sort} column="provider">
+              Provider
+            </Table.SortHeading>
+            <Table.SortHeading sort={sort} column="account">
+              Account
+            </Table.SortHeading>
+            <Table.SortHeading sort={sort} column="status">
+              Status
+            </Table.SortHeading>
+            <Table.Heading ariaLabel="Actions" />
+          </Table.Row>
+        </Table.Head>
         <Table.Body>
           {providers === null ? (
             <Table.Status>
@@ -104,21 +134,33 @@ function needsYou(provider: AgentProviderView) {
 }
 
 /**
+ * What the status cell reads, and the blockers it lists below that. An agent account that
+ * is not ready is the one blocker Coral then reports, and its state says more. Any other
+ * blocker comes first, since connecting won't help.
+ */
+function status(provider: AgentProviderView) {
+  const action = accountAction(provider.account)
+  const accountOnly = action !== null && provider.blockers.length <= 1
+  const [first, ...rest] = accountOnly ? [] : provider.blockers
+  return { action, label: first ?? action ?? 'Ready', rest }
+}
+
+function statusLabel(provider: AgentProviderView) {
+  return status(provider).label
+}
+
+/**
  * The first blocker, or what the agent's account needs. The other blockers show
  * below it, so nobody clears one blocker expecting access.
  */
 function ProviderStatus({ provider }: { provider: AgentProviderView }) {
-  const action = accountAction(provider.account)
-  // An agent account that is not ready is the one blocker Coral then reports, and
-  // its state says more. Any other blocker comes first, since connecting won't help.
-  const accountOnly = action !== null && provider.blockers.length <= 1
-  const [first, ...rest] = accountOnly ? [] : provider.blockers
+  const { action, label, rest } = status(provider)
   return (
     <span className={styles.cellStack}>
       <span className={styles.cellInline}>
         <StatusDot blockers={provider.blockers} personalAccountAction={action} />
         <Typography.BodySmall as="span" className={styles.cellInlineText}>
-          {first ?? action ?? 'Ready'}
+          {label}
         </Typography.BodySmall>
       </span>
       {rest.length > 0 && (

@@ -5,7 +5,7 @@ import { FilterField } from '@/components/catalog'
 import type { ActivitySummaryData } from '@/lib/activity-summary'
 import { filterQuery } from '@/utils/filter-query'
 import { callerNames, number, outcomes, share } from './format'
-import { STOP_REASONS, toolRows, type SummaryProvider } from './tools'
+import { STOP_REASONS, TOOL_ORDER, toolRows, type SummaryProvider, type ToolRow } from './tools'
 import { BarCell, None, ToolName, StatCards, StopSplit } from './parts'
 import * as styles from './summary.css'
 
@@ -30,6 +30,12 @@ export const TOOL_COLUMNS: readonly Table.Column[] = [
 ]
 const CALLERS_COLUMN: Table.Column = { label: 'Callers', width: { fill: 2 } }
 
+const SORT_COLUMNS = {
+  tool: TOOL_ORDER,
+  calls: Table.byCount((row: ToolRow) => row.calls),
+  stopped: Table.byCount((row: ToolRow) => row.stopped),
+}
+
 /** Every ended call by outcome, each with its share. */
 function Split({ summary }: { summary: ActivitySummaryData }) {
   const { calls } = summary
@@ -52,7 +58,7 @@ function Split({ summary }: { summary: ActivitySummaryData }) {
   )
 }
 
-/** Is it working? The split of every call, then each tool, busiest first, to filter. */
+/** Is it working? The split of every call, then each tool, busiest first, to filter and sort. */
 export function CallsLens({
   summary,
   providers,
@@ -66,10 +72,18 @@ export function CallsLens({
   const [input, setInput] = useState('')
   const query = filterQuery(useDeferredValue(input))
   const table = Table.useRowCursor({ filterId: FILTER_ID })
-  const all = toolRows(summary, providers).toSorted((a, b) => b.calls - a.calls)
+  // Tools with equal counts stay in tool order, whichever way the column runs.
+  const sort = Table.useSort({
+    columns: SORT_COLUMNS,
+    initial: 'calls',
+    tiebreak: TOOL_ORDER.compare,
+  })
+  const all = toolRows(summary, providers)
   const total = all.reduce((sum, row) => sum + row.calls, 0)
   const max = Math.max(0, ...all.map((row) => row.calls))
-  const rows = all.filter((row) => query.matches(row.namespace, row.relativePath, row.provider))
+  const rows = sort.rows(
+    all.filter((row) => query.matches(row.namespace, row.relativePath, row.provider)),
+  )
   return (
     <div className={styles.lens}>
       <Split summary={summary} />
@@ -101,11 +115,17 @@ export function CallsLens({
       >
         <Table.Head>
           <Table.Row>
-            <Table.Heading>Tool</Table.Heading>
-            <Table.Heading>Calls</Table.Heading>
+            <Table.SortHeading sort={sort} column="tool">
+              Tool
+            </Table.SortHeading>
+            <Table.SortHeading sort={sort} column="calls">
+              Calls
+            </Table.SortHeading>
             {showCallers && <Table.Heading>Callers</Table.Heading>}
             <Table.Heading align="right">Share</Table.Heading>
-            <Table.Heading align="right">Stopped</Table.Heading>
+            <Table.SortHeading sort={sort} column="stopped" align="right">
+              Stopped
+            </Table.SortHeading>
           </Table.Row>
         </Table.Head>
         {rows.length === 0 ? (
