@@ -21,15 +21,15 @@ import {
 
 export { ManagementErrorBoundary as ErrorBoundary } from '@/views/management/management-error'
 
-/**
- * Only an organization owner can list the secret stores; Coral denies anyone else.
- * The page does not exist where the deployment turned them off.
- */
 // A refused change can follow changes that saved, so reload after a failed save too.
 export function shouldRevalidate() {
   return true
 }
 
+/**
+ * Only an organization owner can list the secret stores; Coral denies anyone else.
+ * The page does not exist where the deployment turned them off.
+ */
 export async function loader({ context }: Route.LoaderArgs) {
   try {
     const api = management(context)
