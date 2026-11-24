@@ -61,10 +61,10 @@ fn owned(pairs: &[(&str, u64)]) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// A Run counts its acceptance, its claim, each phase and its end, and
+/// A Run counts its acceptance, each phase and its end, and
 /// leaves no Run active once its stream's loop retires.
 #[tokio::test]
-async fn a_run_records_its_acceptance_claims_phases_and_end() {
+async fn a_run_records_its_acceptance_phases_and_end() {
     let (metrics, _guard) = measured();
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let runs = fixture.live(None).await;
