@@ -77,26 +77,6 @@ async fn generation_runs_in_program(
     )
 }
 
-/// Reports whether a dispatch of `run_id` is in flight that may still
-/// record its result: an upstream send or a Built-in Tool that started and
-/// has not ended. A Tool whose body runs in the Program never does once
-/// the Run is ending, so the settle of a termination never waits for one.
-pub(crate) async fn has_dispatch_in_flight(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &coral_workspace::WorkspaceId,
-    run_id: &crate::RunId,
-) -> Result<bool, Error> {
-    for generation in
-        invocation_repository::dispatching_generations_for_run(transaction, workspace_id, run_id)
-            .await?
-    {
-        if !generation_runs_in_program(transaction, &generation).await? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 /// What ending an Invocation found.
 pub(crate) enum FinishOutcome {
     /// The Invocation ended now; the Event rides the caller's chunk.

@@ -35,7 +35,6 @@ use crate::engine::ExecutionCompletion;
 use crate::invocation::{EnforcementBatch, EnforcementRequest, ParkedInvocation, PrecheckBatch};
 use crate::lifecycle::{RequestedTermination, RunTerminationKind};
 use crate::run_repository::{OwnedEvent, OwnedEventKind, RunHead};
-use crate::termination::ShutdownAction;
 use crate::{CoralFailure, Error};
 
 use super::chunk::{ChunkBuild, ChunkItem, ChunkWork};
@@ -89,15 +88,6 @@ pub(crate) enum Effect {
     /// answers, then terminate the Program on the stream; the answer
     /// reaches the owner as [`Message::Completed`].
     EndStreamRun(RequestedTermination),
-    /// One attempt to settle the recorded termination: end every nonterminal
-    /// Invocation and the Run once no dispatch is in flight, or once the
-    /// shutdown grace is out. `again` means the previous attempt found a
-    /// dispatch in flight: the host waits a moment before this one. The owner
-    /// keeps recording dispatch results between attempts, never during one.
-    Settle {
-        shutdown: ShutdownAction,
-        again: bool,
-    },
     /// A Run stream owner moves its stream in the Shutdown Drain: the
     /// stream sends no `Terminate` and no fatal answer, the owner detaches and
     /// retires with no terminal write, and the stream ends cleanly so the
@@ -179,9 +169,6 @@ pub(crate) enum Phase {
     Ending,
     /// The terminal write is running.
     Completing,
-    /// A termination is recorded and being settled; results of dispatches
-    /// still in flight ride the owner's chunks until the Run ends.
-    Settling,
     /// A commit was lost or refused; nothing more is committed. The Program's
     /// end decides what follows.
     Stopped(CommitRejection),
@@ -224,11 +211,6 @@ pub(crate) struct OwnerState {
     /// No more Program requests: a stop, the Run's end, or the end of the
     /// Program's execution.
     stop_requested: bool,
-    /// A settle attempt of the recorded termination runs: no chunk commits
-    /// meanwhile.
-    settling: bool,
-    /// The recorded termination the owner settles, from its terminal write.
-    shutdown: Option<ShutdownAction>,
     /// The Program's completion, kept until its terminal write has answered.
     completion: Option<ExecutionCompletion>,
     /// A Run stream's termination the owner decided (ADR 0027): written in
@@ -282,8 +264,6 @@ impl OwnerState {
                 ..limits
             },
             stop_requested: false,
-            settling: false,
-            shutdown: None,
             completion: None,
             stream_end: None,
             head: 0,
@@ -425,15 +405,16 @@ impl OwnerState {
     }
 
     /// Row work and dispatch results are accepted while the owner can still
-    /// commit them: an Invocation that ends after the Program did, during the
-    /// terminal write, or while a recorded termination is being settled, still
-    /// records its outcome. Work that arrives during the terminal write commits
-    /// once that write has answered: before the settle, or before the terminal
-    /// write runs again when it refused a Run with a nonterminal Invocation.
+    /// commit them: an Invocation that ends after the Program did, or during
+    /// the terminal write, still records its outcome. Work that arrives during
+    /// the terminal write commits once that write has answered, before the
+    /// terminal write runs again when it refused a Run with a nonterminal
+    /// Invocation. After a Run stream's end, which ends every Invocation,
+    /// nothing commits.
     fn accepts_work(&self) -> bool {
         matches!(
             self.phase,
-            Phase::Running | Phase::Ending | Phase::Completing | Phase::Settling
+            Phase::Running | Phase::Ending | Phase::Completing
         )
     }
 
@@ -835,7 +816,7 @@ impl OwnerState {
             // The Program stops at once. A chunk in flight may have landed
             // before the end: its answer still settles its waiters, and a
             // chunk that did not finds the end and stops the loop.
-            self.ended_outside = run.termination;
+            self.ended_outside = run.ended_as;
             if self.in_flight.is_none() {
                 return self.rejected(CommitRejection::RunEnded);
             }
@@ -992,7 +973,7 @@ impl OwnerState {
     /// After another end was applied, it is the Program's end as any other.
     fn deadline_reached(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
         if self.phase != Phase::Running {
-            return self.program_ended(ExecutionCompletion::ProgramHostTerminated);
+            return self.program_ended(ExecutionCompletion::ProgramHostTerminated, now_unix_nanos);
         }
         if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
             return self.deadline(now_unix_nanos);
@@ -1012,7 +993,7 @@ impl OwnerState {
         if self.phase != Phase::Running {
             return Vec::new();
         }
-        let Ok(termination) = RequestedTermination::new(kind, None, at_unix_nanos, 0) else {
+        let Ok(termination) = RequestedTermination::unrequested(kind, at_unix_nanos) else {
             return self.stop();
         };
         self.stream_end = Some(termination);
@@ -1024,10 +1005,7 @@ impl OwnerState {
 
     /// Commit-when-free: the oldest pending chunk, once nothing is in flight.
     fn commit_when_free(&mut self) -> Vec<Effect> {
-        if self.in_flight.is_some()
-            || self.settling
-            || !matches!(self.phase, Phase::Running | Phase::Ending | Phase::Settling)
-        {
+        if self.in_flight.is_some() || !matches!(self.phase, Phase::Running | Phase::Ending) {
             return Vec::new();
         }
         let chunk = match self.closed.pop_front() {
@@ -1036,32 +1014,6 @@ impl OwnerState {
             None => std::mem::take(&mut self.open),
         };
         self.commit(chunk)
-    }
-
-    /// Commits the pending chunks when free; with none left while a recorded
-    /// termination is being settled, attempts the settle.
-    fn commit_or_settle_when_free(&mut self) -> Vec<Effect> {
-        if self.pending_chunks() > 0 {
-            return self.commit_when_free();
-        }
-        self.settle_when_free(false)
-    }
-
-    /// One settle attempt, once nothing is in flight and no chunk is
-    /// pending: the owner records every dispatch result it holds before it
-    /// looks at what is still dispatching.
-    fn settle_when_free(&mut self, again: bool) -> Vec<Effect> {
-        if self.phase != Phase::Settling || self.settling || self.in_flight.is_some() {
-            return Vec::new();
-        }
-        if self.pending_chunks() > 0 {
-            return self.commit_when_free();
-        }
-        let Some(shutdown) = self.shutdown.clone() else {
-            return Vec::new();
-        };
-        self.settling = true;
-        vec![Effect::Settle { shutdown, again }]
     }
 
     /// Starts one chunk commit.
@@ -1106,7 +1058,7 @@ impl OwnerState {
             }
         }
         match self.phase {
-            Phase::Running | Phase::Settling => effects.extend(self.commit_or_settle_when_free()),
+            Phase::Running => effects.extend(self.commit_when_free()),
             Phase::Ending => effects.extend(self.advance_ending()),
             Phase::Starting | Phase::Completing | Phase::Stopped(_) | Phase::Retired => {}
         }
@@ -1202,9 +1154,23 @@ impl OwnerState {
         ]
     }
 
-    fn program_ended(&mut self, completion: ExecutionCompletion) -> Vec<Effect> {
-        match self.phase {
-            Phase::Running => {
+    /// The Program ended. One that the Run Executor ended on its own, at a
+    /// limit or with its Program host lost, ends the Run as the deadline
+    /// does (ADR 0027): its termination written first in one chunk, with
+    /// its open Invocations, and no grace; past the Run deadline it times
+    /// out. A Program the loop stopped leaves the terminal write to decide.
+    fn program_ended(
+        &mut self,
+        completion: ExecutionCompletion,
+        now_unix_nanos: i64,
+    ) -> Vec<Effect> {
+        let own_end = completion.termination().filter(|_| !self.stop_requested);
+        match (self.phase, own_end) {
+            (Phase::Running, Some(_)) if now_unix_nanos >= self.limits.deadline_at_unix_nanos => {
+                self.deadline(now_unix_nanos)
+            }
+            (Phase::Running, Some(kind)) => self.end_stream_run(kind, now_unix_nanos),
+            (Phase::Running, None) => {
                 self.phase = Phase::Ending;
                 self.completion = Some(completion);
                 // Wake every detached Invocation wait, as execution's end does;
@@ -1215,34 +1181,22 @@ impl OwnerState {
                 effects
             }
             // A refused or failed commit leaves the terminal write to decide;
-            // a lost or
-            // ended Run has nothing left to write, and a corrupt one gets
-            // nothing more written.
-            Phase::Stopped(CommitRejection::Refused | CommitRejection::Failed) => {
+            // a lost or ended Run has nothing left to write, and a corrupt one
+            // gets nothing more written.
+            (Phase::Stopped(CommitRejection::Refused | CommitRejection::Failed), _) => {
                 self.phase = Phase::Completing;
                 vec![Effect::CompleteExecution { completion }]
             }
-            Phase::Stopped(
-                CommitRejection::ClaimMismatch
-                | CommitRejection::RunEnded
-                | CommitRejection::Corrupt,
+            (
+                Phase::Stopped(
+                    CommitRejection::ClaimMismatch
+                    | CommitRejection::RunEnded
+                    | CommitRejection::Corrupt,
+                ),
+                _,
             ) => self.retire(),
-            Phase::Starting
-            | Phase::Ending
-            | Phase::Completing
-            | Phase::Settling
-            | Phase::Retired => Vec::new(),
+            (Phase::Starting | Phase::Ending | Phase::Completing | Phase::Retired, _) => Vec::new(),
         }
-    }
-
-    /// The terminal write found or recorded a termination: the owner settles
-    /// it, recording the results of dispatches in flight between attempts.
-    fn settle_recorded(&mut self, shutdown: ShutdownAction) -> Vec<Effect> {
-        self.phase = Phase::Settling;
-        self.head = shutdown.head();
-        self.completion = None;
-        self.shutdown = Some(shutdown);
-        self.commit_or_settle_when_free()
     }
 
     /// A lost or refused commit stops the owner at once: the Program is
@@ -1263,9 +1217,6 @@ impl OwnerState {
                     None => effects.extend(self.retire()),
                 }
             }
-            // The recorded termination still has to be settled; the owner
-            // records nothing else.
-            Phase::Settling => effects.extend(self.settle_when_free(false)),
             Phase::Starting | Phase::Completing | Phase::Stopped(_) | Phase::Retired => {}
         }
         effects
@@ -1354,11 +1305,9 @@ impl OwnerState {
                 // terminal write ends the Run Interrupted once it lands. The
                 // Run deadline is not known before the start.
                 Phase::Starting => {
-                    if let Ok(end) = RequestedTermination::new(
+                    if let Ok(end) = RequestedTermination::unrequested(
                         RunTerminationKind::Interrupted,
-                        None,
                         now_unix_nanos,
-                        0,
                     ) {
                         self.stream_end = Some(end);
                     }
@@ -1466,19 +1415,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
                 state.retire()
             }
         }
-        Message::Started(Ok(None) | Err(_)) | Message::Completed(Ok(None)) => state.retire(),
-        Message::Completed(Ok(Some(shutdown))) => state.settle_recorded(shutdown),
-        // The Run ended; or the settle gave a definite answer other than the
-        // Run's end, and the sweeper ends the Run from its recorded
-        // termination.
-        Message::SettleAttempted(Ok(true) | Err(_)) => {
-            state.settling = false;
-            state.retire()
-        }
-        Message::SettleAttempted(Ok(false)) => {
-            state.settling = false;
-            state.settle_when_free(true)
-        }
+        Message::Started(Ok(None) | Err(_)) | Message::Completed(Ok(())) => state.retire(),
         Message::Emit {
             value,
             location,
@@ -1512,7 +1449,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         Message::Parked(parked) => state.park(parked, now_unix_nanos),
         Message::Changed => state.changed(),
         Message::Prechecked { check, found } => state.prechecked(check, found),
-        Message::ProgramEnded(completion) => state.program_ended(completion),
+        Message::ProgramEnded(completion) => state.program_ended(completion, now_unix_nanos),
         Message::DeadlineReached => state.deadline_reached(now_unix_nanos),
         Message::Committed => state.committed(),
         Message::CommitRejected(rejection) => state.rejected(rejection),

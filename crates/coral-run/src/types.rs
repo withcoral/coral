@@ -1146,7 +1146,6 @@ pub(crate) struct AcceptedRun {
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) principal: Principal,
     pub(crate) accepted_at_unix_nanos: i64,
-    pub(crate) shutdown_grace_nanos: i64,
     pub(crate) value_limits: coral_value::ValueLimits,
     /// The execution claim a take gave the Run; acceptance writes none.
     pub(crate) claim_id: String,

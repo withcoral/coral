@@ -559,10 +559,6 @@ impl RunModule {
     }
 }
 
-fn duration_until(deadline_at_unix_nanos: i64, now_unix_nanos: i64) -> Duration {
-    nanos_duration(deadline_at_unix_nanos.saturating_sub(now_unix_nanos))
-}
-
 /// `nanos` as a duration; a negative count is no wait.
 fn nanos_duration(nanos: i64) -> Duration {
     Duration::from_nanos(u64::try_from(nanos).unwrap_or(0))

@@ -37,9 +37,7 @@ pub(crate) use sweep::{
     unstarted_takes,
 };
 pub(crate) use take::{Claimed, Taker, any_waiting, take_oldest};
-pub(crate) use termination::{
-    finish_run, finish_taken_run, finish_termination, interrupt_run, request_termination,
-};
+pub(crate) use termination::{finish_run, finish_taken_run, interrupt_run};
 pub(crate) use usage::{first_success_before, private_tool_calls, run_endings, shared_tool_calls};
 
 #[derive(Iden, Clone, Copy)]
@@ -185,7 +183,7 @@ fn exact_run_statement(workspace_id: &WorkspaceId, run_id: &RunId) -> sea_query:
 }
 
 /// The columns `RunRow` decodes, shared by Run reads and retention's hold.
-const RUN_COLUMNS: [ProgramRunRecords; 32] = [
+const RUN_COLUMNS: [ProgramRunRecords; 31] = [
     ProgramRunRecords::Id,
     ProgramRunRecords::WorkspaceId,
     ProgramRunRecords::PrincipalId,
@@ -202,7 +200,6 @@ const RUN_COLUMNS: [ProgramRunRecords; 32] = [
     ProgramRunRecords::TerminationKind,
     ProgramRunRecords::TerminationStartedAtUnixNanos,
     ProgramRunRecords::TerminationDeadlineAtUnixNanos,
-    ProgramRunRecords::ShutdownGraceNanos,
     ProgramRunRecords::CancellationRequestedAtUnixNanos,
     ProgramRunRecords::CancellationPrincipalId,
     ProgramRunRecords::CancellationPrincipalKind,

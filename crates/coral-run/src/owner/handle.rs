@@ -13,7 +13,6 @@ use crate::approval::{ApprovalDecision, ApprovalId};
 use crate::engine::ExecutionCompletion;
 use crate::execution::ExecutionStop;
 use crate::invocation::{EnforcementRequest, ParkedInvocation};
-use crate::termination::ShutdownAction;
 use crate::types::HeldRunId;
 use crate::{Error, ProgramLogLevel, ProgramValue, RunId, SourceLocation};
 
@@ -199,12 +198,8 @@ pub(crate) enum Message {
     /// The chunk in flight did not land, definitively: an answer the database
     /// did not give is resolved by the hosting task before it reaches here.
     CommitRejected(CommitRejection),
-    /// The terminal write ran; a shutdown settle may still be due.
-    Completed(Result<Option<ShutdownAction>, Error>),
-    /// One settle attempt of the recorded termination ended: `Ok(true)` the
-    /// Run is terminal; `Ok(false)` a dispatch is still in flight within the
-    /// shutdown grace, and the owner tries again.
-    SettleAttempted(Result<bool, Error>),
+    /// The terminal write ran.
+    Completed(Result<(), Error>),
     /// The mailbox is empty: commit when free.
     Drained,
     /// Run stream request `number`: `message` is what it asks of the owner,
@@ -298,14 +293,7 @@ impl fmt::Debug for Message {
                 .debug_tuple("CommitRejected")
                 .field(rejection)
                 .finish(),
-            Self::Completed(result) => formatter
-                .debug_tuple("Completed")
-                .field(&result.as_ref().map(Option::is_some))
-                .finish(),
-            Self::SettleAttempted(result) => formatter
-                .debug_tuple("SettleAttempted")
-                .field(result)
-                .finish(),
+            Self::Completed(result) => formatter.debug_tuple("Completed").field(result).finish(),
             Self::Drained => formatter.write_str("Drained"),
             Self::Request { number, message } => formatter
                 .debug_struct("Request")

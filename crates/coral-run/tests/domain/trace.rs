@@ -760,7 +760,6 @@ fn unstarted_run() -> crate::lifecycle::RunRecord {
         execution_claim_id: None,
         execution_started_at_unix_nanos: None,
         termination: None,
-        shutdown_grace_nanos: 0,
         chunk_sequence: 0,
         last_event_sequence: None,
         accumulated_output_bytes: 0,

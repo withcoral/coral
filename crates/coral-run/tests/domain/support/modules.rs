@@ -1510,7 +1510,6 @@ pub(crate) fn test_invoker(
         workspace_id: run.workspace_id.clone(),
         principal: run.principal.clone(),
         accepted_at_unix_nanos: run.accepted_at_unix_nanos,
-        shutdown_grace_nanos: run.shutdown_grace_nanos,
         value_limits: run.value_limits,
         claim_id: claim_id.clone(),
         linked_snapshots: std::collections::HashMap::new(),

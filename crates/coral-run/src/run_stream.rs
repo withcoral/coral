@@ -415,7 +415,7 @@ impl RunModule {
         }
         let checked_at = self.now()?.max(run.accepted_at_unix_nanos);
         if resumed && run.termination.is_some() {
-            // A termination recorded meanwhile: no Program starts on it.
+            // An older build recorded a termination: no Program starts on it.
             transaction.commit().await?;
             return Ok(Start::Unavailable("the Run is being terminated"));
         }
@@ -602,7 +602,6 @@ impl RunModule {
             workspace_id: run.workspace_id,
             principal: run.principal,
             accepted_at_unix_nanos: run.accepted_at_unix_nanos,
-            shutdown_grace_nanos: run.shutdown_grace_nanos,
             value_limits: run.value_limits,
             claim_id: claim_id.clone(),
             linked_snapshots,

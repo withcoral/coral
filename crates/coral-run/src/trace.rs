@@ -26,8 +26,9 @@ pub(crate) enum Phase {
     Execute,
     /// The terminal write after the Program ended, or an interruption.
     Complete,
-    /// Settling a recorded termination: a cancellation, the deadline or a
-    /// shutdown.
+    /// Ending a Run in one chunk: the deadline, a limit, a lost Program
+    /// host, the end of the Shutdown Drain for a local child, or an older
+    /// build's recorded termination.
     Terminate,
 }
 

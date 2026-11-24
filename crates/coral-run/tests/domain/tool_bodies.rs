@@ -1,8 +1,7 @@
 //! Private Tool calls whose body Coral performs in the Program, over the
 //! real V8 engine: the outer call holds no slot under the Fan-out Limit, and
-//! a Run that ends during a body ends the outer call as `run_terminated`
-//! without waiting out the shutdown grace, while the calls the body made
-//! keep their own outcomes. The owner's in-memory slot rule has its own row
+//! a Run that ends during a body ends the outer call as `run_terminated`,
+//! while the calls the body made keep their own outcomes. The owner's in-memory slot rule has its own row
 //! in the `apply` table (`owner.rs`).
 use super::*;
 
@@ -24,9 +23,7 @@ const LEFTOVER_WORK: &str = "void (async () => {
 })();";
 
 /// A Workspace whose `weather` Tool sends through an upstream that holds
-/// each send until released, and whose Runs call its Private Tools. Its
-/// shutdown grace is longer than any wait here, so a Run that waits it out
-/// fails the wait.
+/// each send until released, and whose Runs call its Private Tools.
 struct BodyScope {
     fixture: TestModules,
     upstream: Arc<BlockingUpstream>,
@@ -47,8 +44,6 @@ impl BodyScope {
             upstream.clone(),
         )
         .await;
-        fixture.runs.execution_policy =
-            crate::execution::ExecutionPolicy::testing_with_shutdown_grace(Duration::from_secs(30));
         let index =
             coral_search::SearchIndex::new(fixture.database.clone(), Duration::from_secs(3_600));
         fixture.runs = fixture
@@ -154,11 +149,11 @@ impl BodyScope {
         }
     }
 
-    /// Waits until `run` records its termination, or has ended.
-    async fn termination_is_recorded(&self, run: &crate::RunId) {
+    /// Waits until `run` has ended.
+    async fn run_has_ended(&self, run: &crate::RunId) {
         wait_until_async(async || {
             let record = self.fixture.run_record(&self.tool.workspace_id, run).await;
-            record.termination.is_some() || record.state != RunState::Running
+            record.state != RunState::Running
         })
         .await;
     }
@@ -260,8 +255,8 @@ enum Ending {
 // dispatch, in particular), whether the Run is canceled, times out or spends
 // its CPU budget in the body. A cancellation or the deadline ends the body's
 // call in flight `indeterminate` (ADR 0027: a termination is written first);
-// the CPU end settles within the shutdown grace (#3405), so that call keeps
-// its own outcome.
+// the CPU budget runs out after that call answered, so it keeps its own
+// outcome.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_run_that_ends_during_a_tool_body_ends_its_call_as_run_terminated() {
     for ending in [Ending::Canceled, Ending::TimedOut, Ending::CpuLimitExceeded] {
@@ -300,7 +295,7 @@ async fn a_run_that_ends_during_a_tool_body_ends_its_call_as_run_terminated() {
         let cancel = scope.end(ending, &run);
         if !matches!(ending, Ending::CpuLimitExceeded) {
             // The body's call answers only after the Run ended.
-            scope.termination_is_recorded(&run).await;
+            scope.run_has_ended(&run).await;
             scope.upstream.release();
         }
 
@@ -937,7 +932,7 @@ async fn a_run_that_ends_while_a_call_waits_for_its_children_ends_it_as_run_term
     wait_until(|| scope.upstream.entered.load(Ordering::SeqCst)).await;
 
     let cancel = scope.end(Ending::Canceled, &run).expect("a cancel");
-    scope.termination_is_recorded(&run).await;
+    scope.run_has_ended(&run).await;
     scope.upstream.release();
 
     let terminal = scope.terminal(&run).await;

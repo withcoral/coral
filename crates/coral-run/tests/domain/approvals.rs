@@ -1027,9 +1027,6 @@ async fn pending_approval_rechecks_live_policy_authority_and_run_termination() {
             upstream.clone(),
         )
         .await;
-        // Outlast the test: only a dispatched Invocation may hold cancellation open.
-        fixture.runs.execution_policy =
-            crate::execution::ExecutionPolicy::testing_with_shutdown_grace(Duration::from_mins(15));
         fixture.serve().await;
         let tool = fixture
             .user_tool("user:wait-races", "Pending approval lifecycle")
@@ -2384,16 +2381,16 @@ async fn commit_elsewhere(fixture: &TestModules, bystander: &ToolFixture, at: i6
 }
 
 /// A decision on a terminated Run closes the obsolete request and records
-/// no new Approved decision: while the owner settles the cancellation (a
-/// dispatch of the other call still in flight), and once the Run is
-/// terminal, where the record answers.
+/// no new Approved decision: once the cancellation ended the Run while a
+/// dispatch of the other call is still in flight, and once the Run is
+/// terminal and its loop gone, where the record answers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[expect(
     clippy::too_many_lines,
-    reason = "two cases of one rule: a decision while the owner settles, and once the Run is terminal"
+    reason = "two cases of one rule: a decision while a dispatch is in flight, and once the loop is gone"
 )]
 async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_no_approval() {
-    // While settling: two gated calls, the first approved and held upstream.
+    // A dispatch in flight: two gated calls, the first approved and held upstream.
     {
         let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
             200,
@@ -2407,11 +2404,9 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
             upstream.clone(),
         )
         .await;
-        fixture.runs.execution_policy =
-            crate::execution::ExecutionPolicy::testing_with_shutdown_grace(Duration::from_secs(30));
         fixture.serve().await;
         let tool = fixture
-            .user_tool("user:decide-settling", "Decide while settling")
+            .user_tool("user:decide-dispatching", "Decide while dispatching")
             .await;
         fixture.require_approval(&tool).await;
         let approvals = fixture.approvals();
@@ -2467,8 +2462,8 @@ async fn a_decision_on_a_terminated_run_closes_the_obsolete_request_and_records_
             fixture
                 .run_record(&tool.workspace_id, run.run_id())
                 .await
-                .termination
-                .is_some()
+                .state
+                .is_terminal()
         })
         .await;
         let closed = approvals
