@@ -93,6 +93,8 @@ impl CancellationCaller {
 }
 
 pub(crate) struct TestModules {
+    /// The tasks that serve Run Modules' Runs on Run Executors.
+    pub(crate) serving: Mutex<Vec<Serving>>,
     pub(crate) test_database: TestDatabase,
     pub(crate) database: Arc<coral_db::Database>,
     pub(crate) workspaces: WorkspaceModule,
@@ -101,8 +103,6 @@ pub(crate) struct TestModules {
     pub(crate) runs: RunModule,
     pub(crate) upstream: Arc<dyn UpstreamSender>,
     pub(crate) clock: Arc<TestClock>,
-    /// The tasks that serve Run Modules' Runs on Run Executors.
-    pub(crate) serving: Mutex<Vec<Serving>>,
 }
 
 impl TestModules {

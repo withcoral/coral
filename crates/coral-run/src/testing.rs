@@ -9,10 +9,22 @@ use crate::RunModule;
 /// harness's concurrent cells.
 const ROOM: u32 = 128;
 
-/// The tasks that serve one Run Module's Runs. Dropping it stops them.
+/// The tasks that serve one Run Module's Runs. Dropping it aborts them;
+/// [`Self::stop`] also waits until they have ended.
 pub struct Serving {
-    tasks: Vec<tokio::task::AbortHandle>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
     _retire: tokio::sync::oneshot::Sender<()>,
+}
+
+impl Serving {
+    /// Stops the tasks and waits until each has ended, so that no take loop
+    /// of this Serving takes a Run afterwards.
+    pub async fn stop(mut self) {
+        for task in std::mem::take(&mut self.tasks) {
+            task.abort();
+            drop(task.await);
+        }
+    }
 }
 
 impl Drop for Serving {
@@ -58,19 +70,19 @@ pub async fn serve_on_run_executor_within(
         .expect("bind the link");
     let address = format!("http://{}", listener.local_addr().expect("its address"));
     let streams = link.streams();
-    let serving = tokio::spawn(link.serve(listener, std::future::pending()));
+    let serving =
+        tokio::spawn(async move { drop(link.serve(listener, std::future::pending()).await) });
     let taker = runs.clone();
-    let taking = tokio::spawn(async move { taker.take_runs(streams, None).await });
+    let taking = tokio::spawn(async move {
+        let _never = taker.take_runs(streams, None).await;
+    });
     let (retire, executor) =
         coral_run_executor::testing::spawn_run_executor_at(&address, ROOM, limits, None);
+    let executor = tokio::spawn(async move { drop(executor.await) });
     (
         runs,
         Serving {
-            tasks: vec![
-                serving.abort_handle(),
-                taking.abort_handle(),
-                executor.abort_handle(),
-            ],
+            tasks: vec![serving, taking, executor],
             _retire: retire,
         },
     )

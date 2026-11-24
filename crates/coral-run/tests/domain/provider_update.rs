@@ -484,8 +484,8 @@ async fn a_rename_an_owner_raced_is_a_failure_the_program_catches() {
     );
 }
 
-/// Renames through the real workflow, but stalls first until released, as a
-/// worker that dies there would.
+/// Renames through the real workflow, but stalls first until released, so
+/// the Run can end while the rename is in flight.
 struct StallingRenamer {
     workflow: coral_administration::ProviderWorkflow,
     entered: AtomicBool,

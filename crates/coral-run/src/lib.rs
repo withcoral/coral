@@ -53,9 +53,12 @@
 //!   release the rest once their leases lapse.
 //!   [`RunModule::release_run_executor`] releases one at once. Coral never
 //!   resumes a Run.
-//! - [`RunModule::shutdown`] refuses new Runs and drains the Run streams:
-//!   each moves to another Coral Instance once no dispatch is in flight on
-//!   it, and a local child's Run ends at the drain's length.
+//! - [`RunModule::shutdown`] refuses new Runs and drains the Run streams. A
+//!   dialed Run Executor's stream moves to another Coral Instance once no
+//!   dispatch is in flight on it, or at once at the drain's length, when the
+//!   Coral Instance it reopens on ends the calls still in flight
+//!   `indeterminate`. A local child's stream cannot move: its Run ends
+//!   interrupted, or timed out past its deadline, at the drain's length.
 //! - [`approval::ApprovalModule`] exposes human-only exact Invocation decisions;
 //!   request validity and lifecycle evidence stay behind that separate Interface.
 //!

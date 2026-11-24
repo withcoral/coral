@@ -6,8 +6,9 @@
 //! Coral Instance's wake-up reader, and it runs the snapshot checks of the
 //! parked waits, whose findings come back as [`Message::Prechecked`].
 //!
-//! Every write the loop starts ends on an answer, never on the clock. A
-//! chunk commit the database does not answer is resolved by rereading the Run
+//! Every write the loop starts ends on an answer, never on the clock, unless
+//! the loop retires first: then nothing is left to tell, and the reread
+//! stops. A chunk commit the database does not answer is resolved by rereading the Run
 //! row under the loop's claim: landed (the row carries the commit time and
 //! the watermark this very attempt wrote), fenced (another claim, or an
 //! ended Run), moved (another writer moved the head: the chunk is rebuilt on

@@ -150,14 +150,19 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   while the row names its Coral Instance as the stream's holder. In the
   Shutdown Drain, a loop dispatches no call the Program makes after the
   drain starts, and once its Coral Instance holds no pull stream and no
-  dispatch is in flight, or at the drain's length, it detaches and ends the
-  stream cleanly. A local child's stream can reopen only on its parent, so
+  dispatch is in flight, it detaches and ends the stream cleanly. At the
+  drain's length it moves the stream at once, and the Coral Instance the
+  stream reopens on ends the calls still in flight `indeterminate`. A local
+  child's stream can reopen only on its parent, so
   its loop keeps dispatching through the drain, and at the drain's length
   it ends the Run Interrupted, or TimedOut past its deadline.
 - A nonterminal Run has three writers: its loop, the Coral Instance that
   receives an outside request for it (a decision on one of its Approval
-  Requests, or a cancellation), and the Run sweeper. Each writes under the
-  claim and the head, so the first commit wins, and each takes its rows in
+  Requests, or a cancellation), and the Run sweeper, one Coral Instance at a
+  time, elected by a lease row. Each writes under the claim and the head, so
+  the first commit wins: a receiver whose write found the head moved rereads
+  and retries a bounded number of times, then answers
+  `RunRequestNotYetRecorded`, which its caller retries. Each takes its rows in
   one order: the Invocation and Approval Request rows, then the Run row;
   none holds the Run row first. A loop learns of another writer only from
   the Run's head, so give such a writer no side table to tell it. Only the

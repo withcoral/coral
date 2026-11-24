@@ -16,9 +16,9 @@ const POLICY: DestinationPolicy =
 /// The Sub-agent's tools over the real modules, and a lead's caller in a
 /// Task of its own.
 struct Harness {
-    _fixture: TestDatabase,
     /// Serves the Runs on a Run Executor in this process.
     _serving: coral_run::testing::Serving,
+    _fixture: TestDatabase,
 
     tasks: TaskModule,
     tools: RunTools,

@@ -17,15 +17,16 @@ use crate::{
     run_repository,
 };
 
-/// How much longer than its shutdown grace a cancellation, or the end of the
-/// Shutdown Drain, waits for the owner to end the Run: the owner's last
-/// settle attempt and its terminal write.
+/// How much longer than the shutdown grace the end of the Shutdown Drain
+/// waits for the loops it moves or interrupts: a loop's last settle attempt
+/// and its terminal write.
 pub(crate) const SETTLE_MARGIN: Duration = Duration::from_secs(1);
 
 impl RunModule {
-    /// Cancels the Run and returns it as recorded. Whichever Coral Instance
-    /// receives the cancellation ends the Run in one chunk under its claim
-    /// and head ([ADR 0027](../../docs/adr/0027-run-executors-compile-and-execute-programs.md)).
+    /// Cancels the Run and returns it as recorded. For a Run that waits for,
+    /// or is held by, a Run Executor, whichever Coral Instance receives the
+    /// cancellation ends the Run in one chunk under its claim and head
+    /// ([ADR 0027](../../docs/adr/0027-run-executors-compile-and-execute-programs.md)).
     /// The first termination wins, and a repeat receives the recorded answer;
     /// a terminal Run is shown as it is.
     ///

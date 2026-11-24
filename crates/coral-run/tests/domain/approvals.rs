@@ -1397,7 +1397,7 @@ async fn approval_does_not_bypass_a_later_restrictive_policy_at_the_enforcement_
     clippy::too_many_lines,
     reason = "one decided event seeds the fault; the rest is the one scenario"
 )]
-async fn a_decision_persistence_fault_ends_the_run_and_records_no_partial_decision() {
+async fn a_decision_persistence_fault_leaves_the_run_waiting_and_records_no_partial_decision() {
     let mut fixture = TestModules::new(Arc::new(
         crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap(),
     ))

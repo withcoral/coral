@@ -285,7 +285,7 @@ async fn a_canceled_run_records_its_program_termination() {
 
 /// Coral records what a Run keeps: each Emission and Log by size. The Run
 /// Executor keeps the Run's output budget, so the Emission over it never
-/// reaches Coral, and the Run Executor counts that rejection.
+/// reaches Coral and is not counted here (#3406).
 #[tokio::test]
 async fn program_output_records_what_the_run_keeps() {
     let (metrics, _guard) = measured();

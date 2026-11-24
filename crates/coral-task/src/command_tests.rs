@@ -26,14 +26,14 @@ const RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_mins(5
 const SPINS: &str = "while (true) {}";
 
 struct Fixture {
+    /// Serves the Runs on a Run Executor in this process.
+    _serving: coral_run::testing::Serving,
     test_database: TestDatabase,
     tasks: TaskModule,
     commands: TaskCommands,
     /// The index the fixture's saves and deletes notify.
     index: coral_search::SearchIndex,
     runs: coral_run::RunModule,
-    /// Serves the Runs on a Run Executor in this process.
-    _serving: coral_run::testing::Serving,
     functions: coral_tools::PrivateToolModule,
     user: coral_workspace::AuthenticatedUser,
     actor: AuthenticatedPrincipal,

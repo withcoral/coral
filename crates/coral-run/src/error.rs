@@ -508,7 +508,7 @@ pub enum Error {
     RunEnded,
     /// The Run stream's loop stopped before it recorded the request. The
     /// outcome is unknown: read the Run again.
-    #[error("Program Run Owner stopped before recording the request")]
+    #[error("Program Run stream stopped before recording the request")]
     OwnerLost,
     /// An outside Run Request was not recorded: other writers moved the Run
     /// under every attempt, or an older release's Run Owner still holds the

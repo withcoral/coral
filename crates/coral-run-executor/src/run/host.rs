@@ -605,6 +605,11 @@ impl RunHost {
             Err(coral_v8::Error::InvalidProgramValue(message)) => {
                 failure("invalid_program_value", message, None)
             }
+            // A stop settled what the Program awaited: the Run ends as the
+            // stop says.
+            Err(coral_v8::Error::PendingProgram) if self.state().stopped => {
+                end(self.state().end.unwrap_or(FinishEnd::HostTerminated))
+            }
             // Nothing is left that could settle what the Program awaits: no
             // Tool call is in flight, and no other event source exists.
             Err(coral_v8::Error::PendingProgram) => failure(

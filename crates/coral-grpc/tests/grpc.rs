@@ -45,6 +45,8 @@ use std::sync::{Arc, OnceLock};
 use tonic::transport::Channel;
 
 struct Fixture {
+    /// Serves the Runs on a Run Executor in this process.
+    _serving: coral_run::testing::Serving,
     database: TestDatabase,
     _vault_dir: tempfile::TempDir,
     _server: TestServer,
@@ -64,8 +66,6 @@ struct Fixture {
     provider_module: coral_provider::ProviderModule,
     tasks: coral_task::TaskModule,
     runs: coral_run::RunModule,
-    /// Serves the Runs on a Run Executor in this process.
-    _serving: coral_run::testing::Serving,
     private_tools: coral_tools::PrivateToolModule,
 }
 

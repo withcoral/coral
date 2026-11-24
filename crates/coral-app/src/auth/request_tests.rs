@@ -595,6 +595,8 @@ async fn response_message(response: reqwest::Response) -> serde_json::Value {
 }
 
 struct Fixture {
+    /// Serves the Runs on a Run Executor in this process.
+    _serving: coral_run::testing::Serving,
     _database: coral_test_support::TestDatabase,
     organization: OrganizationModule,
     workspaces: WorkspaceModule,
@@ -607,8 +609,6 @@ struct Fixture {
     issuer: SessionTokenIssuer,
     auth: WorkspaceAuthentication,
     server: coral_mcp::RunningMcpHttpServer,
-    /// Serves the Runs on a Run Executor in this process.
-    _serving: coral_run::testing::Serving,
 }
 impl Fixture {
     async fn new() -> Self {

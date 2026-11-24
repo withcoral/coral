@@ -49,12 +49,12 @@ const NOON: UnixNanos = UnixNanos::new(1_795_003_200_000_000_000);
 /// A lead in a Workspace of its own, over the real modules, and the HTTP
 /// stub that stands in for the model.
 struct Lead {
+    /// Serves the Runs on a Run Executor in this process.
+    _serving: coral_run::testing::Serving,
     _fixture: TestDatabase,
     database: Arc<Database>,
     workspaces: WorkspaceModule,
     modules: McpModules,
-    /// Serves the Runs on a Run Executor in this process.
-    _serving: coral_run::testing::Serving,
 
     actor: AuthenticatedPrincipal,
     workspace_id: WorkspaceId,

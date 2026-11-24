@@ -14,7 +14,10 @@ impl TestModules {
     /// any Run Module it served before, and returns it: two take loops on
     /// one database would take each other's Runs.
     pub(crate) async fn served(&self, runs: RunModule) -> RunModule {
-        self.serving.lock().expect("the serving tasks").clear();
+        let before = std::mem::take(&mut *self.serving.lock().expect("the serving tasks"));
+        for serving in before {
+            serving.stop().await;
+        }
         let (runs, serving) = serve_runs(runs).await;
         self.serving
             .lock()

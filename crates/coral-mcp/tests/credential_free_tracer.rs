@@ -221,6 +221,9 @@ impl Drop for TestUpstream {
 /// One credential-free MCP server over a fresh database: Workspaces A and B, the
 /// weather Provider published and enabled in A, and an Agent registered in A.
 struct Tracer {
+    /// Serves the Runs on a Run Executor in this process, until a test
+    /// stops it.
+    serving: std::sync::Mutex<Option<coral_run::testing::Serving>>,
     database: TestDatabase,
     upstream: TestUpstream,
     server: coral_mcp::RunningMcpHttpServer,
@@ -233,9 +236,6 @@ struct Tracer {
     /// Publishes the Providers a test adds to Workspace A.
     providers: ProviderModule,
     runs: RunModule,
-    /// Serves the Runs on a Run Executor in this process, until a test
-    /// stops it.
-    serving: std::sync::Mutex<Option<coral_run::testing::Serving>>,
     policies: ToolPolicyModule,
     approvals: coral_run::approval::ApprovalModule,
     /// Reads what Coral recorded about Private Tool changes.
@@ -1990,11 +1990,14 @@ async fn a_lost_worker_run_is_interrupted_not_a_tool_error() {
     )
     .await;
     // The Run Executor's lease outlives the test, and RunModule has no clock
-    // to inject. The test moves it back to the epoch, so it does not wait
-    // the lease out.
+    // to inject. The test moves the lost worker's back to the epoch, so it
+    // does not wait the lease out.
     let lapsed = tracer
         .database
-        .execute_fixture_sql("UPDATE run_executors SET lease_until = 0")
+        .execute_fixture_sql(&format!(
+            "UPDATE run_executors SET lease_until = 0 WHERE id = \
+             (SELECT run_executor_id FROM program_run_records WHERE id = '{lost_worker}')"
+        ))
         .await
         .expect("lapse the lost Run Executor's lease");
     assert_eq!(lapsed, 1, "the lost worker's Run Executor held a lease");
