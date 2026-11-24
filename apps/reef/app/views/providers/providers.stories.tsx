@@ -289,7 +289,7 @@ export const ConfigurationRefusedAutomaticClient: Story = {
         credential: null,
         configurationErrors: {
           'application.client_id':
-            'Automatic client setup did not work for this service. ' +
+            'The service did not accept automatic client registration. ' +
             'Register an OAuth application with the service, and give its client ID.',
         },
       }}

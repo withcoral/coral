@@ -993,7 +993,7 @@ fn materialize_content(
         {
             return Err(diagnostic(
                 "unsupported_openapi_encoding",
-                "The request body sets an encoding. An encoding applies only to a form or multipart body.",
+                "This tool supports encoding only on form or multipart request bodies.",
             ));
         }
         let encodings = encodings.as_object().ok_or_else(|| {

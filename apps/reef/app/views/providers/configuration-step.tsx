@@ -213,7 +213,7 @@ export function ConfigurationStep({
   const review = setup.configuration!
   const errors = result?.configurationErrors ?? review.errors
   // A refused Next names the fields at fault, which can be far down the page:
-  // bring the first one into view and put the caret in it.
+  // bring the first control that marks itself invalid into view and focus it.
   const refused = result?.configurationErrors
   useEffect(() => {
     if (!refused || Object.keys(refused).length === 0) return

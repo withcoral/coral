@@ -115,8 +115,8 @@ export function AddProviderEntry({
                 <Button.TextButton
                   type="submit"
                   form={detailsForm}
-                  disabled={detailsReading}
-                  busy={detailsReading}
+                  disabled={detailsReading || pending}
+                  busy={detailsReading || pending}
                 >
                   {SOURCE_VERB[chosen.kind]}
                 </Button.TextButton>

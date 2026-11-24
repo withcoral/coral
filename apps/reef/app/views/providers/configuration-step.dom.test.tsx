@@ -425,8 +425,8 @@ it('keeps a server whose URL differs from the suggested one in view', async () =
 // on how to get a client ID.
 it('shows a refused automatic client setup on Client ID, in place of its hint', async () => {
   const message =
-    'Automatic client setup did not work for this service. ' +
-    'Register an OAuth application with auth.example.test. ' +
+    'auth.example.test did not accept automatic client registration. ' +
+    'Register an OAuth application with it. ' +
     'Add the callback URL to its allowed redirect URLs. Then enter its client ID here.'
   await renderStep(
     null,
@@ -446,7 +446,7 @@ it('shows a refused automatic client setup on Client ID, in place of its hint', 
       credential: null,
       configurationErrors: {
         'application.client_id':
-          'Automatic client setup did not work for this service. ' +
+          'The service did not accept automatic client registration. ' +
           'Register an OAuth application with the service, and give its client ID.',
       },
     },
@@ -461,7 +461,9 @@ it('shows a refused automatic client setup on Client ID, in place of its hint', 
       .split(' ')
       .map((id) => document.getElementById(id)?.textContent),
   ).toEqual([message])
-  // Said once, in the hint's place: no hint beside it and no banner repeats it.
+  // Said once, as the focused field's description: not also an alert, no hint
+  // beside it, and no banner repeating it.
   expect(document.body.textContent).not.toContain('Leave empty to use automatic client setup.')
-  expect(alerts()).toEqual([message])
+  expect(alerts()).toEqual([])
+  expect(document.body.textContent?.split(message).length).toBe(2)
 })

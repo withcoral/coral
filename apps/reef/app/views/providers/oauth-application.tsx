@@ -141,10 +141,11 @@ export function OAuthApplicationBlock({
             {clientIdRefused ? (
               <FieldError
                 id={clientErrorId}
+                alert={false}
                 message={
                   device
-                    ? `Automatic client setup did not work for this service. Register an OAuth application with ${registrar}. Then enter its client ID here.`
-                    : `Automatic client setup did not work for this service. Register an OAuth application with ${registrar}. Add the callback URL to its allowed redirect URLs. Then enter its client ID here.`
+                    ? `${registrar} did not accept automatic client registration. Register an OAuth application with it. Then enter its client ID here.`
+                    : `${registrar} did not accept automatic client registration. Register an OAuth application with it. Add the callback URL to its allowed redirect URLs. Then enter its client ID here.`
                 }
               />
             ) : (

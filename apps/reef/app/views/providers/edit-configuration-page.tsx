@@ -20,7 +20,7 @@ import { DiscoveryStep, SignInStatus } from './setup-steps'
 import { usePublication } from './publication-form'
 import { StepFrame, StepPage } from './step-frame'
 import { UpdateAuthorization } from './update-authorization'
-import { accountLabels, useAccountAudience } from './account-labels'
+import { accountLabels, connectAgain, useAccountAudience } from './account-labels'
 import { AttemptEnded } from './attempt-ended'
 import type { AccountChoice, SetupView, UpdatePageProps } from './types'
 import * as styles from './providers.css'
@@ -344,7 +344,7 @@ export function EditConfigurationPage({
                 <Radio.Item
                   variant="card"
                   value="shared-connect"
-                  description={`${oauth ? `You sign in${held ? ' again' : ' once'}.` : held ? 'You enter other credentials.' : 'You enter the credentials once.'} ${audience.sharedCallers} that account.`}
+                  description={`${connectAgain(oauth, held).shared} ${audience.sharedCallers} that account.`}
                 >
                   {held || currentAccount === 'fixed'
                     ? 'Connect another account'

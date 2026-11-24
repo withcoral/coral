@@ -261,9 +261,9 @@ test.each([
   expect(reading).toBeInTheDocument()
 })
 
-// Catches: a ?recipe= link to a recipe that asks for details opening without the
-// question, or the question replacing the catalog that Cancel returns to.
-test('a link to a recipe with source details opens its dialog over the catalog', async () => {
+// Catches: a recipe the page opens on (as a ?recipe= link gives it) that asks for
+// details opening without the question, or the question replacing the catalog.
+test('a recipe the page opens on asks its source details in a dialog over the catalog', async () => {
   renderRoute(
     <AddProviderEntry
       form={{ csrf: 'test-csrf', requestId: 'test-request' }}
