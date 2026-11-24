@@ -17,15 +17,20 @@ const closed = 'workspaces/00000000-0000-4000-8000-000000000002'
 const requestId = '00000000-0000-4000-8000-0000000000aa'
 const load = () => loader(authRouteTestArgs(new Request(url), {}, null))
 let refuse: ConnectError | null
+/** A change Coral refuses, as its method and workspace, while it accepts the others. */
+let refuseChange: string | null
 let disabled: boolean
 let calls: { method: string; workspace: string; secretStore: string; requestId: string }[]
 
 beforeEach(() => {
   refuse = null
+  refuseChange = null
   disabled = false
   calls = []
   const change = (method: string) => (request: Omit<(typeof calls)[number], 'method'>) => {
     if (refuse) throw refuse
+    if (refuseChange === `${method} ${request.workspace}`)
+      throw new ConnectError('SECRET_STORE_NOT_DEFINED', Code.FailedPrecondition)
     calls.push({
       method,
       workspace: request.workspace,
@@ -97,14 +102,15 @@ beforeEach(() => {
   })
 })
 
-function submit(fields: Record<string, string>) {
+function submit(fields: Record<string, string | string[]>) {
   const form = new FormData()
   form.set('requestId', requestId)
-  for (const [key, value] of Object.entries(fields)) form.set(key, value)
+  for (const [key, value] of Object.entries(fields))
+    for (const one of [value].flat()) form.append(key, one)
   const request = new Request(url, { method: 'POST', headers: { origin }, body: form })
   return action(authRouteTestArgs(request, {}, null))
 }
-const grant = { intent: 'grant', name: 'secretStores/platform', workspace: research }
+const grant = { intent: 'update', name: 'secretStores/platform', grant: research }
 
 // Catches: an owner seeing a resource name, a store Coral cannot read shown as
 // usable, a newer server's state breaking the page, or a grant whose store config
@@ -149,17 +155,12 @@ it('does not exist where the deployment turned secret stores off', async () => {
   expect(failure).toMatchObject({ status: 404 })
 })
 
-// Catches: the form's one key reused across rows, so the second change on a page
-// is refused as a repeat, or a revocation refused as a repeat of its grant.
-it('sends each change with a key of its own', async () => {
-  expect((await submit(grant)).data).toMatchObject({
-    error: null,
-    message: 'Secret store granted.',
-  })
-  await submit({ ...grant, workspace: closed })
-  expect((await submit({ ...grant, intent: 'revoke' })).data).toMatchObject({
-    message: 'Grant revoked.',
-  })
+// Catches: the form's one key reused across changes, so the second change is refused
+// as a repeat, a revocation refused as a repeat of its grant, or a revocation sent before
+// the grants, which takes access away before an edit that fails halfway gives any.
+it('saves an edit as one change per workspace, grants first, each with a key of its own', async () => {
+  const result = await submit({ ...grant, grant: [research, closed], revoke: research })
+  expect(result.data).toMatchObject({ error: null, message: 'Workspaces saved.' })
   expect(calls.map(({ method, workspace }) => [method, workspace])).toEqual([
     ['grant', research],
     ['grant', closed],
@@ -169,12 +170,22 @@ it('sends each change with a key of its own', async () => {
   expect(calls.every((call) => call.secretStore === 'secretStores/platform')).toBe(true)
 })
 
+// Catches: an edit that goes on after a refusal, so the page reports one failure but
+// saved changes after it that the dialog then offers again.
+it('stops at the first change Coral refuses, keeping the ones before it', async () => {
+  refuseChange = `revoke ${closed}`
+  const result = await submit({ ...grant, revoke: [closed, research] })
+  expect(result.init?.status).toBe(409)
+  expect(calls.map(({ method, workspace }) => [method, workspace])).toEqual([['grant', research]])
+})
+
 // Catches: a forged field reaching Coral as another kind of resource.
 it.each([
-  ['an unknown intent', { ...grant, intent: 'delete' }],
+  ['an unknown intent', { ...grant, intent: 'grant' }],
   ['a bad store', { ...grant, name: 'workspaces/other' }],
-  ['a bad workspace', { ...grant, workspace: 'secretStores/other' }],
-  ['no chosen workspace', { ...grant, workspace: '' }],
+  ['a bad workspace to grant', { ...grant, grant: 'secretStores/other' }],
+  ['a bad workspace to revoke', { ...grant, revoke: 'secretStores/other' }],
+  ['no change', { intent: 'update', name: 'secretStores/platform' }],
 ])('rejects %s without calling Coral', async (_case, fields) => {
   const failure: unknown = await submit(fields).catch((error: unknown) => error)
   expect(failure).toMatchObject({ status: 400 })

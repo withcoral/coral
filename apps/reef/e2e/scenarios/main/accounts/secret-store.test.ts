@@ -89,11 +89,13 @@ async function weatherProvider(context: TestContext) {
 async function grantStore(page: Page, store: string, workspaceDisplay: string) {
   await page.goto('/')
   await openSettings(page, 'Secret stores')
-  await page.getByRole('button', { name: `Grant ${store} to a workspace` }).click()
-  const dialog = page.getByRole('dialog')
-  await dialog.getByRole('button', { name: 'Workspace' }).click()
-  await page.getByRole('menuitemradio', { name: workspaceDisplay }).click()
-  await dialog.getByRole('button', { name: 'Grant' }).click()
+  await page.getByRole('button', { name: `Edit the workspaces of ${store}` }).click()
+  const dialog = page.getByRole('dialog', { name: 'Edit workspaces' })
+  await dialog.getByRole('combobox', { name: 'Workspaces' }).fill(workspaceDisplay)
+  await page.getByRole('option', { name: workspaceDisplay }).click()
+  // The open list hides the rest of the dialog, so leave the field to close it before saving.
+  await page.keyboard.press('Tab')
+  await dialog.getByRole('button', { name: 'Save changes' }).click()
   await page
     .getByRole('row', { name: new RegExp(store) })
     .getByText(workspaceDisplay)
