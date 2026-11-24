@@ -36,6 +36,7 @@ export default [
         route('organization/members', 'routes/organization-members.tsx'),
         route('organization/workspaces', 'routes/organization-workspaces.tsx'),
         route('organization/secret-stores', 'routes/organization-secret-stores.tsx'),
+        route('organization/sub-agent', 'routes/organization-sub-agent.tsx'),
         route('usage-data', 'routes/usage-data.tsx'),
       ]),
       route('workspaces/:workspace', 'routes/workspace.tsx'),

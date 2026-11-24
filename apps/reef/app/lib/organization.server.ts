@@ -1,6 +1,10 @@
 import type { OrganizationWorkspace } from '@/generated/coral/management/v1/organization_workspace_pb'
 import { WorkspaceState } from '@/generated/coral/management/v1/workspace_pb'
-import type { OrganizationPersonView, OrganizationWorkspaceView } from '@/views/management/types'
+import type {
+  OrganizationPersonView,
+  OrganizationWorkspaceView,
+  PersonView,
+} from '@/views/management/types'
 import type { ManagementApi } from './management.server'
 import { ownerView, profileView } from './management-views.server'
 
@@ -21,6 +25,27 @@ export async function enabledOrganizationPeople(
     pageToken = page.nextPageToken
   } while (pageToken)
   return people.toSorted((a, b) => sortKey(a).localeCompare(sortKey(b)))
+}
+
+/**
+ * One organization member, enabled or not, by user name. Null for a person who left. Only an
+ * organization owner can list the members.
+ */
+export async function organizationMember(
+  api: Pick<ManagementApi, 'organizationMemberships'>,
+  user: string,
+): Promise<PersonView | null> {
+  let pageToken = ''
+  do {
+    const page = await api.organizationMemberships.listOrganizationMemberships({
+      pageSize: 100,
+      pageToken,
+    })
+    const member = page.memberships.find((m) => m.profile?.user === user)
+    if (member) return profileView(member.profile, user)
+    pageToken = page.nextPageToken
+  } while (pageToken)
+  return null
 }
 
 const sortKey = (p: OrganizationPersonView) => p.profile.name || p.profile.email
