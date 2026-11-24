@@ -4,11 +4,12 @@ use super::*;
 #[tokio::test(flavor = "multi_thread")]
 async fn internal_invocations_do_not_end_waits_and_initial_wait_batches_authored_output() {
     let upstream = SequencedUpstream::new(HttpOutcome::new(200, serde_json::json!({})));
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:lean-wait", "Meaningful waits")
         .await;
@@ -85,11 +86,12 @@ async fn internal_invocations_do_not_end_waits_and_initial_wait_batches_authored
 #[tokio::test(flavor = "multi_thread")]
 async fn a_batching_wait_does_not_end_on_a_log() {
     let upstream = SequencedUpstream::new(HttpOutcome::new(200, serde_json::json!({})));
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:batched-wait", "Batched waits")
         .await;
@@ -131,11 +133,12 @@ async fn a_batching_wait_does_not_end_on_a_log() {
 #[tokio::test(flavor = "multi_thread")]
 async fn cursorless_wait_replays_earlier_output_and_ends_only_on_later_output() {
     let upstream = SequencedUpstream::new(HttpOutcome::new(200, serde_json::json!({})));
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         upstream.clone(),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:cursorless-wait", "Cursorless waits")
         .await;
@@ -211,11 +214,12 @@ async fn cursorless_wait_replays_earlier_output_and_ends_only_on_later_output() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn authored_pages_skip_internal_records_without_losing_order_or_replay() {
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         Arc::new(ScriptedUpstream::json(200, serde_json::json!({}))),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:lean-pages", "Authored output pages")
         .await;
@@ -366,7 +370,7 @@ async fn waiting_observation_falls_back_to_polling_during_a_notification_outage(
 /// received no Tool Result, get none.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_thrown_program_gets_the_shapes_of_its_tool_results_with_its_failure() {
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         Arc::new(ScriptedUpstream::json(
             200,
@@ -374,6 +378,7 @@ async fn a_thrown_program_gets_the_shapes_of_its_tool_results_with_its_failure()
         )),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:result-shapes", "Result shapes")
         .await;
@@ -450,7 +455,7 @@ async fn a_thrown_program_gets_the_shapes_of_its_tool_results_with_its_failure()
 async fn shapes_read_only_the_latest_tool_results_that_fit_the_read_budget() {
     let large =
         "x".repeat(usize::try_from(crate::tool_result_shape::RESULTS_READ_MAX_BYTES).unwrap());
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default()).unwrap()),
         Arc::new(RotatingUpstream::json([
             serde_json::json!({"items": []}),
@@ -459,6 +464,7 @@ async fn shapes_read_only_the_latest_tool_results_that_fit_the_read_budget() {
         ])),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:result-budget", "Result budget")
         .await;

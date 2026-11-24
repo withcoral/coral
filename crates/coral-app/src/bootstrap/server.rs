@@ -201,13 +201,10 @@ impl ServerBuilder {
         self
     }
 
-    /// Registers the factory of the tool surface MCP serves in place of core's.
+    /// Registers the factory of the Sub-agent's Tools.
     #[must_use]
-    pub fn with_mcp_interface_factory(
-        mut self,
-        factory: Arc<dyn super::McpInterfaceFactory>,
-    ) -> Self {
-        self.launcher.mcp_interface_factory = Some(factory);
+    pub fn with_sub_agent_factory(mut self, factory: Arc<dyn super::SubAgentToolsFactory>) -> Self {
+        self.launcher.sub_agent_factory = Some(factory);
         self
     }
 
@@ -457,6 +454,7 @@ impl PreparedServerBuilder {
             clock: Arc::clone(&clock),
             policy,
             runtime_limits: deployment_config.runtime_limits(),
+            sub_agent: deployment_config.configures_sub_agent(),
             human_interface: deployment_config.human_interface().clone(),
             credentials: CredentialParts {
                 vault,
@@ -541,6 +539,7 @@ impl PrivateListeners {
     pub(crate) async fn serve(self, engine: BootedEngine) -> Result<RunningServer, AppError> {
         let listener = TcpListener::bind(self.grpc_bind).await?;
         let local_addr = listener.local_addr()?;
+        let run_executor_addr = self.run_executors.listener.local_addr()?;
         let (lapse, license_lapse) = watch::channel(None);
         let engine = engine.run(LicenseRecheck {
             edition: self.edition,
@@ -573,6 +572,7 @@ impl PrivateListeners {
             mcp_origin,
             endpoint_uri: format!("http://{local_addr}"),
             local_addr,
+            run_executor_addr,
             authorization_server: self.held_authorization_server,
             license_notices: self.license_notices,
             license_lapse,
@@ -790,6 +790,7 @@ pub struct RunningServer {
     mcp_origin: Arc<std::sync::OnceLock<String>>,
     endpoint_uri: String,
     local_addr: SocketAddr,
+    run_executor_addr: SocketAddr,
     authorization_server: Option<Box<CoralAuthorizationServer>>,
     license_notices: Vec<coral_edition::LicenseNotice>,
     /// Why the License recheck stopped Coral, once it has.
@@ -823,6 +824,13 @@ impl RunningServer {
     #[must_use]
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
+    }
+
+    /// The address the Run Executor listener is bound to, which a Run
+    /// Executor that Coral did not start dials.
+    #[must_use]
+    pub fn run_executor_addr(&self) -> SocketAddr {
+        self.run_executor_addr
     }
 
     /// This start's Coral Instance id, which the Runs it holds record.
@@ -893,7 +901,7 @@ impl RunningServer {
         self.shutdown_inner().await
     }
 
-    /// Reports not ready, stops the expired-lease sweep and drains the Runs
+    /// Reports not ready, stops the take loop and drains the Runs
     /// ([`coral_run::RunModule::shutdown`]) while every listener still
     /// serves; stop the listeners after it.
     pub async fn drain_runs(&self) {

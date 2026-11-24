@@ -152,7 +152,8 @@ async fn a_program_search_embeds_its_query_with_the_model_of_the_run_modules_sea
         scope.fixture.workspaces.clone(),
     )
     .with_model(loaded);
-    scope.fixture.runs = scope.fixture.runs.clone().with_search(search);
+    let runs = scope.fixture.runs.clone().with_search(search);
+    scope.fixture.replace_runs(runs).await;
 
     let page = scope
         .outcome(submission(

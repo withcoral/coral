@@ -12,8 +12,9 @@
 //! upstream result at Applied, a known failure once it is recorded. Operational
 //! failure is host-fatal rather than catchable. Known failures persist the same
 //! closed [`CoralFailure`] code and safe [`Rejection`] message projected to the
-//! Program, even during child shutdown. Only shutdown and recovery record lost
-//! dispatching work as indeterminate; a stop that reaches the owner before a
+//! Program, even during child shutdown. Only a Run's termination, and a
+//! reopen of its stream on another Coral Instance, record lost dispatching
+//! work as indeterminate; a stop that reaches the owner before a
 //! permitted Invocation sends ends it as `run_terminated` instead, as Run
 //! termination ends a Private Tool call whose body was still running.
 
@@ -263,6 +264,8 @@ pub(crate) struct ToolInvoker {
     search: coral_search::UniversalSearchModule,
     /// What `coral.addCustomTool`, `updateCustomTool` and `removeCustomTool` author through.
     private_tools: Option<crate::builtin::PrivateTools>,
+    /// What `coral.agent` and `coral.cancelAgent` reach the Sub-agent through.
+    sub_agents: crate::builtin::SubAgentSlot,
     human_interface: Option<crate::HumanInterfaceUrl>,
     database: Arc<coral_db::Database>,
     workspaces: WorkspaceModule,
@@ -299,6 +302,7 @@ impl ToolInvoker {
         provider_renamer: Option<Arc<dyn coral_provider::ProviderRenamer>>,
         search: coral_search::UniversalSearchModule,
         private_tools: Option<crate::builtin::PrivateTools>,
+        sub_agents: crate::builtin::SubAgentSlot,
         human_interface: Option<crate::HumanInterfaceUrl>,
         database: Arc<coral_db::Database>,
         workspaces: WorkspaceModule,
@@ -318,6 +322,7 @@ impl ToolInvoker {
             provider_renamer,
             search,
             private_tools,
+            sub_agents,
             human_interface,
             database,
             workspaces,
@@ -1046,10 +1051,12 @@ impl ToolInvoker {
             renamer: self.provider_renamer.as_deref(),
             search: &self.search,
             private_tools: self.private_tools.as_ref(),
+            sub_agents: self.sub_agents.get().map(AsRef::as_ref),
             actor: &self.actor,
             context: context.as_ref(),
             principal: &self.principal,
             workspace_id: &self.workspace_id,
+            run_id: &self.run_id,
             human_interface,
             run: self,
         };
@@ -2962,6 +2969,10 @@ impl crate::builtin::InvokingRun for ToolInvoker {
 
     async fn stopped(&self) {
         self.stop.requested().await;
+    }
+
+    fn canceled(&self) -> bool {
+        self.stop.is_canceled()
     }
 
     fn now(&self) -> Result<i64, Error> {

@@ -8,8 +8,8 @@ use serde::de::IgnoredAny;
 use zeroize::Zeroizing;
 
 use super::env::AppEnvironment;
-use super::mcp_interface::ConfiguredMcpInterface;
 use super::secret_store_config::SecretStoreDefinitions;
+use super::sub_agent::ConfiguredSubAgent;
 use super::{AppError, is_loopback_ip};
 use crate::auth::{
     AuthListenerSettings, AuthSection, AuthServerError, AuthSettings, CoralAuthorizationServer,
@@ -90,8 +90,8 @@ pub(crate) struct Launcher {
     pub(crate) usage_environment: Option<coral_usage::SendEnvironment>,
     /// What the launching binary adds to Coral, such as its Edition check.
     pub(crate) extensions: super::runtime::Extensions,
-    /// Builds the tool surface MCP serves in place of core's.
-    pub(crate) mcp_interface_factory: Option<std::sync::Arc<dyn super::McpInterfaceFactory>>,
+    /// Builds the Sub-agent's Tools from its config section.
+    pub(crate) sub_agent_factory: Option<std::sync::Arc<dyn super::SubAgentToolsFactory>>,
     /// The binary local Run Executors run, for a test that starts Coral in
     /// its own process. Without one, this process's own binary.
     pub(crate) run_executor_program: Option<std::path::PathBuf>,
@@ -164,9 +164,10 @@ impl LoadedServerConfig {
         grpc_bind: Option<SocketAddr>,
     ) -> Result<DeploymentConfig, AppError> {
         let mut document = Document::parse(&self.raw).map_err(AppError::ConfigDecode)?;
-        let mcp_interface = match &launcher.mcp_interface_factory {
-            Some(factory) => ConfiguredMcpInterface::take(factory, &mut document)
-                .map_err(AppError::ConfigDecode)?,
+        let sub_agent = match &launcher.sub_agent_factory {
+            Some(factory) => {
+                ConfiguredSubAgent::take(factory, &mut document).map_err(AppError::ConfigDecode)?
+            }
             None => None,
         };
         // A section that no factory took is an unknown field here.
@@ -234,7 +235,7 @@ impl LoadedServerConfig {
                 (mcp_http, auth_bind_addr, Some(session_auth))
             }
         };
-        let run_executor = listeners.run_executor.validate(session_auth.is_some())?;
+        let run_executor = listeners.run_executor.validate()?;
         let human_interface = human_interface(
             listeners.web,
             session_auth.is_some(),
@@ -257,7 +258,7 @@ impl LoadedServerConfig {
             credential_key_env,
             license,
             secret_stores,
-            mcp_interface,
+            sub_agent,
             session_auth,
             telemetry: TelemetryConfig { otel },
         })
@@ -292,7 +293,7 @@ pub(crate) struct DeploymentConfig {
     license: Option<LicenseSource>,
     /// None when the deployment turned Secret Stores off.
     secret_stores: Option<SecretStoreDefinitions>,
-    mcp_interface: Option<ConfiguredMcpInterface>,
+    sub_agent: Option<ConfiguredSubAgent>,
     session_auth: Option<SessionAuthConfig>,
     telemetry: TelemetryConfig,
 }
@@ -460,6 +461,12 @@ impl DeploymentConfig {
         self.local_run_executors
     }
 
+    /// Whether the config file has the registered Sub-agent's section, so
+    /// that the built-in catalog holds `agent` and `cancelAgent`.
+    pub(crate) const fn configures_sub_agent(&self) -> bool {
+        self.sub_agent.is_some()
+    }
+
     /// Reef's origin, where Coral links a person.
     pub(crate) fn human_interface(&self) -> &coral_mcp::HumanInterfaceUrl {
         &self.human_interface
@@ -524,7 +531,7 @@ impl DeploymentConfig {
             outbound_policy: self.outbound_policy(defaults),
             mcp_oauth_client_bootstrap: self.mcp_oauth_client_bootstrap(),
             mcp_http: self.mcp_http.clone(),
-            mcp_interface: self.mcp_interface.clone(),
+            sub_agent: self.sub_agent.clone(),
             auth_bind_addr: self.auth_bind_addr,
             session_auth: self.resolve_session_auth()?,
             human_interface: self.human_interface.clone(),
@@ -998,9 +1005,10 @@ struct RunExecutorListenerConfig {
 const RUN_EXECUTOR_TOKEN_ENV: &str = "listeners.run_executor.token_env";
 
 impl RunExecutorListenerSettings {
-    /// Checks the section without reading a token. Without `[auth]`
-    /// (`authenticated` false) its bind must be loopback.
-    fn validate(self, authenticated: bool) -> Result<RunExecutorListenerConfig, AppError> {
+    /// Checks the section without reading a token. Off loopback it needs an
+    /// operator token, with or without `[auth]`: Coral admits a Run Executor
+    /// by its token, never by the network it dials from (ADR 0027).
+    fn validate(self) -> Result<RunExecutorListenerConfig, AppError> {
         const SETTING: &str = RUN_EXECUTOR_TOKEN_ENV;
         const BIND: &str = "listeners.run_executor.bind";
         let names = match self.token_env {
@@ -1014,16 +1022,11 @@ impl RunExecutorListenerSettings {
                 ));
             }
         };
-        if !is_loopback_ip(self.bind.ip()) {
-            if !authenticated {
-                return Err(refused_without_auth(BIND, "must be loopback"));
-            }
-            if names.is_empty() {
-                return Err(refused(
-                    BIND,
-                    format_args!("off loopback requires {SETTING}"),
-                ));
-            }
+        if !is_loopback_ip(self.bind.ip()) && names.is_empty() {
+            return Err(refused(
+                BIND,
+                format_args!("off loopback requires {SETTING}"),
+            ));
         }
         let token_env = names
             .iter()
@@ -1185,7 +1188,7 @@ pub struct ServeSettings {
     outbound_policy: coral_outbound::DestinationPolicy,
     mcp_oauth_client_bootstrap: coral_provider::account::ClientBootstrapPolicy,
     pub(super) mcp_http: McpHttpServeConfig,
-    pub(super) mcp_interface: Option<ConfiguredMcpInterface>,
+    pub(super) sub_agent: Option<ConfiguredSubAgent>,
     auth_bind_addr: SocketAddr,
     pub(super) session_auth: Option<SessionAuthSettings>,
     human_interface: coral_mcp::HumanInterfaceUrl,
@@ -2683,10 +2686,8 @@ client_secret = 'test-secret'
         let env = [("TOKEN_A", token.as_str()), ("TOKEN_B", token.as_str())];
         let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
         let public = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 50052));
-        let remote = authenticated(
-            &format!("{MCP}{PUBLIC_RUN_EXECUTORS}token_env = 'TOKEN_A'\n"),
-            "",
-        );
+        let remote = format!("{PUBLIC_RUN_EXECUTORS}token_env = 'TOKEN_A'\n");
+        let remote_with_auth = authenticated(&format!("{MCP}{remote}"), "");
         for (raw, bind, tokens) in [
             (String::new(), loopback, 0),
             (
@@ -2700,6 +2701,7 @@ client_secret = 'test-secret'
                 2,
             ),
             (remote, public, 1),
+            (remote_with_auth, public, 1),
         ] {
             let listener = run_executor_listener(&raw, &env).expect(&raw);
             assert_eq!(
@@ -2711,8 +2713,7 @@ client_secret = 'test-secret'
     }
 
     #[test]
-    fn the_run_executor_listener_refuses_to_boot_without_a_usable_token_or_off_loopback_without_auth()
-     {
+    fn the_run_executor_listener_refuses_to_boot_without_a_usable_token() {
         let short = "t".repeat(31);
         let spaced = format!("{} t", "t".repeat(31));
         let env = [("SHORT", short.as_str()), ("SPACED", spaced.as_str())];

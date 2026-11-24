@@ -1,9 +1,10 @@
 //! The Run and Tool Invocation metrics `coral-run` records at its phase
 //! boundaries. Each test records to its own capture through the subscriber
-//! it sets for its thread, which every Run Owner task on its current-thread
-//! runtime, and every Program thread the owner starts, inherits.
+//! it sets for its thread, which every Run stream loop task on its
+//! current-thread runtime, and every thread a loop starts, inherits.
 use super::*;
 
+use super::run_streams::{Scripted, finish_terminated, take};
 use coral_telemetry::testing::{MetricCapture, MetricPoint};
 
 /// A capture every Run in the calling test records to, until the guard drops.
@@ -60,25 +61,25 @@ fn owned(pairs: &[(&str, u64)]) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// A Run counts its acceptance, its claims, each phase and its end, and
-/// leaves no Run active or queued once its owner retires.
+/// A Run counts its acceptance, each phase and its end, and
+/// leaves no Run active once its stream's loop retires.
 #[tokio::test]
-async fn a_run_records_its_acceptance_claims_phases_and_end() {
+async fn a_run_records_its_acceptance_phases_and_end() {
     let (metrics, _guard) = measured();
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let runs = fixture.live(None).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:run-metrics", "Measure one Run")
         .await;
-    let accepted = fixture
-        .runs
-        .start(&principal, &workspace_id, submission("null"))
+    let accepted = runs
+        .start(&principal, &workspace_id, submission("return null;"))
         .await
         .expect("accept the Run");
     let run = fixture
         .terminal_record(&workspace_id, accepted.run_id())
         .await;
     assert_eq!(run.state, RunState::Succeeded);
-    wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
+    wait_until(|| !runs.has_owner(accepted.run_id())).await;
 
     assert_eq!(
         counts(&metrics, "coral.run.accepted"),
@@ -89,19 +90,8 @@ async fn a_run_records_its_acceptance_claims_phases_and_end() {
         owned(&[("outcome=ok", 1)])
     );
     assert_eq!(
-        counts(&metrics, "coral.run.claims"),
-        owned(&[
-            ("operation=accept,outcome=won", 1),
-            ("operation=start,outcome=won", 1)
-        ])
-    );
-    assert_eq!(
         counts(&metrics, "coral.run.phase.duration"),
-        owned(&[
-            ("run.phase=complete", 1),
-            ("run.phase=execute", 1),
-            ("run.phase=start", 1)
-        ])
+        owned(&[("run.phase=complete", 1), ("run.phase=execute", 1)])
     );
     assert_eq!(
         counts(&metrics, "coral.run.ended"),
@@ -116,7 +106,6 @@ async fn a_run_records_its_acceptance_claims_phases_and_end() {
         owned(&[("output.kind=final_value", 1)])
     );
     assert_eq!(level(&metrics, "coral.run.active").last(), Some(&0.0));
-    assert_eq!(level(&metrics, "coral.run.queue.depth").last(), Some(&0.0));
 }
 
 /// Each compile failure keeps its cause for the caller and the metric, at
@@ -192,11 +181,8 @@ async fn a_tool_invocation_records_its_gates_result_and_end() {
         500,
         serde_json::json!({"down": true}),
     ));
-    let fixture = TestModules::with_upstream(
-        Arc::new(InvokingEngine::new("coral.providers.weather.getForecast")),
-        upstream,
-    )
-    .await;
+    let mut fixture = TestModules::with_upstream(v8_engine(), upstream).await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:measured-tool", "Call weather")
         .await;
@@ -205,7 +191,7 @@ async fn a_tool_invocation_records_its_gates_result_and_end() {
         .start(
             &tool.principal,
             &tool.workspace_id,
-            submission("invoke-tool"),
+            submission(INVOKE_WEATHER),
         )
         .await
         .expect("accept the Run");
@@ -249,52 +235,12 @@ async fn a_tool_invocation_records_its_gates_result_and_end() {
     );
 }
 
-/// A Run a recovered owner takes over counts the recovery claim it won, the
-/// recovery and the interruption it wrote, with its failure code.
-#[tokio::test]
-async fn a_recovered_run_records_its_takeover_and_end() {
-    let (metrics, _guard) = measured();
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
-    let (workspace_id, principal) = fixture
-        .user_scope("user:recovered-metrics", "Recover one Run")
-        .await;
-    let run_id = fixture
-        .staged_run(&principal, &workspace_id, "return 1;")
-        .await;
-    fixture
-        .hand_to(&workspace_id, &run_id, "dead-holder", None)
-        .await;
-    let recovering = fixture.next_process();
-    assert_eq!(recovering.sweep_expired_leases().await.unwrap(), 1);
-    let run = fixture.terminal_record(&workspace_id, &run_id).await;
-    assert_eq!(run.state, RunState::Interrupted);
-    wait_until(|| !recovering.has_owner(&run_id)).await;
-
-    assert_eq!(
-        counts(&metrics, "coral.run.recovery"),
-        owned(&[("outcome=ended", 1)])
-    );
-    assert!(
-        counts(&metrics, "coral.run.claims")
-            .contains(&("operation=recover,outcome=won".to_string(), 1))
-    );
-    assert!(
-        counts(&metrics, "coral.run.phase.duration")
-            .contains(&("run.phase=recover".to_string(), 1))
-    );
-    assert_eq!(
-        counts(&metrics, "coral.run.ended"),
-        owned(&[("failure.code=interrupted,run.status=interrupted", 1)])
-    );
-}
-
 /// A cancelled Run counts its Program as terminated for the cancellation,
 /// and ends canceled, which carries no failure code.
 #[tokio::test]
 async fn a_canceled_run_records_its_program_termination() {
     let (metrics, _guard) = measured();
-    let engine = Arc::new(StopAwareEngine::default());
-    let fixture = TestModules::new(engine.clone()).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:canceled-metrics", "Cancel one Run")
         .await;
@@ -303,7 +249,9 @@ async fn a_canceled_run_records_its_program_termination() {
         .start(&principal, &workspace_id, submission("until-canceled"))
         .await
         .expect("accept the Run");
-    wait_until(|| engine.started.load(Ordering::SeqCst)).await;
+    let claim = take(&fixture.runs).await;
+    let mut stream = Scripted::open(&fixture.runs, &accepted.run_id().to_string(), &claim);
+    stream.start().await;
     fixture
         .runs
         .cancel(
@@ -318,6 +266,7 @@ async fn a_canceled_run_records_its_program_termination() {
         .terminal_record(&workspace_id, accepted.run_id())
         .await;
     assert_eq!(run.state, RunState::Canceled);
+    finish_terminated(&mut stream, 1).await;
     wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
 
     assert_eq!(
@@ -330,21 +279,24 @@ async fn a_canceled_run_records_its_program_termination() {
     );
 }
 
-/// A Program's thread records what its Run keeps and rejects: each Emission
-/// and Log by size, and the Emission over the Run's output budget as a
-/// rejection.
+/// Coral records what a Run keeps: each Emission and Log by size. The Run
+/// Executor keeps the Run's output budget, so the Emission over it never
+/// reaches Coral and is not counted here (#3406).
 #[tokio::test]
-async fn program_output_records_what_the_run_keeps_and_rejects() {
+async fn program_output_records_what_the_run_keeps() {
     let (metrics, _guard) = measured();
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let (workspace_id, principal) = fixture
         .user_scope("user:output-metrics", "Measure output")
         .await;
     // The log keeps two UTF-8 bytes and each Emission four, so the 64th
     // Emission is over the budget.
-    let runs = fixture
-        .live_runs(None)
-        .with_value_limits(coral_value::ValueLimits::new(5, 1024, 4096, 257).expect("limits"));
+    let runs =
+        fixture
+            .served(fixture.live_runs(None).with_value_limits(
+                coral_value::ValueLimits::new(5, 1024, 4096, 257).expect("limits"),
+            ))
+            .await;
     let accepted = runs
         .start(
             &principal,
@@ -358,9 +310,5 @@ async fn program_output_records_what_the_run_keeps_and_rejects() {
     assert_eq!(
         counts(&metrics, "coral.output.size"),
         owned(&[("output.kind=emission", 63), ("output.kind=log", 1)])
-    );
-    assert_eq!(
-        counts(&metrics, "coral.output.rejections"),
-        owned(&[("output.kind=emission", 1)])
     );
 }

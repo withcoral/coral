@@ -58,6 +58,7 @@ impl BodyScope {
                 Self::private_tool_module(&fixture),
                 index,
             ));
+        fixture.serve().await;
         let tool = fixture.user_tool(user, "Tool bodies").await;
         assert_eq!(tool.call_path, WEATHER);
         Self {
@@ -131,7 +132,7 @@ impl BodyScope {
     /// Ends `run` as `ending` says, while its body's call waits upstream.
     /// For a cancellation, returns the cancel call, which answers once the
     /// Run has ended.
-    async fn end(
+    fn end(
         &self,
         ending: Ending,
         run: &crate::RunId,
@@ -149,52 +150,15 @@ impl BodyScope {
                         .await
                 }))
             }
-            Ending::Interrupted => {
-                let claim = self
-                    .fixture
-                    .run_record(&self.tool.workspace_id, run)
-                    .await
-                    .execution_claim_id
-                    .expect("a started Run");
-                self.fixture
-                    .runs
-                    .owners
-                    .find(run, &claim)
-                    .expect("the owner is live")
-                    .request_stop();
-                None
-            }
             Ending::TimedOut | Ending::CpuLimitExceeded => None,
-            Ending::LostInstance => {
-                let accepted_at = self
-                    .fixture
-                    .run_record(&self.tool.workspace_id, run)
-                    .await
-                    .accepted_at_unix_nanos;
-                self.fixture
-                    .expire_worker_claim(&self.tool.workspace_id, run, accepted_at)
-                    .await;
-                self.fixture
-                    .clock
-                    .next
-                    .store(accepted_at + 2_000_000_000, Ordering::SeqCst);
-                self.fixture
-                    .next_process()
-                    .sweep_expired_leases()
-                    .await
-                    .expect("sweep the lost instance's lapsed lease");
-                None
-            }
         }
     }
 
+    /// Waits until `run` records its termination, or has ended.
     async fn termination_is_recorded(&self, run: &crate::RunId) {
         wait_until_async(async || {
-            self.fixture
-                .run_record(&self.tool.workspace_id, run)
-                .await
-                .termination
-                .is_some()
+            let record = self.fixture.run_record(&self.tool.workspace_id, run).await;
+            record.termination.is_some() || record.state != RunState::Running
         })
         .await;
     }
@@ -220,11 +184,12 @@ fn outcomes(rows: &[InvocationRow]) -> Vec<(&str, Option<InvocationResultKind>)>
 async fn tool_bodies_that_make_more_concurrent_calls_than_the_fan_out_limit_complete() {
     let mut scope = BodyScope::new("user:tool-bodies-fan-out").await;
     scope.upstream.release();
-    scope.fixture.runs = scope
+    let runs = scope
         .fixture
         .runs
         .clone()
         .with_fan_out_limit(crate::FanOutLimit::new(1).expect("a limit"));
+    scope.fixture.replace_runs(runs).await;
     scope
         .save(
             "weather.inner",
@@ -286,37 +251,28 @@ async fn tool_bodies_that_make_more_concurrent_calls_than_the_fan_out_limit_comp
 enum Ending {
     Canceled,
     TimedOut,
-    /// Its owner is stopped, as the end of a Shutdown Drain does.
-    Interrupted,
     /// The body spends the Run CPU Budget.
     CpuLimitExceeded,
-    /// Its Coral Instance is lost and the next one's expired-lease sweep
-    /// ends it.
-    LostInstance,
 }
 
 // Catches: an open code-performed Invocation that the end of its Run leaves
-// to wait out the shutdown grace, or ends as anything but `run_terminated`
-// (an `indeterminate` dispatch, in particular), whether the Run is canceled,
-// times out, is interrupted, spends its CPU budget in the body, or is ended by
-// the recovery of a lost Coral Instance; or a termination that changes the
-// outcome of a call the body made.
+// waiting, or ends as anything but `run_terminated` (an `indeterminate`
+// dispatch, in particular), whether the Run is canceled, times out or spends
+// its CPU budget in the body. A cancellation or the deadline ends the body's
+// call in flight `indeterminate` (ADR 0027: a termination is written first);
+// the CPU end settles within the shutdown grace (#3405), so that call keeps
+// its own outcome.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_run_that_ends_during_a_tool_body_ends_its_call_as_run_terminated() {
-    for ending in [
-        Ending::Canceled,
-        Ending::TimedOut,
-        Ending::Interrupted,
-        Ending::CpuLimitExceeded,
-        Ending::LostInstance,
-    ] {
+    for ending in [Ending::Canceled, Ending::TimedOut, Ending::CpuLimitExceeded] {
         let mut scope = BodyScope::new(&format!("user:tool-bodies-{ending:?}")).await;
         // The body's call returns at once unless the Run ends while it waits.
         if matches!(ending, Ending::CpuLimitExceeded) {
             scope.upstream.release();
-            scope.fixture.runs = scope.fixture.runs.clone().with_cpu_budget(
+            let runs = scope.fixture.runs.clone().with_cpu_budget(
                 crate::RunCpuBudget::new(Duration::from_millis(200)).expect("a budget"),
             );
+            scope.fixture.replace_runs(runs).await;
         }
         scope
             .save(
@@ -341,21 +297,18 @@ async fn a_run_that_ends_during_a_tool_body_ends_its_call_as_run_terminated() {
             .await;
         wait_until(|| scope.upstream.entered.load(Ordering::SeqCst)).await;
 
-        let cancel = scope.end(ending, &run).await;
-        if !matches!(ending, Ending::CpuLimitExceeded | Ending::LostInstance) {
-            // The body's call ends with its own outcome while the Run ends.
+        let cancel = scope.end(ending, &run);
+        if !matches!(ending, Ending::CpuLimitExceeded) {
+            // The body's call answers only after the Run ended.
             scope.termination_is_recorded(&run).await;
             scope.upstream.release();
         }
 
         let terminal = scope.terminal(&run).await;
         let (state, body_call) = match ending {
-            Ending::Canceled => (RunState::Canceled, InvocationResultKind::UpstreamOutcome),
-            Ending::TimedOut => (RunState::TimedOut, InvocationResultKind::UpstreamOutcome),
-            Ending::Interrupted => (RunState::Interrupted, InvocationResultKind::UpstreamOutcome),
+            Ending::Canceled => (RunState::Canceled, InvocationResultKind::Indeterminate),
+            Ending::TimedOut => (RunState::TimedOut, InvocationResultKind::Indeterminate),
             Ending::CpuLimitExceeded => (RunState::Failed, InvocationResultKind::UpstreamOutcome),
-            // Nothing tells the next instance how the lost send ended.
-            Ending::LostInstance => (RunState::Interrupted, InvocationResultKind::Indeterminate),
         };
         assert_eq!(terminal.state(), state, "{ending:?}: {terminal:?}");
         assert_eq!(
@@ -964,7 +917,8 @@ async fn a_call_made_after_its_tool_body_ended_is_refused() {
 
 // Catches: a call whose body ended but whose child still runs that the
 // Run's cancellation leaves waiting for the child, or ends as anything but
-// `run_terminated`; or a cancellation that changes the child's outcome.
+// `run_terminated`; or a child result that lands after the cancellation
+// ended the child `indeterminate` (ADR 0027: a termination is written first).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_run_that_ends_while_a_call_waits_for_its_children_ends_it_as_run_terminated() {
     let scope = BodyScope::new("user:tool-bodies-waiting").await;
@@ -982,7 +936,7 @@ async fn a_run_that_ends_while_a_call_waits_for_its_children_ends_it_as_run_term
         .await;
     wait_until(|| scope.upstream.entered.load(Ordering::SeqCst)).await;
 
-    let cancel = scope.end(Ending::Canceled, &run).await.expect("a cancel");
+    let cancel = scope.end(Ending::Canceled, &run).expect("a cancel");
     scope.termination_is_recorded(&run).await;
     scope.upstream.release();
 
@@ -995,7 +949,7 @@ async fn a_run_that_ends_while_a_call_waits_for_its_children_ends_it_as_run_term
                 "coral.private.weather.leave",
                 Some(InvocationResultKind::RunTerminated)
             ),
-            (WEATHER, Some(InvocationResultKind::UpstreamOutcome)),
+            (WEATHER, Some(InvocationResultKind::Indeterminate)),
         ]
     );
     let canceled = cancel.await.expect("join").expect("cancel the Run");

@@ -1,5 +1,5 @@
 //! The bounded values of the catalog's attributes. A release can add a
-//! value, but never rename or remove one.
+//! value. Renaming or removing one is a breaking change.
 
 /// Declares a bounded attribute: an enum whose variants each name one value.
 macro_rules! attribute {
@@ -92,49 +92,11 @@ attribute! {
 }
 
 attribute! {
-    /// One phase of a Program Run under its Run Owner, for `run.phase`.
+    /// One phase of a Program Run, for `run.phase`.
     RunPhase {
-        Start => "start",
         Execute => "execute",
         Complete => "complete",
         Terminate => "terminate",
-        Recover => "recover",
-    }
-}
-
-attribute! {
-    /// How a recovered Run Owner's one chunk ended, for `outcome`.
-    RecoveryOutcome {
-        /// The chunk ended the Run.
-        Ended => "ended",
-        /// The Run had already ended.
-        AlreadyEnded => "already_ended",
-        /// Another Coral Instance owns the Run.
-        Lost => "lost",
-        /// The chunk failed.
-        Failed => "failed",
-    }
-}
-
-attribute! {
-    /// A claim to own a Program Run, for `operation`.
-    ClaimKind {
-        /// The claim written with the accepted Run.
-        Accept => "accept",
-        /// The Run Owner's start mark, which renews the acceptance claim.
-        Start => "start",
-        /// An expired-lease sweep's takeover.
-        Recover => "recover",
-        /// A panicked Run Owner's supervisor taking over to end its Run.
-        Takeover => "takeover",
-    }
-}
-
-attribute! {
-    /// Whether a claim won the Run, for `outcome`.
-    ClaimOutcome {
-        Won => "won",
-        Lost => "lost",
     }
 }
 

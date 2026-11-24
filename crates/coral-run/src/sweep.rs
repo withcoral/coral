@@ -1,7 +1,7 @@
 //! The Run sweeper: ends what no Run stream decided in time.
 //!
-//! A Run that a Run Executor holds has no Run Owner while no stream is open
-//! for it, and a loop that holds its stream may hang. One sweeper at a time,
+//! A Run that a Run Executor holds has no loop while no stream is open for
+//! it, and a loop that holds its stream may hang. One sweeper at a time,
 //! elected by a lease row, covers both. Each pass, bounded and oldest first,
 //! it ends the Runs past their deadline, expires the Approval Requests past
 //! theirs, puts back the taken Runs that never started, and releases the Run
@@ -13,7 +13,8 @@
 //! two sweepers write nothing twice. A Run Executor's Runs are released only
 //! under a hold of its row at the lease the pass read: a Run Executor that
 //! renewed it since is back, and its Runs are its own. The sweeper never
-//! touches a Run that a Run Owner holds: a worker claim fences each one.
+//! touches a Run that an older release's Run Owner holds: a worker claim
+//! fences each one.
 
 use std::ops::AddAssign;
 use std::time::Duration;
@@ -359,7 +360,7 @@ impl RunModule {
         now: i64,
     ) -> Result<bool, Error> {
         let now = now.max(run.accepted_at_unix_nanos);
-        let ended = unless_moved(commit_end(transaction, run, None, None, now).await)?;
+        let ended = unless_moved(commit_end(transaction, run, None, now).await)?;
         if ended.is_some() {
             self.wakes.wake_for(&run.id);
         }

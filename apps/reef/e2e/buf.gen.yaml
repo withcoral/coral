@@ -8,6 +8,7 @@ plugins:
 inputs:
   - directory: ../../crates/coral-grpc/proto
     paths:
+      - ../../crates/coral-grpc/proto/grpc/health/v1/health.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/inspection.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/activity.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/workspace.proto

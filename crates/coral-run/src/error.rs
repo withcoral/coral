@@ -506,14 +506,14 @@ pub enum Error {
     /// `run.ended`.
     #[error("Program Run Ledger chunk was built on an ended Run")]
     RunEnded,
-    /// The Run Owner stopped before it recorded the request. The outcome is
-    /// unknown: read the Run again.
-    #[error("Program Run Owner stopped before recording the request")]
+    /// The Run stream's loop stopped before it recorded the request. The
+    /// outcome is unknown: read the Run again.
+    #[error("Program Run stream stopped before recording the request")]
     OwnerLost,
-    /// An outside Run Request waits in the Run's Run Inbox and its Run Owner
-    /// has not recorded it within the wait. Retry: the retry finds it still
-    /// waiting, recorded, or the Run ended without it, when the record
-    /// answers.
+    /// An outside Run Request was not recorded: other writers moved the Run
+    /// under every attempt, or an older release's Run Owner still holds the
+    /// Run. Retry: the retry finds it recorded, or the Run ended without it,
+    /// when the record answers.
     #[error("Program Run request is not yet recorded; retry")]
     RunRequestNotYetRecorded,
     /// The process is shutting down and accepts no new Run: its Shutdown
@@ -523,7 +523,7 @@ pub enum Error {
     /// one.
     #[error("the server is shutting down and accepts no new Program Run; retry")]
     ShuttingDown,
-    /// A fatal Program host failure stopped execution for recovery.
+    /// A fatal Program host failure stopped execution.
     #[error("Program host terminated execution")]
     ProgramHostTerminated,
     /// Provider or retained Catalog evidence rejected Invocation work.

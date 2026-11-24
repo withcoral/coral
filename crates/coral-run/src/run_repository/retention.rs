@@ -11,8 +11,8 @@ use crate::{Error, RunId, RunState};
 
 /// Holds a terminal Run's row exclusively for the rest of `transaction` and
 /// returns the Run as held, in one round trip; `None` when no terminal Run
-/// has that identity. A nonterminal Run's row is its Run Owner's alone: this
-/// matches nothing for it and holds nothing.
+/// has that identity. A nonterminal Run's row is its writers', never
+/// retention's: this matches nothing for it and holds nothing.
 ///
 /// The held Run carries no `last_event_sequence`: the statement reads no
 /// Event rows.

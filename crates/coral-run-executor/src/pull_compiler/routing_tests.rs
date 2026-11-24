@@ -10,8 +10,8 @@ use tokio::task::JoinHandle;
 
 use super::{COMPILE_WAIT, PullStreamCompiler, ROOM_WAIT_RESERVE};
 use crate::local::tests::FakeStarter;
-use crate::pull::Credentials;
-use crate::pull::tests::{Sent, compiled, dialed_stream as open, up};
+use crate::pull::tests::{Sent, busy_stream, compiled, dialed_stream as open, up};
+use crate::pull::{COMPILE_ROOM, Credentials};
 use crate::wire::v1::{PullRequest, PullResponse, Room, pull_request, pull_response};
 use crate::{CompileError, CompilerClient, LocalRunExecutors, PullStreams, StreamId, Unavailable};
 
@@ -68,36 +68,39 @@ fn held_later(caller: &PullStreamCompiler) -> JoinHandle<Arc<dyn CompilerClient>
     tokio::spawn(async move { held(&caller).await })
 }
 
-fn free(streams: &PullStreams, stream: StreamId) -> u32 {
+fn rooms(streams: &PullStreams, stream: StreamId) -> (u32, u32) {
     let held = streams.held();
-    held.iter().find(|held| held.stream == stream).unwrap().free
+    let held = held.iter().find(|held| held.stream == stream).unwrap();
+    (held.free, streams.compile_room(stream))
 }
 
+// Catches: a compile that spends room for Runs, so a full set of Runs stops
+// it; compile room that its answer does not free; or a tie that ignores room
+// for Runs.
 #[tokio::test(start_paused = true)]
-async fn a_call_takes_a_unit_of_the_stream_with_the_most_room_until_its_answer() {
+async fn a_call_takes_a_unit_of_compile_room_until_its_answer_and_no_room_for_runs() {
     let streams = PullStreams::default();
+    let (full, mut sent) = open(&streams, 0);
     let (low, _low_sent) = open(&streams, 1);
-    let (most, mut sent) = open(&streams, 3);
-    let (mid, _mid_sent) = open(&streams, 2);
+    streams.hold_compile(low).unwrap();
     let caller = PullStreamCompiler::new(streams.clone(), None);
     let first = held(&caller).await;
-    assert_eq!(
-        [
-            free(&streams, low),
-            free(&streams, most),
-            free(&streams, mid)
-        ],
-        [1, 2, 2],
-        "one unit of the stream with the most room held"
-    );
+    let free = |stream| rooms(&streams, stream);
+    let room = COMPILE_ROOM;
+    // The most compile room wins over room for Runs.
+    assert_eq!(free(full), (0, room - 1), "a full Run Executor compiles");
+    assert_eq!(free(low), (1, room - 1));
     let calling = compiling(first);
-    answer(&streams, most, &mut sent, None).await;
+    answer(&streams, full, &mut sent, None).await;
     assert_eq!(calling.await.unwrap().as_deref(), Ok("42"));
-    assert_eq!(
-        free(&streams, most),
-        2,
-        "an answer alone frees nothing: the Run Executor's room report does"
-    );
+    assert_eq!(free(full), (0, room), "the answer frees its unit");
+
+    // A tie in compile room goes to the stream with more room for Runs:
+    // `full` reports none, as a full or a retiring Run Executor does.
+    streams.let_go(low);
+    let _second = held(&caller).await;
+    assert_eq!(free(low), (1, room - 1), "the tie goes to room for Runs");
+    assert_eq!(free(full), (0, room));
 }
 
 /// What the stream after the ones that end does with the call.
@@ -221,9 +224,9 @@ async fn a_call_waits_for_a_pull_stream_and_fails_past_the_bound() {
     answer(&streams, stream, &mut sent, Some(1)).await;
     assert_eq!(calling.await.unwrap().as_deref(), Ok("42"));
 
-    // A stream with no room is no compiler: past the bound, none is.
+    // A busy compiler is no compiler: past the bound, none is.
     let streams = PullStreams::default();
-    let (_full, _sent) = open(&streams, 0);
+    let (_busy, _sent) = busy_stream(&streams);
     let caller = PullStreamCompiler::new(streams, None);
     let error = caller
         .ready()
@@ -244,7 +247,7 @@ async fn a_call_waits_for_a_pull_stream_and_fails_past_the_bound() {
 #[tokio::test(start_paused = true)]
 async fn a_call_no_stream_takes_in_its_time_fails_as_no_compiler_before_its_deadline() {
     let streams = PullStreams::default();
-    let (_full, _sent) = open(&streams, 0);
+    let (_busy, _sent) = busy_stream(&streams);
     let caller = PullStreamCompiler::new(streams, None);
     let time_left = Duration::from_secs(2);
     let started = tokio::time::Instant::now();
@@ -305,28 +308,34 @@ async fn ready_holds_the_unit_for_its_caller_until_its_first_call() {
     let streams = PullStreams::default();
     let (stream, mut sent) = open(&streams, 1);
     let caller = PullStreamCompiler::new(streams.clone(), None);
-    let first = held(&caller).await;
-    assert_eq!(free(&streams, stream), 0, "held for the first caller");
+    let mut firsts = Vec::new();
+    for _unit in 0..COMPILE_ROOM {
+        firsts.push(held(&caller).await);
+    }
+    assert_eq!(
+        streams.compile_room(stream),
+        0,
+        "held for the first callers"
+    );
 
-    // A second caller waits for room: the held unit is not its.
+    // Another caller waits for room: the held units are not its.
     let waiting = held_later(&caller);
     tokio::time::sleep(COMPILE_WAIT / 2).await;
-    assert!(!waiting.is_finished(), "the second caller waits");
+    assert!(!waiting.is_finished(), "the next caller waits");
 
-    // The first call spends the held unit; its room report frees it for
-    // the second.
-    let calling = compiling(first);
-    answer(&streams, stream, &mut sent, Some(1)).await;
+    // A first call spends its held unit, and its answer frees it for the
+    // caller that waits.
+    let calling = compiling(firsts.pop().unwrap());
+    answer(&streams, stream, &mut sent, None).await;
     assert_eq!(calling.await.unwrap().as_deref(), Ok("42"));
     let calling = compiling(waiting.await.unwrap());
-    answer(&streams, stream, &mut sent, Some(1)).await;
+    answer(&streams, stream, &mut sent, None).await;
     assert_eq!(calling.await.unwrap().as_deref(), Ok("42"));
 
     // A held unit no call spends is freed when its client drops.
-    let unused = held(&caller).await;
-    assert_eq!(free(&streams, stream), 0);
-    drop(unused);
-    assert_eq!(free(&streams, stream), 1);
+    assert_eq!(streams.compile_room(stream), 1);
+    drop(firsts);
+    assert_eq!(streams.compile_room(stream), COMPILE_ROOM);
 }
 
 // Catches: a wait for a compiler that blocks its thread, so nothing else on
@@ -342,5 +351,5 @@ async fn ready_waits_for_room_without_holding_its_thread() {
     };
     let (held, (stream, _sent)) = tokio::join!(caller.ready(), opening);
     let _held = held.expect("a compiler").expect("a held unit");
-    assert_eq!(free(&streams, stream), 0);
+    assert_eq!(streams.compile_room(stream), COMPILE_ROOM - 1);
 }

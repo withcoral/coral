@@ -16,6 +16,8 @@ export const divider = style({
     '&:hover, &:focus-visible': {
       background: theme.surface.onMainContentHover,
     },
+    // Drawn inside: the divider spans its container, which clips a ring outside it.
+    '&:focus-visible': { outline: `2px solid ${theme.stroke.focused}`, outlineOffset: -2 },
   },
 })
 export const grip = style({

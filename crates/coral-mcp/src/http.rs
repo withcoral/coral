@@ -212,7 +212,7 @@ async fn start_server(
         .with_allowed_hosts(allowed_hosts)
         .with_max_request_body_bytes(MAX_MCP_REQUEST_BODY_SIZE);
     let state = Arc::new(HttpState {
-        interface: modules.served_interface(),
+        interface: modules.core_interface(),
         workspaces: modules.workspaces,
         authentication,
         config: streamable_config,

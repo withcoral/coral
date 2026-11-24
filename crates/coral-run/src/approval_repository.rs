@@ -2,7 +2,7 @@
 //! authorization, transition selection, lifecycle orchestration, and commit.
 //! SQL rows are decoded here before reaching Approval.
 
-use coral_db::Transaction;
+use coral_db::{RowLock, Transaction};
 use coral_workspace::{Principal, PrincipalId, PrincipalKind, TraceId, WorkspaceId};
 use sea_query::{Alias, Expr, ExprTrait as _, Iden, JoinType, Order, Query, SimpleExpr};
 use sqlx::FromRow;
@@ -224,11 +224,32 @@ pub(super) async fn load(
     workspace: &WorkspaceId,
     id: &ApprovalId,
 ) -> Result<StoredApproval, Error> {
+    load_as(tx, workspace, id, RowLock::None).await
+}
+
+/// [`load`], holding the request's row until the transaction ends: a
+/// decision or an expiry that another writer races waits for it, then reads
+/// the request as that writer left it.
+pub(super) async fn load_held(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    id: &ApprovalId,
+) -> Result<StoredApproval, Error> {
+    load_as(tx, workspace, id, RowLock::Exclusive).await
+}
+
+async fn load_as(
+    tx: &mut Transaction<'_>,
+    workspace: &WorkspaceId,
+    id: &ApprovalId,
+    lock: RowLock,
+) -> Result<StoredApproval, Error> {
     let row: ApprovalRow = tx
-        .fetch_optional(
+        .fetch_optional_locked(
             select(workspace)
                 .and_where(Expr::col(InvocationApprovals::Id).eq(id.to_string()))
                 .to_owned(),
+            lock,
         )
         .await?
         .ok_or(Error::ApprovalNotFound)?;
@@ -370,36 +391,6 @@ fn request_deadlines(rows: Vec<(String, i64)>) -> Result<Vec<(ApprovalId, i64)>,
             Ok((id, deadline))
         })
         .collect()
-}
-
-/// The Run's undecided Approval Requests whose deadline is at or before
-/// `by_unix_nanos`, with their deadlines, in deadline order.
-pub(super) async fn undecided_by(
-    tx: &mut Transaction<'_>,
-    workspace: &WorkspaceId,
-    run: &RunId,
-    by_unix_nanos: i64,
-) -> Result<Vec<(ApprovalId, i64)>, Error> {
-    let rows: Vec<(String, i64)> = tx
-        .fetch_all(
-            Query::select()
-                .columns([
-                    InvocationApprovals::Id,
-                    InvocationApprovals::DeadlineAtUnixNanos,
-                ])
-                .from(InvocationApprovals::Table)
-                .and_where(Expr::col(InvocationApprovals::WorkspaceId).eq(workspace.to_string()))
-                .and_where(Expr::col(InvocationApprovals::RunId).eq(run.to_string()))
-                .and_where(
-                    Expr::col(InvocationApprovals::State).eq(ApprovalState::Pending.storage()),
-                )
-                .and_where(Expr::col(InvocationApprovals::DeadlineAtUnixNanos).lte(by_unix_nanos))
-                .order_by(InvocationApprovals::DeadlineAtUnixNanos, Order::Asc)
-                .order_by(InvocationApprovals::Id, Order::Asc)
-                .to_owned(),
-        )
-        .await?;
-    request_deadlines(rows)
 }
 
 /// The undecided Approval Requests whose deadline passed by `by_unix_nanos`,

@@ -14,29 +14,6 @@ use crate::{
     tool_result_shape,
 };
 
-/// Reads `settled` again after every ring of the change signal, at most once
-/// per reread gap, until it holds or `until` passes, as [`RunModule::observe`]
-/// waits: without the signal it reads again at the fallback poll.
-pub(crate) async fn read_until<Read>(
-    database: &Database,
-    until: tokio::time::Instant,
-    mut settled: impl FnMut() -> Read,
-) -> Result<bool, Error>
-where
-    Read: Future<Output = Result<bool, Error>>,
-{
-    let mut wait = database.wait_for_changes(until);
-    loop {
-        let read_at = tokio::time::Instant::now();
-        if settled().await? {
-            return Ok(true);
-        }
-        if !wait.pause(read_at).await {
-            return Ok(false);
-        }
-    }
-}
-
 impl RunModule {
     /// Returns a non-consuming observation of an authorized Run, optionally waiting.
     ///
@@ -210,24 +187,11 @@ pub(crate) async fn rung(changes: &mut Option<ChangeSubscription>) {
 }
 
 /// The shortest gap between two reads of a reader that follows the change
-/// signal: the Run Inbox's and the wake-up reader's.
+/// signal: the wake-up reader's.
 const READ_GAP: Duration = Duration::from_millis(250);
 /// The longest gap between two such reads: the backstop for a change signal
 /// that does not ring.
 const BACKSTOP: Duration = Duration::from_secs(15);
-
-/// A request that reaches its Run's owner later than this after it was
-/// written is logged, so a slow delivery can be told from a slow owner.
-const LATE_DELIVERY: Duration = Duration::from_secs(1);
-
-/// How late, in milliseconds, something written at `written_at_unix_nanos`
-/// reaches its Run's owner at `now_unix_nanos`, when later than
-/// [`LATE_DELIVERY`]. Between hosts the gap also holds their clocks'
-/// difference.
-pub(crate) fn late_delivery_ms(now_unix_nanos: i64, written_at_unix_nanos: i64) -> Option<i64> {
-    let delay_ms = now_unix_nanos.saturating_sub(written_at_unix_nanos) / 1_000_000;
-    (delay_ms > i64::try_from(LATE_DELIVERY.as_millis()).unwrap_or(i64::MAX)).then_some(delay_ms)
-}
 
 /// What started one read of a [`Cadence`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -40,6 +40,7 @@ tokio.workspace = true
 tokio-stream.workspace = true
 
 [dev-dependencies]
+coral-run = { workspace = true, features = ["test-support"] }
 coral-edition = { workspace = true, features = ["test-fixtures"] }
 coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-workspace = { workspace = true, features = ["test-fixtures"] }

@@ -39,12 +39,17 @@ const baseStyles = {
   width: '100%',
 } as const
 
+// Drawn inside the button: the sidebar's scroll port and its clip cut off any
+// ring outside a full-width row.
+const focusRing = {
+  outline: `1px solid ${theme.button.primary.focus}`,
+  outlineOffset: -1,
+} as const
+
 // Muted shares the default surface; only its resting text is quieter.
 const defaultSurface = {
   selectors: {
-    '&:focus-visible': {
-      outline: `1px solid ${theme.button.primary.focus}`,
-    },
+    '&:focus-visible': focusRing,
     [`&.${activeClass}`]: {
       background: theme.sidebar.button.selected,
     },
@@ -86,9 +91,7 @@ export const sidebarButton = recipe({
     variant: {
       accent: {
         selectors: {
-          '&:focus-visible': {
-            outline: `1px solid ${theme.button.primary.focus}`,
-          },
+          '&:focus-visible': focusRing,
           [`&.${activeClass}`]: {
             background: theme.sidebar.buttonAccent.selected,
           },

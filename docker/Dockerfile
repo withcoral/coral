@@ -104,7 +104,9 @@ ENV CORAL_CONFIG_DIR=/var/lib/coral/config \
 USER 65532:0
 # Healthy means ready: `coral.readiness` answers from the database, while the
 # empty service name only reports that the process is alive. The MCP and auth
-# listeners serve their own /healthz and /readyz.
+# listeners serve their own /healthz and /readyz. A Run Executor serves
+# `coral.readiness` on its --health-listen address while it is linked to
+# Coral: set CORAL_HEALTHCHECK_ADDR to that address.
 HEALTHCHECK --interval=5s --timeout=3s --start-period=30s --retries=6 \
     CMD /usr/local/bin/grpc_health_probe -service coral.readiness -addr="${CORAL_HEALTHCHECK_ADDR:-127.0.0.1:14555}"
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

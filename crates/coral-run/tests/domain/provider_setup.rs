@@ -87,6 +87,7 @@ impl AdminScope {
             .clone()
             .with_provider_renamer(Arc::new(workflow(&fixture)))
             .with_accounts(accounts);
+        fixture.serve().await;
         let mut transaction = fixture.database.begin().await.unwrap();
         fixture
             .providers
@@ -696,7 +697,7 @@ pub(super) struct RunEndsAfterPreparation {
 #[async_trait]
 impl InvocationObserver for RunEndsAfterPreparation {
     fn builtin_prepared(&self) {
-        // Past the Run timeout, not the claim lease.
+        // Past the Run timeout.
         self.clock.next.store(100_000_000_000, Ordering::SeqCst);
     }
 }
@@ -706,11 +707,10 @@ impl InvocationObserver for RunEndsAfterPreparation {
 #[tokio::test]
 async fn a_run_that_ends_before_the_call_returns_leaves_nothing_behind() {
     let mut scope = AdminScope::new("user:ended-before-return").await;
-    scope.fixture.runs.execution_policy =
-        crate::execution::ExecutionPolicy::testing_with_claim_lease(Duration::from_mins(15));
     scope.fixture.runs.invocation_observer = Arc::new(RunEndsAfterPreparation {
         clock: scope.fixture.clock.clone(),
     });
+    scope.fixture.serve().await;
     scope.set_access(ToolAccessState::Enabled).await;
     let before = scope.created_setups().await;
     let run = scope
@@ -1457,10 +1457,10 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
         crate::RuntimeLimits::default()
             .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
         crate::CoralInstanceId::generate(),
-        crate::RunInbox::table(scope.fixture.database.clone()),
     )
     .expect("start the real Program runtime")
     .with_human_interface(test_reef());
+    let production = scope.fixture.served(production).await;
     let run = production
         .start(
             &scope.owner,
@@ -1482,6 +1482,7 @@ async fn the_source_fetch_uses_the_bootstrap_destination_policy() {
     );
 
     // A policy that permits loopback fetches the source once and prepares one Setup.
+    scope.fixture.served(scope.fixture.runs.clone()).await;
     let run = scope
         .start(&scope.owner, add_provider(&serde_json::json!({ "namespace": "weather", "source": source, "credentialRoute": "fixed" }), "error.code"))
         .await;

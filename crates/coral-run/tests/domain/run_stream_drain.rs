@@ -25,9 +25,9 @@ const LONG_DRAIN: Duration = Duration::from_secs(600);
 /// The Coral Instance that drains, with `drain` as its Shutdown Drain, and
 /// the one its streams move to.
 fn two_instances(fixture: &TestModules, drain: Duration) -> (RunModule, RunModule) {
-    let mut first = fixture.runs.clone().with_run_streams();
+    let mut first = fixture.runs.clone();
     first.shutdown_drain = crate::ShutdownDrain::new(drain);
-    (first, fixture.next_process().with_run_streams())
+    (first, fixture.next_process())
 }
 
 /// A started Run on a stream of the first of two Coral Instances, whose
@@ -42,7 +42,7 @@ async fn streaming_for(
     drain: Duration,
     taker: Option<&Taker<'_>>,
 ) -> (Moving, Scripted) {
-    let fixture = TestModules::with_upstream(Arc::new(ImmediateEngine::default()), upstream).await;
+    let fixture = TestModules::with_upstream(Arc::new(ImmediateEngine), upstream).await;
     let tool = fixture.user_tool("user:drain", "Drain").await;
     let instances = two_instances(&fixture, drain);
     Box::pin(start_moving_for(
@@ -176,7 +176,7 @@ async fn a_draining_stream_with_nothing_in_flight_moves_at_once() {
 
 #[tokio::test]
 async fn a_taken_run_whose_first_open_hits_a_draining_instance_starts_on_another() {
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let (first, second) = two_instances(&fixture, LONG_DRAIN);
     let (workspace_id, principal) = fixture.user_scope("user:drain-take", "Drain take").await;
     let accepted = first
@@ -237,7 +237,7 @@ async fn at_the_drains_length_a_stream_moves_with_its_dispatch_in_flight() {
 async fn a_stream_moves_only_once_its_instance_holds_no_pull_stream() {
     let streams = PullStreams::default();
     let (pull, _sent) = streams.scripted("6f0c2a59-55a7-4e0b-9a2e-7c1d4f3b8e21", 1);
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture.user_tool("user:drain-pull", "Drain pull").await;
     let (first, second) = two_instances(&fixture, LONG_DRAIN);
     let first = first.with_pull_streams(streams.clone());
@@ -334,4 +334,24 @@ async fn at_the_drains_length_a_local_childs_run_ends_interrupted() {
         result_kinds(&moving.fixture, &moving.tool, &moving.run_id).await,
         [Some(InvocationResultKind::Indeterminate)]
     );
+}
+
+/// Catches: a Run submitted once the Shutdown Drain started, which this
+/// Coral Instance would never serve: it is refused with `ShuttingDown`, and
+/// nothing is written.
+#[tokio::test]
+async fn a_new_run_is_refused_once_the_shutdown_drain_started() {
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let (workspace_id, principal) = fixture.user_scope("user:refused", "Refused").await;
+    let before = fixture.runs.count_runs().await.expect("count Runs");
+
+    let drain = shut_down(&fixture.runs);
+    let refused = fixture
+        .runs
+        .start(&principal, &workspace_id, submission("return 1;"))
+        .await;
+
+    assert!(matches!(refused, Err(Error::ShuttingDown)), "{refused:?}");
+    assert_eq!(fixture.runs.count_runs().await.expect("count Runs"), before);
+    drain.await.expect("the drain ends");
 }

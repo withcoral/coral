@@ -5,6 +5,7 @@ mod modules;
 mod oauth;
 mod observers;
 mod owners;
+mod streams;
 mod upstreams;
 
 pub(crate) use approvals::*;
@@ -13,4 +14,5 @@ pub(crate) use modules::*;
 pub(crate) use oauth::*;
 pub(crate) use observers::*;
 pub(crate) use owners::*;
+pub(crate) use streams::*;
 pub(crate) use upstreams::*;

@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let database = fixture.database();
-    let catalog = BuiltinCatalog::running().unwrap();
+    let catalog = BuiltinCatalog::with_sub_agent().unwrap();
     let mut transaction = database.begin().await.unwrap();
     let first = coral_catalog::publish_builtin_generation_in_transaction(
         &mut transaction,
@@ -32,7 +32,7 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
     .unwrap();
     let second = coral_catalog::publish_builtin_generation_in_transaction(
         &mut transaction,
-        &catalog,
+        &BuiltinCatalog::running().unwrap(),
         UnixNanos::new(2),
     )
     .await
@@ -185,6 +185,21 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
                 "metadata: { kind: \"builtin\" }",
             ][..],
         ),
+        (
+            BuiltinTool::Agent,
+            // It starts a Sub-agent or a Turn, so it is not read-only.
+            ToolHints::new(Some(false), Some(false), Some(false), Some(true)),
+            &[
+                r#"(input: ({ "message": string; "wait_ms"?: number } | { "cursor"?: string; "message"?: string; "sub_agent_id": string; "wait_ms"?: number }))"#,
+                r#""state": "running" | "needs_action" | "completed" | "failed" | "canceled" | "interrupted""#,
+            ][..],
+        ),
+        (
+            BuiltinTool::CancelAgent,
+            // A second cancel changes nothing more.
+            ToolHints::new(Some(false), Some(true), Some(true), Some(false)),
+            &[r#"export default function (input: { "sub_agent_id": string })"#][..],
+        ),
     ] {
         let key = tool_key.key();
         let tool = tools
@@ -220,6 +235,8 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
         [
             "addCustomTool",
             "addProvider",
+            "agent",
+            "cancelAgent",
             "getPolicy",
             "getProvider",
             "listProviders",
@@ -230,13 +247,28 @@ async fn each_published_builtin_generation_retains_the_coral_defined_catalog() {
             "updateProvider"
         ]
     );
+    // A deployment that configures no Sub-agent serves neither of its Tools.
+    let without = coral_catalog::available_search_targets_in_transaction(&mut transaction, &second)
+        .await
+        .unwrap();
+    let without: Vec<_> = without.iter().map(|target| target.key().as_str()).collect();
+    let mut core = target_keys.clone();
+    core.retain(|key| !["agent", "cancelAgent"].contains(key));
+    assert_eq!(without, core);
     // The retained Generation keeps the enabled default the catalog declares
-    // for the Tools that change only the caller's own Private Tools, and
-    // for no other Tool, so policy reads it from storage.
+    // for the Tools that change only the caller's own Private Tools and for
+    // the Sub-agent's two, and for no other Tool, so policy reads it from storage.
     let enabled_by_default = |facts: coral_catalog::ToolPolicyFacts, key: &str| {
         assert_eq!(
             facts.declares_enabled_by_default(),
-            ["addCustomTool", "updateCustomTool", "removeCustomTool"].contains(&key),
+            [
+                "addCustomTool",
+                "updateCustomTool",
+                "removeCustomTool",
+                "agent",
+                "cancelAgent"
+            ]
+            .contains(&key),
             "{key}"
         );
     };
@@ -398,6 +430,7 @@ async fn a_builtin_generation_pins_its_own_catalog_and_no_other() {
     let running = BuiltinCatalog::running().unwrap();
     let other =
         BuiltinCatalog::with_unknown_tools([("archiveThings", ToolHints::default())]).unwrap();
+    let with_sub_agent = BuiltinCatalog::with_sub_agent().unwrap();
     let mut transaction = database.begin().await.unwrap();
     let generation = coral_catalog::publish_builtin_generation_in_transaction(
         &mut transaction,
@@ -409,7 +442,7 @@ async fn a_builtin_generation_pins_its_own_catalog_and_no_other() {
     transaction.commit().await.unwrap();
 
     let mut transaction = database.begin_read_snapshot().await.unwrap();
-    for (catalog, pins) in [(&running, true), (&other, false)] {
+    for (catalog, pins) in [(&running, true), (&other, false), (&with_sub_agent, false)] {
         assert_eq!(
             coral_catalog::builtin_generation_pins_in_transaction(
                 &mut transaction,

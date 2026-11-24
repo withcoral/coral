@@ -12,7 +12,6 @@ use coral_tools::{AuthoredToolPath, LinkedToolSelection};
 use coral_v8::{BuiltinTools, CompileFailure};
 use coral_workspace::{AuthenticatedPrincipal, Principal, WorkspaceId};
 use tokio::time::timeout_at;
-use uuid::Uuid;
 
 use coral_run_executor::tool_check_deadline;
 
@@ -23,7 +22,7 @@ use crate::shutdown::Admitted;
 use crate::types::AcceptedRun;
 use crate::{
     COMBINED_TYPESCRIPT_MAX_BYTES, Error, LINKED_TOOL_MAX_COUNT, ProgramSource, RunCursor, RunId,
-    RunModule, RunState, RunSubmission, RunTimeout, RunUpdate, run_repository,
+    RunModule, RunState, RunSubmission, RunUpdate, run_repository,
 };
 
 /// The most candidate Call Paths admission checks, as Private Tool typing
@@ -99,11 +98,9 @@ pub struct PreparedRun {
 pub struct StagedRun {
     run: AcceptedRun,
     actor: AuthenticatedPrincipal,
-    /// The Run's time limit, which its deadline counts from its start.
-    time_limit: RunTimeout,
     /// The `coral.run.accept` span, which ends once the Run is launched.
     accept: tracing::Span,
-    /// Holds the admission until `launch` registers the Run's owner, or the
+    /// Holds the admission until `launch` reports the Run accepted, or the
     /// staged Run is dropped: a shutdown waits for it.
     admitted: Admitted,
 }
@@ -219,10 +216,6 @@ impl RunModule {
         hold_linked_sources(transaction, workspace_id, actor, &linked).await?;
         let accepted_at_unix_nanos = self.now()?;
         authority.require_current_at(coral_db::UnixNanos::new(accepted_at_unix_nanos))?;
-        // The Run Owner's claim is written with acceptance, so no running Run
-        // is ever unclaimed; the owner renews the lease with every chunk.
-        let worker_claim_expires_at_unix_nanos =
-            self.execution_policy.lease_until(accepted_at_unix_nanos)?;
         // The primary key proves the identifier unused: a conflict writes
         // nothing, and the next attempt draws fresh words.
         let mut attempts = 0;
@@ -234,8 +227,8 @@ impl RunModule {
                 accepted_at_unix_nanos,
                 shutdown_grace_nanos: self.execution_policy.shutdown_grace_nanos(),
                 value_limits: self.value_limits,
-                claim_id: Uuid::new_v4().hyphenated().to_string(),
-                worker_claim_expires_at_unix_nanos,
+                // The Run waits for a take, which gives it its claim.
+                claim_id: String::new(),
                 linked_snapshots: linked
                     .iter()
                     .map(|snapshot| {
@@ -251,8 +244,6 @@ impl RunModule {
             if run_repository::insert_acceptance(
                 transaction,
                 &run,
-                // A Run for Run streams waits for a take: no holder, no lease.
-                (!self.run_streams).then_some(&self.instance),
                 submission.source(),
                 &package,
                 &linked,
@@ -273,15 +264,14 @@ impl RunModule {
         Ok(StagedRun {
             run,
             actor: actor.clone(),
-            time_limit: submission.timeout(),
             accept,
             admitted,
         })
     }
 
-    /// Launches durably accepted work. Call only after committing acceptance.
-    /// Re-reading acceptance prevents a rolled-back staging token from executing.
-    /// Existing worker claims fence duplicate launch hints.
+    /// Launches durably accepted work: the Run waits, `running`, until a take
+    /// claims it. Call only after committing acceptance. Re-reading acceptance
+    /// prevents a rolled-back staging token from being reported as accepted.
     ///
     /// # Errors
     /// Returns an error if durable acceptance cannot be read; never undoes acceptance.
@@ -300,20 +290,14 @@ impl RunModule {
         // accept span links back to it.
         crate::trace::link_request(staged.run.trace.as_ref());
         let StagedRun {
-            run,
             actor,
-            time_limit,
             accept,
             admitted,
+            ..
         } = staged;
         drop(accept);
         crate::trace::record_run_accepted(actor.principal());
-        // A Run for Run streams waits in the queue until a take claims it.
-        if !self.run_streams {
-            self.schedule_execution(run, actor, time_limit);
-        }
-        // An owned Run is registered, and shutdown counts it from here. A
-        // waiting Run holds nothing on this Coral Instance.
+        // A waiting Run holds nothing on this Coral Instance.
         drop(admitted);
         Ok(update)
     }

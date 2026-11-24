@@ -1,6 +1,6 @@
-//! A Run Ledger chunk as the Run Owner builds it in memory: the Events it
-//! applied, the Run-scoped row work that rides the same commit, and the
-//! termination intent and outside requests the commit records.
+//! A Run Ledger chunk as a Run stream's loop builds it in memory: the Events
+//! it applied, the Run-scoped row work that rides the same commit, and the
+//! Approval Request expiries the commit records.
 
 use std::fmt;
 
@@ -8,8 +8,7 @@ use async_trait::async_trait;
 use coral_db::Transaction;
 
 use crate::invocation::{EnforcementBatch, EnforcementRequest, ParkedInvocation};
-use crate::lifecycle::{RequestedTermination, RunRecord};
-use crate::run_inbox::InboxRow;
+use crate::lifecycle::RunRecord;
 use crate::run_repository::OwnedEvent;
 use crate::{CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, Error};
 
@@ -82,16 +81,9 @@ pub(crate) struct ChunkBuild {
     /// The Run Ledger head the chunk is built on, set as it goes in flight;
     /// its commit asserts it.
     pub(crate) head: u64,
-    /// The entities this chunk's outside requests and the owner's own
-    /// expiries decide: a later request for one is a repeat.
+    /// The Approval Requests this chunk's expiries decide: a later expiry of
+    /// one is a repeat.
     pub(crate) requests: Vec<RequestKey>,
-    /// The termination intent the owner applied into this chunk, written in
-    /// its head update beside the `cancellation.requested` Event among the
-    /// items.
-    pub(crate) termination: Option<RequestedTermination>,
-    /// The Run Inbox rows of the requests this chunk records, deleted in its
-    /// commit.
-    pub(crate) inbox_rows: Vec<InboxRow>,
     /// Events the owner counted at apply time; row work adds its own inside
     /// the transaction.
     pub(crate) events: usize,
@@ -113,8 +105,6 @@ impl ChunkBuild {
             && self.enforcement.is_none()
             && self.waiters.is_empty()
             && self.requests.is_empty()
-            && self.termination.is_none()
-            && self.inbox_rows.is_empty()
             && self.request_number.is_none()
     }
 
@@ -178,12 +168,6 @@ impl ChunkBuild {
 #[derive(Debug)]
 pub(crate) struct ChunkBuildView {
     pub(crate) events: usize,
-    pub(crate) works: usize,
-    /// Invocations in the enforcement batch.
-    pub(crate) pending_enforcement: usize,
-    pub(crate) termination: Option<RequestedTermination>,
-    /// Run Inbox rows the chunk deletes.
-    pub(crate) inbox_rows: usize,
 }
 
 #[cfg(test)]
@@ -195,10 +179,6 @@ impl ChunkBuildView {
                 .iter()
                 .filter(|item| matches!(item, ChunkItem::Event(_)))
                 .count(),
-            works: chunk.works,
-            pending_enforcement: chunk.enforcement.as_ref().map_or(0, |batch| batch.len()),
-            termination: chunk.termination.clone(),
-            inbox_rows: chunk.inbox_rows.len(),
         }
     }
 }

@@ -46,6 +46,11 @@
   enable: a test whose subject is not the conflict check passes it.
 - The Coral process starts no V8 isolate. Compile and execute only through a
   Run Executor (ADR 0027).
+- A change to the messages in `link.proto` (a comment or a format edit is
+  none) or to the Program Runtime Surface's `globals.json` raises
+  `PROTOCOL_LEVEL` by one over the last release, and takes the steps that the
+  Versions section of ADR 0027 gives a message, a field or a global.
+  `scripts/check-protocol-level.sh` checks the level.
 - Read process environment only at process bootstrap. Pass explicit values to
   domain code. The `env` Secret Store is the one exception: bootstrap hands it
   a reader, and it reads only under its guarded prefix (ADR 0036).
@@ -131,112 +136,56 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   across Members; the publish that moves its current revision and the removal
   that tombstones it hold the row exclusively. A Private Tool row keeps the
   exclusive hold: only its owner links it.
-- The next three bullets state the Run Owner path of ADR 0018 and ADR 0025.
-  [ADR 0027](docs/adr/0027-run-executors-compile-and-execute-programs.md)
-  supersedes both, and
-  [#2884](https://github.com/withcoral/coral/issues/2884) tracks the
-  migration in slices. The owner path stays as it is until
-  [#2911](https://github.com/withcoral/coral/issues/2911) deletes it and
-  rewrites these bullets, so they, and the owner rules under Tests, bind
-  every change to that code. ADR 0027 keeps the Run Ledger and its head, the
-  chunk commit predicated on the claim and the head and never on the clock,
-  a write that ends on the database's answer, the exact Run Output Budget,
-  the Policy Enforcement Point, the Fan-out Limit, and the wake-up as a
-  hint. It retires the Run Owner as a Run's one writer, the Run Inbox, the
-  per-Run worker lease and its expired-lease sweep, each owner's
-  subscription to the change signal, and the Shutdown Drain's interruption
-  of live Runs; a local child's Run is still interrupted at the drain's
-  length. Fix a defect in a retiring part under the rules below. Build
-  new Run coordination beside the owner path, in the #2884 slice that
-  replaces that part. The one exception is the Run stream (#2903): a Run that
-  a Run Executor holds is hosted by a Run Owner whose Program is its stream.
-  That owner has no worker lease, marks each chunk by its commit time,
-  applies the stream's requests in number order, and rebuilds a chunk on a
-  head that another writer moved under the claim, dropping the requests that
-  writer committed. At the Run's deadline, it commits what it applied, then
-  ends the Run and its open Invocations in one chunk, and only then sends
-  `Terminate`; no shutdown grace applies (#2904). A reopen of the stream
-  (#2905) starts a new owner, rebuilt from the ledger. The owner it
-  replaces, whose stream moved to another Coral Instance or to a reopen on
-  its own, rebuilds nothing: its chunk is refused. The Shutdown Drain never
-  interrupts that owner's Run on a dialed Run Executor (#2908): the owner
-  dispatches no call the Program makes after the drain starts, and once its
-  Coral Instance holds no pull stream and no dispatch is in flight on the
-  stream, or at the drain's length, it detaches and ends the stream cleanly.
-  A local child's stream can reopen only on its parent, so its owner keeps
-  dispatching through the drain, and at the drain's length it ends the Run
-  Interrupted, or TimedOut past its deadline. For a Run that no worker
-  claim fences, the Run sweeper (#2906) also writes under the claim and the
-  head, as the sweeper section of ADR 0027 states. So does the Coral Instance
-  that receives a decision or a cancellation for it (#2907), and it compares
-  no clock: only the loop and the sweeper do. Every writer of such a Run, its
-  owner included, takes its rows in one order: the Invocation and Approval
-  Request rows, then the Run row; none holds the Run row first. A stream
-  owner learns of another writer only from the Run's head, so give such a
-  writer no side table to tell it. A stream owner writes its Run only while
-  the row names its Coral Instance as the stream's holder.
-- A waiting Invocation parks with its Run Owner and never polls or
-  subscribes to the change signal itself; the owner wakes it (the
-  Wake-ups bullet of
-  [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md)). A
-  wake-up is a hint; the held recheck decides.
-- A nonterminal Run's row and Events are written only through its Run
-  Owner (a Run that a Run Executor holds follows the Run stream exception
-  above instead): the Program paths (Emissions, Logs, Invocation admission, held
-  rechecks, the Policy Enforcement Point, Invocation completion), the outside
-  requests (an approval decision, a cancellation) and the owner's timers
-  (the Run deadline, each Approval Request's and connection request's
-  deadline) alike. An Event is applied in owner memory, a row write is a
-  `ChunkWork` that joins the owner's chunk commit, and an intent (a
-  cancellation, the deadline) rides a chunk's head update or the owner's
-  terminal write; every chunk commit asserts the head the owner tracks in
-  memory. A timer is armed as an effect and fires as a message into the
-  owner's mailbox, so the clock never decides state outside the owner (ADR
-  0018): a Run's timeout and an Approval Request's expiry are decided in the
-  owner's pure `apply`, in mailbox order (when the timer fires, or first
-  when a decision, a cancel or the periodic precheck of parked waits applied
-  before it finds the deadline passed),
-  the owner's own writes read the
-  clock only for their own sample (the start mark, the terminal write and a
-  recovered owner's one chunk date a timeout they find passed; the Policy
-  Enforcement Point compares, at dispatch, an approved request's decision
-  time (the owner's sample when it applied the decision, not when its chunk
-  commits) with its deadline, contract line 3, and records no expiry),
-  and no chunk commit is predicated on the clock (contract line 5). For a
-  Run that a Run Owner holds, nothing outside the owner compares `now` with
-  those deadlines to write TimedOut or Expired: readers show the recorded
-  state beside the deadline. A
-  connection request is Account-owned and shared across Runs: the Account
-  module records its expiry when a holder reads it, and the owner's timer
-  only wakes the Invocations parked on it. Do not open a transaction that
-  holds the Run row from any of these paths, and do not write a nonterminal
-  Run's row from outside its owner. The one exception: the Coral Instance
-  that receives an outside request for a running Run (a decision on one of
-  its pending Approval Requests, or a cancellation while no termination is
-  recorded) inserts it into the Run's Run Inbox, and only the owner deletes
-  that row while the Run is nonterminal
-  ([ADR 0025](docs/adr/0025-outside-run-requests-reach-the-run-owner-through-the-run-inbox.md)). A Run whose owner retired or whose
-  Coral Instance is gone without ending it gets its owner back from the
-  expired-lease sweep (the Recovery section of ADR 0018); a panicked owner
-  task's supervisor ends its Run at once instead. Retention holds and
-  deletes terminal Runs only.
-  [ADR 0018](docs/adr/0018-run-owner-coordinates-each-run.md) and ADR 0025
-  have the request model (requests keyed by the entity they decide, the
-  first wins).
-- A Run Owner's write ends on the database's answer, never on the clock: an
+- A Run executes on a Run Executor over a Run stream
+  ([ADR 0027](docs/adr/0027-run-executors-compile-and-execute-programs.md)).
+  The Coral Instance that holds the stream hosts the Run's loop (the `owner`
+  module of `coral-run`). The loop applies the stream's requests in number
+  order, commits each chunk under the claim and the head and marks it by its
+  commit time, and rebuilds a chunk on a head that another writer moved
+  under the claim, dropping the requests that writer committed. At the Run's
+  deadline, it commits what it applied, then ends the Run and its open
+  Invocations in one chunk, and only then sends `Terminate`. A reopen of the
+  stream starts a new loop, rebuilt from the ledger; the loop it replaces
+  rebuilds nothing, and its chunk is refused. A loop writes its Run only
+  while the row names its Coral Instance as the stream's holder. In the
+  Shutdown Drain, a loop dispatches no call the Program makes after the
+  drain starts, and once its Coral Instance holds no pull stream and no
+  dispatch is in flight, it detaches and ends the stream cleanly. At the
+  drain's length it moves the stream at once, and the Coral Instance the
+  stream reopens on ends the calls still in flight `indeterminate`. A local
+  child's stream can reopen only on its parent, so
+  its loop keeps dispatching through the drain, and at the drain's length
+  it ends the Run Interrupted, or TimedOut past its deadline.
+- A nonterminal Run has three writers: its loop, the Coral Instance that
+  receives an outside request for it (a decision on one of its Approval
+  Requests, or a cancellation), and the Run sweeper, one Coral Instance at a
+  time, elected by a lease row. Each writes under the claim and the head, so
+  the first commit wins: a receiver whose write found the head moved rereads
+  and retries a bounded number of times, then answers
+  `RunRequestNotYetRecorded`, which its caller retries. Each takes its rows in
+  one order: the Invocation and Approval Request rows, then the Run row;
+  none holds the Run row first. A loop learns of another writer only from
+  the Run's head, so give such a writer no side table to tell it. Only the
+  loop and the sweeper compare a clock with a deadline: the receiver records
+  a decision as made and a cancellation as Canceled. A waiting Invocation
+  parks with its loop and never polls or subscribes to the change signal
+  itself; its Coral Instance's wake-up reader wakes the loop, and the held
+  recheck decides. Readers show the recorded state beside a deadline and
+  never derive TimedOut or Expired from `now`. A connection request is
+  Account-owned: the Account module records its expiry when a holder reads
+  it, and the loop's timer only wakes the Invocations parked on it.
+  Retention holds and deletes terminal Runs only.
+- A Run write ends on the database's answer, never on the clock: an
   unanswered write (`Error::is_operational`: a lost connection, a session the
   database ended or refused, a pool timeout, a lock race) means a reread and
-  a retry with bounded backoff until the answer comes or the owner has
+  a retry with bounded backoff until the answer comes or the loop has
   retired, and a definite answer (a rejection, a claim mismatch, an ended
-  Run, a corrupt head) stops it; the Interrupted record, and a Run stream's
-  end at its deadline, alone retry every answer but a claim mismatch or an
-  ended Run. The worker lease is ownership
-  between Coral Instances, renewed by every commit: never write a Run whose live lease another Coral Instance
-  holds, except to insert an outside request into its Run Inbox.
-  The lease never ends a Run from inside its own Coral Instance. The owner's
-  own bounds do (suspect after one lease without a commit, self-interrupt
-  after three, constants in `crates/coral-run/src/execution.rs`), and the
-  supervisor of a panicked owner task writes the same one Interrupted chunk.
+  Run, a corrupt head) stops it. The loop's own end of its Run (at its
+  deadline, at the drain's length for a local child, or on a reopen that
+  finds its Principal gone) alone retries every answer but a claim mismatch
+  or an ended Run. A termination the Run stream itself records (a CPU or
+  memory limit, a lost Program host) still settles within the Run's
+  shutdown grace until #3405.
 - A write to a source never touches the Universal Search tables, and they keep
   no foreign key to a source but the Workspace (the vector table keeps none).
   Notify `SearchIndex` after the commit with ids alone; its reconcile pass
@@ -462,10 +411,14 @@ has the reasons.
 - A test that compiles TypeScript but is not about the compilation deadline
   uses `coral_test_support::TEST_COMPILATION_TIMEOUT`. The production deadline
   fails such tests on a starved runner.
-- A test that runs a Program in V8 needs real `coral` children, since no Run
-  Executor runs in the Coral process. Put it under `crates/coral/tests`, which
-  builds the binary, and pass `env!("CARGO_BIN_EXE_coral")` through
-  `Launch.run_executor_program` or `ServerBuilder::with_run_executor_program`.
+- A test that runs a Program serves its `RunModule` on a Run Executor in the
+  test process: `coral_run::testing::serve_on_run_executor` (the
+  `test-support` feature of `coral-run`). The rule that the Coral process
+  starts no V8 isolate is for the shipped binary. A test about the `coral`
+  binary, its children or its process boundary goes under
+  `crates/coral/tests`, which builds the binary, and passes
+  `env!("CARGO_BIN_EXE_coral")` through `Launch.run_executor_program` or
+  `ServerBuilder::with_run_executor_program`.
 - A test server whose subject is not semantic search turns it off: write its
   config with `coral_test_support::write_server_config`. With the default on,
   a start whose state root holds no model, as a test's fresh one does,
@@ -483,14 +436,15 @@ has the reasons.
   Production `#[cfg(test)]` hooks only synchronize timing; every tested path is
   one production runs.
 - Before a test asserts that something did not happen, switch off every path
-  that could make it happen. Two owner paths record an Approval Request's
-  expiry: its timer, and the periodic precheck of parked waits
+  that could make it happen. Three paths record an Approval Request's
+  expiry: the loop's timer, the loop's periodic precheck of parked waits
   (`ExecutionPolicy::with_wakeups`), which wakes the parked Invocation so its
-  held recheck finds the deadline passed and records it.
+  held recheck finds the deadline passed and records it, and the Run
+  sweeper.
 - Do not race a real timer against database work: the database is slower on
   CI, most of all on Postgres. Give the Run a long real deadline and send the
-  timer's message to the owner yourself. Order messages by waiting on an
-  observer signal, such as `CommitProbe::delivered`, never on `sleep`.
+  timer's message to the loop yourself. Order messages by waiting on an
+  observer signal, such as `CommitGate::dequeued`, never on `sleep`.
 - A test hook that blocks a Tokio task blocks in `tokio::task::block_in_place`,
   and its tests use `#[tokio::test(flavor = "multi_thread")]`: it panics on
   the default current-thread runtime. A plain blocking call also strands the

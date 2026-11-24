@@ -34,7 +34,7 @@ impl UpstreamSender for PendingMemoryUpstream {
 #[tokio::test]
 async fn memory_termination_preserves_output_and_dispatched_uncertainty_without_poisoning_later_runs()
  {
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(
             crate::engine::V8ProgramEngine::new(
                 coral_v8::IsolateLimits::new(16 * 1024 * 1024, 512 * 1024 * 1024).expect("limits"),
@@ -44,6 +44,7 @@ async fn memory_termination_preserves_output_and_dispatched_uncertainty_without_
         Arc::new(PendingMemoryUpstream::default()),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:memory", "Stop outstanding work")
         .await;

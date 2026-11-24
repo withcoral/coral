@@ -1,4 +1,4 @@
-import { style, styleVariants } from '@/wax/css'
+import { globalStyle, style, styleVariants } from '@/wax/css'
 
 import { theme } from '@/wax/theme/theme.css'
 
@@ -14,11 +14,17 @@ export const viewport = style({
   maxHeight: 'inherit',
   overscrollBehavior: 'contain',
   width: '100%',
-  selectors: {
-    // Not a tab stop: only a click focuses it, and a later key press must not
-    // outline the whole area as if the keyboard had.
-    '&[tabindex="-1"]:focus-visible': { outline: 'none' },
-  },
+  // The root shows the viewport's focus: the root clips a ring outside the
+  // viewport, and the viewport's fade masks would fade a ring on it.
+  selectors: { '&:focus-visible': { outline: 'none' } },
+})
+
+// A tab stop while it scrolls. Not one with tabindex -1: only a click focuses
+// it, and a later key press must not outline the whole area as if the keyboard
+// had.
+globalStyle(`${root}:has(> ${viewport}:focus-visible:not([tabindex="-1"]))`, {
+  outline: `2px solid ${theme.stroke.focused}`,
+  outlineOffset: -2,
 })
 
 /** The reading controller, rather than browser heuristics, owns record anchoring. */

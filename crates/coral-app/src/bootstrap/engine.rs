@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
-use tokio::task::{AbortHandle, JoinHandle};
+use tokio::task::JoinHandle;
 
 use super::error::AppError;
 use super::health::EngineReadiness;
@@ -58,6 +58,9 @@ pub(crate) struct EngineParts {
     pub(crate) clock: Arc<dyn coral_db::Clock>,
     pub(crate) policy: coral_outbound::DestinationPolicy,
     pub(crate) runtime_limits: coral_run::RuntimeLimits,
+    /// Whether the deployment configures a Sub-agent, whose Tools the
+    /// built-in catalog then holds.
+    pub(crate) sub_agent: bool,
     /// Reef's origin, where a Run's Built-in Tools link a person.
     pub(crate) human_interface: coral_mcp::HumanInterfaceUrl,
     pub(crate) credentials: CredentialParts,
@@ -318,8 +321,8 @@ struct Modules {
     local_run_executors: Option<coral_run_executor::LocalRunExecutors>,
 }
 
-/// An `Engine` whose modules are built and whose boot writes and first
-/// expired-lease sweep are done, with nothing running beside them yet.
+/// An `Engine` whose modules are built and whose boot writes and first Run
+/// sweep are done, with nothing running beside them yet.
 ///
 /// [`Self::run`] starts the background work. Whoever binds the private
 /// listeners calls it after the bind, so a start that fails on their address
@@ -363,7 +366,7 @@ impl BootedEngine {
         let take_loop = spawn_take_loop(&modules, pull_streams);
         let child_exits = spawn_child_exits(&modules.runs, exited_children);
         let mut passes = Passes::default();
-        let run_recovery = start_passes(
+        start_passes(
             &mut passes,
             &modules.runs,
             &modules.accounts,
@@ -383,7 +386,6 @@ impl BootedEngine {
             passes,
             take_loop,
             child_exits,
-            run_recovery,
             search_reconcile,
             search_model,
             search_model_delivery,
@@ -407,9 +409,6 @@ pub(crate) struct Engine {
     take_loop: JoinHandle<()>,
     /// Releases the Runs of each local child that exits.
     child_exits: JoinHandle<()>,
-    /// The expired-lease sweep, one of `passes`: it stops before the Run
-    /// drain, and the others after.
-    run_recovery: AbortHandle,
     search_reconcile: JoinHandle<()>,
     search_model: Option<SearchModel>,
     search_model_delivery: Option<JoinHandle<()>>,
@@ -423,8 +422,7 @@ pub(crate) struct Engine {
 impl Engine {
     /// Builds the domain modules, brings every Workspace's Coral Providers
     /// to this process's catalog, binds the Run Executor listener, starts
-    /// the local Run Executors and runs the first pass of the expired-lease
-    /// sweep and of the Run sweeper.
+    /// the local Run Executors and runs the first pass of the Run sweeper.
     ///
     /// The Run Executor listener comes back bound and unserved: an `Engine`
     /// serves nothing.
@@ -443,6 +441,7 @@ impl Engine {
             clock,
             policy,
             runtime_limits,
+            sub_agent,
             human_interface,
             credentials,
             search,
@@ -452,8 +451,12 @@ impl Engine {
             usage,
         } = parts;
         let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
-        let builtin_catalog = coral_catalog::BuiltinCatalog::running()
-            .map_err(|error| AppError::engine_boot(error.to_string()))?;
+        let builtin_catalog = if sub_agent {
+            coral_catalog::BuiltinCatalog::with_sub_agent()
+        } else {
+            coral_catalog::BuiltinCatalog::running()
+        }
+        .map_err(|error| AppError::engine_boot(error.to_string()))?;
         let providers = coral_provider::ProviderModule::new(
             policy,
             database.clone(),
@@ -490,7 +493,6 @@ impl Engine {
             runtime_limits,
             compiler.clone(),
             instance,
-            coral_run::RunInbox::table(database.clone()),
         )
         .map_err(|error| AppError::engine_boot(error.to_string()))?
         .with_provider_renamer(Arc::new(provider_workflow.clone()))
@@ -505,8 +507,7 @@ impl Engine {
             &clock,
             &search_index,
         ))
-        .with_pull_streams(link.server.streams())
-        .with_run_streams();
+        .with_pull_streams(link.server.streams());
         let pull_streams = link.server.streams();
         let link = RunExecutorLink {
             server: link.server.with_run_streams(runs.run_stream_server()),
@@ -575,8 +576,9 @@ impl Engine {
     }
 
     /// The domain modules the private gRPC API serves. Its Run module is the
-    /// one MCP's Runs start in, so a cancel or decision from either surface
-    /// reaches the Run Owner that the other's Run registered.
+    /// one MCP's Runs start in: a Run either surface starts is taken by the
+    /// same take loop, and a cancel or decision from either surface is
+    /// committed under the Run's claim and head.
     pub(crate) fn grpc_dependencies(&self) -> coral_grpc::Dependencies {
         let database = &self.modules.database;
         let workspaces = &self.modules.workspaces;
@@ -643,8 +645,8 @@ impl Engine {
 
     /// The domain modules MCP serves, without selecting authentication or
     /// Principal. They are this `Engine`'s, so the process has one search
-    /// module, one index, one set of Run Owners and one warm compiler that
-    /// every surface reaches.
+    /// module, one index, one Run module and one warm compiler that every
+    /// surface reaches.
     pub(crate) fn mcp_modules(
         &self,
         human_interface: coral_mcp::HumanInterfaceUrl,
@@ -667,13 +669,11 @@ impl Engine {
         )
     }
 
-    /// Reports not ready, stops the expired-lease sweep and the take loop,
-    /// and drains the Runs
+    /// Reports not ready, stops the take loop, and drains the Runs
     /// ([`coral_run::RunModule::shutdown`]). Every listener still serves
     /// meanwhile, but no new Run Executor stream opens; stop them after it.
     pub(crate) async fn drain_runs(&self) {
         self.modules.readiness.stop_serving();
-        self.run_recovery.abort();
         // A draining Coral Instance takes no Run and starts no child.
         self.take_loop.abort();
         self.modules.runs.shutdown().await;
@@ -750,9 +750,8 @@ async fn install_coral_providers(
         .map_err(|error| AppError::engine_boot(format!("Built-in Provider update failed: {error}")))
 }
 
-/// Schedules the periodic passes and returns the expired-lease sweep's
-/// handle, which stops before the others. A pass that takes the time reads
-/// `clock`, the instance's one clock, when it runs.
+/// Schedules the periodic passes. A pass that takes the time reads `clock`,
+/// the instance's one clock, when it runs.
 fn start_passes(
     passes: &mut Passes,
     runs: &coral_run::RunModule,
@@ -760,16 +759,7 @@ fn start_passes(
     releases: Option<coral_release::ReleaseCheck>,
     usage: Option<UsageReporting>,
     clock: &Arc<dyn coral_db::Clock>,
-) -> AbortHandle {
-    let run_recovery = {
-        let runs = runs.clone();
-        // The boot pass was the first, so this one waits a cadence.
-        let schedule = Schedule::every(runs.sweep_interval()).first_after(runs.sweep_interval());
-        passes.start("expired_lease_sweep", schedule, move || {
-            let runs = runs.clone();
-            async move { sweep_expired_leases(&runs).await }
-        })
-    };
+) {
     {
         let runs = runs.clone();
         let interval = coral_run::RUN_SWEEP_INTERVAL;
@@ -820,7 +810,6 @@ fn start_passes(
             }
         });
     }
-    run_recovery
 }
 
 /// Schedules the License recheck. When it finds that Coral must stop, it
@@ -874,20 +863,14 @@ fn private_tools(
     coral_run::PrivateTools::new(module, search_index.clone())
 }
 
-/// The first pass of each sweep, before any listener serves and before any
-/// but the Run Executor listener binds. The expired-lease sweep gives a Run
-/// whose lease lapsed before boot its owner back before the first request;
-/// the Run sweeper, on SQLite, ends the Runs that an earlier process's
-/// local children held, up to its pass limit: later passes end the rest
-/// once their Run Executors' leases lapse. A pass that fails is logged, the
-/// listeners bind anyway, and its next pass reads again.
+/// The Run sweeper's first pass, before any listener serves and before any
+/// but the Run Executor listener binds. On SQLite it releases the local
+/// children an earlier process started, up to its pass limit: their started
+/// Runs end, and their unstarted ones wait again. Later passes release the
+/// rest once their Run Executors' leases lapse. A pass that
+/// fails is logged, the listeners bind anyway, and its next pass reads
+/// again.
 async fn sweep_at_boot(runs: &coral_run::RunModule) {
-    if let Err(code) = sweep_expired_leases(runs).await {
-        tracing::warn!(
-            error.type = safe::kind(code),
-            "expired-lease sweep failed at boot; the next pass retries"
-        );
-    }
     if let Err(code) = sweep_runs(runs.sweep_runs_at_boot()).await {
         tracing::warn!(
             error.type = safe::kind(code),
@@ -933,22 +916,6 @@ async fn sweep_runs(
     pass: impl std::future::Future<Output = Result<Option<coral_run::Swept>, coral_run::Error>>,
 ) -> Result<(), &'static str> {
     pass.await.map(drop).map_err(|error| error.code())
-}
-
-/// One pass of the expired-lease sweep. It fails with the error's code, and
-/// the next pass reads again.
-async fn sweep_expired_leases(runs: &coral_run::RunModule) -> Result<(), &'static str> {
-    let recovered = runs
-        .sweep_expired_leases()
-        .await
-        .map_err(|error| error.code())?;
-    if recovered > 0 {
-        tracing::info!(
-            coral.run.recovered = safe::number(recovered),
-            "expired-lease sweep recovered Runs"
-        );
-    }
-    Ok(())
 }
 
 #[cfg(test)]

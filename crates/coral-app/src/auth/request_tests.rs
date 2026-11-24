@@ -595,6 +595,8 @@ async fn response_message(response: reqwest::Response) -> serde_json::Value {
 }
 
 struct Fixture {
+    /// Serves the Runs on a Run Executor in this process.
+    _serving: coral_run::testing::Serving,
     _database: coral_test_support::TestDatabase,
     organization: OrganizationModule,
     workspaces: WorkspaceModule,
@@ -671,9 +673,9 @@ impl Fixture {
             coral_run::RuntimeLimits::default()
                 .with_compilation_timeout(coral_test_support::TEST_COMPILATION_TIMEOUT),
             coral_run::CoralInstanceId::generate(),
-            coral_run::RunInbox::table(database.clone()),
         )
         .unwrap();
+        let (runs, serving) = coral_run::testing::serve_on_run_executor(runs).await;
         let search = coral_search::UniversalSearchModule::new(database.clone(), workspaces.clone());
         let commands = coral_task::TaskCommands::new(tasks.clone(), search.clone(), runs.clone());
         let modules = McpModules::new(
@@ -695,6 +697,7 @@ impl Fixture {
         .unwrap();
         Self {
             _database: fixture,
+            _serving: serving,
             organization,
             workspaces,
             tasks,

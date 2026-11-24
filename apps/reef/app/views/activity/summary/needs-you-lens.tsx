@@ -1,10 +1,31 @@
 import { Typography } from '@/wax/components'
 import * as Table from '@/wax/components/table'
-import type { ActivitySummaryData } from '@/lib/activity-summary'
-import { duration, number } from './format'
-import { fixFor, toolRows, type SummaryProvider } from './tools'
+import type { ActivitySummaryData, StopReason } from '@/lib/activity-summary'
+import { duration, number, outcomes } from './format'
+import { fixFor, TOOL_ORDER, toolRows, type SummaryProvider, type ToolRow } from './tools'
 import { Note, ToolName, Reason, Section, StatCards } from './parts'
 import * as styles from './summary.css'
+
+/** A tool's stops for one reason that you fix. */
+interface ToFix {
+  row: ToolRow
+  reason: Extract<StopReason, 'blocked' | 'needsSetup'>
+  count: number
+}
+
+const TO_FIX_COLUMNS = {
+  tool: { ...TOOL_ORDER, compare: (a: ToFix, b: ToFix) => TOOL_ORDER.compare(a.row, b.row) },
+  reason: Table.byText((item: ToFix) => outcomes[item.reason].label),
+  calls: Table.byCount((item: ToFix) => item.count),
+}
+// A tool's two reasons stay in reason order.
+const toFixOrder = (a: ToFix, b: ToFix) =>
+  TO_FIX_COLUMNS.tool.compare(a, b) || TO_FIX_COLUMNS.reason.compare(a, b)
+
+const NOT_ALLOWED_COLUMNS = {
+  tool: TOOL_ORDER,
+  calls: Table.byCount((row: ToolRow) => row.stops.notAllowed),
+}
 
 /** What needs you: the stops you fix, what people decided, and the calls they did not allow. */
 export function NeedsYouLens({
@@ -17,17 +38,26 @@ export function NeedsYouLens({
   const { approvals } = summary
   // One cursor runs through both tables, so ↑ and ↓ read them as one list.
   const cursor = Table.useRowCursor()
+  // Each table starts with the most calls. Equal counts stay in tool order.
+  const toFixSort = Table.useSort({
+    columns: TO_FIX_COLUMNS,
+    initial: 'calls',
+    tiebreak: toFixOrder,
+  })
+  const notAllowedSort = Table.useSort({
+    columns: NOT_ALLOWED_COLUMNS,
+    initial: 'calls',
+    tiebreak: TOOL_ORDER.compare,
+  })
   const rows = toolRows(summary, providers)
-  const toFix = rows
-    .flatMap((row) =>
+  const toFix = toFixSort.rows(
+    rows.flatMap((row) =>
       (['blocked', 'needsSetup'] as const)
         .filter((reason) => row.stops[reason] > 0)
         .map((reason) => ({ row, reason, count: row.stops[reason] })),
-    )
-    .toSorted((a, b) => b.count - a.count)
-  const notAllowed = rows
-    .filter((row) => row.stops.notAllowed > 0)
-    .toSorted((a, b) => b.stops.notAllowed - a.stops.notAllowed)
+    ),
+  )
+  const notAllowed = notAllowedSort.rows(rows.filter((row) => row.stops.notAllowed > 0))
   return (
     <div ref={cursor} className={styles.lens}>
       <Section title="To fix" count={toFix.reduce((total, item) => total + item.count, 0)}>
@@ -39,12 +69,24 @@ export function NeedsYouLens({
             variant="card"
             layout="fixed"
             columns={[
-              { label: 'Tool', width: { fill: 3 } },
-              { label: 'Reason', width: { fill: 1.6 } },
-              { label: 'Calls', width: 72, align: 'right' },
+              { width: { fill: 3 } },
+              { width: { fill: 1.6 } },
+              { width: 72, align: 'right' },
             ]}
           >
-            <Table.Head />
+            <Table.Head>
+              <Table.Row>
+                <Table.SortHeading sort={toFixSort} column="tool">
+                  Tool
+                </Table.SortHeading>
+                <Table.SortHeading sort={toFixSort} column="reason">
+                  Reason
+                </Table.SortHeading>
+                <Table.SortHeading sort={toFixSort} column="calls">
+                  Calls
+                </Table.SortHeading>
+              </Table.Row>
+            </Table.Head>
             <Table.Body>
               {toFix.map(({ row, reason, count }) => {
                 const fix = fixFor(reason, row.pages)
@@ -89,12 +131,27 @@ export function NeedsYouLens({
             ariaLabel="Calls not allowed"
             variant="card"
             layout="fixed"
-            columns={[
-              { label: 'Tool', width: { fill: 3 } },
-              { label: 'Not allowed', width: { fill: 1.6 } },
-            ]}
+            columns={[{ width: { fill: 3 } }, { width: { fill: 1.6 } }]}
           >
-            <Table.Head />
+            <Table.Head>
+              <Table.Row>
+                {/* The To fix table above has a Tool column too. */}
+                <Table.SortHeading
+                  sort={notAllowedSort}
+                  column="tool"
+                  label="Sort calls not allowed by tool"
+                >
+                  Tool
+                </Table.SortHeading>
+                <Table.SortHeading
+                  sort={notAllowedSort}
+                  column="calls"
+                  label="Sort calls not allowed by count"
+                >
+                  Not allowed
+                </Table.SortHeading>
+              </Table.Row>
+            </Table.Head>
             <Table.Body>
               {notAllowed.map((row) => {
                 const to = row.pages?.tool

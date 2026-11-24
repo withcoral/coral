@@ -35,17 +35,17 @@ pub(crate) async fn compose(config: &str) -> Composed {
     compose_with(config, None).await
 }
 
-/// [`compose`], with `factory` registered for MCP's tool surface.
+/// [`compose`], with `factory` registered as the Sub-agent's.
 pub(crate) async fn compose_with(
     config: &str,
-    factory: Option<Arc<dyn coral_app::McpInterfaceFactory>>,
+    factory: Option<Arc<dyn coral_app::SubAgentToolsFactory>>,
 ) -> Composed {
     let state_root = TempDir::new().expect("temporary state root");
     coral_test_support::write_server_config(state_root.path(), config);
     let runtime = coral_app::start_runtime(coral_app::Launch {
         config_dir: Some(state_root.path().to_owned()),
         run_executor_program: Some(PathBuf::from(env!("CARGO_BIN_EXE_coral"))),
-        mcp_interface_factory: factory,
+        sub_agent_factory: factory,
         ..coral_app::Launch::default()
     })
     .await
@@ -191,6 +191,19 @@ pub(crate) async fn recorded_run_state(dir: &Path, run_id: &str) -> String {
         .await
         .expect("read the Run");
     state
+}
+
+/// The kind of the Run Executor that holds or held the Run `run_id`, as the
+/// SQLite state database at `dir` records it; none before a take.
+pub(crate) async fn recorded_run_executor_kind(dir: &Path, run_id: &str) -> Option<String> {
+    let mut connection = state_database(dir).await;
+    let (kind,): (Option<String>,) =
+        sqlx::query_as("SELECT run_executor_kind FROM program_run_records WHERE id = ?")
+            .bind(run_id)
+            .fetch_one(&mut connection)
+            .await
+            .expect("read the Run");
+    kind
 }
 
 /// The SQLite state database at `dir`.

@@ -1,8 +1,7 @@
 //! The Sub-agent (ADR 0040): a model that Coral runs to do data work for the
-//! agent that calls it, the lead. The lead reaches it through one more MCP
-//! tool, `agent`, while the config file has a `[sub_agent]` section.
+//! agent that calls it, the lead. A Program of the lead reaches it through
+//! `coral.agent`, while the config file has a `[sub_agent]` section.
 
-mod lead_text;
 mod model;
 mod prompt;
 mod repository;
@@ -19,21 +18,21 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 
-use coral_app::{McpInterfaceDependencies, McpInterfaceFactory};
-use coral_mcp::McpInterface;
+use coral_app::{SubAgentDependencies, SubAgentToolsFactory};
+use coral_run::SubAgentTools;
 use coral_secret_store::{BuildEnvironment, SettingError, StoreSettings, env_var_name};
 use serde::Deserialize;
 use url::Url;
 
 use model::{ModelClient, Protocol};
 use sub_agents::SubAgents;
-use tools::CoreWithAgent;
+use tools::AgentTools;
 
-/// Builds core's MCP tools with the `agent` tool beside them, from the
+/// Builds what `coral.agent` and `coral.cancelAgent` reach, from the
 /// `[sub_agent]` section of the config file.
 pub struct SubAgentFactory;
 
-impl McpInterfaceFactory for SubAgentFactory {
+impl SubAgentToolsFactory for SubAgentFactory {
     fn section_name(&self) -> &'static str {
         "sub_agent"
     }
@@ -41,16 +40,15 @@ impl McpInterfaceFactory for SubAgentFactory {
     fn build(
         &self,
         section: &toml::Table,
-        dependencies: McpInterfaceDependencies,
-    ) -> Result<Arc<dyn McpInterface>, Box<dyn Error + Send + Sync>> {
+        dependencies: SubAgentDependencies,
+    ) -> Result<Arc<dyn SubAgentTools>, Box<dyn Error + Send + Sync>> {
         let section: Section = StoreSettings::new(section.clone()).decode()?;
         let model = section.model_client(&dependencies)?;
-        let core = dependencies.modules.core_interface();
         let human_interface = dependencies.modules.human_interface().clone();
         let modules = dependencies.modules;
         let tasks = modules.tasks;
         let sub_agents = SubAgents::new(
-            dependencies.database,
+            dependencies.database.clone(),
             tasks.clone(),
             modules.commands,
             modules.runs,
@@ -59,12 +57,12 @@ impl McpInterfaceFactory for SubAgentFactory {
             dependencies.clock,
             dependencies.stopping,
         );
-        Ok(Arc::new(CoreWithAgent::new(
-            core,
+        Ok(Arc::new(AgentTools {
+            database: dependencies.database,
             tasks,
             sub_agents,
             human_interface,
-        )))
+        }))
     }
 }
 
@@ -90,7 +88,7 @@ impl Section {
     /// Checks each setting and reads the token. It sends the model nothing.
     fn model_client(
         self,
-        dependencies: &McpInterfaceDependencies,
+        dependencies: &SubAgentDependencies,
     ) -> Result<ModelClient, SettingError> {
         let base_url = Url::parse(&self.base_url)
             .ok()

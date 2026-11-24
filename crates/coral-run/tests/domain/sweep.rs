@@ -28,9 +28,9 @@ struct Sweep {
 
 impl Sweep {
     async fn new() -> Self {
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
         fixture.clock.next.store(START, Ordering::SeqCst);
-        let runs = fixture.runs.clone().with_run_streams();
+        let runs = fixture.runs.clone();
         let tool = fixture.user_tool("user:sweep", "Sweep").await;
         fixture.require_approval(&tool).await;
         Self {
@@ -150,22 +150,25 @@ impl Sweep {
         (run_id, approval)
     }
 
-    /// A Run a Run Owner holds by its worker claim, past its deadline.
+    /// A Run an older release's Run Owner holds by its worker claim, past
+    /// its deadline.
     async fn owned_past_deadline(&self) -> RunId {
         let owned = self
             .fixture
             .staged_run(&self.tool.principal, &self.tool.workspace_id, "return 1;")
             .await;
-        self.fixture
-            .claim_run(
-                &self.tool.workspace_id,
-                &owned,
-                "owner-claim",
-                START + 60 * SECOND,
-            )
-            .await;
-        self.set(&owned, "deadline_at_unix_nanos = accepted_at_unix_nanos")
-            .await;
+        self.set(
+            &owned,
+            &format!(
+                "worker_claim_id = 'owner-claim', \
+                 worker_claim_expires_at_unix_nanos = {}, \
+                 execution_claim_id = 'owner-claim', \
+                 execution_started_at_unix_nanos = accepted_at_unix_nanos, \
+                 deadline_at_unix_nanos = accepted_at_unix_nanos",
+                START + 60 * SECOND
+            ),
+        )
+        .await;
         owned
     }
 
@@ -463,4 +466,48 @@ async fn a_pass_ends_the_oldest_deadlines_first_up_to_its_limit() {
     let next = sweep.runs.sweep(Pass::Periodic, 2).await.expect("sweep");
     assert_eq!(next.map(|swept| swept.ended), Some(1));
     assert_eq!(states().await, [RunState::TimedOut; 3]);
+}
+
+/// Catches: a pass that stops at a Run row it cannot decode, so the Runs
+/// after it stay past their deadline, or that writes the row it could not
+/// read.
+#[tokio::test]
+async fn a_pass_skips_a_run_it_cannot_decode_and_still_ends_the_rest() {
+    let sweep = Sweep::new().await;
+    // The pass reads by deadline: the undecodable Run, accepted first, has
+    // the strictly earlier one.
+    let undecodable = sweep.started(LIVE, Kind::Dialed).await;
+    let decodable = sweep.started(LIVE, Kind::Dialed).await;
+    sweep
+        .set(
+            &undecodable,
+            "deadline_at_unix_nanos = accepted_at_unix_nanos",
+        )
+        .await;
+    sweep
+        .set(
+            &decodable,
+            "deadline_at_unix_nanos = accepted_at_unix_nanos + 1",
+        )
+        .await;
+    let before = sweep.run(&undecodable).await;
+    // A build that knows one more limit wrote it.
+    let limits = "value_limits_json = replace(value_limits_json, '}', ',\"mcp_result_bytes\":1}')";
+    sweep.set(&undecodable, limits).await;
+
+    let swept = sweep.runs.sweep_runs().await.expect("sweep");
+
+    assert_eq!(swept.map(|swept| swept.ended), Some(1));
+    assert_eq!(sweep.run(&decodable).await.state, RunState::TimedOut);
+    sweep
+        .set(
+            &undecodable,
+            "value_limits_json = replace(value_limits_json, ',\"mcp_result_bytes\":1', '')",
+        )
+        .await;
+    assert_eq!(
+        sweep.run(&undecodable).await,
+        before,
+        "the pass wrote nothing"
+    );
 }

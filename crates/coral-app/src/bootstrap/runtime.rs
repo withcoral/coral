@@ -11,11 +11,11 @@ use coral_mcp::{
 
 use super::engine::Engine;
 use super::error::AppError;
-use super::mcp_interface::{McpInterfaceDependencies, McpInterfaceFactory};
 use super::server::{
     Composition, PreparedServerBuilder, RunningServer as GrpcServer, ServerBuilder,
 };
 use super::server_config::{LOCAL_OUTBOUND_DEFAULTS, McpHttpServeConfig, ServeSettings};
+use super::sub_agent::{SubAgentDependencies, SubAgentToolsFactory};
 use crate::auth::{AuthServerError, CoralAuthorizationServer, RunningCoralAuthorizationServer};
 
 /// What a launching binary adds to Coral beyond what every build has.
@@ -72,9 +72,9 @@ pub struct Launch {
     pub usage_environment: Option<coral_usage::SendEnvironment>,
     /// What the launching binary adds to Coral.
     pub extensions: Extensions,
-    /// Builds the tool surface MCP serves in place of core's. Without one,
-    /// MCP serves core's.
-    pub mcp_interface_factory: Option<Arc<dyn McpInterfaceFactory>>,
+    /// Builds the Sub-agent's Tools from its config section. Without one,
+    /// no config file can turn the Sub-agent on.
+    pub sub_agent_factory: Option<Arc<dyn SubAgentToolsFactory>>,
     /// The `coral` binary that local Run Executors run: for a test that
     /// starts Coral in its own process, whose binary is no `coral`. Without
     /// one, this process's own binary.
@@ -92,8 +92,8 @@ impl Launch {
     /// Passes this launch to `builder`.
     fn configure(self, builder: ServerBuilder) -> ServerBuilder {
         let builder = builder.with_extensions(self.extensions);
-        let builder = match self.mcp_interface_factory {
-            Some(factory) => builder.with_mcp_interface_factory(factory),
+        let builder = match self.sub_agent_factory {
+            Some(factory) => builder.with_sub_agent_factory(factory),
             None => builder,
         };
         let builder = match self.run_executor_program {
@@ -270,10 +270,10 @@ pub enum McpStartError {
     /// authentication or its public host.
     #[error("MCP authentication configuration is missing or invalid")]
     MissingAuthentication,
-    /// The registered tool surface did not start.
-    #[error("the tool surface of config section `{section_name}` did not start: {error}")]
-    Interface {
-        /// The config section the surface is built from.
+    /// The registered Sub-agent did not start.
+    #[error("the Sub-agent of config section `{section_name}` did not start: {error}")]
+    SubAgent {
+        /// The config section the Sub-agent is built from.
         section_name: &'static str,
         /// Why its factory could not build it.
         error: Box<dyn std::error::Error + Send + Sync>,
@@ -302,6 +302,12 @@ impl RunningRuntime {
     #[must_use]
     pub fn grpc_addr(&self) -> SocketAddr {
         self.grpc.local_addr()
+    }
+
+    /// The Run Executor listener address.
+    #[must_use]
+    pub fn run_executor_addr(&self) -> SocketAddr {
+        self.grpc.run_executor_addr()
     }
 
     /// This start's Coral Instance id, which the Runs it holds record.
@@ -529,7 +535,7 @@ async fn start_mcp_http(
     let engine = grpc.engine();
     let readiness = engine.readiness().probe();
     let modules = engine.mcp_modules(settings.human_interface().clone());
-    let modules = with_registered_interface(modules, settings, grpc, &clock)?;
+    let modules = with_registered_sub_agent(modules, settings, grpc, &clock)?;
     let server = match settings.mcp_http().clone() {
         McpHttpServeConfig::AuthDisabled { bind_addr } => {
             start_local(McpHttpConfig::new(bind_addr)?, modules, readiness, clock).await?
@@ -553,18 +559,18 @@ async fn start_mcp_http(
     Ok(server)
 }
 
-/// Serves the registered factory's tool surface over `modules`, when the
-/// config file has the factory's section.
-fn with_registered_interface(
+/// Wires the registered factory's Sub-agent into the Runs of `modules`, when
+/// the config file has the factory's section.
+fn with_registered_sub_agent(
     modules: McpModules,
     settings: &ServeSettings,
     grpc: &GrpcServer,
     clock: &Arc<dyn coral_db::Clock>,
 ) -> Result<McpModules, McpStartError> {
-    let Some(configured) = &settings.mcp_interface else {
+    let Some(configured) = &settings.sub_agent else {
         return Ok(modules);
     };
-    let interface = configured.build(McpInterfaceDependencies {
+    let tools = configured.build(SubAgentDependencies {
         database: grpc.engine().database(),
         modules: modules.clone(),
         outbound_policy: settings.outbound_policy(),
@@ -572,7 +578,8 @@ fn with_registered_interface(
         clock: Arc::clone(clock),
         stopping: grpc.engine().readiness().stopping(),
     })?;
-    Ok(modules.with_interface(interface))
+    modules.runs.set_sub_agent_tools(tools);
+    Ok(modules)
 }
 
 #[cfg(test)]

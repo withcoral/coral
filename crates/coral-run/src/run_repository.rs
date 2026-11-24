@@ -1,20 +1,18 @@
-//! Run record persistence. Children own the package, claim, take, Run Ledger,
-//! termination, Event, Run Inbox, and retention statements; callers reach all of them
+//! Run record persistence. Children own the package, take, Run Ledger,
+//! termination, Event, and retention statements; callers reach all of them
 //! through this module.
 
 #[cfg(test)]
 use coral_db::Database;
 use coral_db::Transaction;
 use coral_workspace::{Principal, PrincipalKind, WorkspaceId};
-use sea_query::{Condition, Expr, ExprTrait as _, Iden, Order, Query};
+use sea_query::{Condition, Expr, ExprTrait as _, Iden, Query};
 
 use crate::lifecycle::RunRecord;
-use crate::{Error, RunId, RunState};
+use crate::{Error, RunId};
 
 mod acceptance;
-mod claims;
 mod events;
-mod inbox;
 mod ledger;
 mod retention;
 mod run_row;
@@ -24,17 +22,10 @@ mod take;
 mod termination;
 mod usage;
 
-pub(crate) use acceptance::{insert_acceptance, load_package_in_transaction};
-#[cfg(test)]
-pub(crate) use claims::claim_for_test;
-pub(crate) use claims::start_execution;
+pub(crate) use acceptance::insert_acceptance;
 use events::last_event_sequence;
 pub(crate) use events::{
     NewEvent, OwnedEvent, OwnedEventKind, event_page_in_transaction, output_page_in_transaction,
-};
-pub(crate) use inbox::{
-    delete as delete_inbox_rows, held_by, insert as insert_inbox_request,
-    waiting_for as inbox_requests_waiting_for, waits as inbox_request_waits,
 };
 pub(crate) use ledger::{Chunk, ChunkEvent, commit_chunk};
 pub(crate) use retention::{delete_retained_history, hold_terminal_run, retention_activity};
@@ -47,8 +38,7 @@ pub(crate) use sweep::{
 };
 pub(crate) use take::{Claimed, Taker, any_waiting, take_oldest};
 pub(crate) use termination::{
-    Takeover, finish_run, finish_taken_run, finish_termination, finish_unstarted_run,
-    interrupt_run, request_termination,
+    finish_run, finish_taken_run, finish_termination, interrupt_run, request_termination,
 };
 pub(crate) use usage::{first_success_before, private_tool_calls, run_endings, shared_tool_calls};
 
@@ -93,7 +83,7 @@ enum ProgramRunRecords {
 }
 
 /// Reads the Run row in one statement, outside any transaction and without
-/// holding it: the reread a Run Owner makes when a commit got no answer.
+/// holding it: the reread a loop makes when a commit got no answer.
 pub(crate) async fn find_exact(
     database: &coral_db::Database,
     workspace_id: &WorkspaceId,
@@ -114,33 +104,6 @@ pub(crate) async fn find_exact_in_transaction(
         .fetch_optional(exact_run_statement(workspace_id, run_id))
         .await?;
     row.map(RunRow::decode).transpose()
-}
-
-/// Every `running` Run whose lease lapsed at `now_unix_nanos`, as the
-/// expired-lease sweep reads them in one snapshot, in acceptance order. A Run
-/// with no lease is never one: a waiting Run has none until it is taken.
-///
-/// Each Run decodes on its own: a row that does not decode comes back as
-/// its [`UndecodableRun`], in its place, and costs no other Run its read.
-pub(crate) async fn lapsed_leases(
-    transaction: &mut Transaction<'_>,
-    now_unix_nanos: i64,
-) -> Result<Vec<Result<RunRecord, UndecodableRun>>, Error> {
-    let rows: Vec<RunRow> = transaction
-        .fetch_all(
-            base_run_select()
-                .and_where(
-                    Expr::col(ProgramRunRecords::State).eq(RunState::Running.as_storage_str()),
-                )
-                .and_where(
-                    Expr::col(ProgramRunRecords::WorkerClaimExpiresAtUnixNanos).lte(now_unix_nanos),
-                )
-                .order_by(ProgramRunRecords::AcceptedAtUnixNanos, Order::Asc)
-                .order_by(ProgramRunRecords::Id, Order::Asc)
-                .to_owned(),
-        )
-        .await?;
-    Ok(rows.into_iter().map(RunRow::decode_or_name).collect())
 }
 
 pub(crate) async fn find_visible_in_transaction(
@@ -274,7 +237,8 @@ fn base_run_select() -> sea_query::SelectStatement {
 }
 
 /// A running Run that no worker claim fences: one a Run Executor waits for,
-/// has taken or holds. A Run Owner's Run holds a worker claim until it ends.
+/// has taken or holds. An older release's Run Owner's Run holds a worker
+/// claim until it ends.
 /// The state is a literal, so each plan can use an index that `state` leads.
 fn running_without_owner() -> Condition {
     Condition::all()

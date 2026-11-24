@@ -35,6 +35,18 @@ interface ActiveWorkspace {
   displayName: string
 }
 
+const SORT_COLUMNS = {
+  name: Table.byText((store: SecretStoreRow) => store.name),
+  kind: Table.byText((store: SecretStoreRow) => store.kind ?? 'Unknown'),
+  // The stores Coral cannot read from come first, then each status by the label you read.
+  status: {
+    compare: (a: SecretStoreRow, b: SecretStoreRow) =>
+      Number(b.blockers.length > 0) - Number(a.blockers.length > 0) ||
+      Table.compareText(a.blockers[0] ?? '', b.blockers[0] ?? ''),
+    first: 'ascending',
+  },
+} satisfies Record<string, Table.SortColumn<SecretStoreRow>>
+
 /** The secret stores the operator defined in deployment config, and their grants. */
 export function OrganizationSecretStoresPage({
   stores,
@@ -45,6 +57,12 @@ export function OrganizationSecretStoresPage({
   workspaces: ActiveWorkspace[]
   form: FormContext
 }) {
+  // Stores with equal values stay in name order, whichever way the column runs.
+  const sort = Table.useSort({
+    columns: SORT_COLUMNS,
+    initial: 'name',
+    tiebreak: SORT_COLUMNS.name.compare,
+  })
   return (
     <ManagementLayout breadcrumbs={trail([], 'Secret stores')} compact>
       <Table.Container
@@ -52,14 +70,22 @@ export function OrganizationSecretStoresPage({
         variant="card"
         layout="fixed"
         staticRows
-        columns={[
-          { label: 'Name', width: 'fill' },
-          { label: 'Kind', width: 'fill' },
-          { label: 'Status', width: 'fill' },
-          { label: 'Workspaces', width: { fill: 2 } },
-        ]}
+        columns={[{ width: 'fill' }, { width: 'fill' }, { width: 'fill' }, { width: { fill: 2 } }]}
       >
-        <Table.Head />
+        <Table.Head>
+          <Table.Row>
+            <Table.SortHeading sort={sort} column="name">
+              Name
+            </Table.SortHeading>
+            <Table.SortHeading sort={sort} column="kind">
+              Kind
+            </Table.SortHeading>
+            <Table.SortHeading sort={sort} column="status">
+              Status
+            </Table.SortHeading>
+            <Table.Heading>Workspaces</Table.Heading>
+          </Table.Row>
+        </Table.Head>
         {stores.length === 0 && (
           <Table.Status>
             No secret stores defined.{' '}
@@ -70,7 +96,7 @@ export function OrganizationSecretStoresPage({
           </Table.Status>
         )}
         <Table.Body>
-          {stores.map((store) => (
+          {sort.rows(stores).map((store) => (
             <Table.Row key={store.name}>
               <Table.Cell title={store.name}>{store.name}</Table.Cell>
               <Table.Cell>{store.kind ?? 'Unknown'}</Table.Cell>

@@ -55,7 +55,7 @@ async fn an_mcp_is_error_rejects_the_call_and_provider_bound_reads_survive_run_o
                 }
             }))
         }).expect(1).mount(&server).await;
-    let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let (workspace, principal) = fixture
         .user_scope("user:mcp-runner", "Preserve MCP outcomes")
         .await;
@@ -97,7 +97,7 @@ async fn an_mcp_is_error_rejects_the_call_and_provider_bound_reads_survive_run_o
             .published_provider()
             .expect("published MCP Provider");
     }
-    let runs = fixture.live_runs(None);
+    let runs = fixture.live(None).await;
     let accepted = runs.start(&principal, &workspace, submission(r#"
         let result;
         try {
@@ -279,7 +279,7 @@ async fn an_mcp_authentication_refusal_is_a_catchable_tool_error() {
             .expect(1)
             .mount(&server)
             .await;
-        let fixture = TestModules::new(Arc::new(ImmediateEngine::default())).await;
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
         let (workspace, principal) = fixture
             .user_scope("user:mcp-refused", "Observe an MCP authentication refusal")
             .await;
@@ -317,7 +317,7 @@ async fn an_mcp_authentication_refusal_is_a_catchable_tool_error() {
             .skip_search()
             .published_provider()
             .expect("published MCP Provider");
-        let runs = fixture.live_runs(None);
+        let runs = fixture.live(None).await;
         let accepted = runs
             .start(
                 &principal,

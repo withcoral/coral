@@ -18,11 +18,36 @@ export function callers(entries: readonly ContextEntry[]) {
   return agents ? `You and ${agents}` : 'You'
 }
 
+const size = (entry: ContextEntry) => Math.abs(Number(entry.bytes))
+
+/** Orders exact byte counts, which can pass what a number holds. */
+function compareBytes(bytes: (entry: ContextEntry) => bigint) {
+  return (a: ContextEntry, b: ContextEntry) => {
+    const [x, y] = [bytes(a), bytes(b)]
+    return x < y ? -1 : x > y ? 1 : 0
+  }
+}
+const net = (entry: ContextEntry) => BigInt(entry.bytes)
+const moved = (entry: ContextEntry) => (net(entry) < 0n ? -net(entry) : net(entry))
+
+const SORT_COLUMNS = {
+  caller: Table.byText((entry: ContextEntry) => entry.label),
+  share: { compare: compareBytes(moved), first: 'descending' },
+  // The most saved comes first.
+  context: { compare: compareBytes(net), first: 'ascending' },
+} satisfies Record<string, Table.SortColumn<ContextEntry>>
+
 /** Each caller's net context, with its share of all the context moved. */
 export function ContextLens({ entries }: { entries: readonly ContextEntry[] }) {
+  // Coral lists the callers that saved the most first. Equal values stay in caller order.
+  const sort = Table.useSort({
+    columns: SORT_COLUMNS,
+    initial: 'context',
+    tiebreak: SORT_COLUMNS.caller.compare,
+  })
   if (entries.length === 0) return <Note>No measured runs.</Note>
-  const sizes = entries.map((entry) => Math.abs(Number(entry.bytes)))
-  const whole = sizes.reduce((total, size) => total + size, 0)
+  const sizes = entries.map(size)
+  const whole = sizes.reduce((total, value) => total + value, 0)
   const max = Math.max(...sizes)
   return (
     <Table.Container
@@ -30,15 +55,23 @@ export function ContextLens({ entries }: { entries: readonly ContextEntry[] }) {
       variant="card"
       layout="fixed"
       maxRows={8}
-      columns={[
-        { label: 'Caller', width: { fill: 2 } },
-        { label: 'Share', width: { fill: 2 } },
-        { label: 'Context', width: 120, align: 'right' },
-      ]}
+      columns={[{ width: { fill: 2 } }, { width: { fill: 2 } }, { width: 120, align: 'right' }]}
     >
-      <Table.Head />
+      <Table.Head>
+        <Table.Row>
+          <Table.SortHeading sort={sort} column="caller">
+            Caller
+          </Table.SortHeading>
+          <Table.SortHeading sort={sort} column="share">
+            Share
+          </Table.SortHeading>
+          <Table.SortHeading sort={sort} column="context">
+            Context
+          </Table.SortHeading>
+        </Table.Row>
+      </Table.Head>
       <Table.Body>
-        {entries.map((entry, i) => (
+        {sort.rows(entries).map((entry) => (
           <Table.Row key={entry.key}>
             <Table.Cell title={entry.label}>
               <span className={styles.labeled}>
@@ -49,7 +82,7 @@ export function ContextLens({ entries }: { entries: readonly ContextEntry[] }) {
               </span>
             </Table.Cell>
             <Table.Cell>
-              <BarCell value={sizes[i]} label={share(sizes[i], whole)} max={max} />
+              <BarCell value={size(entry)} label={share(size(entry), whole)} max={max} />
             </Table.Cell>
             <Table.Cell>
               <ContextImpact bytes={entry.bytes} />

@@ -40,7 +40,8 @@ pub mod pull_response {
         /// Runs taken for this Run Executor.
         #[prost(message, tag = "2")]
         Taken(super::Taken),
-        /// One compile, which holds one unit of room until Compiled answers it.
+        /// One compile, which holds no room for Runs: Coral keeps a count of the
+        /// compiles it sends each Run Executor's one compiler.
         #[prost(message, tag = "3")]
         Compile(super::Compile),
     }
@@ -55,7 +56,7 @@ pub struct Hello {
     /// The Run Executor's protocol level.
     #[prost(uint32, tag = "2")]
     pub protocol_level: u32,
-    /// The units of room free: Runs and compiles it is willing to hold.
+    /// The units of room free: the Runs it is willing to hold.
     #[prost(uint32, tag = "3")]
     pub free: u32,
     /// The limits it applies to each Run.
@@ -92,7 +93,7 @@ pub struct Welcome {
 /// The Run Executor's count of free units, which replaces the last one.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Room {
-    /// The units of room free.
+    /// The units of room free for Runs.
     #[prost(uint32, tag = "1")]
     pub free: u32,
 }
@@ -113,7 +114,8 @@ pub struct TakenRun {
     #[prost(string, tag = "2")]
     pub claim_id: ::prost::alloc::string::String,
 }
-/// One compile call, which holds one unit of room until Compiled answers it.
+/// One compile call, which holds one unit of compile room until Compiled
+/// answers it, and no room for Runs.
 /// It carries source and no Workspace, Principal or credential.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Compile {

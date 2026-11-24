@@ -11,9 +11,11 @@ use coral_test_support::TestDatabase;
 use tokio::task::JoinHandle;
 
 use super::CompileRelay;
-use crate::pull::tests::{Sent, compiled, dialed_stream as open, up};
+use crate::pull::tests::{
+    Sent, busy_stream as open_busy, compiled, dialed_stream as open, fill_compile, up,
+};
 use crate::relay_repository::{Take, count, take_oldest};
-use crate::wire::v1::{PullRequest, PullResponse, Room, pull_request, pull_response};
+use crate::wire::v1::{PullResponse, pull_response};
 use crate::{
     BuiltinTools, CompileError, CompilerClient, PullStreamCompiler, PullStreams, StreamId,
     Unavailable,
@@ -94,21 +96,8 @@ async fn instances_answering<const N: usize>(
     (requester, others)
 }
 
-/// The units the streams can still take.
-fn free(streams: &PullStreams) -> u32 {
-    streams.held().iter().map(|held| held.free).sum()
-}
-
-/// `stream`'s Run Executor reports `free` units of room.
-fn report(streams: &PullStreams, stream: StreamId, free: u32) {
-    let room = PullRequest {
-        message: Some(pull_request::Message::Room(Room { free })),
-    };
-    streams.receive(stream, room).expect("a room report");
-}
-
-/// Answers the next `Compile` sent on `stream` with the package `42`.
-async fn answer(streams: &PullStreams, stream: StreamId, sent: &mut Sent) {
+/// The number of the next `Compile` sent on `stream`.
+async fn next_compile(sent: &mut Sent) -> u64 {
     let next = tokio::time::timeout(Duration::from_secs(5), sent.recv()).await;
     let Ok(Some(Ok(PullResponse {
         message: Some(pull_response::Message::Compile(compile)),
@@ -116,8 +105,14 @@ async fn answer(streams: &PullStreams, stream: StreamId, sent: &mut Sent) {
     else {
         panic!("a Compile within 5 s");
     };
+    compile.number
+}
+
+/// Answers the next `Compile` sent on `stream` with the package `42`.
+async fn answer(streams: &PullStreams, stream: StreamId, sent: &mut Sent) {
+    let number = next_compile(sent).await;
     streams
-        .receive(stream, up(compiled(compile.number)))
+        .receive(stream, up(compiled(number)))
         .expect("the answer");
 }
 
@@ -162,14 +157,14 @@ fn readying(
 async fn a_compile_with_no_room_here_is_served_where_there_is_room() {
     let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let (requester, [server]) = instances(&database).await;
-    let (stream, mut sent) = open(&server.streams, 0);
+    let (stream, mut sent) = open_busy(&server.streams);
 
     // Ready waits on a probe until a Coral Instance has room. Room
     // elsewhere holds nothing here; room that showed here is held, and
     // freed as the held client drops.
     let ready = readying(&requester.compiler);
     rows_reach(&database.database(), 1).await;
-    report(&server.streams, stream, 1);
+    server.streams.let_go(stream);
     let held = ready.await.unwrap().map(|held| held.is_some());
     assert_eq!(held, Ok(Arc::ptr_eq(&requester, &server)));
     assert_eq!(
@@ -178,10 +173,10 @@ async fn a_compile_with_no_room_here_is_served_where_there_is_room() {
         "the probe is gone"
     );
 
-    report(&server.streams, stream, 0);
+    fill_compile(&server.streams, stream);
     let call = compiling(&requester.compiler, Duration::from_secs(5));
     rows_reach(&database.database(), 1).await;
-    report(&server.streams, stream, 1);
+    server.streams.let_go(stream);
     answer(&server.streams, stream, &mut sent).await;
     assert_eq!(call.await.unwrap().as_deref(), Ok("42"));
     assert_eq!(
@@ -197,7 +192,7 @@ async fn two_coral_instances_with_room_serve_two_rows_once_each() {
     let (requester, servers) = instances::<2>(&database).await;
     let mut opened: Vec<_> = servers
         .iter()
-        .map(|server| (server, open(&server.streams, 0)))
+        .map(|server| (server, open_busy(&server.streams)))
         .collect();
     let calls = [
         compiling(&requester.compiler, Duration::from_secs(5)),
@@ -205,13 +200,18 @@ async fn two_coral_instances_with_room_serve_two_rows_once_each() {
     ];
     rows_reach(&database.database(), 2).await;
 
-    // One unit each, and no room report after a send: a stream that served
-    // a row cannot take the other.
+    // One unit each, and no answer before both are sent: a stream that
+    // served a row cannot take the other.
     for (server, (stream, _)) in &opened {
-        report(&server.streams, *stream, 1);
+        server.streams.let_go(*stream);
     }
-    for (server, (stream, sent)) in &mut opened {
-        answer(&server.streams, *stream, sent).await;
+    let mut numbers = Vec::new();
+    for (_, (_, sent)) in &mut opened {
+        numbers.push(next_compile(sent).await);
+    }
+    for ((server, (stream, _)), number) in opened.iter().zip(numbers) {
+        let answer = up(compiled(number));
+        server.streams.receive(*stream, answer).expect("the answer");
     }
     for call in calls {
         assert_eq!(call.await.unwrap().as_deref(), Ok("42"));
@@ -226,7 +226,7 @@ async fn two_coral_instances_with_room_serve_two_rows_once_each() {
 async fn a_row_nobody_serves_fails_at_the_requesters_bound_and_is_gone() {
     let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let (requester, [server]) = instances(&database).await;
-    let (_stream, mut sent) = open(&server.streams, 0);
+    let (_stream, mut sent) = open_busy(&server.streams);
 
     let call = compiling(&requester.compiler, Duration::from_secs(2));
     rows_reach(&database.database(), 1).await;
@@ -248,11 +248,11 @@ async fn a_row_served_whose_compile_runs_out_of_time_fails_as_timed_out_and_is_g
     // The served compile ends a second early, so its timed-out answer is
     // read well before the requester gives up on the taker.
     let (requester, [server]) = instances_answering(&database, Duration::from_secs(1)).await;
-    let (stream, mut sent) = open(&server.streams, 0);
+    let (stream, mut sent) = open_busy(&server.streams);
 
     let call = compiling(&requester.compiler, Duration::from_secs(3));
     rows_reach(&database.database(), 1).await;
-    report(&server.streams, stream, 1);
+    server.streams.let_go(stream);
     let sent = tokio::time::timeout(Duration::from_secs(5), sent.recv()).await;
     assert!(
         matches!(sent, Ok(Some(Ok(_)))),
@@ -337,29 +337,27 @@ async fn one_unit_of_room_elsewhere_readies_one_waiting_caller_at_a_time() {
     // the unit.
     let (requester, server) =
         requester_and_promising_server(&database, Duration::from_secs(600)).await;
-    let (stream, mut sent) = open(&server.streams, 0);
+    let (stream, mut sent) = open_busy(&server.streams);
     let first = readying(&requester.compiler);
     rows_reach(&database.database(), 1).await;
     let second = readying(&requester.compiler);
     rows_reach(&database.database(), 2).await;
 
-    report(&server.streams, stream, 1);
+    server.streams.let_go(stream);
     let ready = first.await.unwrap().map(|held| held.is_some());
     assert_eq!(ready, Ok(false), "the oldest caller relays its calls");
     // The server holds its one unit for the first caller's call, so the
     // other's probe finds no room.
-    assert_eq!(free(&server.streams), 0, "the unit is held");
+    assert_eq!(server.streams.compile_room(stream), 0, "the unit is held");
     assert!(!second.is_finished(), "the other waits for room");
 
-    // The first caller's call spends the held unit.
+    // The first caller's call spends the held unit, and its answer frees
+    // it for the other.
     let call = compiling(&requester.compiler, Duration::from_secs(5));
     answer(&server.streams, stream, &mut sent).await;
     assert_eq!(call.await.unwrap().as_deref(), Ok("42"));
-    assert!(!second.is_finished(), "the other still waits for room");
-
-    report(&server.streams, stream, 1);
     let ready = second.await.unwrap().map(|held| held.is_some());
-    assert_eq!(ready, Ok(false), "new room readies the other");
+    assert_eq!(ready, Ok(false), "the freed unit readies the other");
 }
 
 #[tokio::test]
@@ -367,13 +365,13 @@ async fn a_unit_held_for_a_call_that_never_comes_readies_the_next_caller() {
     let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
     let (requester, server) =
         requester_and_promising_server(&database, Duration::from_millis(200)).await;
-    let (stream, _sent) = open(&server.streams, 0);
+    let (stream, _sent) = open_busy(&server.streams);
     let first = readying(&requester.compiler);
     rows_reach(&database.database(), 1).await;
     let second = readying(&requester.compiler);
     rows_reach(&database.database(), 2).await;
 
-    report(&server.streams, stream, 1);
+    server.streams.let_go(stream);
     let ready = first.await.unwrap().map(|held| held.is_some());
     assert_eq!(ready, Ok(false));
     // No call comes: the promise lapses, and the unit readies the other.

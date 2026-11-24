@@ -53,7 +53,7 @@ async fn store_backed(engine: Arc<dyn ProgramEngine>) -> StoreBacked {
         .await
         .unwrap();
     submit_reference(&accounts, &tool, &change(tool.user.clone(), 41, '4'), PATH).await;
-    let runs = fixture.live_runs(None).with_accounts(accounts.clone());
+    let runs = fixture.live(Some(accounts.clone())).await;
     StoreBacked {
         server,
         fixture,
@@ -170,7 +170,7 @@ fn caught(run: &crate::RunUpdate) -> (String, String) {
 // Catches: a value Coral keeps, or one read once, so rotation has no effect.
 #[tokio::test]
 async fn an_invocation_sends_the_stores_current_value_and_a_rotated_one_next() {
-    let backed = store_backed(Arc::new(ImmediateEngine::default())).await;
+    let backed = store_backed(Arc::new(ImmediateEngine)).await;
     backed.expect_bearer("stored-canary").await;
     let first = backed
         .run("return await coral.providers.weather.getForecast({});")
@@ -190,9 +190,10 @@ async fn an_invocation_sends_the_stores_current_value_and_a_rotated_one_next() {
 // reaching the store for an Invocation enforcement then denies.
 #[tokio::test]
 async fn an_invocation_enforcement_denies_never_reads_the_store() {
-    let mut backed = store_backed(Arc::new(ImmediateEngine::default())).await;
+    let mut backed = store_backed(Arc::new(ImmediateEngine)).await;
     let (gate, release) = EnforcementGate::blocking();
     backed.runs.invocation_observer = gate.clone();
+    backed.runs = backed.fixture.served(backed.runs.clone()).await;
     let reads = backed.store.reads();
     let started = backed
         .runs
@@ -235,7 +236,7 @@ async fn an_invocation_enforcement_denies_never_reads_the_store() {
 // Catches: a failure that names the path, falls back, or sends the call anyway.
 #[tokio::test]
 async fn a_failed_read_ends_the_invocation_without_naming_the_path() {
-    let backed = store_backed(Arc::new(ImmediateEngine::default())).await;
+    let backed = store_backed(Arc::new(ImmediateEngine)).await;
     for (failure, code) in [
         (
             coral_secret_store::Error::Unreachable,
@@ -279,10 +280,11 @@ async fn a_failed_read_ends_the_invocation_without_naming_the_path() {
 // Owner changes it during the Invocation.
 #[tokio::test]
 async fn changing_a_reference_stops_a_pending_invocation() {
-    let mut backed = store_backed(Arc::new(ImmediateEngine::default())).await;
+    let mut backed = store_backed(Arc::new(ImmediateEngine)).await;
     backed.store.set("team/other", "token", "other-canary");
     let (gate, release) = EnforcementGate::blocking();
     backed.runs.invocation_observer = gate.clone();
+    backed.runs = backed.fixture.served(backed.runs.clone()).await;
     let started = backed
         .runs
         .start(

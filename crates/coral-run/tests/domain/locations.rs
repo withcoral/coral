@@ -30,7 +30,7 @@ fn private_tools(fixture: &TestModules) -> PrivateToolModule {
 /// Runs one real-V8 Program that calls a linked Private Tool, emits in a
 /// loop and fans out Tool calls, and waits for it to succeed.
 async fn run_located_program() -> (TestModules, ToolFixture, crate::RunId) {
-    let fixture = TestModules::with_upstream(
+    let mut fixture = TestModules::with_upstream(
         Arc::new(
             crate::engine::V8ProgramEngine::new(crate::IsolateLimits::default())
                 .expect("V8 engine"),
@@ -38,6 +38,7 @@ async fn run_located_program() -> (TestModules, ToolFixture, crate::RunId) {
         Arc::new(ScriptedUpstream::json(200, serde_json::json!(null))),
     )
     .await;
+    fixture.serve().await;
     let tool = fixture
         .user_tool("user:locations", "Record authored locations")
         .await;
