@@ -15,7 +15,8 @@ export interface SortColumn<T> {
 }
 
 // One fixed locale, so the server and every browser put the rows in the same order when the
-// page hydrates. It ignores case, so "github" and "Zendesk" do not split by it.
+// page hydrates. Names that differ only by case or accents, such as "github" and "GitHub",
+// tie.
 export const compareText = (a: string, b: string) =>
   a.localeCompare(b, 'en', { sensitivity: 'base' })
 

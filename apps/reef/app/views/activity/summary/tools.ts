@@ -33,12 +33,16 @@ export interface ToolRow {
   stopped: number
 }
 
-/** A column of tools, in the order their cells read: provider, namespace, then tool. */
+/**
+ * A column of tools, in the order their cells read: provider, namespace, then tool. Two tools
+ * that held one Call Path read alike, so their resource names order them.
+ */
 export const TOOL_ORDER: SortColumn<ToolRow> = {
   compare: (a, b) =>
     compareText(a.provider, b.provider) ||
     compareText(a.namespace, b.namespace) ||
-    compareText(a.relativePath, b.relativePath),
+    compareText(a.relativePath, b.relativePath) ||
+    compareText(a.tool, b.tool),
   first: 'ascending',
 }
 

@@ -69,6 +69,28 @@ it('keeps equal rows in tiebreak order whichever way the column runs', () => {
   expect(sort.names()).toEqual(['Linear', 'Zendesk', 'Attio', 'github'])
 })
 
+// Catches: names that split by case or accents, so the order changes with how a provider
+// spells its name.
+it.each([
+  [
+    ['GitHub', 'github', 'Attio'],
+    ['Attio', 'GitHub', 'github'],
+  ],
+  [
+    ['github', 'GitHub', 'Attio'],
+    ['Attio', 'github', 'GitHub'],
+  ],
+  [
+    ['Öresund', 'oresund', 'Oresund'],
+    ['Öresund', 'oresund', 'Oresund'],
+  ],
+])('ties names that differ only by case or accents: %j', (rows, order) => {
+  const { result } = renderHook(() =>
+    useSort({ columns: { name: byText((name: string) => name) }, initial: 'name' }),
+  )
+  expect(result.current.rows(rows)).toEqual(order)
+})
+
 /** Runs the test as a runtime whose default locale is `locale`, such as a browser set to it. */
 function runtimeLocale(locale: string) {
   const compare = String.prototype.localeCompare

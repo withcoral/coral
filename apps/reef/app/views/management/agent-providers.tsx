@@ -29,7 +29,7 @@ const SORT_COLUMNS = {
   status: {
     compare: (a: AgentProviderView, b: AgentProviderView) =>
       Number(needsYou(b)) - Number(needsYou(a)) ||
-      Table.compareText(statusLabel(a), statusLabel(b)),
+      Table.compareText(status(a).label, status(b).label),
     first: 'ascending',
   },
 } satisfies Record<string, Table.SortColumn<AgentProviderView>>
@@ -143,10 +143,6 @@ function status(provider: AgentProviderView) {
   const accountOnly = action !== null && provider.blockers.length <= 1
   const [first, ...rest] = accountOnly ? [] : provider.blockers
   return { action, label: first ?? action ?? 'Ready', rest }
-}
-
-function statusLabel(provider: AgentProviderView) {
-  return status(provider).label
 }
 
 /**
