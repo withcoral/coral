@@ -4,7 +4,8 @@
 //! A retriever applies its owners' visibility rules once per request, puts
 //! the answer into its ranked statement over the search-owned table, and
 //! hands the engine its window in rank order, each Entity marked strong or
-//! weak by the retriever's own rule. When the request carries the query's
+//! weak by the retriever's own rule, and with its distance from the query
+//! when its vector list holds it. When the request carries the query's
 //! vector, the query has a word to rank, and some of what the caller may
 //! search is in the index, the retriever also runs a vector query with its
 //! own visibility rules and merges the two lists ([`vector_list`]). It
@@ -18,7 +19,7 @@ pub(crate) mod tools;
 pub(crate) mod vector_list;
 
 pub(crate) use repository::{abandon_query, begin_query, end_query};
-pub(crate) use vector_list::{LexicalReason, Semantic};
+pub(crate) use vector_list::{Distance, LexicalReason, Semantic};
 
 use std::sync::Arc;
 
@@ -106,16 +107,49 @@ pub(crate) struct Answer {
     /// Whether the window merged a vector list; `None` for a retriever
     /// that keeps no vectors.
     pub(crate) semantic: Option<Semantic>,
+    /// The distances of the retriever's vector list, nearest first, as the
+    /// list stood before the merge cut it to the window: the window can lose
+    /// the nearest entries. Empty without a vector list.
+    pub(crate) vector_distances: Vec<Distance>,
 }
 
-/// One Entity of a ranked window and its retriever's mark. A retriever
-/// marks an Entity strong when, by its own rule and over its own signals, the
-/// Entity plainly answers the query; the engine puts every strong Entity of
-/// every window before the weak ones, each group by position. Scores stay in
-/// the retriever, since they do not compare across kinds.
+/// One Entity of a ranked window and its mark. A retriever marks an Entity
+/// strong when, by its own rule and over its own signals, the Entity plainly
+/// answers the query, and weak otherwise; the rerank step can change the mark
+/// of an Authored Tool. Scores stay in the retriever, since they do not
+/// compare across kinds.
 pub(crate) struct WindowEntry {
     pub(crate) entity: EntityRef,
-    pub(crate) strong: bool,
+    pub(crate) mark: Mark,
+    /// The Entity's distance from the query when its retriever's vector
+    /// list holds it.
+    pub(crate) distance: Option<Distance>,
+    /// A rare content word of the query starts a word of the Entity's path.
+    /// The Authored Tool retriever sets it for a weak entry; the rerank step
+    /// decides whether it makes the entry strong. Always false for a
+    /// Provider Tool.
+    pub(crate) rare_path_word: bool,
+}
+
+/// Where the engine puts a window entry: every strong entry of every window
+/// before every weak one, and every weak one before every last one, each
+/// group by position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Mark {
+    /// The Entity plainly answers the query.
+    Strong,
+    /// The Entity matched the query, and no rule makes it strong.
+    Weak,
+    /// An Authored Tool that no rule makes strong. Only the rerank step
+    /// gives this mark.
+    Last,
+}
+
+impl Mark {
+    /// A retriever's mark: strong when its own rule holds, weak otherwise.
+    pub(crate) const fn of(strong: bool) -> Self {
+        if strong { Self::Strong } else { Self::Weak }
+    }
 }
 
 /// Why a retriever could not answer.

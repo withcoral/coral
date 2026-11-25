@@ -18,7 +18,7 @@ use super::RetrievalError;
 use super::plan::{
     QueryPlan, ScoringPlan, Statistics, WordStatistics, contains_pattern, prefix_pattern,
 };
-use super::vector_list::{CurrentRow, NearestVector};
+use super::vector_list::{CurrentRow, Distance, NearestVector};
 use crate::CallPath;
 
 /// The `search_entities` columns the coverage reads name, for sea-query.
@@ -310,12 +310,13 @@ async fn nearest(
     limit: usize,
 ) -> Result<Vec<NearestVector>, Error> {
     let (sql, values) = nearest_statement(transaction.system(), scope, revision, vector, limit);
-    let rows: Vec<(String, UnixNanos)> = transaction.fetch_all_sql(&sql, values).await?;
+    let rows: Vec<(String, UnixNanos, f64)> = transaction.fetch_all_sql(&sql, values).await?;
     Ok(rows
         .into_iter()
-        .map(|(doc_id, source_indexed_at)| NearestVector {
+        .map(|(doc_id, source_indexed_at, distance)| NearestVector {
             doc_id,
             source_indexed_at,
+            distance: Distance(distance),
         })
         .collect())
 }
@@ -404,7 +405,9 @@ fn row_columns(alias: &str) -> String {
     )
 }
 
-/// The vector query over the scope, with its binds.
+/// The vector query over the scope, with its binds. Each row is a key, the
+/// source stamp of its vector and the vector's cosine distance from
+/// `vector`.
 ///
 /// On Postgres the vector binds as `halfvec`, the column's type, so the
 /// distance needs no cast per row, and the scan is exact: the table has no
@@ -431,10 +434,11 @@ fn nearest_statement(
     let limit = binds.push(limit_value(limit));
     let sql = match system {
         DatabaseSystem::Postgres => format!(
-            "SELECT d.doc_id, d.source_indexed_at_unix_nanos \
+            "SELECT d.doc_id, d.source_indexed_at_unix_nanos, \
+                d.embedding <=> CAST({vector} AS halfvec) AS distance \
              FROM search_entity_embeddings AS d \
              WHERE {conditions} AND d.embedder_revision = {revision} \
-             ORDER BY d.embedding <=> CAST({vector} AS halfvec), d.doc_id COLLATE \"C\" ASC \
+             ORDER BY distance, d.doc_id COLLATE \"C\" ASC \
              LIMIT {limit}"
         ),
         DatabaseSystem::Sqlite => format!(
@@ -447,7 +451,7 @@ fn nearest_statement(
                     JOIN search_entities AS d \
                         ON d.workspace_id = e.workspace_id AND d.doc_id = e.doc_id \
                     WHERE {conditions} AND e.embedder_revision = {revision})) \
-             SELECT e.doc_id, e.source_indexed_at_unix_nanos \
+             SELECT e.doc_id, e.source_indexed_at_unix_nanos, n.distance \
              FROM nearest AS n \
              JOIN search_entity_embeddings AS e ON e.vector_rowid = n.vector_rowid \
              ORDER BY n.distance, e.doc_id"
