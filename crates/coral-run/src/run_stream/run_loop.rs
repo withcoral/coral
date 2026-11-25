@@ -33,8 +33,14 @@
 //! transaction: the Run row read without a hold, the row work, the Events,
 //! and the head update that asserts the loop's claim and the head it tracks
 //! in memory and stamps the commit time.
+//!
+//! Two writes of a Run stream go outside the loop's chunks (`completion`):
+//! the timeout of a Run whose deadline passed before its Program started,
+//! which the stream writes before any loop exists, and the terminal write
+//! once the Program has ended.
 
 mod chunk;
+mod completion;
 mod handle;
 mod host;
 mod state;
@@ -43,7 +49,7 @@ pub(crate) use chunk::ChunkWork;
 #[cfg(test)]
 pub(crate) use chunk::{CHUNK_WORK_CAP, ChunkBuildView, ENFORCEMENT_BATCH_CAP};
 pub(crate) use handle::{
-    Check, DecisionRequest, DrainStep, Message, OwnerHandle, OwnerRegistration, Owners, ParkedWait,
+    Check, DecisionRequest, DrainStep, LoopHandle, LoopRegistration, Loops, Message, ParkedWait,
     RequestTicket, StartedExecution,
 };
 #[cfg(test)]
@@ -51,4 +57,19 @@ pub(crate) use handle::{CommitRejection, Reply, Timer};
 pub(crate) use host::host;
 pub(crate) use state::NO_DEADLINE;
 #[cfg(test)]
-pub(crate) use state::{Effect, OwnerLimits, OwnerState, Phase, apply};
+pub(crate) use state::{Effect, LoopLimits, LoopState, Phase, apply};
+
+impl crate::RunModule {
+    /// Registers a Run stream's loop, which detaches the one it replaces
+    /// ([`Loops::register_stream`]), and starts the wake-up reader of this
+    /// Coral Instance's loops.
+    pub(crate) fn register_loop(&self, handle: &LoopHandle) -> LoopRegistration {
+        let registration = self.loops.register_stream(handle.clone());
+        self.wakes.loop_registered(
+            &self.loops,
+            #[cfg(test)]
+            &self.execution_observer,
+        );
+        registration
+    }
+}

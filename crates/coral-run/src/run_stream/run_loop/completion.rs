@@ -9,7 +9,6 @@
 
 use crate::engine::ExecutionCompletion;
 use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
-use crate::owner::{self, OwnerHandle};
 use crate::termination::{commit_end, end_in_one_chunk};
 use crate::trace::RunEnd;
 use crate::types::AcceptedRun;
@@ -19,19 +18,6 @@ use crate::{
 };
 
 impl RunModule {
-    /// Registers a Run stream's owner, which detaches the one it replaces
-    /// ([`owner::Owners::register_stream`]), and starts the wake-up reader
-    /// of this Coral Instance's loops.
-    pub(crate) fn register_stream_owner(&self, handle: &OwnerHandle) -> owner::OwnerRegistration {
-        let registration = self.owners.register_stream(handle.clone());
-        self.wakes.loop_registered(
-            &self.owners,
-            #[cfg(test)]
-            &self.execution_observer,
-        );
-        registration
-    }
-
     /// Ends a Run whose deadline passed before its Program started: the
     /// timeout in one terminal chunk, committed here, and nothing to run.
     pub(crate) async fn time_out_before_start(
@@ -140,7 +126,7 @@ impl RunModule {
 
 /// The outcome of a Program that returned on its own, and whether its Final
 /// Value was over the Run's output budget, which fails the Run instead. The
-/// Final Value is decided against the recorded total, which the owner's last
+/// Final Value is decided against the recorded total, which the loop's last
 /// chunk wrote from its exact in-memory total.
 fn returned_outcome(
     run: &RunRecord,

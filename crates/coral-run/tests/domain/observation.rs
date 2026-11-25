@@ -309,12 +309,12 @@ async fn waiting_observation_wakes_on_a_committed_change() {
     assert_eq!(update.required_actions(), []);
 }
 
-/// An action's expiry is a commit of the Run Owner's timer: the wait wakes
+/// An action's expiry is a commit of the loop's timer: the wait wakes
 /// on it like on any change, and derives nothing from the clock. Domain time
 /// never reaches the deadline here; the test sends the timer's message, since
 /// a real timer short enough to wait for would race the "still pending" check.
 #[tokio::test]
-async fn waiting_observation_wakes_when_the_owner_records_an_actions_expiry() {
+async fn waiting_observation_wakes_when_the_loop_records_an_actions_expiry() {
     let held = HeldApproval::new("user:observation").await;
     let pending = held.observe_changes(Duration::from_secs(30));
     tokio::pin!(pending);
@@ -326,15 +326,15 @@ async fn waiting_observation_wakes_when_the_owner_records_an_actions_expiry() {
     };
     held.fixture
         .runs
-        .owners
+        .loops
         .get(&held.run)
-        .expect("live owner")
-        .send(crate::owner::Message::Timer(crate::owner::Timer::Approval(
-            approval.clone(),
-        )));
+        .expect("live loop")
+        .send(crate::run_stream::run_loop::Message::Timer(
+            crate::run_stream::run_loop::Timer::Approval(approval.clone()),
+        ));
     let update = tokio::time::timeout(EVENTUALLY, pending)
         .await
-        .expect("the owner's expiry chunk ends the wait long before its deadline")
+        .expect("the loop's expiry chunk ends the wait long before its deadline")
         .unwrap();
     assert_eq!(update.required_actions(), []);
 }

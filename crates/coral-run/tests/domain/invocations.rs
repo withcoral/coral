@@ -819,7 +819,7 @@ async fn resolving_a_tool_call_begins_no_write_transaction() {
         .until(|read| read.contains(&ended(WireEnd::Succeeded)))
         .await;
     let record = fixture.terminal_record(&tool.workspace_id, &run_id).await;
-    wait_until(|| !fixture.runs.has_owner(&run_id)).await;
+    wait_until(|| !fixture.runs.has_loop(&run_id)).await;
     let invoker = test_invoker(&fixture, &tool, &record);
 
     for (call, private_path) in [

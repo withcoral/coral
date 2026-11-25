@@ -26,8 +26,8 @@ use coral_workspace::WorkspaceId;
 
 use crate::approval::{self, ApprovalId, DecideWork};
 use crate::lifecycle::RunRecord;
-use crate::owner::ChunkWork as _;
 use crate::run_repository::{self, Chunk, HeldRun, UndecodableRun};
+use crate::run_stream::run_loop::ChunkWork as _;
 use crate::termination::commit_end;
 use crate::types::HeldRunId;
 use crate::{Error, RunId, RunModule};
@@ -194,7 +194,7 @@ impl RunModule {
     /// deadline still passed as the transaction reads it.
     async fn end_on_deadline(&self, held: &HeldRun, now: i64) -> Result<bool, Error> {
         let mut transaction = self.database.begin().await?;
-        match unowned(&mut transaction, &held.workspace_id, &held.run_id).await? {
+        match find_without_worker_claim(&mut transaction, &held.workspace_id, &held.run_id).await? {
             Some(run) if run.deadline_passed(now) => self.end(transaction, &run, now).await,
             _ => Ok(false),
         }
@@ -225,7 +225,8 @@ impl RunModule {
         now: i64,
     ) -> Result<bool, Error> {
         let mut transaction = self.database.begin().await?;
-        let Some(run) = unowned(&mut transaction, workspace_id, run_id).await? else {
+        let Some(run) = find_without_worker_claim(&mut transaction, workspace_id, run_id).await?
+        else {
             return Ok(false);
         };
         if run.termination.is_some()
@@ -237,7 +238,8 @@ impl RunModule {
         let events = DecideWork::expiry(approval.clone())
             .run(&mut transaction, &run, now)
             .await?;
-        let chunk = Chunk::new(&run, run.execution_claim_id.as_deref(), now).owned_events(&events);
+        let chunk =
+            Chunk::new(&run, run.execution_claim_id.as_deref(), now).pending_events(&events);
         if unless_moved(run_repository::commit_chunk(&mut transaction, chunk).await)?.is_none() {
             return Ok(false);
         }
@@ -331,10 +333,13 @@ impl RunModule {
         }
         // A take mints a new claim: the same one means the same take, so the
         // Run still names this Run Executor.
-        let run = match unowned(&mut transaction, &held.workspace_id, &held.run_id).await? {
-            Some(run) if run.execution_claim_id.as_deref() == Some(held.claim.as_str()) => run,
-            _ => return Ok(Released::Skipped),
-        };
+        let run =
+            match find_without_worker_claim(&mut transaction, &held.workspace_id, &held.run_id)
+                .await?
+            {
+                Some(run) if run.execution_claim_id.as_deref() == Some(held.claim.as_str()) => run,
+                _ => return Ok(Released::Skipped),
+            };
         let written = if run.execution_started() {
             self.end(transaction, &run, now)
                 .await?
@@ -368,9 +373,10 @@ impl RunModule {
     }
 }
 
-/// The Run as `transaction` reads it, while it is running with no worker
-/// claim: no Run Owner fences it.
-async fn unowned(
+/// The Run as `transaction` reads it, while a Run Executor waits for, has
+/// taken or holds it ([`RunRecord::runs_on_run_executor`]). It is `None` for
+/// an older release's Run Owner's Run, which holds a worker claim.
+async fn find_without_worker_claim(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
     run_id: &RunId,

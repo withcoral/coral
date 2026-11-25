@@ -19,7 +19,7 @@ use crate::execution::until_answered;
 use crate::invocation_lifecycle::{self, InvocationState};
 use crate::invocation_repository::{self, RecordedOutcome, StreamInvocation};
 use crate::lifecycle::RunRecord;
-use crate::owner::StartedExecution;
+use crate::run_stream::run_loop::StartedExecution;
 use crate::{Error, InvocationId, RunModule, run_repository};
 
 /// How many times a reopen reads the Run again after a writer moved its
@@ -72,12 +72,12 @@ impl RunModule {
         awaited: Vec<Awaited>,
     ) {
         let held = run.held_id();
-        // Held until the owner is registered, so a Shutdown Drain counts it.
+        // Held until the loop is registered, so a Shutdown Drain counts it.
         let Ok(admitted) = self.admission.admit() else {
             return link.close(Closing::Unavailable(SHUTTING_DOWN));
         };
-        // An owner of this Run still here commits nothing more on a moved head.
-        self.owners.supersede(&run.id);
+        // A loop of this Run still here commits nothing more on a moved head.
+        self.loops.supersede(&run.id);
         let reopened = until_answered(
             &held,
             "Run stream reopen",
@@ -322,7 +322,7 @@ impl RunModule {
         transaction: &mut coral_db::Transaction<'_>,
         run: &RunRecord,
         invocation: &mut StreamInvocation,
-        events: &mut Vec<crate::run_repository::OwnedEvent>,
+        events: &mut Vec<crate::run_repository::PendingEvent>,
         now: i64,
     ) -> Result<(), Error> {
         match invocation.state {

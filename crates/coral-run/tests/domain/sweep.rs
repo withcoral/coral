@@ -101,7 +101,7 @@ impl Sweep {
         stream.start().await;
         requests(&mut stream, &run_id).await;
         drop(stream);
-        wait_until(|| self.runs.owners.get(&run_id).is_none()).await;
+        wait_until(|| self.runs.loops.get(&run_id).is_none()).await;
         run_id
     }
 
@@ -234,7 +234,7 @@ async fn a_pass_expires_an_approval_request_past_its_deadline_in_one_chunk() {
 
 /// Catches: a pass that misses a Run past its deadline, a stale take or a
 /// lapsed Run Executor, or writes a Run it must leave: one before its
-/// deadline, a recent take, a live Run Executor's, or one a Run Owner holds.
+/// deadline, a recent take, a live Run Executor's, or one an older release's Run Owner holds.
 #[tokio::test]
 async fn one_pass_ends_puts_back_and_releases_only_what_no_stream_decided() {
     let sweep = Sweep::new().await;

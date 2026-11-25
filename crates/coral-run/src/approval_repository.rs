@@ -300,7 +300,7 @@ fn own_invocation() -> SimpleExpr {
 
 /// Complete pending-approval match for repository queries using `a` (approval)
 /// and `i` (Invocation). Queue existence, card pages and Run Updates share it.
-/// A request stays pending until its Run Owner records its expiry: readers
+/// A request stays pending until its loop records its expiry: readers
 /// show the recorded state and its deadline, never a state derived from the
 /// clock.
 pub(super) fn pending_invocation() -> SimpleExpr {
@@ -428,7 +428,7 @@ pub(super) async fn undecided_on_run_executors(
                         ),
                 )
                 .cond_where(
-                    crate::run_repository::running_without_owner_as("run")
+                    crate::run_repository::running_without_worker_claim_as("run")
                         .add(Expr::col((run, Alias::new("termination_kind"))).is_null())
                         .add(
                             Expr::col((approval.clone(), Approvals::State))

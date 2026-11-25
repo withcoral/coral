@@ -79,7 +79,7 @@ async fn a_run_records_its_acceptance_phases_and_end() {
         .terminal_record(&workspace_id, accepted.run_id())
         .await;
     assert_eq!(run.state, RunState::Succeeded);
-    wait_until(|| !runs.has_owner(accepted.run_id())).await;
+    wait_until(|| !runs.has_loop(accepted.run_id())).await;
 
     assert_eq!(
         counts(&metrics, "coral.run.accepted"),
@@ -198,7 +198,7 @@ async fn a_tool_invocation_records_its_gates_result_and_end() {
     fixture
         .terminal_record(&tool.workspace_id, accepted.run_id())
         .await;
-    wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
+    wait_until(|| !fixture.runs.has_loop(accepted.run_id())).await;
 
     assert_eq!(
         counts(&metrics, "coral.invocation.started"),
@@ -267,7 +267,7 @@ async fn a_canceled_run_records_its_program_termination() {
         .await;
     assert_eq!(run.state, RunState::Canceled);
     finish_terminated(&mut stream, 1).await;
-    wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
+    wait_until(|| !fixture.runs.has_loop(accepted.run_id())).await;
 
     assert_eq!(
         counts(&metrics, "coral.program.termination"),

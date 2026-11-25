@@ -1,20 +1,20 @@
 //! Run-bound Tool Invocation admission, Policy Enforcement Point, and
-//! completion, as Run Requests to the Run Owner.
+//! completion, as Run Requests to the loop.
 //!
 //! The [`ToolInvoker`] is private to one accepted Program Run. It resolves
-//! a Call Path outside the Run, admits it as one owner request (answered at
-//! Applied: the Invocation row and `invocation.started` ride the owner's next
+//! a Call Path outside the Run, admits it as one loop request (answered at
+//! Applied: the Invocation row and `invocation.started` ride the loop's next
 //! chunk), plans away from persistence, runs its held rechecks as row work
-//! inside the owner's chunk commits and the Policy Enforcement Point as one
+//! inside the loop's chunk commits and the Policy Enforcement Point as one
 //! batched check per chunk commit ([`EnforcementBatch`], decided by
 //! [`crate::enforcement`]), decrypts and sends outside every lock after the
-//! pre-send check, and reports the terminal Invocation through the owner: an
+//! pre-send check, and reports the terminal Invocation through the loop: an
 //! upstream result at Applied, a known failure once it is recorded. Operational
 //! failure is host-fatal rather than catchable. Known failures persist the same
 //! closed [`CoralFailure`] code and safe [`Rejection`] message projected to the
 //! Program, even during child shutdown. Only a Run's termination, and a
 //! reopen of its stream on another Coral Instance, record lost dispatching
-//! work as indeterminate; a stop that reaches the owner before a
+//! work as indeterminate; a stop that reaches the loop before a
 //! permitted Invocation sends ends it as `run_terminated` instead, as Run
 //! termination ends a Private Tool call whose body was still running.
 
@@ -45,8 +45,8 @@ use crate::engine::Clock;
 use crate::execution::ExecutionStop;
 use crate::invocation_lifecycle::{FinishOutcome, InvocationState, UnfinishedInvocation};
 use crate::lifecycle::RunRecord;
-use crate::owner::{Check, ChunkWork, OwnerHandle, ParkedWait, RequestTicket};
-use crate::run_repository::{OwnedEvent, OwnedEventKind};
+use crate::run_repository::{PendingEvent, PendingEventKind};
+use crate::run_stream::run_loop::{Check, ChunkWork, LoopHandle, ParkedWait, RequestTicket};
 use crate::trace::{Gate, Step, gate_span, step_span};
 use crate::types::AcceptedRun;
 use crate::{
@@ -279,7 +279,7 @@ pub(crate) struct ToolInvoker {
     /// at most, bounded by the Run deadline.
     approval_wait_nanos: i64,
     limits: coral_value::ValueLimits,
-    owner: OwnerHandle,
+    run_loop: LoopHandle,
     stop: Arc<ExecutionStop>,
     mcp_resources: Arc<McpResources>,
     upstream: Arc<dyn UpstreamSender>,
@@ -310,7 +310,7 @@ impl ToolInvoker {
         accepted: &AcceptedRun,
         deadline_at_unix_nanos: i64,
         approval_wait_nanos: i64,
-        owner: OwnerHandle,
+        run_loop: LoopHandle,
         upstream: Arc<dyn UpstreamSender>,
         clock: Arc<dyn Clock>,
         #[cfg(test)] observer: Arc<dyn InvocationObserver>,
@@ -334,8 +334,8 @@ impl ToolInvoker {
             deadline_at_unix_nanos,
             approval_wait_nanos,
             limits: accepted.value_limits,
-            stop: owner.stop(),
-            owner,
+            stop: run_loop.stop(),
+            run_loop,
             mcp_resources: Arc::new(McpResources::default()),
             upstream,
             clock,
@@ -370,7 +370,7 @@ impl ToolInvoker {
         Ok(ToolCall {
             invoker: self.clone(),
             child,
-            ticket: self.owner.take_request(),
+            ticket: self.run_loop.take_request(),
         })
     }
 
@@ -438,10 +438,10 @@ impl ToolInvoker {
             self.admit(&admitted, &trace, ticket).await?;
             let Permit { slot, progress, .. } =
                 self.permit(&admitted, &arguments, policy, None).await?;
-            // The owner's own terminal state, before the body runs: a stop
-            // that reached the owner ends this permitted Invocation as
+            // The loop's own terminal state, before the body runs: a stop
+            // that reached the loop ends this permitted Invocation as
             // `run_terminated` instead.
-            if self.owner.is_stopping() {
+            if self.run_loop.is_stopping() {
                 self.end_before_send(&admitted).await?;
                 return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
             }
@@ -468,8 +468,8 @@ impl ToolInvoker {
     }
 
     /// The Invocation of `target` that one call opens, with its trace, as a
-    /// child of the call whose body made it when there is one. Its Run
-    /// Owner has not admitted it yet.
+    /// child of the call whose body made it when there is one. Its loop
+    /// has not admitted it yet.
     fn open(
         &self,
         child: Option<&OpenChild>,
@@ -503,15 +503,15 @@ impl ToolInvoker {
         Ok((admitted, trace))
     }
 
-    /// Asks the Run Owner to admit the opened Invocation, and counts it as
-    /// started once the owner has. One the owner refuses is never counted.
+    /// Asks the loop to admit the opened Invocation, and counts it as
+    /// started once the loop has. One the loop refuses is never counted.
     async fn admit(
         &self,
         admitted: &Arc<AdmittedInvocation>,
         trace: &crate::trace::InvocationTrace,
         ticket: RequestTicket,
     ) -> Result<(), InvocationHostError> {
-        self.owner
+        self.run_loop
             .admit(
                 Box::new(AdmissionWork {
                     admitted: admitted.clone(),
@@ -866,10 +866,10 @@ impl ToolInvoker {
         mut slot: DispatchSlot,
         trace: &crate::trace::InvocationTrace,
     ) -> Result<String, InvocationHostError> {
-        // The owner's own terminal state, before anything leaves the process:
-        // a stop that reached the owner ends this permitted Invocation as
+        // The loop's own terminal state, before anything leaves the process:
+        // a stop that reached the loop ends this permitted Invocation as
         // `run_terminated` instead of sending.
-        if self.owner.is_stopping() {
+        if self.run_loop.is_stopping() {
             self.end_before_send(admitted).await?;
             return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
         }
@@ -970,7 +970,7 @@ impl ToolInvoker {
     }
 
     /// Records a complete Tool Result, and why it rejects the call if it
-    /// does, as the Upstream Outcome, through the owner. A result over its
+    /// does, as the Upstream Outcome, through the loop. A result over its
     /// bound fails as `too_large`.
     async fn finish_result(
         &self,
@@ -1206,11 +1206,11 @@ impl ToolInvoker {
         Ok(())
     }
 
-    /// Waits, holding nothing, until the Run Owner sends this parked
-    /// Invocation back to its held recheck: the owner recorded a decision or
+    /// Waits, holding nothing, until the loop sends this parked
+    /// Invocation back to its held recheck: the loop recorded a decision or
     /// an expiry of its Approval Request, its connection request's deadline
     /// passed, or a snapshot check found its wait ended or moot. The held
-    /// recheck decides; a wake is a hint. The owner drops the wake once its
+    /// recheck decides; a wake is a hint. The loop drops the wake once its
     /// Run takes no more Program requests.
     async fn parked(&self, woken: oneshot::Receiver<()>) -> Result<(), Error> {
         #[cfg(test)]
@@ -1250,18 +1250,18 @@ impl ToolInvoker {
         }
     }
 
-    /// Queues `work` on the owner and returns its outcome once its chunk is
+    /// Queues `work` on the loop and returns its outcome once its chunk is
     /// recorded.
     async fn ask<O>(
         &self,
         build: impl FnOnce(Replier<O>) -> Box<dyn ChunkWork>,
     ) -> Result<O, Error> {
         let (sender, receiver) = oneshot::channel();
-        self.owner.work(build(Replier::new(sender)))?;
+        self.run_loop.work(build(Replier::new(sender)))?;
         receiver.await.map_err(|_lost| Error::OwnerLost)?
     }
 
-    /// The held credential selection; `wake` is how the owner sends the
+    /// The held credential selection; `wake` is how the loop sends the
     /// Invocation back here if this parks it on a connection request.
     async fn select_credentials(
         &self,
@@ -1372,7 +1372,7 @@ impl ToolInvoker {
         }
     }
 
-    /// The held approval gate; `wake` is how the owner sends the Invocation
+    /// The held approval gate; `wake` is how the loop sends the Invocation
     /// back here if this parks it on its Approval Request.
     async fn approval_ready(
         &self,
@@ -1399,7 +1399,7 @@ impl ToolInvoker {
         now: i64,
         admitted: &AdmittedInvocation,
         progress: &InvocationProgress,
-        events: &mut Vec<OwnedEvent>,
+        events: &mut Vec<PendingEvent>,
     ) -> Result<GateOutcome, Error> {
         catch_rejection(
             self.approval_ready_checked(tx, run, now, admitted, progress, events)
@@ -1418,7 +1418,7 @@ impl ToolInvoker {
         now: i64,
         admitted: &AdmittedInvocation,
         progress: &InvocationProgress,
-        events: &mut Vec<OwnedEvent>,
+        events: &mut Vec<PendingEvent>,
     ) -> Result<GateOutcome, Error> {
         if !self.run_is_current(run, now) {
             return Ok(GateOutcome::RunNotCurrent);
@@ -1456,7 +1456,7 @@ impl ToolInvoker {
     }
 
     /// The enforcement point's shared facts for one Invocation, read under
-    /// their shared holds inside the owner's chunk commit and checked at a
+    /// their shared holds inside the loop's chunk commit and checked at a
     /// clock sample taken after the reads: the policy and that sample, `None`
     /// when the Run no longer takes Program work, the known failure when a fact
     /// refuses.
@@ -1495,12 +1495,12 @@ impl ToolInvoker {
         }
     }
 
-    /// Asks the owner for the Policy Enforcement Point: the request joins the
+    /// Asks the loop for the Policy Enforcement Point: the request joins the
     /// batch of a chunk commit and answers once that chunk is recorded, with
     /// the slot the Invocation holds under the Fan-out Limit. A decision comes
     /// only from a batch that committed, and every request of a batch that
     /// [holds one](AdmittedInvocation::holds_fan_out_slot) holds a slot; a
-    /// request the owner never batched (the Run ending, the owner gone)
+    /// request the loop never batched (the Run ending, the loop gone)
     /// answers with an error and held none.
     async fn enforce(
         &self,
@@ -1508,7 +1508,7 @@ impl ToolInvoker {
         progress: &mut InvocationProgress,
     ) -> Result<(EnforcementOutcome, DispatchSlot), Error> {
         let (sender, receiver) = oneshot::channel();
-        self.owner.enforce(EnforcementRequest {
+        self.run_loop.enforce(EnforcementRequest {
             invoker: self.clone(),
             pending: PendingEnforcement {
                 admitted: admitted.clone(),
@@ -1523,7 +1523,7 @@ impl ToolInvoker {
                 .span
                 .record("coral.invocation.dispatch_started", true);
         }
-        Ok((outcome, DispatchSlot::new(self.owner.clone(), admitted)))
+        Ok((outcome, DispatchSlot::new(self.run_loop.clone(), admitted)))
     }
 
     pub(crate) fn enforcement_scope(&self) -> EnforcementScope<'_> {
@@ -1537,13 +1537,13 @@ impl ToolInvoker {
     pub(crate) fn run_facts<'a>(&'a self, run: &'a RunRecord) -> RunFacts<'a> {
         RunFacts {
             run,
-            claim_id: self.owner.claim_id(),
+            claim_id: self.run_loop.claim_id(),
             principal: &self.principal,
             deadline_at_unix_nanos: self.deadline_at_unix_nanos,
         }
     }
 
-    /// Reports an upstream result: the owner decides it against the Run
+    /// Reports an upstream result: the loop decides it against the Run
     /// Output Budget and answers at Applied; the row and `invocation.ended`
     /// ride its next chunk. The result carries the slot's release, so the
     /// Invocation that has waited longest meets the enforcement point in that
@@ -1569,12 +1569,12 @@ impl ToolInvoker {
         };
         let frees_slot = slot.carry_with_result();
         let applied = self
-            .owner
+            .run_loop
             .invocation_result(result_json.len(), Box::new(work), frees_slot)
             .instrument(step_span(&admitted.span, Step::Persist))
             .await;
         if applied.is_err() {
-            // The owner applied nothing (the result is over budget, or the
+            // The loop applied nothing (the result is over budget, or the
             // Run takes no more work): the row is still dispatching and the
             // slot stays with this task until the row's end is recorded.
             slot.keep();
@@ -1820,13 +1820,13 @@ impl PerformedCall {
     }
 
     /// The Program ended before the body did, so nothing will complete the
-    /// call: its Invocation ends as `run_terminated` in the owner's next
+    /// call: its Invocation ends as `run_terminated` in the loop's next
     /// chunk, which the Program's end reaches only after this. A Run that
     /// commits nothing more ends it with its termination instead.
     pub(crate) fn abandon(self) {
         // The Run's stream left this loop: the body runs on, on the Run
         // Executor, and the loop that holds the stream now ends the call.
-        if self.invoker.owner.is_detached() {
+        if self.invoker.run_loop.is_detached() {
             return;
         }
         if let Some(parent) = &self.open_in_parent {
@@ -1836,7 +1836,7 @@ impl PerformedCall {
         let span = self.admitted.span.clone();
         span.in_scope(|| {
             let (sender, _unwatched) = oneshot::channel();
-            let _queued = self.invoker.owner.work(Box::new(EndBeforeSendWork {
+            let _queued = self.invoker.run_loop.work(Box::new(EndBeforeSendWork {
                 admitted: self.admitted,
                 reply: Replier::new(sender),
             }));
@@ -1935,35 +1935,35 @@ impl Drop for OpenChild {
 
 /// One slot under the Run's Fan-out Limit, held from the enforcement point's
 /// decision until the dispatch it decided is over. An upstream result carries
-/// the release: the owner frees the slot as it applies the result, so the
+/// the release: the loop frees the slot as it applies the result, so the
 /// Invocation that has waited longest meets the enforcement point in the same
 /// chunk the ended row rides. Every other end (denied, superseded, parked on a
-/// refresh, a failure, the Run ending) frees it on drop, which tells the owner.
+/// refresh, a failure, the Run ending) frees it on drop, which tells the loop.
 /// An Invocation that holds no slot has one that frees nothing.
 struct DispatchSlot {
-    /// The owner the slot is held from; `None` when the Invocation holds none.
-    owner: Option<OwnerHandle>,
+    /// The loop the slot is held from; `None` when the Invocation holds none.
+    run_loop: Option<LoopHandle>,
     carried_by_result: bool,
 }
 
 impl DispatchSlot {
     /// The slot the enforcement point's decision on `admitted` gave it.
-    fn new(owner: OwnerHandle, admitted: &AdmittedInvocation) -> Self {
+    fn new(run_loop: LoopHandle, admitted: &AdmittedInvocation) -> Self {
         Self {
-            owner: admitted.holds_fan_out_slot().then_some(owner),
+            run_loop: admitted.holds_fan_out_slot().then_some(run_loop),
             carried_by_result: false,
         }
     }
 
-    /// The upstream result about to reach the owner frees the slot, if one is
-    /// held, as it is applied; the drop then tells the owner nothing more.
+    /// The upstream result about to reach the loop frees the slot, if one is
+    /// held, as it is applied; the drop then tells the loop nothing more.
     /// Returns whether it frees one.
     fn carry_with_result(&mut self) -> bool {
-        self.carried_by_result = self.owner.is_some();
+        self.carried_by_result = self.run_loop.is_some();
         self.carried_by_result
     }
 
-    /// The owner refused the result and freed nothing: the slot is this
+    /// The loop refused the result and freed nothing: the slot is this
     /// task's again, freed on drop.
     fn keep(&mut self) {
         self.carried_by_result = false;
@@ -1972,15 +1972,15 @@ impl DispatchSlot {
 
 impl Drop for DispatchSlot {
     fn drop(&mut self) {
-        if let Some(owner) = &self.owner
+        if let Some(run_loop) = &self.run_loop
             && !self.carried_by_result
         {
-            owner.dispatch_ended();
+            run_loop.dispatch_ended();
         }
     }
 }
 
-/// The error a refusal means for a step inside the owner's chunk: the known
+/// The error a refusal means for a step inside the loop's chunk: the known
 /// failure the Invocation ends with, or the Run's end.
 fn refused(refusal: Refusal) -> Error {
     match refusal {
@@ -1989,7 +1989,7 @@ fn refused(refusal: Refusal) -> Error {
     }
 }
 
-/// Keeps a known failure as the step's outcome: inside the owner's chunk
+/// Keeps a known failure as the step's outcome: inside the loop's chunk
 /// transaction a rejection is a value the chunk records, not an error that
 /// fails it.
 fn catch_rejection<O>(
@@ -2058,7 +2058,7 @@ pub(crate) struct AdmittedInvocation {
     /// The Run stream request that opened it; `None` in process.
     pub(crate) request_number: Option<u64>,
     /// The Invocation's `coral.invocation` span. Its gates that run inside
-    /// the owner's chunk commits are its children too.
+    /// the loop's chunk commits are its children too.
     pub(crate) span: tracing::Span,
 }
 
@@ -2089,7 +2089,7 @@ pub(crate) struct InvocationProgress {
     pub(crate) connection_request: Option<coral_provider::account::ConnectionRequestId>,
     pub(crate) credential_evidence: Option<coral_provider::account::CredentialEvidence>,
     /// The Approval Request's decision as the gate recorded it, which the
-    /// enforcement point decides on from owner memory: an approval never
+    /// enforcement point decides on from loop memory: an approval never
     /// changes.
     pub(crate) approval: ApprovalFact,
     pub(crate) dispatch_started: bool,
@@ -2146,7 +2146,7 @@ pub(crate) enum EnforcementOutcome {
     RunTerminated,
 }
 
-/// Carries one step's outcome from the owner's commit transaction back to the
+/// Carries one step's outcome from the loop's commit transaction back to the
 /// Invocation task once the chunk is recorded.
 struct Replier<O> {
     outcome: Option<O>,
@@ -2179,7 +2179,7 @@ impl<O> fmt::Debug for Replier<O> {
     }
 }
 
-/// The Invocation row and `invocation.started`, riding the owner's next chunk.
+/// The Invocation row and `invocation.started`, riding the loop's next chunk.
 struct AdmissionWork {
     admitted: Arc<AdmittedInvocation>,
 }
@@ -2200,10 +2200,10 @@ impl ChunkWork for AdmissionWork {
         transaction: &mut Transaction<'_>,
         _run: &RunRecord,
         _now_unix_nanos: i64,
-    ) -> Result<Vec<OwnedEvent>, Error> {
+    ) -> Result<Vec<PendingEvent>, Error> {
         invocation_repository::insert_admission(transaction, &self.admitted).await?;
-        Ok(vec![OwnedEvent::new(
-            OwnedEventKind::InvocationStarted(self.admitted.id.clone()),
+        Ok(vec![PendingEvent::new(
+            PendingEventKind::InvocationStarted(self.admitted.id.clone()),
             self.admitted.admitted_at_unix_nanos,
         )])
     }
@@ -2216,7 +2216,7 @@ struct SelectCredentialsWork {
     admitted: Arc<AdmittedInvocation>,
     progress: InvocationProgress,
     reply: Replier<SelectionOutcome>,
-    /// How the owner sends the Invocation back here once the connection
+    /// How the loop sends the Invocation back here once the connection
     /// request the selection parks it on ends.
     wake: Option<oneshot::Sender<()>>,
 }
@@ -2237,7 +2237,7 @@ impl ChunkWork for SelectCredentialsWork {
         transaction: &mut Transaction<'_>,
         run: &RunRecord,
         now_unix_nanos: i64,
-    ) -> Result<Vec<OwnedEvent>, Error> {
+    ) -> Result<Vec<PendingEvent>, Error> {
         let outcome = self
             .invoker
             .select_credentials_in(
@@ -2277,7 +2277,7 @@ struct ApprovalReadyWork {
     admitted: Arc<AdmittedInvocation>,
     progress: InvocationProgress,
     reply: Replier<GateOutcome>,
-    /// How the owner sends the Invocation back here once the Approval
+    /// How the loop sends the Invocation back here once the Approval
     /// Request the gate parks it on is decided or expires.
     wake: Option<oneshot::Sender<()>>,
 }
@@ -2298,7 +2298,7 @@ impl ChunkWork for ApprovalReadyWork {
         transaction: &mut Transaction<'_>,
         run: &RunRecord,
         now_unix_nanos: i64,
-    ) -> Result<Vec<OwnedEvent>, Error> {
+    ) -> Result<Vec<PendingEvent>, Error> {
         let mut events = Vec::new();
         let outcome = self
             .invoker
@@ -2335,7 +2335,7 @@ impl ChunkWork for ApprovalReadyWork {
     }
 }
 
-/// One Invocation parked on a wait, as its Run Owner keeps it until the
+/// One Invocation parked on a wait, as its loop keeps it until the
 /// wait ends: what a snapshot check reads for it, and the wake that sends
 /// it back to its held recheck. Dropping it lets the Invocation go: it reads
 /// that its Run takes no more Program work.
@@ -2363,7 +2363,7 @@ impl ParkedTarget {
 }
 
 impl ParkedInvocation {
-    /// The Invocation a held recheck parked on `wait`, for its owner.
+    /// The Invocation a held recheck parked on `wait`, for its loop.
     fn new(
         invoker: &ToolInvoker,
         admitted: &Arc<AdmittedInvocation>,
@@ -2392,7 +2392,7 @@ impl ParkedInvocation {
         let _waiting = self.wake.send(());
     }
 
-    /// A parked Invocation for the owner's in-memory tests, which never
+    /// A parked Invocation for the loop's in-memory tests, which never
     /// check it.
     #[cfg(test)]
     pub(crate) fn for_apply_test(
@@ -2422,7 +2422,7 @@ impl fmt::Debug for ParkedInvocation {
 }
 
 /// One snapshot check of parked waits, holding nothing: each wait with the
-/// serial its owner gave the park, so a finding reaches only the park it
+/// serial its loop gave the park, so a finding reaches only the park it
 /// read. Every wait is one Run's, so any wait's invoker reads for all.
 pub(crate) struct PrecheckBatch {
     check: Check,
@@ -2506,8 +2506,8 @@ impl PrecheckBatch {
     /// periodic precheck also reads the Policy Enforcement Point's facts with
     /// the shared loader and decides each wait with the shared evaluator: a
     /// wait it would not keep waiting is found. The Approval Requests and the
-    /// Invocation rows are the owner's own (an outside writer touches none
-    /// while the Run is nonterminal), so what the owner keeps of them stands:
+    /// Invocation rows are the loop's own (an outside writer touches none
+    /// while the Run is nonterminal), so what the loop keeps of them stands:
     /// a request still pending, no failure recorded. On a Run a Run
     /// Executor holds, the receiver of a decision and the sweeper write them
     /// too, and move its head: the approvals check reads each parked wait's
@@ -2614,7 +2614,7 @@ impl PrecheckBatch {
 }
 
 /// One Invocation's request for the Policy Enforcement Point, carrying what the
-/// enforcement point decides it on from owner memory: its retained target, its
+/// enforcement point decides it on from loop memory: its retained target, its
 /// selected credentials and the approval the gate found, and the invoker of its
 /// Run, which the batch keeps once.
 pub(crate) struct EnforcementRequest {
@@ -2654,7 +2654,7 @@ impl EnforcementRequest {
         self.pending.admitted.holds_fan_out_slot()
     }
 
-    /// A request for the owner's in-memory tests, which never run it.
+    /// A request for the loop's in-memory tests, which never run it.
     #[cfg(test)]
     pub(crate) fn for_apply_test(
         invoker: ToolInvoker,
@@ -2672,11 +2672,11 @@ impl EnforcementRequest {
     }
 }
 
-/// The enforcement check of one chunk commit: every ready Invocation the owner
+/// The enforcement check of one chunk commit: every ready Invocation the loop
 /// collected for it, decided together. The shared facts are read once under
 /// their shared holds, the clock is sampled once after the last read, each
 /// Invocation is decided in memory, and every permitted row is moved from
-/// `pending` to `dispatching` in the same commit, which the owner predicates
+/// `pending` to `dispatching` in the same commit, which the loop predicates
 /// on its claim and the head. The enforcement point writes no Event.
 pub(crate) struct EnforcementBatch {
     invoker: ToolInvoker,
@@ -2724,7 +2724,7 @@ impl ChunkWork for EnforcementBatch {
         transaction: &mut Transaction<'_>,
         run: &RunRecord,
         _now_unix_nanos: i64,
-    ) -> Result<Vec<OwnedEvent>, Error> {
+    ) -> Result<Vec<PendingEvent>, Error> {
         let invoker = &self.invoker;
         let targets: Vec<EnforcementTarget<'_>> = self
             .invocations
@@ -2816,7 +2816,7 @@ impl ChunkWork for EnforcementBatch {
 }
 
 /// The loss every Invocation of a batch learns when the chunk did not land:
-/// the owner settles a chunk's work with a lost claim, the Program host's
+/// the loop settles a chunk's work with a lost claim, the Program host's
 /// end, or corruption.
 fn lost_again(error: &Error) -> Error {
     match error {
@@ -2856,7 +2856,7 @@ impl ChunkWork for FinishWork {
         transaction: &mut Transaction<'_>,
         run: &RunRecord,
         now_unix_nanos: i64,
-    ) -> Result<Vec<OwnedEvent>, Error> {
+    ) -> Result<Vec<PendingEvent>, Error> {
         let ended_at = now_unix_nanos
             .max(run.accepted_at_unix_nanos)
             .max(self.admitted.admitted_at_unix_nanos);
@@ -2900,7 +2900,7 @@ impl ChunkWork for FinishWork {
     }
 }
 
-/// Ends a permitted Invocation the owner's stop reached before it sent.
+/// Ends a permitted Invocation the loop's stop reached before it sent.
 struct EndBeforeSendWork {
     admitted: Arc<AdmittedInvocation>,
     reply: Replier<()>,
@@ -2922,7 +2922,7 @@ impl ChunkWork for EndBeforeSendWork {
         transaction: &mut Transaction<'_>,
         run: &RunRecord,
         now_unix_nanos: i64,
-    ) -> Result<Vec<OwnedEvent>, Error> {
+    ) -> Result<Vec<PendingEvent>, Error> {
         let ended_at = now_unix_nanos.max(run.accepted_at_unix_nanos);
         let unfinished = UnfinishedInvocation {
             id: self.admitted.id.clone(),

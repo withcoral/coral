@@ -13,7 +13,7 @@ use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 use sea_query::{Expr, ExprTrait as _, Query};
 
-use super::events::{NewEvent, OwnedEvent, insert_events};
+use super::events::{NewEvent, PendingEvent, insert_events};
 use super::{ProgramRunRecords, RunRecord};
 use crate::{Error, RunId, RunState};
 
@@ -79,7 +79,10 @@ impl<'a> Chunk<'a> {
     }
 
     /// Appends `events` in order after the ones already in the chunk.
-    pub(crate) fn owned_events(mut self, events: impl IntoIterator<Item = &'a OwnedEvent>) -> Self {
+    pub(crate) fn pending_events(
+        mut self,
+        events: impl IntoIterator<Item = &'a PendingEvent>,
+    ) -> Self {
         for event in events {
             self = self.event(event.as_new(), event.occurred_at_unix_nanos);
         }

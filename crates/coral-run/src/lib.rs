@@ -7,9 +7,9 @@
 //! `run.started`. An accepted Run waits, `running`, until a take claims it
 //! for a Run Executor (ADR 0027), which executes the Program over a Run
 //! stream. The Coral Instance that serves the stream hosts the Run's loop
-//! (see the `owner` module): it appends the Run Ledger on every path the
-//! Program takes, in chunks, and runs the Run-bound Tool Invocation and
-//! Policy Enforcement Point choreography inside its commits.
+//! (see the `run_stream::run_loop` module): it appends the Run Ledger on
+//! every path the Program takes, in chunks, and runs the Run-bound Tool
+//! Invocation and Policy Enforcement Point choreography inside its commits.
 //!
 //! # Interface
 //!
@@ -115,17 +115,17 @@
 //! Run's head, so the first commit wins. A loop learns of another writer
 //! only from the head. Only the loop and the sweeper compare a clock: the
 //! loop's Run deadline and Approval Request timers are applied in mailbox
-//! order (see the `owner` module), and the sweeper writes what no stream
-//! decided in time. A connection request is Account-owned: the Account
-//! module records its expiry when a holder reads it, and the loop's timer at
-//! its deadline only wakes the Invocations parked on it. Readers show the
-//! recorded state beside a deadline and never derive an expiry or a timeout
-//! from `now`. A termination is written first, in one chunk that ends the
-//! Run's open Invocations, and the Program hears of it after. The first
-//! terminal transaction wins. User work remains private; Workspace Owners
-//! can observe and cancel Workspace-owned Agent Runs, while an Agent can
-//! address only that same Agent's Run in its fixed Workspace. Run
-//! identifiers and cursors grant no authority.
+//! order (see the `run_stream::run_loop` module), and the sweeper writes
+//! what no stream decided in time. A connection request is Account-owned:
+//! the Account module records its expiry when a holder reads it, and the
+//! loop's timer at its deadline only wakes the Invocations parked on it.
+//! Readers show the recorded state beside a deadline and never derive an
+//! expiry or a timeout from `now`. A termination is written first, in one
+//! chunk that ends the Run's open Invocations, and the Program hears of it
+//! after. The first terminal transaction wins. User work remains private;
+//! Workspace Owners can observe and cancel Workspace-owned Agent Runs,
+//! while an Agent can address only that same Agent's Run in its fixed
+//! Workspace. Run identifiers and cursors grant no authority.
 
 mod activity;
 mod activity_observation;
@@ -164,7 +164,6 @@ mod invocation_lifecycle;
 mod invocation_repository;
 mod lifecycle;
 mod observation;
-mod owner;
 mod program_output;
 mod required_actions;
 mod required_actions_repository;
@@ -187,7 +186,6 @@ mod tool_result_shape;
 pub use tool_result_shape::{ToolResultShape, ToolResultShapes};
 mod trace;
 mod types;
-mod worker;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -207,12 +205,12 @@ use execution::{ExecutionObserver, NoopExecutionObserver};
 #[cfg(test)]
 use invocation::{InvocationObserver, NoopInvocationObserver};
 use invocation::{ProductionUpstream, UpstreamSender};
-use owner::Owners;
 pub use required_actions::{
     ActionCursor, ActionPage, ActionSummary, QueueCursor, QueuedAction, RequiredAction,
     RequiredActionCounts, RequiredActionKind, RequiredActionRequest, RequiredActionSetRevision,
     RequiredActions, RequiredActor,
 };
+use run_stream::run_loop::Loops;
 pub use summary::{
     ActivitySummary, ActorContext, ApprovalDecisions, CallOutcomes, CallerCalls, MAX_SUMMARY_DAYS,
     StoppedTool, SummaryWindow, ToolAddress, ToolCalls,
@@ -276,7 +274,7 @@ pub struct RunModule {
     wakes: run_wake::RunWakes,
     /// This Coral Instance's pull streams, which its Shutdown Drain closes.
     pull_streams: Option<coral_run_executor::PullStreams>,
-    owners: Owners,
+    loops: Loops,
     admission: shutdown::Admission,
     #[cfg(test)]
     invocation_observer: Arc<dyn InvocationObserver>,
@@ -353,7 +351,7 @@ impl RunModule {
             instance,
             wakes,
             pull_streams: None,
-            owners: Owners::default(),
+            loops: Loops::default(),
             admission: shutdown::Admission::default(),
             #[cfg(test)]
             invocation_observer: Arc::new(NoopInvocationObserver),
@@ -397,7 +395,7 @@ impl RunModule {
             instance: CoralInstanceId::generate(),
             wakes,
             pull_streams: None,
-            owners: Owners::default(),
+            loops: Loops::default(),
             admission: shutdown::Admission::default(),
             invocation_observer: observers.invocation,
             execution_observer: observers.execution,
@@ -493,7 +491,7 @@ impl RunModule {
         self
     }
 
-    /// Returns the Applied cap new Run Owners decide against.
+    /// Returns the Applied cap new loops decide against.
     #[must_use]
     pub const fn applied_output_cap(&self) -> AppliedOutputCap {
         self.applied_output_cap
@@ -513,7 +511,7 @@ impl RunModule {
         self
     }
 
-    /// Returns the Fan-out Limit new Run Owners decide dispatch starts against.
+    /// Returns the Fan-out Limit new loops decide dispatch starts against.
     #[must_use]
     pub const fn fan_out_limit(&self) -> FanOutLimit {
         self.fan_out_limit
@@ -547,10 +545,10 @@ impl RunModule {
         self.clock.now_unix_nanos().map_err(Error::Clock)
     }
 
-    /// Whether this process still hosts the Run's owner.
+    /// Whether this process still hosts the Run's loop.
     #[cfg(test)]
-    fn has_owner(&self, run_id: &RunId) -> bool {
-        self.owners.contains(run_id)
+    fn has_loop(&self, run_id: &RunId) -> bool {
+        self.loops.contains(run_id)
     }
 
     #[cfg(test)]

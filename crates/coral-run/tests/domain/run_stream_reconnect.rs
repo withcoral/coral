@@ -420,9 +420,9 @@ async fn a_loop_whose_stream_moved_commits_nothing_more() {
     wait_until(|| gate.entered()).await;
     let first_loop = moving
         .first
-        .owners
+        .loops
         .find(&moving.run_id, &moving.claim)
-        .expect("the first loop's owner");
+        .expect("the first loop");
     drop(stream);
     let mut stream = reopen(&moving, &[(1, 0)]);
     assert_eq!(stream.next().await, committed(0));
@@ -768,7 +768,7 @@ async fn a_reopen_ends_an_older_builds_termination_intent_in_one_chunk() {
     stream.request(1, super::run_streams::invoke_forecast());
     wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
     drop(stream);
-    wait_until(|| runs.owners.get(&run_id).is_none()).await;
+    wait_until(|| runs.loops.get(&run_id).is_none()).await;
     let before = fixture.run_record(&tool.workspace_id, &run_id).await;
     let claim = before.execution_claim_id.clone().expect("a claimed Run");
     let at = before

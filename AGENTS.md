@@ -138,8 +138,8 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   exclusive hold: only its owner links it.
 - A Run executes on a Run Executor over a Run stream
   ([ADR 0027](docs/adr/0027-run-executors-compile-and-execute-programs.md)).
-  The Coral Instance that holds the stream hosts the Run's loop (the `owner`
-  module of `coral-run`). The loop applies the stream's requests in number
+  The Coral Instance that holds the stream hosts the Run's loop (the
+  `run_stream::run_loop` module of `coral-run`). The loop applies the stream's requests in number
   order, commits each chunk under the claim and the head and marks it by its
   commit time, and rebuilds a chunk on a head that another writer moved
   under the claim, dropping the requests that writer committed. At the Run's

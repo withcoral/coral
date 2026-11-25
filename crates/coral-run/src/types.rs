@@ -30,9 +30,9 @@ pub const RUN_EVENT_PAGE_MAX: u16 = 100;
 /// Maximum UTF-8 byte length of one Program Log message; a Run Executor
 /// checks the same limit.
 pub use coral_run_executor::PROGRAM_LOG_MESSAGE_MAX_BYTES;
-/// Events after which the Run Owner closes a Run Ledger chunk.
+/// Events after which the loop closes a Run Ledger chunk.
 pub const CHUNK_EVENTS_CAP: usize = 1000;
-/// Output bytes after which the Run Owner closes a Run Ledger chunk; one larger
+/// Output bytes after which the loop closes a Run Ledger chunk; one larger
 /// Event commits alone.
 pub const CHUNK_BYTES_CAP: usize = 1024 * 1024;
 
@@ -1197,11 +1197,11 @@ impl crate::lifecycle::RunRecord {
     }
 }
 
-/// The cap on Program output the Run Owner has applied but not yet recorded.
+/// The cap on Program output the loop has applied but not yet recorded.
 ///
-/// While the owner holds more than this many unrecorded output bytes, Program
+/// While the loop holds more than this many unrecorded output bytes, Program
 /// requests answer only once the chunk that carries them commits, so the cap
-/// bounds the loss set and the owner's memory without slowing the admission
+/// bounds the loss set and the loop's memory without slowing the admission
 /// burst. Set at process bootstrap; the default is 8 MiB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppliedOutputCap {
@@ -1248,7 +1248,7 @@ impl Default for AppliedOutputCap {
 /// The Fan-out Limit: how many Invocations of one Run may be `dispatching`
 /// at once.
 ///
-/// The Run Owner decides each dispatch start against its in-memory count. A
+/// The loop decides each dispatch start against its in-memory count. A
 /// ready Invocation above the limit stays `pending`, with no Event and no
 /// required action, and starts its dispatch in readiness order when an
 /// earlier one ends; waits for an account or an approval hold no slot.
@@ -1371,7 +1371,7 @@ impl RunCpuBudget {
 }
 
 /// The limits one deployment sets for Program execution: the V8 isolate
-/// heaps, the Run Owner's Applied cap and its Fan-out Limit, and the
+/// heaps, the loop's Applied cap and its Fan-out Limit, and the
 /// Shutdown Drain. Resolved once at process bootstrap and handed to the Run
 /// module whole. It also carries the compilation deadline, which no
 /// deployment sets: it is [`COMPILATION_TIMEOUT`] unless a test relaxes it.
@@ -1454,13 +1454,13 @@ impl RuntimeLimits {
         self.isolate
     }
 
-    /// The Run Owner's Applied cap on unrecorded Program output.
+    /// The loop's Applied cap on unrecorded Program output.
     #[must_use]
     pub const fn applied_output_cap(&self) -> AppliedOutputCap {
         self.applied_output_cap
     }
 
-    /// The Fan-out Limit the Run Owner decides dispatch starts against.
+    /// The Fan-out Limit the loop decides dispatch starts against.
     #[must_use]
     pub const fn fan_out_limit(&self) -> FanOutLimit {
         self.fan_out_limit

@@ -8,16 +8,16 @@ pub(crate) async fn until_released(gate: &watch::Sender<bool>) {
     let _released = released.wait_for(|released| *released).await;
 }
 
-/// Records every timer the Run Owner armed, with how long after its arming
+/// Records every timer the loop armed, with how long after its arming
 /// it fires.
 #[derive(Default)]
 pub(crate) struct TimerProbe {
-    armed: Mutex<Vec<(crate::owner::Timer, i64)>>,
+    armed: Mutex<Vec<(crate::run_stream::run_loop::Timer, i64)>>,
 }
 
 impl TimerProbe {
     /// How long after its last arming `timer` fires, once armed.
-    pub(crate) fn armed(&self, timer: &crate::owner::Timer) -> Option<i64> {
+    pub(crate) fn armed(&self, timer: &crate::run_stream::run_loop::Timer) -> Option<i64> {
         self.armed
             .lock()
             .expect("armed lock")
@@ -30,7 +30,7 @@ impl TimerProbe {
 
 #[async_trait]
 impl ExecutionObserver for TimerProbe {
-    fn timer_armed(&self, timer: &crate::owner::Timer, after_nanos: i64) {
+    fn timer_armed(&self, timer: &crate::run_stream::run_loop::Timer, after_nanos: i64) {
         self.armed
             .lock()
             .expect("armed lock")
@@ -99,7 +99,7 @@ impl ExecutionObserver for CommitGate {
         let _released = self.gate.hold().await;
     }
 
-    fn owner_message_dequeued(&self) {
+    fn loop_message_dequeued(&self) {
         self.dequeued.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -338,7 +338,7 @@ impl InvocationObserver for EnforcementGate {
 }
 
 /// Parks every Invocation that reaches the enforcement point until released, so
-/// a batch of ready Invocations asks the owner for its enforcement point
+/// a batch of ready Invocations asks the loop for its enforcement point
 /// together; and parks every enforcement check again after it has read its
 /// facts under their holds, so a test can see what else proceeds while those
 /// holds are in place. Each park is released on its own; a latch that holds
@@ -450,7 +450,7 @@ impl InvocationObserver for EnforcementLatch {
 }
 
 /// Watches parked waits from both sides: counts the held rechecks, the
-/// times an Invocation parks, its enforcement checks, and the owner's
+/// times an Invocation parks, its enforcement checks, and the loop's
 /// snapshot checks of its parked waits with what each found.
 pub(crate) struct WaitProbe {
     held: watch::Sender<usize>,
@@ -458,7 +458,13 @@ pub(crate) struct WaitProbe {
     enforcement_checks: ObservedEnforcementChecks,
     /// Each check of the parked waits: its kind, what it found, and when it
     /// finished.
-    prechecks: Mutex<Vec<(crate::owner::Check, usize, tokio::time::Instant)>>,
+    prechecks: Mutex<
+        Vec<(
+            crate::run_stream::run_loop::Check,
+            usize,
+            tokio::time::Instant,
+        )>,
+    >,
 }
 
 impl WaitProbe {
@@ -485,9 +491,9 @@ impl WaitProbe {
         self.enforcement_checks.len()
     }
 
-    /// The owner's checks of its parked waits, in order, each with how many
+    /// The loop's checks of its parked waits, in order, each with how many
     /// waits it found ended or moot.
-    pub(crate) fn prechecks(&self) -> Vec<(crate::owner::Check, usize)> {
+    pub(crate) fn prechecks(&self) -> Vec<(crate::run_stream::run_loop::Check, usize)> {
         self.prechecks
             .lock()
             .unwrap()
@@ -498,7 +504,10 @@ impl WaitProbe {
 
     /// When the first check of `check`'s kind that found a wait ended or
     /// moot finished.
-    pub(crate) fn first_found(&self, check: crate::owner::Check) -> Option<tokio::time::Instant> {
+    pub(crate) fn first_found(
+        &self,
+        check: crate::run_stream::run_loop::Check,
+    ) -> Option<tokio::time::Instant> {
         self.prechecks
             .lock()
             .unwrap()
@@ -536,7 +545,7 @@ impl InvocationObserver for WaitProbe {
 
 #[async_trait]
 impl ExecutionObserver for WaitProbe {
-    fn precheck_finished(&self, check: crate::owner::Check, found: usize) {
+    fn precheck_finished(&self, check: crate::run_stream::run_loop::Check, found: usize) {
         self.prechecks
             .lock()
             .unwrap()

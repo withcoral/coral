@@ -205,7 +205,7 @@ impl TestModules {
     }
 
     /// A production-wired Run Module (real V8 and upstream) over this fixture's
-    /// database, optionally resolving caller and shared Accounts. Its owners
+    /// database, optionally resolving caller and shared Accounts. Its loops
     /// precheck their parked waits on the test cadence, so a wait that became
     /// moot is found within a test's wait for the Run's end.
     pub(crate) fn live_runs(&self, accounts: Option<AccountModule>) -> RunModule {
@@ -1442,7 +1442,7 @@ pub(crate) async fn admitted_invocation(
 
 /// An admitted call to the Private Tool at `coral.private.<relative_path>`
 /// of `tool`'s Workspace, which Coral performs in the Program, for tests
-/// that drive the owner's pieces directly.
+/// that drive the loop's pieces directly.
 pub(crate) async fn admitted_private_invocation(
     fixture: &TestModules,
     tool: &ToolFixture,
@@ -1496,7 +1496,7 @@ fn admitted(
     })
 }
 
-/// A Tool invoker bound to `run` as its owner would build it, for
+/// A Tool invoker bound to `run` as its loop would build it, for
 /// tests that call the enforcement point's pieces directly.
 pub(crate) fn test_invoker(
     fixture: &TestModules,
@@ -1516,7 +1516,7 @@ pub(crate) fn test_invoker(
         trace: run.trace.clone(),
         time_limit_nanos: None,
     };
-    let (owner, _mailbox) = crate::owner::OwnerHandle::for_stream(
+    let (run_loop, _mailbox) = crate::run_stream::run_loop::LoopHandle::for_stream(
         accepted.held_id(),
         claim_id,
         accepted.workspace_id.clone(),
@@ -1537,7 +1537,7 @@ pub(crate) fn test_invoker(
         &accepted,
         deadline,
         fixture.runs.execution_policy.approval_wait_nanos(),
-        owner,
+        run_loop,
         fixture.upstream.clone(),
         fixture.clock.clone(),
         Arc::new(NoopInvocationObserver),

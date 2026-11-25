@@ -5,7 +5,7 @@ use coral_db::Transaction;
 use sea_query::Expr;
 
 use super::ledger::commit_chunk_with;
-use super::{Chunk, NewEvent, OwnedEvent, ProgramRunRecords};
+use super::{Chunk, NewEvent, PendingEvent, ProgramRunRecords};
 use crate::lifecycle::{RequestedTermination, RunRecord};
 use crate::{Error, FinalValue, RunTerminalOutcome};
 
@@ -83,7 +83,7 @@ pub(crate) async fn finish_run(
 pub(crate) async fn interrupt_run(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
-    events: &[OwnedEvent],
+    events: &[PendingEvent],
     termination: &RequestedTermination,
     terminal_at_unix_nanos: i64,
 ) -> Result<(), Error> {
@@ -116,7 +116,7 @@ async fn finish_terminal_run(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     execution_claim_id: Option<&str>,
-    invocation_events: &[OwnedEvent],
+    invocation_events: &[PendingEvent],
     outcome: &RunTerminalOutcome,
     terminal_at_unix_nanos: i64,
     mut values: Vec<(ProgramRunRecords, Expr)>,
@@ -157,7 +157,7 @@ async fn finish_terminal_run(
         ),
     ]);
     let chunk = Chunk::new(run, execution_claim_id, terminal_at_unix_nanos)
-        .owned_events(invocation_events)
+        .pending_events(invocation_events)
         .event(
             NewEvent::Ended(outcome.state(), final_value_bytes),
             terminal_at_unix_nanos,

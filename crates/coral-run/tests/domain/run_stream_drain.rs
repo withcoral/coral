@@ -99,7 +99,7 @@ async fn a_draining_stream_waits_for_its_dispatch_then_moves_and_the_run_finishe
     stream.request(3, emit(&serde_json::json!({"step": 3})));
     stream.request(4, forecast(None));
     stream.until(|read| read.contains(&committed(4))).await;
-    assert!(moving.first.owners.contains(&moving.run_id), "still held");
+    assert!(moving.first.loops.contains(&moving.run_id), "still held");
 
     upstream.release_all();
     let (before, closing) = stream.read_to_close().await;
@@ -249,7 +249,7 @@ async fn a_stream_moves_only_once_its_instance_holds_no_pull_stream() {
     // connection back here.
     stream.request(1, emit(&serde_json::json!({"step": 1})));
     stream.until(|read| read.contains(&committed(1))).await;
-    assert!(moving.first.owners.contains(&moving.run_id), "still held");
+    assert!(moving.first.loops.contains(&moving.run_id), "still held");
 
     streams.end_scripted(pull);
     assert_eq!(stream.closing().await, Closing::Moved);

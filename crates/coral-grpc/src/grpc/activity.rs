@@ -821,7 +821,7 @@ mod tests {
                 coral_task::Error::Run(coral_run::Error::ProgramWorkerStopped),
                 Code::Unavailable,
             ),
-            // The Run Owner stopped before answering: the outcome is unknown
+            // The Run's loop stopped before answering: the outcome is unknown
             // until the Run is read again.
             (
                 coral_task::Error::Run(coral_run::Error::OwnerLost),

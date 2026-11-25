@@ -7,7 +7,7 @@ use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 use crate::lifecycle::{RequestedTermination, RunRecord, RunTerminationKind};
 use crate::observation::validate_cursor;
-use crate::run_repository::{OwnedEvent, OwnedEventKind};
+use crate::run_repository::{PendingEvent, PendingEventKind};
 use crate::trace::RunEnd;
 use crate::{
     Error, RunId, RunModule, RunObservation, RunState, RunUpdate, invocation_lifecycle,
@@ -144,7 +144,7 @@ impl RunModule {
     /// # Errors
     ///
     /// [`Error::ClaimMismatch`] when the Run row no longer holds `claim_id`
-    /// (another writer took the Run) or, for an [`Interrupter::Owner`]
+    /// (another writer took the Run) or, for an [`Interrupter::Loop`]
     /// on a Run a Run Executor holds, names another
     /// Coral Instance as its stream's holder (its stream reopened there),
     /// [`Error::RunEnded`] when the Run is
@@ -189,7 +189,7 @@ impl RunModule {
         // another Coral Instance, which records itself as the holder in the
         // chunk that moves the head: the head fences a reopen after this
         // read, and the holder one before it.
-        if by == Interrupter::Owner
+        if by == Interrupter::Loop
             && run.on_run_executor
             && run.holder_instance_id.as_ref() != Some(&self.instance)
         {
@@ -255,8 +255,8 @@ pub(crate) async fn end_in_one_chunk(
         (Some(recorded), _) => RequestedTermination::recorded(recorded),
         (None, Some(decided)) => {
             events.extend(decided.requester.clone().map(|requester| {
-                OwnedEvent::new(
-                    OwnedEventKind::CancellationRequested(requester),
+                PendingEvent::new(
+                    PendingEventKind::CancellationRequested(requester),
                     decided.termination.started_at_unix_nanos,
                 )
             }));
@@ -291,7 +291,7 @@ pub(crate) enum Interrupter {
     /// A Run stream's loop. It writes its Run only while the row names its
     /// Coral Instance as the stream's holder: a reopen elsewhere keeps the
     /// claim.
-    Owner,
+    Loop,
     /// A reopen that found the Run's Principal gone, or an older build's
     /// termination. It read the row just now and does not hold the stream
     /// yet, so the claim and the head fence it.

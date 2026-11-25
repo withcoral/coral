@@ -119,7 +119,7 @@ pub(crate) trait ExecutionObserver: Send + Sync {
     }
 
     /// The loop's task dequeued one message.
-    fn owner_message_dequeued(&self) {}
+    fn loop_message_dequeued(&self) {}
 
     /// The wake-up reader woke one Run stream's loop, in a read that `turn`
     /// started.
@@ -129,11 +129,11 @@ pub(crate) trait ExecutionObserver: Send + Sync {
     async fn before_wake_read(&self) {}
 
     /// The loop armed `timer` to fire after `after_nanos` on the host clock.
-    fn timer_armed(&self, _timer: &crate::owner::Timer, _after_nanos: i64) {}
+    fn timer_armed(&self, _timer: &crate::run_stream::run_loop::Timer, _after_nanos: i64) {}
 
     /// The loop's `check` of its parked waits read its snapshot and found
     /// `found` waits ended or moot.
-    fn precheck_finished(&self, _check: crate::owner::Check, _found: usize) {}
+    fn precheck_finished(&self, _check: crate::run_stream::run_loop::Check, _found: usize) {}
 
     fn execution_attempt_finished(&self) {}
 }
