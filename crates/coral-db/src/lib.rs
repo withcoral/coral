@@ -17,6 +17,9 @@
 //!   wake [`Database::subscribe_changes`] readers. `SQLite` uses the shared application
 //!   handle; Postgres propagates invalidations across workers. Notifications are
 //!   coalescing hints, not retained Events, payloads, or authority.
+//! - [`Transaction::ring_on_commit`] rings a named [`Signal`], which wakes only
+//!   its [`Database::subscribe_signal`] readers, for a waiter that few commits
+//!   concern. Its name is all that crosses.
 //! - [`Database::wait_for_changes`] paces a reader's reread loop on those commits.
 //! - [`Database::execute`], [`Database::fetch_optional`], and
 //!   [`Database::fetch_all`] execute domain-owned `SeaQuery` statements.
@@ -78,7 +81,7 @@ mod upgrade;
 mod version;
 
 pub use backend::DatabaseSystem;
-pub use changes::{ChangeSubscription, ChangeWait};
+pub use changes::{ChangeSubscription, ChangeWait, Signal};
 pub use database::{Database, ReadOnlyDatabase, validate_postgres_url};
 pub use error::{Error, sqlx_error_is_serialization_conflict, sqlx_error_is_unique_violation};
 pub use executor::QueryExecutor;

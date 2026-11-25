@@ -395,19 +395,29 @@ async fn the_sqlite_boot_pass_ends_a_local_childs_run_and_leaves_a_dialed_ones()
     assert!(rows.contains(&LIVE.to_owned()));
 }
 
-/// Catches: a local child's exit that leaves its Runs to its lease.
+/// Catches: a local child's exit that leaves its Runs to its lease, or a
+/// put-back that leaves its Run to the take loop's backstop.
 #[tokio::test]
 async fn a_local_childs_exit_releases_its_runs_at_once() {
     let sweep = Sweep::new().await;
     sweep.lease(LOCAL, Kind::Local, START + 60 * SECOND).await;
     let started = sweep.started(LOCAL, Kind::Local).await;
     let (unstarted, _) = sweep.taken(LOCAL, Kind::Local, sweep.now()).await;
+    let mut queue = sweep
+        .fixture
+        .database
+        .subscribe_signal(crate::run_repository::QUEUE)
+        .expect("subscribe to the queue signal");
 
     let released = sweep
         .runs
         .release_run_executor(LOCAL)
         .await
         .expect("release");
+    tokio::time::timeout(EVENTUALLY, queue.changed())
+        .await
+        .expect("the put-back rings the queue signal")
+        .expect("the signal is available");
 
     assert_eq!(
         released,

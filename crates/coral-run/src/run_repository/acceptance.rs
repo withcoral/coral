@@ -99,6 +99,7 @@ pub(crate) async fn insert_acceptance(
     if !insert_record(transaction, run).await? {
         return Ok(false);
     }
+    transaction.ring_on_commit(super::QUEUE);
 
     let statement = Query::insert()
         .into_table(ProgramRunPackages::Table)

@@ -114,6 +114,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   holds (`fetch_optional_locked`), and worker-lease renewals (`execute`) must
   not wake activity observers or Run waits. Time-dependent visibility also
   needs an observation deadline.
+- A write that makes a Run wait for a take, such as an acceptance or a
+  put-back, rings `run_repository::QUEUE` with `Transaction::ring_on_commit`.
+  The take loop follows only that signal, so a Run whose write rings nothing
+  waits for the loop's backstop.
 - Open read-only work with `Database::begin_read_snapshot` and non-holding
   checks. `Database::begin` takes SQLite's write lock at `BEGIN`, so it waits
   behind every other writer.

@@ -36,7 +36,7 @@ pub(crate) use sweep::{
     HeldRun, elect_sweeper, held_by_run_executor, names_run_executor, past_deadline, put_back,
     unstarted_takes,
 };
-pub(crate) use take::{Claimed, Taker, any_waiting, take_oldest};
+pub(crate) use take::{Claimed, QUEUE, Taker, any_waiting, take_oldest};
 pub(crate) use termination::{finish_run, finish_taken_run, interrupt_run};
 pub(crate) use usage::{first_success_before, private_tool_calls, run_endings, shared_tool_calls};
 

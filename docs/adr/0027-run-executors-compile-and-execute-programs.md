@@ -86,11 +86,12 @@ runtime.
   holder, and no Coral Instance holds a waiting Run in memory. A waiting Run reads `running`; Reef shows it waiting to
   start. One queue, oldest first, across Coral Instances and Workspaces.
 - **The room report is the ask, and Coral holds it.** Each Coral Instance runs one take loop for all its pull streams.
-  The change signal marks it dirty; it runs a take at most once per short period, and once a longer period while any
-  pull stream has room. Each take picks the pull stream with the most room and, in one statement, claims the oldest
-  waiting Runs up to that room and a cap, each with its own claim and its take time, skipping rows another take holds.
-  Coral sends them as one message. The loop repeats while Runs wait and room remains, so a burst spreads across Run
-  Executors and Coral Instances. A Run Executor never polls, and never reaches the database.
+  The queue signal and new room mark it dirty; it runs a take at once, and once a longer period while any pull stream
+  has room. A take rings nothing, so the loop never wakes itself. Each take picks the pull stream with the most room
+  and, in one statement, claims the oldest waiting Runs up to that room and a cap, each with its own claim and its take
+  time, skipping rows another take holds. Coral sends them as one message. The loop repeats while Runs wait and room
+  remains, so a burst spreads across Run Executors and Coral Instances. A Run Executor never polls, and never reaches
+  the database.
 - **A taken Run that never starts goes back to waiting.** The sweep clears the claim of a Run with no start mark and a
   take older than a confirmation period, predicated on the claim and the missing start mark; the Run keeps its place. A
   late load from the first Run Executor fails the start's claim predicate and is answered that the Run is not held. No
@@ -243,9 +244,12 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   already ended, and the waiter reports it to the Program. When another write moves the head under a chunk the loop is
   committing, the loop rebuilds that chunk on the new head and rereads those Approval Requests then too. The head is durable, so no outside
   write goes unseen.
-- **The other waiters keep the content-free signal**: the take loop and the compile relay, one subscription each per
-  Coral Instance. The content-free signal stays the only signal in `coral-db`: no table name, row identity or payload
-  crosses it.
+- **The compile relay keeps the content-free signal**, one subscription per Coral Instance.
+- **The take loop follows the queue signal**, one subscription per Coral Instance. It is a named signal in `coral-db`:
+  only a commit that rings it by name wakes its subscribers. A write that makes a Run wait rings it: an acceptance, and a
+  put-back of a take that never started. Every observable commit rings the content-free signal, so a take loop that
+  followed it would read the queue once per commit on every Coral Instance. A named signal carries its name and nothing
+  else. No table name, row identity or payload crosses either signal.
 
 ## Compiling
 
@@ -402,6 +406,9 @@ Coral exports and amends this ADR.
   machine and a hosted fleet are all reachable only if the Run Executor dials.
 - **Polling, or a held request kept only so work can be pushed.** The room report is the ask; a Run Executor with no
   room sends nothing, and the take loop reads Coral's own database on a period.
+- **A take loop on the content-free signal, at most one pass per short period.** The period bounds the reads, but each
+  Run waits up to that period for its take. At 50 ms a Run waited about 30 ms, and the p95 of Runs at 50 to 100 Runs/s
+  rose 1.4 to 1.6 times. **A wake from a local acceptance** helps only the Coral Instance that accepted the Run.
 - **Room as a grant Coral spends and the Run Executor refills.** A count can drift by one unit for a moment and needs
   no arithmetic on both sides.
 - **A Retiring message.** Coral cannot tell a full Run Executor from a retiring one, and does not need to.

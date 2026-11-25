@@ -206,7 +206,8 @@ pub(crate) async fn names_run_executor(
 /// Executor, predicated on the claim the pass read and the missing start
 /// mark. `false` when the row no longer matches: the Run started, ended or
 /// was taken again. Like the take, it records no Event and wakes no
-/// observer; the Run keeps its place.
+/// observer; the Run keeps its place. It rings [`super::QUEUE`], so a take
+/// loop takes the Run again at once.
 pub(crate) async fn put_back(
     transaction: &mut Transaction<'_>,
     held: &HeldRun,
@@ -246,5 +247,8 @@ pub(crate) async fn put_back(
                 .to_owned(),
         )
         .await?;
+    if written == 1 {
+        transaction.ring_on_commit(super::QUEUE);
+    }
     Ok(written == 1)
 }

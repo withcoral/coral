@@ -9,18 +9,11 @@ use coral_run_executor::{
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::Instant;
 
-use crate::take::{Pace, TAKE_MAX, Timing};
+use crate::take::{Pace, TAKE_MAX};
 
+/// A backstop that does not come during a test: the loop takes at once and
+/// when a Run starts to wait, then never again unless room appears.
 const LONG: Duration = Duration::from_secs(3600);
-
-/// Takes at once, then never again unless room appears or a test waits a
-/// short backstop.
-const fn timing(backstop: Duration) -> Timing {
-    Timing {
-        spacing: LONG,
-        backstop,
-    }
-}
 
 /// Accepts `count` Runs for Run streams, oldest first.
 async fn waiting_runs(fixture: &TestModules, runs: &RunModule, count: usize) -> Vec<String> {
@@ -46,9 +39,9 @@ async fn waiting_runs_in(
     ids
 }
 
-fn take_loop(runs: &RunModule, streams: &PullStreams, timing: Timing) {
+fn take_loop(runs: &RunModule, streams: &PullStreams, backstop: Duration) {
     let (runs, streams) = (runs.clone(), streams.clone());
-    tokio::spawn(async move { runs.take_loop(streams, None, timing).await });
+    tokio::spawn(async move { runs.take_loop(streams, None, backstop).await });
 }
 
 /// A process starter that counts its starts; each child it starts runs
@@ -98,7 +91,7 @@ async fn a_run_that_waits_with_no_room_asks_for_a_local_child() {
     let loop_children = children.clone();
     tokio::spawn(async move {
         taker
-            .take_loop(held, Some(loop_children), timing(Duration::from_millis(10)))
+            .take_loop(held, Some(loop_children), Duration::from_millis(10))
             .await
     });
     waiting_runs(&fixture, &runs, 1).await;
@@ -197,7 +190,7 @@ async fn a_take_claim_with_no_start_mark_decodes_only_while_the_run_is_running()
     }
     let streams = PullStreams::default();
     let (_stream, mut sent) = streams.scripted("ender", 2);
-    take_loop(&runs, &streams, timing(LONG));
+    take_loop(&runs, &streams, LONG);
     let taken = next_taken(&mut sent).await;
     for (run_id, ..) in &ended {
         let claim = taken
@@ -253,7 +246,7 @@ async fn a_take_claims_the_oldest_runs_for_the_stream_with_the_most_room() {
     let (_small, mut small_sent) = streams.scripted("small", 2);
     let (large, mut large_sent) = streams.scripted("large", 5);
 
-    take_loop(&runs, &streams, timing(LONG));
+    take_loop(&runs, &streams, LONG);
     let taken = next_taken(&mut large_sent).await;
 
     assert_eq!(
@@ -290,7 +283,7 @@ async fn one_take_claims_at_most_the_cap_and_the_pass_repeats_for_the_rest() {
     let streams = PullStreams::default();
     let (_stream, mut sent) = streams.scripted("roomy", TAKE_MAX + 1);
 
-    take_loop(&runs, &streams, timing(LONG));
+    take_loop(&runs, &streams, LONG);
     let first = next_taken(&mut sent).await;
     let second = next_taken(&mut sent).await;
 
@@ -309,7 +302,7 @@ async fn no_room_takes_nothing_and_new_room_takes_at_once() {
     let streams = PullStreams::default();
     let (_full, mut full_sent) = streams.scripted("full", 0);
 
-    take_loop(&runs, &streams, timing(LONG));
+    take_loop(&runs, &streams, LONG);
     // On this one thread the spawned loop runs to its wait for room.
     tokio::task::yield_now().await;
     let run_id = accepted.first().expect("one Run");
@@ -327,25 +320,29 @@ async fn no_room_takes_nothing_and_new_room_takes_at_once() {
     );
 }
 
-/// Catches: a loop that waits for its backstop after the change signal
-/// rang.
+/// Catches: a loop that waits for its backstop, or for a spacing, after a
+/// Run's acceptance rang the queue signal; or a take that rings it and
+/// wakes the loop for nothing.
 #[tokio::test]
-async fn a_run_accepted_while_the_loop_waits_is_taken_when_the_change_signal_rings() {
+async fn a_run_accepted_while_the_loop_waits_is_taken_when_the_queue_signal_rings() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let runs = fixture.runs.clone();
     let (workspace_id, principal) = fixture.user_scope("ringer", "Rung").await;
     let first = waiting_runs_in(&runs, &principal, &workspace_id, 1).await;
     let streams = PullStreams::default();
     let (_stream, mut sent) = streams.scripted("roomy", 2);
-    // No spacing, and a backstop that does not come during the test.
-    let timing = Timing {
-        spacing: Duration::ZERO,
-        backstop: LONG,
-    };
-    take_loop(&runs, &streams, timing);
+    let mut queue = fixture
+        .database
+        .subscribe_signal(crate::run_repository::QUEUE)
+        .expect("subscribe to the queue signal");
+    // A backstop that does not come during the test.
+    take_loop(&runs, &streams, LONG);
     assert_eq!(ids(&next_taken(&mut sent).await), first);
+    tokio::time::timeout(Duration::from_millis(50), queue.changed())
+        .await
+        .expect_err("a take rings no queue signal");
 
-    // The pass ended with nothing left waiting, so only the change signal
+    // The pass ended with nothing left waiting, so only the queue signal
     // takes this one.
     let later = waiting_runs_in(&runs, &principal, &workspace_id, 1).await;
     assert_eq!(ids(&next_taken(&mut sent).await), later);
@@ -359,7 +356,7 @@ async fn the_backstop_takes_a_run_that_nothing_rang_for() {
     let run_id = accepted.first().expect("one Run");
     let streams = PullStreams::default();
     let (_stream, mut sent) = streams.scripted("roomy", 2);
-    take_loop(&runs, &streams, timing(Duration::from_millis(50)));
+    take_loop(&runs, &streams, Duration::from_millis(50));
     let first = next_taken(&mut sent).await;
 
     // Back to waiting by fixture SQL, which raises no change signal.
@@ -406,8 +403,8 @@ async fn two_coral_instances_take_disjoint_runs_from_one_queue() {
     let (_first, mut one_sent) = one.scripted("one", TAKE_MAX);
     let (_second, mut two_sent) = two.scripted("two", TAKE_MAX);
 
-    take_loop(&runs, &one, timing(LONG));
-    take_loop(&other, &two, timing(LONG));
+    take_loop(&runs, &one, LONG);
+    take_loop(&other, &two, LONG);
     let mut taken = Vec::new();
     for sent in [&mut one_sent, &mut two_sent] {
         let mut mine = Vec::new();
@@ -423,15 +420,13 @@ async fn two_coral_instances_take_disjoint_runs_from_one_queue() {
 }
 
 #[test]
-fn the_pace_coalesces_rings_and_keeps_a_backstop() {
-    let timing = Timing {
-        spacing: Duration::from_millis(50),
-        backstop: Duration::from_secs(1),
-    };
+fn the_pace_takes_at_once_on_a_ring_and_keeps_a_backstop() {
+    let backstop = Duration::from_secs(1);
     let start = Instant::now();
     let after = |millis| start + Duration::from_millis(millis);
+    let now = after(10);
     let passed = || {
-        let mut pace = Pace::new(timing);
+        let mut pace = Pace::new(backstop);
         pace.passed(start);
         pace
     };
@@ -440,37 +435,31 @@ fn the_pace_coalesces_rings_and_keeps_a_backstop() {
         (0..rings).for_each(|_ring| pace.ring());
         pace
     };
-    let slow = Timing {
-        spacing: LONG,
-        ..timing
-    };
-    let mut slow_rang = Pace::new(slow);
-    slow_rang.passed(start);
-    slow_rang.ring();
+    let mut rang_then_passed = rang(10);
+    rang_then_passed.passed(after(5));
     let cases = [
         (
             "a new loop takes at once",
-            Pace::new(timing),
+            Pace::new(backstop),
             true,
-            Some(start),
+            Some(now),
         ),
         ("no room, no take", rang(1), false, None),
-        ("one ring waits the spacing", rang(1), true, Some(after(50))),
-        ("many rings make one take", rang(10), true, Some(after(50))),
+        ("a ring takes at once", rang(1), true, Some(now)),
+        (
+            "many rings make one take",
+            rang_then_passed,
+            true,
+            Some(after(1005)),
+        ),
         (
             "nothing rang: the backstop",
             passed(),
             true,
             Some(after(1000)),
         ),
-        (
-            "the backstop bounds the spacing",
-            slow_rang,
-            true,
-            Some(after(1000)),
-        ),
     ];
     for (case, pace, room, due) in cases {
-        assert_eq!(pace.due(room, start), due, "{case}");
+        assert_eq!(pace.due(room, now), due, "{case}");
     }
 }
