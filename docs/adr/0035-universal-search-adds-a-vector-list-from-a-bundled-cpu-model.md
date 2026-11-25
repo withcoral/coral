@@ -47,9 +47,10 @@ An Authored Tool is not strong by its place in the vector list. The rerank step 
 the Provider Tool vector list before the merge
 ([ADR 0044](0044-a-rerank-step-decides-by-distance-whether-an-authored-tool-is-strong.md)): a rare path word makes
 it strong only when it is no farther than the Provider Tool of a fixed rank there, and without one it must be
-strictly nearer than the nearest. Each entry carries its distance for that step, and each answer the distances of its
-vector list. The vector side merges no list across kinds: the engine's strong-first fusion
-([ADR 0011](0011-universal-search-engine-and-retrievers.md)) merges the windows by position. The manifest holds the
+strictly nearer than the nearest. Each entry that the vector list holds carries its distance for that step, and each
+answer the distances of its vector list; an entry of the lexical list alone carries none. The vector side merges no
+list across kinds: the engine's strong-first fusion ([ADR 0011](0011-universal-search-engine-and-retrievers.md))
+merges the windows by position. The manifest holds the
 merge constants; [#3050](https://github.com/withcoral/coral/issues/3050) has their values.
 
 - **The strong count is fixed.** It does not follow the request's limit, so the order is the same for every page size and

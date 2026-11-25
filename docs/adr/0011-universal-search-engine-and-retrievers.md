@@ -13,10 +13,12 @@ about its kind:
 applying its owners' visibility rules, matching, ranking, merging its lexical and vector lists
 ([ADR 0035](0035-universal-search-adds-a-vector-list-from-a-bundled-cpu-model.md)), and exact resolution for exact Call
 Path lookups. Only positions, marks and, for the rerank step, vector distances and whether a rare path word matched
-an Authored Tool cross into the engine; Search Hits carry no evidence. A strong match is an entry that its retriever
-judges to answer the query, not only to share a word somewhere in its text. Raw scores are assumed incomparable across retrievers, so each retriever turns its own scores into that one
-judgment and the engine compares no score. Search applies visibility but decides none; those rules stay with the owning
-domains.
+an Authored Tool cross into the engine; Search Hits carry no evidence. A strong match is an entry judged to answer the
+query, not only to share a word somewhere in its text. Raw scores are assumed incomparable across retrievers, so each
+retriever turns its own scores into that one judgment and the engine compares no score. The one exception is the final
+mark of an Authored Tool: the rerank step sets it from its retriever's judgment and from cosine distances, which
+compare across kinds where scores do not (ADR 0044). Search applies visibility but decides none; those rules stay with
+the owning domains.
 
 Before the split, one module ranked lanes of material across every kind, and each new kind or kind-specific rule added
 a branch to every loop. Rejected: per-kind branches in the engine; a lanes-only trait that keeps ranking in the engine
@@ -24,12 +26,13 @@ and stops a kind from ranking its own way; and one ranking per lane across kinds
 once each kind ranks its own way.
 
 Fusion puts every strong match before every weak one, and every weak one before every last one, each group by
-position, so a match is demoted, never dropped. Only an Authored Tool that no rule makes strong is last (ADR 0044); among
-Provider Tools, and among strong matches of every kind, fusion weights retrievers equally. Each retriever decides strong
-or weak by its own rule over its own signals, such as the query's words in order in a field, a query word that starts a
-word of its name, a Provider the query names, or, for a Provider Tool, a place near the top of its vector list. A kind can therefore judge by fields another kind lacks, and each rule can be tested
-alone; the cost is that the rules can disagree about how good a match must be, and only measuring them on one labelled
-set keeps them in step. The rules are in [#2792](https://github.com/withcoral/coral/pull/2792).
+position, so a match is demoted, never dropped. Only an Authored Tool that no rule makes strong is last (ADR 0044).
+Otherwise fusion weights retrievers equally: the retriever order decides only a tie at equal position, as below. Each
+retriever decides strong or weak by its own rule over its own signals, such as the query's words in order in a field,
+a query word that starts a word of its name, a Provider the query names, or, for a Provider Tool, a place near the top
+of its vector list. A kind can therefore judge by fields another kind lacks, and each rule can be tested alone; the
+cost is that the rules can disagree about how good a match must be, and only measuring them on one labelled set keeps
+them in step. The rules are in [#2792](https://github.com/withcoral/coral/pull/2792).
 
 At equal position a strong Provider Tool comes before a strong Private Tool, and a Private Tool before a Shared Tool. A
 Private Tool used to win every tie, because people wrote Private Tools for this Workspace and no model has them
