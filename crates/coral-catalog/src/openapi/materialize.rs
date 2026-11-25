@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// Stable version of the bounded OpenAPI profile materializer.
-pub(crate) const MATERIALIZER_VERSION: &str = "openapi-schema-faithful-search-profile-v6";
+pub(crate) const MATERIALIZER_VERSION: &str = "openapi-schema-faithful-search-profile-v7";
 
 /// Materializes one exact pinned OpenAPI input and carries forward paths owned
 /// by Tool Keys that remain active in the replacement catalog.
@@ -367,7 +367,7 @@ fn materialize_operation(
     if draft.operation.contains_key("callbacks") {
         diagnostics.push(diagnostic(
             "unsupported_openapi_callback",
-            "an OpenAPI callback cannot be invoked by the v1 HTTP binding",
+            "This tool cannot receive the callbacks that its operation declares.",
         ));
     }
     let (input_schema, input_schema_json) = match build_input_schema(&binding) {
@@ -971,13 +971,17 @@ fn materialize_content(
         && (media_type.contains('*')
             || !crate::schema::is_binary_schema(&schema_id, |id| schemas.schema(id)))
     {
-        return Err(unsupported_http_request_media_type());
+        return Err(unsupported_http_request_media_type(media_type));
     }
     if request
         && media_type_essence(media_type).starts_with("text/")
         && !schema_is_text_serializable(schemas, &schema_id, &mut HashSet::new())
     {
-        return Err(unsupported_http_request_media_type());
+        return Err(CatalogDiagnostic::stable_naming(
+            "unsupported_http_request_media_type",
+            "This tool cannot send its {} request body, because the body schema is not text.",
+            &media_type_essence(media_type),
+        ));
     }
     let mut encoding = Vec::new();
     if let Some(encodings) = media.get("encoding") {
@@ -989,7 +993,7 @@ fn materialize_content(
         {
             return Err(diagnostic(
                 "unsupported_openapi_encoding",
-                "OpenAPI encoding is supported only for form and multipart requests",
+                "This tool supports encoding only on form or multipart request bodies.",
             ));
         }
         let encodings = encodings.as_object().ok_or_else(|| {
@@ -1040,7 +1044,11 @@ fn materialize_encoding(
     {
         validate_media_type(content_type)?;
         if !supported_content_serialization_media_type(content_type) {
-            return Err(unsupported_http_request_media_type());
+            return Err(CatalogDiagnostic::stable_naming(
+                "unsupported_http_request_media_type",
+                "This tool cannot send a form field of type {}.",
+                &media_type_essence(content_type),
+            ));
         }
     }
     let style = encoding
@@ -1183,7 +1191,7 @@ fn build_input_schema(binding: &HttpExecutionBinding) -> Result<Value, CatalogDi
         {
             return Err(diagnostic(
                 "unsupported_logical_input_collision",
-                "OpenAPI parameters collide in the flat logical input schema",
+                "Two parameters of this operation have the same name. This tool cannot accept both.",
             ));
         }
         if parameter.required() {
@@ -1194,7 +1202,7 @@ fn build_input_schema(binding: &HttpExecutionBinding) -> Result<Value, CatalogDi
         if properties.contains_key("body") {
             return Err(diagnostic(
                 "unsupported_logical_input_collision",
-                "an OpenAPI parameter collides with the logical request body",
+                "A parameter of this operation is named body. That name is kept for the request body.",
             ));
         }
         let body_schema = match body.content() {
@@ -2149,17 +2157,18 @@ fn invalid_tool_index() -> CatalogDiagnostic {
     )
 }
 
-fn unsupported_http_request_media_type() -> CatalogDiagnostic {
-    diagnostic(
+fn unsupported_http_request_media_type(media_type: &str) -> CatalogDiagnostic {
+    CatalogDiagnostic::stable_naming(
         "unsupported_http_request_media_type",
-        "an OpenAPI request body uses a media type without a faithful v1 encoder",
+        "This tool cannot send a request body of type {}.",
+        &media_type_essence(media_type),
     )
 }
 
 fn unsupported_parameter_serialization() -> CatalogDiagnostic {
     diagnostic(
         "unsupported_parameter_serialization",
-        "an OpenAPI parameter uses a serialization style that is invalid for its location",
+        "This tool cannot send one of its parameters in the style that its operation declares.",
     )
 }
 

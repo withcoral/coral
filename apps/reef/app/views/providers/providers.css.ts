@@ -222,12 +222,10 @@ export const catalogScrollContent = style({
   // margin), so the cards stop short of it.
   paddingInlineEnd: 14,
 })
-export const chosenRecipe = style({
-  alignItems: 'center',
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: 12,
-})
+/** Holds a control at its own width inside a column that stretches its children. */
+export const fitContent = style({ alignSelf: 'flex-start', maxWidth: '100%' })
+/** A recipe's name with its logo, as a dialog title. */
+export const recipeTitle = style({ alignItems: 'center', display: 'flex', gap: 10 })
 export const checklist = style({
   display: 'flex',
   flexDirection: 'column',
@@ -501,4 +499,12 @@ export const iconError = style({
   marginInlineStart: iconIndent,
   minWidth: 0,
   order: 1,
+})
+// The servers that hold their suggested URL, folded into one line under the rest.
+export const foldedServers = style({
+  alignItems: 'center',
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: 12,
+  justifyContent: 'space-between',
 })

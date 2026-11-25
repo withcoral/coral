@@ -11,15 +11,14 @@ export function place(kind: UsageDataView['kind']): string {
   return kind === 'desktop' ? 'your computer' : 'this server'
 }
 
-/** Why Coral sends nothing whatever the switch shows. */
+/** Why the switch shows off and takes no change. */
 export function blockReason(block: SendBlock, kind: UsageDataView['kind']): string {
-  const sends = `Coral sends no usage data from ${place(kind)}, even when sharing is on.`
   switch (block.kind) {
     case 'build':
-      return `This is a source build. ${sends}`
+      return 'You cannot turn on sharing in a source build.'
     case 'unknown':
-      return sends
+      return `You cannot turn on sharing for ${place(kind)}.`
     case 'environment':
-      return `${block.variable} is set. ${sends}`
+      return `You cannot turn on sharing while ${block.variable} is set on ${place(kind)}.`
   }
 }

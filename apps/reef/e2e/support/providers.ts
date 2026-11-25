@@ -419,6 +419,23 @@ export async function checkRadio(radio: Locator) {
     .toBe(true)
 }
 
+/**
+ * Points one credential at a secret store in the credential table: its Type
+ * becomes Secret store, then its store menu picks the store. The menus open on
+ * the page, outside the form.
+ */
+export async function chooseSecretStore(
+  page: Page,
+  field: string,
+  store: string,
+  form: Page | Locator = page,
+) {
+  await form.getByRole('button', { name: `Type for ${field}` }).click()
+  await page.getByRole('menuitemradio', { name: 'Secret store' }).click()
+  await form.getByRole('button', { name: `Secret store for ${field}` }).click()
+  await page.getByRole('menuitemradio', { name: store }).click()
+}
+
 /** The account question itself, whatever outcomes it currently offers. */
 export function accountQuestion(page: Page) {
   return page.getByRole('radiogroup', { name: 'Whose account does it use?' })

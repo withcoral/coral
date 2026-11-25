@@ -273,11 +273,15 @@ export const bulletList = style({
   listStyle: 'disc',
 })
 
-// A secret store's workspaces, removable unless archived, then the button that adds one.
+// A secret store's workspaces.
 export const grants = style({
   alignItems: 'center',
   display: 'flex',
+  flex: '1 1 auto',
   flexWrap: 'wrap',
   gap: 4,
   minWidth: 0,
 })
+export const grantsEmpty = style({ color: theme.content.tertiary })
+// The edit button sits after the last pill, however many wrap.
+export const grantsEdit = style({ flexShrink: 0 })

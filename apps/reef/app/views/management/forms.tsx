@@ -223,6 +223,11 @@ interface ActionDialogProps {
   /** Overrides the opening button's look, as for a destructive action repeated down a list. */
   triggerVariant?: ButtonVariant
   finalFocus?: React.RefObject<HTMLElement | null>
+  /**
+   * Asks again in a stacked dialog before the form submits, as for a change that
+   * takes something away. Its button submits the form.
+   */
+  confirm?: { title: string; description: string; submit: string } | null
 }
 
 export function ActionDialog(props: ActionDialogProps) {
@@ -271,9 +276,16 @@ function ActionDialogBody({
   ...props
 }: ActionDialogProps & { close: () => void; onPendingChange: (pending: boolean) => void }) {
   const fetcher = useFetcher<ActionResult>()
+  const formId = useId()
+  const pending = fetcher.state !== 'idle'
+  const [confirming, setConfirming] = useState(false)
+  // The result before you confirmed, so a new error closes the stacked dialog and shows
+  // in the dialog behind, beside what you chose.
+  const [beforeConfirm, setBeforeConfirm] = useState<ActionResult | undefined>(undefined)
+  const confirmOpen =
+    confirming && (pending || !fetcher.data?.error || fetcher.data === beforeConfirm)
   const [submission] = useState({ form: props.form, etag: props.etag, name: props.name })
   const handled = useRef<ActionResult | undefined>(undefined)
-  const pending = fetcher.state !== 'idle'
   useEffect(() => {
     onPendingChange(pending)
   }, [pending, onPendingChange])
@@ -296,12 +308,18 @@ function ActionDialogBody({
       <Dialog.Title>{props.title}</Dialog.Title>
       {props.description && <Dialog.Description>{props.description}</Dialog.Description>}
       <fetcher.Form
+        id={formId}
         method="post"
         action={props.action}
         className={styles.stack}
         aria-busy={pending}
         onSubmit={(event) => {
           if (pending || props.disabled) event.preventDefault()
+          else if (props.confirm && !confirmOpen) {
+            event.preventDefault()
+            setBeforeConfirm(fetcher.data)
+            setConfirming(true)
+          }
         }}
       >
         <Fields
@@ -326,6 +344,40 @@ function ActionDialogBody({
           </Button.TextButton>
         </Dialog.Actions>
       </fetcher.Form>
+      {props.confirm && (
+        <Dialog.Root
+          open={confirmOpen}
+          onOpenChange={(next) => {
+            if (!pending) setConfirming(next)
+          }}
+        >
+          <Dialog.Portal>
+            <Dialog.Popup>
+              <Dialog.Title>{props.confirm.title}</Dialog.Title>
+              <Dialog.Description>{props.confirm.description}</Dialog.Description>
+              <Dialog.Actions>
+                <Button.TextButton
+                  type="button"
+                  variant="secondary"
+                  disabled={pending}
+                  onClick={() => setConfirming(false)}
+                >
+                  Cancel
+                </Button.TextButton>
+                <Button.TextButton
+                  type="submit"
+                  form={formId}
+                  variant="destructive"
+                  disabled={pending}
+                  busy={pending}
+                >
+                  {props.confirm.submit}
+                </Button.TextButton>
+              </Dialog.Actions>
+            </Dialog.Popup>
+          </Dialog.Portal>
+        </Dialog.Root>
+      )}
     </Dialog.Popup>
   )
 }

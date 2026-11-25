@@ -128,9 +128,9 @@ fn workspace(evidence: &WorkspaceEvidence, meta: ResourceMetadata) -> wire::Work
         current_user_profile: None,
         mcp_endpoint: String::new(),
         organization_mcp_endpoint: String::new(),
-        etag: meta.etag,
-        create_time: Some(timestamp(meta.created_at)),
-        update_time: Some(timestamp(meta.updated_at)),
+        etag: meta.version.to_string(),
+        create_time: meta.created_at.map(timestamp),
+        update_time: meta.updated_at.map(timestamp),
         effective_role: role(evidence.effective_role()).into(),
     }
 }

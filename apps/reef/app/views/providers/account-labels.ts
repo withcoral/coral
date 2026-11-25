@@ -64,3 +64,20 @@ export function useAccountAudience(): AccountAudience {
 export function accountHelp(audience: AccountAudience): Record<AccountChoice, string> {
   return { none: 'Coral sends no account credentials with tool calls.', ...audience.help }
 }
+
+/**
+ * How the person connects an account: a sign-in, or credentials they type. A held
+ * account means they connect another one. Shared by the Account step and Edit
+ * configuration, so the two say it the same way.
+ */
+export function connectAgain(oauth: boolean, held: boolean) {
+  return oauth
+    ? {
+        shared: held ? 'You sign in again.' : 'You sign in once.',
+        own: held ? 'You sign in again' : 'You sign in now',
+      }
+    : {
+        shared: held ? 'You enter other credentials.' : 'You enter the credentials once.',
+        own: held ? 'You enter other credentials' : 'You enter the credentials now',
+      }
+}

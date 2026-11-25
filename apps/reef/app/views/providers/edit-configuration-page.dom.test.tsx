@@ -251,9 +251,13 @@ it('opens a replacement with the shared account references filled in', async () 
   })
   await userEvent.click(screen.getByRole('button', { name: 'Connect the shared account' }))
   const dialog = await screen.findByRole('dialog')
-  expect(within(dialog).getByRole('radio', { name: 'Use a secret store' })).toBeChecked()
-  expect(within(dialog).getByRole('textbox', { name: 'Path' })).toHaveValue('team/forecast')
-  expect(within(dialog).getByRole('textbox', { name: 'Key' })).toHaveValue('token')
+  expect(within(dialog).getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
+    'platform',
+  )
+  expect(within(dialog).getByRole('textbox', { name: 'Path for Token' })).toHaveValue(
+    'team/forecast',
+  )
+  expect(within(dialog).getByRole('textbox', { name: 'Key for Token' })).toHaveValue('token')
 })
 
 // Catches: a refused replacement reopening on another option, with its message out of view.
