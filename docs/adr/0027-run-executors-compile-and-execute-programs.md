@@ -253,9 +253,10 @@ above it, in order. A repeat carries the same number and lands once; an Emission
 
 Each Run Executor keeps one warm Program Compiler, warmed before it says hello, with the compiler's existing limits. A
 compile travels down the pull stream and its answer comes back on it; it goes to the pull stream with the most compile
-room on the Coral Instance that needs it. A Coral Instance that holds a pull stream that takes sends waits for its own
-compile room, and borrows no idle compiler from another Coral Instance. A unit frees when a compile answers or its pull
-stream ends. A Coral Instance that holds no such stream writes the call to a relay row that any Coral Instance with
+room on the Coral Instance that needs it. A Coral Instance that holds an open pull stream, one it has not closed for
+the connection's age, the drain or shutdown, waits for its own compile room, and borrows no idle compiler from another
+Coral Instance; a retiring Run Executor's stream stays open. A unit frees when a compile answers or its pull stream
+ends. A Coral Instance that holds no open pull stream writes the call to a relay row that any Coral Instance with
 compile room picks up, serves and answers through the database. Coral Instances keep talking only through the database.
 A compile that no Run Executor can serve yet waits for one: no Run Executor linked is a state every rollout passes
 through. The compile's own time limit runs once a Run Executor serves it; a compile that waits past a bound fails as a
