@@ -1941,7 +1941,7 @@ test.each([
   await turnOn()
   let dialog = await consentDialog()
   expect(dialog).toHaveTextContent(
-    'Your agents can give it data work. Their questions and the tool results from this workspace go to the host below, conversations in progress included.',
+    'Calling this tool sends a natural language query to a Coral agent. The agent sends workspace data to the model below.',
   )
   expect(await shownFacts(dialog)).toEqual({
     Host: 'models.example.com',

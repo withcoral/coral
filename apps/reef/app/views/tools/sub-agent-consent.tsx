@@ -105,7 +105,7 @@ export function SubAgentConsent({
         open={open}
         onOpenChange={setOpen}
         title="Turn on the sub-agent?"
-        description="Your agents can give it data work. Their questions and the tool results from this workspace go to the host below, conversations in progress included."
+        description="Calling this tool sends a natural language query to a Coral agent. The agent sends workspace data to the model below."
         submit="Turn on"
         form={form}
         intent="turnOn"
@@ -133,8 +133,8 @@ export function SubAgentConsent({
               </DescriptionList.Row>
             </DescriptionList.List>
             <Typography.BodySmall as="p" variant="tertiary">
-              An organization owner set this model. A new base URL blocks the sub-agent until you
-              turn it on again.
+              Your organization owner set this model. If its base URL changes, the sub-agent turns
+              off until you turn it on again.
             </Typography.BodySmall>
           </>
         ) : (
