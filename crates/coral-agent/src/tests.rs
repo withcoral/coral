@@ -24,17 +24,20 @@ use coral_workspace::{
 use rmcp::ErrorData;
 use rmcp::model::{CallToolRequestParams, CallToolResponse};
 use sea_query::{Alias, Expr, ExprTrait as _, Order, Query};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use wiremock::matchers::{any, body_string_contains, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 use crate::model::{Block, Message, ModelClient, Protocol, Role, ToolCall};
 use crate::run_tools::Caller;
-use crate::sub_agents::{Error, RunningTurn, SubAgents, TURN_LEASE, TURN_MAX, TurnState};
+use crate::sub_agents::{
+    Error, ModelSource, RunningTurn, SubAgents, TURN_LEASE, TURN_MAX, TurnState,
+};
 use crate::telemetry::TurnTrace;
-use crate::{MODEL_CALL_TIMEOUT, SubAgentFactory, repository};
+use crate::{ConfiguredModel, MODEL_CALL_TIMEOUT, SubAgentFactory, repository};
 
 mod compaction;
+mod models;
 mod telemetry;
 
 const POLICY: DestinationPolicy =
@@ -147,17 +150,12 @@ impl Lead {
 
     /// The Sub-agents of the same database, which call the same stub.
     fn sub_agents(&self) -> SubAgents {
-        let http = coral_outbound::Client::new(POLICY, MODEL_CALL_TIMEOUT).unwrap();
-        let base_url = self.base_url().parse().unwrap();
-        let model = ModelClient::new(
-            http,
-            Protocol::ChatCompletions,
-            &base_url,
-            MODEL.to_owned(),
-            None,
-            None,
-            None,
-        );
+        let model = Arc::new(model_client(&self.model));
+        self.sub_agents_of(Arc::new(ConfiguredModel(model)))
+    }
+
+    /// The Sub-agents of the same database, which call what `models` gives.
+    fn sub_agents_of(&self, models: Arc<dyn ModelSource>) -> SubAgents {
         let modules = self.modules.clone();
         let (tasks, commands, runs) = (modules.tasks, modules.commands, modules.runs);
         let (clock, stopping) = (Arc::new(self.clock.clone()), self.stop.subscribe());
@@ -167,7 +165,7 @@ impl Lead {
             commands,
             runs,
             modules.search,
-            model,
+            models,
             clock,
             stopping,
         )
@@ -246,6 +244,19 @@ impl Lead {
             .mount(&self.model)
             .await;
     }
+}
+
+/// A client of the model that `server` stands in for.
+fn model_client(server: &MockServer) -> ModelClient {
+    ModelClient::new(
+        coral_outbound::Client::new(POLICY, MODEL_CALL_TIMEOUT).unwrap(),
+        Protocol::ChatCompletions,
+        &format!("{}/v1", server.uri()).parse().unwrap(),
+        MODEL.to_owned(),
+        None,
+        None,
+        Map::new(),
+    )
 }
 
 /// A new Workspace of `owner`.
@@ -1215,6 +1226,7 @@ async fn an_interrupted_turn_closes_the_calls_it_left_without_results() {
     let task = task.await.unwrap();
     let running = RunningTurn {
         trace: TurnTrace::begin(&sub_agent_id, actor, workspace_id, task.telemetry_id()),
+        model: Arc::new(model_client(&lead.model)),
         id: turn.id,
         sub_agent_id: sub_agent_id.clone(),
         caller: Caller {

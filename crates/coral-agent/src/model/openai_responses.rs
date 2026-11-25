@@ -20,9 +20,12 @@ pub(super) fn request_body(
     conversation: &[Message],
     tools: &[ToolText],
     max_tokens: Option<u32>,
-    reasoning_effort: Option<&str>,
-) -> Result<Vec<u8>, ModelError> {
-    let include_encrypted = reasoning_effort != Some("none");
+    args: &Map<String, Value>,
+) -> serde_json::Result<Value> {
+    let effort = args
+        .get("reasoning")
+        .and_then(|reasoning| reasoning.get("effort"));
+    let include_encrypted = effort.and_then(Value::as_str) != Some("none");
     let request = ResponsesRequest {
         model,
         store: false,
@@ -30,14 +33,13 @@ pub(super) fn request_body(
         input: input_items(conversation, model),
         tools: tools.iter().map(ResponsesTool::from).collect(),
         max_output_tokens: max_tokens,
-        reasoning: reasoning_effort.map(|effort| ReasoningConfig { effort }),
         include: if include_encrypted {
             vec!["reasoning.encrypted_content"]
         } else {
             Vec::new()
         },
     };
-    serde_json::to_vec(&request).map_err(|_error| ModelError::Misconfigured)
+    serde_json::to_value(&request)
 }
 
 /// Parses an `OpenAI` Responses API response body into a [`Reply`].
@@ -281,15 +283,8 @@ struct ResponsesRequest<'a> {
     tools: Vec<ResponsesTool<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning: Option<ReasoningConfig<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     include: Vec<&'static str>,
-}
-
-#[derive(Serialize)]
-struct ReasoningConfig<'a> {
-    effort: &'a str,
 }
 
 #[derive(Serialize)]

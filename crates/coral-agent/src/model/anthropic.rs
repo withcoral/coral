@@ -17,10 +17,10 @@ use super::{
 pub(super) const VERSION: &str = "2023-06-01";
 
 /// Default `max_tokens` for reply calls (Anthropic requires the field on every request).
-const DEFAULT_MAX_TOKENS: u32 = 16_384;
+const DEFAULT_MAX_TOKENS: u64 = 16_384;
 
 /// Minimum headroom above `budget_tokens` when `max_tokens` was not explicitly set.
-const BUDGET_HEADROOM: u32 = 4_096;
+const BUDGET_HEADROOM: u64 = 4_096;
 
 /// Serializes an Anthropic Messages API request body.
 pub(super) fn request_body(
@@ -29,10 +29,9 @@ pub(super) fn request_body(
     conversation: &[Message],
     tools: &[ToolText],
     max_tokens: Option<u32>,
-    reasoning_effort: Option<&str>,
-) -> Result<Vec<u8>, ModelError> {
-    let (thinking, output_config) = reasoning_settings(reasoning_effort);
-    let max_tokens = resolve_max_tokens(max_tokens, thinking.as_ref());
+    args: &Map<String, Value>,
+) -> serde_json::Result<Value> {
+    let max_tokens = resolve_max_tokens(max_tokens, args);
     let mut messages = anthropic_messages(conversation, model);
     mark_last_user_cache_breakpoint(&mut messages);
     let request = MessagesRequest {
@@ -45,10 +44,8 @@ pub(super) fn request_body(
         }],
         tools: tools.iter().map(AnthropicTool::from).collect(),
         messages,
-        thinking,
-        output_config,
     };
-    serde_json::to_vec(&request).map_err(|_error| ModelError::Misconfigured)
+    serde_json::to_value(&request)
 }
 
 /// Parses an Anthropic Messages API response body into a [`Reply`].
@@ -111,39 +108,24 @@ pub(super) fn parse_reply(
     })
 }
 
-/// Maps `reasoning_effort` to Anthropic's `thinking` and `output_config` fields:
-/// - `None`: omit both so the model server's defaults apply.
-/// - `"none"` / `"disabled"`: disable thinking explicitly.
-/// - Unsigned integer (e.g. `"8000"`): enabled thinking with `budget_tokens`.
-/// - Any other value (e.g. `"low"`, `"medium"`, `"high"`, `"max"`): adaptive
-///   thinking with `output_config.effort` sent as written.
-fn reasoning_settings(
-    reasoning_effort: Option<&str>,
-) -> (Option<Thinking>, Option<OutputConfig<'_>>) {
-    let Some(effort) = reasoning_effort else {
-        return (None, None);
-    };
-    if matches!(effort, "none" | "disabled") {
-        return (Some(Thinking::Disabled), None);
-    }
-    if let Ok(budget_tokens) = effort.parse::<u32>() {
-        return (Some(Thinking::Enabled { budget_tokens }), None);
-    }
-    (Some(Thinking::Adaptive), Some(OutputConfig { effort }))
-}
-
-/// Ensures `max_tokens` is strictly greater than `budget_tokens` when enabled
-/// budget thinking is requested, since Anthropic rejects `max_tokens <= budget_tokens`.
-fn resolve_max_tokens(max_tokens: Option<u32>, thinking: Option<&Thinking>) -> u32 {
-    match (max_tokens, thinking) {
-        (Some(limit), Some(Thinking::Enabled { budget_tokens })) if limit <= *budget_tokens => {
-            budget_tokens.saturating_add(limit)
+/// The `max_tokens` that Coral writes, which every request needs. `None`
+/// leaves the field to the args, which set it for replies alone.
+///
+/// Anthropic rejects a `max_tokens` that is not above the args' thinking
+/// budget, so Coral's own leaves room above it.
+fn resolve_max_tokens(cap: Option<u32>, args: &Map<String, Value>) -> Option<u64> {
+    let thinking = args.get("thinking");
+    let budget = thinking
+        .and_then(|thinking| thinking.get("budget_tokens"))
+        .and_then(Value::as_u64);
+    match (cap.map(u64::from), budget) {
+        (Some(limit), Some(budget)) if limit <= budget => Some(budget.saturating_add(limit)),
+        (Some(limit), _) => Some(limit),
+        (None, _) if args.contains_key("max_tokens") => None,
+        (None, Some(budget)) => {
+            Some(DEFAULT_MAX_TOKENS.max(budget.saturating_add(BUDGET_HEADROOM)))
         }
-        (Some(limit), _) => limit,
-        (None, Some(Thinking::Enabled { budget_tokens })) => {
-            DEFAULT_MAX_TOKENS.max(budget_tokens.saturating_add(BUDGET_HEADROOM))
-        }
-        (None, _) => DEFAULT_MAX_TOKENS,
+        (None, None) => Some(DEFAULT_MAX_TOKENS),
     }
 }
 
@@ -373,15 +355,12 @@ fn normalize_stop_reason(reason: &str) -> String {
 #[derive(Serialize)]
 struct MessagesRequest<'a> {
     model: &'a str,
-    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u64>,
     system: Vec<SystemBlock<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<AnthropicTool<'a>>,
     messages: Vec<AnthropicMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thinking: Option<Thinking>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    output_config: Option<OutputConfig<'a>>,
 }
 
 #[derive(Serialize)]
@@ -423,19 +402,6 @@ impl<'a> From<&'a ToolText> for AnthropicTool<'a> {
 struct AnthropicMessage {
     role: &'static str,
     content: Vec<Value>,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum Thinking {
-    Adaptive,
-    Enabled { budget_tokens: u32 },
-    Disabled,
-}
-
-#[derive(Serialize)]
-struct OutputConfig<'a> {
-    effort: &'a str,
 }
 
 #[derive(Deserialize)]

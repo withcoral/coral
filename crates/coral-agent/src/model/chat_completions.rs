@@ -19,16 +19,14 @@ pub(super) fn request_body(
     conversation: &[Message],
     tools: &[ToolText],
     max_tokens: Option<u32>,
-    reasoning_effort: Option<&str>,
-) -> Result<Vec<u8>, ModelError> {
+) -> serde_json::Result<Value> {
     let request = CompletionRequest {
         model,
         messages: chat_messages(system, conversation, model),
         tools: tools.iter().map(ChatTool::from).collect(),
         max_completion_tokens: max_tokens,
-        reasoning_effort,
     };
-    serde_json::to_vec(&request).map_err(|_error| ModelError::Misconfigured)
+    serde_json::to_value(&request)
 }
 
 /// Parses a Chat Completions response body into a [`Reply`].
@@ -62,8 +60,6 @@ struct CompletionRequest<'a> {
     tools: Vec<ChatTool<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_completion_tokens: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<&'a str>,
 }
 
 /// The conversation as Chat Completions messages: a user's text as content parts, an assistant

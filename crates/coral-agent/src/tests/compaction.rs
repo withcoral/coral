@@ -137,6 +137,22 @@ async fn a_thread_near_the_window_is_summarized_and_the_turn_answers() {
     );
 }
 
+// Catches: a model with no context window set that is never compacted, or is compacted as if its
+// window were small.
+#[tokio::test]
+async fn a_model_with_no_window_compacts_as_if_it_had_128_000_tokens() {
+    let lead = Lead::new().await;
+    // The twelfth call leaves less than the reserve free of 128,000 tokens.
+    stub(&lead, 11).await;
+
+    let (_, waited) = lead.turn(&*lead.tools(), &lead.task().await).await;
+
+    assert_eq!(waited.get("answer"), Some(&json!(ANSWER)), "{waited}");
+    let mut steps = vec!["step"; 11];
+    steps.extend(["summary", "step"]);
+    assert_eq!(requests(&lead).await, steps);
+}
+
 // Catches: a server's "too long" that fails the Turn where a summary of its
 // older messages lets it go on, and a retry that sends the thread whole again.
 #[tokio::test]
