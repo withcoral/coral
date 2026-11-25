@@ -1,6 +1,5 @@
 //! What the lead reads of a Sub-agent: its latest Turn, the steps the Turn
-//! took, the outcome it recorded, and what the Turn's Runs wait for from a
-//! person.
+//! took, and what the Turn's Runs wait for from a person.
 
 use coral_db::UnixNanos;
 use coral_run::{RequiredAction, RunId, RunObservation};
@@ -10,7 +9,7 @@ use serde::Deserialize;
 use super::{Error, SubAgents, TurnState};
 use crate::model::{Block, Message, ToolCall};
 use crate::repository;
-use crate::run_tools::{Outcome, first_chars, recorded_outcome, shortened_intent};
+use crate::run_tools::{first_chars, shortened_intent};
 
 impl SubAgents {
     /// The latest Turn of the caller's own Sub-agent, as the lead reads it.
@@ -24,7 +23,7 @@ impl SubAgents {
         let messages =
             repository::turn_messages(&*self.database, workspace_id, sub_agent_id, &turn.id);
         let messages = messages.await?;
-        let (steps, outcome) = (steps(&messages), outcome(&messages));
+        let steps = steps(&messages);
         let required_actions = if turn.state == TurnState::Running {
             self.required_actions(actor, workspace_id, &steps).await?
         } else {
@@ -35,7 +34,6 @@ impl SubAgents {
             state: turn.state,
             lease_expires_at: turn.lease_expires_at,
             steps,
-            outcome,
             required_actions,
         })
     }
@@ -68,8 +66,6 @@ pub(crate) struct TurnPage {
     pub(crate) state: TurnState,
     pub(crate) lease_expires_at: UnixNanos,
     pub(crate) steps: Vec<Step>,
-    /// How the model said its work went, if it recorded that in this Turn.
-    pub(crate) outcome: Option<Outcome>,
     /// What the Turn's Runs wait for from a person, while the Turn runs.
     pub(crate) required_actions: Vec<WaitingAction>,
 }
@@ -139,17 +135,6 @@ pub(super) fn steps(messages: &[Message]) -> Vec<Step> {
         step(call, started)
     });
     steps.collect()
-}
-
-/// The outcome of the Turn's last `end_task` that recorded one.
-pub(super) fn outcome(messages: &[Message]) -> Option<Outcome> {
-    let calls = calls_with_results(messages);
-    let ended = calls.filter(|(call, _result)| call.name == "end_task");
-    let recorded = ended.filter_map(|(_call, result)| match result {
-        Some(Block::ToolResult { content, .. }) => recorded_outcome(content),
-        _ => None,
-    });
-    recorded.last()
 }
 
 /// Each tool call in the messages, with its result once stored. A reply's
@@ -260,49 +245,5 @@ mod tests {
         assert_eq!(shown, started, "two execs, then the search");
         let lengths = steps.iter().map(|step| step.intent.chars().count());
         assert_eq!(lengths.collect::<Vec<_>>(), [80, 80, 200]);
-    }
-
-    // Catches: an outcome read from a refused `end_task`, from another call's
-    // result, or from an earlier call than the Turn's last.
-    #[test]
-    fn the_outcome_is_the_last_that_end_task_recorded() {
-        let end_task = |outcome: &str| ToolCall {
-            id: "call_0".to_owned(),
-            name: "end_task".to_owned(),
-            arguments: format!(r#"{{"task_id":"lead-task-id","outcome":"{outcome}"}}"#),
-        };
-        let recorded =
-            |outcome: &str| format!(r#"{{"task_id":"lead-task-id","outcome":"{outcome}"}}"#);
-        let refused = r#"{"error":{"code":"wrong_task","message":"Nothing was recorded."}}"#;
-        let exec = ToolCall {
-            id: "call_0".to_owned(),
-            name: "exec".to_owned(),
-            arguments: r#"{"intent":"Read"}"#.to_owned(),
-        };
-        let reply = |calls: Vec<ToolCall>, results: Vec<String>| {
-            let results = calls
-                .iter()
-                .zip(results)
-                .map(|(call, content)| call.result(content, false, None));
-            let results = Message::tool_results(results.collect());
-            let calls = calls.into_iter().map(Block::ToolUse).collect();
-            [
-                Message {
-                    role: Role::Assistant,
-                    content: calls,
-                },
-                results,
-            ]
-        };
-        let mut thread = vec![Message::user("brief".to_owned())];
-
-        assert_eq!(outcome(&thread), None, "no end_task");
-        thread.extend(reply(vec![end_task("failure")], vec![recorded("failure")]));
-        assert_eq!(outcome(&thread), Some(Outcome::Failure));
-        thread.extend(reply(vec![end_task("success")], vec![refused.to_owned()]));
-        assert_eq!(outcome(&thread), Some(Outcome::Failure), "a refused call");
-        let both = vec![end_task("success"), exec];
-        thread.extend(reply(both, vec![recorded("success"), recorded("failure")]));
-        assert_eq!(outcome(&thread), Some(Outcome::Success), "by its place");
     }
 }

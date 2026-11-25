@@ -27,7 +27,6 @@ impl crate::SubAgentTools for Echo {
             answer: Some(message.clone()),
             failure: None,
             required_actions: Vec::new(),
-            outcome: None,
             steps: Vec::new(),
             next_cursor: String::new(),
         })
