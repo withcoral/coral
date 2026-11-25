@@ -35,7 +35,6 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       images: ${{ steps.filter.outputs.images }}
       desktop-app: ${{ steps.filter.outputs.desktop-app }}
-      chart: ${{ steps.filter.outputs.chart }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -82,9 +81,6 @@ jobs:
             # only ones that name their inputs. desktop.yml also runs nightly.
             desktop-app:
               - '{.github/**,apps/desktop/**}'
-            # The chart's gate reads only the chart and its own tooling.
-            chart:
-              - '{.github/workflows/ci.yml,charts/**,scripts/check-chart.sh,Makefile}'
 
   rust:
     name: Rust / Checks
@@ -348,7 +344,7 @@ jobs:
   chart:
     name: Chart / Checks
     needs: changes
-    if: ${{ needs.changes.outputs.chart != 'false' }}
+    if: ${{ needs.changes.outputs.code != 'false' }}
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
     env:

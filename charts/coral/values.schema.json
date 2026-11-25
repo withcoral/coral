@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -65,19 +65,19 @@
       ],
       "properties": {
         "databaseUrl": {
-          "$ref": "#/$defs/secret"
+          "$ref": "#/definitions/secret"
         },
         "credentialsKey": {
-          "$ref": "#/$defs/secret"
+          "$ref": "#/definitions/secret"
         },
         "sessionSigningKey": {
-          "$ref": "#/$defs/secret"
+          "$ref": "#/definitions/secret"
         },
         "oidcClientSecret": {
-          "$ref": "#/$defs/secret"
+          "$ref": "#/definitions/secret"
         },
         "webSessionSecret": {
-          "$ref": "#/$defs/secret"
+          "$ref": "#/definitions/secret"
         },
         "license": {
           "type": "object",
@@ -139,14 +139,14 @@
       ],
       "properties": {
         "image": {
-          "$ref": "#/$defs/image"
+          "$ref": "#/definitions/image"
         },
         "replicas": {
           "type": "integer",
           "minimum": 0
         },
         "resources": {
-          "$ref": "#/$defs/resources"
+          "$ref": "#/definitions/resources"
         },
         "probes": {
           "type": "object",
@@ -158,13 +158,13 @@
           ],
           "properties": {
             "startup": {
-              "$ref": "#/$defs/probe"
+              "$ref": "#/definitions/probe"
             },
             "readiness": {
-              "$ref": "#/$defs/probe"
+              "$ref": "#/definitions/probe"
             },
             "liveness": {
-              "$ref": "#/$defs/probe"
+              "$ref": "#/definitions/probe"
             }
           }
         }
@@ -181,14 +181,14 @@
       ],
       "properties": {
         "image": {
-          "$ref": "#/$defs/image"
+          "$ref": "#/definitions/image"
         },
         "replicas": {
           "type": "integer",
           "minimum": 0
         },
         "resources": {
-          "$ref": "#/$defs/resources"
+          "$ref": "#/definitions/resources"
         },
         "probes": {
           "type": "object",
@@ -199,10 +199,10 @@
           ],
           "properties": {
             "readiness": {
-              "$ref": "#/$defs/probe"
+              "$ref": "#/definitions/probe"
             },
             "liveness": {
-              "$ref": "#/$defs/probe"
+              "$ref": "#/definitions/probe"
             }
           }
         },
@@ -243,13 +243,13 @@
           "minimum": 0
         },
         "token": {
-          "$ref": "#/$defs/secret"
+          "$ref": "#/definitions/secret"
         },
         "previousToken": {
-          "$ref": "#/$defs/secret"
+          "$ref": "#/definitions/secret"
         },
         "resources": {
-          "$ref": "#/$defs/resources"
+          "$ref": "#/definitions/resources"
         },
         "probes": {
           "type": "object",
@@ -260,17 +260,17 @@
           ],
           "properties": {
             "readiness": {
-              "$ref": "#/$defs/probe"
+              "$ref": "#/definitions/probe"
             },
             "liveness": {
-              "$ref": "#/$defs/probe"
+              "$ref": "#/definitions/probe"
             }
           }
         }
       }
     }
   },
-  "$defs": {
+  "definitions": {
     "secret": {
       "type": "object",
       "additionalProperties": false,
