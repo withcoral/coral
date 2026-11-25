@@ -454,7 +454,7 @@ impl PreparedServerBuilder {
             clock: Arc::clone(&clock),
             policy,
             runtime_limits: deployment_config.runtime_limits(),
-            sub_agent: deployment_config.configures_sub_agent(),
+            sub_agent: deployment_config.has_sub_agent(),
             human_interface: deployment_config.human_interface().clone(),
             credentials: CredentialParts {
                 vault,

@@ -14,6 +14,7 @@ use std::sync::Arc;
 use coral_db::Database;
 use coral_provider::ProviderModule;
 use coral_search::SearchIndex;
+use coral_telemetry::safe;
 use coral_workspace::{ChangeContext, RequestId, Workspace, WorkspaceDisplayName, WorkspaceModule};
 
 use crate::Error;
@@ -73,6 +74,23 @@ impl WorkspaceWorkflow {
         transaction.commit().await?;
         for provider in installed {
             crate::providers::notify(&self.search, provider);
+        }
+        // A Workspace is created with the base catalog. While the Organization
+        // has a Sub-agent model, the update gives it the Sub-agent's Tools,
+        // with their rule. One that fails waits for the next update.
+        let updated = crate::providers::update_builtin_catalogs(
+            &self.providers,
+            &self.search,
+            Some(workspace.id()),
+            context.occurred_at(),
+        )
+        .await;
+        if let Err(error) = updated {
+            tracing::warn!(
+                coral.workspace.id = safe::id(workspace.id()),
+                error.type = safe::kind(error.code()),
+                "failed to read a new Workspace's Built-in catalog"
+            );
         }
         Ok(workspace)
     }

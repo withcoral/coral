@@ -17,7 +17,10 @@ pub mod account;
 #[cfg(test)]
 mod account_tests;
 mod coral_defined;
-pub use coral_defined::{CoralDefinedProvider, MissingCoralDefinedProvider};
+pub use coral_defined::{
+    CoralDefinedProvider, MissingCoralDefinedProvider, builtin_provider_in_transaction,
+    builtin_providers_in_transaction,
+};
 mod change;
 #[cfg(test)]
 mod coral_defined_tests;
@@ -122,6 +125,9 @@ pub struct ProviderModule {
     outbound_policy: coral_outbound::DestinationPolicy,
     consent: account::consent::Issuer,
     builtin_catalog: coral_catalog::BuiltinCatalog,
+    /// The catalog that a Workspace has while the Organization has a Sub-agent
+    /// model; none when this process has no Sub-agent.
+    sub_agent_catalog: Option<coral_catalog::BuiltinCatalog>,
     schema_graphs: coral_catalog::SchemaGraphCache,
     /// Measures how long a Publication has run since its request's instant.
     clock: Arc<dyn coral_db::Clock>,
@@ -185,6 +191,7 @@ impl ProviderModule {
             outbound_policy,
             consent: account::consent::Issuer::default(),
             builtin_catalog,
+            sub_agent_catalog: None,
             schema_graphs,
             clock: Arc::new(coral_db::SystemClock),
             #[cfg(test)]
@@ -199,6 +206,21 @@ impl ProviderModule {
     pub fn with_clock(mut self, clock: Arc<dyn coral_db::Clock>) -> Self {
         self.clock = clock;
         self
+    }
+
+    /// Serves `catalog` in place of the Built-in catalog while the
+    /// Organization has a Sub-agent model.
+    #[must_use]
+    pub fn with_sub_agent_catalog(mut self, catalog: coral_catalog::BuiltinCatalog) -> Self {
+        self.sub_agent_catalog = Some(catalog);
+        self
+    }
+
+    /// The database that this Module's transactions open on, for a workflow
+    /// that joins one.
+    #[must_use]
+    pub fn database(&self) -> &Arc<Database> {
+        &self.database
     }
 
     /// Reads the clock as work that outlives its request's instant begins.
@@ -250,6 +272,7 @@ impl ProviderModule {
             consent: account::consent::Issuer::default(),
             builtin_catalog: coral_catalog::BuiltinCatalog::running()
                 .expect("the built-in catalog prepares"),
+            sub_agent_catalog: None,
             schema_graphs: coral_catalog::SchemaGraphCache::with_default_budget(),
             clock: Arc::new(coral_db::SystemClock),
             publication_observer,

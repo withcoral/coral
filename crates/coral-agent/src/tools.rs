@@ -202,6 +202,7 @@ impl From<Error> for SubAgentError {
                 field: "cursor",
                 reason: "belongs to another turn of the agent",
             },
+            Error::Model(refusal) => Self::Unavailable(refusal.text()),
             Error::Task(error) => match error.into_database_error() {
                 Ok(database) => Self::Host(database.into()),
                 Err(_refused) => Self::Unavailable("you can no longer use the task of this run"),

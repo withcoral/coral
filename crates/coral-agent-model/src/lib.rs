@@ -3,9 +3,13 @@
 //!
 //! # Interface
 //!
-//! [`AgentModels`] reads, sets, changes and removes the model. Every method
-//! denies a caller who is not an enabled Organization Owner.
-//! One validation, inside them, checks the [`EnteredSettings`].
+//! [`AgentModels`] reads, sets, changes and removes the model, and denies a
+//! caller who is not an enabled Organization Owner. One validation, inside
+//! them, checks the [`EnteredSettings`]. A change joins its caller's
+//! transaction, which turns the Sub-agent off in every Workspace when the
+//! model's id changes. [`AgentModels::read_for_workspace`] shows the model to
+//! a Workspace's Owner, and [`AgentModels::active_in_transaction`] is the
+//! model as a Turn uses it.
 //!
 //! # Invariants
 //!
@@ -29,7 +33,9 @@ mod settings;
 #[cfg(test)]
 mod tests;
 
-pub use agent_models::{AgentModel, AgentModels, ApiKeyChange};
+pub use agent_models::{
+    ActiveModel, AgentModel, AgentModels, ApiKeyChange, ModelChange, current_id_in_transaction,
+};
 pub use error::{Error, InvalidSetting};
 pub use settings::{
     CONTEXT_WINDOW_MIN, EnteredSettings, ModelProtocol, ModelSettings, REQUEST_ARG_NAMES,

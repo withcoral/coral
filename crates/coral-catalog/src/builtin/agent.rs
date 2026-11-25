@@ -39,12 +39,12 @@ pub(super) fn agent_definition() -> Definition {
         key: BuiltinTool::Agent.key(),
         summary: "Delegate data work to one of Coral's agents",
         presentation: ToolPresentation::new(
-            Some("Agent".to_string()),
+            Some("Sub-agent".to_string()),
             "Delegate data work, reads and writes, to one of Coral's agents. It runs programs \
              with your permissions, in the task of this run."
                 .to_string(),
             false,
-            vec!["Agents".to_string()],
+            vec!["Sub-agent".to_string()],
             Some(AGENT_GUIDANCE.to_string()),
         ),
         // Not read-only: it starts work. That work is the caller's own, and
@@ -62,12 +62,12 @@ pub(super) fn cancel_definition() -> Definition {
         key: BuiltinTool::CancelAgent.key(),
         summary: "Stop one of the agents you started",
         presentation: ToolPresentation::new(
-            Some("Cancel agent".to_string()),
+            Some("Cancel sub-agent".to_string()),
             "Stop one of the agents you started: its turn and its unfinished runs. It returns \
              the agent as coral.agent does."
                 .to_string(),
             false,
-            vec!["Agents".to_string()],
+            vec!["Sub-agent".to_string()],
             None,
         ),
         hints: ToolHints::new(Some(false), Some(true), Some(true), Some(false)),

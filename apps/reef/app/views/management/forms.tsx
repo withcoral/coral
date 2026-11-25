@@ -222,7 +222,7 @@ interface ActionDialogProps {
   triggerSize?: ButtonSize
   /** Overrides the opening button's look, as for a destructive action repeated down a list. */
   triggerVariant?: ButtonVariant
-  finalFocus?: React.RefObject<HTMLElement | null>
+  finalFocus?: Dialog.PopupProps['finalFocus']
   /**
    * Asks again in a stacked dialog before the form submits, as for a change that
    * takes something away. Its button submits the form.

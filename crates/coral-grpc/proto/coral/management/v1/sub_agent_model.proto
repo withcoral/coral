@@ -3,9 +3,11 @@ package coral.management.v1;
 
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
+import "coral/management/v1/policy.proto";
 
 // The one model that the Organization's Sub-agents use. Only an Organization
-// Owner can read or change it.
+// Owner can read or change it. A Workspace Owner reads where it sends data, and
+// turns `coral.agent` on for their Workspace.
 service SubAgentModelService {
   // Reads the model, when one is set.
   rpc GetSubAgentModel(GetSubAgentModelRequest) returns (GetSubAgentModelResponse) {
@@ -17,6 +19,12 @@ service SubAgentModelService {
   rpc UpdateSubAgentModel(UpdateSubAgentModelRequest) returns (SubAgentModel);
   // Removes the model, and its API key, with an exact etag.
   rpc DeleteSubAgentModel(DeleteSubAgentModelRequest) returns (google.protobuf.Empty);
+  // Reads what a Workspace Owner agrees to by turning `coral.agent` on.
+  rpc GetWorkspaceSubAgentModel(GetWorkspaceSubAgentModelRequest) returns (WorkspaceSubAgentModel) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+  // Turns `coral.agent` on in one Workspace, for the model its Owner was shown.
+  rpc TurnOnSubAgent(TurnOnSubAgentRequest) returns (TurnOnSubAgentResponse);
 }
 
 // Asks for the model.
@@ -82,6 +90,36 @@ message SubAgentModelSettings {
   optional uint32 context_window = 4;
   // What Coral merges into each request: a JSON object, or empty for none.
   string request_args_json = 5;
+}
+
+// Asks what a Workspace Owner agrees to.
+message GetWorkspaceSubAgentModelRequest {
+  // The Workspace, as `workspaces/{workspace}`. The caller must be its Owner.
+  string workspace = 1;
+}
+
+// The model as a Workspace Owner sees it before they turn `coral.agent` on.
+message WorkspaceSubAgentModel {
+  // The id to name in `TurnOnSubAgent`.
+  string id = 1;
+  // What an Organization Owner set.
+  SubAgentModelSettings settings = 2;
+}
+
+// Turns `coral.agent` on.
+message TurnOnSubAgentRequest {
+  // The Workspace, as `workspaces/{workspace}`. The caller must be its Owner.
+  string workspace = 1;
+  // The id of the model that the Owner was shown.
+  string model_id = 2;
+  // Enabled, or approval required. Not a way to disable the Tool.
+  ToolAccessState access_state = 3;
+}
+
+// The state that `coral.agent` has now.
+message TurnOnSubAgentResponse {
+  // The committed state.
+  ToolAccessState access_state = 1;
 }
 
 // The wire protocol that a model's endpoint speaks.

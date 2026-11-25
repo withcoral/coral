@@ -5,7 +5,10 @@ use std::sync::Arc;
 use coral_credentials::{CredentialVault, Secret};
 use coral_db::{Database, RowLock, Transaction, UnixNanos, Version};
 use coral_outbound::DestinationPolicy;
-use coral_workspace::{AuthenticatedUser, ChangeContext, IfMatch, OrganizationModule, UserId};
+use coral_workspace::{
+    AuthenticatedUser, ChangeContext, IfMatch, OrganizationModule, UserId, WorkspaceAction,
+    WorkspaceId, WorkspaceModule,
+};
 use uuid::Uuid;
 
 use crate::error::Error;
@@ -64,6 +67,17 @@ impl AgentModel {
     }
 }
 
+/// The model as a Turn uses it: its settings, and its API key opened.
+#[derive(Debug)]
+pub struct ActiveModel {
+    /// Names where the model's requests go.
+    pub id: Uuid,
+    /// What the Owner set, but the key.
+    pub settings: ModelSettings,
+    /// The API key, when one is stored.
+    pub api_key: Option<Secret>,
+}
+
 /// What a change does to the stored API key.
 #[derive(Debug)]
 pub enum ApiKeyChange {
@@ -75,6 +89,15 @@ pub enum ApiKeyChange {
     Clear,
 }
 
+/// A model after a change.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelChange {
+    /// The model as it is stored now.
+    pub model: AgentModel,
+    /// Whether the change issued a new id, which no Workspace agreed to.
+    pub moved: bool,
+}
+
 /// Reads and changes the model, for an Organization Owner.
 #[derive(Clone)]
 pub struct AgentModels {
@@ -84,6 +107,7 @@ pub struct AgentModels {
 struct Inner {
     database: Arc<Database>,
     organization: OrganizationModule,
+    workspaces: WorkspaceModule,
     vault: CredentialVault,
     policy: DestinationPolicy,
 }
@@ -96,6 +120,7 @@ impl AgentModels {
         Self {
             inner: Arc::new(Inner {
                 organization: OrganizationModule::new(Arc::clone(&database)),
+                workspaces: WorkspaceModule::new(Arc::clone(&database)),
                 database,
                 vault,
                 policy,
@@ -119,21 +144,78 @@ impl AgentModels {
         Ok(stored.map(|stored| stored.model))
     }
 
-    /// Sets the model of an Organization that has none.
+    /// The model, for a Workspace Owner to see what they agree to by turning
+    /// `coral.agent` on. It shows them no key, and nothing else of the
+    /// Organization.
+    ///
+    /// # Errors
+    ///
+    /// Denies a caller who is not the Workspace's Owner, and returns
+    /// [`Error::WorkspaceArchived`] for an archived one, or [`Error::NotSet`]
+    /// while the Organization has no model.
+    pub async fn read_for_workspace(
+        &self,
+        actor: &AuthenticatedUser,
+        workspace_id: &WorkspaceId,
+    ) -> Result<AgentModel, Error> {
+        let mut tx = self.inner.database.begin_read_snapshot().await?;
+        let configure = WorkspaceAction::Configure;
+        self.inner
+            .workspaces
+            .check_in_transaction(&mut tx, actor, workspace_id, configure)
+            .await?;
+        let stored = repository::find(&mut tx, RowLock::None).await?;
+        tx.commit().await?;
+        stored.map(|stored| stored.model).ok_or(Error::NotSet)
+    }
+
+    /// The model as a Turn uses it, or `None` while the Organization has none.
+    /// The caller owns the transaction, and decides whether the Workspace may
+    /// use the model.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence failure, [`Error::CorruptData`] for a row that is
+    /// not what Coral writes, or [`Error::Sealing`] for a key that does not
+    /// open for the model it is stored with.
+    pub async fn active_in_transaction(
+        &self,
+        tx: &mut Transaction<'_>,
+    ) -> Result<Option<ActiveModel>, Error> {
+        let Some(stored) = repository::find(tx, RowLock::None).await? else {
+            return Ok(None);
+        };
+        let model = stored.model;
+        let record = key_record(model.id, &model.settings.base_url);
+        let open = |sealed: String| {
+            let opened = self.inner.vault.open_sealed(&record, &sealed);
+            let opened = opened.map_err(|_cryptography| Error::Sealing)?;
+            Secret::new(opened.to_string()).map_err(|_invalid| Error::Sealing)
+        };
+        Ok(Some(ActiveModel {
+            id: model.id,
+            settings: model.settings,
+            api_key: stored.sealed_api_key.map(open).transpose()?,
+        }))
+    }
+
+    /// Sets the model of an Organization that has none. The caller owns the
+    /// transaction, and turns the Sub-agent off everywhere in it.
     ///
     /// # Errors
     ///
     /// Denies a caller who is not an enabled Organization Owner, before it
     /// checks the settings. Returns [`Error::Invalid`] with the setting to
-    /// correct, and [`Error::AlreadySet`] when there is a model. All change
-    /// nothing.
-    pub async fn set(
+    /// correct, and [`Error::AlreadySet`] when there is a model. Do not commit
+    /// the transaction after an error.
+    pub async fn set_in_transaction(
         &self,
+        tx: &mut Transaction<'_>,
         context: &ChangeContext,
         entered: &EnteredSettings,
         api_key: Option<Secret>,
     ) -> Result<AgentModel, Error> {
-        let mut tx = self.begin_change(context).await?;
+        self.hold_owner(tx, context).await?;
         let settings = ModelSettings::parse(self.inner.policy, entered)?;
         let stored = self.sealed(
             context,
@@ -142,32 +224,35 @@ impl AgentModels {
             settings,
             api_key.as_ref(),
         )?;
-        if !repository::insert(&mut tx, &stored).await? {
+        if !repository::insert(tx, &stored).await? {
             return Err(Error::AlreadySet);
         }
-        tx.commit().await?;
         Ok(stored.model)
     }
 
     /// Changes the model that the caller read at `if_match`. A new base URL
-    /// issues a new id and drops the key that was stored.
+    /// issues a new id and drops the key that was stored. The caller owns the
+    /// transaction, and turns the Sub-agent off everywhere in it when
+    /// [`ModelChange::moved`] says so.
     ///
     /// # Errors
     ///
     /// Denies a caller who is not an enabled Organization Owner, before it
     /// checks the settings. Returns [`Error::Invalid`] with the setting to
     /// correct, [`Error::NotSet`] when there is no model and
-    /// [`Error::EtagMismatch`] when it changed since. All change nothing.
-    pub async fn change(
+    /// [`Error::EtagMismatch`] when it changed since. Do not commit the
+    /// transaction after an error.
+    pub async fn change_in_transaction(
         &self,
+        tx: &mut Transaction<'_>,
         context: &ChangeContext,
         if_match: &IfMatch,
         entered: &EnteredSettings,
         api_key: ApiKeyChange,
-    ) -> Result<AgentModel, Error> {
-        let mut tx = self.begin_change(context).await?;
+    ) -> Result<ModelChange, Error> {
+        self.hold_owner(tx, context).await?;
         let settings = ModelSettings::parse(self.inner.policy, entered)?;
-        let current = held(&mut tx, if_match).await?;
+        let current = held(tx, if_match).await?;
         let moved = settings.base_url != current.model.settings.base_url;
         let (id, version) = if moved {
             (Uuid::new_v4(), Version::FIRST)
@@ -188,34 +273,44 @@ impl AgentModels {
             next.model.has_api_key = current.sealed_api_key.is_some();
             next.sealed_api_key.clone_from(&current.sealed_api_key);
         }
-        repository::replace(&mut tx, &current.model, &next).await?;
-        tx.commit().await?;
-        Ok(next.model)
+        repository::replace(tx, &current.model, &next).await?;
+        Ok(ModelChange {
+            model: next.model,
+            moved,
+        })
     }
 
-    /// Removes the model that the caller read at `if_match`, and its key.
+    /// Removes the model that the caller read at `if_match`, and its key. The
+    /// caller owns the transaction, and turns the Sub-agent off everywhere in
+    /// it.
     ///
     /// # Errors
     ///
     /// Denies a caller who is not an enabled Organization Owner, and returns
     /// [`Error::NotSet`] when there is no model and [`Error::EtagMismatch`]
-    /// when it changed since. All change nothing.
-    pub async fn remove(&self, context: &ChangeContext, if_match: &IfMatch) -> Result<(), Error> {
-        let mut tx = self.begin_change(context).await?;
-        let current = held(&mut tx, if_match).await?;
-        repository::delete(&mut tx, &current.model).await?;
-        tx.commit().await?;
-        Ok(())
+    /// when it changed since. Do not commit the transaction after an error.
+    pub async fn remove_in_transaction(
+        &self,
+        tx: &mut Transaction<'_>,
+        context: &ChangeContext,
+        if_match: &IfMatch,
+    ) -> Result<(), Error> {
+        self.hold_owner(tx, context).await?;
+        let current = held(tx, if_match).await?;
+        repository::delete(tx, &current.model).await
     }
 
-    /// Opens a change that holds the actor's Organization Owner authority.
-    async fn begin_change(&self, context: &ChangeContext) -> Result<Transaction<'_>, Error> {
-        let mut tx = self.inner.database.begin().await?;
-        self.inner
+    /// Holds the actor's Organization Owner authority through the commit.
+    async fn hold_owner(
+        &self,
+        tx: &mut Transaction<'_>,
+        context: &ChangeContext,
+    ) -> Result<(), Error> {
+        let held = self
+            .inner
             .organization
-            .check_owner_in_transaction(&mut tx, context.actor())
-            .await?;
-        Ok(tx)
+            .check_owner_in_transaction(tx, context.actor());
+        Ok(held.await?)
     }
 
     /// The row of a model, with `api_key` sealed for its id and base URL.
@@ -256,6 +351,19 @@ async fn held(tx: &mut Transaction<'_>, if_match: &IfMatch) -> Result<StoredMode
     } else {
         Err(Error::EtagMismatch)
     }
+}
+
+/// The id of the Organization's model, or `None` while it has none, holding
+/// the model's row as `lock` says. It authorizes nobody: the caller decides.
+///
+/// # Errors
+///
+/// Returns a persistence failure.
+pub async fn current_id_in_transaction(
+    tx: &mut Transaction<'_>,
+    lock: RowLock,
+) -> Result<Option<Uuid>, coral_db::Error> {
+    repository::find_id(tx, lock).await
 }
 
 /// The record a model's API key is sealed for: its id and its base URL.

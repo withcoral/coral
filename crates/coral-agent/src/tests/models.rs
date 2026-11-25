@@ -3,18 +3,22 @@ use std::sync::Mutex;
 use super::*;
 
 /// A model that a test sets again while Turns run.
-struct SetModel(Mutex<Arc<ModelClient>>);
+struct SetModel(Mutex<FixedModel>);
 
 impl SetModel {
     fn set(&self, server: &MockServer) {
-        *self.0.lock().unwrap() = Arc::new(model_client(server));
+        *self.0.lock().unwrap() = FixedModel::new(model_client(server));
     }
 }
 
 #[async_trait::async_trait]
 impl ModelSource for SetModel {
-    async fn current(&self) -> Arc<ModelClient> {
-        Arc::clone(&self.0.lock().unwrap())
+    async fn current(&self, _workspace: &WorkspaceId) -> Result<TurnModel, ModelRefusal> {
+        Ok(self.0.lock().unwrap().0.clone())
+    }
+
+    async fn allows(&self, _workspace: &WorkspaceId, _id: uuid::Uuid) -> Result<(), ModelRefusal> {
+        Ok(())
     }
 }
 
@@ -41,7 +45,9 @@ async fn a_turn_keeps_its_model_and_the_next_one_uses_the_model_set_then() {
         .respond_with(reply("from the second"))
         .mount(&second)
         .await;
-    let model = Arc::new(SetModel(Mutex::new(Arc::new(model_client(&lead.model)))));
+    let model = Arc::new(SetModel(Mutex::new(FixedModel::new(model_client(
+        &lead.model,
+    )))));
     let (setter, to) = (model.clone(), second.clone());
     lead.model_answers(OneStep(std::sync::atomic::AtomicUsize::new(0), move || {
         setter.set(&to);

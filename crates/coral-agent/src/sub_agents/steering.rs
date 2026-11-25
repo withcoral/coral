@@ -120,7 +120,7 @@ impl SubAgents {
         sub_agent_id: &str,
         message: &str,
     ) -> Result<(), Error> {
-        let model = self.models.current().await;
+        let model = self.models.current(workspace_id).await?;
         let mut transaction = self.database.begin().await?;
         let task_id = repository::task_id(&mut transaction, workspace_id, sub_agent_id).await?;
         let task_id = task_id.ok_or(Error::SubAgentNotFound)?;

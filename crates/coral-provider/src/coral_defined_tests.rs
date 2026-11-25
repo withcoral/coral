@@ -624,7 +624,7 @@ impl BuiltinWorkspace {
     async fn boot(&self, served: &BuiltinCatalog, at: i64) -> Vec<crate::ProviderId> {
         let process = serving(&self.providers, served.clone());
         let mut updated = Vec::new();
-        for outdated in process.outdated_builtin_generations().await.unwrap() {
+        for outdated in process.outdated_builtin_generations(None).await.unwrap() {
             if process
                 .update_builtin_catalog(&outdated, UnixNanos::new(at))
                 .await
@@ -835,7 +835,7 @@ async fn two_processes_that_boot_together_activate_one_generation() {
         coral_catalog::SchemaGraphCache::with_default_budget(),
     );
     let [outdated] = first
-        .outdated_builtin_generations()
+        .outdated_builtin_generations(None)
         .await
         .unwrap()
         .try_into()

@@ -384,20 +384,38 @@ async fn prepare_access(
 }
 
 impl ProviderModule {
-    /// Lists the Built-in Providers' active Generations, across Workspaces and
-    /// in any state, that pin a catalog other than the one this process serves.
+    /// Lists the Built-in Providers' active Generations, of `workspace` or
+    /// across Workspaces, in any state, that pin a catalog other than the one
+    /// this process serves now: the Sub-agent's while the Organization has a
+    /// model, if this process has a Sub-agent.
     ///
     /// # Errors
     ///
     /// Returns a persistence failure, or corrupt data for a Generation that
     /// pins no well-formed catalog identity.
-    pub async fn outdated_builtin_generations(&self) -> Result<Vec<ActiveGeneration>, Error> {
+    pub async fn outdated_builtin_generations(
+        &self,
+        workspace: Option<&WorkspaceId>,
+    ) -> Result<Vec<ActiveGeneration>, Error> {
         let mut transaction = self.database.begin_read_snapshot().await?;
+        let served = self
+            .builtin_catalog_in_transaction(&mut transaction)
+            .await?
+            .clone();
+        let installed = match workspace {
+            Some(workspace) => {
+                provider_repository::workspace_builtin_generation(&mut transaction, workspace)
+                    .await?
+                    .into_iter()
+                    .collect()
+            }
+            None => provider_repository::builtin_active_generations(&mut transaction).await?,
+        };
         let mut outdated = Vec::new();
-        for active in provider_repository::builtin_active_generations(&mut transaction).await? {
+        for active in installed {
             if !coral_catalog::builtin_generation_pins_in_transaction(
                 &mut transaction,
-                &self.builtin_catalog,
+                &served,
                 active.generation_id(),
             )
             .await?
@@ -409,38 +427,93 @@ impl ProviderModule {
         Ok(outdated)
     }
 
-    /// Replaces `outdated` with a Generation of the catalog this process
-    /// serves, in its own transaction, with Coral as the recorded actor. The
-    /// Provider keeps its state, in an active or an archived Workspace.
-    /// `false` means the Provider is gone or another process replaced
-    /// `outdated` first, and nothing changes.
+    /// The Built-in catalog that this process serves now. A Workspace is
+    /// installed with the base catalog, and the update that gives it the
+    /// Sub-agent's Tools writes their rule in the same transaction.
+    async fn builtin_catalog_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<&coral_catalog::BuiltinCatalog, Error> {
+        match &self.sub_agent_catalog {
+            Some(catalog) if sub_agent_model_is_set(transaction).await? => Ok(catalog),
+            _ => Ok(&self.builtin_catalog),
+        }
+    }
+
+    /// Whether this process now gives a Workspace the Built-in catalog that
+    /// holds the Sub-agent's Tools. A Workspace's own can lag behind.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence failure.
+    pub async fn serves_sub_agent_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<bool, Error> {
+        Ok(self.sub_agent_catalog.is_some() && sub_agent_model_is_set(transaction).await?)
+    }
+
+    /// [`Self::update_builtin_catalog_in_transaction`] in a transaction of its
+    /// own, for a test that writes no rule.
     ///
     /// # Errors
     ///
     /// Returns a persistence or corrupt-data failure.
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub async fn update_builtin_catalog(
         &self,
         outdated: &ActiveGeneration,
         occurred_at: UnixNanos,
     ) -> Result<Committed<bool>, Error> {
         let mut transaction = self.database.begin().await?;
+        let updated = self
+            .update_builtin_catalog_in_transaction(&mut transaction, outdated, occurred_at)
+            .await?;
+        transaction.commit().await?;
+        Ok(updated.map_or_else(
+            || Committed::unchanged(false),
+            |committed| {
+                let ((), search) = committed.into_parts();
+                Committed::new(true, search)
+            },
+        ))
+    }
+
+    /// Replaces `outdated` with a Generation of the catalog this process
+    /// serves now, with Coral as the recorded actor. The Provider keeps its
+    /// state, in an active or an archived Workspace. `None` means the
+    /// Provider is gone or another process replaced `outdated` first, and
+    /// nothing changes.
+    ///
+    /// The caller owns the transaction. It writes the Sub-agent's rule there
+    /// when the catalog holds its Tools, and hands the search change to
+    /// Universal Search after the commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence or corrupt-data failure. Do not commit the
+    /// transaction after one.
+    pub async fn update_builtin_catalog_in_transaction(
+        &self,
+        transaction: &mut Transaction<'_>,
+        outdated: &ActiveGeneration,
+        occurred_at: UnixNanos,
+    ) -> Result<Option<Committed<()>>, Error> {
         let Some(generation) = self
-            .replace_builtin_generation(&mut transaction, outdated, occurred_at)
+            .replace_builtin_generation(transaction, outdated, occurred_at)
             .await?
         else {
-            transaction.rollback().await?;
-            return Ok(Committed::unchanged(false));
+            return Ok(None);
         };
-        transaction.commit().await?;
-        Ok(Committed::new(
-            true,
+        Ok(Some(Committed::new(
+            (),
             SearchChange::Activated(ActivatedGeneration::new(
                 outdated.workspace_id().clone(),
                 outdated.provider_id().clone(),
                 generation,
                 Some(outdated.generation_id().clone()),
             )),
-        ))
+        )))
     }
 
     /// The Generation that replaced `outdated`, or `None` when another
@@ -468,9 +541,13 @@ impl ProviderModule {
         if stored.generation_id != *outdated.generation_id() {
             return Ok(None);
         }
+        let served = self
+            .builtin_catalog_in_transaction(transaction)
+            .await?
+            .clone();
         let generation = coral_catalog::publish_builtin_generation_in_transaction(
             transaction,
-            &self.builtin_catalog,
+            &served,
             occurred_at,
         )
         .await?;
@@ -501,4 +578,41 @@ impl ProviderModule {
         .await?;
         Ok(Some(generation))
     }
+}
+
+async fn sub_agent_model_is_set(transaction: &mut Transaction<'_>) -> Result<bool, Error> {
+    let model =
+        coral_agent_model::current_id_in_transaction(transaction, coral_db::RowLock::None).await?;
+    Ok(model.is_some())
+}
+
+/// Every Workspace's Built-in Provider, in any state. The caller owns the
+/// transaction and the authority to read across Workspaces.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-data failure.
+pub async fn builtin_providers_in_transaction(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<(WorkspaceId, ProviderId)>, Error> {
+    let active = provider_repository::builtin_active_generations(transaction).await?;
+    Ok(active
+        .into_iter()
+        .map(|active| (active.workspace_id().clone(), active.provider_id().clone()))
+        .collect())
+}
+
+/// The Workspace's Built-in Provider. The caller owns the transaction and the
+/// authority to read it.
+///
+/// # Errors
+///
+/// Returns a persistence or corrupt-data failure.
+pub async fn builtin_provider_in_transaction(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<Option<ProviderId>, Error> {
+    let active =
+        provider_repository::workspace_builtin_generation(transaction, workspace_id).await?;
+    Ok(active.map(|active| active.provider_id().clone()))
 }

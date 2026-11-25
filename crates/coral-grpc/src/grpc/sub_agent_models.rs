@@ -1,33 +1,36 @@
 use super::status::{self, invalid, safe_status};
-use super::workspaces::{change, timestamp};
-use super::{GrpcServices, management as wire};
+use super::workspaces::{change, timestamp, workspace_id};
+use super::{GrpcServices, management as wire, policies};
 use coral_agent_model::{
-    AgentModel, ApiKeyChange, EnteredSettings, Error, InvalidSetting, ModelProtocol,
+    AgentModel, ApiKeyChange, EnteredSettings, Error, InvalidSetting, ModelProtocol, ModelSettings,
 };
 use coral_credentials::Secret;
 use coral_workspace::IfMatch;
 use tonic::{Code, Request, Response, Status};
 
+fn settings(settings: &ModelSettings) -> wire::SubAgentModelSettings {
+    wire::SubAgentModelSettings {
+        protocol: match settings.protocol() {
+            ModelProtocol::ChatCompletions => wire::SubAgentModelProtocol::ChatCompletions,
+            ModelProtocol::OpenAiResponses => wire::SubAgentModelProtocol::OpenaiResponses,
+            ModelProtocol::Anthropic => wire::SubAgentModelProtocol::Anthropic,
+        }
+        .into(),
+        base_url: settings.base_url().to_owned(),
+        model: settings.model().to_owned(),
+        context_window: settings.context_window(),
+        request_args_json: if settings.request_args().is_empty() {
+            String::new()
+        } else {
+            serde_json::Value::Object(settings.request_args().clone()).to_string()
+        },
+    }
+}
+
 fn model(model: &AgentModel) -> wire::SubAgentModel {
-    let settings = model.settings();
     wire::SubAgentModel {
         id: model.id().to_string(),
-        settings: Some(wire::SubAgentModelSettings {
-            protocol: match settings.protocol() {
-                ModelProtocol::ChatCompletions => wire::SubAgentModelProtocol::ChatCompletions,
-                ModelProtocol::OpenAiResponses => wire::SubAgentModelProtocol::OpenaiResponses,
-                ModelProtocol::Anthropic => wire::SubAgentModelProtocol::Anthropic,
-            }
-            .into(),
-            base_url: settings.base_url().to_owned(),
-            model: settings.model().to_owned(),
-            context_window: settings.context_window(),
-            request_args_json: if settings.request_args().is_empty() {
-                String::new()
-            } else {
-                serde_json::Value::Object(settings.request_args().clone()).to_string()
-            },
-        }),
+        settings: Some(settings(model.settings())),
         has_api_key: model.has_api_key(),
         changed_by: format!("users/{}", model.changed_by()),
         change_time: Some(timestamp(model.changed_at())),
@@ -52,6 +55,7 @@ fn error(error: &Error) -> Status {
             },
         ),
         Error::AlreadySet => (Code::AlreadyExists, "SUB_AGENT_MODEL_ALREADY_SET"),
+        Error::WorkspaceArchived => (Code::FailedPrecondition, "WORKSPACE_ARCHIVED"),
         Error::EtagMismatch => (Code::Aborted, "ETAG_MISMATCH"),
         Error::Sealing => return status::internal(),
         Error::Database(_) | Error::CorruptData(_) | Error::Unavailable => {
@@ -90,7 +94,7 @@ impl wire::sub_agent_model_service_server::SubAgentModelService for GrpcServices
         request: Request<wire::GetSubAgentModelRequest>,
     ) -> Result<Response<wire::GetSubAgentModelResponse>, Status> {
         let actor = self.management_user(&request).await?;
-        let read = self.agent_models.read(&actor).await;
+        let read = self.sub_agent_models.read(&actor).await;
         let read = read.map_err(|failure| error(&failure))?;
         Ok(Response::new(wire::GetSubAgentModelResponse {
             model: read.as_ref().map(model),
@@ -106,7 +110,10 @@ impl wire::sub_agent_model_service_server::SubAgentModelService for GrpcServices
         let input = request.into_inner();
         let settings = entered(input.settings)?;
         let key = input.api_key.map(api_key).transpose()?;
-        let set = self.agent_models.set(&change(actor), &settings, key).await;
+        let set = self
+            .sub_agent_models
+            .set(&change(actor), &settings, key)
+            .await;
         let set = set.map_err(|failure| error(&failure))?;
         Ok(Response::new(model(&set)))
     }
@@ -127,7 +134,7 @@ impl wire::sub_agent_model_service_server::SubAgentModelService for GrpcServices
         };
         let context = change(actor);
         let changed = self
-            .agent_models
+            .sub_agent_models
             .change(&context, &if_match, &settings, key);
         let changed = changed.await.map_err(|failure| error(&failure))?;
         Ok(Response::new(model(&changed)))
@@ -140,8 +147,49 @@ impl wire::sub_agent_model_service_server::SubAgentModelService for GrpcServices
     ) -> Result<Response<()>, Status> {
         let actor = self.management_user(&request).await?;
         let if_match = IfMatch::parse(&request.get_ref().etag).map_err(super::workspaces::error)?;
-        let removed = self.agent_models.remove(&change(actor), &if_match).await;
+        let removed = self
+            .sub_agent_models
+            .remove(&change(actor), &if_match)
+            .await;
         removed.map_err(|failure| error(&failure))?;
         Ok(Response::new(()))
+    }
+
+    #[tracing::instrument(skip_all, name = "coral.private.get_workspace_sub_agent_model")]
+    async fn get_workspace_sub_agent_model(
+        &self,
+        request: Request<wire::GetWorkspaceSubAgentModelRequest>,
+    ) -> Result<Response<wire::WorkspaceSubAgentModel>, Status> {
+        let actor = self.management_user(&request).await?;
+        let workspace = workspace_id(&request.get_ref().workspace)?;
+        let read = self
+            .sub_agent_models
+            .read_for_workspace(&actor, &workspace)
+            .await
+            .map_err(|failure| error(&failure))?;
+        Ok(Response::new(wire::WorkspaceSubAgentModel {
+            id: read.id().to_string(),
+            settings: Some(settings(read.settings())),
+        }))
+    }
+
+    #[tracing::instrument(skip_all, name = "coral.private.turn_on_sub_agent")]
+    async fn turn_on_sub_agent(
+        &self,
+        request: Request<wire::TurnOnSubAgentRequest>,
+    ) -> Result<Response<wire::TurnOnSubAgentResponse>, Status> {
+        let context = change(self.management_user(&request).await?);
+        let input = request.into_inner();
+        let workspace = workspace_id(&input.workspace)?;
+        let seen = input.model_id.parse().map_err(|_not_a_uuid| invalid())?;
+        let state = policies::access(input.access_state)?;
+        let decision = self
+            .policies
+            .turn_on_sub_agent(&context, &workspace, seen, state)
+            .await
+            .map_err(policies::error)?;
+        Ok(Response::new(wire::TurnOnSubAgentResponse {
+            access_state: policies::access_state(decision.access_state()).into(),
+        }))
     }
 }

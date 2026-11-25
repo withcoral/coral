@@ -12,7 +12,6 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::{
     Block, Message, ModelCall, ModelClient, ModelError, Protocol, Reply, Role, ToolCall, Usage,
 };
-use crate::effort_args;
 use crate::prompt::ToolText;
 
 const MODEL: &str = "test-model";
@@ -43,6 +42,25 @@ fn client_for(server: &MockServer, protocol: Protocol, api_key: Option<&str>) ->
             Map::new(),
         )
     }
+}
+
+/// Args that set how much a model reasons on each protocol.
+fn effort_args(protocol: Protocol, effort: Option<&str>) -> Map<String, Value> {
+    let Some(effort) = effort else {
+        return Map::new();
+    };
+    let args = match protocol {
+        Protocol::ChatCompletions => json!({"reasoning_effort": effort}),
+        Protocol::OpenAiResponses => json!({"reasoning": {"effort": effort}}),
+        Protocol::Anthropic if effort == "none" => json!({"thinking": {"type": "disabled"}}),
+        Protocol::Anthropic => match effort.parse::<u32>() {
+            Ok(budget) => json!({"thinking": {"type": "enabled", "budget_tokens": budget}}),
+            Err(_word) => {
+                json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": effort}})
+            }
+        },
+    };
+    args.as_object().cloned().unwrap()
 }
 
 fn client(server: &MockServer, api_key: Option<&str>) -> ModelClient {

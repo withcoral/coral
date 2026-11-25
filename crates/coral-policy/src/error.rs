@@ -17,6 +17,13 @@ pub enum Error {
         /// Each path that names a Built-in Tool.
         builtin: Vec<String>,
     },
+    /// `coral.agent` is off, and only [`crate::ToolPolicyModule::turn_on_sub_agent`]
+    /// turns it on: a Workspace Owner must see where its data goes.
+    #[error("turning the Sub-agent on needs the Workspace Owner's consent")]
+    SubAgentConsentRequired,
+    /// The Sub-agent's model is not the one that the Workspace Owner saw.
+    #[error("the Sub-agent's model changed")]
+    SubAgentModelChanged,
     /// A persisted row does not decode to the closed domain model.
     #[error("database contains corrupt Tool policy data: {0}")]
     CorruptData(String),
@@ -49,6 +56,8 @@ impl Error {
             Self::InvalidBatch
             | Self::ToolNotFound
             | Self::RefusedToolPaths { .. }
+            | Self::SubAgentConsentRequired
+            | Self::SubAgentModelChanged
             | Self::CorruptData(_)
             | Self::EventFields(_) => None,
         }
@@ -86,6 +95,8 @@ impl Error {
             | Self::InvalidBatch
             | Self::ToolNotFound
             | Self::RefusedToolPaths { .. }
+            | Self::SubAgentConsentRequired
+            | Self::SubAgentModelChanged
             | Self::CorruptData(_)
             | Self::EventFields(_) => None,
         }

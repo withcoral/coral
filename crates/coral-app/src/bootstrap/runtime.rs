@@ -271,13 +271,8 @@ pub enum McpStartError {
     #[error("MCP authentication configuration is missing or invalid")]
     MissingAuthentication,
     /// The registered Sub-agent did not start.
-    #[error("the Sub-agent of config section `{section_name}` did not start: {error}")]
-    SubAgent {
-        /// The config section the Sub-agent is built from.
-        section_name: &'static str,
-        /// Why its factory could not build it.
-        error: Box<dyn std::error::Error + Send + Sync>,
-    },
+    #[error("the Sub-agent did not start: {0}")]
+    SubAgent(Box<dyn std::error::Error + Send + Sync>),
     /// The listener did not bind or serve.
     #[error(transparent)]
     Http(#[from] McpHttpError),
@@ -559,25 +554,26 @@ async fn start_mcp_http(
     Ok(server)
 }
 
-/// Wires the registered factory's Sub-agent into the Runs of `modules`, when
-/// the config file has the factory's section.
+/// Wires the registered factory's Sub-agent into the Runs of `modules`.
 fn with_registered_sub_agent(
     modules: McpModules,
     settings: &ServeSettings,
     grpc: &GrpcServer,
     clock: &Arc<dyn coral_db::Clock>,
 ) -> Result<McpModules, McpStartError> {
-    let Some(configured) = &settings.sub_agent else {
+    let Some(factory) = &settings.sub_agent_factory else {
         return Ok(modules);
     };
-    let tools = configured.build(SubAgentDependencies {
-        database: grpc.engine().database(),
-        modules: modules.clone(),
-        outbound_policy: settings.outbound_policy(),
-        env: Arc::new(super::env_var),
-        clock: Arc::clone(clock),
-        stopping: grpc.engine().readiness().stopping(),
-    })?;
+    let tools = factory
+        .build(SubAgentDependencies {
+            database: grpc.engine().database(),
+            agent_models: grpc.engine().agent_models(),
+            modules: modules.clone(),
+            outbound_policy: settings.outbound_policy(),
+            clock: Arc::clone(clock),
+            stopping: grpc.engine().readiness().stopping(),
+        })
+        .map_err(McpStartError::SubAgent)?;
     modules.runs.set_sub_agent_tools(tools);
     Ok(modules)
 }

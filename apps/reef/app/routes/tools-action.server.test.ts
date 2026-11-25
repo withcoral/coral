@@ -4,7 +4,7 @@ import { ConnectError, Code } from '@connectrpc/connect'
 import { authRouteTestArgs } from '@/auth/server-context.test-helper'
 import { ToolAccessState } from '@/generated/coral/management/v1/policy_pb'
 import { ProviderBlocker } from '@/generated/coral/management/v1/provider_pb'
-import { fakeManagement } from '@/lib/management.test-support'
+import { coralRefusal, fakeManagement } from '@/lib/management.test-support'
 import { action } from './tools'
 
 const mocks = vi.hoisted(() => ({
@@ -193,6 +193,25 @@ it('reports each tool on its own when one provider batch fails', async () => {
     },
   ])
   expect(result.data.message).toContain('1 tool not saved')
+})
+
+// Catches: a page that still shows coral.agent as on, after the model changed, saying only to
+// check the form when Coral refuses its change.
+it('says to turn coral.agent on separately when Coral asks for consent', async () => {
+  mocks.updateToolPolicies.mockRejectedValue(
+    coralRefusal(Code.FailedPrecondition, 'SUB_AGENT_CONSENT_REQUIRED'),
+  )
+  const result = (await post(policyForm([{ provider: providerA, tool: 'agent' }]))) as unknown as {
+    data: { tools: unknown[] }
+  }
+  expect(result.data.tools).toEqual([
+    {
+      provider: providerA,
+      tool: 'agent',
+      status: 'failed',
+      reason: 'The sub-agent is blocked. Turn it on separately.',
+    },
+  ])
 })
 
 // Catches: a lapsed sign-in in one batch reported as that tool's failure

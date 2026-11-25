@@ -106,6 +106,20 @@ pub(crate) async fn find(
     row.map(StoredModel::try_from).transpose()
 }
 
+/// The id of the stored model, holding its row as `lock` says. A row whose id
+/// is not a UUID reads as none, which turns the Sub-agent off.
+pub(crate) async fn find_id(
+    tx: &mut Transaction<'_>,
+    lock: RowLock,
+) -> Result<Option<Uuid>, coral_db::Error> {
+    let query = Query::select()
+        .column(SubAgentModels::Id)
+        .from(SubAgentModels::Table)
+        .to_owned();
+    let row: Option<(String,)> = tx.fetch_optional_locked(query, lock).await?;
+    Ok(row.and_then(|(id,)| Uuid::parse_str(&id).ok()))
+}
+
 /// What both writes store of the model, beside the singleton mark.
 fn stored_values(stored: &StoredModel) -> Result<[(SubAgentModels, SimpleExpr); 10], Error> {
     let StoredModel {

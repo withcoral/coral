@@ -22,7 +22,7 @@ impl SubAgents {
         tools: &[ToolText],
         thread: &mut Vec<ThreadEntry>,
     ) -> Result<Reply, TurnFailure> {
-        let model = &turn.model;
+        let model = &turn.model.client;
         let window = model.context_window();
         if is_near(system, tools, thread, window) {
             self.compact(turn, system, tools, thread, window).await?;
@@ -83,6 +83,7 @@ impl SubAgents {
         let request = [summary_request(previous, older, window)];
         let summarized = turn
             .model
+            .client
             .summarize(SUMMARIZER, &request, SUMMARY_MAX_TOKENS);
         let reply = match summarized.await {
             Ok(reply) if !reply.message.text().trim().is_empty() => reply,

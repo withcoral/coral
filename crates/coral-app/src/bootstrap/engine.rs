@@ -58,8 +58,8 @@ pub(crate) struct EngineParts {
     pub(crate) clock: Arc<dyn coral_db::Clock>,
     pub(crate) policy: coral_outbound::DestinationPolicy,
     pub(crate) runtime_limits: coral_run::RuntimeLimits,
-    /// Whether the deployment configures a Sub-agent, whose Tools the
-    /// built-in catalog then holds.
+    /// Whether this process has a Sub-agent, whose Tools a Workspace's
+    /// Built-in catalog then holds while the Organization has a model.
     pub(crate) sub_agent: bool,
     /// Reef's origin, where a Run's Built-in Tools link a person.
     pub(crate) human_interface: coral_mcp::HumanInterfaceUrl,
@@ -452,12 +452,10 @@ impl Engine {
             usage,
         } = parts;
         let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
-        let builtin_catalog = if sub_agent {
-            coral_catalog::BuiltinCatalog::with_sub_agent()
-        } else {
-            coral_catalog::BuiltinCatalog::running()
-        }
-        .map_err(|error| AppError::engine_boot(error.to_string()))?;
+        let prepared = |catalog: Result<_, coral_catalog::Error>| {
+            catalog.map_err(|error| AppError::engine_boot(error.to_string()))
+        };
+        let builtin_catalog = prepared(coral_catalog::BuiltinCatalog::running())?;
         let providers = coral_provider::ProviderModule::new(
             policy,
             database.clone(),
@@ -468,6 +466,12 @@ impl Engine {
             ),
         )
         .with_clock(clock.clone());
+        let providers = if sub_agent {
+            let catalog = prepared(coral_catalog::BuiltinCatalog::with_sub_agent())?;
+            providers.with_sub_agent_catalog(catalog)
+        } else {
+            providers
+        };
         let agent_models = coral_agent_model::AgentModels::new(
             database.clone(),
             credentials.vault.clone(),
@@ -563,6 +567,11 @@ impl Engine {
         Arc::clone(&self.modules.database)
     }
 
+    /// The model that the Organization's Sub-agents use.
+    pub(crate) fn agent_models(&self) -> coral_agent_model::AgentModels {
+        self.modules.agent_models.clone()
+    }
+
     /// The credential subsystem, which the Provider OAuth callback completes
     /// an Authorization in.
     pub(crate) fn accounts(&self) -> coral_provider::account::AccountModule {
@@ -642,7 +651,10 @@ impl Engine {
             releases: self.modules.releases.clone(),
             edition: self.modules.edition.clone(),
             usage: self.modules.usage.clone(),
-            agent_models: self.modules.agent_models.clone(),
+            sub_agent_models: coral_administration::SubAgentModelWorkflow::new(
+                self.modules.agent_models.clone(),
+                self.modules.provider_workflow.clone(),
+            ),
             secret_stores: coral_administration::SecretStoreAdministration::new(
                 coral_workspace::OrganizationModule::new(database.clone()),
                 workspaces.clone(),

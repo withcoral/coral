@@ -70,8 +70,8 @@ pub struct Dependencies {
     pub usage: Option<coral_usage::UsageData>,
     /// The Secret Stores the operator defined and their grants to Workspaces.
     pub secret_stores: coral_administration::SecretStoreAdministration,
-    /// The model setting for the Organization's Sub-agents.
-    pub agent_models: coral_agent_model::AgentModels,
+    /// The model that the Organization's Sub-agents use.
+    pub sub_agent_models: coral_administration::SubAgentModelWorkflow,
 }
 
 /// Resolved transport context supplied by application composition.
@@ -218,7 +218,7 @@ struct GrpcServices {
     edition: coral_edition::EditionInspection,
     usage: Option<coral_usage::UsageData>,
     secret_stores: coral_administration::SecretStoreAdministration,
-    agent_models: coral_agent_model::AgentModels,
+    sub_agent_models: coral_administration::SubAgentModelWorkflow,
 }
 
 impl GrpcServices {
@@ -253,7 +253,7 @@ impl GrpcServices {
             edition: dependencies.edition,
             usage: dependencies.usage,
             secret_stores: dependencies.secret_stores,
-            agent_models: dependencies.agent_models,
+            sub_agent_models: dependencies.sub_agent_models,
         }
     }
 

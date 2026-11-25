@@ -151,3 +151,74 @@ async fn a_refused_setting_names_itself_to_an_organization_owner_alone() {
     let denied = client.get_sub_agent_model(message).await.unwrap_err();
     assert_eq!(failure(&denied), (DENIED.0, DENIED.1.to_owned()));
 }
+
+/// coral-policy and coral-administration own the consent. This checks that a
+/// Workspace Owner reaches it, with the stable reasons Reef acts on, and that
+/// nobody else reads the model through a Workspace.
+#[tokio::test]
+async fn a_workspace_owner_sees_the_model_and_turns_the_sub_agent_on_for_it_alone() {
+    let f = Fixture::new().await;
+    let mut client = Client::new(f.channel.clone());
+    let (owner, member) = (f.token(&f.owner, "reef"), f.token(&f.member, "reef"));
+    let workspace = format!("workspaces/{}", f.workspace.id());
+    let read = |token: &str| {
+        let message = management::GetWorkspaceSubAgentModelRequest {
+            workspace: workspace.clone(),
+        };
+        let request = request(message, token, "reef");
+        let mut client = Client::new(f.channel.clone());
+        async move {
+            let read = client.get_workspace_sub_agent_model(request).await;
+            read.map(tonic::Response::into_inner)
+                .map_err(|status| failure(&status))
+        }
+    };
+    let missing = read(&owner).await;
+    assert_eq!(missing, Err((NOT_FOUND.0, NOT_FOUND.1.to_owned())));
+
+    let entered = settings("https://a.example/v1", r#"{"speed":"fast"}"#);
+    let model = create(&mut client, &owner, entered.clone(), Some("key-1")).await;
+    let model = model.unwrap();
+    let shown = read(&owner).await.unwrap();
+    assert_eq!(
+        (&shown.id, shown.settings.as_ref()),
+        (&model.id, Some(&entered))
+    );
+    let denied = read(&member).await;
+    assert_eq!(denied, Err((DENIED.0, DENIED.1.to_owned())));
+
+    let turn_on = |token: &str, model_id: &str, state| {
+        let message = management::TurnOnSubAgentRequest {
+            workspace: workspace.clone(),
+            model_id: model_id.to_owned(),
+            access_state: state,
+        };
+        let request = request(message, token, "reef");
+        let mut client = Client::new(f.channel.clone());
+        async move {
+            let on = client.turn_on_sub_agent(request).await;
+            on.map(|response| response.into_inner().access_state)
+                .map_err(|status| failure(&status))
+        }
+    };
+    let enabled = i32::from(management::ToolAccessState::Enabled);
+    let disabled = i32::from(management::ToolAccessState::Disabled);
+    let invalid = Err((INVALID.0, INVALID.1.to_owned()));
+    let other = uuid::Uuid::new_v4().to_string();
+    let changed = (tonic::Code::Aborted, "SUB_AGENT_MODEL_CHANGED".to_owned());
+    assert_eq!(turn_on(&owner, &other, enabled).await, Err(changed));
+    assert_eq!(turn_on(&owner, "not-a-uuid", enabled).await, invalid);
+    assert_eq!(turn_on(&owner, &model.id, disabled).await, invalid);
+    let denied = turn_on(&member, &model.id, enabled).await;
+    assert_eq!(denied, Err((DENIED.0, DENIED.1.to_owned())));
+
+    // A model is set, so "no model" would be the wrong reason.
+    let (context, any) = (change(&f.owner), IfMatch::any());
+    let archived = f.workspaces.archive(&context, f.workspace.id(), &any);
+    archived.await.unwrap();
+    let archived = (
+        tonic::Code::FailedPrecondition,
+        "WORKSPACE_ARCHIVED".to_owned(),
+    );
+    assert_eq!(read(&owner).await, Err(archived));
+}

@@ -8,6 +8,7 @@ mod repository;
 mod search_eval;
 mod setup;
 mod shared_tools;
+mod sub_agent_model;
 mod tool_removal;
 mod workspaces;
 
