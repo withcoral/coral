@@ -313,6 +313,7 @@ struct Modules {
     releases: Option<coral_release::ReleaseCheck>,
     edition: coral_edition::EditionInspection,
     usage: Option<coral_usage::UsageData>,
+    agent_models: coral_agent_model::AgentModels,
     readiness: EngineReadiness,
     /// The instance's one clock, which the periodic passes and the modules
     /// each surface builds read.
@@ -467,6 +468,11 @@ impl Engine {
             ),
         )
         .with_clock(clock.clone());
+        let agent_models = coral_agent_model::AgentModels::new(
+            database.clone(),
+            credentials.vault.clone(),
+            policy,
+        );
         let (accounts, secret_stores) = credentials.accounts(providers.clone(), clock.clone());
         let (search_index, search_module, embedder_slot) =
             search.modules(&database, &workspaces, &clock);
@@ -531,6 +537,7 @@ impl Engine {
                 releases,
                 edition,
                 usage: usage.as_ref().map(|usage| usage.data.clone()),
+                agent_models,
                 readiness,
                 clock,
                 local_run_executors,
@@ -635,6 +642,7 @@ impl Engine {
             releases: self.modules.releases.clone(),
             edition: self.modules.edition.clone(),
             usage: self.modules.usage.clone(),
+            agent_models: self.modules.agent_models.clone(),
             secret_stores: coral_administration::SecretStoreAdministration::new(
                 coral_workspace::OrganizationModule::new(database.clone()),
                 workspaces.clone(),

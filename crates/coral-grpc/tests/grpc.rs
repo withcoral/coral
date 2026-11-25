@@ -31,6 +31,8 @@ mod private_tools;
 mod providers;
 #[path = "grpc/shared_tools.rs"]
 mod shared_tools;
+#[path = "grpc/sub_agent_models.rs"]
+mod sub_agent_models;
 use coral_auth::{PrincipalAuthentication, SessionTokenIssuer};
 use coral_grpc::coral::{internal::v1 as internal, management::v1 as management};
 use coral_outbound::DestinationPolicy;
@@ -258,6 +260,11 @@ impl Fixture {
             .unwrap()
             .skip_search();
         tx.commit().await.unwrap();
+        let agent_models = coral_agent_model::AgentModels::new(
+            database.clone(),
+            vault.clone(),
+            DestinationPolicy::default(),
+        );
         let accounts = coral_provider::account::AccountModule::new(providers.clone(), vault)
             .with_secret_stores(secret_stores.clone())
             .with_client_id_metadata_document(
@@ -298,6 +305,7 @@ impl Fixture {
         let server = TestServer::start(coral_grpc::routes(
             coral_grpc::Dependencies {
                 organization: OrganizationModule::new(database.clone()),
+                agent_models,
                 providers: providers.clone(),
                 runs: runs.clone(),
                 accounts: Some(accounts),
