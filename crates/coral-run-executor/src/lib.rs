@@ -39,7 +39,7 @@ pub use compiler::{
     AnalysisError, CompileError, CompilerClient, Diagnostics, Unavailable, time_left,
     tool_check_deadline,
 };
-pub use coral_v8::BuiltinTools;
+pub use coral_v8::{BuiltinTools, IsolateLimits};
 pub use in_process::InProcessCompiler;
 pub use link::{
     AddressError, CoralAddress, MESSAGE_MAX_BYTES, PROTOCOL_LEVEL, RunError, RunExecutorConfig,

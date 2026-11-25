@@ -6,6 +6,8 @@ use std::io::{self, Write as _};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 
+use coral_v8::IsolateLimits;
+
 use super::{LocalChild, ProcessStarter};
 use crate::link::Token;
 
@@ -20,8 +22,8 @@ pub struct ChildCommand {
     pub coral_address: String,
     /// The most Runs the child holds at once.
     pub max_runs_held: u32,
-    /// The child's Program Compiler heap limit.
-    pub compiler_heap_bytes: usize,
+    /// The heap limits of the child's Runs and of its Program Compiler.
+    pub isolate_limits: IsolateLimits,
     /// The child's whole environment.
     pub environment: Vec<(OsString, OsString)>,
 }
@@ -34,8 +36,10 @@ impl ProcessStarter for ChildCommand {
             .arg(&self.coral_address)
             .args(["--max-runs-held", &self.max_runs_held.to_string()])
             .args([
+                "--execution-heap-bytes",
+                &self.isolate_limits.execution_heap_bytes().to_string(),
                 "--compiler-heap-bytes",
-                &self.compiler_heap_bytes.to_string(),
+                &self.isolate_limits.compiler_heap_bytes().to_string(),
             ])
             .env_clear()
             .envs(self.environment.iter().map(|(name, value)| (name, value)))

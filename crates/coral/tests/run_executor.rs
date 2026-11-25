@@ -10,19 +10,20 @@ use std::time::Duration;
 
 use coral_run_executor::testing::{Answer, ScriptedCoral};
 use coral_run_executor::{
-    ChildCommand, Credentials, Kind, LinkServer, LocalChild, LocalRunExecutors, PROTOCOL_LEVEL,
-    ProcessStarter, Token,
+    ChildCommand, Credentials, IsolateLimits, Kind, LinkServer, LocalChild, LocalRunExecutors,
+    PROTOCOL_LEVEL, ProcessStarter, Token,
 };
 use coral_test_support::TestDatabase;
 use tokio::io::AsyncWriteExt as _;
 use tokio::process::{Child, Command};
 
 /// The variables the Run Executor reads, which the test must not inherit.
-const RUN_EXECUTOR_VARIABLES: [&str; 6] = [
+const RUN_EXECUTOR_VARIABLES: [&str; 7] = [
     "CORAL_RUN_EXECUTOR_CORAL_ADDRESS",
     "CORAL_RUN_EXECUTOR_TOKEN",
     "CORAL_RUN_EXECUTOR_TOKEN_STDIN",
     "CORAL_RUN_EXECUTOR_MAX_RUNS_HELD",
+    "CORAL_RUN_EXECUTOR_EXECUTION_HEAP_BYTES",
     "CORAL_RUN_EXECUTOR_COMPILER_HEAP_BYTES",
     "CORAL_RUN_EXECUTOR_HEALTH_LISTEN",
 ];
@@ -113,39 +114,18 @@ async fn a_local_child_exits_once_its_parent_is_gone() {
 #[cfg(unix)]
 #[tokio::test]
 async fn after_sigterm_the_run_executor_exits_once_its_run_ends() {
-    use coral_run_executor::testing::{ended, package};
+    use coral_run_executor::testing::{ended, started};
     use coral_run_executor::wire::v1::{
-        InvocationResult, Started, invocation_result, run_request, run_response,
+        InvocationResult, invocation_result, run_request, run_response,
     };
-    use coral_run_executor::{BuiltinTools, CompilerClient as _, InProcessCompiler, RunLimits};
 
     let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
     let mut child = spawn(&coral, |command| {
         command.env("CORAL_RUN_EXECUTOR_TOKEN", "dialing-token");
     });
     let mut call = coral.next_call().await;
-    let compiler = InProcessCompiler::new(RunLimits::default().isolate).unwrap();
-    let program = compiler
-        .compile(
-            coral_test_support::TEST_COMPILATION_TIMEOUT,
-            "await coral.providers.tracker.issues.list({}); return 1;",
-            &[],
-            &BuiltinTools::default(),
-            None,
-        )
-        .await
-        .unwrap();
-    coral.take("run-1", "claim-1");
-    let mut run = coral.next_run().await;
-    let package = package(program.javascript(), program.source_map());
-    run.send(run_response::Message::Package(package)).await;
-    let loaded = run.next().await;
-    assert!(matches!(loaded, Some(run_request::Message::Loaded(_))));
-    let started = Started {
-        deadline_ms: 60_000,
-        cpu_budget_ms: None,
-    };
-    run.send(run_response::Message::Started(started)).await;
+    let package = compiled("await coral.providers.tracker.issues.list({}); return 1;").await;
+    let mut run = started(&mut coral, package, None).await;
     let number = |message: Option<run_request::Message>| match message {
         Some(run_request::Message::Request(request)) => request.number,
         other => panic!("expected a request, got {other:?}"),
@@ -186,6 +166,97 @@ async fn a_dialing_run_executor_takes_its_token_from_the_environment() {
 
     let call = coral.next_call().await;
     assert_eq!(call.authorization.as_deref(), Some("Bearer dialing-token"));
+}
+
+/// Catches: a Run heap limit that never reaches the Run Executor, so that
+/// every Run gets the default 128 MiB, as a local child or as a dialing
+/// Run Executor.
+#[tokio::test]
+async fn each_run_gets_the_heap_limit_its_run_executor_was_given() {
+    use coral_run_executor::testing::started;
+    use coral_run_executor::wire::v1::{Finish, FinishEnd, Request, finish, request, run_request};
+
+    /// How the case starts its Run Executor.
+    #[derive(Clone, Copy, Debug)]
+    enum Start {
+        Dialing,
+        DialingWithEnvironment,
+        LocalChildWithFlag,
+    }
+    // 16 to 32 MiB, by V8's element size, that stays reachable until the
+    // Program returns: past an 8 MiB limit, and well within the default
+    // 128 MiB.
+    const PROGRAM: &str = "const chunks: number[][] = []; \
+        for (let i = 0; i < 4; i++) chunks.push(new Array(1 << 20).fill(i)); \
+        return chunks.length;";
+    let low = IsolateLimits::new(8 << 20, IsolateLimits::defaults().compiler_heap_bytes())
+        .expect("valid heap limits");
+    let package = compiled(PROGRAM).await;
+    let memory_limit = finish::Completion::End(FinishEnd::MemoryLimit.into());
+    for (start, expected) in [
+        (
+            Start::Dialing,
+            finish::Completion::ValueJson("4".to_owned()),
+        ),
+        (Start::DialingWithEnvironment, memory_limit.clone()),
+        (Start::LocalChildWithFlag, memory_limit),
+    ] {
+        let mut coral = ScriptedCoral::start([Answer::Welcome(PROTOCOL_LEVEL)]).await;
+        let dialing_token = |command: &mut Command| {
+            command.env("CORAL_RUN_EXECUTOR_TOKEN", "dialing-token");
+        };
+        // Held until the case ends: each kills its Run Executor on drop.
+        let _run_executor: Box<dyn std::any::Any> = match start {
+            Start::Dialing => Box::new(spawn(&coral, dialing_token)),
+            Start::DialingWithEnvironment => Box::new(spawn(&coral, |command| {
+                dialing_token(command);
+                command.env(
+                    "CORAL_RUN_EXECUTOR_EXECUTION_HEAP_BYTES",
+                    low.execution_heap_bytes().to_string(),
+                );
+            })),
+            Start::LocalChildWithFlag => {
+                let mut command = ChildCommand {
+                    program: env!("CARGO_BIN_EXE_coral").into(),
+                    coral_address: coral.address().to_owned(),
+                    max_runs_held: 2,
+                    isolate_limits: low,
+                    environment: child_environment(),
+                };
+                let token = Token::new("local-child-token".to_owned()).unwrap();
+                let child = command.start(&token).expect("start the local child");
+                Box::new(SharedChild(Arc::new(Mutex::new(child))))
+            }
+        };
+        let _call = coral.next_call().await;
+        let mut run = started(&mut coral, package.clone(), None).await;
+        let completion = match run.next().await {
+            Some(run_request::Message::Request(Request {
+                kind: Some(request::Kind::Finish(Finish { completion })),
+                ..
+            })) => completion,
+            other => panic!("expected the Finish, got {other:?}"),
+        };
+        assert_eq!(completion, Some(expected), "{start:?}");
+    }
+}
+
+/// `source` compiled as a Program with the default heap limits.
+async fn compiled(source: &str) -> coral_run_executor::wire::v1::RunPackage {
+    use coral_run_executor::{BuiltinTools, CompilerClient as _, InProcessCompiler};
+
+    let compiler = InProcessCompiler::new(IsolateLimits::defaults()).expect("a compiler");
+    let program = compiler
+        .compile(
+            coral_test_support::TEST_COMPILATION_TIMEOUT,
+            source,
+            &[],
+            &BuiltinTools::default(),
+            None,
+        )
+        .await
+        .expect("the Program compiles");
+    coral_run_executor::testing::package(program.javascript(), program.source_map())
 }
 
 /// Starts real children and keeps each one where the test reaches it.
@@ -265,7 +336,7 @@ async fn coral_starts_a_local_child_that_opens_its_pull_stream_and_exits_when_it
             program: env!("CARGO_BIN_EXE_coral").into(),
             coral_address: format!("http://{address}"),
             max_runs_held: 3,
-            compiler_heap_bytes: 512 << 20,
+            isolate_limits: IsolateLimits::defaults(),
             environment: child_environment(),
         },
         children: children.clone(),

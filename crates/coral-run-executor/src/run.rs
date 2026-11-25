@@ -37,7 +37,7 @@ pub const PROGRAM_LOG_MESSAGE_MAX_BYTES: usize = 64 * 1024;
 /// What each Run on a Run Executor runs within.
 #[derive(Clone, Copy, Debug)]
 pub struct RunLimits {
-    /// The heap limits of each Run's isolate.
+    /// The heap limits of each Run's isolate and of the Program Compiler.
     pub isolate: coral_v8::IsolateLimits,
     /// The Applied cap, [`APPLIED_CAP_BYTES`] outside tests.
     pub applied_cap_bytes: usize,

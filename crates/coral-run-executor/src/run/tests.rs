@@ -9,12 +9,13 @@ use tonic::Status;
 use super::*;
 use crate::link::{HeldRun, Runs};
 use crate::testing::{
-    Answer, PullCall, RunCall, ScriptedCoral, ended, package, start_run_executor,
+    Answer, PullCall, RunCall, ScriptedCoral, ended, loaded, package, start, start_run_executor,
+    started,
 };
 use crate::wire::v1::{
     Awaited, Committed, Complete, CoralFailure, Emit, Fatal, Finish, FinishEnd, InvocationResult,
     Invoke, LinkedSnapshot, LinkedToolRoot, Loaded, Location, Log, LogLevel, OutputKind, Permitted,
-    Request, Started, Terminate, TerminateReason, Threw, UpstreamOutcome, complete, finish,
+    Request, Terminate, TerminateReason, Threw, UpstreamOutcome, complete, finish,
     invocation_result, request,
 };
 use crate::{CompilerClient as _, InProcessCompiler};
@@ -121,50 +122,8 @@ fn notes_title() -> (LinkedToolSource, LinkedSnapshot) {
     )
 }
 
-/// Takes Run `run_id` and answers its Open with `package`, which loads.
-async fn loaded(coral: &mut ScriptedCoral, run_id: &str, package: RunPackage) -> RunCall {
-    coral.take(run_id, "claim-1");
-    let mut run = coral.next_run().await;
-    assert_eq!(
-        run.open,
-        Open {
-            run_id: run_id.to_owned(),
-            claim_id: "claim-1".to_owned(),
-            protocol_level: PROTOCOL_LEVEL,
-            awaited: Vec::new(),
-        }
-    );
-    run.send(run_response::Message::Package(package)).await;
-    assert_eq!(
-        run.next().await,
-        Some(run_request::Message::Loaded(Loaded {}))
-    );
-    run
-}
-
-/// Takes one Run, answers its Open with `package` and its Loaded with
-/// Started.
-async fn started(
-    coral: &mut ScriptedCoral,
-    package: RunPackage,
-    cpu_budget_ms: Option<u64>,
-) -> RunCall {
-    let run = loaded(coral, "run-1", package).await;
-    start(&run, 60_000, cpu_budget_ms).await;
-    run
-}
-
 /// A Program that waits on an Invoke.
 const WAITS: &str = "await coral.providers.tracker.issues.list({});";
-
-/// Sends `Started` with the time to the deadline and the CPU budget.
-async fn start(run: &RunCall, deadline_ms: u64, cpu_budget_ms: Option<u64>) {
-    let started = Started {
-        deadline_ms,
-        cpu_budget_ms,
-    };
-    run.send(run_response::Message::Started(started)).await;
-}
 
 async fn next_request(run: &mut RunCall) -> (u64, request::Kind) {
     match run.next().await {

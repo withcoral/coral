@@ -49,7 +49,6 @@ fn dial(link: &Link) {
         local_child: false,
         max_runs_held: 2,
         run_limits: RunLimits::default(),
-        compiler_heap_bytes: crate::IsolateLimits::default().compiler_heap_bytes(),
     };
     tokio::spawn(coral_run_executor::run(
         config,
