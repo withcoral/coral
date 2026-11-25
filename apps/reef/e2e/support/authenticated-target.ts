@@ -9,7 +9,8 @@ export type PortReservation = Awaited<ReturnType<typeof reservePort>>
 
 // OAuth origins must be fixed before Coral starts. Reserve ephemeral ports and
 // release each just before the owning child binds it. Another process can take
-// the port in between: `startStack` then starts the stack again on fresh ports.
+// the port in between: `startStack` then starts a SQLite stack again on fresh
+// ports.
 // Never attach to a server that happens to occupy a port.
 export async function reservePort() {
   const server = createServer()
