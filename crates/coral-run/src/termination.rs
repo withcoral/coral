@@ -137,8 +137,8 @@ impl RunModule {
     /// termination it `decided` (its deadline, a limit or a lost Program
     /// host, or the end of the Shutdown Drain for a local child), which a
     /// recorded one still precedes. A reopen that finds the Run's Principal
-    /// gone, or an older build's termination, ends it too, as
-    /// [`Interrupter::Reopen`]. The Run row is read without a hold:
+    /// gone, its `Open` broken, or an older build's termination, ends it
+    /// too, as [`Interrupter::Reopen`]. The Run row is read without a hold:
     /// the write's predicate on the claim and the head fences it.
     ///
     /// # Errors
@@ -292,9 +292,9 @@ pub(crate) enum Interrupter {
     /// Coral Instance as the stream's holder: a reopen elsewhere keeps the
     /// claim.
     Loop,
-    /// A reopen that found the Run's Principal gone, or an older build's
-    /// termination. It read the row just now and does not hold the stream
-    /// yet, so the claim and the head fence it.
+    /// A reopen that found the Run's Principal gone, its `Open` broken, or
+    /// an older build's termination. It read the row just now and does not
+    /// hold the stream yet, so the claim and the head fence it.
     Reopen,
 }
 

@@ -612,8 +612,9 @@ pub struct Open {
     /// The Run Executor's protocol level.
     #[prost(uint32, tag = "3")]
     pub protocol_level: u32,
-    /// Each request that waits for its InvocationResult. Coral answers again
-    /// each one the committed watermark covers, from what it recorded.
+    /// Each request that waits for its InvocationResult, once, in ascending
+    /// number order. Coral answers again each one the committed watermark
+    /// covers, from what it recorded. Any other list breaks the protocol.
     #[prost(message, repeated, tag = "4")]
     pub awaited: ::prost::alloc::vec::Vec<Awaited>,
 }

@@ -237,6 +237,8 @@ impl RunModule {
             Ok(None) => return link.end(WireEnd::NotHeld),
             Err(_unanswered) => return link.close(Closing::Unavailable("the Run is not read")),
         };
+        // A Run not started waits on no answer: the list is not kept.
+        drop(open.awaited);
         send_package(&run, &package, &linked, link);
         if !self.loaded(&mut requests, &run, &claim, link).await {
             return;

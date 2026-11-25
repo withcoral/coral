@@ -397,6 +397,34 @@ async fn a_reopen_answers_a_waited_request_that_left_no_row_as_not_admitted() {
     );
 }
 
+#[tokio::test]
+async fn a_reopen_whose_awaited_list_breaks_the_protocol_interrupts_the_run() {
+    // A Run Executor lists each request it waits on once, in ascending
+    // number order, every number above zero, and a `Complete` after its
+    // Perform. Each list here breaks one of those, whatever the watermark
+    // covers.
+    let lists: [&[(u64, u64)]; 4] = [&[(0, 0)], &[(1, 0), (1, 0)], &[(2, 0), (1, 0)], &[(2, 2)]];
+    for awaited in lists {
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+        let tool = fixture.user_tool("user:awaited", "Awaited").await;
+        let modules = modules(&fixture, |runs| runs);
+        let (moving, stream) = start_moving(fixture, modules, tool, "return 1;").await;
+        drop(stream);
+        let (read, closing) = reopen(&moving, awaited).read_to_close().await;
+        assert!(
+            read.is_empty() && matches!(closing, coral_run_executor::Closing::InvalidArgument(_)),
+            "{awaited:?}: {read:?} {closing:?}"
+        );
+        // The Run is interrupted: the next reopen hears how it ended.
+        let mut stream = reopen(&moving, &[]);
+        assert_eq!(
+            stream.next().await,
+            ended(WireEnd::Interrupted),
+            "{awaited:?}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_loop_whose_stream_moved_commits_nothing_more() {
     let (gate, release) = CommitGate::blocking();
