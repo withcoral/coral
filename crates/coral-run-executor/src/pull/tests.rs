@@ -104,6 +104,13 @@ pub(crate) fn busy_stream(streams: &PullStreams) -> (StreamId, Sent) {
     (stream, sent)
 }
 
+/// Waits until `callers` callers wait in line for compile room.
+pub(crate) async fn in_line(streams: &PullStreams, callers: usize) {
+    while streams.waiting_for_compile_room() != callers {
+        tokio::task::yield_now().await;
+    }
+}
+
 /// Holds every unit of `stream`'s compile room still free, as callers that
 /// wait for a compiler do. The stream must take sends.
 pub(crate) fn fill_compile(streams: &PullStreams, stream: StreamId) {

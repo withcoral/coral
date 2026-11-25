@@ -78,6 +78,8 @@ runtime.
 - **Compiles ride it, and take no room.** A compile runs on the Run Executor's one warm compiler, not in a Run's room.
   Coral keeps a small count of its own for each pull stream, its compile room, which bounds the compiles queued on that
   compiler. A compile holds one unit of it until it is answered. A full set of Runs therefore does not stop a compile.
+  Compiles that find no compile room wait on their Coral Instance in the order they came, and each unit that frees goes
+  to the oldest.
 
 ## The queue and the take
 
@@ -251,9 +253,9 @@ above it, in order. A repeat carries the same number and lands once; an Emission
 
 Each Run Executor keeps one warm Program Compiler, warmed before it says hello, with the compiler's existing limits. A
 compile travels down the pull stream and its answer comes back on it; it goes to the pull stream with the most compile
-room on the Coral Instance that needs it. A Coral Instance that holds no pull stream, or none with compile room, writes
-the call to a relay row that any Coral Instance with compile room, itself included, picks up, serves and answers
-through the database. Coral Instances keep talking only through the database. A compile that no Run Executor can serve yet waits for one: no Run
+room on the Coral Instance that needs it. A Coral Instance that holds a pull stream waits for its own compile room, which
+frees within a compile. A Coral Instance that holds no pull stream writes the call to a relay row that any Coral
+Instance with compile room, itself included, picks up, serves and answers through the database. Coral Instances keep talking only through the database. A compile that no Run Executor can serve yet waits for one: no Run
 Executor linked is a state every rollout passes through. The compile's own time limit runs once a Run Executor serves
 it; a compile that waits past a bound fails as a missing compiler fails today, and Runs already accepted wait.
 Only no Run Executor linked, or every compiler busy for the bound, reaches it: a full set of Runs never does. With

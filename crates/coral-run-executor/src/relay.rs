@@ -1,6 +1,6 @@
 //! Compiles relayed through the database: Coral Instances talk
-//! only through it. A Coral Instance that holds no pull stream with compile
-//! room writes a row and waits on the change signal for its answer; every
+//! only through it. A Coral Instance that holds no pull stream that takes
+//! sends writes a row and waits on the change signal for its answer; every
 //! Coral Instance that holds one with compile room, itself included, takes
 //! the oldest row it can serve, serves it on that stream, and writes the
 //! answer back.

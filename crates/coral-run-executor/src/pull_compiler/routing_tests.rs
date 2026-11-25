@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 
 use super::{COMPILE_WAIT, PullStreamCompiler, ROOM_WAIT_RESERVE};
 use crate::local::tests::FakeStarter;
-use crate::pull::tests::{Sent, busy_stream, compiled, dialed_stream as open, up};
+use crate::pull::tests::{Sent, busy_stream, compiled, dialed_stream as open, in_line, up};
 use crate::pull::{COMPILE_ROOM, Credentials};
 use crate::wire::v1::{PullRequest, PullResponse, Room, pull_request, pull_response};
 use crate::{CompileError, CompilerClient, LocalRunExecutors, PullStreams, StreamId, Unavailable};
@@ -352,4 +352,31 @@ async fn ready_waits_for_room_without_holding_its_thread() {
     let (held, (stream, _sent)) = tokio::join!(caller.ready(), opening);
     let _held = held.expect("a compiler").expect("a held unit");
     assert_eq!(streams.compile_room(stream), COMPILE_ROOM - 1);
+}
+
+// Catches: a unit that frees going to whichever waiting caller looks first,
+// so one caller loses it again and again; or a new caller that takes a unit
+// before the callers already in line.
+#[tokio::test(start_paused = true)]
+async fn callers_that_wait_for_room_take_it_in_the_order_they_came() {
+    let streams = PullStreams::default();
+    let (stream, _sent) = busy_stream(&streams);
+    let caller = PullStreamCompiler::new(streams.clone(), None);
+    let mut waiting = Vec::new();
+    for callers in 1..=3 {
+        waiting.push(held_later(&caller));
+        in_line(&streams, callers).await;
+    }
+    // A caller served out of order would wait past the bound and panic.
+    let mut served_callers = Vec::new();
+    for (served, next) in waiting.into_iter().enumerate() {
+        streams.let_go(stream);
+        served_callers.push(next.await.unwrap());
+        assert_eq!(
+            streams.waiting_for_compile_room(),
+            2 - served,
+            "the oldest caller takes the unit"
+        );
+        assert_eq!(streams.compile_room(stream), 0, "held for it");
+    }
 }
