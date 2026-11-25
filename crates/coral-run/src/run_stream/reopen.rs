@@ -80,7 +80,7 @@ impl RunModule {
         };
         // A loop of this Run still here commits nothing more on a moved head.
         self.loops.supersede(&run.id);
-        if !awaited_in_order(&awaited) {
+        if !awaited_well_formed(&awaited) {
             return self.refuse_broken_open(&run, &claim_id, link).await;
         }
         let reopened = until_answered(
@@ -405,14 +405,14 @@ impl RunModule {
         workspace_id: &coral_workspace::WorkspaceId,
         id: &crate::RunId,
     ) {
-        if link.violated.load(std::sync::atomic::Ordering::SeqCst) {
+        if link.violated.load(Ordering::SeqCst) {
             return link.close(Closing::InvalidArgument(
                 "the Run stream broke the protocol",
             ));
         }
         // The stream moves: the Coral Instance it reopens on answers how the
         // Run stands.
-        if link.moving.load(std::sync::atomic::Ordering::SeqCst) {
+        if link.moving.load(Ordering::SeqCst) {
             return link.close(Closing::Moved);
         }
         if let Ok(Some(run)) = run_repository::find_exact(&self.database, workspace_id, id).await
@@ -427,7 +427,7 @@ impl RunModule {
 /// once, in ascending number order, every number above zero, and each
 /// `Complete` after the Perform it completes. A reopen then answers again at
 /// most one entry for each request the Run committed.
-fn awaited_in_order(awaited: &[Awaited]) -> bool {
+fn awaited_well_formed(awaited: &[Awaited]) -> bool {
     awaited
         .iter()
         .try_fold(0, |last, entry| {

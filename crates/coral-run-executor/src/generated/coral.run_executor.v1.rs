@@ -615,8 +615,8 @@ pub struct Open {
     /// Each request that waits for its InvocationResult, once, in ascending
     /// number order, every number above zero, and each Complete after the
     /// Perform it completes. Coral answers again each one the committed
-    /// watermark covers, from what it recorded. Any other list breaks the
-    /// protocol.
+    /// watermark covers, from what it recorded. On the reopen of a started
+    /// Run, any other list breaks the protocol.
     #[prost(message, repeated, tag = "4")]
     pub awaited: ::prost::alloc::vec::Vec<Awaited>,
 }
