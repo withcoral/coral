@@ -63,8 +63,8 @@ export function SubAgentPage({
         title="Model"
         description={
           model
-            ? 'The sub-agent uses this model. It is blocked in each workspace until a workspace owner turns it on, on the Tools page.'
-            : 'The sub-agent is a model that does data work for your agents. Set the model that it uses.'
+            ? 'A Coral agent that your agents can query in natural language. Workspace owners turn it on from the Tools page.'
+            : 'A Coral agent that your agents can query in natural language. Set the LLM that it uses.'
         }
       >
         {model && (

@@ -175,10 +175,10 @@ it.each([
   expect(screen.getByText('Advanced').closest('details')!.open).toBe(open)
 })
 
-// Catches: a page that does not say what the model is for, or what a person must do next.
+// Catches: a page that does not say what the sub-agent is, or what a person must do next.
 it.each([
-  [null, 'The sub-agent is a model that does data work for your agents.'],
-  [model, 'blocked in each workspace until a workspace owner turns it on, on the Tools page.'],
+  [null, 'A Coral agent that your agents can query in natural language. Set the LLM that it uses.'],
+  [model, 'Workspace owners turn it on from the Tools page.'],
 ])('says what comes next', (current, text) => {
   render({ model: current })
   expect(screen.getByText(text, { exact: false })).toBeInTheDocument()
