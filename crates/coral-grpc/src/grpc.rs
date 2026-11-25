@@ -70,7 +70,7 @@ pub struct Dependencies {
     pub usage: Option<coral_usage::UsageData>,
     /// The Secret Stores the operator defined and their grants to Workspaces.
     pub secret_stores: coral_administration::SecretStoreAdministration,
-    /// The model that the Organization's Sub-agents use.
+    /// The model setting for the Organization's Sub-agents.
     pub agent_models: coral_agent_model::AgentModels,
 }
 

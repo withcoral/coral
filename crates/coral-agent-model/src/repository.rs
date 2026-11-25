@@ -2,7 +2,7 @@
 
 use coral_db::{RowLock, Transaction, UnixNanos, Version};
 use coral_workspace::UserId;
-use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query, SelectStatement};
+use sea_query::{Expr, ExprTrait as _, Iden, OnConflict, Query, SelectStatement, SimpleExpr};
 use uuid::Uuid;
 
 use crate::agent_models::AgentModel;
@@ -106,44 +106,53 @@ pub(crate) async fn find(
     row.map(StoredModel::try_from).transpose()
 }
 
-/// Inserts the model unless there is one. Of two concurrent inserts, the
-/// first one stands. Returns whether this one did.
-pub(crate) async fn insert(tx: &mut Transaction<'_>, stored: &StoredModel) -> Result<bool, Error> {
+/// What both writes store of the model, beside the singleton mark.
+fn stored_values(stored: &StoredModel) -> Result<[(SubAgentModels, SimpleExpr); 10], Error> {
     let StoredModel {
         model,
         sealed_api_key,
     } = stored;
     let settings = &model.settings;
+    Ok([
+        (SubAgentModels::Id, model.id.to_string().into()),
+        (SubAgentModels::Version, model.version.get().into()),
+        (
+            SubAgentModels::Protocol,
+            settings.protocol.as_storage_str().into(),
+        ),
+        (SubAgentModels::BaseUrl, settings.base_url.as_str().into()),
+        (SubAgentModels::Model, settings.model.as_str().into()),
+        (SubAgentModels::SealedApiKey, sealed_api_key.clone().into()),
+        (
+            SubAgentModels::ContextWindow,
+            settings.context_window.map(i64::from).into(),
+        ),
+        (
+            SubAgentModels::RequestArgsJson,
+            request_args_json(settings)?.into(),
+        ),
+        (
+            SubAgentModels::ChangedByUserId,
+            model.changed_by.as_str().into(),
+        ),
+        (SubAgentModels::ChangedAtUnixNanos, model.changed_at.into()),
+    ])
+}
+
+/// Inserts the model unless there is one. Of two concurrent inserts, the
+/// first one stands. Returns whether this one did.
+pub(crate) async fn insert(tx: &mut Transaction<'_>, stored: &StoredModel) -> Result<bool, Error> {
+    let singleton = (SubAgentModels::Singleton, SimpleExpr::from(1_i64));
+    let (columns, values): (Vec<_>, Vec<_>) = stored_values(stored)?
+        .into_iter()
+        .chain([singleton])
+        .unzip();
     let inserted = tx
         .execute_change(
             Query::insert()
                 .into_table(SubAgentModels::Table)
-                .columns([
-                    SubAgentModels::Id,
-                    SubAgentModels::Singleton,
-                    SubAgentModels::Version,
-                    SubAgentModels::Protocol,
-                    SubAgentModels::BaseUrl,
-                    SubAgentModels::Model,
-                    SubAgentModels::SealedApiKey,
-                    SubAgentModels::ContextWindow,
-                    SubAgentModels::RequestArgsJson,
-                    SubAgentModels::ChangedByUserId,
-                    SubAgentModels::ChangedAtUnixNanos,
-                ])
-                .values_panic([
-                    model.id.to_string().into(),
-                    1_i64.into(),
-                    model.version.get().into(),
-                    settings.protocol.as_storage_str().into(),
-                    settings.base_url.as_str().into(),
-                    settings.model.as_str().into(),
-                    sealed_api_key.clone().into(),
-                    settings.context_window.map(i64::from).into(),
-                    request_args_json(settings)?.into(),
-                    model.changed_by.as_str().into(),
-                    model.changed_at.into(),
-                ])
+                .columns(columns)
+                .values_panic(values)
                 .on_conflict(
                     OnConflict::column(SubAgentModels::Singleton)
                         .do_nothing()
@@ -162,39 +171,11 @@ pub(crate) async fn replace(
     current: &AgentModel,
     next: &StoredModel,
 ) -> Result<(), Error> {
-    let StoredModel {
-        model,
-        sealed_api_key,
-    } = next;
-    let settings = &model.settings;
     let replaced = tx
         .execute_change(
             Query::update()
                 .table(SubAgentModels::Table)
-                .values([
-                    (SubAgentModels::Id, model.id.to_string().into()),
-                    (SubAgentModels::Version, model.version.get().into()),
-                    (
-                        SubAgentModels::Protocol,
-                        settings.protocol.as_storage_str().into(),
-                    ),
-                    (SubAgentModels::BaseUrl, settings.base_url.as_str().into()),
-                    (SubAgentModels::Model, settings.model.as_str().into()),
-                    (SubAgentModels::SealedApiKey, sealed_api_key.clone().into()),
-                    (
-                        SubAgentModels::ContextWindow,
-                        settings.context_window.map(i64::from).into(),
-                    ),
-                    (
-                        SubAgentModels::RequestArgsJson,
-                        request_args_json(settings)?.into(),
-                    ),
-                    (
-                        SubAgentModels::ChangedByUserId,
-                        model.changed_by.as_str().into(),
-                    ),
-                    (SubAgentModels::ChangedAtUnixNanos, model.changed_at.into()),
-                ])
+                .values(stored_values(next)?)
                 .and_where(Expr::col(SubAgentModels::Id).eq(current.id.to_string()))
                 .and_where(Expr::col(SubAgentModels::Version).eq(current.version.get()))
                 .to_owned(),

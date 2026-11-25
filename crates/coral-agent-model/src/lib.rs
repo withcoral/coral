@@ -15,8 +15,8 @@
 //!   other change issues a new one.
 //! - An API key is sealed for the model's id and base URL, so it opens for no
 //!   other destination. A new base URL drops it, and no method returns it.
-//! - A change takes the etag its caller read. An etag of a model that was
-//!   removed admits no model set since.
+//! - A change takes the etag its caller read. An etag read before a removal
+//!   admits no model set after it.
 //!
 //! The Sub-agent's crate depends on the crate that serves the API, so the
 //! settings that both use live here.

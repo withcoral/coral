@@ -262,6 +262,37 @@ async fn a_stale_etag_changes_nothing_even_after_the_model_was_removed_and_set_a
     assert_eq!(f.read().await, Some(again));
 }
 
+// Catches: a refused setting that a model is set or changed with all the same, or that drops the
+// saved key or moves the etag.
+#[tokio::test]
+async fn a_refused_setting_sets_and_changes_nothing() {
+    let f = Fixture::new().await;
+    let refused = EnteredSettings {
+        context_window: Some(crate::CONTEXT_WINDOW_MIN - 1),
+        ..settings(URL_B)
+    };
+    let set = f.models.set(&at(&f.owner, 1), &refused, None).await;
+    let expected = InvalidSetting::ContextWindow;
+    assert!(matches!(set, Err(Error::Invalid(setting)) if setting == expected));
+    assert!(f.read().await.is_none());
+
+    let model = f.set(URL_A, Some("key-1")).await;
+    let changed = f
+        .models
+        .change(
+            &at(&f.owner, 2),
+            &etag(&model),
+            &refused,
+            ApiKeyChange::Set(secret("key-2")),
+        )
+        .await;
+    assert!(matches!(changed, Err(Error::Invalid(setting)) if setting == expected));
+    let kept = f.read().await.expect("the model stays");
+    assert_eq!(kept.etag().to_string(), model.etag().to_string());
+    assert_eq!(kept.settings().base_url(), URL_A);
+    assert_eq!(f.stored_key().await.as_deref(), Some("key-1"));
+}
+
 // Catches: two models, or a second set that replaces the first.
 #[tokio::test]
 async fn an_organization_has_one_model_and_the_first_set_stands() {

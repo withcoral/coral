@@ -70,14 +70,42 @@ impl Error {
 
 impl From<coral_workspace::Error> for Error {
     fn from(error: coral_workspace::Error) -> Self {
+        use coral_workspace::Error as Workspace;
+
         match error.into_database_error() {
             Ok(error) => Self::Database(error),
-            Err(other)
-                if other.refusal() == Some(coral_workspace::AuthorityRefusal::PermissionDenied) =>
-            {
-                Self::PermissionDenied
+            Err(Workspace::PermissionDenied(_)) => Self::PermissionDenied,
+            Err(Workspace::CorruptData(_)) => {
+                Self::CorruptData("the Organization's authority is corrupt")
             }
-            Err(_other) => Self::Unavailable,
+            // Name every variant so a new one needs a decision here.
+            Err(
+                Workspace::WorkspaceNotFound
+                | Workspace::WorkspaceArchived
+                | Workspace::AgentNotFound
+                | Workspace::AgentDisabled
+                | Workspace::AgentRegistrationExpired
+                | Workspace::InvalidAgentCredential
+                | Workspace::InvalidInput(_)
+                | Workspace::OrganizationAuthorityConflict
+                | Workspace::EtagMismatch
+                | Workspace::RequestAlreadyApplied
+                | Workspace::MembershipAlreadyExists
+                | Workspace::AmbiguousEmail
+                | Workspace::WorkspaceAlreadyActive
+                | Workspace::WorkspaceAlreadyArchived
+                | Workspace::MembershipNotFound
+                | Workspace::LastWorkspaceOwner
+                | Workspace::OwnerTransferRequired
+                | Workspace::OwnerTargetNotEnabled
+                | Workspace::OrganizationMembershipNotFound
+                | Workspace::LastOrganizationOwner
+                | Workspace::MemberTargetNotEnabled
+                | Workspace::AccessRemovalMismatch
+                | Workspace::CredentialGeneration
+                | Workspace::Database(_)
+                | Workspace::EventFields(_),
+            ) => Self::Unavailable,
         }
     }
 }
