@@ -471,8 +471,11 @@ impl AuthorizationServerHttpState {
         // falls through to its metadata document.
         let clients = OAuthClients::new(database.clone(), Arc::new(client_metadata_resolver));
         let mut user_directory = UserDirectory::new(database.clone());
-        if let Some((issuer, subject)) = settings.bootstrap_owner() {
-            user_directory = user_directory.with_bootstrap_owner(issuer, subject);
+        if let Some(subject) = settings.bootstrap_owner_subject() {
+            user_directory = user_directory.with_bootstrap_owner(coral_auth::UserIdentifier::new(
+                coral_auth::UserIdentifierKind::Subject,
+                subject,
+            ));
         }
         let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
         let organization = coral_workspace::OrganizationModule::new(database.clone());

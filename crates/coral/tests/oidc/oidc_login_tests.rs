@@ -354,7 +354,7 @@ async fn composed_server_issues_an_organization_token_for_the_picked_workspace()
     let database = composed.server.database();
     let Ok(coral_auth::LoginProvisioning::Provisioned(user_id)) =
         coral_auth::UserDirectory::new(database.clone())
-            .provision_login(coral_auth::VerifiedOidcLogin::new(
+            .provision_login(coral_auth::VerifiedLogin::oidc(
                 &composed.provider.uri(),
                 "upstream-subject",
                 None,

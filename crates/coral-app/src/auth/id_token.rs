@@ -92,9 +92,10 @@ impl TokenRejection {
 
 /// A fully verified identity. Intentionally does not implement `Debug`.
 ///
-/// The upstream identity is the verified `issuer` plus the raw `subject`, and
-/// that pair alone keys the user directory. A configured principal projection
-/// can constrain admission but never replaces or accompanies that identity.
+/// The upstream identity is the verified `issuer` plus the raw `subject`. The
+/// Subject alone finds the User in the user directory, and the issuer must
+/// equal the one that User keeps. A configured principal projection can
+/// constrain admission but never replaces or accompanies that identity.
 pub(super) struct ValidatedOidcIdentity {
     /// Issuer the ID token's signature and `iss` claim were verified against.
     pub(super) issuer: String,

@@ -1,8 +1,8 @@
 //! Coral User access-token issuance, credential-to-Principal authentication, and
-//! stable User identity provisioning for verified OIDC logins.
+//! stable User identity provisioning for verified sign-ins.
 //!
-//! This private domain Module owns the durable mapping from one verified OIDC
-//! identity to one opaque Coral [`UserId`]. The authorization-server Adapter
+//! This private domain Module owns the durable mapping from one verified
+//! [`UserIdentifier`] to one opaque Coral [`UserId`]. The authorization-server Adapter
 //! validates the upstream protocol and supplies the resulting identity; this
 //! Module performs transactional identity and initial Membership provisioning
 //! without exposing database rows to application composition. Organization role
@@ -23,11 +23,12 @@
 //!
 //! # Invariants
 //!
-//! A first login mints one random Coral User identity. Concurrent first logins
+//! Every login finds its User through the store for User Identifiers. A first
+//! login mints one random Coral User identity. Concurrent first logins
 //! converge on that identity, and later logins preserve it. A subject already
 //! bound to another configured issuer is never rebound automatically. Failed
 //! provisioning commits no directory or Membership change. Only the explicitly
-//! configured bootstrap issuer/subject selects an initial Owner; ordinary login
+//! configured bootstrap identifier selects an initial Owner; ordinary login
 //! provisions a Member and cannot reset a current role or disabled state.
 //! Issuer, subject, and display name remain private authentication data.
 //! Authentication never grants Workspace or resource access: domain Modules still
@@ -47,15 +48,17 @@ pub mod user_tokens;
 
 pub use authentication::{AuthenticationError, PrincipalAuthentication, WorkspaceFixedBy};
 pub use session::{IssuedAccessToken, SessionTokenError, SessionTokenIssuer};
+pub use user_identifiers::{UserIdentifier, UserIdentifierKind};
 
 use std::sync::Arc;
 
-use coral_db::{Database, UnixNanos};
+use coral_db::{Database, Transaction, UnixNanos};
 use coral_telemetry::safe;
 pub use coral_workspace::UserId;
 use coral_workspace::{
     AuthenticatedUser, ChangeContext, OrganizationModule, OrganizationRole, TraceId,
 };
+use user_identifiers::LinkOutcome;
 
 /// External credentials may identify a User, but never the implicit local Owner.
 fn external_user_id(value: &str) -> Result<UserId, ()> {
@@ -86,28 +89,51 @@ fn database_failure<R>(error: &coral_db::Error, refusal: R) -> R {
     refusal
 }
 
-/// One verified OIDC identity supplied by the authorization-server Adapter.
-pub struct VerifiedOidcLogin<'a> {
-    issuer: &'a str,
-    subject: &'a str,
+/// One verified sign-in supplied by the authorization-server Adapter.
+pub struct VerifiedLogin<'a> {
+    identifier: UserIdentifier<'a>,
+    /// The verified issuer of an OIDC login. Its User keeps it and the Subject
+    /// in `users`, because the release before this one reads them there.
+    oidc_issuer: Option<&'a str>,
     display_name: Option<&'a str>,
     profile: coral_workspace::VerifiedUserProfile<'a>,
     profile_observed_at: UnixNanos,
     occurred_at: UnixNanos,
 }
 
-impl<'a> VerifiedOidcLogin<'a> {
-    /// Builds the persistence input for one successfully verified login.
+impl<'a> VerifiedLogin<'a> {
+    /// Builds the persistence input for one successfully verified OIDC login:
+    /// the Subject `subject`, verified under `issuer`.
     #[must_use]
-    pub const fn new(
+    pub const fn oidc(
         issuer: &'a str,
         subject: &'a str,
         display_name: Option<&'a str>,
         occurred_at: UnixNanos,
     ) -> Self {
+        let mut login = Self::new(
+            UserIdentifier::new(UserIdentifierKind::Subject, subject),
+            display_name,
+            occurred_at,
+        );
+        login.oidc_issuer = Some(issuer);
+        login
+    }
+
+    /// Builds the persistence input for a verified sign-in that names its
+    /// person by `identifier` alone. A new User of such a sign-in keeps no
+    /// issuer and no Subject in `users`, so the release before this one cannot
+    /// find it: give a Subject to [`Self::oidc`] instead. No sign-in that Coral
+    /// ships calls this yet.
+    #[must_use]
+    pub const fn new(
+        identifier: UserIdentifier<'a>,
+        display_name: Option<&'a str>,
+        occurred_at: UnixNanos,
+    ) -> Self {
         Self {
-            issuer,
-            subject,
+            identifier,
+            oidc_issuer: None,
             display_name,
             profile: coral_workspace::VerifiedUserProfile::new(None, None, None, None),
             profile_observed_at: occurred_at,
@@ -160,7 +186,7 @@ pub enum Error {
 #[derive(Clone)]
 pub struct UserDirectory {
     database: Arc<Database>,
-    bootstrap_owner: Option<(String, String)>,
+    bootstrap_owner: Option<(UserIdentifierKind, String)>,
 }
 
 impl UserDirectory {
@@ -173,12 +199,14 @@ impl UserDirectory {
         }
     }
 
-    /// Selects the exact verified issuer and subject eligible for initial Owner provisioning.
+    /// Selects the exact verified identifier eligible for initial Owner
+    /// provisioning: its kind and its value. The issuer is no part of it, since
+    /// an OIDC login is always verified under the configured issuer.
     /// This operator setting is never taken from client metadata or an email address.
     /// It has no effect on an existing Membership's role or disabled state.
     #[must_use]
-    pub fn with_bootstrap_owner(mut self, issuer: &str, subject: &str) -> Self {
-        self.bootstrap_owner = Some((issuer.to_owned(), subject.to_owned()));
+    pub fn with_bootstrap_owner(mut self, identifier: UserIdentifier<'_>) -> Self {
+        self.bootstrap_owner = Some((identifier.kind(), identifier.value().to_owned()));
         self
     }
 
@@ -189,23 +217,31 @@ impl UserDirectory {
     /// Returns a persistence or corrupt-data error. Failure commits no change.
     pub async fn provision_login(
         &self,
-        login: VerifiedOidcLogin<'_>,
+        login: VerifiedLogin<'_>,
     ) -> Result<LoginProvisioning, Error> {
         let mut transaction = self.database.begin().await?;
+        // Every login holds this row before it reads or writes a User, in this
+        // release and in the one before it, so two logins never interleave.
         OrganizationModule::hold_profile_updates_in_transaction(&mut transaction).await?;
-        let candidate_user_id = UserId::parse(&uuid::Uuid::new_v4().to_string())?;
-        let identity =
-            repository::upsert_login(&mut transaction, &candidate_user_id, &login).await?;
-        if identity.issuer != login.issuer {
-            transaction.rollback().await?;
-            return Ok(LoginProvisioning::IssuerMismatch);
-        }
-        let user_id = identity.user_id;
+        let user_id = match locate_user(&mut transaction, &login).await? {
+            Located::Created(user_id) => user_id,
+            Located::Existing(user_id) => {
+                let stored_issuer = repository::issuer(&mut transaction, &user_id).await?;
+                if let (Some(stored), Some(issuer)) = (stored_issuer, login.oidc_issuer)
+                    && stored != issuer
+                {
+                    transaction.rollback().await?;
+                    return Ok(LoginProvisioning::IssuerMismatch);
+                }
+                repository::record_login(&mut transaction, &user_id, &login).await?;
+                user_id
+            }
+        };
 
         let initial_role = if self
             .bootstrap_owner
             .as_ref()
-            .is_some_and(|(issuer, subject)| issuer == login.issuer && subject == login.subject)
+            .is_some_and(|(kind, value)| UserIdentifier::new(*kind, value) == login.identifier)
         {
             OrganizationRole::Owner
         } else {
@@ -237,9 +273,63 @@ impl UserDirectory {
     }
 }
 
+/// The User of a login, and whether this login made it.
+enum Located {
+    Existing(UserId),
+    Created(UserId),
+}
+
+/// Finds the User that holds the login's identifier, or makes it.
+///
+/// A User that the release before this one made holds its Subject in
+/// `users.subject` and no row in the store: such a User is found there, among
+/// the Users that hold no identifier, and the store gains its row.
+///
+/// A first login links the identifier to a new Coral User ID, then `users`
+/// gains the User's row. The link inserts with `ON CONFLICT DO NOTHING` and
+/// reads again, so a login of the same person that linked first wins.
+async fn locate_user(
+    transaction: &mut Transaction<'_>,
+    login: &VerifiedLogin<'_>,
+) -> Result<Located, Error> {
+    let identifier = login.identifier;
+    if let Some(user_id) = user_identifiers::find(&mut *transaction, identifier).await? {
+        return Ok(Located::Existing(user_id));
+    }
+    if identifier.kind() == UserIdentifierKind::Subject
+        && let Some(user_id) =
+            repository::find_unlinked_subject(transaction, identifier.value()).await?
+    {
+        let outcome =
+            user_identifiers::link(transaction, identifier, &user_id, login.occurred_at).await?;
+        return holder_after_link(outcome, &user_id).map(Located::Existing);
+    }
+    let candidate = UserId::parse(&uuid::Uuid::new_v4().to_string())?;
+    let outcome =
+        user_identifiers::link(transaction, identifier, &candidate, login.occurred_at).await?;
+    let holder = holder_after_link(outcome, &candidate)?;
+    if holder != candidate {
+        return Ok(Located::Existing(holder));
+    }
+    repository::insert_user(transaction, &candidate, login).await?;
+    Ok(Located::Created(candidate))
+}
+
+/// The User that the store names for an identifier after a link of it to
+/// `user_id`. A User that held no identifier cannot hold another of the kind.
+fn holder_after_link(outcome: LinkOutcome, user_id: &UserId) -> Result<UserId, Error> {
+    match outcome {
+        LinkOutcome::Linked | LinkOutcome::AlreadyLinked => Ok(user_id.clone()),
+        LinkOutcome::HeldBy(holder) => Ok(holder),
+        LinkOutcome::UserHoldsAnother => Err(Error::CorruptData(
+            "the store refused a link for a User that held no identifier of its kind".to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{LoginProvisioning, UserDirectory, VerifiedOidcLogin};
+    use super::{LoginProvisioning, UserDirectory, VerifiedLogin};
     use coral_test_support::TestDatabase;
 
     #[tokio::test]
@@ -317,8 +407,9 @@ mod tests {
             WorkspaceModule, WorkspaceRole,
         };
         let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
-        let directory = UserDirectory::new(fixture.database())
-            .with_bootstrap_owner("https://issuer.test", "owner");
+        let directory = UserDirectory::new(fixture.database()).with_bootstrap_owner(
+            super::UserIdentifier::new(super::UserIdentifierKind::Subject, "owner"),
+        );
         let verified = |email| VerifiedUserProfile::new(None, Some(email), Some(true), None);
         let owner = provisioned(
             directory
@@ -390,8 +481,9 @@ mod tests {
     #[tokio::test]
     async fn verified_login_provisions_membership_and_cannot_undo_disablement() {
         let fixture = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
-        let directory = UserDirectory::new(fixture.database())
-            .with_bootstrap_owner("https://issuer.test", "owner");
+        let directory = UserDirectory::new(fixture.database()).with_bootstrap_owner(
+            super::UserIdentifier::new(super::UserIdentifierKind::Subject, "owner"),
+        );
         let owner_id = provisioned(
             directory
                 .provision_login(login("https://issuer.test", "owner", None, 1))
@@ -518,8 +610,8 @@ mod tests {
         subject: &'a str,
         display_name: Option<&'a str>,
         occurred_at_unix_nanos: i64,
-    ) -> VerifiedOidcLogin<'a> {
-        VerifiedOidcLogin::new(
+    ) -> VerifiedLogin<'a> {
+        VerifiedLogin::oidc(
             issuer,
             subject,
             display_name,
