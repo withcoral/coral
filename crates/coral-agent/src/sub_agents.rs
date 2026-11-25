@@ -129,7 +129,8 @@ impl SubAgents {
         task_id: &TaskId,
         message: String,
     ) -> Result<String, Error> {
-        let model = self.models.current(workspace_id).await?;
+        let model = self.models.current(workspace_id).await;
+        let model = model.inspect_err(log_unreadable)?;
         let mut transaction = self.database.begin().await?;
         let (task, authority) = self
             .tasks
@@ -320,6 +321,8 @@ impl SubAgents {
                 }
                 continue;
             }
+            // The Owner can have turned the Tool off while the model replied.
+            self.may_go_on(turn).await?;
             let results = join_all(calls.iter().map(|call| async {
                 let result = search::call(
                     &self.search,
@@ -419,15 +422,8 @@ impl SubAgents {
             return Err(TurnFailure::Canceled);
         }
         let allowed = self.models.allows(&caller.workspace_id, turn.model.id);
-        allowed.await.map_err(|refusal| {
-            if let ModelRefusal::Unreadable(code) = refusal {
-                tracing::warn!(
-                    error.type = safe::kind(code),
-                    "a Sub-agent Turn stopped because its model could not be read"
-                );
-            }
-            TurnFailure::Withdrawn(refusal)
-        })
+        let allowed = allowed.await.inspect_err(log_unreadable);
+        allowed.map_err(TurnFailure::Withdrawn)
     }
 
     /// Whether the caller can still use its Task: the Task is open and the
@@ -587,6 +583,16 @@ impl Error {
             Self::CorruptData => "corrupt_data",
             Self::Database(error) => error.code(),
         }
+    }
+}
+
+/// Logs a model that could not be read, which stops a Turn or starts none.
+fn log_unreadable(refusal: &ModelRefusal) {
+    if let ModelRefusal::Unreadable(code) = refusal {
+        tracing::warn!(
+            error.type = safe::kind(code),
+            "a Sub-agent's model could not be read"
+        );
     }
 }
 

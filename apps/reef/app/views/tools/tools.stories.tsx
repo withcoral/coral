@@ -1165,6 +1165,8 @@ export const TreeProviderDisabled: Story = {
 // Once the organization has a model, Coral has the sub-agent's tool, which starts off.
 const coralWithAgent: ProviderView = {
   ...coral,
+  readyCount: coralTools.length + 1,
+  totalCount: coralTools.length + 1,
   tools: [
     ...coralTools,
     { ...weather.tools[0]!, key: 'agent', relativePath: 'agent', policy: 'disabled' },
@@ -1173,7 +1175,7 @@ const coralWithAgent: ProviderView = {
 const consent: SubAgentConsentRead = {
   model: {
     id: 'model-1',
-    host: 'models.example.com',
+    baseUrl: 'https://models.example.com/v1',
     name: 'large-1',
   },
   problem: null,
@@ -1194,7 +1196,7 @@ export const SubAgentConsent: Story = {
   parameters: { consent, chromatic: { viewports: [390, 1440] } },
   play: async ({ canvasElement }) => {
     const dialog = within(await askToTurnOn(canvasElement))
-    await waitFor(() => expect(dialog.getByText('models.example.com')).toBeVisible())
+    await waitFor(() => expect(dialog.getByText('https://models.example.com/v1')).toBeVisible())
   },
 }
 // The model changed while the dialog was open: it says so, and shows the new one.
@@ -1247,7 +1249,9 @@ export const SubAgentConsentFromDrawer: Story = {
     const drawer = await screen.findByRole('dialog', { name: 'agent' })
     await userEvent.click(await within(drawer).findByRole('radio', { name: 'Allow' }))
     const dialog = await screen.findByRole('dialog', { name: 'Turn on the sub-agent?' })
-    await waitFor(() => expect(within(dialog).getByText('models.example.com')).toBeVisible())
+    await waitFor(() =>
+      expect(within(dialog).getByText('https://models.example.com/v1')).toBeVisible(),
+    )
     await waitFor(() => expect(dialog.contains(document.activeElement)).toBe(true))
     await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     await waitFor(() =>

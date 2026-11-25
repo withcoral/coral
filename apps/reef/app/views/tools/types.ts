@@ -118,8 +118,8 @@ export type PublishReviewResult =
 export interface SubAgentConsentModel {
   /** Coral's name for where the model's requests go, which the answer names. */
   id: string
-  /** The host that this workspace's data goes to. */
-  host: string
+  /** Where this workspace's data goes. Any change to it asks for consent again. */
+  baseUrl: string
   name: string
 }
 

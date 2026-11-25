@@ -150,8 +150,9 @@ impl AgentModels {
     ///
     /// # Errors
     ///
-    /// Denies a caller who is not an Owner of the active Workspace, and
-    /// returns [`Error::NotSet`] while the Organization has no model.
+    /// Denies a caller who is not the Workspace's Owner, and returns
+    /// [`Error::WorkspaceArchived`] for an archived one, or [`Error::NotSet`]
+    /// while the Organization has no model.
     pub async fn read_for_workspace(
         &self,
         actor: &AuthenticatedUser,
@@ -174,8 +175,9 @@ impl AgentModels {
     ///
     /// # Errors
     ///
-    /// Returns a persistence failure, or [`Error::Sealing`] for a key that
-    /// does not open for the model it is stored with.
+    /// Returns a persistence failure, [`Error::CorruptData`] for a row that is
+    /// not what Coral writes, or [`Error::Sealing`] for a key that does not
+    /// open for the model it is stored with.
     pub async fn active_in_transaction(
         &self,
         tx: &mut Transaction<'_>,

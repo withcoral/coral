@@ -381,6 +381,18 @@ impl ToolPolicyModule {
             .workspaces
             .check_configuration_in_transaction(&mut transaction, context.actor(), workspace)
             .await?;
+        // A change of the model holds its row exclusively, then turns these
+        // rules off. Taken first, so that neither waits on the other's rules.
+        if updates
+            .iter()
+            .any(|(target, _)| sub_agent::goes_off_with_the_model(target))
+        {
+            coral_agent_model::current_id_in_transaction(
+                &mut transaction,
+                coral_db::RowLock::Shared,
+            )
+            .await?;
+        }
         let mut decisions = Vec::with_capacity(updates.len());
         for (target, access_state) in updates {
             require_tool_in_transaction(&mut transaction, context.actor(), &evidence, &target)

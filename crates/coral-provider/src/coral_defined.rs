@@ -402,11 +402,17 @@ impl ProviderModule {
             .builtin_catalog_in_transaction(&mut transaction)
             .await?
             .clone();
-        let mut outdated = Vec::new();
-        for active in provider_repository::builtin_active_generations(&mut transaction).await? {
-            if workspace.is_some_and(|workspace| workspace != active.workspace_id()) {
-                continue;
+        let installed = match workspace {
+            Some(workspace) => {
+                provider_repository::workspace_builtin_generation(&mut transaction, workspace)
+                    .await?
+                    .into_iter()
+                    .collect()
             }
+            None => provider_repository::builtin_active_generations(&mut transaction).await?,
+        };
+        let mut outdated = Vec::new();
+        for active in installed {
             if !coral_catalog::builtin_generation_pins_in_transaction(
                 &mut transaction,
                 &served,
@@ -434,7 +440,8 @@ impl ProviderModule {
         }
     }
 
-    /// Whether a Workspace's Built-in catalog holds the Sub-agent's Tools now.
+    /// Whether this process now gives a Workspace the Built-in catalog that
+    /// holds the Sub-agent's Tools. A Workspace's own can lag behind.
     ///
     /// # Errors
     ///

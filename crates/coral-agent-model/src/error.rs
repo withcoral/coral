@@ -33,6 +33,9 @@ pub enum Error {
     /// The Organization has a model already.
     #[error("a Sub-agent model is already set")]
     AlreadySet,
+    /// The Workspace that the caller reads the model for is archived.
+    #[error("the Workspace is archived")]
+    WorkspaceArchived,
     /// The model changed since the caller read it.
     #[error("the Sub-agent's model changed")]
     EtagMismatch,
@@ -59,6 +62,7 @@ impl Error {
             Self::Invalid(_) => "invalid",
             Self::NotSet => "not_set",
             Self::AlreadySet => "already_set",
+            Self::WorkspaceArchived => "workspace_archived",
             Self::EtagMismatch => "etag_mismatch",
             Self::Sealing => "sealing",
             Self::Database(_) => "database",
@@ -78,8 +82,9 @@ impl From<coral_workspace::Error> for Error {
             Err(Workspace::CorruptData(_)) => {
                 Self::CorruptData("the Organization's authority is corrupt")
             }
-            // A Workspace that is concealed or archived offers no model.
-            Err(Workspace::WorkspaceNotFound | Workspace::WorkspaceArchived) => Self::NotSet,
+            // A Workspace that is concealed offers no model.
+            Err(Workspace::WorkspaceNotFound) => Self::NotSet,
+            Err(Workspace::WorkspaceArchived) => Self::WorkspaceArchived,
             // Name every variant so a new one needs a decision here.
             Err(
                 Workspace::AgentNotFound

@@ -24,6 +24,7 @@ struct Fixture {
     providers: ProviderModule,
     index: SearchIndex,
     policies: ToolPolicyModule,
+    agent_models: AgentModels,
     models: SubAgentModelWorkflow,
     /// The Organization Owner, who belongs to no Workspace.
     organization_owner: AuthenticatedUser,
@@ -56,6 +57,7 @@ impl Fixture {
         let member = provision_user(database.clone(), "member", OrganizationRole::Member).await;
         Self {
             policies: ToolPolicyModule::new(database, workspaces.clone()),
+            agent_models: models.clone(),
             models: SubAgentModelWorkflow::new(
                 models,
                 ProviderWorkflow::new(providers.clone(), index.clone()),
@@ -310,12 +312,14 @@ async fn only_a_new_base_url_or_a_removal_turns_the_tool_off_in_every_workspace(
         matches!(stale, Err(Error::SubAgentModelChanged)),
         "{stale:?}"
     );
+    assert!(!f.is_on(&one).await && !f.is_on(&two).await);
     let back = f.change(&moved, &entered(URL_A)).await;
     let stale = f.turn_on(&one, first.id()).await;
     assert!(
         matches!(stale, Err(Error::SubAgentModelChanged)),
         "{stale:?}"
     );
+    assert!(!f.is_on(&one).await && !f.is_on(&two).await);
 
     f.turn_on(&one, back.id()).await.unwrap();
     f.remove(&back).await;
@@ -325,6 +329,51 @@ async fn only_a_new_base_url_or_a_removal_turns_the_tool_off_in_every_workspace(
         f.shown(&one, "agent").await,
         Some(ToolAccessState::Disabled)
     );
+}
+
+// Catches: a policy change that reads the rule while it is on, waits out a change of the model that
+// turns it off, and writes it back on for a destination that no Owner saw.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_policy_change_beside_a_new_base_url_does_not_turn_the_tool_back_on() {
+    let f = Fixture::new().await;
+    let workspace = f.workspace("Ops").await;
+    let model = f.set(URL_A).await;
+    f.turn_on(&workspace, model.id()).await.unwrap();
+    let target = f.target(&workspace, "agent").await;
+
+    // The change as `SubAgentModelWorkflow` makes it, held before its commit.
+    let database = f.db.database();
+    let mut tx = database.begin().await.unwrap();
+    let context = change(f.organization_owner.clone(), 3, '3');
+    let keep = ApiKeyChange::Keep;
+    f.agent_models
+        .change_in_transaction(&mut tx, &context, &etag(&model), &entered(URL_B), keep)
+        .await
+        .unwrap();
+    let at = context.occurred_at();
+    coral_policy::turn_sub_agent_off_in_transaction(&mut tx, at)
+        .await
+        .unwrap();
+
+    let (policies, owner) = (f.policies.clone(), f.owner.clone());
+    let beside = tokio::spawn(async move {
+        let context = change(owner, 6, '6');
+        let approval = ToolAccessState::ApprovalRequired;
+        policies.set_access_state(&context, target, approval).await
+    });
+    // It may or may not have read the rule by now. Either way it is refused.
+    let waits = std::time::Instant::now();
+    while !beside.is_finished() && waits.elapsed() < std::time::Duration::from_millis(300) {
+        tokio::task::yield_now().await;
+    }
+    tx.commit().await.unwrap();
+
+    let beside = beside.await.unwrap();
+    assert!(
+        matches!(beside, Err(Error::SubAgentConsentRequired)),
+        "{beside:?}"
+    );
+    assert!(!f.is_on(&workspace).await);
 }
 
 // Catches: a Sub-agent that is on with no way to stop it, a stop that waits for an approval that no
@@ -384,7 +433,12 @@ async fn a_rule_from_before_is_reset_and_a_missing_rule_counts_as_off() {
         Some(ToolAccessState::Disabled)
     );
 
-    let delete = "DELETE FROM tool_access_rules WHERE tool_key = 'agent'";
-    f.db.execute_fixture_sql(delete).await.unwrap();
+    let delete = format!(
+        "DELETE FROM tool_access_rules WHERE workspace_id = '{}' AND provider_id = '{}' \
+         AND tool_key = 'agent'",
+        target.workspace_id(),
+        target.provider_id(),
+    );
+    f.db.execute_fixture_sql(&delete).await.unwrap();
     assert!(!f.is_on(&workspace).await);
 }

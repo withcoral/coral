@@ -259,29 +259,30 @@ pub(super) async fn insert_access_state_if_absent(
     Ok(transaction.execute_change(statement).await? == 1)
 }
 
-/// How many Providers one statement names.
-const PROVIDERS_PER_STATEMENT: usize = 500;
+/// How many Providers one statement names, each with its Workspace.
+const PROVIDERS_PER_STATEMENT: usize = 250;
 
 /// Disables the Tool `key` of each of `providers` that has an exact rule on
 /// it. A decision that holds one of the rules shared makes this wait.
 pub(super) async fn disable_for_providers(
     transaction: &mut Transaction<'_>,
-    providers: &[ProviderId],
+    providers: &[(WorkspaceId, ProviderId)],
     key: &ToolKey,
     occurred_at: UnixNanos,
 ) -> Result<(), Error> {
     let disabled = ToolAccessState::Disabled.as_storage_str();
     for providers in providers.chunks(PROVIDERS_PER_STATEMENT) {
+        // A Provider is in one Workspace, so the two lists name no other pair.
+        let workspaces = providers.iter().map(|(workspace, _)| workspace.to_string());
+        let ids = providers.iter().map(|(_, provider)| provider.to_string());
         let statement = Query::update()
             .table(ToolAccessRules::Table)
             .value(ToolAccessRules::AccessState, disabled)
             .value(ToolAccessRules::UpdatedAtUnixNanos, occurred_at)
+            .and_where(Expr::col(ToolAccessRules::WorkspaceId).is_in(workspaces))
+            .and_where(Expr::col(ToolAccessRules::ProviderId).is_in(ids))
             .and_where(Expr::col(ToolAccessRules::ToolKey).eq(key.as_str()))
             .and_where(Expr::col(ToolAccessRules::AccessState).ne(disabled))
-            .and_where(
-                Expr::col(ToolAccessRules::ProviderId)
-                    .is_in(providers.iter().map(ToString::to_string)),
-            )
             .to_owned();
         transaction.execute_change(statement).await?;
     }

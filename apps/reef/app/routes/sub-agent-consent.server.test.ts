@@ -66,11 +66,11 @@ const post = (fields: Record<string, string>) => {
   )
 }
 
-// Catches: a host without its port, or a setting that says nothing of where the data goes, such as
-// the arguments, in the way of what does.
+// Catches: two destinations that look the same, such as two paths of one gateway, and a setting that
+// says nothing of where the data goes, such as the arguments, in the way of what does.
 it('reads where the model is and what it is called', async () => {
   expect(await load()).toEqual({
-    model: { id: modelId, host: 'models.example.com:8443', name: 'large-1' },
+    model: { id: modelId, baseUrl: 'https://models.example.com:8443/v1', name: 'large-1' },
     problem: null,
   })
   expect(calls).toEqual([{ read: `workspaces/${workspace}` }])
@@ -109,7 +109,7 @@ it('refuses a member', async () => {
   expect(calls).toEqual([])
 })
 
-// Catches: a consent to another model, in another workspace, or to another policy than the owner's.
+// Catches: a consent that does not carry the workspace, the model and the policy the owner confirmed.
 it.each([
   ['enabled', ToolAccessState.ENABLED],
   ['approval_required', ToolAccessState.APPROVAL_REQUIRED],

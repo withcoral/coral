@@ -4,11 +4,12 @@
 //! # Interface
 //!
 //! [`AgentModels`] reads, sets, changes and removes the model, and denies a
-//! caller who is not an enabled Organization Owner. A change joins its
-//! caller's transaction, which turns the Sub-agent off in every Workspace when
-//! the model's id changes. [`AgentModels::active_in_transaction`] is the model
-//! as a Turn uses it.
-//! One validation, inside them, checks the [`EnteredSettings`].
+//! caller who is not an enabled Organization Owner. One validation, inside
+//! them, checks the [`EnteredSettings`]. A change joins its caller's
+//! transaction, which turns the Sub-agent off in every Workspace when the
+//! model's id changes. [`AgentModels::read_for_workspace`] shows the model to
+//! a Workspace's Owner, and [`AgentModels::active_in_transaction`] is the
+//! model as a Turn uses it.
 //!
 //! # Invariants
 //!

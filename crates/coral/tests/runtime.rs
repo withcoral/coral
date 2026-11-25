@@ -251,7 +251,8 @@ async fn a_program_reaches_the_sub_agent_that_a_registered_factory_builds() {
         model_id: shown.id,
         access_state: ToolAccessState::Enabled.into(),
     }));
-    turned_on.await.expect("turn coral.agent on");
+    let turned_on = turned_on.await.expect("turn coral.agent on").into_inner();
+    assert_eq!(turned_on.access_state(), ToolAccessState::Enabled);
 
     let refused = run_to_end(&composed.client, program).await;
     assert_eq!(

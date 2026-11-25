@@ -126,7 +126,7 @@ export function SubAgentConsent({
           <>
             <input type="hidden" name="modelId" value={shown.model.id} />
             <DescriptionList.List>
-              <DescriptionList.Row label="Host">{shown.model.host}</DescriptionList.Row>
+              <DescriptionList.Row label="Base URL">{shown.model.baseUrl}</DescriptionList.Row>
               <DescriptionList.Row label="Model">{shown.model.name}</DescriptionList.Row>
               <DescriptionList.Row label="Policy">
                 {opening && policyLabels[opening.access]}

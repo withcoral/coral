@@ -140,8 +140,9 @@ async fn a_turn_starts_only_where_the_owner_turned_the_tool_on_and_sends_what_wa
     assert_eq!(body.get("reasoning_effort"), Some(&json!("high")));
 }
 
-// Catches: a running Turn that calls the model again after its Workspace's Owner turned the Tool
-// off, or after the base URL changed or the model was removed, and one that leaves its Runs going.
+// Catches: a running Turn that calls the model again, or starts what the model's last reply asks
+// for, after its Workspace's Owner turned the Tool off, or after the base URL changed or the model
+// was removed, and one that leaves its Runs going.
 #[tokio::test]
 async fn a_running_turn_stops_once_its_workspace_may_no_longer_use_the_model() {
     enum Withdrawn {
@@ -159,6 +160,11 @@ async fn a_running_turn_stops_once_its_workspace_may_no_longer_use_the_model() {
         let task_id = lead.task().await;
         let endless = json!({"task_id": task_id.as_str(), "intent": "Loop", "program": "while (true) {}", "wait_ms": 0});
         let endless = tool_calls(&[tool_call("call_1", "exec", &endless)]);
+        Mock::given(any())
+            .respond_with(endless.clone())
+            .up_to_n_times(1)
+            .mount(&lead.model)
+            .await;
         let (arrived, release) = lead.hold_first_reply(endless.clone()).await;
         lead.model_answers(endless).await;
         let model = lead.set_model(&settings).await;
@@ -194,12 +200,43 @@ async fn a_running_turn_stops_once_its_workspace_may_no_longer_use_the_model() {
         assert!(failure.contains(says), "{failure}");
         assert_eq!(
             lead.model.received_requests().await.unwrap().len(),
-            1,
+            2,
             "{says}"
         );
+        // The first reply's Run. The second reply asked for one that did not start.
+        let steps = field(&waited, "steps").as_array().unwrap();
+        let started = steps.iter().map(|step| step.get("run_id").is_some());
+        let started: Vec<bool> = started.collect();
+        assert_eq!(started, [true, false], "{says}: {waited}");
         let run = json!({"run_id": waited.pointer("/steps/0/run_id"), "wait_ms": 30_000});
         let run = result(call(&*tools, &lead.caller(), "wait", run).await);
         assert_eq!(field(&run, "state"), "canceled", "{says}: {run}");
+    }
+}
+
+// Catches: a model that could not be read counted as an Owner's withdrawal, or the reverse, and a
+// refusal that reads to the caller as a mistake of its own.
+#[test]
+fn a_refused_model_is_unavailable_to_the_caller_and_keeps_its_own_code() {
+    use crate::sub_agents::{Error, TurnFailure};
+    use crate::telemetry::TurnEnd;
+
+    for (refusal, expected) in [
+        (ModelRefusal::NotSet, "model_withdrawn"),
+        (ModelRefusal::TurnedOff, "model_withdrawn"),
+        (ModelRefusal::Changed, "model_withdrawn"),
+        (ModelRefusal::Unreadable("database"), "model_unreadable"),
+    ] {
+        let called = SubAgentError::from(Error::Model(refusal));
+        assert!(
+            matches!(called, SubAgentError::Unavailable(text) if text == refusal.text()),
+            "{refusal:?}"
+        );
+        let ended = TurnEnd::of(&Err(TurnFailure::Withdrawn(refusal)));
+        assert!(
+            matches!(ended, TurnEnd::Failed(code) if code == expected),
+            "{ended:?}"
+        );
     }
 }
 

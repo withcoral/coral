@@ -55,6 +55,7 @@ fn error(error: &Error) -> Status {
             },
         ),
         Error::AlreadySet => (Code::AlreadyExists, "SUB_AGENT_MODEL_ALREADY_SET"),
+        Error::WorkspaceArchived => (Code::FailedPrecondition, "WORKSPACE_ARCHIVED"),
         Error::EtagMismatch => (Code::Aborted, "ETAG_MISMATCH"),
         Error::Sealing => return status::internal(),
         Error::Database(_) | Error::CorruptData(_) | Error::Unavailable => {

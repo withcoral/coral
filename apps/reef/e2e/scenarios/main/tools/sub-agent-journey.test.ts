@@ -71,7 +71,6 @@ async function openTools(page: Page, workspace: string) {
 test('A workspace owner turns on the sub-agent that an organization owner set up, a program gets its answer, and a new base URL turns it off', async (context) => {
   const { owner, alice } = await createActors(context)
   const model = await modelServer(context)
-  const host = new URL(model.origin).host
   const organization = managementClients(owner.accessToken).subAgentModel
   // The stack has one organization, so no other scenario may start with this one's model.
   const removeModel = async () => {
@@ -125,7 +124,7 @@ test('A workspace owner turns on the sub-agent that an organization owner set up
     await step('The workspace owner reads where the data goes and turns it on', async () => {
       const dialog = await openDialog(page, policyOf(page, 'agent', 'Allow'))
       await dialog.getByRole('heading', { name: 'Turn on the sub-agent?', exact: true }).waitFor()
-      await dialog.getByText(host, { exact: true }).waitFor()
+      await dialog.getByText(`${model.origin}/v1`, { exact: true }).waitFor()
       await dialog.getByText('reel-1', { exact: true }).waitFor()
       await dialog.getByRole('button', { name: 'Turn on', exact: true }).click()
       await expectPolicy(page, 'Allow')

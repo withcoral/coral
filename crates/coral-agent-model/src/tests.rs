@@ -312,20 +312,15 @@ async fn a_refused_setting_sets_and_changes_nothing() {
         context_window: Some(crate::CONTEXT_WINDOW_MIN - 1),
         ..settings(URL_B)
     };
-    let set = f.models.set(&at(&f.owner, 1), &refused, None).await;
+    let set = f.set_as(&at(&f.owner, 1), &refused, None).await;
     let expected = InvalidSetting::ContextWindow;
     assert!(matches!(set, Err(Error::Invalid(setting)) if setting == expected));
     assert!(f.read().await.is_none());
 
     let model = f.set(URL_A, Some("key-1")).await;
+    let key = ApiKeyChange::Set(secret("key-2"));
     let changed = f
-        .models
-        .change(
-            &at(&f.owner, 2),
-            &etag(&model),
-            &refused,
-            ApiKeyChange::Set(secret("key-2")),
-        )
+        .change_as(&at(&f.owner, 2), &etag(&model), &refused, key)
         .await;
     assert!(matches!(changed, Err(Error::Invalid(setting)) if setting == expected));
     let kept = f.read().await.expect("the model stays");

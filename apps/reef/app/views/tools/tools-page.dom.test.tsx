@@ -1858,7 +1858,7 @@ const AGENT_OFF = coralWith('disabled')
 
 const firstModel = {
   id: 'model-1',
-  host: 'models.example.com',
+  baseUrl: 'https://models.example.com/v1',
   name: 'large-1',
 }
 
@@ -1908,7 +1908,7 @@ const noConsentDialog = () =>
   expect(screen.queryByRole('dialog', { name: 'Turn on the sub-agent?' })).toBeNull()
 /** The dialog's facts, once they loaded. */
 async function shownFacts(dialog: HTMLElement) {
-  await within(dialog).findByText('Host')
+  await within(dialog).findByText('Base URL')
   const labels = [...dialog.querySelectorAll('dt')]
   return Object.fromEntries(
     labels.map((label) => [label.textContent, label.nextElementSibling!.textContent]),
@@ -1944,7 +1944,7 @@ test.each([
     'Calling this tool sends a natural language query to a Coral agent. The agent sends workspace data to the model below.',
   )
   expect(await shownFacts(dialog)).toEqual({
-    Host: 'models.example.com',
+    'Base URL': 'https://models.example.com/v1',
     Model: 'large-1',
     Policy: policy,
   })
@@ -2030,7 +2030,7 @@ test('a model that changed is shown before the owner can confirm it', async () =
     reads: [
       { model: firstModel, problem: null },
       {
-        model: { id: 'model-2', host: 'other.example.com', name: 'small-2' },
+        model: { id: 'model-2', baseUrl: 'https://other.example.com/v1', name: 'small-2' },
         problem: null,
       },
     ],
@@ -2040,10 +2040,10 @@ test('a model that changed is shown before the owner can confirm it', async () =
   const dialog = await consentDialog()
   await shownFacts(dialog)
   await user.click(within(dialog).getByRole('button', { name: 'Turn on' }))
-  await within(dialog).findByText('other.example.com')
+  await within(dialog).findByText('https://other.example.com/v1')
   expect(within(dialog).getByRole('alert')).toHaveTextContent(changed)
   expect(await shownFacts(dialog)).toEqual({
-    Host: 'other.example.com',
+    'Base URL': 'https://other.example.com/v1',
     Model: 'small-2',
     Policy: 'Ask',
   })

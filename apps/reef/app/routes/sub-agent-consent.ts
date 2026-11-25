@@ -44,7 +44,7 @@ async function consentRead(api: Api, workspace: string): Promise<SubAgentConsent
     return {
       model: {
         id,
-        host: new URL(settings.baseUrl).host,
+        baseUrl: settings.baseUrl,
         name: settings.model,
       },
       problem: null,

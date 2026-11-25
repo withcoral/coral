@@ -211,4 +211,14 @@ async fn a_workspace_owner_sees_the_model_and_turns_the_sub_agent_on_for_it_alon
     assert_eq!(turn_on(&owner, &model.id, disabled).await, invalid);
     let denied = turn_on(&member, &model.id, enabled).await;
     assert_eq!(denied, Err((DENIED.0, DENIED.1.to_owned())));
+
+    // A model is set, so "no model" would be the wrong reason.
+    let (context, any) = (change(&f.owner), IfMatch::any());
+    let archived = f.workspaces.archive(&context, f.workspace.id(), &any);
+    archived.await.unwrap();
+    let archived = (
+        tonic::Code::FailedPrecondition,
+        "WORKSPACE_ARCHIVED".to_owned(),
+    );
+    assert_eq!(read(&owner).await, Err(archived));
 }

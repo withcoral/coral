@@ -19,7 +19,7 @@ use url::Url;
 
 use crate::model::{ModelError, Reply};
 use crate::prompt;
-use crate::sub_agents::TurnFailure;
+use crate::sub_agents::{ModelRefusal, TurnFailure};
 
 /// The trace and metrics of one Turn. Its span is the root of a trace of its
 /// own, linked to the span of the `agent` call that started the Turn.
@@ -150,6 +150,9 @@ impl TurnEnd {
             Err(TurnFailure::TooManyModelCalls) => Self::Failed("too_many_model_calls"),
             Err(TurnFailure::NoAnswer) => Self::Failed("no_answer"),
             Err(TurnFailure::TimeLimit) => Self::Failed("time_limit"),
+            Err(TurnFailure::Withdrawn(ModelRefusal::Unreadable(_))) => {
+                Self::Failed("model_unreadable")
+            }
             Err(TurnFailure::Withdrawn(_)) => Self::Failed("model_withdrawn"),
             Err(TurnFailure::Internal) => Self::Failed("internal"),
             Err(TurnFailure::Canceled) => Self::Canceled,

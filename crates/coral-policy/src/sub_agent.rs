@@ -42,8 +42,15 @@ fn target(workspace_id: &WorkspaceId, builtin: &ProviderId) -> ToolPolicyTarget 
     ToolPolicyTarget::new(workspace_id.clone(), builtin.clone(), agent_key())
 }
 
+/// Whether a change of the model can turn the Tool's rule off.
+pub(crate) fn goes_off_with_the_model(target: &ToolPolicyTarget) -> bool {
+    [agent_key(), cancel_key()].contains(target.tool_key())
+}
+
 /// Refuses a change that turns `coral.agent` on. One that is on already was
 /// consented to, so a change from enabled to approval or back is not refused.
+/// The caller holds the model's row, so the rule it reads here stands until
+/// its own write.
 pub(crate) async fn refuse_turn_on_in_transaction(
     transaction: &mut Transaction<'_>,
     changed: &ToolPolicyTarget,
@@ -147,12 +154,8 @@ pub async fn turn_sub_agent_off_in_transaction(
     let builtin = coral_provider::builtin_providers_in_transaction(transaction)
         .await
         .map_err(provider_read_error)?;
-    let providers: Vec<_> = builtin
-        .into_iter()
-        .map(|(_workspace, provider)| provider)
-        .collect();
     for key in [agent_key(), cancel_key()] {
-        repository::disable_for_providers(transaction, &providers, &key, occurred_at).await?;
+        repository::disable_for_providers(transaction, &builtin, &key, occurred_at).await?;
     }
     Ok(())
 }
