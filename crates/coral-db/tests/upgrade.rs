@@ -714,7 +714,7 @@ async fn upgrade_gives_each_row_the_first_version_and_the_times_its_metadata_hol
 
 /// The step that brings each Agent and Agent Registration row up to the times
 /// that its concurrency metadata holds.
-const RESOURCE_TIMES_REPAIR: i64 = 78;
+const RESOURCE_TIMES_REPAIR: i64 = 85;
 
 /// Agents and Registrations on the schema of the resource version step, as
 /// two Corals that served side by side left them. A Coral with that step
