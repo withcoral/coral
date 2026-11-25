@@ -5,9 +5,12 @@ import { join } from 'node:path'
 
 import { startIdentityProvider, type AuthenticationTarget } from './oidc-fixture.ts'
 
-// OAuth origins must be fixed before Coral starts. Reserve ephemeral ports,
-// release immediately before the owning child binds, and let a collision fail
-// startup. Never attach to a server that happens to occupy a port.
+export type PortReservation = Awaited<ReturnType<typeof reservePort>>
+
+// OAuth origins must be fixed before Coral starts. Reserve ephemeral ports and
+// release each just before the owning child binds it. Another process can take
+// the port in between: `startStack` then starts the stack again on fresh ports.
+// Never attach to a server that happens to occupy a port.
 export async function reservePort() {
   const server = createServer()
   await new Promise<void>((resolve, reject) => {
@@ -47,7 +50,7 @@ export async function prepareAuthenticatedTarget(
   front?: { authURL: string; mcpURL: string },
   session: SessionLifetimes = {},
 ) {
-  const reservations: Awaited<ReturnType<typeof reservePort>>[] = []
+  const reservations: PortReservation[] = []
   let provider: Awaited<ReturnType<typeof startIdentityProvider>> | undefined
   const close = async () => {
     const outcomes = await Promise.allSettled([
@@ -67,7 +70,7 @@ export async function prepareAuthenticatedTarget(
     return reservation
   }
   try {
-    const auth: Awaited<ReturnType<typeof reservePort>>[] = []
+    const auth: PortReservation[] = []
     while (auth.length < stateDirs.length) auth.push(await reserve())
     const web = await reserve()
     const mcp = front ? undefined : await reserve()
@@ -128,9 +131,10 @@ bootstrap_owner_subject = ${q(idp.owner.subject)}
       },
       /** Each instance's own auth listener origin, which the proxy forwards to. */
       authOrigins: auth.map((reservation) => reservation.url),
-      releaseCoralPorts: (index: number) =>
-        Promise.all([auth[index].release(), ...(mcp ? [mcp.release()] : [])]),
-      releaseWebPort: () => web.release(),
+      /** The ports instance `index` binds, for `startProcess` to release. */
+      coralPorts: (index: number) => [auth[index], ...(mcp ? [mcp] : [])],
+      /** Reef's port, for `startProcess` to release. */
+      webPort: web,
       close,
     }
   } catch (error) {

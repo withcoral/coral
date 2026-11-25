@@ -481,20 +481,107 @@ test('a Coral that exits during startup shows how it ended and its last output',
   const dir = await mkdtemp(join(tmpdir(), 'reel-exit-'))
   try {
     const coralBinary = join(dir, 'coral')
+    // Coral's own report of a bind failure, on a port the harness never reserved:
+    // without sign-in, Coral binds port zero.
     await writeFile(
       coralBinary,
-      '#!/bin/sh\necho "starting"\necho "Error: address 127.0.0.1:4100 already in use" >&2\nexit 3\n',
+      `#!/bin/sh\necho start >> "${dir}/starts"\necho "starting"\n` +
+        'echo "Error: failed to bind MCP HTTP server to 127.0.0.1:4100" >&2\n' +
+        'echo "    1: Address already in use (os error 98)" >&2\nexit 3\n',
       { mode: 0o755 },
     )
     await assert.rejects(
       startStack({ coralBinary, childEnv: { PATH: process.env.PATH }, runDir: dir }),
       (error: Error) => {
         assert.match(error.message, /exited \(3\) during startup/)
-        assert.match(error.message, /Error: address 127\.0\.0\.1:4100 already in use/)
+        assert.match(error.message, /failed to bind MCP HTTP server to 127\.0\.0\.1:4100/)
         return true
       },
     )
+    // A port the harness did not reserve is not the harness's collision to retry.
+    assert.equal(await readFile(join(dir, 'starts'), 'utf8'), 'start\n')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
+})
+
+test('a reserved port taken before Coral binds it starts the stack again on fresh ports, and only then', async (context) => {
+  const dir = await mkdtemp(join(tmpdir(), 'reel-collision-'))
+  context.after(() => rm(dir, { recursive: true, force: true }))
+  const warn = context.mock.method(console, 'warn', () => {})
+  // Stands in for Coral. Each start records the auth listener it was configured
+  // with. The first asks the test to take that port, then binds it for real and
+  // reports the bind failure as Coral does. The second fails for another reason.
+  const coralBinary = join(dir, 'coral')
+  await writeFile(
+    coralBinary,
+    `#!${process.execPath}
+const { appendFileSync, existsSync, readFileSync, writeFileSync } = require('node:fs')
+const { createServer } = require('node:net')
+const { join } = require('node:path')
+const dir = ${JSON.stringify(dir)}
+const config = readFileSync(join(process.env.CORAL_CONFIG_DIR, 'config.toml'), 'utf8')
+const [, port, publicURL] = config.match(/\\[listeners\\.auth\\]\\nbind = '127\\.0\\.0\\.1:(\\d+)'\\npublic_url = "([^"]+)"/)
+appendFileSync(join(dir, 'starts'), port + ' ' + publicURL + '\\n')
+if (readFileSync(join(dir, 'starts'), 'utf8').trim().split('\\n').length > 1) {
+  console.error('Error: an unrelated startup failure')
+  process.exit(3)
+}
+writeFileSync(join(dir, 'take'), port)
+const wait = setInterval(() => {
+  if (!existsSync(join(dir, 'taken'))) return
+  clearInterval(wait)
+  createServer()
+    .once('error', (error) => {
+      console.error('Error: failed to bind auth-support listener to 127.0.0.1:' + port)
+      console.error('    1: ' + (error.code === 'EADDRINUSE' ? 'Address already in use (os error 98)' : error.message))
+      process.exit(1)
+    })
+    .listen(Number(port), '127.0.0.1', () => process.exit(4))
+}, 20)
+`,
+    { mode: 0o755 },
+  )
+  const started = startStack({
+    coralBinary,
+    childEnv: { PATH: process.env.PATH },
+    runDir: dir,
+    authenticated: true,
+  }).then(
+    () => assert.fail('the stack started'),
+    (error: Error) => error,
+  )
+  let port: number | undefined
+  while (port === undefined) {
+    try {
+      port = Number(await readFile(join(dir, 'take'), 'utf8'))
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+  }
+  // Another process takes the port after the harness released it.
+  const squatter = createServer()
+  await new Promise<void>((resolve, reject) => {
+    squatter.once('error', reject)
+    squatter.listen(port, '127.0.0.1', resolve)
+  })
+  context.after(() => new Promise((resolve) => squatter.close(resolve)))
+  await writeFile(join(dir, 'taken'), '')
+
+  const error = await started
+  assert.match(error.message, /exited \(3\) during startup/)
+  assert.match(error.message, /an unrelated startup failure/)
+  const starts = (await readFile(join(dir, 'starts'), 'utf8')).trim().split('\n')
+  // The second start fails for another reason, so no third follows.
+  assert.equal(starts.length, 2)
+  const [first, second] = starts.map((line) => line.split(' '))
+  assert.deepEqual(first, [String(port), `http://127.0.0.1:${port}`])
+  assert.notEqual(second[0], first[0])
+  // The issuer follows the fresh port.
+  assert.equal(second[1], `http://127.0.0.1:${second[0]}`)
+  const retries = warn.mock.calls
+    .map((call) => String(call.arguments[0]))
+    .filter((message) => message.includes('Starting the stack again'))
+  assert.equal(retries.length, 1)
+  assert.match(retries[0], new RegExp(`reserved port ${port}\\b`))
 })
