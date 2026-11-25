@@ -33,3 +33,13 @@ export const fill = style({
   width: '100%',
 })
 globalStyle(`${fill} > :last-child`, { marginInlineStart: 'auto' })
+
+// An option's label that takes width and no height or text: generated content
+// stays out of the trigger's text, and hidden it stays out of its name.
+export const widthOf = style({
+  display: 'block',
+  height: 0,
+  overflow: 'hidden',
+  visibility: 'hidden',
+  '::before': { content: 'attr(data-label)' },
+})

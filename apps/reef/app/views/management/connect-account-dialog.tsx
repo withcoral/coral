@@ -137,7 +137,7 @@ export function ConnectAccountDialog({
       {open && (
         <Dialog.Portal>
           <Dialog.Backdrop />
-          <Dialog.Popup size={table ? 'xl' : undefined}>
+          <Dialog.Popup size={table ? 'xxl' : undefined}>
             <Dialog.Title>
               {reconnect ? 'Reconnect' : 'Connect'} {providerName}
             </Dialog.Title>

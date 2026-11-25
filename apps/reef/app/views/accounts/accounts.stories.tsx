@@ -278,24 +278,26 @@ const sharedSecretEntry: AuthorizationView = {
 export const SecretEntryWithSecretStore: Story = {
   render: () => <AuthorizationPage view={sharedSecretEntry} />,
   play: async ({ canvas, canvasElement }) => {
-    const source = canvas.getByRole('button', { name: 'Source for Token' })
+    const type = canvas.getByRole('button', { name: 'Type for Token' })
     const typed = () => canvasElement.querySelector('input[name="credential.token"]')
-    await expect(source).toHaveTextContent('Typed value')
+    await expect(type).toHaveTextContent('Value')
     await expect(typed()).not.toBeNull()
-    await userEvent.click(source)
+    await userEvent.click(type)
     await userEvent.click(
-      await within(document.body).findByRole('menuitemradio', { name: 'platform' }),
+      await within(document.body).findByRole('menuitemradio', { name: 'Secret store' }),
     )
     await expect(typed()).toBeNull()
+    // The first store Coral can read is the one a new reference starts on.
+    const source = canvas.getByRole('button', { name: 'Secret store for Token' })
+    await expect(source).toHaveTextContent('platform')
     await expect(canvas.getByRole('textbox', { name: 'Path for Token' })).toBeRequired()
     await expect(canvas.getByRole('textbox', { name: 'Key for Token' })).toBeRequired()
-    await expect(source).toHaveTextContent('platform')
     // An env store's reference is one variable name, with its prefix as a hint.
     await userEvent.click(source)
     await userEvent.click(await within(document.body).findByRole('menuitemradio', { name: 'env' }))
     const variable = await canvas.findByRole('textbox', { name: 'Variable name for Token' })
     await expect(variable).toBeRequired()
-    await expect(variable).toHaveAccessibleDescription('Variable name Starts with MYCO_')
+    await expect(variable).toHaveAccessibleDescription('Starts with MYCO_')
     await expect(canvas.queryByRole('textbox', { name: 'Path for Token' })).toBeNull()
     await expect(canvas.queryByRole('textbox', { name: 'Key for Token' })).toBeNull()
     // A store Coral cannot read now is still offered, and says why in words.
@@ -323,7 +325,7 @@ export const ReconnectAfterGrantRevoked: Story = {
     />
   ),
   play: async ({ canvas }) => {
-    await expect(canvas.getByRole('button', { name: 'Source for Token' })).toHaveTextContent(
+    await expect(canvas.getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
       'removed',
     )
   },
@@ -341,7 +343,7 @@ export const ReconnectWithSavedReference: Story = {
     />
   ),
   play: async ({ canvas, canvasElement }) => {
-    await expect(canvas.getByRole('button', { name: 'Source for Token' })).toHaveTextContent(
+    await expect(canvas.getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
       'research',
     )
     await expect(canvas.getByRole('textbox', { name: 'Path for Token' })).toHaveValue(

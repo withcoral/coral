@@ -9,14 +9,16 @@ import type { CredentialFieldEntry } from './credential-fields'
 import * as styles from './credential-fields.css'
 import { UNKNOWN_REFERENCE_FORM } from '@/lib/reference-form'
 
-/** The source a field starts on that is not a store: the value typed here. */
-const VALUE = ''
+/** A field's two types: a value typed here, or a reference to a secret store. */
+const VALUE = 'value'
+const STORE = 'store'
 
 /**
- * Each Credential Field as a row: the field, where its value comes from, and the
- * value or the reference. The Source menu offers a typed value or any store on
- * offer, so one choice picks both. The caller renders each typed value's input,
- * so it stays inside the caller's document form. Only the chosen inputs post.
+ * Each Credential Field as a row: the field, its type, and the value or the
+ * reference. The Type menu offers a typed value or a secret store, as Setup's
+ * Headers table does; a reference then names its store, path and key. The caller
+ * renders each typed value's input, so it stays inside the caller's document
+ * form. Only the chosen inputs post.
  */
 export function CredentialTable({
   fields,
@@ -35,9 +37,10 @@ export function CredentialTable({
       ariaLabel="Credentials"
       variant="card"
       columns={[
-        { label: 'Field', width: 'minmax(96px, 1fr)' },
-        { label: 'Source', width: 'content' },
-        { label: 'Value', width: 'minmax(160px, 3fr)' },
+        // A short name takes its own width, so the value keeps the rest.
+        { label: 'Field', width: 'fit-content(200px)' },
+        { label: 'Type', width: 'content' },
+        { label: 'Value', width: 'minmax(160px, 1fr)' },
       ]}
     >
       <Table.Head />
@@ -68,14 +71,17 @@ function CredentialRow({
   value: CredentialFieldEntry
 }) {
   const id = useId()
-  const [source, setSource] = useState(saved?.store ?? VALUE)
   // A saved store stays on offer after it loses its grant, so saving says why, and
   // the reference never moves to another store on its own.
   const choices =
     saved && !stores.some(({ name }) => name === saved.store)
       ? [...stores, { name: saved.store, blockers: ['Unavailable'], form: UNKNOWN_REFERENCE_FORM }]
       : stores
-  const store = choices.find(({ name }) => name === source)
+  const [type, setType] = useState(saved ? STORE : VALUE)
+  const [source, setSource] = useState(
+    saved?.store ?? (choices.find(({ blockers }) => blockers.length === 0) ?? choices[0])?.name,
+  )
+  const store = type === STORE ? choices.find(({ name }) => name === source) : undefined
   // Each store's kind says what its references hold, so the inputs follow the store.
   const form = store?.form ?? UNKNOWN_REFERENCE_FORM
   const kept = source === saved?.store ? saved : undefined
@@ -93,21 +99,14 @@ function CredentialRow({
       </Table.Cell>
       <Table.Cell control>
         <Picker
-          ariaLabel={`Source for ${field.label}`}
+          ariaLabel={`Type for ${field.label}`}
           fill
-          value={source}
-          // Two groups say where the value lives: saved with the account, or read
-          // from a store on each use.
+          value={type}
           options={[
-            { value: VALUE, label: 'Typed value', group: 'Saved here' },
-            ...choices.map(({ name, blockers }) => ({
-              value: name,
-              // A store Coral cannot read now says why in words, not by colour.
-              label: blockers.length > 0 ? `${name} (${blockers.join(', ')})` : name,
-              group: 'From secret store',
-            })),
+            { value: VALUE, label: 'Value' },
+            { value: STORE, label: 'Secret store' },
           ]}
-          onChange={setSource}
+          onChange={setType}
         />
       </Table.Cell>
       <Table.Cell control>
@@ -119,41 +118,59 @@ function CredentialRow({
             bare: true,
           })
         ) : (
-          // A new store starts empty, so a path for one kind never reaches another.
-          <span className={styles.referenceInputs} key={source}>
-            <input type="hidden" name={referenceInputName(field.name, 'store')} value={source} />
-            <span className={styles.referencePath}>
-              <Inputs.TextInput
-                bare
-                id={`${id}-value`}
-                name={referenceInputName(field.name, 'path')}
-                ariaLabel={`${form.pathLabel} for ${field.label}`}
-                ariaDescribedBy={form.pathPrefix ? `${id}-prefix` : undefined}
-                // A label inside the box, so a filled one still says what it holds.
-                prefix={form.pathLabel}
-                placeholder={form.pathPrefix ? `${form.pathPrefix}…` : undefined}
-                defaultValue={kept?.path}
-                required
+          <span className={styles.referenceInputs}>
+            <input
+              type="hidden"
+              name={referenceInputName(field.name, 'store')}
+              value={store.name}
+            />
+            <span className={styles.referenceStore}>
+              <Picker
+                ariaLabel={`Secret store for ${field.label}`}
+                fill
+                value={store.name}
+                options={choices.map(({ name, blockers }) => ({
+                  value: name,
+                  // A store Coral cannot read now says why in words, not by colour.
+                  label: blockers.length > 0 ? `${name} (${blockers.join(', ')})` : name,
+                }))}
+                onChange={setSource}
               />
-              {form.pathPrefix && (
-                <span id={`${id}-prefix`} className={visuallyHidden}>
-                  Starts with {form.pathPrefix}
+            </span>
+            {/* A new store starts empty, so a path for one kind never reaches another. */}
+            <span className={styles.referenceParts} key={store.name}>
+              <span className={styles.referencePath}>
+                <Inputs.TextInput
+                  bare
+                  id={`${id}-value`}
+                  name={referenceInputName(field.name, 'path')}
+                  ariaLabel={`${form.pathLabel} for ${field.label}`}
+                  ariaDescribedBy={form.pathPrefix ? `${id}-prefix` : undefined}
+                  placeholder={form.pathPrefix ? `${form.pathPrefix}…` : form.pathLabel}
+                  defaultValue={kept?.path}
+                  required
+                />
+                {form.pathPrefix && (
+                  <span id={`${id}-prefix`} className={visuallyHidden}>
+                    Starts with {form.pathPrefix}
+                  </span>
+                )}
+              </span>
+              {form.key && (
+                <span className={styles.referenceKey}>
+                  <Inputs.TextInput
+                    bare
+                    name={referenceInputName(field.name, 'key')}
+                    ariaLabel={`${form.key.label} for ${field.label}`}
+                    placeholder={
+                      form.key.required ? form.key.label : `${form.key.label} (optional)`
+                    }
+                    defaultValue={kept?.key}
+                    required={form.key.required}
+                  />
                 </span>
               )}
             </span>
-            {form.key && (
-              <span className={styles.referenceKey}>
-                <Inputs.TextInput
-                  bare
-                  name={referenceInputName(field.name, 'key')}
-                  ariaLabel={`${form.key.label} for ${field.label}`}
-                  prefix={form.key.label}
-                  placeholder={form.key.required ? undefined : 'optional'}
-                  defaultValue={kept?.key}
-                  required={form.key.required}
-                />
-              </span>
-            )}
           </span>
         )}
       </Table.Cell>

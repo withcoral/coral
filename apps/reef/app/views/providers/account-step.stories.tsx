@@ -254,13 +254,15 @@ export const SharedDialogOffersSecretStore: Story = {
   play: async ({ canvas }) => {
     const page = within(document.body)
     await userEvent.click(canvas.getByRole('button', { name: 'Connect the shared account' }))
-    const source = await page.findByRole('button', { name: 'Source for Token' })
-    await expect(source).toHaveTextContent('Typed value')
-    await userEvent.click(source)
-    await userEvent.click(await page.findByRole('menuitemradio', { name: 'platform' }))
+    const type = await page.findByRole('button', { name: 'Type for Token' })
+    await expect(type).toHaveTextContent('Value')
+    await userEvent.click(type)
+    await userEvent.click(await page.findByRole('menuitemradio', { name: 'Secret store' }))
     await expect(document.querySelector('input[name="credential.token"]')).toBeNull()
+    await expect(page.getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
+      'platform',
+    )
     await expect(page.getByRole('textbox', { name: 'Path for Token' })).toBeRequired()
-    await expect(source).toHaveTextContent('platform')
   },
 }
 export const OwnDialogStaysTyped: Story = {
@@ -274,7 +276,7 @@ export const OwnDialogStaysTyped: Story = {
     await userEvent.click(canvas.getByRole('button', { name: 'Connect your account' }))
     await page.findByRole('dialog')
     await expect(page.getByLabelText('Token', { exact: true })).toBeInTheDocument()
-    await expect(page.queryByRole('button', { name: 'Source for Token' })).toBeNull()
+    await expect(page.queryByRole('button', { name: 'Type for Token' })).toBeNull()
   },
 }
 

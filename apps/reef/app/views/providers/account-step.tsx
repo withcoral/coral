@@ -295,7 +295,7 @@ export function AccountStep({
           <Dialog.Portal>
             <Dialog.Backdrop />
             {/* With stores on offer, each field is a row of a table that needs the width. */}
-            <Dialog.Popup size={shared && showsCredentialTable(secretStores) ? 'xl' : undefined}>
+            <Dialog.Popup size={shared && showsCredentialTable(secretStores) ? 'xxl' : undefined}>
               <Dialog.Title>{shared ? audience.shareTitle : 'Connect your account'}</Dialog.Title>
               <Dialog.Description>
                 {shared ? audience.shareBody : audience.onlyYou}

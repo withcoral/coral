@@ -251,7 +251,7 @@ it('opens a replacement with the shared account references filled in', async () 
   })
   await userEvent.click(screen.getByRole('button', { name: 'Connect the shared account' }))
   const dialog = await screen.findByRole('dialog')
-  expect(within(dialog).getByRole('button', { name: 'Source for Token' })).toHaveTextContent(
+  expect(within(dialog).getByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
     'platform',
   )
   expect(within(dialog).getByRole('textbox', { name: 'Path for Token' })).toHaveValue(

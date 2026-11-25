@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { useState } from 'react'
+import { expect, userEvent, within } from 'storybook/test'
 
 import {
   buildSeverityPickerOptions,
@@ -132,5 +133,38 @@ export const SeverityConfigurations: Story = {
         />
       </div>
     )
+  },
+}
+
+// Catches: a fill trigger that takes the width of its current choice, so a new
+// choice moves the column beside it.
+export const FillKeepsItsWidth: Story = {
+  render: function Render() {
+    const [source, setSource] = useState('value')
+    return (
+      <div style={{ display: 'inline-grid', gridTemplateColumns: 'max-content 160px', gap: 8 }}>
+        <Picker
+          ariaLabel="Source"
+          fill
+          value={source}
+          options={[
+            { value: 'value', label: 'Value' },
+            { value: 'research', label: 'research (Needs Enterprise)', group: 'Secret store' },
+          ]}
+          onChange={setSource}
+        />
+        <span>Beside</span>
+      </div>
+    )
+  },
+  play: async ({ canvas }) => {
+    const trigger = canvas.getByRole('button', { name: 'Source' })
+    const before = trigger.getBoundingClientRect().width
+    await userEvent.click(trigger)
+    await userEvent.click(
+      await within(document.body).findByRole('menuitemradio', { name: /^research/ }),
+    )
+    await expect(trigger).toHaveTextContent(/^research \(Needs Enterprise\)$/)
+    await expect(trigger.getBoundingClientRect().width).toBe(before)
   },
 }

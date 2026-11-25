@@ -23,7 +23,11 @@ export interface PickerProps {
   disabled?: boolean
   /** The trigger's id, for a page that moves focus to it. */
   id?: string
-  /** Takes its container's width, its label at the start and the chevron at the end. */
+  /**
+   * Takes its container's width, its label at the start and the chevron at the end.
+   * It is never narrower than its longest option, so a column of them keeps one
+   * width whatever each one picks.
+   */
   fill?: boolean
   /** Draws the error border and marks the value invalid. */
   invalid?: boolean
@@ -69,7 +73,19 @@ export function Picker({
         }
       >
         {selectedIcon && <Icon color={selectedIcon.color} name={selectedIcon.name} size="16" />}
-        <Button.Text>{displayLabel}</Button.Text>
+        <Button.Text>
+          {displayLabel}
+          {fill &&
+            // Each option's label in no height, so a new choice does not move what sits beside.
+            options.map((option) => (
+              <span
+                key={option.value}
+                aria-hidden
+                className={styles.widthOf}
+                data-label={option.label}
+              />
+            ))}
+        </Button.Text>
         <Button.Icon name="ChevronDown" />
       </Menu.Trigger>
       <Menu.Content className={styles.popup}>

@@ -226,7 +226,7 @@ export function EditConfigurationPage({
         <Dialog.Backdrop />
         {/* Typed credentials with a store on offer show as a table that needs the width. */}
         <Dialog.Popup
-          size={!oauth && showsCredentialTable(secretStores, savedReferences) ? 'xl' : undefined}
+          size={!oauth && showsCredentialTable(secretStores, savedReferences) ? 'xxl' : undefined}
         >
           <Dialog.Title>{audience.shareTitle}</Dialog.Title>
           <Dialog.Description>{audience.shareBody}</Dialog.Description>
