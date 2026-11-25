@@ -18,15 +18,25 @@ pub struct Signal(&'static str);
 /// The change signal's name on the Postgres channel: none.
 pub(crate) const CHANGE_SIGNAL_NAME: &str = "";
 
+/// The longest name a signal takes, far below the 8,000 bytes that Postgres
+/// takes as a notification's payload.
+const SIGNAL_NAME_MAX_BYTES: usize = 64;
+
 impl Signal {
     /// The signal named `name`, which the module that rings it owns.
     ///
     /// # Panics
     ///
-    /// When `name` is empty, the change signal's own name.
+    /// When `name` is empty (the change signal's name), or longer than
+    /// `SIGNAL_NAME_MAX_BYTES`. Evaluated in a `const` item, as every signal
+    /// is, it fails the build instead.
     #[must_use]
     pub const fn new(name: &'static str) -> Self {
         assert!(!name.is_empty(), "a signal has a name");
+        assert!(
+            name.len() <= SIGNAL_NAME_MAX_BYTES,
+            "a signal's name exceeds SIGNAL_NAME_MAX_BYTES"
+        );
         Self(name)
     }
 

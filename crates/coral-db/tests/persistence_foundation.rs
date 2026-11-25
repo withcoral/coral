@@ -1695,6 +1695,7 @@ async fn postgres_notifications_cross_independent_workers() {
         .unwrap();
     let writer = fixture.connect_peer().await.unwrap();
     let mut observer = observer_db.subscribe_changes().unwrap();
+    let mut queue = observer_db.subscribe_signal(QUEUE).unwrap();
     let other_fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
     let other = other_fixture.database();
     let mut unrelated = other.begin().await.unwrap();
@@ -1702,10 +1703,14 @@ async fn postgres_notifications_cross_independent_workers() {
         .execute_change(insert_record("other-schema", "private"))
         .await
         .unwrap();
+    unrelated.ring_on_commit(QUEUE);
     unrelated.commit().await.unwrap();
     tokio::time::timeout(Duration::from_millis(50), observer.changed())
         .await
         .expect_err("another state schema must not wake this observer");
+    tokio::time::timeout(Duration::from_millis(50), queue.changed())
+        .await
+        .expect_err("another state schema's ring must not wake this reader");
     let mut tx = writer.begin().await.unwrap();
     tx.execute_change(insert_record("remote", "visible"))
         .await
@@ -1719,7 +1724,6 @@ async fn postgres_notifications_cross_independent_workers() {
         record(&observer_db, "remote").await.unwrap().value,
         "visible"
     );
-    let mut queue = observer_db.subscribe_signal(QUEUE).unwrap();
     let mut tx = writer.begin().await.unwrap();
     tx.execute(insert_record("remote-queued", "signalled"))
         .await

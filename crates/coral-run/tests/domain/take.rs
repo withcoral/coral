@@ -320,21 +320,27 @@ async fn no_room_takes_nothing_and_new_room_takes_at_once() {
     );
 }
 
-/// Catches: a loop that waits for its backstop, or for a spacing, after a
-/// Run's acceptance rang the queue signal; or a take that rings it and
-/// wakes the loop for nothing.
+/// Catches: a loop that waits for its backstop after a Run's acceptance
+/// rang the queue signal, or a take that rings it and wakes the loop for
+/// nothing.
 #[tokio::test]
 async fn a_run_accepted_while_the_loop_waits_is_taken_when_the_queue_signal_rings() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let runs = fixture.runs.clone();
     let (workspace_id, principal) = fixture.user_scope("ringer", "Rung").await;
-    let first = waiting_runs_in(&runs, &principal, &workspace_id, 1).await;
-    let streams = PullStreams::default();
-    let (_stream, mut sent) = streams.scripted("roomy", 2);
     let mut queue = fixture
         .database
         .subscribe_signal(crate::run_repository::QUEUE)
         .expect("subscribe to the queue signal");
+    let first = waiting_runs_in(&runs, &principal, &workspace_id, 1).await;
+    // Postgres delivers the acceptance's ring after its commit: hear it
+    // here, so a later ring is the take's.
+    tokio::time::timeout(EVENTUALLY, queue.changed())
+        .await
+        .expect("the acceptance rings the queue signal")
+        .expect("the signal is available");
+    let streams = PullStreams::default();
+    let (_stream, mut sent) = streams.scripted("roomy", 2);
     // A backstop that does not come during the test.
     take_loop(&runs, &streams, LONG);
     assert_eq!(ids(&next_taken(&mut sent).await), first);
