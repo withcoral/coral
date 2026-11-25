@@ -17,7 +17,8 @@
 //! vector list, before the merge cut it to the window, which can lose the
 //! nearest entries; the list holds only the Tools inside the search's
 //! Provider filter, so each comparison is inside it too. The distances come
-//! from one query vector and one model, so no tuned limit enters.
+//! from one query vector and one model, so no limit on a distance's value
+//! enters; the one tuned number is the rank of the rare-word rule.
 //!
 //! The step changes marks only. It does not reorder a window and does not
 //! drop an entry. It reads the kind of an entry directly, the one place in

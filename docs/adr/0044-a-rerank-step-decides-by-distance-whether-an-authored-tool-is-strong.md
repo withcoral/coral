@@ -105,7 +105,7 @@ count for every kind). Both now state the current rules; this section gives the 
   not ready, the query not embedded). An Authored Tool has none when its vector is missing or stale, its vector query
   fails, or its vector list ends before it; the list holds as many of the nearest Authored Tools of one kind as the
   window holds. In each case the rare path word decides alone and rule 3 makes nothing strong, so a search without the
-  vector side marks Authored Tools as it did before this step.
+  vector side makes the same Authored Tools strong as before this step; the others are last, not weak.
 - **Equal distances.** An Authored Tool exactly as near as the nearest Provider Tool is not strong by rule 3. One
   exactly as near as the Provider Tool of the rank of rule 2 is near enough for its rare path word.
 - **The Provider filter keeps its rule.** It does not narrow Authored Tools, as the `coral.search` description says. An
