@@ -42,6 +42,7 @@ pub mod oauth_clients;
 pub use audience::PrivateAudience;
 mod repository;
 mod session;
+mod user_identifiers;
 pub mod user_tokens;
 
 pub use authentication::{AuthenticationError, PrincipalAuthentication, WorkspaceFixedBy};
