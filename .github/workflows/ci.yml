@@ -178,8 +178,52 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           cache-key: ci-rust-windows
-      # Report every failing test binary, not only the first.
-      - run: cargo test --locked --no-fail-fast -p coral-app -p coral -p coral-credentials -p coral-db -p coral-run-executor
+      - uses: taiki-e/install-action@5f57d6cb7cd20b14a8a27f522884c4bc8a187458 # v2.75.19
+        with:
+          tool: nextest
+      # The coral-app lib test binary sometimes dies with 0xC0000409, a
+      # fast-fail that prints nothing and names no test (#3517). It is likely
+      # not a Rust stack overflow, which prints its thread and exits
+      # 0xC00000FD. Have Windows keep a minidump of any process that crashes,
+      # so the next one shows the fast-fail code and the faulting stack.
+      # The key is the global one, not a per-exe key like desktop.yml's
+      # node.exe, because each test binary's name carries a hash.
+      - name: Keep crash dumps
+        continue-on-error: true
+        run: |
+          $dumps = Join-Path $env:RUNNER_TEMP 'crash'
+          New-Item -ItemType Directory -Force -Path $dumps | Out-Null
+          $key = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps'
+          New-Item -Path $key -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpFolder -Value $dumps -PropertyType ExpandString -Force | Out-Null
+          New-ItemProperty -Path $key -Name DumpType -Value 1 -PropertyType DWord -Force | Out-Null
+      # nextest runs each test in its own process, so a crash names its test
+      # and exit code and no longer stops the rest of its binary. That also
+      # stops tests sharing a process, which could hide an interaction between
+      # them; Linux runs them this way too. These crates have no doctests.
+      - run: cargo nextest run --locked --no-fail-fast -p coral-app -p coral -p coral-credentials -p coral-db -p coral-run-executor
+      # A dump needs the crashed test binary and its PDB to name Rust frames.
+      - name: Add the crashed test binaries to the dumps
+        if: ${{ failure() }}
+        continue-on-error: true
+        run: |
+          $dumps = Join-Path $env:RUNNER_TEMP 'crash'
+          Get-ChildItem -Path $dumps -Filter '*.dmp' -ErrorAction SilentlyContinue | ForEach-Object {
+            $exe = $_.Name -replace '\.\d+\.dmp$', ''
+            $names = $exe, ($exe -replace '\.exe$', '.pdb')
+            # Test binaries sit in deps or build; a spawned coral.exe sits in target\debug.
+            @(Get-ChildItem -Path target\debug\* -Include $names -File -ErrorAction SilentlyContinue) +
+              @(Get-ChildItem -Path target\debug\deps, target\debug\build -Recurse -Include $names -ErrorAction SilentlyContinue) |
+              Copy-Item -Destination $dumps -Force
+          }
+      - name: Keep the crash evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: rust-windows-test-crash-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/crash
+          if-no-files-found: ignore
+          retention-days: 7
 
   reef:
     name: Reef / Checks
