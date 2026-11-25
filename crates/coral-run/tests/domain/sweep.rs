@@ -395,19 +395,41 @@ async fn the_sqlite_boot_pass_ends_a_local_childs_run_and_leaves_a_dialed_ones()
     assert!(rows.contains(&LIVE.to_owned()));
 }
 
-/// Catches: a local child's exit that leaves its Runs to its lease.
+/// Catches: a local child's exit that leaves its Runs to its lease, or a
+/// put-back that leaves its Run to the take loop's backstop.
 #[tokio::test]
 async fn a_local_childs_exit_releases_its_runs_at_once() {
     let sweep = Sweep::new().await;
     sweep.lease(LOCAL, Kind::Local, START + 60 * SECOND).await;
     let started = sweep.started(LOCAL, Kind::Local).await;
     let (unstarted, _) = sweep.taken(LOCAL, Kind::Local, sweep.now()).await;
+    // The acceptances rang the queue signal. SQLite rings before a commit
+    // returns. Postgres delivers a ring later, but only to a connection
+    // that listened before the commit, so a new one hears the put-back alone.
+    let listener = match sweep.fixture.database.system() {
+        DatabaseSystem::Sqlite => sweep.fixture.database.clone(),
+        DatabaseSystem::Postgres => Arc::new(
+            sweep
+                .fixture
+                .test_database
+                .connect_peer()
+                .await
+                .expect("a handle that listens after the acceptances"),
+        ),
+    };
+    let mut queue = listener
+        .subscribe_signal(crate::run_repository::QUEUE)
+        .expect("subscribe to the queue signal");
 
     let released = sweep
         .runs
         .release_run_executor(LOCAL)
         .await
         .expect("release");
+    tokio::time::timeout(EVENTUALLY, queue.changed())
+        .await
+        .expect("the put-back rings the queue signal")
+        .expect("the signal is available");
 
     assert_eq!(
         released,

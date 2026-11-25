@@ -9,10 +9,13 @@ use std::sync::LazyLock;
 
 use coral_db::{
     ChangeWait, Database, DatabaseOptions, DatabaseSystem, Error, MigrationPlan, MigrationProgress,
-    QueryExecutor, ReadOnlyDatabase, RowLock, UnixNanos,
+    QueryExecutor, ReadOnlyDatabase, RowLock, Signal, UnixNanos,
 };
 use coral_test_support::TestDatabase;
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
+
+/// A named signal that the fixture's writes ring.
+const QUEUE: Signal = Signal::new("fixture_queue");
 
 static MIGRATOR: LazyLock<MigrationPlan> =
     LazyLock::new(|| MigrationPlan::shared(&sqlx::migrate!("./tests/migrations").migrations));
@@ -1589,6 +1592,66 @@ async fn notifications_follow_commits_not_reads_locks_rollbacks_or_zero_row_writ
     );
 }
 
+/// Catches: a signal that rings before its commit, at a rollback, for a
+/// plain observable change or for another signal, or that wakes the change
+/// signal's readers.
+#[tokio::test]
+async fn a_signal_rings_only_its_own_readers_and_only_at_commit() {
+    use std::time::Duration;
+    const OTHER: Signal = Signal::new("fixture_other");
+    let quiet = Duration::from_millis(50);
+    let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
+    let database = fixture.database();
+    let mut queue = database.subscribe_signal(QUEUE).unwrap();
+    let mut other = database.subscribe_signal(OTHER).unwrap();
+    let mut changes = database.subscribe_changes().unwrap();
+
+    let mut tx = database.begin().await.unwrap();
+    tx.execute_change(insert_record("rolled-back", "hidden"))
+        .await
+        .unwrap();
+    tx.ring_on_commit(QUEUE);
+    tx.rollback().await.unwrap();
+    let mut tx = database.begin().await.unwrap();
+    tx.execute_change(insert_record("changed", "unsignalled"))
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    // The change arrives after anything the rollback could have sent.
+    tokio::time::timeout(Duration::from_secs(2), changes.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(quiet, queue.changed())
+        .await
+        .expect_err("a rollback or a plain change rings no signal");
+
+    let mut tx = database.begin().await.unwrap();
+    tx.execute(insert_record("queued", "signalled"))
+        .await
+        .unwrap();
+    tx.ring_on_commit(QUEUE);
+    tx.ring_on_commit(QUEUE);
+    tokio::time::timeout(quiet, queue.changed())
+        .await
+        .expect_err("an uncommitted ring wakes nobody");
+    tx.commit().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), queue.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        record(database.as_ref(), "queued").await.unwrap().value,
+        "signalled"
+    );
+    tokio::time::timeout(quiet, other.changed())
+        .await
+        .expect_err("a ring wakes no other signal's reader");
+    tokio::time::timeout(quiet, changes.changed())
+        .await
+        .expect_err("a ring wakes no change reader");
+}
+
 #[tokio::test]
 async fn sqlite_commit_notifies_even_when_the_caller_stops_awaiting_the_acknowledgement() {
     use std::time::Duration;
@@ -1632,6 +1695,7 @@ async fn postgres_notifications_cross_independent_workers() {
         .unwrap();
     let writer = fixture.connect_peer().await.unwrap();
     let mut observer = observer_db.subscribe_changes().unwrap();
+    let mut queue = observer_db.subscribe_signal(QUEUE).unwrap();
     let other_fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
     let other = other_fixture.database();
     let mut unrelated = other.begin().await.unwrap();
@@ -1639,10 +1703,14 @@ async fn postgres_notifications_cross_independent_workers() {
         .execute_change(insert_record("other-schema", "private"))
         .await
         .unwrap();
+    unrelated.ring_on_commit(QUEUE);
     unrelated.commit().await.unwrap();
     tokio::time::timeout(Duration::from_millis(50), observer.changed())
         .await
         .expect_err("another state schema must not wake this observer");
+    tokio::time::timeout(Duration::from_millis(50), queue.changed())
+        .await
+        .expect_err("another state schema's ring must not wake this reader");
     let mut tx = writer.begin().await.unwrap();
     tx.execute_change(insert_record("remote", "visible"))
         .await
@@ -1656,6 +1724,17 @@ async fn postgres_notifications_cross_independent_workers() {
         record(&observer_db, "remote").await.unwrap().value,
         "visible"
     );
+    let mut tx = writer.begin().await.unwrap();
+    tx.execute(insert_record("remote-queued", "signalled"))
+        .await
+        .unwrap();
+    tx.ring_on_commit(QUEUE);
+    tx.commit().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), queue.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    // The ring wakes no change reader either.
     tokio::time::timeout(keepalive * 5, observer.changed())
         .await
         .expect_err("notification keepalives must not invalidate domain views");
@@ -1674,17 +1753,26 @@ async fn postgres_notification_reconnect_requires_a_resnapshot_after_the_gap() {
     let fixture = TestDatabase::new(&MIGRATOR).await.unwrap();
     let database = fixture.database();
     let mut observer = database.subscribe_changes().unwrap();
+    let mut queue = database.subscribe_signal(QUEUE).unwrap();
     database.interrupt_change_notifications().await.unwrap();
-    let lost = tokio::time::timeout(Duration::from_secs(2), observer.changed())
-        .await
-        .unwrap();
-    assert!(matches!(lost, Err(coral_db::Error::ObservationUnavailable)));
+    for subscription in [&mut observer, &mut queue] {
+        let lost = tokio::time::timeout(Duration::from_secs(2), subscription.changed())
+            .await
+            .unwrap();
+        assert!(matches!(lost, Err(coral_db::Error::ObservationUnavailable)));
+    }
     let mut tx = database.begin().await.unwrap();
     tx.execute_change(insert_record("notification-gap", "resnapshot"))
         .await
         .unwrap();
     tx.commit().await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), observer.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    // No commit rang the signal: the resync wakes its readers, since one
+    // may have rung in the gap.
+    tokio::time::timeout(Duration::from_secs(5), queue.changed())
         .await
         .unwrap()
         .unwrap();

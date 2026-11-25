@@ -1205,11 +1205,18 @@ async fn standalone_acceptance_can_commit_before_launch_without_a_goal() {
         .unwrap();
     let id = staged.run_id().clone();
     transaction.commit().await.unwrap();
+    // The commit alone makes the Run visible. The take loop starts it
+    // without `launch`, so it may already have ended.
     let accepted = runs
         .observe(&actor, workspace.id(), &id, &immediate(None, 100))
         .await
-        .unwrap();
-    assert_eq!(accepted.state(), RunState::Running);
+        .expect("the committed Run is visible before launch");
+    assert_eq!(accepted.run_id(), &id);
+    assert!(
+        matches!(accepted.state(), RunState::Running | RunState::Succeeded),
+        "{:?}",
+        accepted.state()
+    );
     runs.launch(staged).await.unwrap();
     let terminal = wait_for_terminal(&runs, &actor, workspace.id(), &id).await;
     assert_eq!(terminal.state(), RunState::Succeeded);

@@ -1,12 +1,17 @@
 //! The take (ADR 0027): claims the oldest waiting Runs for one pull stream.
 
-use coral_db::{Database, RowLock, Transaction};
+use coral_db::{Database, RowLock, Signal, Transaction};
 use coral_run_executor::Kind;
 use sea_query::{CaseStatement, Condition, Expr, ExprTrait as _, Order, Query};
 use uuid::Uuid;
 
 use super::ProgramRunRecords;
 use crate::Error;
+
+/// Rings when a Run starts to wait: at its acceptance, and when a take that
+/// never started is put back. A take does not ring it, so the take loop does
+/// not wake itself.
+pub(crate) const QUEUE: Signal = Signal::new("run_queue");
 
 /// The Run Executor a take claims Runs for, as each Run records it.
 pub(crate) struct Taker<'a> {
