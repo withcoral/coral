@@ -222,3 +222,80 @@ async fn a_workspace_owner_sees_the_model_and_turns_the_sub_agent_on_for_it_alon
     );
     assert_eq!(read(&owner).await, Err(archived));
 }
+
+/// Answers each test with the next of its results, and keeps the key it got.
+struct Tester {
+    results: std::sync::Mutex<Vec<Result<(), coral_agent_model::TestFailure>>>,
+    keys: std::sync::Mutex<Vec<Option<String>>>,
+}
+
+#[tonic::async_trait]
+impl coral_agent_model::ModelTester for Tester {
+    async fn test(
+        &self,
+        _settings: &coral_agent_model::ModelSettings,
+        key: Option<coral_credentials::Secret>,
+    ) -> Result<(), coral_agent_model::TestFailure> {
+        let key = key.map(|key| key.expose().to_owned());
+        self.keys.lock().unwrap().push(key);
+        self.results.lock().unwrap().remove(0)
+    }
+}
+
+/// coral-agent owns what a test does. This checks the key that each request
+/// means, each outcome on the wire, and who may ask.
+#[tokio::test]
+async fn an_organization_owner_tests_a_model_with_the_key_the_request_means() {
+    use coral_agent_model::TestFailure;
+    use management::SubAgentModelTestOutcome as Outcome;
+
+    let f = Fixture::new().await;
+    let (owner, member) = (f.token(&f.owner, "reef"), f.token(&f.member, "reef"));
+    let entered = settings("https://a.example/v1", "");
+    let mut client = Client::new(f.channel.clone());
+    let saved = create(&mut client, &owner, entered.clone(), Some("saved")).await;
+    saved.unwrap();
+    let test = |token: &str, key: Option<&str>| {
+        let message = management::TestSubAgentModelRequest {
+            settings: Some(entered.clone()),
+            api_key: key.map(str::to_owned),
+        };
+        let request = request(message, token, "reef");
+        let mut client = Client::new(f.channel.clone());
+        async move {
+            let tested = client.test_sub_agent_model(request).await;
+            let tested = tested.map(tonic::Response::into_inner);
+            tested
+                .map(|tested| (tested.outcome(), tested.http_status))
+                .map_err(|status| failure(&status))
+        }
+    };
+    let (code, _reason) = test(&owner, None).await.unwrap_err();
+    assert_eq!(code, tonic::Code::Unimplemented, "no Sub-agent is composed");
+
+    let tester = Arc::new(Tester {
+        results: std::sync::Mutex::new(vec![
+            Ok(()),
+            Err(TestFailure::Refused(401)),
+            Err(TestFailure::Unreachable),
+            Err(TestFailure::Forbidden),
+            Err(TestFailure::Unreadable),
+        ]),
+        keys: std::sync::Mutex::default(),
+    });
+    f.agent_models.set_tester(tester.clone());
+    let denied = test(&member, None).await;
+    assert_eq!(denied, Err((DENIED.0, DENIED.1.to_owned())));
+    for (key, expected) in [
+        (None, (Outcome::Answered, None)),
+        (Some("typed"), (Outcome::Refused, Some(401))),
+        (Some(""), (Outcome::Unreachable, None)),
+        (None, (Outcome::Forbidden, None)),
+        (None, (Outcome::Unreadable, None)),
+    ] {
+        assert_eq!(test(&owner, key).await, Ok(expected), "{key:?}");
+    }
+    let keys = tester.keys.lock().unwrap().clone();
+    let [saved, typed] = ["saved", "typed"].map(|key| Some(key.to_owned()));
+    assert_eq!(keys, [saved.clone(), typed, None, saved.clone(), saved]);
+}

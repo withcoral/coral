@@ -180,11 +180,14 @@ impl AgentModels {
             TestKey::Absent => None,
             // The stored key is only ever sent to the base URL that it was
             // saved with.
-            TestKey::Stored => self
-                .active_in_transaction(&mut tx)
-                .await?
-                .filter(|active| active.settings.base_url == settings.base_url)
-                .and_then(|active| active.api_key),
+            TestKey::Stored => {
+                let stored = repository::find(&mut tx, RowLock::None).await?;
+                stored
+                    .filter(|stored| stored.model.settings.base_url == settings.base_url)
+                    .map(|stored| self.active(stored))
+                    .transpose()?
+                    .and_then(|active| active.api_key)
+            }
         };
         tx.commit().await?;
         let tester = self.inner.tester.get().ok_or(Error::NoTester)?;
@@ -229,9 +232,12 @@ impl AgentModels {
         &self,
         tx: &mut Transaction<'_>,
     ) -> Result<Option<ActiveModel>, Error> {
-        let Some(stored) = repository::find(tx, RowLock::None).await? else {
-            return Ok(None);
-        };
+        let stored = repository::find(tx, RowLock::None).await?;
+        stored.map(|stored| self.active(stored)).transpose()
+    }
+
+    /// The stored model with its key, opened for the model's own destination.
+    fn active(&self, stored: StoredModel) -> Result<ActiveModel, Error> {
         let model = stored.model;
         let record = key_record(model.id, &model.settings.base_url);
         let open = |sealed: String| {
@@ -239,11 +245,11 @@ impl AgentModels {
             let opened = opened.map_err(|_cryptography| Error::Sealing)?;
             Secret::new(opened.to_string()).map_err(|_invalid| Error::Sealing)
         };
-        Ok(Some(ActiveModel {
+        Ok(ActiveModel {
             id: model.id,
             settings: model.settings,
             api_key: stored.sealed_api_key.map(open).transpose()?,
-        }))
+        })
     }
 
     /// Sets the model of an Organization that has none. The caller owns the

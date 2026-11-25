@@ -153,7 +153,7 @@ impl ModelClient {
     }
 
     /// Asks for one reply to a fixed prompt, with the Sub-agent's tools, and
-    /// does not retry.
+    /// does not retry. No Turn asks, so it is no model call in the telemetry.
     /// # Errors
     /// Returns why the model gave no reply.
     pub(crate) async fn probe(&self) -> Result<(), ModelError> {
@@ -443,8 +443,9 @@ pub(crate) enum ModelError {
     /// The destination policy forbids the server.
     #[error("the model settings do not lead to a model endpoint Coral may use")]
     Forbidden,
-    /// The server's answer could not be read for the configured protocol.
-    #[error("the model settings do not lead to a model endpoint Coral may use")]
+    /// The request could not be written, or the server's answer could not be read, for the
+    /// configured protocol.
+    #[error("the model server's answer does not read as a reply of its protocol")]
     Misconfigured,
 }
 
