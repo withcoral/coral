@@ -19,7 +19,6 @@ export const settingsPath = {
   organizationMembers: '/organization/members',
   organizationWorkspaces: '/organization/workspaces',
   secretStores: '/organization/secret-stores',
-  subAgent: '/organization/sub-agent',
   usageData: '/usage-data',
 }
 
@@ -60,12 +59,6 @@ export function settingsNav({
       label: 'Secret stores',
       to: settingsPath.secretStores,
       icon: 'KeyRound',
-    },
-    {
-      id: 'sub-agent',
-      label: 'Sub-agent',
-      to: settingsPath.subAgent,
-      icon: 'Brain',
     },
     {
       id: 'usage-data',

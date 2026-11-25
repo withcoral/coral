@@ -11,7 +11,6 @@ import {
   openDialog,
   programRunner,
 } from '../../../support/providers.ts'
-import { openSettings } from '../../../support/settings.ts'
 
 // The Sub-agent across every process: an Organization Owner sets its model in Reef, a Workspace
 // Owner consents to where it sends their data, a Program gets an answer from the model's own
@@ -89,8 +88,8 @@ test('A workspace owner turns on the sub-agent that an organization owner set up
 
   await asOwner(async ({ page, step }) => {
     await step('The organization owner sets the model', async () => {
-      await page.goto('/')
-      await openSettings(page, 'Sub-agent')
+      // No menu has the page yet.
+      await page.goto('/organization/sub-agent')
       await page.getByLabel('Base URL').fill(`${model.origin}/v1`)
       await page.getByLabel('Model name').fill('reel-1')
       await page.getByLabel('API key').fill(KEY)
@@ -147,8 +146,7 @@ test('A workspace owner turns on the sub-agent that an organization owner set up
 
   await asOwner(async ({ page, step }) => {
     await step('The organization owner changes the base URL', async () => {
-      await page.goto('/')
-      await openSettings(page, 'Sub-agent')
+      await page.goto('/organization/sub-agent')
       await page.getByLabel('Base URL').fill(`${model.origin}/v2`)
       await page
         .getByText('Saving a new base URL blocks the sub-agent in every workspace.')

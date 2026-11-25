@@ -15,7 +15,6 @@ test.each([
       ['Members', '/organization/members'],
       ['Workspaces', '/organization/workspaces'],
       ['Secret stores', '/organization/secret-stores'],
-      ['Sub-agent', '/organization/sub-agent'],
       ['Usage data', '/usage-data'],
     ],
   ],
@@ -30,7 +29,6 @@ test.each([
     [
       ['Workspaces', '/organization/workspaces'],
       ['Secret stores', '/organization/secret-stores'],
-      ['Sub-agent', '/organization/sub-agent'],
       ['Usage data', '/usage-data'],
     ],
   ],
@@ -39,7 +37,6 @@ test.each([
     { organizationOwner: true, people: false, secretStoresEnabled: false },
     [
       ['Workspaces', '/organization/workspaces'],
-      ['Sub-agent', '/organization/sub-agent'],
       ['Usage data', '/usage-data'],
     ],
   ],
@@ -51,7 +48,6 @@ test.each([
 test.each([
   ['/organization/members', 'members'],
   ['/organization/workspaces', 'workspaces'],
-  ['/organization/sub-agent', 'sub-agent'],
   ['/usage-data', 'usage-data'],
   ['/workspaces/ops/members', undefined],
 ])('at %s the current section is %s', (pathname, expected) => {
