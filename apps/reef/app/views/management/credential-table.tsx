@@ -97,18 +97,25 @@ function CredentialRow({
           )}
         </span>
       </Table.Cell>
-      <Table.Cell control>
-        <Picker
-          ariaLabel={`Type for ${field.label}`}
-          fill
-          value={type}
-          options={[
-            { value: VALUE, label: 'Value' },
-            { value: STORE, label: 'Secret store' },
-          ]}
-          onChange={setType}
-        />
-      </Table.Cell>
+      {/* A field with no store to choose, beside one whose saved store is gone, takes a value. */}
+      {choices.length > 0 ? (
+        <Table.Cell control>
+          <Picker
+            ariaLabel={`Type for ${field.label}`}
+            fill
+            value={type}
+            options={[
+              { value: VALUE, label: 'Value' },
+              { value: STORE, label: 'Secret store' },
+            ]}
+            onChange={setType}
+          />
+        </Table.Cell>
+      ) : (
+        <Table.Cell>
+          <Typography.BodySmall>Value</Typography.BodySmall>
+        </Table.Cell>
+      )}
       <Table.Cell control>
         {!store ? (
           value({

@@ -76,7 +76,8 @@ export function Picker({
         <Button.Text>
           {displayLabel}
           {fill &&
-            // Each option's label in no height, so a new choice does not move what sits beside.
+            // Each option's label takes its width in no height, so the trigger keeps its
+            // longest option's width and a new choice does not move what sits beside it.
             options.map((option) => (
               <span
                 key={option.value}

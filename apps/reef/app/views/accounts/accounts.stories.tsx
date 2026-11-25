@@ -330,6 +330,30 @@ export const ReconnectAfterGrantRevoked: Story = {
     )
   },
 }
+// Catches: a Secret store choice offered for a field when no store is on offer,
+// which would then show the typed input under it.
+export const ReconnectWithNoStoreOnOffer: Story = {
+  render: () => (
+    <AuthorizationPage
+      view={{
+        ...sharedSecretEntry,
+        credentialFields: [
+          ...sharedSecretEntry.credentialFields,
+          { name: 'app_key', label: 'App key', description: '', sensitive: true },
+        ],
+        secretStores: [],
+        savedReferences: {
+          token: { store: 'removed', path: 'team/forecast', key: 'token' },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvas, canvasElement }) => {
+    await expect(canvas.getByRole('button', { name: 'Type for Token' })).toBeVisible()
+    await expect(canvas.queryByRole('button', { name: 'Type for App key' })).toBeNull()
+    await expect(canvasElement.querySelector('input[name="credential.app_key"]')).not.toBeNull()
+  },
+}
 // Catches: Reconnect asking for a reference again, or a typed field filled in.
 export const ReconnectWithSavedReference: Story = {
   render: () => (
