@@ -23,8 +23,10 @@
 //!
 //! # Invariants
 //!
-//! Every login finds its User through the store for User Identifiers. A first
-//! login mints one random Coral User identity. Concurrent first logins
+//! Every login looks for its User in the store for User Identifiers first. A
+//! Subject that the store lacks is then looked for in `users.subject`, among
+//! the Users that hold no identifier, and linked: the release before this one
+//! writes only that column. A first login mints one random Coral User identity. Concurrent first logins
 //! converge on that identity, and later logins preserve it. A subject already
 //! bound to another configured issuer is never rebound automatically. Failed
 //! provisioning commits no directory or Membership change. Only the explicitly
