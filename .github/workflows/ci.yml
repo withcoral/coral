@@ -210,7 +210,10 @@ jobs:
           $dumps = Join-Path $env:RUNNER_TEMP 'crash'
           Get-ChildItem -Path $dumps -Filter '*.dmp' -ErrorAction SilentlyContinue | ForEach-Object {
             $exe = $_.Name -replace '\.\d+\.dmp$', ''
-            Get-ChildItem -Path target\debug\deps, target\debug\build -Recurse -Include $exe, ($exe -replace '\.exe$', '.pdb') -ErrorAction SilentlyContinue |
+            $names = $exe, ($exe -replace '\.exe$', '.pdb')
+            # Test binaries sit in deps or build; a spawned coral.exe sits in target\debug.
+            @(Get-ChildItem -Path target\debug\* -Include $names -File -ErrorAction SilentlyContinue) +
+              @(Get-ChildItem -Path target\debug\deps, target\debug\build -Recurse -Include $names -ErrorAction SilentlyContinue) |
               Copy-Item -Destination $dumps -Force
           }
       - name: Keep the crash evidence
