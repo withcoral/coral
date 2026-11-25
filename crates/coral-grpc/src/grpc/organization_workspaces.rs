@@ -9,7 +9,7 @@ fn view(workspace: OrganizationWorkspace) -> wire::OrganizationWorkspace {
         name: format!("workspaces/{}", workspace.workspace.id()),
         display_name: workspace.workspace.display_name().as_str().into(),
         state: state(workspace.workspace.state()).into(),
-        etag: workspace.metadata.etag,
+        etag: workspace.metadata.version.to_string(),
         owners: workspace.owners.into_iter().map(owner).collect(),
     }
 }

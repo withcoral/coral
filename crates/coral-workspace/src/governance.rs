@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use coral_db::Transaction;
 
-use crate::list_repository::{Resources, Users};
+use crate::list_repository::Users;
 use crate::{
     AuthenticatedUser, AuthoritySource, ChangeContext, Error, EventDetail, IfMatch,
     LifecycleAction, LifecycleTargetKind, OrganizationRole, RequestId, ResourceMetadata, UserId,
@@ -75,15 +75,17 @@ pub(super) async fn make_owner(
     workspace: &WorkspaceId,
     target: &UserId,
 ) -> Result<(), Error> {
-    let previous = crate::repository::membership_role_in_transaction(tx, workspace, target).await?;
+    let stored = crate::repository::membership_in_transaction(tx, workspace, target).await?;
+    let previous = stored.map(|(role, _metadata)| role);
     if previous == Some(WorkspaceRole::Owner) {
         return Ok(());
     }
-    crate::repository::upsert_membership(
+    crate::repository::write_membership_role(
         tx,
         workspace,
         target,
         WorkspaceRole::Owner,
+        stored.map(|(_role, read)| read.version),
         context.occurred_at(),
     )
     .await?;
@@ -122,24 +124,19 @@ impl WorkspaceModule {
             &crate::organization::current_user(&mut tx, actor.user_id()).await?,
         )?;
         let workspaces = crate::repository::all_workspaces(&mut tx).await?;
-        let metadata =
-            crate::management_repository::listed_metadata(&mut tx, Resources::EveryWorkspace)
-                .await?;
         let mut owners: HashMap<WorkspaceId, Vec<WorkspaceOwner>> = HashMap::new();
         for (workspace, owner) in listed_owners(&mut tx, None).await? {
             owners.entry(workspace).or_default().push(owner);
         }
         tx.commit().await?;
-        workspaces
+        Ok(workspaces
             .into_iter()
-            .map(|workspace| {
-                Ok(OrganizationWorkspace {
-                    metadata: metadata.of(&workspace.id().to_string())?,
-                    owners: owners.remove(workspace.id()).unwrap_or_default(),
-                    workspace,
-                })
+            .map(|workspace| OrganizationWorkspace {
+                metadata: workspace.metadata(),
+                owners: owners.remove(workspace.id()).unwrap_or_default(),
+                workspace,
             })
-            .collect()
+            .collect())
     }
 
     /// Inspects one Workspace as an Organization Owner sees it.
@@ -284,17 +281,10 @@ async fn organization_workspace(
     tx: &mut Transaction<'_>,
     workspace: Workspace,
 ) -> Result<OrganizationWorkspace, Error> {
-    let metadata = crate::management_repository::metadata(
-        tx,
-        workspace.id(),
-        LifecycleTargetKind::Workspace,
-        &workspace.id().to_string(),
-    )
-    .await?;
     let owners = owners(tx, workspace.id()).await?;
     Ok(OrganizationWorkspace {
+        metadata: workspace.metadata(),
         workspace,
-        metadata,
         owners,
     })
 }
