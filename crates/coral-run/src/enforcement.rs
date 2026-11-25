@@ -64,7 +64,7 @@ impl RunFacts<'_> {
 /// memory: in the enforcement point, what the held approval gate recorded (a
 /// request is never needed again once approved, and an approval never changes);
 /// in the parked-wait precheck, the pending request the Invocation is parked on
-/// (only its owner decides it).
+/// (a decision on it wakes the loop, and the held recheck reads it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ApprovalFact {
     /// No request exists, or none was needed when the gate ran.

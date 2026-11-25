@@ -373,8 +373,9 @@ impl RunModule {
     }
 }
 
-/// The Run as `transaction` reads it, while it is running with no worker
-/// claim: no older release's Run Owner fences it.
+/// The Run as `transaction` reads it, while a Run Executor waits for, has
+/// taken or holds it ([`RunRecord::runs_on_run_executor`]). It is `None` for
+/// an older release's Run Owner's Run, which holds a worker claim.
 async fn find_without_worker_claim(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
