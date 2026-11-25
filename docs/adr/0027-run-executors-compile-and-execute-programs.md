@@ -258,8 +258,8 @@ the connection's age, the drain or shutdown, waits for its own compile room, and
 Coral Instance; a retiring Run Executor's stream stays open. A unit frees when a compile answers or its pull stream
 ends. A Coral Instance that holds no open pull stream writes the call to a relay row that any Coral Instance with
 compile room picks up, serves and answers through the database. A Coral Instance whose callers wait for compile room
-holds a place in that line for each relay row, so the rows wait in order with its own callers. Coral Instances keep
-talking only through the database.
+holds a place in that line for each relay row waiting, up to 64, so the rows wait in order with its own callers; a row
+past the 64 takes a place as one frees. Coral Instances keep talking only through the database.
 A compile that no Run Executor can serve yet waits for one: no Run Executor linked is a state every rollout passes
 through. The compile's own time limit runs once a Run Executor serves it; a compile that waits past a bound fails as a
 missing compiler fails today, and Runs already accepted wait. Only no Run Executor linked, or every compiler busy for
