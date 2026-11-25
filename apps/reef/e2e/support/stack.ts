@@ -442,7 +442,12 @@ bind = '127.0.0.1:0'
           },
           join(options.runDir, `run-executor-${index + 1}.log`),
           { privateValues: [runExecutorToken], reserved: [health], note },
-        )
+        ).catch(async (error: unknown) => {
+          // No cleanup owns this reservation, so a start that fails before it
+          // releases the port closes the listener here.
+          await health.release()
+          throw error
+        })
         processes.push(runExecutor)
         await linked(health.url, runExecutor)
       }
