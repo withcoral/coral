@@ -102,9 +102,10 @@ count for every kind). Both now state the current rules; this section gives the 
 
 - **A missing distance.** The Provider Tool vector list is empty when no Provider Tool in scope has a current vector,
   the Provider Tool vector query or retriever fails, or the request has no query vector (semantic search off, the model
-  not ready, the query not embedded). An Authored Tool has none when its vector is missing or stale, its vector query
-  fails, or its vector list ends before it; the list holds as many of the nearest Authored Tools of one kind as the
-  window holds. In each case the rare path word decides alone and rule 3 makes nothing strong, so a search without the
+  not ready, the query not embedded). It is also empty when no query term can select anything; then no window holds an
+  entry, so no Authored Tool needs a mark. An Authored Tool has none when its vector is missing or stale, its vector
+  query fails, or its vector list ends before it; the list holds as many of the nearest Authored Tools of one kind as
+  the window holds. In each case the rare path word decides alone and rule 3 makes nothing strong, so a search without the
   vector side makes the same Authored Tools strong as before this step; the others are last, not weak.
 - **Equal distances.** An Authored Tool exactly as near as the nearest Provider Tool is not strong by rule 3. One
   exactly as near as the Provider Tool of the rank of rule 2 is near enough for its rare path word.

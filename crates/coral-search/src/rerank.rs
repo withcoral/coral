@@ -30,7 +30,8 @@ use crate::retriever::{Distance, EntityRef, Mark, WindowEntry};
 /// A rare path word makes an Authored Tool strong only when it is no
 /// farther than the Provider Tool of this rank by distance. On the #698
 /// bench a rare word alone put an Authored Tool in the first 3 places of
-/// half the Provider pages; at this rank, of 4 to 10% (#3427).
+/// about half the Provider pages; with the rank, it did so on 4 to 10% of
+/// them (#3427).
 const RARE_WORD_PROVIDER_TOOL_RANK: usize = 10;
 
 /// What the rerank step did, for the search span: how many Authored Tools
