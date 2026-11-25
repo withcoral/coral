@@ -375,7 +375,9 @@ jobs:
           tar -xzf kubeconform.tgz kubeconform
           curl -fsSLo unittest.tgz "https://github.com/helm-unittest/helm-unittest/releases/download/v$HELM_UNITTEST_VERSION/helm-unittest-linux-amd64-$HELM_UNITTEST_VERSION.tgz"
           echo "$HELM_UNITTEST_SHA256  unittest.tgz" | sha256sum -c -
-          tar -xzf unittest.tgz untt
+          # The archive names the binary for its platform.
+          tar -xzf unittest.tgz untt-linux-amd64
+          mv untt-linux-amd64 untt
           rm kubeconform.tgz unittest.tgz
       - if: ${{ steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

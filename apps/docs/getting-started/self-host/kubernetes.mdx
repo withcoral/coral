@@ -20,7 +20,7 @@ To try Coral without a Postgres server, use [Docker Compose](/getting-started/se
 
 - **Kubernetes 1.35 or later**, and Helm 3.8 or later.
 - **Postgres**, with pgvector 0.7 or later and `pg_trgm`. Create both extensions in Coral's database before you install, or give Coral's database role permission to create them. See [Postgres needs pgvector](/getting-started/self-host#postgres-needs-pgvector). If your server does not have pgvector, set `semantic_search_enabled: false` under `config.search` in your values.
-- **An OIDC provider.** Register `https://auth.<coral-host>/auth/oidc/callback` as the redirect URI.
+- **An OIDC provider.** Register `https://auth.<coral-host>/auth/oidc/callback` as the redirect URI. If you set `hosts.auth`, register `https://<hosts.auth>/auth/oidc/callback` instead.
 - **Routing and TLS** for three hosts: `<coral-host>`, `auth.<coral-host>` and `mcp.<coral-host>`. For example, an ingress controller and cert-manager.
 
 The `coral` image holds the model for [semantic search](/getting-started/self-host#semantic-search), so the pods need no network access to get it.
@@ -145,9 +145,9 @@ The `coral` image holds the model for [semantic search](/getting-started/self-ho
                      number: 14556
    ```
 
-   Do not route to the `coral` Service. It serves Coral's plaintext gRPC API and the Run Executors' connection, which must stay inside the cluster.
+   Do not route to the `coral` Service. It serves Coral's gRPC API and the Run Executors' connection over plaintext HTTP/2. Each Run Executor request carries its token, so keep this traffic on the cluster's private network.
 
-6. Open the Coral UI at `https://<coral-host>`. After you create your first workspace, follow the instructions in the Coral UI to connect an MCP client through `https://mcp.<coral-host>`.
+6. Open the Coral UI at `https://<coral-host>`. After you create your first workspace, follow the instructions in the Coral UI to connect an MCP client through `https://mcp.<coral-host>`, or `https://<hosts.mcp>` if you set `hosts.mcp`.
 
 ### Install without Helm
 
@@ -175,8 +175,8 @@ Run Executors run your users' programs, each in its own pod, apart from Coral's 
 To rotate the token without downtime:
 
 1. Add the new token to the Secret under a new key, such as `CORAL_RUN_EXECUTOR_TOKEN_NEW`.
-2. Set `runExecutors.previousToken.key` to `CORAL_RUN_EXECUTOR_TOKEN_NEW`, and run `helm upgrade`. Coral then accepts both tokens.
-3. Set `runExecutors.token.key` to `CORAL_RUN_EXECUTOR_TOKEN_NEW` and `runExecutors.previousToken.key` to `CORAL_RUN_EXECUTOR_TOKEN`, and run `helm upgrade`. The Run Executors then use the new token.
+2. Set `runExecutors.previousToken.key` to `CORAL_RUN_EXECUTOR_TOKEN_NEW`, and run `helm upgrade --wait`. Coral then accepts both tokens.
+3. Set `runExecutors.token.key` to `CORAL_RUN_EXECUTOR_TOKEN_NEW` and `runExecutors.previousToken.key` to `CORAL_RUN_EXECUTOR_TOKEN`, and run `helm upgrade --wait`. The Run Executors then use the new token. Do not start step 4 until the upgrade finishes.
 4. Set `runExecutors.previousToken.key` to `""`, and run `helm upgrade`. Then remove the old key from the Secret.
 
 ## Upgrade
@@ -193,7 +193,7 @@ Read [Upgrade Coral](/getting-started/self-host#upgrade-coral) first, and the re
 
    Do not use `--atomic`. Coral updates its database when it starts, and `--atomic` rolls the chart back after that update.
 
-   The pods roll one at a time, so your users keep working. Each new `coral` pod updates the database before it serves. The chart gives it 15 minutes. For a large database, raise `coral.probes.startup.failureThreshold`.
+   The pods roll one at a time, and each old pod stops only after its replacement is ready. Each new `coral` pod updates the database before it serves. The chart gives it 15 minutes. For a large database, raise `coral.probes.startup.failureThreshold`.
 
 3. To go back one release, run `helm rollback coral --namespace coral`. To go back further, restore your backup.
 

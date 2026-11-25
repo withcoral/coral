@@ -9,7 +9,7 @@
   "properties": {
     "host": {
       "type": "string",
-      "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(:[0-9]{1,5})?$",
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?$",
       "minLength": 1,
       "description": "The UI's host name, with no scheme or path."
     },
@@ -19,11 +19,11 @@
       "properties": {
         "auth": {
           "type": "string",
-          "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(:[0-9]{1,5})?$"
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?$"
         },
         "mcp": {
           "type": "string",
-          "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(:[0-9]{1,5})?$"
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*(:(6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?$"
         }
       }
     },
@@ -122,7 +122,17 @@
               "required": [
                 "issuer",
                 "client_id"
-              ]
+              ],
+              "properties": {
+                "issuer": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "client_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
             }
           }
         }
@@ -211,7 +221,8 @@
           "maxItems": 8,
           "items": {
             "type": "string",
-            "minLength": 1,
+            "description": "A client name, as coral-web accepts it.",
+            "pattern": "^[A-Za-z0-9]+([ ._-][A-Za-z0-9]+)*$",
             "maxLength": 32
           }
         }

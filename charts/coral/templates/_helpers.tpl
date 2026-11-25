@@ -1,8 +1,13 @@
 {{/*
 The name of every object, and the prefix of each component's: the release
 name. Helm keeps it to 53 characters, so each suffix still fits a Service name.
+Helm accepts a release name with a dot or a leading digit, which a Service
+name may not have, so the render fails on one.
 */}}
 {{- define "coral.fullname" -}}
+{{- if not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" .Release.Name) -}}
+{{- fail (printf "release name %q cannot name a Service: use lowercase letters, digits and hyphens, starting with a letter" .Release.Name) -}}
+{{- end -}}
 {{- .Release.Name -}}
 {{- end -}}
 
@@ -70,8 +75,8 @@ an empty key fails the render.
 - name: {{ index . 1 }}
   valueFrom:
     secretKeyRef:
-      name: {{ $ref.secretName | default (include "coral.fullname" $root) }}
-      key: {{ $key }}
+      name: {{ $ref.secretName | default (include "coral.fullname" $root) | quote }}
+      key: {{ $key | quote }}
 {{- end -}}
 
 {{/*

@@ -45,8 +45,13 @@ tests:
           path: spec.template.spec.containers[0].env
           count: 1
       - equal:
-          path: spec.template.spec.containers[0].env[0].name
-          value: CORAL_RUN_EXECUTOR_TOKEN
+          path: spec.template.spec.containers[0].env[0]
+          value:
+            name: CORAL_RUN_EXECUTOR_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: prod
+                key: CORAL_RUN_EXECUTOR_TOKEN
       - notExists:
           path: spec.template.spec.containers[0].envFrom
 

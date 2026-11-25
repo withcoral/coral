@@ -6,15 +6,6 @@ values:
 templates:
   - templates/coral.yaml
 tests:
-  - it: names every object after the release
-    asserts:
-      - equal:
-          path: metadata.name
-          value: prod
-        documentSelector:
-          path: kind
-          value: Deployment
-
   - it: rolls with no downtime
     documentSelector:
       path: kind
@@ -27,8 +18,9 @@ tests:
             rollingUpdate:
               maxUnavailable: 0
               maxSurge: 1
-      - exists:
+      - matchRegex:
           path: spec.template.metadata.annotations["checksum/config"]
+          pattern: ^[0-9a-f]{64}$
 
   - it: gives migrations 15 minutes to start by default
     documentSelector:

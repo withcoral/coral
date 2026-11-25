@@ -7,16 +7,18 @@ templates:
   - templates/configmap.yaml
 tests:
   - it: derives every public URL from host
+    set:
+      host: ui.example.net
     asserts:
       - matchRegex:
           path: data["config.toml"]
-          pattern: '\[listeners\.web\]\s+public_url = "https://coral\.example\.com"'
+          pattern: '\[listeners\.web\]\s+public_url = "https://ui\.example\.net"'
       - matchRegex:
           path: data["config.toml"]
-          pattern: '\[listeners\.auth\][^\[]*public_url = "https://auth\.coral\.example\.com"'
+          pattern: '\[listeners\.auth\][^\[]*public_url = "https://auth\.ui\.example\.net"'
       - matchRegex:
           path: data["config.toml"]
-          pattern: '\[listeners\.mcp\][^\[]*public_url = "https://mcp\.coral\.example\.com"'
+          pattern: '\[listeners\.mcp\][^\[]*public_url = "https://mcp\.ui\.example\.net"'
 
   - it: takes the auth and MCP hosts from hosts
     set:
@@ -25,10 +27,10 @@ tests:
     asserts:
       - matchRegex:
           path: data["config.toml"]
-          pattern: 'public_url = "https://login\.example\.org"'
+          pattern: '\[listeners\.auth\][^\[]*public_url = "https://login\.example\.org"'
       - matchRegex:
           path: data["config.toml"]
-          pattern: 'public_url = "https://tools\.example\.org"'
+          pattern: '\[listeners\.mcp\][^\[]*public_url = "https://tools\.example\.org"'
 
   - it: turns off local Run Executors
     asserts:

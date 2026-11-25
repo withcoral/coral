@@ -31,3 +31,31 @@ tests:
     asserts:
       - failedTemplate:
           errorPattern: /host
+
+  - it: fails on a host with an empty label
+    set:
+      host: coral..example.com
+    asserts:
+      - failedTemplate:
+          errorPattern: /host
+
+  - it: fails on a host with a port out of range
+    set:
+      host: coral.example.com:65536
+    asserts:
+      - failedTemplate:
+          errorPattern: /host
+
+  - it: fails on an issuer that is not a string
+    set:
+      config.auth.provider.issuer: 5
+    asserts:
+      - failedTemplate:
+          errorPattern: /config/auth/provider/issuer
+
+  - it: fails on a plugin client name that coral-web refuses
+    set:
+      web.agentsWithAvailablePlugins: ["claude,chatgpt"]
+    asserts:
+      - failedTemplate:
+          errorPattern: /web/agentsWithAvailablePlugins/0
