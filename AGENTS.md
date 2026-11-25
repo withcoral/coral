@@ -117,7 +117,7 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - A write that makes a Run wait for a take, such as an acceptance or a
   put-back, rings `run_repository::QUEUE` with `Transaction::ring_on_commit`.
   The take loop follows only that signal, so a Run whose write rings nothing
-  waits for the loop's backstop.
+  can wait up to the loop's backstop.
 - Open read-only work with `Database::begin_read_snapshot` and non-holding
   checks. `Database::begin` takes SQLite's write lock at `BEGIN`, so it waits
   behind every other writer.

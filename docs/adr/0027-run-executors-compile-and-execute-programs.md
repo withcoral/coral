@@ -245,11 +245,13 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   committing, the loop rebuilds that chunk on the new head and rereads those Approval Requests then too. The head is durable, so no outside
   write goes unseen.
 - **The compile relay keeps the content-free signal**, one subscription per Coral Instance.
-- **The take loop follows the queue signal**, one subscription per Coral Instance. It is a named signal in `coral-db`:
-  only a commit that rings it by name wakes its subscribers. A write that makes a Run wait rings it: an acceptance, and a
-  put-back of a take that never started. Every observable commit rings the content-free signal, so a take loop that
-  followed it would read the queue once per commit on every Coral Instance. A named signal carries its name and nothing
-  else. No table name, row identity or payload crosses either signal.
+- **The take loop follows the queue signal**, one subscription per Coral Instance. It is a named signal in `coral-db`: a
+  commit that rings it by name wakes its subscribers, and other commits do not. Like the content-free signal, it also
+  wakes them when an outage of the notification connection begins and at the resync after it. A write that makes a Run
+  wait rings it: an acceptance, and a put-back of a take that never started. Every observable commit rings the
+  content-free signal, so on it a take loop wakes on every Coral Instance for commits that make no Run wait, and needs a
+  period between passes to bound its reads. A named signal carries its name and nothing else. No table name, row
+  identity or payload crosses either signal.
 
 ## Compiling
 
