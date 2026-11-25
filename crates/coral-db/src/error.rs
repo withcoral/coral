@@ -114,7 +114,8 @@ impl Error {
     /// serialization race left the statement unapplied. The write may be
     /// retried; whether it took effect is for the caller to read back. Every
     /// other error is the backend's definite answer, a constraint violation
-    /// included.
+    /// included, and so is a statement that binds more values than its
+    /// backend takes, which no retry sends.
     #[must_use]
     pub fn is_unanswered(&self) -> bool {
         match self {
@@ -123,9 +124,9 @@ impl Error {
                 sqlx::Error::Database(error) => {
                     error.code().is_some_and(|code| is_unanswered_code(&code))
                 }
+                sqlx::Error::Protocol(message) => !is_bind_limit_refusal(message),
                 sqlx::Error::Io(_)
                 | sqlx::Error::Tls(_)
-                | sqlx::Error::Protocol(_)
                 | sqlx::Error::PoolTimedOut
                 | sqlx::Error::PoolClosed
                 | sqlx::Error::WorkerCrashed => true,
@@ -134,6 +135,17 @@ impl Error {
             _ => false,
         }
     }
+}
+
+/// Reports whether the Postgres driver refused a statement that binds more
+/// than 65,535 values. It refuses before it sends anything and leaves the
+/// connection as it was, so the refusal is as definite as the database error
+/// `SQLite` reports for its own limit. Every other protocol error stays
+/// unanswered. The driver states the refusal only in its message; the shared
+/// persistence tests send such a statement, so a driver that words it
+/// otherwise fails them.
+fn is_bind_limit_refusal(message: &str) -> bool {
+    message.starts_with("PgConnection::run(): too many arguments for query:")
 }
 
 /// Reports a timed-out wait for the `SQLite` writer as [`Error::WriterBusy`].
@@ -210,6 +222,26 @@ mod tests {
         assert!(!Error::Sqlx(sqlx::Error::ColumnNotFound("x".into())).is_unanswered());
         assert!(!Error::ObservationUnavailable.is_unanswered());
         assert!(!Error::Config("bad".into()).is_unanswered());
+    }
+
+    /// The Postgres driver's refusal of a statement past its bind limit is a
+    /// definite answer; any other protocol error leaves the write
+    /// unanswered. The shared persistence tests send such a statement on
+    /// both databases.
+    #[test]
+    fn a_bind_limit_refusal_is_the_one_definite_protocol_error() {
+        let protocol = |message: &str| Error::Sqlx(sqlx::Error::Protocol(message.to_owned()));
+        let refused = protocol(
+            "PgConnection::run(): too many arguments for query: 65536 \
+             (sqlx_postgres::connection::executor:222)",
+        );
+        assert!(!refused.is_unanswered(), "{refused}");
+        for message in [
+            "unexpected response from SSLRequest: 0x00 (sqlx_postgres::connection::tls:83)",
+            "execute: unexpected message: ParseComplete (sqlx_postgres::connection::executor:400)",
+        ] {
+            assert!(protocol(message).is_unanswered(), "{message}");
+        }
     }
 
     /// A busy writer the backend reports is unanswered; a constraint it

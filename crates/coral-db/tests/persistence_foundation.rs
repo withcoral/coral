@@ -1179,6 +1179,46 @@ async fn read_snapshots_cannot_write() {
     assert_eq!(record(&*database, "snapshot").await, None);
 }
 
+/// A statement that binds more values than its database takes is refused
+/// before it runs, so no retry sends it: the refusal is a definite answer on
+/// both databases, and the transaction goes on.
+#[tokio::test]
+async fn a_statement_past_the_bind_limit_is_refused_as_a_definite_answer() {
+    // More than either database binds: 32,766 on `SQLite`, 65,535 on Postgres.
+    const VALUES: i64 = 65_536;
+    let fixture = TestDatabase::new(&MIGRATOR)
+        .await
+        .expect("create repository test database");
+    let database = fixture.database();
+    let one = || Query::select().expr(Expr::val(1_i64)).to_owned();
+
+    let mut transaction = database.begin().await.expect("begin transaction");
+    let refused = transaction
+        .fetch_all::<(i64,)>(
+            one()
+                .and_where(Expr::val(1_i64).is_in(0..VALUES))
+                .to_owned(),
+        )
+        .await
+        .expect_err("a statement past the bind limit is refused");
+
+    let backend_refused = match database.system() {
+        DatabaseSystem::Sqlite => matches!(&refused, Error::Sqlx(sqlx::Error::Database(error))
+            if error.message().contains("too many SQL variables")),
+        DatabaseSystem::Postgres => matches!(&refused, Error::Sqlx(sqlx::Error::Protocol(_))),
+    };
+    assert!(backend_refused, "{refused:?}");
+    assert!(!refused.is_unanswered(), "{refused:?}");
+    assert_eq!(
+        transaction
+            .fetch_all::<(i64,)>(one())
+            .await
+            .expect("the transaction goes on"),
+        [(1,)]
+    );
+    transaction.rollback().await.expect("roll back");
+}
+
 /// A hold reads like `fetch_optional` or `fetch_all` in a read-write
 /// transaction. A read snapshot holds nothing on either database, so it
 /// refuses the hold before it sends a statement, and stays usable.
