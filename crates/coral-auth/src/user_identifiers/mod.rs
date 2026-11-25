@@ -8,7 +8,7 @@
 
 pub(crate) mod repository;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use coral_db::{QueryExecutor, Transaction, UnixNanos};
 

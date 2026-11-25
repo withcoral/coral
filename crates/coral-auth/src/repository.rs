@@ -4,7 +4,7 @@
 //! release before this one finds a User there. The store for User Identifiers
 //! finds every User in this release.
 
-use coral_db::Transaction;
+use coral_db::{RowLock, Transaction};
 use sea_query::{Expr, ExprTrait as _, Iden, Query};
 
 use crate::user_identifiers::repository::UserIdentifiers;
@@ -69,14 +69,14 @@ pub(super) async fn find_unlinked_subject(
     .transpose()
 }
 
-/// Adds the `users` row of a new User. An OIDC login writes its issuer and
-/// Subject; another login leaves both empty.
+/// Adds the `users` row of a new User, with the issuer and the Subject that
+/// the login keeps there, or with both empty.
 pub(super) async fn insert_user(
     transaction: &mut Transaction<'_>,
     user_id: &UserId,
     login: &VerifiedLogin<'_>,
 ) -> Result<(), Error> {
-    let subject = login.oidc_issuer.map(|_issuer| login.identifier.value());
+    let (issuer, subject) = login.kept_columns().unzip();
     transaction
         .execute(
             Query::insert()
@@ -91,7 +91,7 @@ pub(super) async fn insert_user(
                 ])
                 .values_panic([
                     Expr::val(user_id.as_str()),
-                    Expr::val(login.oidc_issuer.map(ToString::to_string)),
+                    Expr::val(issuer.map(ToString::to_string)),
                     Expr::val(subject.map(ToString::to_string)),
                     Expr::val(login.display_name.map(ToString::to_string)),
                     Expr::val(login.occurred_at),
@@ -103,18 +103,20 @@ pub(super) async fn insert_user(
     Ok(())
 }
 
-/// The issuer that the User's row keeps, or `None` when it keeps none.
+/// The issuer that the User's row keeps, or `None` when it keeps none. The row
+/// is held exclusively: the login goes on to write it.
 pub(super) async fn issuer(
     transaction: &mut Transaction<'_>,
     user_id: &UserId,
 ) -> Result<Option<String>, Error> {
     let row: IssuerRow = transaction
-        .fetch_optional(
+        .fetch_optional_locked(
             Query::select()
                 .column(Users::Issuer)
                 .from(Users::Table)
                 .and_where(Expr::col(Users::UserId).eq(user_id.as_str()))
                 .to_owned(),
+            RowLock::Exclusive,
         )
         .await?
         .ok_or_else(|| {
