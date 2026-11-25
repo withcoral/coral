@@ -24,8 +24,8 @@ struct HolderRow {
     user_id: String,
 }
 
-/// The stored name of a kind.
-const fn stored(kind: UserIdentifierKind) -> &'static str {
+/// The name of a kind as its row stores it.
+const fn kind_name(kind: UserIdentifierKind) -> &'static str {
     match kind {
         UserIdentifierKind::Subject => "subject",
         UserIdentifierKind::NameId => "name_id",
@@ -42,7 +42,7 @@ pub(super) async fn find(
             Query::select()
                 .column(UserIdentifiers::UserId)
                 .from(UserIdentifiers::Table)
-                .and_where(Expr::col(UserIdentifiers::Kind).eq(stored(identifier.kind())))
+                .and_where(Expr::col(UserIdentifiers::Kind).eq(kind_name(identifier.kind())))
                 .and_where(Expr::col(UserIdentifiers::Value).eq(identifier.value()))
                 .to_owned(),
         )
@@ -75,7 +75,7 @@ pub(super) async fn insert(
                     UserIdentifiers::LinkedAtUnixNanos,
                 ])
                 .values_panic([
-                    stored(identifier.kind()).into(),
+                    kind_name(identifier.kind()).into(),
                     identifier.value().into(),
                     user_id.as_str().into(),
                     linked_at.into(),

@@ -1,11 +1,10 @@
 -- `users.issuer` and `users.subject` stop being required, for a User whose
--- sign-in has no Subject. No Coral writes such a User yet.
+-- sign-in has no Subject. At this step, no Coral writes such a User.
 --
 -- An older Coral keeps working: `users` keeps every column and its unique
 -- `subject`, and that Coral always writes both columns. The two columns drop
 -- NOT NULL on purpose. An older Coral cannot read a User that leaves them
--- empty, and none exists until every Coral Instance runs this step and an
--- operator then selects a sign-in that has no Subject.
+-- empty, and this step makes none.
 --
 -- The change scans no row. It is a step of its own so that its lock on `users`
 -- ends at once. lock_timeout limits how long the migration waits for that

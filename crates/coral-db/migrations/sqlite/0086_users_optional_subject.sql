@@ -1,5 +1,5 @@
 -- `users.issuer` and `users.subject` stop being required, for a User whose
--- sign-in has no Subject. No Coral writes such a User yet.
+-- sign-in has no Subject. At this step, no Coral writes such a User.
 --
 -- SQLite cannot change a column's NOT NULL, so `users` is rebuilt: create it
 -- with the two columns optional, copy every row, drop the old table, rename

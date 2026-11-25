@@ -8,9 +8,9 @@
 -- that names a User: the copy below then only reads `users`, and a sign-in
 -- that writes `users` does not wait for it.
 --
--- Each `users.subject` is copied in as a `subject`. A User that a Coral makes
--- after this step has no row here until a sign-in writes the store. So the
--- Coral that first reads the store also looks in `users.subject`.
+-- Each `users.subject` that exists at this step is copied in as a `subject`.
+-- The step adds no write of the store, so the copy does not cover a User that
+-- a Coral makes after it.
 CREATE TABLE user_identifiers (
     kind TEXT NOT NULL,
     value TEXT NOT NULL,

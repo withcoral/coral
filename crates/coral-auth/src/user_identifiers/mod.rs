@@ -7,8 +7,7 @@
 //! authority.
 //!
 //! No sign-in reads or writes the store yet: the upgrade copies each Subject
-//! into it, and a User made after the upgrade has no row. The change that
-//! makes the sign-in use the store also covers those Users.
+//! into it, and a User made after the upgrade has no row.
 #![cfg_attr(
     not(test),
     expect(
@@ -31,7 +30,8 @@ use crate::{Error, UserId};
 pub(crate) enum UserIdentifierKind {
     /// The `sub` of an OIDC sign-in.
     Subject,
-    /// The value of a SAML `NameID`.
+    /// The value of a `NameID`: the name of a person at a sign-in that has no
+    /// Subject.
     NameId,
 }
 
@@ -61,7 +61,7 @@ impl<'a> UserIdentifier<'a> {
 
 /// What the store did with a request to link an identifier to a User.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Link {
+pub(crate) enum LinkOutcome {
     /// The store now holds the identifier for the User.
     Linked,
     /// The User held this identifier already.
@@ -89,18 +89,18 @@ pub(crate) async fn link(
     identifier: UserIdentifier<'_>,
     user_id: &UserId,
     linked_at: UnixNanos,
-) -> Result<Link, Error> {
+) -> Result<LinkOutcome, Error> {
     if repository::insert(transaction, identifier, user_id, linked_at).await? {
-        return Ok(Link::Linked);
+        return Ok(LinkOutcome::Linked);
     }
     // The insert met a row of one of the two rules, and no row is ever
     // removed. So a holder of the identifier is read here, and with no holder
     // the row that refused the insert is the User's other identifier.
     Ok(
         match repository::find(&mut *transaction, identifier).await? {
-            Some(holder) if &holder == user_id => Link::AlreadyLinked,
-            Some(holder) => Link::HeldBy(holder),
-            None => Link::UserHoldsAnother,
+            Some(holder) if &holder == user_id => LinkOutcome::AlreadyLinked,
+            Some(holder) => LinkOutcome::HeldBy(holder),
+            None => LinkOutcome::UserHoldsAnother,
         },
     )
 }
