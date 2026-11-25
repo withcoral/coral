@@ -92,8 +92,7 @@ pub struct RunExecutorConfig {
     pub local_child: bool,
     /// The most Runs it holds at once: its free room while it holds none.
     pub max_runs_held: u32,
-    /// What each Run runs within. Its isolate limits also hold the Program
-    /// Compiler's heap limit.
+    /// What each Run runs within, and the Program Compiler's heap limit.
     pub run_limits: RunLimits,
 }
 

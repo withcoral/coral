@@ -359,7 +359,10 @@ async fn run_executor(args: RunExecutorArgs) -> anyhow::Result<()> {
         health_listen,
     } = args;
     let isolate = coral_run_executor::IsolateLimits::new(execution_heap_bytes, compiler_heap_bytes)
-        .context("invalid --execution-heap-bytes or --compiler-heap-bytes")?;
+        .context(
+            "invalid --execution-heap-bytes (CORAL_RUN_EXECUTOR_EXECUTION_HEAP_BYTES) \
+             or --compiler-heap-bytes (CORAL_RUN_EXECUTOR_COMPILER_HEAP_BYTES)",
+        )?;
     // The Run Executor's own warnings, such as a refused protocol level.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)

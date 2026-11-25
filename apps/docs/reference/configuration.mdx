@@ -97,6 +97,8 @@ The setting applies when Coral sets up a new OAuth client. It does not change a 
 
 Write byte sizes as plain numbers. For example, write `134217728` for 128MiB.
 
+The two heap keys apply only to the run executors that Coral starts itself. A run executor that you start with `coral run-executor` takes `--execution-heap-bytes` and `--compiler-heap-bytes` instead.
+
 | Key                        | Description                                                                                                                                                    | Required | Default              |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------------------- |
 | `execution_heap_bytes`     | Heap bytes that one run's program may use. A run over it fails. Must be at least 8MiB.                                                                         | No       | 128MiB               |
