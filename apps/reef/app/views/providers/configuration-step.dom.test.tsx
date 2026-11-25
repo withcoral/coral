@@ -6,7 +6,12 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, expect, it } from 'vitest'
 
 import { ConfigurationStep } from './configuration-step'
-import type { ConfigurationReviewView, RecipeConfigurationView, SetupView } from './types'
+import type {
+  ConfigurationReviewView,
+  RecipeConfigurationView,
+  SetupView,
+  StepperResult,
+} from './types'
 
 const roots: Root[] = []
 const routers: ReturnType<typeof createMemoryRouter>[] = []
@@ -120,7 +125,11 @@ const headerRecipe: RecipeConfigurationView = {
   },
 }
 
-async function renderStep(recipe: RecipeConfigurationView | null, configuration = review) {
+async function renderStep(
+  recipe: RecipeConfigurationView | null,
+  configuration = review,
+  result?: StepperResult,
+) {
   // The step's form reloads the document, so a router action never sees it post.
   let submitted = false
   const router = createMemoryRouter(
@@ -133,6 +142,7 @@ async function renderStep(recipe: RecipeConfigurationView | null, configuration 
             form={{ csrf: 'test-csrf', requestId: 'test-request' }}
             pending={false}
             recipe={recipe}
+            result={result}
           />
         ),
       },
@@ -335,4 +345,125 @@ it('marks a saved server and method that the source dropped on their fields', as
   expect(alerts()).toEqual([
     'This document does not support Bearer token. Choose a supported method.',
   ])
+})
+
+/** Two per-tool servers built from one site answer, as in Datadog's recipe. */
+const siteServers = ['/logs', '/metrics'].map(
+  (path) => `#/paths/~1v2${path.replace('/', '~1')}/servers`,
+)
+const site = { ...consoleId, name: 'site', label: 'Site', defaultValue: 'datadoghq.eu' }
+const siteRecipe: RecipeConfigurationView = {
+  id: 'datadog_v2',
+  inputs: [site],
+  suggestedMethods: ['none'],
+  values: {
+    authentication: 'none',
+    servers: siteServers.map((declaration) => ({
+      declaration,
+      url: 'https://api.{{input.site}}',
+      custom: true,
+      variables: {},
+    })),
+  },
+}
+const siteReview: ConfigurationReviewView = {
+  ...review,
+  servers: siteServers.map((declaration) => ({
+    declaration,
+    tools: ['submit'],
+    required: true,
+    options: [{ url: 'https://{subdomain}.{site}', variables: [] }],
+  })),
+}
+const shownServers = () =>
+  [...document.querySelectorAll('label')]
+    .map((label) => label.textContent)
+    .filter((text) => text?.startsWith('Server for'))
+
+// Catches: a list of servers that each hold the recipe's URL, every one shown,
+// so the part of Setup that needs nothing is the longest part of it.
+it.each<[string, ConfigurationReviewView, string[], string]>([
+  ['every server holds the suggested URL', siteReview, [], '2 servers have the suggested URL.'],
+  [
+    'one server has an error',
+    { ...siteReview, errors: { [siteServers[1]]: 'Enter a reachable URL.' } },
+    ['Server for /v2/metrics'],
+    '1 server has the suggested URL.',
+  ],
+])('folds the suggested servers when %s', async (_case, configuration, shown, summary) => {
+  await renderStep(siteRecipe, configuration)
+  expect(shownServers()).toEqual(shown)
+  expect(document.body.textContent).toContain(summary)
+
+  const toggle = button('Show these servers')
+  expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await act(async () => toggle.click())
+  // Opened, every server shows in its place, so changing one does not move it.
+  expect(shownServers()).toEqual(['Server for /v2/logs', 'Server for /v2/metrics'])
+  expect(button('Hide these servers')).toHaveAttribute('aria-expanded', 'true')
+})
+
+// Catches: a server the person changed folded away with the ones that need nothing.
+it('keeps a server whose URL differs from the suggested one in view', async () => {
+  await renderStep(siteRecipe, siteReview)
+  await act(async () => button('Show these servers').click())
+  await act(async () => {
+    const input = field('Server for /v2/logs')
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(
+      input,
+      'https://logs.example.test',
+    )
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await act(async () => button('Hide these servers').click())
+  expect(shownServers()).toEqual(['Server for /v2/logs'])
+  expect(document.body.textContent).toContain('1 server has the suggested URL.')
+})
+
+// Catches: a refused automatic client setup shown as a banner at the foot of the
+// page, far from the Client ID field that gets the person past it, with no word
+// on how to get a client ID.
+it('shows a refused automatic client setup on Client ID, in place of its hint', async () => {
+  const message =
+    'auth.example.test did not accept automatic client registration. ' +
+    'Register an OAuth application with it. ' +
+    'Add the callback URL to its allowed redirect URLs. Then enter its client ID here.'
+  await renderStep(
+    null,
+    {
+      ...review,
+      authenticationMethods: ['oauth'],
+      servers: [],
+      values: {
+        ...review.values,
+        authentication: 'oauth',
+        authorizationUrl: 'https://auth.example.test/authorize',
+        tokenUrl: 'https://auth.example.test/token',
+      },
+    },
+    {
+      error: null,
+      credential: null,
+      configurationErrors: {
+        'application.client_id':
+          'The service did not accept automatic client registration. ' +
+          'Register an OAuth application with the service, and give its client ID.',
+      },
+    },
+  )
+  const clientId = field('Client ID')
+  expect(clientId.getAttribute('aria-invalid')).toBe('true')
+  expect(clientId.required).toBe(true)
+  expect(document.activeElement).toBe(clientId)
+  expect(
+    clientId
+      .getAttribute('aria-describedby')!
+      .split(' ')
+      .map((id) => document.getElementById(id)?.textContent),
+  ).toEqual([message])
+  // Said once, as the focused field's description: not also an alert, no hint
+  // beside it, and no banner repeating it.
+  expect(document.body.textContent).not.toContain('Leave empty to use automatic client setup.')
+  expect(alerts()).toEqual([])
+  expect(document.body.textContent?.split(message).length).toBe(2)
 })

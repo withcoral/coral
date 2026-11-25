@@ -9,9 +9,18 @@ import * as styles from './providers.css'
 /** The domain's namespace grammar: letters, digits and underscores, starting with a letter. */
 export const NAMESPACE = /^[A-Za-z][A-Za-z0-9_]*$/
 
-export function FieldError({ message, id }: { message?: string; id?: string }) {
+export function FieldError({
+  message,
+  id,
+  alert = true,
+}: {
+  message?: string
+  id?: string
+  /** False for an error whose field takes focus, which then reads it as its description. */
+  alert?: boolean
+}) {
   return message ? (
-    <Typography.BodySmall as="p" id={id} role="alert" variant="error">
+    <Typography.BodySmall as="p" id={id} role={alert ? 'alert' : undefined} variant="error">
       {message}
     </Typography.BodySmall>
   ) : null

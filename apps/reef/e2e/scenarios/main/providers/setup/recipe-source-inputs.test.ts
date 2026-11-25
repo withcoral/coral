@@ -12,11 +12,13 @@ test('An instance recipe reads its filled URL through Reef and Coral', async (co
     )
     await step('Enter the instance address before reading its source', async () => {
       await page.goto(`/workspaces/${workspace}/providers/new?recipe=n8n`)
-      await page.getByLabel('n8n instance', { exact: true }).fill(`${upstream.origin}/`)
-      expect(await page.getByLabel('MCP server URL', { exact: true }).inputValue()).toBe(
+      // The recipe asks in a dialog over the catalog, whose own form has the same fields.
+      const details = page.getByRole('dialog')
+      await details.getByLabel('n8n instance', { exact: true }).fill(`${upstream.origin}/`)
+      expect(await details.getByLabel('MCP server URL', { exact: true }).inputValue()).toBe(
         `${upstream.origin}/mcp-server/http`,
       )
-      await page.getByRole('button', { name: 'Connect', exact: true }).click()
+      await details.getByRole('button', { name: 'Connect', exact: true }).click()
       await page.getByLabel('Display name', { exact: true }).waitFor()
       const server = page.getByRole('group', { name: 'MCP server URL', exact: true })
       expect(await server.getByRole('textbox').inputValue()).toBe(

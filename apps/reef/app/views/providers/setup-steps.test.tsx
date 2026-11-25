@@ -55,11 +55,11 @@ const credentialForms: [string, (shown: SetupView) => ReactNode][] = [
 
 describe('where typed-in credentials go', () => {
   // Catches: an agent's addProvider pointing credentials at a server the
-  // person never sees before they paste a secret, or a credential form that
-  // leaves the destination out.
+  // person never sees before they paste a secret, a credential form that
+  // leaves the destination out, or a list whose order changes between reads.
   const destinations = [
     [
-      'every host the tools call, once each',
+      'every host the tools call, once each, in order',
       {
         configuration: {
           destinations: {
@@ -69,12 +69,12 @@ describe('where typed-in credentials go', () => {
           },
         } as unknown as ConfigurationReviewView,
       },
-      'Coral sends what you enter here to discord.com, cdn.discord.test.',
+      'Only cdn.discord.test and discord.com receive what you enter here.',
     ],
     [
       'the MCP server',
       { kind: 'mcp' as const, sourceHost: 'mcp.example.test' },
-      'Coral sends what you enter here to mcp.example.test.',
+      'Only mcp.example.test receives what you enter here.',
     ],
   ] as const
   it.each(
@@ -90,7 +90,7 @@ describe('where typed-in credentials go', () => {
 
   it.each(credentialForms)('says nothing in %s when no destination is known yet', (_, renderAt) => {
     renderForm(renderAt(setup))
-    expect(screen.queryByText(/Coral sends what you enter here/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/what you enter here/)).not.toBeInTheDocument()
   })
 })
 
