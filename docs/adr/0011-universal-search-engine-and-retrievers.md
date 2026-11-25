@@ -12,9 +12,9 @@ final mark of each Authored Tool
 about its kind:
 applying its owners' visibility rules, matching, ranking, merging its lexical and vector lists
 ([ADR 0035](0035-universal-search-adds-a-vector-list-from-a-bundled-cpu-model.md)), and exact resolution for exact Call
-Path lookups. Only positions, marks and, for the rerank step, vector distances cross into the engine; Search Hits carry
-no evidence. A strong match is an entry that its retriever judges to answer the query, not only to share a word somewhere
-in its text. Raw scores are assumed incomparable across retrievers, so each retriever turns its own scores into that one
+Path lookups. Only positions, marks and, for the rerank step, vector distances and whether a rare path word matched
+an Authored Tool cross into the engine; Search Hits carry no evidence. A strong match is an entry that its retriever
+judges to answer the query, not only to share a word somewhere in its text. Raw scores are assumed incomparable across retrievers, so each retriever turns its own scores into that one
 judgment and the engine compares no score. Search applies visibility but decides none; those rules stay with the owning
 domains.
 

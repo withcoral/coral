@@ -102,6 +102,7 @@ impl EntityRetriever for AuthoredToolRetriever {
                 window: Vec::new(),
                 coverage: RetrieverCoverage::new(eligible, eligible, 0, false),
                 semantic: Some(Semantic::of(&request.vector)),
+                vector_distances: Vec::new(),
             });
         };
         let ids = current.keys().cloned().collect::<Vec<_>>();
@@ -137,6 +138,7 @@ impl EntityRetriever for AuthoredToolRetriever {
             (Vec::new(), nothing)
         };
         let semantic = Semantic::of(&vector);
+        let vector_distances = vector.as_ref().map_or_default(VectorList::distances);
         let (merged, has_more) = vector_list::merged_window(
             lexical,
             vector.ok(),
@@ -179,6 +181,7 @@ impl EntityRetriever for AuthoredToolRetriever {
             ),
             window,
             semantic: Some(semantic),
+            vector_distances,
         })
     }
 

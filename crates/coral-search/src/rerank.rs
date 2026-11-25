@@ -13,14 +13,17 @@
 //! - or it is strictly nearer to the query than the nearest Provider Tool.
 //!
 //! Every other Authored Tool is last: it follows every weak entry. The
-//! Provider Tool window holds only the Tools inside the search's Provider
-//! filter, so each comparison is inside it too. The distances come from one
-//! query vector and one model, so no tuned limit enters.
+//! Provider Tool distances are those of the Provider Tool retriever's
+//! vector list, before the merge cut it to the window, which can lose the
+//! nearest entries; the list holds only the Tools inside the search's
+//! Provider filter, so each comparison is inside it too. The distances come
+//! from one query vector and one model, so no tuned limit enters.
 //!
 //! The step changes marks only. It does not reorder a window and does not
 //! drop an entry. It reads the kind of an entry directly, the one place in
 //! the engine that does.
 
+use crate::EntityKind;
 use crate::retriever::{Distance, EntityRef, Mark, WindowEntry};
 
 /// A rare path word makes an Authored Tool strong only when it is no
@@ -31,7 +34,7 @@ const RARE_WORD_PROVIDER_TOOL_RANK: usize = 10;
 
 /// What the rerank step did, for the search span: how many Authored Tools
 /// each rule made strong, an entry under the first rule that holds, and
-/// whether a Provider Tool of the windows had a distance.
+/// whether the Provider Tool vector list held a distance.
 pub(crate) struct Reranked {
     pub(crate) strong_by_phrase: usize,
     pub(crate) strong_by_rare_path_word: usize,
@@ -39,9 +42,13 @@ pub(crate) struct Reranked {
     pub(crate) provider_tool_distance: bool,
 }
 
-/// Sets the final mark of each Authored Tool of `windows`.
-pub(crate) fn rerank(windows: &mut [(usize, Vec<WindowEntry>)]) -> Reranked {
-    let provider_tools = ProviderToolDistances::of(windows);
+/// Sets the final mark of each Authored Tool of `windows`. `vector_lists`
+/// holds each retriever's vector list distances, by kind.
+pub(crate) fn rerank(
+    windows: &mut [(usize, Vec<WindowEntry>)],
+    vector_lists: &[(EntityKind, Vec<Distance>)],
+) -> Reranked {
+    let provider_tools = ProviderToolDistances::of(vector_lists);
     let mut reranked = Reranked {
         strong_by_phrase: 0,
         strong_by_rare_path_word: 0,
@@ -69,9 +76,9 @@ pub(crate) fn rerank(windows: &mut [(usize, Vec<WindowEntry>)]) -> Reranked {
 }
 
 /// The two Provider Tool distances the rules compare with. Both are `None`
-/// when no Provider Tool entry has a distance: no Provider Tool in scope has
-/// a current vector, the Provider Tool vector query failed, or the request
-/// has no query vector.
+/// when the Provider Tool vector list is empty: no Provider Tool in scope
+/// has a current vector, the Provider Tool vector query failed, the request
+/// has no query vector, or the Provider Tool retriever failed.
 struct ProviderToolDistances {
     nearest: Option<Distance>,
     /// The distance of the Provider Tool of rank
@@ -81,17 +88,12 @@ struct ProviderToolDistances {
 }
 
 impl ProviderToolDistances {
-    /// The distances of the Provider Tool entries of `windows`. The
-    /// Provider Tool window holds the first entries of its vector list: at
-    /// the manifest's merge weights and rank constant, at most 62 entries
-    /// rank before the entry of rank 10 there, fewer than the window holds.
-    /// A lower weight for the vector list could push it out of the window.
-    fn of(windows: &[(usize, Vec<WindowEntry>)]) -> Self {
-        let mut distances = windows
+    /// The distances of the Provider Tool vector list of `vector_lists`.
+    fn of(vector_lists: &[(EntityKind, Vec<Distance>)]) -> Self {
+        let mut distances = vector_lists
             .iter()
-            .flat_map(|(_retriever, window)| window)
-            .filter(|entry| matches!(entry.entity, EntityRef::Tool(_)))
-            .filter_map(|entry| entry.distance)
+            .filter(|(kind, _distances)| *kind == EntityKind::ProviderTool)
+            .flat_map(|(_kind, distances)| distances.iter().copied())
             .collect::<Vec<_>>();
         distances.sort_by(|left, right| left.order(*right));
         Self {

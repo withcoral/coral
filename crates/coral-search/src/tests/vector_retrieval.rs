@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use coral_catalog::{AuthoredToolKind, ToolKey};
-use coral_db::DatabaseSystem;
+use coral_db::{DatabaseSystem, Transaction};
 use coral_embed::{Embed, EmbedError, MANIFEST};
 use coral_policy::{ToolAccessState, ToolPolicyTarget};
 use coral_provider::ProviderId;
@@ -28,9 +28,14 @@ use tokio::sync::watch;
 use super::{
     SMALL_TOOL_SOURCE, TestModules, change, eventually, exported_keys, organization_user, paths,
 };
+use crate::retriever::authored_tools::AuthoredToolRetriever;
+use crate::retriever::tools::ToolRetriever;
+use crate::retriever::{
+    Answer, EntityRef, EntityRetriever, Hydrated, Listing, QueryError, QueryRequest, RequestContext,
+};
 use crate::{
-    EntityKind, ModelLoad, SearchHit, SearchLimit, SearchPage, SearchQuery, SearchRequest,
-    UniversalSearchModule,
+    CallPath, EntityKind, Error, ExactAuthoringDescription, ModelLoad, ProviderFilter, SearchHit,
+    SearchLimit, SearchPage, SearchQuery, SearchRequest, UniversalSearchModule,
 };
 
 const USER: &str = "user:search-vector-retrieval";
@@ -484,13 +489,16 @@ async fn authored_tools_farther_than_the_nearest_provider_tool_follow_every_weak
         paths(&first)
     );
     assert_eq!(
-        kinds(&all),
+        after_every_provider_tool(&all),
         [
-            [EntityKind::ProviderTool; 14].as_slice(),
-            &[EntityKind::PrivateTool, EntityKind::SharedTool],
-            &[EntityKind::PrivateTool; 5],
-        ]
-        .concat(),
+            "coral.private.notes.archive01",
+            "coral.private.notes.archive02",
+            "coral.private.notes.archive03",
+            "coral.private.notes.archive04",
+            "coral.private.notes.archive05",
+            "coral.private.notes.archive06",
+            "coral.shared.notes.archive",
+        ],
         "with room, the Authored Tools follow every weak Provider Tool: {:?}",
         paths(&all)
     );
@@ -508,34 +516,34 @@ async fn an_authored_tool_is_strong_only_when_strictly_nearer_than_the_nearest_p
     world.save_and_publish("harbour.tideTimes", HARBOUR).await;
     world.index_and_embed().await;
     let semantic = world.semantic();
-    let strong = [
-        EntityKind::ProviderTool,
-        EntityKind::PrivateTool,
-        EntityKind::SharedTool,
-    ];
-    // Each case: the Provider filter, and the kinds of the page in order.
+    // Each case: the Provider filter, and the Authored Tools that follow
+    // every Provider Tool. An Authored Tool is strong or last, and each case
+    // has weak Provider Tools, so one that follows none of them is strong.
     let cases = [
         (
             "no filter: an equal distance is not strong, so the harbour Tools \
              follow every weak Provider Tool",
             None,
-            [
-                strong.as_slice(),
-                &[EntityKind::ProviderTool; 14],
-                &[EntityKind::PrivateTool, EntityKind::SharedTool],
-            ]
-            .concat(),
+            vec![
+                "coral.private.harbour.tideTimes",
+                "coral.shared.harbour.tideTimes",
+            ],
         ),
         (
             "the Notes filter: the harbour Tools are nearer than every Provider Tool in it",
             Some("notes"),
-            [strong.as_slice(), &strong, &[EntityKind::ProviderTool; 10]].concat(),
+            vec![],
         ),
     ];
-    for (case, filter, expected) in cases {
+    for (case, filter, last) in cases {
         let page = world.anchor(&semantic, filter).await;
 
-        assert_eq!(kinds(&page), expected, "{case}: {:?}", paths(&page));
+        assert_eq!(
+            after_every_provider_tool(&page),
+            last,
+            "{case}: {:?}",
+            paths(&page)
+        );
         assert_eq!(
             paths(&page)
                 .into_iter()
@@ -555,24 +563,38 @@ async fn an_authored_tool_is_strong_only_when_strictly_nearer_than_the_nearest_p
 #[tokio::test]
 async fn a_rare_path_word_makes_an_authored_tool_strong_within_the_tenth_nearest_provider_tool() {
     let world = World::with(Arc::new(Meanings::tides())).await;
-    // For `moon anchor`: ten Tides Tools and the Coast tide Tool mean what
-    // a text about tides means, so the tenth nearest Provider Tool is as
-    // near as a text about tides. The other Coast Tools and the forecast
-    // and GitHub Tools mean nothing of the query.
-    let levels = (1..=10)
-        .map(|number| (format!("level{number:02}"), format!("Water level {number}")))
+    // For `moon anchor`, three distances in rank order: eight Tides Tools
+    // and the Coast tide Tool mean what a text about a tide, a forecast and
+    // a quay means, the nearest nine; the Tides level Tool means only what
+    // a text about tides means, the tenth; the Tides outlook Tool means a
+    // tide and a forecast, the eleventh. The other Coast Tools and the
+    // forecast and GitHub Tools mean nothing of the query.
+    let tides = (1..=8)
+        .map(|number| {
+            (
+                format!("quay{number}"),
+                format!("The tide forecast at the quay {number}"),
+            )
+        })
+        .chain([
+            ("level".to_owned(), "Water level".to_owned()),
+            ("outlook".to_owned(), "The forecast of the water".to_owned()),
+        ])
         .collect::<Vec<_>>();
-    world.publish_operations("tides", &levels, 50).await;
+    world.publish_operations("tides", &tides, 50).await;
     // Eight Coast Tools, fewer than ten, so that a filter on Coast leaves
     // fewer than ten Provider distances and weak Provider Tools.
-    let coast = std::iter::once(("tideTables".to_owned(), "Tables of the water".to_owned()))
-        .chain((1..=7).map(|number| (format!("listBuoys{number}"), format!("List buoys {number}"))))
-        .collect::<Vec<_>>();
+    let coast = std::iter::once((
+        "tideTables".to_owned(),
+        "The tide forecast at the quay".to_owned(),
+    ))
+    .chain((1..=7).map(|number| (format!("listBuoys{number}"), format!("List buoys {number}"))))
+    .collect::<Vec<_>>();
     world.publish_operations("coast", &coast, 51).await;
     // `anchor` starts a word of both paths and of no Provider Tool path, so
     // it is rare. The depths Tool is exactly as near as the tenth nearest
-    // Provider Tool; the forecast Tool also means what `forecast` means, so
-    // it is farther.
+    // Provider Tool, and the forecast Tool, which also means what
+    // `forecast` means, as the eleventh.
     world
         .save(&world.principal, "anchor.depths", "Depth below the keel")
         .await;
@@ -587,8 +609,8 @@ async fn a_rare_path_word_makes_an_authored_tool_strong_within_the_tenth_nearest
     // the Authored Tools that follow every Provider Tool.
     let cases = [
         (
-            "no filter: the depths Tool is not farther than the tenth nearest Provider Tool, \
-             the forecast Tool is",
+            "no filter: the depths Tool is as near as the tenth nearest Provider Tool, \
+             the forecast Tool as the eleventh",
             None,
             None,
             vec!["coral.private.anchor.forecast"],
@@ -626,6 +648,44 @@ async fn a_rare_path_word_makes_an_authored_tool_strong_within_the_tenth_nearest
             paths(&page)
         );
     }
+}
+
+#[tokio::test]
+async fn the_cut_offs_come_from_the_vector_list_when_the_window_loses_the_nearest_provider_tool() {
+    let world = World::anchorage().await;
+    // No word of `moon anchor`. The Tool means what a text about tides and a
+    // forecast means: farther from the query than the Tides Tool, the nearest
+    // Provider Tool, and nearer than every other Provider Tool.
+    world
+        .save(
+            &world.principal,
+            "harbour.tideForecast",
+            "The forecast for one berth",
+        )
+        .await;
+    world.index_and_embed().await;
+    let last = ["coral.private.harbour.tideForecast".to_owned()];
+
+    let whole = world.anchor(&world.semantic(), None).await;
+    let cut = world.anchor(&world.losing_nearest_tool(), None).await;
+
+    assert_eq!(
+        after_every_provider_tool(&whole),
+        last,
+        "not nearer than the nearest Provider Tool: {:?}",
+        paths(&whole)
+    );
+    assert!(
+        !paths(&cut).contains(&"coral.providers.tides.getTides"),
+        "the window lost the nearest Provider Tool: {:?}",
+        paths(&cut)
+    );
+    assert_eq!(
+        after_every_provider_tool(&cut),
+        last,
+        "the vector list still holds the nearest Provider Tool: {:?}",
+        paths(&cut)
+    );
 }
 
 #[tokio::test]
@@ -1387,6 +1447,65 @@ impl Embed for Meanings {
     }
 }
 
+/// The Tool retriever, whose window loses the nearest Provider Tool while
+/// its vector list keeps it: what the merge does when a hundred entries
+/// outrank that Tool's place in the vector list alone.
+struct LosesNearestTool(ToolRetriever);
+
+#[async_trait::async_trait]
+impl EntityRetriever for LosesNearestTool {
+    fn kind(&self) -> EntityKind {
+        self.0.kind()
+    }
+
+    async fn list(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: RequestContext<'_>,
+        provider_filter: &ProviderFilter,
+    ) -> Result<Listing, Error> {
+        self.0.list(transaction, context, provider_filter).await
+    }
+
+    async fn query(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: RequestContext<'_>,
+        request: &QueryRequest<'_>,
+    ) -> Result<Answer, QueryError> {
+        let mut answer = self.0.query(transaction, context, request).await?;
+        let nearest = answer
+            .window
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| entry.distance.map(|distance| (index, distance)))
+            .min_by(|left, right| left.1.order(right.1))
+            .map(|(index, _distance)| index);
+        if let Some(index) = nearest {
+            answer.window.remove(index);
+        }
+        Ok(answer)
+    }
+
+    async fn hydrate(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: RequestContext<'_>,
+        entity: &EntityRef,
+    ) -> Result<Hydrated, Error> {
+        self.0.hydrate(transaction, context, entity).await
+    }
+
+    async fn describe(
+        &self,
+        transaction: &mut Transaction<'_>,
+        context: RequestContext<'_>,
+        call_path: &CallPath,
+    ) -> Result<Option<ExactAuthoringDescription>, Error> {
+        self.0.describe(transaction, context, call_path).await
+    }
+}
+
 /// A model that fails on every query.
 struct FailingQueries;
 
@@ -1621,6 +1740,19 @@ impl World {
             self.modules.search.database.clone(),
             self.modules.workspaces.clone(),
         )
+    }
+
+    /// Discovery whose engine embeds each query with the World's model, and
+    /// whose Tool retriever's window loses its nearest Provider Tool.
+    fn losing_nearest_tool(&self) -> UniversalSearchModule {
+        let (_ready, model) = watch::channel(ModelLoad::Ready(Arc::clone(&self.model)));
+        UniversalSearchModule::with_retrievers(
+            self.modules.search.database.clone(),
+            self.modules.workspaces.clone(),
+            Arc::new(LosesNearestTool(ToolRetriever::default())),
+            AuthoredToolRetriever::new,
+        )
+        .with_model(model)
     }
 
     /// Discovery whose model slot holds `model`.

@@ -107,6 +107,10 @@ pub(crate) struct Answer {
     /// Whether the window merged a vector list; `None` for a retriever
     /// that keeps no vectors.
     pub(crate) semantic: Option<Semantic>,
+    /// The distances of the retriever's vector list, nearest first, as the
+    /// list stood before the merge cut it to the window: the window can lose
+    /// the nearest entries. Empty without a vector list.
+    pub(crate) vector_distances: Vec<Distance>,
 }
 
 /// One Entity of a ranked window and its mark. A retriever marks an Entity

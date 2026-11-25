@@ -11,13 +11,16 @@ Private Tool or a Shared Tool. An Authored Tool is strong when one of these rule
 2. **Rare path word, near enough:** a content word of the query starts a word of the Tool's path, few of the
    Workspace's Provider Tool paths hold a word that starts with it
    ([#3426](https://github.com/withcoral/coral/issues/3426)), and the Tool is no farther from the query than the
-   Provider Tool of a fixed rank by distance, or the farthest Provider Tool with a distance when fewer have one. Words
-   such as `get` and `list` start a word of most Provider Tool paths, so they make no Authored Tool strong.
+   Provider Tool of a fixed rank by distance, or the farthest Provider Tool with a distance when fewer have one. Each
+   Workspace counts its own paths: in the Workspace of #3412, `get` starts a word of a third of the Provider Tool paths
+   and `list` of a sixth, far more than counts as rare, so neither makes an Authored Tool strong there.
 3. **Distance:** the Tool is strictly nearer to the query than the nearest Provider Tool of the same request.
 
-The Provider Tool window holds only the Tools inside the search's Provider filter, so each comparison is inside it too.
-A distance condition applies only when both distances exist. When the Tool has no distance of its own, or no Provider
-Tool has one, the rare path word decides alone, as it did before this step, and rule 3 makes nothing strong.
+The Provider Tool distances are those of the Provider Tool vector list before the merge cuts it to the window: the merge
+can drop the nearest Provider Tools from the window. The vector list holds only the Tools inside the search's Provider
+filter, so each comparison is inside it too. A distance condition applies only when both distances exist. When the Tool
+has no distance of its own, or no Provider Tool has one, the rare path word decides alone, as it did before this step,
+and rule 3 makes nothing strong.
 
 The Authored Tool retriever applies rule 1 and finds the rare path word; the rerank step applies the distance
 conditions. An Authored Tool that no rule makes strong gets a third mark, **last**: fusion puts it after every weak
@@ -60,7 +63,8 @@ alone, an Authored Tool was still in the first 3 places of 47% to 60% of the Pro
 Tool lost 3.5 to 5.2 points of hit@3 against the same catalog without Authored Tools. Almost every such page matched a
 rare path word: the bench queries are long, and in a catalog of a few thousand Provider Tools many everyday words are
 rare. Without the rare path word, the Provider pages kept their places, but worded queries for
-an Authored Tool lost 5.7 to 8.6 points of hit@3. No cut-off for "rare" passed both. Rule 2 asks a rare path word to be
+an Authored Tool lost 5.7 to 8.6 points of hit@3 on Set A, and by estimate 14.3 points on Set B's 3-word queries. No
+cut-off for "rare" passed both. Rule 2 asks a rare path word to be
 near the query as well, because a Tool that a word matches by chance is seldom near the query:
 
 | Bench, `main` → this decision | Provider crowding, hit@3 | An Authored Tool in the first 3 places | Worded Authored queries, hit@3 against `main` |
@@ -79,8 +83,10 @@ The rank is relative, as rule 3 is, so it needs no limit on the distance's value
 This decision amends ADR 0011 (what crosses into the engine, kind in the engine, equal fusion) and ADR 0035 (the fixed
 count for every kind). Both now state the current rules; this section gives the reasons.
 
-- **A distance crosses into the engine.** A window entry carries its distance from the query when its retriever's
-  vector list holds it. Both stores compute the cosine distance from one query vector and one model, so the distances
+- **Distances and the rare path word cross into the engine.** A window entry carries its distance from the query
+  when its retriever's vector list holds it, and whether a rare path word matched it. A retriever's answer also
+  carries the distances of its vector list before the merge, so the step reads the nearest Provider Tools even when
+  the window lost them. Both stores compute the cosine distance from one query vector and one model, so the distances
   of two kinds compare, where their scores do not. Only the rerank step reads them. Scores, ranks and merge scores
   still never compare across kinds.
 - **One place in the engine reads the kind.** The rerank step reads the kind of an entry directly. Rejected: a role
@@ -94,12 +100,12 @@ count for every kind). Both now state the current rules; this section gives the 
 
 ## Details
 
-- **A missing distance.** No Provider Tool entry has a distance when no Provider Tool in scope has a current vector,
-  the Provider Tool vector query fails, or the request has no query vector (semantic search off, the model not ready,
-  the query not embedded). An Authored Tool has none when its vector is missing or stale, its vector query fails, or
-  its vector list ends before it; the list holds as many of the nearest Authored Tools of one kind as the window holds.
-  In each case the rare path word decides alone and rule 3 makes nothing strong, so a search without the vector side
-  marks Authored Tools as it did before this step.
+- **A missing distance.** The Provider Tool vector list is empty when no Provider Tool in scope has a current vector,
+  the Provider Tool vector query or retriever fails, or the request has no query vector (semantic search off, the model
+  not ready, the query not embedded). An Authored Tool has none when its vector is missing or stale, its vector query
+  fails, or its vector list ends before it; the list holds as many of the nearest Authored Tools of one kind as the
+  window holds. In each case the rare path word decides alone and rule 3 makes nothing strong, so a search without the
+  vector side marks Authored Tools as it did before this step.
 - **Equal distances.** An Authored Tool exactly as near as the nearest Provider Tool is not strong by rule 3. One
   exactly as near as the Provider Tool of the rank of rule 2 is near enough for its rare path word.
 - **The Provider filter keeps its rule.** It does not narrow Authored Tools, as the `coral.search` description says. An
@@ -122,10 +128,11 @@ count for every kind). Both now state the current rules; this section gives the 
 
 - **The rare path word alone,** as #3426 built it: the Provider pages of the bench kept an Authored Tool in their first
   3 places, as above.
-- **No rare path word,** rules 1 and 3 only: worded queries for an Authored Tool lost 5.7 to 8.6 points on the bench.
-- **A nearer rank for rule 2** (the 1st to 3rd Provider Tool), estimated from the bench replays: worded queries lost
-  up to 8 points on Set B. **The nearest Provider Tool's distance plus a margin**, estimated the same way: it passed
-  at one margin only, and a margin is a limit on the distance's value, as C.
+- **No rare path word,** rules 1 and 3 only: worded queries for an Authored Tool lost 5.7 to 8.6 points on Set A,
+  and by estimate 14.3 points on Set B's 3-word queries.
+- **A nearer rank for rule 2** (the 1st to 3rd Provider Tool), estimated from the bench replays: Set B's 3-word
+  queries lost 7.9 to 14.3 points. **The nearest Provider Tool's distance plus a margin**, estimated the same way: it
+  passed at one margin only, and a margin is a limit on the distance's value, as C.
 - **A0, the fallback if this step fails its bars:** no vector query for Authored Tools, with the rare-word rule. On
   worded queries its hits are 2 to 4 points lower, and it has no hit with no shared word.
 - **A:** the vector list only orders the lexical matches. No case can measure its gain over A0.

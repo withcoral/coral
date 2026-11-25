@@ -172,6 +172,16 @@ pub(crate) struct VectorList<T> {
     pub(crate) has_more: bool,
 }
 
+impl<T> VectorList<T> {
+    /// The distance of each entry, nearest first.
+    pub(crate) fn distances(&self) -> Vec<Distance> {
+        self.entries
+            .iter()
+            .map(|(_entry, distance)| *distance)
+            .collect()
+    }
+}
+
 /// One entry of a retriever's window, and its place in the vector list
 /// when the list holds it.
 pub(crate) struct Merged<T> {

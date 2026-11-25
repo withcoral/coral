@@ -150,7 +150,7 @@ impl UniversalSearchModule {
         Self::with_retrievers(
             database,
             workspaces,
-            ToolRetriever::default(),
+            Arc::new(ToolRetriever::default()),
             AuthoredToolRetriever::new,
         )
     }
@@ -185,9 +185,9 @@ impl UniversalSearchModule {
         Self::with_retrievers(
             database,
             workspaces,
-            ToolRetriever {
+            Arc::new(ToolRetriever {
                 fail_ranking: kinds.contains(&EntityKind::ProviderTool),
-            },
+            }),
             |kind| AuthoredToolRetriever {
                 fail_ranking: kinds.contains(&EntityKind::authored(kind)),
                 ..AuthoredToolRetriever::new(kind)
@@ -198,14 +198,14 @@ impl UniversalSearchModule {
     fn with_retrievers(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
-        tools: ToolRetriever,
+        tools: Arc<dyn EntityRetriever>,
         authored_tools: impl Fn(coral_catalog::AuthoredToolKind) -> AuthoredToolRetriever,
     ) -> Self {
         Self {
             database,
             workspaces,
             retrievers: Arc::new([
-                Arc::new(tools) as Arc<dyn EntityRetriever>,
+                tools,
                 Arc::new(authored_tools(coral_catalog::AuthoredToolKind::Private)),
                 Arc::new(authored_tools(coral_catalog::AuthoredToolKind::Shared)),
             ]),
@@ -448,6 +448,7 @@ impl UniversalSearchModule {
         let mut statuses = Vec::with_capacity(self.retrievers.len());
         let mut applied = 0usize;
         let mut failed = 0usize;
+        let mut vector_lists = Vec::with_capacity(self.retrievers.len());
         for (retriever_index, retriever) in self.retrievers.iter().enumerate() {
             begin_query(transaction).await?;
             let span = tracing::info_span!(
@@ -465,6 +466,7 @@ impl UniversalSearchModule {
                     window,
                     coverage,
                     semantic,
+                    vector_distances,
                 }) => {
                     if let Some(semantic) = semantic {
                         record_semantic(&span, semantic);
@@ -472,6 +474,7 @@ impl UniversalSearchModule {
                     end_query(transaction).await?;
                     applied += 1;
                     windows.push((retriever_index, window));
+                    vector_lists.push((retriever.kind(), vector_distances));
                     ranked_status(retriever.kind(), coverage)
                 }
                 Err(QueryError::Retriever(error)) => {
@@ -498,7 +501,7 @@ impl UniversalSearchModule {
         if applied > 0 && failed == applied {
             return Err(Error::ServiceUnavailable);
         }
-        let reranked = rerank::rerank(&mut windows);
+        let reranked = rerank::rerank(&mut windows, &vector_lists);
         record_marks(&tracing::Span::current(), &reranked);
         Ok((fuse(windows), statuses))
     }

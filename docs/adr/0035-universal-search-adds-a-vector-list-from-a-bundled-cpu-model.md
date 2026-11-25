@@ -43,10 +43,12 @@ retriever drops each vector entry whose source stamp differs from its Search Ent
 of old text never ranks. Both queries return the window depth from the same read snapshot. The retriever merges them
 by reciprocal rank with equal weight and cuts the result to the window. A Provider Tool is strong when the retriever's
 own strong rule holds for it, wherever it came from, or when it is among a fixed number at the top of the vector list.
-An Authored Tool is not strong by its place in the vector list: when its own rules do not make it strong, the rerank
-step compares its distance with the nearest Provider Tool's
-([ADR 0044](0044-a-rerank-step-decides-by-distance-whether-an-authored-tool-is-strong.md)). Each entry carries its
-distance for that step. The vector side merges no list across kinds: the engine's strong-first fusion
+An Authored Tool is not strong by its place in the vector list. The rerank step compares its distance with those of
+the Provider Tool vector list before the merge
+([ADR 0044](0044-a-rerank-step-decides-by-distance-whether-an-authored-tool-is-strong.md)): a rare path word makes
+it strong only when it is no farther than the Provider Tool of a fixed rank there, and without one it must be
+strictly nearer than the nearest. Each entry carries its distance for that step, and each answer the distances of its
+vector list. The vector side merges no list across kinds: the engine's strong-first fusion
 ([ADR 0011](0011-universal-search-engine-and-retrievers.md)) merges the windows by position. The manifest holds the
 merge constants; [#3050](https://github.com/withcoral/coral/issues/3050) has their values.
 

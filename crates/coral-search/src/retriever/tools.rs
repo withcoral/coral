@@ -114,6 +114,7 @@ impl EntityRetriever for ToolRetriever {
                 window: Vec::new(),
                 coverage: RetrieverCoverage::new(count(eligible), count(eligible), 0, false),
                 semantic: Some(Semantic::of(&request.vector)),
+                vector_distances: Vec::new(),
             });
         };
         let complete = repository::complete_generations(transaction, context.workspace_id)
@@ -168,6 +169,7 @@ impl EntityRetriever for ToolRetriever {
             lexical_and_vector_lists(transaction, context.workspace_id, &scope, &plan, request)
                 .await?;
         let semantic = Semantic::of(&vector);
+        let vector_distances = vector.as_ref().map_or_default(VectorList::distances);
         let (merged, has_more) = vector_list::merged_window(
             lexical,
             vector.ok(),
@@ -187,6 +189,7 @@ impl EntityRetriever for ToolRetriever {
             ),
             window,
             semantic: Some(semantic),
+            vector_distances,
         })
     }
 
