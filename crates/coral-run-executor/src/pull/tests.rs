@@ -104,11 +104,21 @@ pub(crate) fn busy_stream(streams: &PullStreams) -> (StreamId, Sent) {
     (stream, sent)
 }
 
-/// Waits until `callers` callers wait in line for compile room.
+/// Waits until `callers` callers wait in line for compile room, and panics
+/// once they have not after many yields. A timeout cannot bound it: a task
+/// that yields keeps the runtime busy, so paused time never advances.
 pub(crate) async fn in_line(streams: &PullStreams, callers: usize) {
-    while streams.waiting_for_compile_room() != callers {
+    const LOOKS: usize = 10_000;
+    for _ in 0..LOOKS {
+        if streams.waiting_for_compile_room() == callers {
+            return;
+        }
         tokio::task::yield_now().await;
     }
+    panic!(
+        "{callers} callers never waited in line, {} do",
+        streams.waiting_for_compile_room()
+    );
 }
 
 /// Holds every unit of `stream`'s compile room still free, as callers that

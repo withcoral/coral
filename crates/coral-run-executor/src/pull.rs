@@ -792,8 +792,10 @@ impl PullStreams {
         if !draining {
             hand_off(&mut held_streams, &mut lock(&self.compile_line));
         }
+        // Room a caller in line took wakes nobody.
+        let room_left = !draining && (has_room(&held_streams) || has_compile_room(&held_streams));
         drop(held_streams);
-        if !draining {
+        if room_left {
             self.signal_room();
         }
         stream

@@ -368,9 +368,14 @@ async fn callers_that_wait_for_room_take_it_in_the_order_they_came() {
         in_line(&streams, callers).await;
     }
     // A caller served out of order would wait past the bound and panic.
+    // Each served client is kept, so the unit held for it stays held.
     let mut served_callers = Vec::new();
     for (served, next) in waiting.into_iter().enumerate() {
         streams.let_go(stream);
+        assert!(
+            streams.compile_turn(false).is_err(),
+            "a caller that comes now waits behind the line"
+        );
         served_callers.push(next.await.unwrap());
         assert_eq!(
             streams.waiting_for_compile_room(),

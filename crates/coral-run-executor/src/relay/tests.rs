@@ -381,7 +381,7 @@ async fn a_unit_held_for_a_call_that_never_comes_readies_the_next_caller() {
 
 // Catches: a Coral Instance whose Run Executors' compile room is spent
 // relaying its calls through the database, which writes rows for each
-// call, although its own room frees within a compile.
+// call, although its own room frees when a compile answers.
 #[tokio::test]
 async fn a_coral_instance_that_holds_a_stream_waits_for_its_own_room() {
     let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
@@ -393,9 +393,7 @@ async fn a_coral_instance_that_holds_a_stream_waits_for_its_own_room() {
 
     let before = database.statements_sent();
     let call = compiling(&compiler, Duration::from_secs(5));
-    tokio::time::timeout(Duration::from_secs(5), in_line(&streams, 1))
-        .await
-        .expect("the call waits in line here");
+    in_line(&streams, 1).await;
     streams.let_go(stream);
     answer(&streams, stream, &mut sent).await;
     assert_eq!(call.await.unwrap().as_deref(), Ok("42"));

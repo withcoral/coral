@@ -1,9 +1,8 @@
 //! Compiles relayed through the database: Coral Instances talk
 //! only through it. A Coral Instance that holds no pull stream that takes
 //! sends writes a row and waits on the change signal for its answer; every
-//! Coral Instance that holds one with compile room, itself included, takes
-//! the oldest row it can serve, serves it on that stream, and writes the
-//! answer back.
+//! Coral Instance that holds one with compile room takes the oldest row it
+//! can serve, serves it on that stream, and writes the answer back.
 //!
 //! A row with no call is a probe: [`crate::CompilerClient::ready`] waits on
 //! one until some Coral Instance has compile room, before the compile's own
