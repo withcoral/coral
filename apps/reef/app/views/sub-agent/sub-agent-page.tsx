@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from 'react'
+import { useId, useRef, useState, type ReactNode } from 'react'
 import { Form } from 'react-router'
 import { CatalogToolbar } from '@/components/catalog'
 import { DocumentSubmitButton } from '@/components/document-submit-button'
@@ -20,6 +20,7 @@ import {
   servicePresets,
   requestArgNames,
 } from './copy'
+import { ModelTestOutcome, testRefusal, useModelTest } from './model-test'
 import {
   type KeyChange,
   type ModelValues,
@@ -152,15 +153,25 @@ function ModelForm({
   const [service, setService] = useState<Service>(
     refused?.conflict || refused?.field === 'baseUrl' ? 'other' : serviceOf(values),
   )
-  // Closed unless it holds something to correct or compare. Read once, so that a page that reloads
-  // its data does not close it.
-  const [advanced] = useState(
-    Boolean(
-      refused?.conflict || refused?.field === 'contextWindow' || refused?.field === 'requestArgs',
-    ),
-  )
   const id = useId()
-  const update = (patch: Partial<ModelValues>) => setValues((v) => ({ ...v, ...patch }))
+  const test = useModelTest()
+  const refusal = test.tried ? testRefusal(test.result) : refused
+  const refusedAdvanced = refusal?.field === 'contextWindow' || refusal?.field === 'requestArgs'
+  // Closed unless it holds something to correct or compare. Kept, so that it does not close over a
+  // person who corrects it.
+  const [advanced, setAdvanced] = useState({
+    open: Boolean(refused?.conflict || refusedAdvanced),
+    test: test.number,
+  })
+  // A test that refuses a setting in it opens it anew, though the person closed it.
+  if (refusedAdvanced && advanced.test !== test.number)
+    setAdvanced({ open: true, test: test.number })
+  const testButton = useRef<HTMLButtonElement>(null)
+  // Not every control raises an input event, which the form clears a test on.
+  const update = (patch: Partial<ModelValues>) => {
+    setValues((v) => ({ ...v, ...patch }))
+    test.clear()
+  }
 
   const moved = saved !== null && destination(values.baseUrl) !== destination(saved.values.baseUrl)
   // Coral sends a saved key only to the base URL it was saved with.
@@ -177,6 +188,10 @@ function ModelForm({
       ? 'replace'
       : 'optional'
   const keyChange = keyChoice && keyChoices.includes(keyChoice) ? keyChoice : keyDefault
+  const chooseKey = (next: KeyChange) => {
+    setKeyChoice(next)
+    test.clear()
+  }
   const chooseService = (next: Service) => {
     setService(next)
     if (next !== 'other') update(servicePresets[next])
@@ -186,7 +201,7 @@ function ModelForm({
 
   /** One field's ids and error, for its control and for the text around it. */
   const control = (name: RefusableField) => {
-    const error = refused?.field === name ? refused.message : undefined
+    const error = refusal?.field === name ? refusal.message : undefined
     const fieldId = `${id}-${name}`
     return {
       field: { id: fieldId, error },
@@ -215,7 +230,16 @@ function ModelForm({
   const requestArgs = control('requestArgs')
   return (
     // The path without its query, so that a refused save does not arrive as a saved one.
-    <Form method="post" action="." reloadDocument className={styles.form}>
+    <Form
+      method="post"
+      action="."
+      reloadDocument
+      className={styles.form}
+      onInput={test.clear}
+      onSubmit={({ nativeEvent }) => {
+        if ((nativeEvent as SubmitEvent).submitter === testButton.current) test.start()
+      }}
+    >
       <Fields form={form} intent="save" etag={saved?.etag} />
       <div className={styles.field}>
         <Typography.BodySmallStrong as="span">Service</Typography.BodySmallStrong>
@@ -268,6 +292,7 @@ function ModelForm({
         <div className={styles.field}>
           <Typography.BodySmallStrong as="span">Base URL</Typography.BodySmallStrong>
           <Typography.BodySmall as="p">{values.baseUrl}</Typography.BodySmall>
+          <FieldError id={`${id}-baseUrl-error`} message={baseUrl.field.error} />
           <input type="hidden" name="baseUrl" value={values.baseUrl} />
         </div>
       )}
@@ -312,7 +337,7 @@ function ModelForm({
         >
           <Inputs.CredentialInput {...apiKey.input} required={keyChange === 'replace'} />
           {keyChange === 'replace' && keyChoices.length > 1 && (
-            <KeyButton onClick={() => setKeyChoice(keepable ? 'keep' : 'clear')}>
+            <KeyButton onClick={() => chooseKey(keepable ? 'keep' : 'clear')}>
               {keepable ? 'Keep the saved key' : 'Use no key'}
             </KeyButton>
           )}
@@ -330,18 +355,18 @@ function ModelForm({
             </Typography.BodySmall>
             {keyChange === 'keep' ? (
               <>
-                <KeyButton onClick={() => setKeyChoice('replace')}>Replace</KeyButton>
-                <KeyButton onClick={() => setKeyChoice('clear')}>Remove</KeyButton>
+                <KeyButton onClick={() => chooseKey('replace')}>Replace</KeyButton>
+                <KeyButton onClick={() => chooseKey('clear')}>Remove</KeyButton>
               </>
             ) : (
-              <KeyButton onClick={() => setKeyChoice(keepable ? 'keep' : 'replace')}>
+              <KeyButton onClick={() => chooseKey(keepable ? 'keep' : 'replace')}>
                 {keepable ? 'Keep the saved key' : 'Enter a key'}
               </KeyButton>
             )}
           </div>
         </div>
       )}
-      <Disclosure title="Advanced" open={advanced}>
+      <Disclosure key={`advanced-${advanced.test}`} title="Advanced" open={advanced.open}>
         <div className={styles.advanced}>
           <Field
             {...contextWindow.field}
@@ -372,9 +397,21 @@ function ModelForm({
           </Field>
         </div>
       </Disclosure>
-      <div>
+      <div className={styles.actions}>
         <DocumentSubmitButton>Save</DocumentSubmitButton>
+        <Button.TextButton
+          ref={testButton}
+          type="submit"
+          variant="secondary"
+          busy={test.testing}
+          {...test.button}
+        >
+          Test
+        </Button.TextButton>
+        {test.testing && <Typography.BodySmall as="span">Testing the model…</Typography.BodySmall>}
       </div>
+      {test.result && <ModelTestOutcome result={test.result} />}
+      {test.frame}
     </Form>
   )
 }

@@ -37,6 +37,22 @@ export type KeyChange = (typeof KEY_CHANGES)[number]
 /** A field that Coral can refuse on its own. */
 export type RefusableField = Exclude<keyof ModelValues, 'protocol'> | 'apiKey'
 
+/** Why a setting was refused, and the field to show it at. */
+export interface SettingRefusal {
+  field: RefusableField
+  message: string
+}
+
+/** How a test of the model ended. It never holds a value of the form, or the server's own text. */
+export type ModelTestResult =
+  | { outcome: 'answered' | 'unreachable' | 'forbidden' | 'unreadable' | 'unknown' }
+  /** The server answered with this HTTP status. */
+  | { outcome: 'refused'; status: number }
+  /** A setting that a save would refuse too. */
+  | ({ outcome: 'invalid' } & SettingRefusal)
+  /** There was no test. The message says what to do. */
+  | { outcome: 'failed'; message: string }
+
 /** A save that changed nothing, with what the person typed except the API key. */
 export interface RefusedSave {
   values: ModelValues

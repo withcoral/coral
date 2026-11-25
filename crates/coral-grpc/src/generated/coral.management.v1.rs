@@ -17945,6 +17945,27 @@ pub struct SubAgentModelSettings {
     #[prost(string, tag = "5")]
     pub request_args_json: ::prost::alloc::string::String,
 }
+/// Tests a model.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TestSubAgentModelRequest {
+    /// The settings as they are entered.
+    #[prost(message, optional, tag = "1")]
+    pub settings: ::core::option::Option<SubAgentModelSettings>,
+    /// Absent uses the stored API key, if the base URL is the one it is stored
+    /// for. Empty sends none. Anything else is sent.
+    #[prost(string, optional, tag = "2")]
+    pub api_key: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// How the model answered.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TestSubAgentModelResponse {
+    /// What happened.
+    #[prost(enumeration = "SubAgentModelTestOutcome", tag = "1")]
+    pub outcome: i32,
+    /// The HTTP status of a refusal.
+    #[prost(uint32, optional, tag = "2")]
+    pub http_status: ::core::option::Option<u32>,
+}
 /// Asks what a Workspace Owner agrees to.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetWorkspaceSubAgentModelRequest {
@@ -17981,6 +18002,51 @@ pub struct TurnOnSubAgentResponse {
     /// The committed state.
     #[prost(enumeration = "ToolAccessState", tag = "1")]
     pub access_state: i32,
+}
+/// How a model answered a test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SubAgentModelTestOutcome {
+    /// Unknown: a newer runtime may send an outcome this client does not know.
+    Unspecified = 0,
+    /// The model replied.
+    Answered = 1,
+    /// The server could not be reached, or did not answer in time.
+    Unreachable = 2,
+    /// The server answered with `http_status`.
+    Refused = 3,
+    /// The operator's destination policy forbids the server.
+    Forbidden = 4,
+    /// The server's answer does not read as a reply of the protocol.
+    Unreadable = 5,
+}
+impl SubAgentModelTestOutcome {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SUB_AGENT_MODEL_TEST_OUTCOME_UNSPECIFIED",
+            Self::Answered => "SUB_AGENT_MODEL_TEST_OUTCOME_ANSWERED",
+            Self::Unreachable => "SUB_AGENT_MODEL_TEST_OUTCOME_UNREACHABLE",
+            Self::Refused => "SUB_AGENT_MODEL_TEST_OUTCOME_REFUSED",
+            Self::Forbidden => "SUB_AGENT_MODEL_TEST_OUTCOME_FORBIDDEN",
+            Self::Unreadable => "SUB_AGENT_MODEL_TEST_OUTCOME_UNREADABLE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SUB_AGENT_MODEL_TEST_OUTCOME_UNSPECIFIED" => Some(Self::Unspecified),
+            "SUB_AGENT_MODEL_TEST_OUTCOME_ANSWERED" => Some(Self::Answered),
+            "SUB_AGENT_MODEL_TEST_OUTCOME_UNREACHABLE" => Some(Self::Unreachable),
+            "SUB_AGENT_MODEL_TEST_OUTCOME_REFUSED" => Some(Self::Refused),
+            "SUB_AGENT_MODEL_TEST_OUTCOME_FORBIDDEN" => Some(Self::Forbidden),
+            "SUB_AGENT_MODEL_TEST_OUTCOME_UNREADABLE" => Some(Self::Unreadable),
+            _ => None,
+        }
+    }
 }
 /// The wire protocol that a model's endpoint speaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -18224,6 +18290,37 @@ pub mod sub_agent_model_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Asks a model for one reply to a fixed prompt, with no Workspace data. It
+        /// changes nothing, and the settings need not be saved.
+        pub async fn test_sub_agent_model(
+            &mut self,
+            request: impl tonic::IntoRequest<super::TestSubAgentModelRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::TestSubAgentModelResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SubAgentModelService/TestSubAgentModel",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SubAgentModelService",
+                        "TestSubAgentModel",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
         /// Reads what a Workspace Owner agrees to by turning `coral.agent` on.
         pub async fn get_workspace_sub_agent_model(
             &mut self,
@@ -18323,6 +18420,15 @@ pub(crate) mod sub_agent_model_service_server {
             &self,
             request: tonic::Request<super::DeleteSubAgentModelRequest>,
         ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
+        /// Asks a model for one reply to a fixed prompt, with no Workspace data. It
+        /// changes nothing, and the settings need not be saved.
+        async fn test_sub_agent_model(
+            &self,
+            request: tonic::Request<super::TestSubAgentModelRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::TestSubAgentModelResponse>,
+            tonic::Status,
+        >;
         /// Reads what a Workspace Owner agrees to by turning `coral.agent` on.
         async fn get_workspace_sub_agent_model(
             &self,
@@ -18601,6 +18707,55 @@ pub(crate) mod sub_agent_model_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = DeleteSubAgentModelSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SubAgentModelService/TestSubAgentModel" => {
+                    #[allow(non_camel_case_types)]
+                    struct TestSubAgentModelSvc<T: SubAgentModelService>(pub Arc<T>);
+                    impl<
+                        T: SubAgentModelService,
+                    > tonic::server::UnaryService<super::TestSubAgentModelRequest>
+                    for TestSubAgentModelSvc<T> {
+                        type Response = super::TestSubAgentModelResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::TestSubAgentModelRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SubAgentModelService>::test_sub_agent_model(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = TestSubAgentModelSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

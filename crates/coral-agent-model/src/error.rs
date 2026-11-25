@@ -42,6 +42,9 @@ pub enum Error {
     /// The API key could not be sealed.
     #[error("the API key could not be sealed")]
     Sealing,
+    /// This process has nothing to test a model with.
+    #[error("the Sub-agent's model cannot be tested here")]
+    NoTester,
     /// The database failed.
     #[error("storage of the Sub-agent's model failed: {0}")]
     Database(#[from] coral_db::Error),
@@ -65,6 +68,7 @@ impl Error {
             Self::WorkspaceArchived => "workspace_archived",
             Self::EtagMismatch => "etag_mismatch",
             Self::Sealing => "sealing",
+            Self::NoTester => "no_tester",
             Self::Database(_) => "database",
             Self::CorruptData(_) => "corrupt_data",
             Self::Unavailable => "unavailable",

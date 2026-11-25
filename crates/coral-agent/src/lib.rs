@@ -23,7 +23,7 @@ use std::time::Duration;
 use coral_app::{SubAgentDependencies, SubAgentToolsFactory};
 use coral_run::SubAgentTools;
 
-use organization_model::OrganizationModel;
+use organization_model::{OrganizationModel, Tester};
 use sub_agents::SubAgents;
 use tools::AgentTools;
 
@@ -40,6 +40,10 @@ impl SubAgentToolsFactory for SubAgentFactory {
             models: dependencies.agent_models,
             http: coral_outbound::Client::new(dependencies.outbound_policy, MODEL_CALL_TIMEOUT)?,
         };
+        let tester = Tester {
+            http: coral_outbound::Client::new(dependencies.outbound_policy, TEST_TIMEOUT)?,
+        };
+        models.models.set_tester(Arc::new(tester));
         let human_interface = dependencies.modules.human_interface().clone();
         let modules = dependencies.modules;
         let tasks = modules.tasks;
@@ -64,3 +68,5 @@ impl SubAgentToolsFactory for SubAgentFactory {
 
 /// How long the model may take over one attempt at a reply.
 const MODEL_CALL_TIMEOUT: Duration = Duration::from_secs(300);
+/// How long a test waits for the model. A person waits for it on a page.
+const TEST_TIMEOUT: Duration = Duration::from_secs(45);

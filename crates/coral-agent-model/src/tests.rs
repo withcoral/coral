@@ -9,7 +9,7 @@ use coral_workspace::{
 use crate::agent_models::key_record;
 use crate::{
     AgentModel, AgentModels, ApiKeyChange, EnteredSettings, Error, InvalidSetting, ModelChange,
-    ModelProtocol, ModelSettings,
+    ModelProtocol, ModelSettings, ModelTester, TestFailure, TestKey,
 };
 
 const URL_A: &str = "https://a.example/v1";
@@ -327,6 +327,55 @@ async fn a_refused_setting_sets_and_changes_nothing() {
     assert_eq!(kept.etag().to_string(), model.etag().to_string());
     assert_eq!(kept.settings().base_url(), URL_A);
     assert_eq!(f.stored_key().await.as_deref(), Some("key-1"));
+}
+
+/// A tester that answers, and keeps the key of each test.
+#[derive(Default)]
+struct Recorder(std::sync::Mutex<Vec<Option<String>>>);
+
+#[async_trait::async_trait]
+impl ModelTester for Recorder {
+    async fn test(&self, _: &ModelSettings, key: Option<Secret>) -> Result<(), TestFailure> {
+        let key = key.map(|key| key.expose().to_owned());
+        self.0.lock().expect("the tests").push(key);
+        Ok(())
+    }
+}
+
+// Catches: a test for someone who is not an Organization Owner, or of settings that a save would
+// refuse, that asks the model, and a stored key that is opened for another destination.
+#[tokio::test]
+async fn only_an_owner_tests_a_model_and_a_stored_key_opens_for_its_destination_alone() {
+    let f = Fixture::new().await;
+    f.set(URL_A, Some("key-1")).await;
+    let none = f
+        .models
+        .test(&f.owner, &settings(URL_A), TestKey::Stored)
+        .await;
+    assert!(matches!(none, Err(Error::NoTester)), "{none:?}");
+
+    let tests = std::sync::Arc::new(Recorder::default());
+    f.models.set_tester(tests.clone());
+    let test = async |actor, entered: &EnteredSettings| {
+        f.models.test(actor, entered, TestKey::Stored).await
+    };
+    let denied = test(&f.member, &settings("not a URL")).await;
+    assert!(matches!(denied, Err(Error::PermissionDenied)), "{denied:?}");
+    let refused = test(&f.owner, &settings("not a URL")).await;
+    assert!(
+        matches!(refused, Err(Error::Invalid(InvalidSetting::BaseUrl))),
+        "{refused:?}"
+    );
+    assert!(tests.0.lock().expect("the tests").is_empty());
+
+    assert!(matches!(test(&f.owner, &settings(URL_A)).await, Ok(Ok(()))));
+    let corrupt = "UPDATE sub_agent_models SET sealed_api_key = 'corrupt'";
+    f.db.execute_fixture_sql(corrupt).await.expect("corrupt it");
+    let sealing = test(&f.owner, &settings(URL_A)).await;
+    assert!(matches!(sealing, Err(Error::Sealing)), "{sealing:?}");
+    assert!(matches!(test(&f.owner, &settings(URL_B)).await, Ok(Ok(()))));
+    let keys = tests.0.lock().expect("the tests").clone();
+    assert_eq!(keys, [Some("key-1".to_owned()), None]);
 }
 
 // Catches: two models, or a second set that replaces the first.

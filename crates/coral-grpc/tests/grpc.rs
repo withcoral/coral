@@ -69,6 +69,8 @@ struct Fixture {
     tasks: coral_task::TaskModule,
     runs: coral_run::RunModule,
     private_tools: coral_tools::PrivateToolModule,
+    /// The settings module the server composes, to give it a tester.
+    agent_models: coral_agent_model::AgentModels,
 }
 
 fn change(user: &AuthenticatedUser) -> ChangeContext {
@@ -306,7 +308,7 @@ impl Fixture {
             coral_grpc::Dependencies {
                 organization: OrganizationModule::new(database.clone()),
                 sub_agent_models: coral_administration::SubAgentModelWorkflow::new(
-                    agent_models,
+                    agent_models.clone(),
                     coral_administration::ProviderWorkflow::new(
                         providers.clone(),
                         search_index.clone(),
@@ -403,6 +405,7 @@ impl Fixture {
             runs,
             tasks,
             private_tools,
+            agent_models,
         }
     }
 

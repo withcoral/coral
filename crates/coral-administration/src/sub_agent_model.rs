@@ -7,7 +7,9 @@
 //! gains or loses the Sub-agent's Tools; one that fails waits for the next
 //! update, and its Turns stop all the same.
 
-use coral_agent_model::{AgentModel, AgentModels, ApiKeyChange, EnteredSettings, Error};
+use coral_agent_model::{
+    AgentModel, AgentModels, ApiKeyChange, EnteredSettings, Error, TestFailure, TestKey,
+};
 use coral_credentials::Secret;
 use coral_db::{Transaction, UnixNanos};
 use coral_telemetry::safe;
@@ -50,6 +52,20 @@ impl SubAgentModelWorkflow {
         workspace_id: &WorkspaceId,
     ) -> Result<AgentModel, Error> {
         self.models.read_for_workspace(actor, workspace_id).await
+    }
+
+    /// Asks a model for one reply with the settings as entered.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`AgentModels::test`].
+    pub async fn test(
+        &self,
+        actor: &AuthenticatedUser,
+        entered: &EnteredSettings,
+        key: TestKey,
+    ) -> Result<Result<(), TestFailure>, Error> {
+        self.models.test(actor, entered, key).await
     }
 
     /// Sets the model of an Organization that has none. Each Workspace then

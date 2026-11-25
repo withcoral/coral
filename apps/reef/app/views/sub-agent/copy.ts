@@ -1,4 +1,4 @@
-import type { Protocol, Service } from './types'
+import type { ModelTestResult, Protocol, Service } from './types'
 
 export const serviceLabels: Record<Service, string> = {
   anthropic: 'Anthropic',
@@ -48,3 +48,35 @@ export const requestArgNames = [
   'top_k',
   'top_p',
 ]
+
+/** What a test's outcome tells the person to do. A newer Coral can send one this Reef lacks. */
+export function testOutcomeMessage(result: Exclude<ModelTestResult, { outcome: 'invalid' }>) {
+  switch (result.outcome) {
+    case 'answered':
+      return 'The model answered, so you can save it.'
+    case 'unreachable':
+      return 'Check the base URL and its server, which did not answer.'
+    case 'forbidden':
+      return 'Enter a different base URL, because this deployment does not permit this server.'
+    case 'unreadable':
+      return 'Check the protocol, because Coral cannot read the answer of this server.'
+    case 'refused':
+      return refusedMessage(result.status)
+    case 'failed':
+      return result.message
+    default:
+      return 'Test the model again.'
+  }
+}
+
+function refusedMessage(status: number) {
+  if (status === 429 || status >= 500)
+    return `Test again later, because the server answered with status ${status}.`
+  const check =
+    status === 401 || status === 403
+      ? 'the API key'
+      : status === 404
+        ? 'the base URL and the model name'
+        : 'the model name and the arguments'
+  return `Check ${check}, which the server refused with status ${status}.`
+}

@@ -276,7 +276,7 @@ fn failed(span: &tracing::Span, error: &ModelError) -> ModelCallOutcome {
     let status = match error {
         ModelError::Unavailable(status) => *status,
         ModelError::Refused(status) | ModelError::ContextTooLong(status) => Some(*status),
-        ModelError::Misconfigured => None,
+        ModelError::Forbidden | ModelError::Misconfigured => None,
     };
     if let Some(status) = status {
         span.record("http.response.status_code", safe::number(status.as_u16()));
@@ -295,7 +295,7 @@ const fn model_failure(error: &ModelError) -> &'static str {
         ModelError::Unavailable(_) => "model_unavailable",
         ModelError::Refused(_) => "model_refused",
         ModelError::ContextTooLong(_) => "model_context_too_long",
-        ModelError::Misconfigured => "model_misconfigured",
+        ModelError::Forbidden | ModelError::Misconfigured => "model_misconfigured",
     }
 }
 

@@ -880,6 +880,21 @@ async fn busy_or_failing_server_is_retried_three_times() {
     }
 }
 
+// Catches: a server that the operator's destination policy forbids sent the request and the key, or
+// the refusal shown as a server that did not answer.
+#[tokio::test]
+async fn a_forbidden_server_is_sent_nothing() {
+    let server = MockServer::start().await;
+    let closed = DestinationPolicy::default();
+    let client = ModelClient {
+        http: coral_outbound::Client::new(closed, Duration::from_secs(5)).unwrap(),
+        ..client(&server, Some(KEY))
+    };
+
+    assert_eq!(client.probe().await, Err(ModelError::Forbidden));
+    assert!(received(&server).await.is_empty());
+}
+
 // Catches: a refusal or an unreadable answer retried, or an error's text holding the answer or the key.
 #[tokio::test]
 async fn refusal_and_unreadable_answer_end_at_once_without_the_answer_or_key() {

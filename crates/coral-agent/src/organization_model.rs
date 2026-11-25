@@ -2,13 +2,14 @@
 
 use std::sync::Arc;
 
-use coral_agent_model::{ActiveModel, AgentModels, ModelProtocol};
+use coral_agent_model::{AgentModels, ModelProtocol, ModelSettings, ModelTester, TestFailure};
+use coral_credentials::Secret;
 use coral_db::{Database, RowLock};
 use coral_workspace::WorkspaceId;
 use url::Url;
 use uuid::Uuid;
 
-use crate::model::{ModelClient, Protocol};
+use crate::model::{ModelClient, ModelError, Protocol};
 use crate::sub_agents::{ModelRefusal, ModelSource, TurnModel};
 
 /// Looks the model up where an Organization Owner set it. A Workspace uses it
@@ -34,7 +35,10 @@ impl ModelSource for OrganizationModel {
         }
         Ok(TurnModel {
             id: active.id,
-            client: Arc::new(self.client(active)?),
+            client: Arc::new(
+                client(&self.http, &active.settings, active.api_key)
+                    .map_err(|_invalid| ModelRefusal::Unreadable("invalid_base_url"))?,
+            ),
         })
     }
 
@@ -57,25 +61,46 @@ impl ModelSource for OrganizationModel {
     }
 }
 
-impl OrganizationModel {
-    fn client(&self, active: ActiveModel) -> Result<ModelClient, ModelRefusal> {
-        let settings = active.settings;
-        let base_url = Url::parse(settings.base_url())
-            .map_err(|_invalid| ModelRefusal::Unreadable("invalid_base_url"))?;
-        Ok(ModelClient::new(
-            self.http.clone(),
-            match settings.protocol() {
-                ModelProtocol::ChatCompletions => Protocol::ChatCompletions,
-                ModelProtocol::OpenAiResponses => Protocol::OpenAiResponses,
-                ModelProtocol::Anthropic => Protocol::Anthropic,
-            },
-            &base_url,
-            settings.model().to_owned(),
-            active.api_key,
-            settings.context_window(),
-            settings.request_args().clone(),
-        ))
+/// Tests a model over a client of its own, which waits less than a Turn's.
+pub(crate) struct Tester {
+    pub(crate) http: coral_outbound::Client,
+}
+
+#[async_trait::async_trait]
+impl ModelTester for Tester {
+    async fn test(&self, settings: &ModelSettings, key: Option<Secret>) -> Result<(), TestFailure> {
+        let client =
+            client(&self.http, settings, key).map_err(|_invalid| TestFailure::Unreadable)?;
+        client.probe().await.map_err(|error| match error {
+            ModelError::Unavailable(None) => TestFailure::Unreachable,
+            ModelError::Unavailable(Some(status))
+            | ModelError::Refused(status)
+            | ModelError::ContextTooLong(status) => TestFailure::Refused(status.as_u16()),
+            ModelError::Forbidden => TestFailure::Forbidden,
+            ModelError::Misconfigured => TestFailure::Unreadable,
+        })
     }
+}
+
+fn client(
+    http: &coral_outbound::Client,
+    settings: &ModelSettings,
+    api_key: Option<Secret>,
+) -> Result<ModelClient, url::ParseError> {
+    let base_url = Url::parse(settings.base_url())?;
+    Ok(ModelClient::new(
+        http.clone(),
+        match settings.protocol() {
+            ModelProtocol::ChatCompletions => Protocol::ChatCompletions,
+            ModelProtocol::OpenAiResponses => Protocol::OpenAiResponses,
+            ModelProtocol::Anthropic => Protocol::Anthropic,
+        },
+        &base_url,
+        settings.model().to_owned(),
+        api_key,
+        settings.context_window(),
+        settings.request_args().clone(),
+    ))
 }
 
 impl From<coral_db::Error> for ModelRefusal {

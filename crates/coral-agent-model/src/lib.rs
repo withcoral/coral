@@ -8,8 +8,9 @@
 //! them, checks the [`EnteredSettings`]. A change joins its caller's
 //! transaction, which turns the Sub-agent off in every Workspace when the
 //! model's id changes. [`AgentModels::read_for_workspace`] shows the model to
-//! a Workspace's Owner, and [`AgentModels::active_in_transaction`] is the
-//! model as a Turn uses it.
+//! a Workspace's Owner, [`AgentModels::active_in_transaction`] is the model as
+//! a Turn uses it, and [`AgentModels::test`] asks a model for one reply before
+//! anybody depends on it.
 //!
 //! # Invariants
 //!
@@ -29,6 +30,7 @@ mod agent_models;
 mod error;
 mod repository;
 mod settings;
+mod tester;
 
 #[cfg(test)]
 mod tests;
@@ -40,3 +42,4 @@ pub use error::{Error, InvalidSetting};
 pub use settings::{
     CONTEXT_WINDOW_MIN, EnteredSettings, ModelProtocol, ModelSettings, REQUEST_ARG_NAMES,
 };
+pub use tester::{ModelTester, TestFailure, TestKey};

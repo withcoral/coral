@@ -20,7 +20,7 @@ use serde_json::{Map, Value};
 use tokio::time::Instant;
 use url::Url;
 
-use crate::prompt::ToolText;
+use crate::prompt::{TOOLS, ToolText};
 use crate::telemetry::ModelCallTrace;
 
 /// The wire protocol a configured model endpoint speaks.
@@ -152,6 +152,16 @@ impl ModelClient {
         }
     }
 
+    /// Asks for one reply to a fixed prompt, with the Sub-agent's tools, and
+    /// does not retry. No Turn asks, so it is no model call in the telemetry.
+    /// # Errors
+    /// Returns why the model gave no reply.
+    pub(crate) async fn probe(&self) -> Result<(), ModelError> {
+        let asked = [Message::user("Reply with the word ready.".to_owned())];
+        let body = self.encode_request("You are being tested.", &asked, &TOOLS, None)?;
+        self.send(&body).await.map(|_reply| ())
+    }
+
     async fn complete(&self, request_body: &[u8]) -> Result<Reply, ModelError> {
         let mut call = ModelCallTrace::open(&self.model, &self.endpoint_url);
         let mut result = self.send(request_body).await;
@@ -172,7 +182,7 @@ impl ModelClient {
         let mut builder = self
             .http
             .post(&self.endpoint_url)
-            .map_err(|_rejected| ModelError::Misconfigured)?
+            .map_err(|_rejected| ModelError::Forbidden)?
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(request_body.to_vec());
         match self.protocol {
@@ -192,7 +202,7 @@ impl ModelClient {
             .send()
             .await
             .map_err(|error| match FetchError::from(error) {
-                FetchError::DestinationRejected => ModelError::Misconfigured,
+                FetchError::DestinationRejected => ModelError::Forbidden,
                 FetchError::Http(_) => ModelError::Unavailable(None),
             })?;
         match response.status() {
@@ -430,8 +440,12 @@ pub(crate) enum ModelError {
     /// The server refused the request because it does not fit the model's context window.
     #[error("the conversation is too long for the model: start a new agent with a narrower brief")]
     ContextTooLong(StatusCode),
-    /// The destination policy forbids the server, or its answer could not be read for the configured protocol.
+    /// The destination policy forbids the server.
     #[error("the model settings do not lead to a model endpoint Coral may use")]
+    Forbidden,
+    /// The request could not be written, or the server's answer could not be read, for the
+    /// configured protocol.
+    #[error("the model server's answer does not read as a reply of its protocol")]
     Misconfigured,
 }
 
