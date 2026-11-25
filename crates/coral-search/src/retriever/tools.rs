@@ -396,7 +396,9 @@ fn strong_tool(plan: &QueryPlan, matched: &repository::RowMatch, named: bool) ->
     matched.phrase_points > 0
         || named
         || (words > 0
-            && 2 * plan.content_words_starting([matched.name.as_str(), matched.title.as_str()])
+            && 2 * plan
+                .content_words_starting([matched.name.as_str(), matched.title.as_str()])
+                .len()
                 >= words)
 }
 

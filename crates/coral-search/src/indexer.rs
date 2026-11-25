@@ -15,6 +15,9 @@ pub(crate) use repository::generation_outcomes_in_workspace;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub(crate) use repository::{generation_states_in_workspace, tool_rows_in_workspace};
 
+#[cfg(test)]
+pub(crate) use repository::path_word_generations_in_workspace;
+
 use std::borrow::Cow;
 use std::collections::HashSet;
 
@@ -32,7 +35,8 @@ use coral_workspace::WorkspaceId;
 /// 1: schema text holds each word once.
 /// 2: the Built-in Provider's text names its Call Root `coral`.
 /// 3: each row holds its field names for the Embedder's text.
-pub(crate) const INDEXER_REVISION: i64 = 3;
+/// 4: each Generation writes the words of its Tool paths.
+pub(crate) const INDEXER_REVISION: i64 = 4;
 
 /// A failure to write the search index. The caller's transaction rolls back.
 #[derive(Debug, thiserror::Error)]

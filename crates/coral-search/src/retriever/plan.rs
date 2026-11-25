@@ -155,14 +155,15 @@ impl QueryPlan {
         self.content_words.len()
     }
 
-    /// How many of the query's content words start a word of one of
-    /// `fields`, by the phrase test's word rule: separators and camelCase
+    /// The query's content words that start a word of one of `fields`,
+    /// each once, by the phrase test's word rule: separators and camelCase
     /// edges end words, and case does not count. A word starts with itself,
-    /// so `issues` counts in `openIssues`, and `deploy` in `deployments`.
+    /// so `issues` starts a word of `openIssues`, and `deploy` of
+    /// `deployments`.
     pub(super) fn content_words_starting<'a>(
         &self,
         fields: impl IntoIterator<Item = &'a str>,
-    ) -> usize {
+    ) -> Vec<&str> {
         let words = fields
             .into_iter()
             .flat_map(field_words)
@@ -170,7 +171,8 @@ impl QueryPlan {
         self.content_words
             .iter()
             .filter(|content| words.iter().any(|word| word.starts_with(content.as_str())))
-            .count()
+            .map(String::as_str)
+            .collect()
     }
 
     /// Whether the query names a Provider: a typed term is its namespace,
@@ -442,6 +444,16 @@ fn field_words(text: &str) -> BTreeSet<String> {
         words.insert(run.to_ascii_lowercase());
     }
     words
+}
+
+/// The words of a Tool path that a query's content word can start, by the
+/// rule that finds a field's words: each of at least three characters, since
+/// no content word is shorter. Each is ASCII letters and digits in lowercase.
+pub(crate) fn path_words(path: &str) -> BTreeSet<String> {
+    field_words(path)
+        .into_iter()
+        .filter(|word| word.len() >= MIN_TERM_CHARS)
+        .collect()
 }
 
 /// The capital that starts a camelCase word with this letter, for an ASCII

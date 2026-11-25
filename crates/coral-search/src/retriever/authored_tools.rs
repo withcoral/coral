@@ -14,7 +14,7 @@
 //! Principal's rule. Another Principal's Private Tool and a hidden Shared
 //! Tool never take a place in either list.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use async_trait::async_trait;
 use coral_catalog::AuthoredToolKind;
@@ -143,8 +143,30 @@ impl EntityRetriever for AuthoredToolRetriever {
             |tool: &repository::RankedAuthoredTool| tool.id.clone(),
             request.window,
         );
+        // The content words that decide each entry's mark by the rare-word
+        // rule: none for an entry that a phrase or the vector list makes
+        // strong already.
+        let marked = merged
+            .into_iter()
+            .map(|entry| {
+                let matched = &entry.entry.matched;
+                let words = if entry.strong_by_vector() || matched.phrase_points > 0 {
+                    Vec::new()
+                } else {
+                    plan.content_words_starting([matched.name.as_str()])
+                };
+                (entry, words)
+            })
+            .collect::<Vec<_>>();
+        let asked = marked
+            .iter()
+            .flat_map(|(_entry, words)| words.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let rare = rare_path_words(transaction, context.workspace_id, &asked).await?;
         let mut window = Vec::new();
-        for entry in merged {
+        for (entry, words) in marked {
             let strong_by_vector = entry.strong_by_vector();
             let ranked = entry.entry;
             let material =
@@ -154,11 +176,11 @@ impl EntityRetriever for AuthoredToolRetriever {
                         "a ranked Authored Tool is not one the caller discovers",
                     )))?;
             window.push(WindowEntry {
+                strong: strong_by_vector || strong_authored_tool(&ranked.matched, &words, &rare),
                 entity: EntityRef::AuthoredTool(AuthoredToolRef {
                     material: material.clone(),
                     call_path: ranked.call_path,
                 }),
-                strong: strong_by_vector || strong_authored_tool(&plan, &ranked.matched),
             });
         }
         Ok(Answer {
@@ -392,12 +414,68 @@ pub(crate) async fn explain_vector_query(
     .await
 }
 
+/// A content word of the query is rare when fewer than this percent of the
+/// Workspace's Provider Tool paths hold a word that starts with it. Words
+/// such as `get` and `list` start a word of most Provider Tool paths; on
+/// real searches they made Authored Tools strong where the agent wanted a
+/// Provider Tool. The result moves little between 2% and 10% (#3412).
+const RARE_PATH_WORD_PERCENT: i64 = 10;
+
 /// Whether a ranked Authored Tool is a strong match, by its retriever's own
-/// rule: a field holds the query's words in order, or a word of its path
-/// starts with a content word of the query. One that shares only description
-/// words with the query is weak, so it follows every strong Tool.
-fn strong_authored_tool(plan: &QueryPlan, matched: &repository::RowMatch) -> bool {
-    matched.phrase_points > 0 || plan.content_words_starting([matched.name.as_str()]) > 0
+/// rule: a field holds the query's words in order, or a content word of the
+/// query that starts a word of its path, one of `path_words`, is in `rare`.
+/// One that shares only description words or common path words with the
+/// query is weak, so it follows every strong Tool.
+fn strong_authored_tool(
+    matched: &repository::RowMatch,
+    path_words: &[&str],
+    rare: &HashSet<String>,
+) -> bool {
+    matched.phrase_points > 0 || path_words.iter().any(|word| rare.contains(*word))
+}
+
+/// Which of `words`, distinct content words of the query that start a word
+/// of an Authored Tool's path, are rare, as [`RARE_PATH_WORD_PERCENT`] decides.
+/// Counts the paths of each Provider's active Generation, as the index
+/// holds it complete, so a Generation that an update or a removal replaced
+/// counts no more, though its rows wait for their removal. Sends no
+/// statement when `words` is empty. A word's count is an upper bound
+/// (`repository::PathWordCount`), so a word near the limit counts as common
+/// rather than rare. In a Workspace with no Provider Tool every word is
+/// rare, and so it is while an active Generation holds no counts: after an
+/// upgrade, until a reconcile pass indexes it again, as the rule before the
+/// counts did.
+async fn rare_path_words(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    words: &[&str],
+) -> Result<HashSet<String>, QueryError> {
+    if words.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let generations = coral_provider::workspace_active_generations_in_transaction(
+        transaction,
+        workspace_id,
+        None,
+    )
+    .await
+    .map_err(Error::from)?
+    .iter()
+    .map(|generation| generation.generation_id().to_string())
+    .collect::<Vec<_>>();
+    let counts = repository::path_word_counts(transaction, workspace_id, &generations, words)
+        .await
+        .map_err(QueryError::retrieval)?;
+    Ok(counts
+        .words
+        .into_iter()
+        .filter(|count| {
+            counts.tools == 0
+                || counts.uncounted > 0
+                || count.tools_at_most * 100 < counts.tools * RARE_PATH_WORD_PERCENT
+        })
+        .map(|count| count.word)
+        .collect())
 }
 
 /// How the Authored Tools of one kind are decided for the caller, read once
