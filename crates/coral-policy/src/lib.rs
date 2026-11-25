@@ -404,7 +404,8 @@ impl ToolPolicyModule {
 
     /// Turns `coral.agent` on in one Workspace, enabled or with approval, for
     /// the Sub-agent model `seen` whose destination its Owner was shown. The
-    /// rule is the Owner's consent: there is no other record of it.
+    /// rule is the Owner's consent: there is no other record of it. It also
+    /// enables `coral.cancelAgent` when that is off.
     ///
     /// # Errors
     ///
@@ -442,6 +443,7 @@ impl ToolPolicyModule {
             .await?
             .ok_or(Error::ToolNotFound)?;
         require_tool_in_transaction(&mut transaction, context.actor(), &evidence, &target).await?;
+        let cancel = sub_agent::cancel_to_enable_in_transaction(&mut transaction, &target).await?;
         let decision = write_access_state_in_transaction(
             &mut transaction,
             context,
@@ -450,6 +452,17 @@ impl ToolPolicyModule {
             access_state,
         )
         .await?;
+        if let Some(cancel) = cancel {
+            let enabled = ToolAccessState::Enabled;
+            write_access_state_in_transaction(
+                &mut transaction,
+                context,
+                &evidence,
+                cancel,
+                enabled,
+            )
+            .await?;
+        }
         transaction.commit().await?;
         Ok(decision)
     }

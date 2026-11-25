@@ -54,15 +54,18 @@ const save = (page: Page) =>
     page.getByRole('button', { name: 'Save', exact: true }).click(),
   )
 
-const agentRow = (page: Page) =>
-  page.getByRole('row').filter({
-    has: page.getByRole('checkbox', { name: 'Select agent', exact: true }),
-  })
-/** Opens the Tools page and waits until `coral.agent` has the policy. */
-async function expectAgentPolicy(page: Page, workspace: string, policy: 'Allow' | 'Block') {
+const policyOf = (page: Page, tool: string, policy: string, checked?: boolean) =>
+  page
+    .getByRole('row')
+    .filter({ has: page.getByRole('checkbox', { name: `Select ${tool}`, exact: true }) })
+    .getByRole('radio', { name: policy, exact: true, checked })
+/** Waits until `coral.agent`, and `coral.cancelAgent` with it, have the policy. */
+async function expectPolicy(page: Page, policy: 'Allow' | 'Block') {
+  for (const tool of ['agent', 'cancelAgent']) await policyOf(page, tool, policy, true).waitFor()
+}
+async function openTools(page: Page, workspace: string) {
   const response = await page.goto(`/${workspace}/tools`)
   expect(response?.status()).toBe(200)
-  await agentRow(page).getByRole('radio', { name: policy, exact: true, checked: true }).waitFor()
 }
 
 test('A workspace owner turns on the sub-agent that an organization owner set up, a program gets its answer, and a new base URL turns it off', async (context) => {
@@ -114,22 +117,18 @@ test('A workspace owner turns on the sub-agent that an organization owner set up
       }`
     const answer = async () => (await observeRun(lead, await lead.exec(ask))).update.final_value
     await step('The tool is in the workspace, off', async () => {
-      await expectAgentPolicy(page, workspace, 'Block')
+      await openTools(page, workspace)
+      await expectPolicy(page, 'Block')
       expect(await answer()).toEqual({ kind: 'value', value: 'Tool is disabled' })
       expect(model.requests).toEqual([])
     })
     await step('The workspace owner reads where the data goes and turns it on', async () => {
-      const dialog = await openDialog(
-        page,
-        agentRow(page).getByRole('radio', { name: 'Allow', exact: true }),
-      )
+      const dialog = await openDialog(page, policyOf(page, 'agent', 'Allow'))
       await dialog.getByRole('heading', { name: 'Turn on the sub-agent?', exact: true }).waitFor()
       await dialog.getByText(host, { exact: true }).waitFor()
       await dialog.getByText('reel-1', { exact: true }).waitFor()
       await dialog.getByRole('button', { name: 'Turn on', exact: true }).click()
-      await agentRow(page)
-        .getByRole('radio', { name: 'Allow', exact: true, checked: true })
-        .waitFor()
+      await expectPolicy(page, 'Allow')
     })
     await step('The lead’s program gets the model’s answer', async () => {
       expect(await answer()).toEqual({ kind: 'value', value: ['completed', ANSWER] })
@@ -163,7 +162,8 @@ test('A workspace owner turns on the sub-agent that an organization owner set up
       taskIntent: 'Ask again',
     })
     await step('The tool is off again, and the new host gets nothing', async () => {
-      await expectAgentPolicy(page, workspace, 'Block')
+      await openTools(page, workspace)
+      await expectPolicy(page, 'Block')
       const { update } = await observeRun(
         lead,
         await lead.exec(

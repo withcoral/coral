@@ -132,8 +132,17 @@ impl Fixture {
         workspace: &WorkspaceId,
         state: ToolAccessState,
     ) -> Result<(), Error> {
+        self.set_tool_state(workspace, "agent", state).await
+    }
+
+    async fn set_tool_state(
+        &self,
+        workspace: &WorkspaceId,
+        key: &str,
+        state: ToolAccessState,
+    ) -> Result<(), Error> {
         let context = change(self.owner.clone(), 6, '6');
-        let target = self.target(workspace, "agent").await;
+        let target = self.target(workspace, key).await;
         let set = self
             .policies
             .set_access_state(&context, target, state)
@@ -207,7 +216,7 @@ async fn a_model_gives_every_workspace_the_tool_turned_off_and_its_removal_takes
         );
         assert!(!f.is_on(workspace).await);
         let cancel = f.shown(workspace, "cancelAgent").await;
-        assert_eq!(cancel, Some(ToolAccessState::Enabled));
+        assert_eq!(cancel, Some(ToolAccessState::Disabled));
     }
 
     f.remove(&model).await;
@@ -316,6 +325,43 @@ async fn only_a_new_base_url_or_a_removal_turns_the_tool_off_in_every_workspace(
         f.shown(&one, "agent").await,
         Some(ToolAccessState::Disabled)
     );
+}
+
+// Catches: a Sub-agent that is on with no way to stop it, a stop that waits for an approval that no
+// Owner asked for, one that outlives what it stops, and an Owner's own choice for it lost.
+#[tokio::test]
+async fn cancel_agent_is_enabled_with_the_agent_and_goes_off_with_the_model() {
+    let f = Fixture::new().await;
+    let (one, two) = (f.workspace("One").await, f.workspace("Two").await);
+    let [off, approval, enabled] = [
+        ToolAccessState::Disabled,
+        ToolAccessState::ApprovalRequired,
+        ToolAccessState::Enabled,
+    ];
+    let model = f.set(URL_A).await;
+    let id = model.id();
+
+    // Whatever the Owner chose for the agent, to stop it needs no approval.
+    f.turn_on_as(&f.owner, &one, id, approval).await.unwrap();
+    assert_eq!(f.shown(&one, "cancelAgent").await, Some(enabled));
+    assert_eq!(f.shown(&two, "cancelAgent").await, Some(off));
+
+    // An Owner who turns the agent off, or who sets a state of their own, keeps it.
+    f.set_state(&one, off).await.unwrap();
+    assert_eq!(f.shown(&one, "cancelAgent").await, Some(enabled));
+    f.set_tool_state(&one, "cancelAgent", approval)
+        .await
+        .unwrap();
+    f.turn_on(&one, id).await.unwrap();
+    assert_eq!(f.shown(&one, "cancelAgent").await, Some(approval));
+
+    let moved = f.change(&model, &entered(URL_B)).await;
+    assert_eq!(f.shown(&one, "cancelAgent").await, Some(off));
+    f.turn_on(&one, moved.id()).await.unwrap();
+    assert_eq!(f.shown(&one, "cancelAgent").await, Some(enabled));
+    f.remove(&moved).await;
+    f.set(URL_B).await;
+    assert_eq!(f.shown(&one, "cancelAgent").await, Some(off));
 }
 
 // Catches: a rule left from before the model was set, or no rule at all, that reads as a consent.

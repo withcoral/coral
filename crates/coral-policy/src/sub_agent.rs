@@ -7,6 +7,10 @@
 //! off in its own transaction, so a rule that is on is a consent to the model
 //! that is set. A Workspace with no rule counts as off, whatever its catalog
 //! declares.
+//!
+//! `coral.cancelAgent` has nothing to stop while `coral.agent` is off, so it
+//! starts off and goes off with it, and is enabled with it. It is no part of
+//! the consent: an Owner sets its rule freely.
 
 use coral_catalog::{BuiltinTool, ToolKey};
 use coral_db::{RowLock, Transaction, UnixNanos};
@@ -17,6 +21,10 @@ use crate::{Error, ToolAccessState, ToolPolicyTarget, provider_read_error, repos
 
 fn agent_key() -> ToolKey {
     ToolKey::parse(BuiltinTool::Agent.key()).expect("a Built-in Tool's key is a Tool Key")
+}
+
+fn cancel_key() -> ToolKey {
+    ToolKey::parse(BuiltinTool::CancelAgent.key()).expect("a Built-in Tool's key is a Tool Key")
 }
 
 /// `coral.agent` of the Workspace's Built-in Provider.
@@ -58,6 +66,21 @@ pub(crate) async fn refuse_turn_on_in_transaction(
     }
 }
 
+/// `coral.cancelAgent` beside `agent`, when it is off and turning `agent` on
+/// enables it. A rule that an Owner set to approval stays.
+pub(crate) async fn cancel_to_enable_in_transaction(
+    transaction: &mut Transaction<'_>,
+    agent: &ToolPolicyTarget,
+) -> Result<Option<ToolPolicyTarget>, Error> {
+    let cancel = ToolPolicyTarget::new(
+        agent.workspace_id().clone(),
+        agent.provider_id().clone(),
+        cancel_key(),
+    );
+    let rule = repository::access_state_in_transaction(transaction, &cancel, RowLock::None).await?;
+    Ok((rule == Some(ToolAccessState::Disabled)).then_some(cancel))
+}
+
 async fn turned_on(
     transaction: &mut Transaction<'_>,
     target: &ToolPolicyTarget,
@@ -86,9 +109,9 @@ pub async fn sub_agent_is_on_in_transaction(
     }
 }
 
-/// Turns `coral.agent` off in the Workspace whose Built-in Provider is
-/// `builtin`, unless it has a rule. The caller adds the Tool to the Workspace
-/// in this transaction. It records no policy Event: the Provider's own update
+/// Turns `coral.agent` and `coral.cancelAgent` off in the Workspace whose
+/// Built-in Provider is `builtin`, each unless it has a rule. The caller adds
+/// the Tools to the Workspace in this transaction. It records no policy Event: the Provider's own update
 /// is the record.
 ///
 /// # Errors
@@ -100,16 +123,19 @@ pub async fn start_sub_agent_off_in_transaction(
     builtin: &ProviderId,
     occurred_at: UnixNanos,
 ) -> Result<(), Error> {
-    let target = target(workspace_id, builtin);
     let off = ToolAccessState::Disabled;
-    repository::insert_access_state_if_absent(transaction, &target, off, occurred_at).await?;
+    for key in [agent_key(), cancel_key()] {
+        let target = ToolPolicyTarget::new(workspace_id.clone(), builtin.clone(), key);
+        repository::insert_access_state_if_absent(transaction, &target, off, occurred_at).await?;
+    }
     Ok(())
 }
 
-/// Turns `coral.agent` off in every Workspace that has a rule on it. The
-/// caller changes the Sub-agent's model in this transaction, under an
-/// Organization Owner's authority. It only turns the Tool off, and records no
-/// policy Event: the change of the model is the record.
+/// Turns `coral.agent` and `coral.cancelAgent` off in every Workspace that has
+/// a rule on them. The caller changes the Sub-agent's model in this
+/// transaction, under an Organization Owner's authority. It only turns the
+/// Tools off, and records no policy Event: the change of the model is the
+/// record.
 ///
 /// # Errors
 ///
@@ -125,5 +151,8 @@ pub async fn turn_sub_agent_off_in_transaction(
         .into_iter()
         .map(|(_workspace, provider)| provider)
         .collect();
-    repository::disable_for_providers(transaction, &providers, &agent_key(), occurred_at).await
+    for key in [agent_key(), cancel_key()] {
+        repository::disable_for_providers(transaction, &providers, &key, occurred_at).await?;
+    }
+    Ok(())
 }
