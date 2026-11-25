@@ -20,12 +20,15 @@ const stubs = resolve(import.meta.dirname, '..', '..', 'test')
 let dataDir: string
 let supervisor: Supervisor | undefined
 let launched: { role: Role; exit?: ProcessExit }[]
+/** Settles as each launched process exits. */
+let exits: Promise<ProcessExit>[]
 let states: SupervisorState[]
 const occupied: Server[] = []
 
 beforeEach(async () => {
   dataDir = await mkdtemp(join(tmpdir(), 'coral-desktop-supervisor-'))
   launched = []
+  exits = []
   states = []
 })
 
@@ -52,23 +55,38 @@ function stub(role: Role, mode: string): Launcher {
     const child = launch(env)
     const record: (typeof launched)[number] = { role }
     launched.push(record)
+    exits.push(child.exited)
     void child.exited.then((exit) => (record.exit = exit))
     return child
   }
 }
 
 const RESTART = { attempts: 2, windowMs: 60_000, backoffMs: 50 }
+const READINESS_TIMEOUT_MS = 1500
+const STOP_TIMEOUT_MS = 500
+/** How long the supervisor waits for a process it killed to exit. */
+const KILL_GRACE_MS = 1000
+
+/**
+ * A timeout for a test that starts Coral `starts` times and waits for the
+ * supervisor's reports. Before each start the supervisor may stop both
+ * processes, each within the stop timeout and the kill grace, and the start
+ * then waits up to the readiness timeout for each process before it reports.
+ * The first start stops nothing, which leaves room for the backoffs and waits.
+ */
+const startsTimeout = (starts: number) =>
+  starts * 2 * (STOP_TIMEOUT_MS + KILL_GRACE_MS + READINESS_TIMEOUT_MS)
 
 function supervise(
   runtime = 'ready',
   reef = 'ready',
-  { restart = RESTART, stopTimeoutMs = 500 } = {},
+  { restart = RESTART, stopTimeoutMs = STOP_TIMEOUT_MS } = {},
 ) {
   supervisor = createSupervisor({
     dataDir,
     runtime: stub('runtime', runtime),
     reef: stub('reef', reef),
-    readinessTimeoutMs: 1500,
+    readinessTimeoutMs: READINESS_TIMEOUT_MS,
     checkUpdates: false,
     stopTimeoutMs,
     restart,
@@ -77,7 +95,34 @@ function supervise(
   return supervisor
 }
 
+/**
+ * Resolves with the next state the supervisor reports that `matches`. Call it
+ * before the action that leads to that state.
+ */
+function nextState(
+  supervisor: Supervisor,
+  matches: (state: SupervisorState) => boolean,
+): Promise<SupervisorState> {
+  return new Promise((resolve) => {
+    const unsubscribe = supervisor.on('state', (state) => {
+      if (!matches(state)) return
+      unsubscribe()
+      resolve(state)
+    })
+  })
+}
+
 const roles = () => launched.map(({ role }) => role)
+
+/**
+ * Matches the report a crash's recovery ends with: running once `relaunched`
+ * says the restart has launched what it needs, or waiting for a start.
+ */
+const restartSettled =
+  (relaunched: () => boolean = () => true) =>
+  (state: SupervisorState) =>
+    state.status === 'failed' ? !state.restarting : state.status === 'running' && relaunched()
+
 const alive = () => launched.filter(({ exit }) => !exit).map(({ role }) => role)
 const statuses = () => states.map(({ status }) => status)
 
@@ -296,13 +341,20 @@ describe('after start', () => {
     ['both exit at once', ['mcp', 'reef'], ['runtime', 'reef', 'runtime', 'reef']],
   ] as const)(
     'restarts what it needs at the same addresses when %s',
+    { timeout: startsTimeout(2) },
     async (_, crashed, relaunched) => {
-      const endpoints = await supervise().start()
+      const supervisor = supervise()
+      const endpoints = await supervisor.start()
+      // A restart that ran before the second exit was seen would launch more.
+      const settled = nextState(
+        supervisor,
+        restartSettled(() => launched.length >= relaunched.length),
+      )
       await Promise.all(crashed.map((listener) => crash(endpoints[listener])))
 
+      expect(await settled).toEqual({ status: 'running', endpoints })
       // One restart, whichever exit Desktop sees first.
-      await expect.poll(() => statuses().filter((status) => status === 'starting')).toHaveLength(2)
-      await expect.poll(() => states.at(-1)).toEqual({ status: 'running', endpoints })
+      expect(statuses().filter((status) => status === 'starting')).toHaveLength(2)
       expect(states[2]).toMatchObject({ failure: { kind: 'crashed' }, restarting: true })
       expect(states).not.toContainEqual(expect.objectContaining({ restarting: false }))
       expect(roles()).toEqual(relaunched)
@@ -310,17 +362,28 @@ describe('after start', () => {
     },
   )
 
-  it('restarts the runtime too when it exits while only Reef restarts', async () => {
-    const endpoints = await supervise().start()
-    await crash(endpoints.reef)
-    await expect.poll(statuses).toContain('failed')
-    await crash(endpoints.mcp)
+  // Reef's restart can run before the runtime's exit is seen, then the runtime's own.
+  it(
+    'restarts the runtime too when it exits while only Reef restarts',
+    { timeout: startsTimeout(3) },
+    async () => {
+      const supervisor = supervise()
+      const endpoints = await supervisor.start()
+      const failed = nextState(supervisor, ({ status }) => status === 'failed')
+      await crash(endpoints.reef)
+      await failed
+      const runtimes = () => roles().filter((role) => role === 'runtime').length
+      const settled = nextState(
+        supervisor,
+        restartSettled(() => runtimes() === 2),
+      )
+      await crash(endpoints.mcp)
 
-    await expect.poll(() => roles().filter((role) => role === 'runtime')).toHaveLength(2)
-    await expect.poll(() => states.at(-1)).toEqual({ status: 'running', endpoints })
-    expect(states).not.toContainEqual(expect.objectContaining({ restarting: false }))
-    expect(alive()).toEqual(['runtime', 'reef'])
-  })
+      expect(await settled).toEqual({ status: 'running', endpoints })
+      expect(states).not.toContainEqual(expect.objectContaining({ restarting: false }))
+      expect(alive()).toEqual(['runtime', 'reef'])
+    },
+  )
 
   it.each([
     ['times out is retried', 'stub.hang', { kind: 'timeout', process: 'runtime' }, true],
@@ -372,29 +435,50 @@ describe('after start', () => {
     expect(alive()).toEqual(['runtime', 'reef'])
   })
 
-  it('stops restarting after repeated crashes and waits for a start', async () => {
-    const supervisor = supervise()
-    let endpoints = await supervisor.start()
-    for (let crashes = 0; crashes < RESTART.attempts; crashes++) {
-      await crash(endpoints.mcp)
-      await expect
-        .poll(() => states.filter((state) => state.status === 'running').length)
-        .toBe(crashes + 2)
-    }
-    await crash(endpoints.mcp)
+  it(
+    'stops restarting after repeated crashes and waits for a start',
+    { timeout: startsTimeout(RESTART.attempts + 2) },
+    async () => {
+      const supervisor = supervise()
+      const endpoints = await supervisor.start()
+      const runtimeCrash = { status: 'failed', failure: { kind: 'crashed', process: 'runtime' } }
+      for (let crashes = 1; crashes <= RESTART.attempts + 1; crashes++) {
+        const settled = nextState(supervisor, restartSettled())
+        await crash(endpoints.mcp)
+        expect(await settled).toMatchObject(
+          crashes <= RESTART.attempts
+            ? { status: 'running', endpoints }
+            : { ...runtimeCrash, restarting: false },
+        )
+      }
+      await Promise.all(exits)
 
-    await expect.poll(alive).toEqual([])
-    expect(states.at(-1)).toMatchObject({
-      status: 'failed',
-      failure: { kind: 'crashed', process: 'runtime' },
-      restarting: false,
-    })
-    await delay(RESTART.backoffMs * 4)
-    expect(roles()).toHaveLength(2 * (RESTART.attempts + 1))
+      // Every crash is reported, and each restart is reported until they run out.
+      const restart = [
+        { ...runtimeCrash, restarting: true },
+        { status: 'starting' },
+        { status: 'running' },
+      ]
+      expect(states).toMatchObject([
+        { status: 'starting' },
+        { status: 'running' },
+        ...Array.from({ length: RESTART.attempts }, () => restart).flat(),
+        { ...runtimeCrash, restarting: false },
+      ])
+      expect(alive()).toEqual([])
 
-    endpoints = await supervisor.start()
-    expect(alive()).toEqual(['runtime', 'reef'])
-  })
+      // A start aborts a pending restart, so first wait twice the backoff that
+      // another restart would take, and check that none ran.
+      await delay(RESTART.backoffMs * 2 ** RESTART.attempts * 2)
+      expect(states).toHaveLength(2 + 3 * RESTART.attempts + 1)
+      expect(roles()).toHaveLength(2 * (RESTART.attempts + 1))
+
+      expect(await supervisor.start()).toEqual(endpoints)
+      expect(statuses().slice(-3)).toEqual(['failed', 'starting', 'running'])
+      expect(roles()).toHaveLength(2 * (RESTART.attempts + 2))
+      expect(alive()).toEqual(['runtime', 'reef'])
+    },
+  )
 })
 
 describe('a state directory another runtime holds', () => {
