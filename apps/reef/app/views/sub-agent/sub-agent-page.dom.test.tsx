@@ -149,29 +149,6 @@ it('warns when another service is chosen, and opens on the service that is saved
   expect(posted()).toMatchObject({ keyChange: 'keep' })
 })
 
-// Catches: advanced settings in the way of a person who uses none, hidden from one who does, or
-// closed over a field that a person empties.
-it('opens the advanced settings only where they hold something', async () => {
-  const bare = { ...model.values, contextWindow: '', requestArgs: '' }
-  const { unmount } = render({ model: { ...model, values: bare } })
-  expect(screen.getByText('Advanced').closest('details')).not.toHaveAttribute('open')
-  unmount()
-  render({ model: { ...model, values: { ...bare, contextWindow: '200000' } } })
-  const details = screen.getByText('Advanced').closest('details')
-  expect(details).toHaveAttribute('open')
-  await userEvent.clear(screen.getByLabelText(/^Context window/))
-  expect(details).toHaveAttribute('open')
-})
-
-// Catches: a page that does not say what the model is for, or what a person must do next.
-it.each([
-  [null, 'The sub-agent is a model that does data work for your agents.'],
-  [model, 'blocked in each workspace until a workspace owner turns it on, on the Tools page.'],
-])('says what comes next', (current, text) => {
-  render({ model: current })
-  expect(screen.getByText(text, { exact: false })).toBeInTheDocument()
-})
-
 const typed: RefusedSave = {
   values: {
     protocol: 'openai_responses',
@@ -183,6 +160,29 @@ const typed: RefusedSave = {
   keyChange: 'replace',
   message: 'Correct this.',
 }
+
+// Catches: advanced settings in the way of a person who does not change them, or closed over one to
+// correct, or over saved values to compare with.
+it.each([
+  ['no model', { model: null }, false],
+  ['a model that has them', {}, false],
+  ['a refusal of another field', { refused: { ...typed, field: 'model' } }, false],
+  ['a refused context window', { refused: { ...typed, field: 'contextWindow' } }, true],
+  ['refused arguments', { refused: { ...typed, field: 'requestArgs' } }, true],
+  ['a conflict', { refused: { ...typed, conflict: true } }, true],
+] as const)('with %s, opens the advanced settings only if it must', (_, props, open) => {
+  render(props)
+  expect(screen.getByText('Advanced').closest('details')!.open).toBe(open)
+})
+
+// Catches: a page that does not say what the model is for, or what a person must do next.
+it.each([
+  [null, 'The sub-agent is a model that does data work for your agents.'],
+  [model, 'blocked in each workspace until a workspace owner turns it on, on the Tools page.'],
+])('says what comes next', (current, text) => {
+  render({ model: current })
+  expect(screen.getByText(text, { exact: false })).toBeInTheDocument()
+})
 
 // Catches: a refusal that is not at its field, one that a screen reader does not hear with the
 // field, and one that loses what the person typed or keeps the key in the page.

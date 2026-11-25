@@ -146,15 +146,11 @@ function ModelForm({
   const [service, setService] = useState<Service>(
     refused?.conflict || refused?.field === 'baseUrl' ? 'other' : serviceOf(values),
   )
-  // Open from the start where it holds something to see. Read once, so that a field that a person
-  // empties does not close over them.
+  // Closed unless it holds something to correct or compare. Read once, so that a page that reloads
+  // its data does not close it.
   const [advanced] = useState(
     Boolean(
-      values.contextWindow ||
-      values.requestArgs ||
-      refused?.conflict ||
-      refused?.field === 'contextWindow' ||
-      refused?.field === 'requestArgs',
+      refused?.conflict || refused?.field === 'contextWindow' || refused?.field === 'requestArgs',
     ),
   )
   const id = useId()
