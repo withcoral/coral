@@ -270,7 +270,7 @@ impl RunExecutorParts {
                     program: children.program,
                     coral_address: format!("http://{address}"),
                     max_runs_held: children.settings.max_runs_held,
-                    compiler_heap_bytes: runtime_limits.isolate().compiler_heap_bytes(),
+                    isolate_limits: runtime_limits.isolate(),
                     environment: children.environment,
                 };
                 Some(coral_run_executor::LocalRunExecutors::start(

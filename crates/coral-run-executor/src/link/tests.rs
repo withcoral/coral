@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use coral_test_support::TEST_COMPILATION_TIMEOUT;
 use coral_v8::{
     AnalyzedSource, AuthoredToolCompilation, BuiltinTools, CallableDeclaration, CompiledProgram,
-    CoralDeclarations, LinkedToolSource, SourceReferences,
+    CoralDeclarations, IsolateLimits, LinkedToolSource, SourceReferences,
 };
 use tokio::sync::oneshot;
 use tonic::{Code, Status};
@@ -20,10 +20,16 @@ use crate::testing::{
 use crate::{AnalysisError, CompileError, PullStreamCompiler};
 
 fn config(coral: &ScriptedCoral, compiler_heap_bytes: usize) -> RunExecutorConfig {
-    RunExecutorConfig {
+    let isolate = IsolateLimits::new(
+        IsolateLimits::defaults().execution_heap_bytes(),
         compiler_heap_bytes,
-        ..run_executor_config(coral, 8, RunLimits::default())
-    }
+    )
+    .expect("valid heap limits");
+    let run_limits = RunLimits {
+        isolate,
+        ..RunLimits::default()
+    };
+    run_executor_config(coral, 8, run_limits)
 }
 
 /// Starts a Run Executor that holds eight Runs, until the sender drops.

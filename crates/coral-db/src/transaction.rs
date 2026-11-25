@@ -19,6 +19,8 @@ pub struct Transaction<'a> {
     backend: TransactionBackend,
     changes: &'a crate::changes::Changes,
     invalidated: bool,
+    /// The named signals this transaction's commit rings.
+    rings: Vec<crate::Signal>,
     /// Whether [`Database::begin`] opened this transaction. A read snapshot
     /// holds no row, so it refuses every [`RowLock`] but [`RowLock::None`].
     read_write: bool,
@@ -150,6 +152,7 @@ impl Database {
             backend,
             changes: &self.access.changes,
             invalidated: false,
+            rings: Vec::new(),
             read_write: true,
             token: TransactionToken(std::sync::Arc::new(())),
             measure: Measure::start(&self.backend),
@@ -194,6 +197,7 @@ impl Database {
             backend,
             changes: &self.access.changes,
             invalidated: false,
+            rings: Vec::new(),
             read_write: false,
             token: TransactionToken(std::sync::Arc::new(())),
             measure: Measure::start(&self.backend),
@@ -306,7 +310,8 @@ impl Transaction<'_> {
         // A commit abandoned before it answers may still land, so it did
         // not roll back.
         self.measure.outcome = Some(TransactionOutcome::Failed);
-        let committed = commit_backend(self.backend, self.changes, self.invalidated).await;
+        let committed =
+            commit_backend(self.backend, self.changes, self.invalidated, &self.rings).await;
         self.measure.outcome = Some(if committed.is_ok() {
             TransactionOutcome::Committed
         } else {
@@ -344,6 +349,15 @@ impl Transaction<'_> {
         let rows = self.execute(statement).await?;
         self.invalidated |= rows > 0;
         Ok(rows)
+    }
+
+    /// Rings `signal` once this transaction commits, and never if it rolls
+    /// back. Call it after the write that concerns the signal's subscribers
+    /// changed a row. It wakes no [`Database::subscribe_changes`] reader.
+    pub fn ring_on_commit(&mut self, signal: crate::Signal) {
+        if !self.rings.contains(&signal) {
+            self.rings.push(signal);
+        }
     }
 
     /// Executes a domain-owned statement and returns its affected row count.
@@ -641,22 +655,30 @@ impl Transaction<'_> {
 }
 
 /// Commits `backend`, then wakes the change subscribers when it changed
-/// something.
+/// something, and the subscribers of each signal in `rings`.
 async fn commit_backend(
     backend: TransactionBackend,
     subscribers: &crate::changes::Changes,
     invalidated: bool,
+    rings: &[crate::Signal],
 ) -> Result<(), Error> {
     match backend {
-        TransactionBackend::Sqlite(transaction) if invalidated => {
-            let changed = subscribers.changed.clone();
+        TransactionBackend::Sqlite(transaction) if invalidated || !rings.is_empty() => {
+            let changed = invalidated.then(|| subscribers.changed.clone());
+            let signals = subscribers.signals.clone();
+            let rings = rings.to_vec();
             // SQLite commits on a worker thread, so a cancelled commit can still
             // land after the caller stops awaiting it. A drop guard would then
             // wake readers before the commit is visible; notify from the task
             // that observes the commit instead.
             tokio::spawn(async move {
                 transaction.commit().await?;
-                changed.send_replace(());
+                if let Some(changed) = changed {
+                    changed.send_replace(());
+                }
+                for signal in rings {
+                    signals.ring(signal.name());
+                }
                 Ok::<_, sqlx::Error>(())
             })
             .await
@@ -664,13 +686,23 @@ async fn commit_backend(
         }
         TransactionBackend::Sqlite(transaction) => transaction.commit().await?,
         TransactionBackend::Postgres(mut transaction) => {
+            // The change signal's notification carries nothing, a named
+            // signal's its name. Postgres delivers them at the commit and
+            // drops them at a rollback.
+            let names: Vec<&str> = invalidated
+                .then_some(crate::changes::CHANGE_SIGNAL_NAME)
+                .into_iter()
+                .chain(rings.iter().map(|signal| signal.name()))
+                .collect();
             if let Some(channel) = subscribers
                 .postgres_channel
                 .as_ref()
-                .filter(|_| invalidated)
+                .filter(|_| !names.is_empty())
             {
-                sqlx::query("SELECT pg_notify($1, '')")
+                // One statement, so a ring costs no round trip of its own.
+                sqlx::query("SELECT pg_notify($1, name) FROM unnest($2::text[]) AS name")
                     .bind(channel)
+                    .bind(&names)
                     .execute(&mut *transaction)
                     .await?;
             }
