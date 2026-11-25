@@ -2,10 +2,14 @@ import { data, Form, redirect } from 'react-router'
 
 import type { Route } from './+types/login'
 
-import { startCoralOAuthLogin } from '@/auth/coral-oauth.server'
+import { isFreshSignIn, signInReturnTo, startCoralOAuthLogin } from '@/auth/coral-oauth.server'
 import { authPrivateHeaders, markAuthResponsePrivate } from '@/auth/response.server'
-import { safeInternalPath } from '@/auth/safe-path.server'
-import { finishPendingSignOuts, resolveCoralWebSession } from '@/auth/session.server'
+import {
+  finishPendingSignOuts,
+  hasCoralWebSession,
+  resolveCoralWebSession,
+} from '@/auth/session.server'
+import type { RequiredAuthConfig } from '@/auth/types'
 import { runtimeConfigContext } from '@/lib/runtime-config.server'
 import { routePath } from '@/routing/routemap'
 import { Brand } from '@/wax/components/brand'
@@ -30,6 +34,12 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   if (pending) cookies.append('Set-Cookie', pending.setCookie)
   const signOutPending = pending?.unfinished ?? false
 
+  const url = new URL(request.url)
+  // With the mark, a browser that holds a session signs in over it.
+  if (isFreshSignIn(url) && (await hasCoralWebSession(request, config))) {
+    return startLogin(request, config, cookies)
+  }
+
   let session
   try {
     session = await resolveCoralWebSession(request, config)
@@ -43,7 +53,6 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   }
   if (session) return markAuthResponsePrivate(redirect('/', { headers: cookies }))
 
-  const url = new URL(request.url)
   // The interstitial is the one branch that renders instead of starting a login,
   // so it is also the one that has to carry the destination forward itself. It
   // is sanitized here rather than on submit because it is about to be written
@@ -52,7 +61,7 @@ export async function loader({ context, request }: Route.LoaderArgs) {
   if (url.searchParams.has('signedOut') || sessionExpired || signOutPending) {
     return data(
       {
-        returnTo: safeInternalPath(url.searchParams.get('returnTo')),
+        returnTo: signInReturnTo(url),
         sessionExpired,
         signOutPending,
       },
@@ -60,6 +69,10 @@ export async function loader({ context, request }: Route.LoaderArgs) {
     )
   }
 
+  return startLogin(request, config, cookies)
+}
+
+async function startLogin(request: Request, config: RequiredAuthConfig, cookies: Headers) {
   const login = await startCoralOAuthLogin(request, config)
   for (const cookie of cookies.getSetCookie()) login.headers.append('Set-Cookie', cookie)
   return markAuthResponsePrivate(login)

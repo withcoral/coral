@@ -222,6 +222,23 @@ export async function signOutCoralWebSession(
 }
 
 /**
+ * Ends, at Coral, the web session that a completed sign-in replaces, as a
+ * sign-out ends it. A session Coral does not answer for joins the browser's
+ * pending sign-outs. The caller writes the new session cookie over the old one.
+ *
+ * Returns the pending sign-out cookie, or `null` when the browser held no session.
+ */
+export async function endReplacedWebSession(
+  request: Request,
+  config: RequiredAuthConfig,
+): Promise<string | null> {
+  const replaced = await readStoredSession(request, config)
+  if (!replaced) return null
+  const unanswered = (await endAtCoral(replaced, config)) ? [] : [replaced]
+  return (await retryPendingSignOuts(request, config, unanswered)).setCookie
+}
+
+/**
  * Retries the sign-outs this browser kept because Coral did not answer, and
  * only those: the browser's current session, if any, is left alone.
  *

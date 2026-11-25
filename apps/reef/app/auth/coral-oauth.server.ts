@@ -8,6 +8,7 @@ import {
   clearOAuthTransaction,
   commitOAuthTransaction,
   commitCoralWebSession,
+  endReplacedWebSession,
   randomToken,
   readOAuthTransaction,
   type StartedWebSession,
@@ -35,13 +36,41 @@ interface OAuthErrorResponse {
   error_description?: unknown
 }
 
+/** The code and the time of a sign-in that Coral refused. */
+export interface FailedSignIn {
+  code: string
+  time: string
+}
+
+/**
+ * The one form of the `error_description` that Coral gives a refused sign-in
+ * with `access_denied`: the code, one space, and the time in UTC to the second,
+ * as in `sign_in_refused 2026-11-25T10:15:42Z`. Coral writes the same form, so
+ * keep the two the same. Reef shows the code and the time only when the whole
+ * description has this form.
+ */
+const FAILED_SIGN_IN_DESCRIPTION = /^([a-z][a-z0-9_]{0,63}) (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)$/
+
+/**
+ * The mark on `/login` that starts a sign-in even when the browser holds a
+ * session: `/login?fresh=1`. Coral sends the browser there, and anybody can
+ * link to it. With no session, the mark changes nothing.
+ */
+export function isFreshSignIn(url: URL): boolean {
+  return url.searchParams.get('fresh') === '1'
+}
+
+/** Where a sign-in that starts at this `/login` URL lands. With the mark, `/`. */
+export function signInReturnTo(url: URL): string {
+  return isFreshSignIn(url) ? '/' : safeInternalPath(url.searchParams.get('returnTo'))
+}
+
 export async function startCoralOAuthLogin(
   request: Request,
   config: RequiredAuthConfig,
 ): Promise<Response> {
   const metadata = await authorizationServerMetadata(config)
-  const url = new URL(request.url)
-  const returnTo = safeInternalPath(url.searchParams.get('returnTo'))
+  const returnTo = signInReturnTo(new URL(request.url))
   const redirectUri = authRedirectUri(config)
   const clientId = authClientId(config)
   const resource = authResource(config)
@@ -77,10 +106,10 @@ export async function completeCoralOAuthLogin(
   const providerError = url.searchParams.get('error')
   if (providerError) {
     const description = url.searchParams.get('error_description')
-    throw await callbackError(
-      description ? `${providerError}: ${description}` : providerError,
-      await clearOAuthTransaction(config),
-    )
+    const clear = await clearOAuthTransaction(config)
+    const failed = failedSignIn(providerError, description)
+    if (failed) throw Response.json(failed, { headers: { 'Set-Cookie': clear }, status: 400 })
+    throw callbackError(description ? `${providerError}: ${description}` : providerError, clear)
   }
 
   const code = url.searchParams.get('code')
@@ -111,8 +140,26 @@ export async function completeCoralOAuthLogin(
   const headers = new Headers()
   headers.append('Set-Cookie', await clearOAuthTransaction(config))
   headers.append('Set-Cookie', await commitCoralWebSession(session, config))
+  // The new session replaces the one the browser held, also the same
+  // person's, so the old one ends at Coral as a sign-out ends it.
+  const replaced = await endReplacedWebSession(request, config)
+  if (replaced) headers.append('Set-Cookie', replaced)
 
   return redirect(transaction.returnTo, { headers })
+}
+
+/** The code and the time of a refused sign-in, when its description has their one form. */
+function failedSignIn(error: string, description: string | null): FailedSignIn | null {
+  if (error !== 'access_denied') return null
+  const match = description ? FAILED_SIGN_IN_DESCRIPTION.exec(description) : null
+  if (!match) return null
+  const [, code, time] = match
+  // Only a real instant: `Date` moves 30 February into March.
+  const instant = new Date(time)
+  if (Number.isNaN(instant.getTime()) || instant.toISOString() !== time.replace('Z', '.000Z')) {
+    return null
+  }
+  return { code, time }
 }
 
 async function authorizationServerMetadata(
