@@ -48,7 +48,7 @@ Tools with three written queries each.
 | Strong rule for an Authored Tool                       | False alarm | Hit, 3 words | Hit, sentence | Hit, no shared word |
 | ------------------------------------------------------ | ----------: | -----------: | ------------: | ------------------: |
 | Fixed count at the top of its own vector list (before) |      100.0% |       100.0% |        100.0% |               84.0% |
-| Rare path word                                         |        9.5% |        90.1% |         95.1% |                0.0% |
+| Rare path word                                         |        9.5% |        90.1% |         93.8% |                0.0% |
 | Nearer than the nearest Provider Tool                  |        1.3% |        67.9% |         82.7% |               11.1% |
 | Rare path word, or nearer than the nearest Provider Tool |      9.6% |        93.8% |         97.5% |               11.1% |
 
@@ -58,8 +58,8 @@ The bench of [coral-benchmarks#698](https://github.com/withcoral/coral-benchmark
 Set A and Set B, with stubs of the same Workspace's Authored Tools; the scoreboard is on #3412. With the rare path word
 alone, an Authored Tool was still in the first 3 places of 47% to 60% of the Provider pages, and the target Provider
 Tool lost 3.5 to 5.2 points of hit@3 against the same catalog without Authored Tools. Almost every such page matched a
-rare path word: the bench queries are long, and in a catalog of a few thousand Provider Tools words such as `search`,
-`project` or `team` are rare. Without the rare path word, the Provider pages kept their places, but worded queries for
+rare path word: the bench queries are long, and in a catalog of a few thousand Provider Tools many everyday words are
+rare. Without the rare path word, the Provider pages kept their places, but worded queries for
 an Authored Tool lost 5.7 to 8.6 points of hit@3. No cut-off for "rare" passed both. Rule 2 asks a rare path word to be
 near the query as well, because a Tool that a word matches by chance is seldom near the query:
 
