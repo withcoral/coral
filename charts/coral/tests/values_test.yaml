@@ -53,9 +53,17 @@ tests:
       - failedTemplate:
           errorPattern: /config/auth/provider/issuer
 
-  - it: fails on a plugin client name that coral-web refuses
+  # The chart joins the names with commas, so a comma would split one name.
+  - it: fails on a plugin client name with a comma
     set:
       web.agentsWithAvailablePlugins: ["claude,chatgpt"]
     asserts:
       - failedTemplate:
           errorPattern: /web/agentsWithAvailablePlugins/0
+
+  - it: checks the auth host like host
+    set:
+      hosts.auth: login..example.org
+    asserts:
+      - failedTemplate:
+          errorPattern: /hosts/auth
