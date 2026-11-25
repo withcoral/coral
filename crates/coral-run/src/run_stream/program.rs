@@ -26,7 +26,7 @@ use super::{StreamLink, StreamRun};
 use crate::engine::{self, ExecutionCompletion};
 use crate::program_output::ProgramOutputWriter;
 use crate::run_stream::run_loop::{LoopHandle, Message};
-use crate::types::AcceptedRun;
+use crate::types::{AcceptedRun, HeldRunId};
 use crate::{FinalValue, RunFailure, RunFailureCode, RunModule};
 
 /// The Run Executor's messages on one Run stream.
@@ -133,7 +133,7 @@ pub(crate) fn start(
             // its calls dropped.
             Read::Finished | Read::Detached => return,
             Read::Violated => {
-                stream_violated(&handle);
+                stream_violated(handle.held_id());
                 Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated)
             }
         };
@@ -141,9 +141,9 @@ pub(crate) fn start(
     });
 }
 
-fn stream_violated(handle: &LoopHandle) {
+pub(super) fn stream_violated(held: &HeldRunId) {
     tracing::warn!(
-        coral.run.id = coral_telemetry::safe::id(handle.held_id()),
+        coral.run.id = coral_telemetry::safe::id(held),
         "the Run Executor broke the Run stream's protocol; the Run is interrupted"
     );
 }

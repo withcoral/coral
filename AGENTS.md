@@ -187,12 +187,12 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   retired, and a definite answer (a rejection, a claim mismatch, an ended
   Run, a corrupt head) stops it. The loop's own end of its Run (at its
   deadline, at a CPU or memory limit or a lost Program host, at the drain's
-  length for a local child, or on a reopen that finds its Principal gone)
-  alone retries every answer but a claim mismatch or an ended Run. An end
-  that reaches a loop whose commit was refused goes through the terminal
-  write instead, which stops on a definite answer and leaves the Run to the
-  sweeper. No write records a termination intent or waits a grace: the
-  chunk that decides a termination ends the Run.
+  length for a local child, or on a reopen that finds its Principal gone or
+  its `Open` broken) alone retries every answer but a claim mismatch or an
+  ended Run. An end that reaches a loop whose commit was refused goes
+  through the terminal write instead, which stops on a definite answer and
+  leaves the Run to the sweeper. No write records a termination intent or
+  waits a grace: the chunk that decides a termination ends the Run.
 - A write to a source never touches the Universal Search tables, and they keep
   no foreign key to a source but the Workspace (the vector table keeps none).
   Notify `SearchIndex` after the commit with ids alone; its reconcile pass
