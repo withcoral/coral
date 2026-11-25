@@ -1,6 +1,6 @@
 suite: values
 release:
-  name: coral-test
+  name: prod
 values:
   - ../ci/default-values.yaml
 templates:

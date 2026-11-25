@@ -1,11 +1,20 @@
 suite: coral
 release:
-  name: coral-test
+  name: prod
 values:
   - ../ci/default-values.yaml
 templates:
   - templates/coral.yaml
 tests:
+  - it: names every object after the release
+    asserts:
+      - equal:
+          path: metadata.name
+          value: prod
+        documentSelector:
+          path: kind
+          value: Deployment
+
   - it: rolls with no downtime
     documentSelector:
       path: kind

@@ -1,6 +1,6 @@
 suite: run executor
 release:
-  name: coral-test
+  name: prod
 values:
   - ../ci/default-values.yaml
 templates:
@@ -67,7 +67,7 @@ tests:
           value:
             - run-executor
             - --coral-address
-            - http://coral-test:14557
+            - http://prod:14557
             - --health-listen
             - 0.0.0.0:14558
             - --max-runs-held

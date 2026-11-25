@@ -1,10 +1,9 @@
-{{/* The name of every object, and the prefix of each component's. */}}
+{{/*
+The name of every object, and the prefix of each component's: the release
+name. Helm keeps it to 53 characters, so each suffix still fits a Service name.
+*/}}
 {{- define "coral.fullname" -}}
-{{- if contains "coral" .Release.Name -}}
-{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
-{{- else -}}
-{{- printf "%s-coral" .Release.Name | trunc 63 | trimSuffix "-" -}}
-{{- end -}}
+{{- .Release.Name -}}
 {{- end -}}
 
 {{- define "coral.labels" -}}
@@ -61,8 +60,8 @@ global.imageRegistry replaces the registry host and keeps the repository path.
 
 {{/*
 An env var read from a Secret. Call with (list $ "ENV_NAME" "values.path" $ref).
-$ref is a {secretName, key}; an empty secretName means the chart's own name
-(coral.fullname), and an empty key fails the render.
+$ref is a {secretName, key}; an empty secretName means the release name, and
+an empty key fails the render.
 */}}
 {{- define "coral.secretEnv" -}}
 {{- $root := index . 0 -}}

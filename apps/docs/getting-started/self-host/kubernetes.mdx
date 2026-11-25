@@ -33,7 +33,7 @@ The `coral` image holds the model for [semantic search](/getting-started/self-ho
    kubectl create namespace coral
    ```
 
-2. Create the Secret. With the release name `coral`, the chart reads every secret from a Secret named `coral` by default.
+2. Create the Secret. By default, the chart reads every secret from a Secret with the same name as the Helm release. This guide names the release `coral`.
 
    | Key                         | Value                                                                                                                       |
    | --------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -84,7 +84,7 @@ The `coral` image holds the model for [semantic search](/getting-started/self-ho
    helm install coral ./coral/charts/coral --namespace coral -f values.yaml --wait --timeout 20m
    ```
 
-5. Route each host to its Service. The chart creates them in the `coral` namespace.
+5. Route each host to its Service. The chart names each object after the release, and creates them in the `coral` namespace.
 
    | Host                | Service      | Port    |
    | ------------------- | ------------ | ------- |
