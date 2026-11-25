@@ -99,7 +99,7 @@ Write byte sizes as plain numbers. For example, write `134217728` for 128MiB.
 
 | Key                        | Description                                                                                                                                                    | Required | Default              |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------------------- |
-| `execution_heap_bytes`     | Maximum heap bytes allowed for a single V8 isolate. Must be at least 8MiB.                                                                                     | No       | 128MiB               |
+| `execution_heap_bytes`     | Heap bytes that one run's program may use. A run over it fails. Must be at least 8MiB.                                                                         | No       | 128MiB               |
 | `compiler_heap_bytes`      | Maximum heap bytes allowed for a single TypeScript compilation job. Must be at least 8MiB.                                                                     | No       | 512MiB               |
 | `execution_cpu_seconds`    | CPU seconds that one run's program may use. A run gets the lower of this and its time limit. Must be greater than 0. On Windows, Coral does not start with it. | No       | Unset (no CPU limit) |
 | `fan_out_limit`            | Provider calls that one run may have in flight at once. Further calls wait for an earlier one to end. Must be greater than 0.                                  | No       | `32`                 |

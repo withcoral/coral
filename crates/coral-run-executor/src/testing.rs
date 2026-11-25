@@ -159,7 +159,6 @@ fn run_executor_config_for(max_runs_held: u32, run_limits: RunLimits) -> RunExec
         token: Token::new(RUN_EXECUTOR_TOKEN.to_owned()).expect("a valid token"),
         local_child: false,
         max_runs_held,
-        compiler_heap_bytes: coral_v8::IsolateLimits::defaults().compiler_heap_bytes(),
         run_limits,
     }
 }
