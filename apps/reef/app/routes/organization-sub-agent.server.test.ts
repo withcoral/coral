@@ -299,13 +299,15 @@ it.each([
   expect(JSON.stringify(result)).not.toContain('sk-secret')
 })
 
-// Catches: a window that the wire cannot hold failing the whole page, and an empty new key
-// clearing the saved one.
+// Catches: a window that the wire cannot hold failing the whole page, one of commas alone read as
+// none, and a new key with nothing in it clearing the saved one or replacing it.
 it.each([
   ['contextWindow', { contextWindow: 'large' }],
   ['contextWindow', { contextWindow: '-1' }],
   ['contextWindow', { contextWindow: '4294967296' }],
+  ['contextWindow', { contextWindow: ',,' }],
   ['apiKey', { keyChange: 'replace', apiKey: '' }],
+  ['apiKey', { keyChange: 'replace', apiKey: '  ' }],
 ])('refuses a %s of %j before Coral', async (field, fields) => {
   expect(await refused({ ...form, etag, ...fields })).toMatchObject({
     data: { field, values: { baseUrl: form.baseUrl } },

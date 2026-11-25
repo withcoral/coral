@@ -76,23 +76,29 @@ export function SubAgentPage({
         {/* A removed model leaves an empty form. */}
         <ModelForm key={model ? 'set' : 'unset'} model={model} form={form} refused={refused} />
       </Card.Card>
-      {model && (
-        <SettingsRemoval
-          title="Remove model"
-          description="Remove the model and its API key."
-          action={
-            <ActionDialog
-              title="Remove model"
-              description="This removes the model and its API key. The sub-agent stops in every workspace. You cannot undo this."
-              form={form}
-              intent="remove"
-              etag={model.etag}
-              destructive
-            />
-          }
-        />
-      )}
+      {model && <RemoveModel model={model} form={form} />}
     </ManagementLayout>
+  )
+}
+
+function RemoveModel({ model, form }: { model: SubAgentModelView; form: FormContext }) {
+  // As the form does, it stays on the model that the page opened with.
+  const [saved] = useState(model)
+  return (
+    <SettingsRemoval
+      title="Remove model"
+      description="Remove the model and its API key."
+      action={
+        <ActionDialog
+          title="Remove model"
+          description="This removes the model and its API key. The sub-agent stops in every workspace. You cannot undo this."
+          form={form}
+          intent="remove"
+          etag={saved.etag}
+          destructive
+        />
+      }
+    />
   )
 }
 

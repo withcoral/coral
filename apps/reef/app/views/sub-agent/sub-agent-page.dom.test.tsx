@@ -246,12 +246,16 @@ it('shows what is saved now beside what the person typed after a conflict', () =
 })
 
 // Catches: a page that reloads its data behind the form, as a refused removal does, moving the
-// form to a change that the person did not see.
+// form or the removal to a change that the person did not see.
 it('stays on the model it opened with while the page reloads behind it', async () => {
   const page = renderLivePage<Page>((p) => <SubAgentPage {...p} />, { model, form })
   await retype(screen.getByLabelText(/^Model name/), 'typed-2')
   await page.update({ model: { ...model, etag: 'etag-2' }, form })
   expect(posted()).toMatchObject({ model: 'typed-2', etag: 'etag-1' })
+  await userEvent.click(button('Remove model'))
+  const dialog = await screen.findByRole('dialog', { name: 'Remove model' })
+  const submit = within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Remove model' })
+  expect(new FormData(submit.form!).get('etag')).toBe('etag-1')
 })
 
 // Catches: the settings of a removed model left in the form that sets the next one.

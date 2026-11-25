@@ -71,7 +71,9 @@ export async function action({ request, context }: Route.ActionArgs) {
 
   const values = modelValues(form)
   const keyChange = oneOf(KEY_CHANGES, field(form, 'keyChange'))
-  const key = keyChange === 'replace' || keyChange === 'optional' ? field(form, 'apiKey') : ''
+  const typed = keyChange === 'replace' || keyChange === 'optional' ? field(form, 'apiKey') : ''
+  // Spaces alone are no key.
+  const key = typed.trim() === '' ? '' : typed
   const etag = form.has('etag') ? field(form, 'etag') : null
   const contextWindow = windowTokens(values.contextWindow)
   const refuse = (status: number, refusal: Refusal) =>
@@ -161,7 +163,7 @@ function oneOf<T extends string>(choices: readonly T[], value: string): T {
 function windowTokens(text: string): number | undefined | null {
   // The page writes large numbers with commas, so the field takes them.
   const digits = text.trim().replaceAll(',', '')
-  if (digits === '') return undefined
+  if (text.trim() === '') return undefined
   const tokens = Number(digits)
   return /^\d+$/.test(digits) && tokens <= UINT32_MAX ? tokens : null
 }
