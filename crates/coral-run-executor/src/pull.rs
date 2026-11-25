@@ -266,6 +266,9 @@ pub struct PullStreams {
     /// The callers waiting for compile room, oldest first. Locked only
     /// while `held` is.
     compile_line: Arc<Mutex<VecDeque<oneshot::Sender<StreamId>>>>,
+    /// Signalled each time a caller joins the line, for tests to wait on.
+    #[cfg(test)]
+    line_joins: Arc<tokio::sync::Notify>,
     /// Signalled when a stream opens or reports its room.
     room_signal: Arc<tokio::sync::Notify>,
     next: Arc<AtomicU64>,
@@ -344,6 +347,15 @@ impl Held {
         Ok(())
     }
 
+    /// Frees one unit [`Self::hold_compile`] held, if it holds one.
+    fn release_compile(&mut self) -> bool {
+        let held = self.kept_for_compiles > 0;
+        if held {
+            self.kept_for_compiles -= 1;
+        }
+        held
+    }
+
     fn send(&self, response: PullResponse) {
         // A closed receiver means the stream is ending; its holder removes it.
         drop(self.outbound.send(Ok(response)));
@@ -361,8 +373,16 @@ fn has_compile_room(held: &HashMap<StreamId, Held>) -> bool {
     held.values().any(|held| held.compile_room() > 0)
 }
 
-/// The stream with the most compile room, ties as
-/// [`PullStreams::most_compile_room`] breaks them.
+/// Whether a stream takes sends.
+fn has_open_stream(held: &HashMap<StreamId, Held>) -> bool {
+    held.values().any(|held| !held.closing)
+}
+
+/// The stream that takes sends with the most compile room, ties to the
+/// most room for Runs and then at random, or none when no stream has
+/// compile room. A retiring Run Executor reports no room for Runs, so it
+/// loses a tie, but it still takes a compile when it has more compile
+/// room; it serves the compile before it retires.
 fn most_compile_room(held: &HashMap<StreamId, Held>) -> Option<StreamId> {
     let random = RandomState::new();
     held.values()
@@ -374,19 +394,29 @@ fn most_compile_room(held: &HashMap<StreamId, Held>) -> Option<StreamId> {
         .map(|held| held.view.stream)
 }
 
+/// Holds one unit of compile room for a caller on the stream with the
+/// most, when one has any.
+fn hold_most(held: &mut HashMap<StreamId, Held>) -> Option<StreamId> {
+    let stream = most_compile_room(held)?;
+    held.get_mut(&stream)?.hold_compile().ok()?;
+    Some(stream)
+}
+
 /// Hands each unit of compile room free to the oldest caller in `line`,
 /// held for it on the stream with the most. A caller that left the line
 /// takes none. So while a caller waits in line, no stream has compile room
 /// free.
 fn hand_off(held: &mut HashMap<StreamId, Held>, line: &mut VecDeque<oneshot::Sender<StreamId>>) {
-    while let Some(stream) = most_compile_room(held)
-        && let Some(next) = line.pop_front()
+    // Held before `held` unlocks, so the caller never finds it unheld.
+    while !line.is_empty()
+        && let Some(stream) = hold_most(held)
     {
-        // Held before `held` unlocks, so the caller never finds it unheld.
-        if next.send(stream).is_ok()
-            && let Some(chosen) = held.get_mut(&stream)
-        {
-            let _found_above = chosen.hold_compile();
+        let handed = line
+            .pop_front()
+            .is_some_and(|next| next.send(stream).is_ok());
+        if !handed && let Some(chosen) = held.get_mut(&stream) {
+            // That caller left the line: the unit goes to the next.
+            chosen.release_compile();
         }
     }
 }
@@ -395,31 +425,47 @@ fn hand_off(held: &mut HashMap<StreamId, Held>, line: &mut VecDeque<oneshot::Sen
 /// line, and frees a unit handed to it that it never read.
 pub(crate) struct CompileTurn {
     streams: PullStreams,
-    /// None once it read its unit.
+    /// None once it read its unit or the line ended.
     handed: Option<oneshot::Receiver<StreamId>>,
 }
 
+/// The line ended before it handed a turn its unit: this Coral Instance's
+/// last stream that takes sends closed or ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LineEnded;
+
 impl CompileTurn {
     /// Waits up to `wait` for its unit: the stream that holds it for the
-    /// caller. None when `wait` ran out first; it keeps its place.
-    pub(crate) async fn handed(&mut self, wait: Duration) -> Option<StreamId> {
+    /// caller. None when `wait` ran out first; it keeps its place. A turn
+    /// that read its unit or heard the line end is done: asked again, it
+    /// answers [`LineEnded`] after `wait`, so a caller that asks in a loop
+    /// never spins.
+    pub(crate) async fn handed(&mut self, wait: Duration) -> Result<Option<StreamId>, LineEnded> {
         let Some(handed) = self.handed.as_mut() else {
             tokio::time::sleep(wait).await;
-            return None;
+            return Err(LineEnded);
         };
         match timeout(wait, handed).await {
-            Ok(Ok(stream)) => {
-                self.handed = None;
-                Some(stream)
-            }
-            // Not while this turn holds its streams: the line keeps the
-            // sender until it hands a unit.
-            Ok(Err(_gone)) => {
-                self.handed = None;
-                None
-            }
-            Err(_elapsed) => None,
+            Ok(read) => self.read(read.ok()).map(Some),
+            Err(_elapsed) => Ok(None),
         }
+    }
+
+    /// Its unit when the line handed it one already.
+    pub(crate) fn handed_now(&mut self) -> Result<Option<StreamId>, LineEnded> {
+        let handed = self.handed.as_mut().ok_or(LineEnded)?;
+        match handed.try_recv() {
+            Ok(stream) => self.read(Some(stream)).map(Some),
+            Err(oneshot::error::TryRecvError::Empty) => Ok(None),
+            Err(oneshot::error::TryRecvError::Closed) => self.read(None).map(Some),
+        }
+    }
+
+    /// Ends the turn on what its receiver read: a unit, or none once the
+    /// line dropped its place.
+    fn read(&mut self, unit: Option<StreamId>) -> Result<StreamId, LineEnded> {
+        self.handed = None;
+        unit.ok_or(LineEnded)
     }
 }
 
@@ -456,11 +502,8 @@ impl PullStreams {
         has_compile_room(&lock(&self.held))
     }
 
-    /// The stream that takes sends with the most compile room, ties to the
-    /// most room for Runs and then at random, or none when no stream has
-    /// compile room. A retiring Run Executor reports no room for Runs, so it
-    /// loses a tie, but it still takes a compile when it has more compile
-    /// room; it serves the compile before it retires.
+    /// The stream that takes sends with the most compile room, ties as
+    /// [`most_compile_room`] breaks them.
     pub(crate) fn most_compile_room(&self) -> Option<StreamId> {
         most_compile_room(&lock(&self.held))
     }
@@ -473,32 +516,37 @@ impl PullStreams {
         line.iter().filter(|waiting| !waiting.is_closed()).count()
     }
 
+    /// Signalled each time a caller joins the line.
+    #[cfg(test)]
+    pub(crate) fn line_joins(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.line_joins)
+    }
+
     /// Whether this Coral Instance holds a stream that takes sends: a
     /// caller here can wait for its compile room.
     pub(crate) fn has_open_stream(&self) -> bool {
-        lock(&self.held).values().any(|held| !held.closing)
+        has_open_stream(&lock(&self.held))
     }
 
     /// One unit of compile room held for the caller now, on the stream with
     /// the most, when one is free. Otherwise its place in the line: at the
-    /// end, or at the front for a caller `again`, whose unit or stream went
-    /// before its call was answered. A caller in line means no room is free.
-    pub(crate) fn compile_turn(&self, again: bool) -> Result<StreamId, CompileTurn> {
+    /// end, or `at_front` for a caller whose unit or stream went before its
+    /// call was answered. A caller in line means no room is free.
+    pub(crate) fn compile_turn(&self, at_front: bool) -> Result<StreamId, CompileTurn> {
         let mut held = lock(&self.held);
         let mut line = lock(&self.compile_line);
         line.retain(|waiting| !waiting.is_closed());
-        if let Some(stream) = most_compile_room(&held)
-            && let Some(chosen) = held.get_mut(&stream)
-            && chosen.hold_compile().is_ok()
-        {
+        if let Some(stream) = hold_most(&mut held) {
             return Ok(stream);
         }
         let (waiting, handed) = oneshot::channel();
-        if again {
+        if at_front {
             line.push_front(waiting);
         } else {
             line.push_back(waiting);
         }
+        #[cfg(test)]
+        self.line_joins.notify_waiters();
         Err(CompileTurn {
             streams: self.clone(),
             handed: Some(handed),
@@ -678,17 +726,32 @@ impl PullStreams {
     /// and no compile spent. The oldest caller in line takes it.
     pub(crate) fn let_go(&self, stream: StreamId) {
         let mut held = lock(&self.held);
-        if let Some(chosen) = held.get_mut(&stream)
-            && chosen.kept_for_compiles > 0
-        {
-            chosen.kept_for_compiles -= 1;
-            hand_off(&mut held, &mut lock(&self.compile_line));
-            // Room a caller in line took wakes nobody.
-            let room_left = has_compile_room(&held);
-            drop(held);
-            if room_left {
-                self.signal_room();
-            }
+        if held.get_mut(&stream).is_some_and(Held::release_compile) {
+            self.hand_off_and_signal(held, has_compile_room);
+        }
+    }
+
+    /// Gives the compile room free in `held` to the callers in line, oldest
+    /// first, and then wakes the waiters for room while `room_left` finds
+    /// some: room that a caller in line took wakes nobody.
+    fn hand_off_and_signal(
+        &self,
+        mut held: MutexGuard<'_, HashMap<StreamId, Held>>,
+        room_left: fn(&HashMap<StreamId, Held>) -> bool,
+    ) {
+        hand_off(&mut held, &mut lock(&self.compile_line));
+        let signal = room_left(&held);
+        drop(held);
+        if signal {
+            self.signal_room();
+        }
+    }
+
+    /// Ends the line once no stream in `held` takes sends, so that its
+    /// callers hear it at once and relay or wait again.
+    fn end_line_unless_open(&self, held: &HashMap<StreamId, Held>) {
+        if !has_open_stream(held) {
+            lock(&self.compile_line).clear();
         }
     }
 
@@ -790,13 +853,9 @@ impl PullStreams {
         );
         self.count.send_replace(held_streams.len());
         if !draining {
-            hand_off(&mut held_streams, &mut lock(&self.compile_line));
-        }
-        // Room a caller in line took wakes nobody.
-        let room_left = !draining && (has_room(&held_streams) || has_compile_room(&held_streams));
-        drop(held_streams);
-        if room_left {
-            self.signal_room();
+            self.hand_off_and_signal(held_streams, |held| {
+                has_room(held) || has_compile_room(held)
+            });
         }
         stream
     }
@@ -852,19 +911,12 @@ impl PullStreams {
             chosen.view.last_work = Some(Instant::now());
             chosen.compiles.remove(&compiled.number)
         });
-        if answered.is_some() {
-            hand_off(&mut held, &mut lock(&self.compile_line));
-        }
-        // Room a caller in line took wakes nobody.
-        let room_left = has_compile_room(&held);
-        drop(held);
-        if let Some(in_flight) = answered {
-            if room_left {
-                self.signal_room();
-            }
-            // An answer nobody waits for any more is dropped.
-            drop(in_flight.answered.send(read));
-        }
+        let Some(in_flight) = answered else {
+            return Ok(());
+        };
+        self.hand_off_and_signal(held, has_compile_room);
+        // An answer nobody waits for any more is dropped.
+        drop(in_flight.answered.send(read));
         Ok(())
     }
 
@@ -873,13 +925,15 @@ impl PullStreams {
     pub(crate) fn close(&self, stream: StreamId) -> Instant {
         let mut held = lock(&self.held);
         let now = Instant::now();
-        held.get_mut(&stream).map_or(now, |held| {
+        let due = held.get_mut(&stream).map_or(now, |held| {
             held.closing = true;
             held.compiles
                 .values()
                 .map(|in_flight| in_flight.due)
                 .fold(now, Instant::max)
-        })
+        });
+        self.end_line_unless_open(&held);
+        due
     }
 
     fn compiles_in_flight(&self, stream: StreamId) -> bool {
@@ -894,6 +948,7 @@ impl PullStreams {
         let mut held_streams = lock(&self.held);
         let held = held_streams.remove(&stream);
         self.count.send_replace(held_streams.len());
+        self.end_line_unless_open(&held_streams);
         drop(held_streams);
         if let (Some(held), Some(violation)) = (held, violation) {
             drop(held.outbound.send(Err(violation)));
@@ -907,9 +962,11 @@ impl PullStreams {
     /// lands on another Coral Instance.
     pub fn drain(&self) {
         self.draining.send_replace(true);
-        for held in lock(&self.held).values_mut() {
+        let mut held_streams = lock(&self.held);
+        for held in held_streams.values_mut() {
             held.closing = true;
         }
+        self.end_line_unless_open(&held_streams);
     }
 
     /// Whether [`Self::drain`] ran.

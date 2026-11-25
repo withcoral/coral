@@ -12,6 +12,7 @@ use coral_v8::{
 
 use crate::compile_wire::{self as codec, ProtocolError, Read};
 use crate::compiler::STOPPED;
+use crate::pull::LineEnded;
 use crate::relay::{CompileRelay, Probed};
 use crate::time::millis;
 use crate::wire::v1::compile::Call;
@@ -30,7 +31,8 @@ pub(crate) const COMPILE_WAIT: Duration = Duration::from_secs(30);
 const ROOM_WAIT_RESERVE: Duration = Duration::from_millis(100);
 
 /// How often a waiting call asks the local children for room again, and
-/// looks again whether this Coral Instance still holds a stream to wait on.
+/// looks again whether this Coral Instance still holds a stream to wait on:
+/// a call that joined the line as it ended hears nothing.
 const ASK_AGAIN: Duration = Duration::from_secs(1);
 
 /// Why a call too large to send is rejected. Only a typed save grows that
@@ -180,12 +182,12 @@ impl PullStreamCompiler {
 
     /// A unit of compile room held on the stream with the most, now or once
     /// every caller in line before this one took one, or none at `until`.
-    /// A caller `again`, whose unit or stream went before its call was
-    /// answered, waits at the front of the line. While this Coral Instance
-    /// holds no stream that takes sends, the relay instead, when there is
-    /// one. The wait asks the local children for room every `ASK_AGAIN`,
-    /// and holds no thread.
-    async fn route(&self, until: Instant, again: bool) -> Option<Route<'_>> {
+    /// A caller whose unit or stream went before its call was answered
+    /// waits `at_front` of the line. While this Coral Instance holds no
+    /// stream that takes sends, the relay instead, when there is one: the
+    /// line ends with the last such stream. The wait asks the local
+    /// children for room every `ASK_AGAIN`, and holds no thread.
+    async fn route(&self, until: Instant, at_front: bool) -> Option<Route<'_>> {
         let (children, relay) = match &self.target {
             #[cfg(any(test, feature = "test-support"))]
             Target::Stream(stream) => return Some(Route::Stream(*stream)),
@@ -202,7 +204,7 @@ impl PullStreamCompiler {
             }
             let turn = match &mut waiting {
                 Some(turn) => turn,
-                None => match self.streams.compile_turn(again) {
+                None => match self.streams.compile_turn(at_front) {
                     Ok(stream) => return Some(Route::Held(stream)),
                     Err(turn) => waiting.insert(turn),
                 },
@@ -214,8 +216,11 @@ impl PullStreamCompiler {
             if left.is_zero() {
                 return None;
             }
-            if let Some(stream) = turn.handed(left.min(ASK_AGAIN)).await {
-                return Some(Route::Held(stream));
+            match turn.handed(left.min(ASK_AGAIN)).await {
+                Ok(Some(stream)) => return Some(Route::Held(stream)),
+                Ok(None) => {}
+                // Relay, or wait in a line that starts again.
+                Err(LineEnded) => waiting = None,
             }
         }
     }
@@ -302,13 +307,13 @@ impl PullStreamCompiler {
         call: &Call,
         until: Instant,
         room_until: Instant,
-        mut again: bool,
+        mut at_front: bool,
     ) -> Result<Routed, CompileError> {
         // A call no stream took was not judged: it fails as no compiler,
         // never as a compile timeout.
         let no_compiler = || CompileError::Unavailable(Unavailable::NoCompiler);
         loop {
-            let route = self.route(room_until, again).await;
+            let route = self.route(room_until, at_front).await;
             let (stream, held) = match route.ok_or_else(no_compiler)? {
                 // Untaken, it answers before the caller's own deadline, as a
                 // wait for room here does.
@@ -338,7 +343,7 @@ impl PullStreamCompiler {
                 Err(Refused::NoRoom | Refused::Closed)
                     if matches!(self.target, Target::MostRoom { .. }) =>
                 {
-                    again = true;
+                    at_front = true;
                 }
                 Err(Refused::NoRoom) => {
                     return Err(CompileError::Unavailable(Unavailable::Busy));

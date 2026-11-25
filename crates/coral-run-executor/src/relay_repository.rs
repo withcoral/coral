@@ -129,6 +129,22 @@ pub(crate) async fn work_for(
     Ok(database.fetch_optional::<(String,)>(work).await?.is_some())
 }
 
+/// How many rows [`take_oldest`] could take for `take`, counting at most
+/// `most`. One read.
+pub(crate) async fn waiting(
+    database: &Database,
+    take: &Take<'_>,
+    most: u16,
+) -> Result<usize, coral_db::Error> {
+    let waiting = Query::select()
+        .column(CompileRequests::Id)
+        .from(CompileRequests::Table)
+        .cond_where(takeable(take))
+        .limit(most.into())
+        .to_owned();
+    Ok(database.fetch_all::<(String,)>(waiting).await?.len())
+}
+
 /// Deletes the rows whose deadline is at or before `expired`. Nobody waits
 /// on them, so this wakes nobody.
 pub(crate) async fn delete_past(

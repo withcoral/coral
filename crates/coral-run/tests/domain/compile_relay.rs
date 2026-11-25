@@ -1,6 +1,6 @@
 //! Program admission wired through the compile relay: a Run
-//! Module compiles through its Coral Instance's link, and a compile that
-//! finds no Run Executor with room there is served through the database.
+//! Module compiles through its Coral Instance's link, and a compile on a
+//! Coral Instance that holds no pull stream is served through the database.
 //! The relay's own rules are tested in `coral-run-executor`.
 use super::*;
 use coral_run_executor::testing::{RUN_EXECUTOR_TOKEN, relayed_requests};

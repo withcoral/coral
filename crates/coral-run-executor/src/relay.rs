@@ -2,7 +2,10 @@
 //! only through it. A Coral Instance that holds no pull stream that takes
 //! sends writes a row and waits on the change signal for its answer; every
 //! Coral Instance that holds one with compile room takes the oldest row it
-//! can serve, serves it on that stream, and writes the answer back.
+//! can serve, serves it on that stream, and writes the answer back. While
+//! callers there wait in line for compile room, its pickup holds a place
+//! in that line for each row, and takes the oldest row on each unit a place
+//! is handed.
 //!
 //! A row with no call is a probe: [`crate::CompilerClient::ready`] waits on
 //! one until some Coral Instance has compile room, before the compile's own
@@ -12,6 +15,7 @@
 
 use std::collections::VecDeque;
 use std::convert::Infallible;
+use std::future::pending;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,6 +25,7 @@ use tokio::time::Instant;
 
 use crate::compile_wire::{ProtocolError, Read, Takes};
 use crate::compiler::STOPPED;
+use crate::pull::{CompileTurn, LineEnded};
 use crate::relay_repository::{self as rows, Answered, NewRequest, Request, Status, Take, Taken};
 use crate::time::{before, millis, unix_now};
 use crate::wire::v1::compile::Call;
@@ -53,6 +58,10 @@ const ORPHAN_GRACE: Duration = Duration::from_secs(5);
 /// How long a pickup holds a unit for a probe it answered for another Coral
 /// Instance, while that Coral Instance's call is on its way.
 const PROMISE_KEPT: Duration = Duration::from_secs(1);
+
+/// The most places a pickup holds in its Coral Instance's line for compile
+/// room, one for each row waiting.
+const PLACES: u16 = 64;
 
 /// This Coral Instance's side of the relay.
 #[derive(Clone)]
@@ -249,14 +258,33 @@ impl CompileRelay {
     }
 
     /// Serves the relayed compiles on `streams` while one has room, or holds
-    /// room for a call it promised.
+    /// room for a call it promised. While callers wait in line here, the
+    /// rows wait in the same line: a place for each, held in [`Places`].
     pub(crate) async fn serve(self, streams: PullStreams) -> Infallible {
         let mut changes = self.database.subscribe_changes().ok();
         let mut promised = Promised::new(streams.clone(), self.promise_kept);
+        let mut places = Places::new(streams.clone());
+        let mut handed = None;
         loop {
             promised.lapse();
-            if streams.has_compile_room() || !promised.is_empty() {
-                self.serve_pending(&streams, &mut promised).await;
+            let unit = handed.take().or_else(|| places.handed_now());
+            if (unit.is_some() || streams.has_compile_room() || !promised.is_empty())
+                && self.serve_pending(&streams, &mut promised, unit).await
+            {
+                // The rows counted are locked by another taker, or reached
+                // their reserve: rejoin the line behind the callers here
+                // rather than hand each unit to the next place.
+                places.leave();
+            }
+            if !streams.has_open_stream() {
+                places.leave();
+            } else if !streams.has_compile_room()
+                && let Some(rows) = self.rows_waiting().await
+            {
+                handed = places.fit(rows);
+                if handed.is_some() {
+                    continue;
+                }
             }
             // A lapsing promise frees its room.
             let wait = promised
@@ -264,65 +292,86 @@ impl CompileRelay {
                 .map_or(LOOK_AGAIN, |lapse| lapse.min(LOOK_AGAIN));
             if streams.has_compile_room() {
                 signalled(&mut changes, &self.database, wait).await;
-            } else if !promised.is_empty() {
-                // Its promised calls come as rows; probes wait for room.
-                tokio::select! {
-                    () = signalled(&mut changes, &self.database, wait) => {}
-                    () = streams.compile_room_signalled(wait) => {}
-                }
             } else {
-                // A row written while no stream had room is taken once one has.
-                streams.compile_room_signalled(LOOK_AGAIN).await;
+                tokio::select! {
+                    // Its promised calls come as rows.
+                    () = signalled(&mut changes, &self.database, wait), if !promised.is_empty() => {}
+                    // A row written while no stream had room is taken once
+                    // one has, or once a place in line takes a unit.
+                    () = streams.compile_room_signalled(wait) => {}
+                    unit = places.next(wait) => handed = unit,
+                }
             }
         }
     }
 
-    /// Takes rows while a stream has room. With none free, it takes only the
+    /// The rows a pickup could take, up to [`PLACES`], or none when the read
+    /// failed.
+    async fn rows_waiting(&self) -> Option<usize> {
+        let take = self.take_at(unix_now(), None);
+        rows::waiting(&self.database, &take, PLACES)
+            .await
+            .inspect_err(|error| {
+                tracing::warn!(
+                    error.type = safe::kind(error.code()),
+                    "relayed compiles could not be counted"
+                );
+            })
+            .ok()
+    }
+
+    /// Takes rows while a stream has room, the first on the unit `handed` to
+    /// a place in line when there is one. With none free, it takes only the
     /// calls of the Coral Instances it holds room for. One read first, so a
-    /// pickup with nothing to take takes no write lock.
-    async fn serve_pending(&self, streams: &PullStreams, promised: &mut Promised) {
+    /// pickup with nothing to take takes no write lock. True when the unit
+    /// `handed` found no row to take.
+    async fn serve_pending(
+        &self,
+        streams: &PullStreams,
+        promised: &mut Promised,
+        mut handed: Option<StreamId>,
+    ) -> bool {
         loop {
             promised.lapse();
-            let free = streams.most_compile_room();
+            let unit = handed
+                .take()
+                .map(Via::Held)
+                .or_else(|| streams.most_compile_room().map(Via::Free));
             let requesters = promised.requesters();
-            let from = match free {
+            let from = match unit {
                 Some(_) => None,
                 None if !requesters.is_empty() => Some(requesters.as_slice()),
-                None => return,
+                None => return false,
             };
             let now = unix_now();
-            let take = Take {
-                taker: &self.instance,
-                deadline_after: now.saturating_add(UNTAKEN_RESERVE),
-                from,
-            };
+            let take = self.take_at(now, from);
             match rows::work_for(&self.database, &take, orphaned_before(now)).await {
                 Ok(true) => {}
-                Ok(false) => return,
+                Ok(false) => return give_back(streams, unit),
                 Err(error) => {
                     tracing::warn!(
                         error.type = safe::kind(error.code()),
                         "relayed compiles could not be read"
                     );
-                    return;
+                    return give_back(streams, unit);
                 }
             }
             let taken = match self.take(from).await {
                 Ok(Some(taken)) => taken,
-                Ok(None) => return,
+                Ok(None) => return give_back(streams, unit),
                 Err(error) => {
                     tracing::warn!(
                         error.type = safe::kind(error.code()),
                         "a relayed compile could not be taken"
                     );
-                    return;
+                    return give_back(streams, unit);
                 }
             };
             let foreign = taken.requester != *self.instance;
-            match (taken.request, free) {
-                (Request::Room, Some(stream)) if foreign => {
+            match (taken.request, unit) {
+                (Request::Room, Some(unit)) if foreign => {
                     // Room held for the call that this answer invites.
-                    if !promised.hold(taken.requester, stream) {
+                    if !promised.hold(taken.requester, unit) {
                         self.release(&taken.id).await;
                     } else if self.answer(&taken.id, Answered::Room).await {
                         promised.answered_newest();
@@ -331,16 +380,21 @@ impl CompileRelay {
                         self.release(&taken.id).await;
                     }
                 }
-                (Request::Room, _) => {
+                (Request::Room, unit) => {
                     self.answer(&taken.id, Answered::Room).await;
+                    give_back(streams, unit);
                 }
-                (Request::Unreadable, _) => {
+                (Request::Unreadable, unit) => {
                     self.answer(&taken.id, failed(ProtocolError.into())).await;
+                    give_back(streams, unit);
                 }
-                (Request::Call(call), free) => {
+                (Request::Call(call), unit) => {
                     let via = match promised.spend(&taken.requester) {
-                        Some(held) => Some(Via::Held(held)),
-                        None => free.map(Via::Free),
+                        Some(held) => {
+                            give_back(streams, unit);
+                            Some(Via::Held(held))
+                        }
+                        None => unit,
                     };
                     match via {
                         Some(via) => {
@@ -414,14 +468,19 @@ impl CompileRelay {
         let mut transaction = self.database.begin().await?;
         let now = unix_now();
         rows::delete_past(&mut transaction, orphaned_before(now)).await?;
-        let take = Take {
+        let taken = rows::take_oldest(&mut transaction, self.take_at(now, from)).await?;
+        transaction.commit().await?;
+        Ok(taken)
+    }
+
+    /// The rows this pickup takes at `now`, only calls of `from` when set:
+    /// none inside [`UNTAKEN_RESERVE`] of its deadline.
+    fn take_at<'a>(&'a self, now: UnixNanos, from: Option<&'a [String]>) -> Take<'a> {
+        Take {
             taker: &self.instance,
             deadline_after: now.saturating_add(UNTAKEN_RESERVE),
             from,
-        };
-        let taken = rows::take_oldest(&mut transaction, take).await?;
-        transaction.commit().await?;
-        Ok(taken)
+        }
     }
 
     /// Gives a taken row back for another pickup.
@@ -458,12 +517,91 @@ impl CompileRelay {
     }
 }
 
-/// The stream a taken call goes down.
+/// The stream a taken row's call goes down.
+#[derive(Clone, Copy)]
 enum Via {
     /// Its free room.
     Free(StreamId),
-    /// A unit held for this call's Coral Instance.
+    /// A unit held for it: promised to its Coral Instance, or handed to a
+    /// place in line.
     Held(StreamId),
+}
+
+/// Frees `unit` when a place in line held it and no call spent it. True
+/// when it freed one.
+fn give_back(streams: &PullStreams, unit: Option<Via>) -> bool {
+    let Some(Via::Held(stream)) = unit else {
+        return false;
+    };
+    streams.let_go(stream);
+    true
+}
+
+/// The places a pickup holds in its Coral Instance's line for compile
+/// room, one for each row waiting while no room is free, up to
+/// [`PLACES`]. So a row from a Coral Instance that holds no pull stream
+/// waits in order with the callers here, not until no caller waits. A place
+/// handed a unit takes the oldest row. Dropped, it leaves the line.
+struct Places {
+    streams: PullStreams,
+    turns: VecDeque<CompileTurn>,
+}
+
+impl Places {
+    const fn new(streams: PullStreams) -> Self {
+        Self {
+            streams,
+            turns: VecDeque::new(),
+        }
+    }
+
+    /// Holds one place for each of `rows`: new places join the end of the
+    /// line, and the newest leave it. A unit held at once, as room freed,
+    /// comes back.
+    fn fit(&mut self, rows: usize) -> Option<StreamId> {
+        self.turns.truncate(rows);
+        while self.turns.len() < rows {
+            match self.streams.compile_turn(false) {
+                Ok(stream) => return Some(stream),
+                Err(turn) => self.turns.push_back(turn),
+            }
+        }
+        None
+    }
+
+    /// A unit handed to the oldest place already, which then leaves.
+    fn handed_now(&mut self) -> Option<StreamId> {
+        let handed = self.turns.front_mut()?.handed_now();
+        self.leave_oldest(handed)
+    }
+
+    /// Waits up to `wait` for a unit handed to the oldest place, which then
+    /// leaves. With no place, it waits for nothing.
+    async fn next(&mut self, wait: Duration) -> Option<StreamId> {
+        let Some(oldest) = self.turns.front_mut() else {
+            return pending().await;
+        };
+        let handed = oldest.handed(wait).await;
+        self.leave_oldest(handed)
+    }
+
+    fn leave_oldest(&mut self, handed: Result<Option<StreamId>, LineEnded>) -> Option<StreamId> {
+        match handed {
+            Ok(None) => None,
+            Ok(Some(stream)) => {
+                self.turns.pop_front();
+                Some(stream)
+            }
+            Err(LineEnded) => {
+                self.leave();
+                None
+            }
+        }
+    }
+
+    fn leave(&mut self) {
+        self.turns.clear();
+    }
 }
 
 /// The units a pickup holds for probes it answered for other Coral
@@ -491,12 +629,18 @@ impl Promised {
         }
     }
 
-    /// Holds a unit of `stream` for `requester`'s call, unless another
-    /// caller took the room first.
-    fn hold(&mut self, requester: String, stream: StreamId) -> bool {
-        if self.streams.hold_compile(stream).is_err() {
-            return false;
-        }
+    /// Holds `unit` for `requester`'s call: free room, unless another caller
+    /// took it first, or a unit held already.
+    fn hold(&mut self, requester: String, unit: Via) -> bool {
+        let stream = match unit {
+            Via::Held(stream) => stream,
+            Via::Free(stream) => {
+                if self.streams.hold_compile(stream).is_err() {
+                    return false;
+                }
+                stream
+            }
+        };
         self.promises.push_back(Promise {
             made: Instant::now(),
             requester,

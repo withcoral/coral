@@ -403,3 +403,34 @@ async fn a_coral_instance_that_holds_a_stream_waits_for_its_own_room() {
         "the call sent the database nothing"
     );
 }
+
+// Catches: a row from a Coral Instance that holds no pull stream taken only
+// once no caller waits where it is served, so under load it waits until its
+// deadline.
+#[tokio::test]
+async fn a_relayed_call_waits_in_line_with_the_callers_where_it_is_served() {
+    let database = TestDatabase::new(coral_db::migration_plan()).await.unwrap();
+    let (requester, [server]) = instances(&database).await;
+    let (stream, mut sent) = open_busy(&server.streams);
+
+    let call = compiling(&requester.compiler, Duration::from_secs(10));
+    rows_reach(&database.database(), 1).await;
+    // The pickup holds a place for the row, then a caller there joins.
+    in_line(&server.streams, 1).await;
+    let local = readying(&server.compiler);
+    in_line(&server.streams, 2).await;
+
+    server.streams.let_go(stream);
+    answer(&server.streams, stream, &mut sent).await;
+    assert_eq!(
+        call.await.unwrap().as_deref(),
+        Ok("42"),
+        "the row came first"
+    );
+    let held = local.await.unwrap().map(|held| held.is_some());
+    assert_eq!(
+        held,
+        Ok(true),
+        "the answer frees the unit for the caller there"
+    );
+}

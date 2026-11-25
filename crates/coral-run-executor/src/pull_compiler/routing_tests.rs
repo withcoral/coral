@@ -354,34 +354,19 @@ async fn ready_waits_for_room_without_holding_its_thread() {
     assert_eq!(streams.compile_room(stream), COMPILE_ROOM - 1);
 }
 
-// Catches: a unit that frees going to whichever waiting caller looks first,
-// so one caller loses it again and again; or a new caller that takes a unit
-// before the callers already in line.
+// Catches: a caller that keeps the turn the end of the line closed, so it
+// never waits in line again and no stream that opens serves it.
 #[tokio::test(start_paused = true)]
-async fn callers_that_wait_for_room_take_it_in_the_order_they_came() {
+async fn a_caller_waits_in_line_again_once_the_line_ends() {
     let streams = PullStreams::default();
     let (stream, _sent) = busy_stream(&streams);
     let caller = PullStreamCompiler::new(streams.clone(), None);
-    let mut waiting = Vec::new();
-    for callers in 1..=3 {
-        waiting.push(held_later(&caller));
-        in_line(&streams, callers).await;
-    }
-    // A caller served out of order would wait past the bound and panic.
-    // Each served client is kept, so the unit held for it stays held.
-    let mut served_callers = Vec::new();
-    for (served, next) in waiting.into_iter().enumerate() {
-        streams.let_go(stream);
-        assert!(
-            streams.compile_turn(false).is_err(),
-            "a caller that comes now waits behind the line"
-        );
-        served_callers.push(next.await.unwrap());
-        assert_eq!(
-            streams.waiting_for_compile_room(),
-            2 - served,
-            "the oldest caller takes the unit"
-        );
-        assert_eq!(streams.compile_room(stream), 0, "held for it");
-    }
+    let waiting = held_later(&caller);
+    in_line(&streams, 1).await;
+
+    streams.end(stream, None);
+    in_line(&streams, 1).await;
+    let (opened, _opened_sent) = open(&streams, 0);
+    let _held = waiting.await.unwrap();
+    assert_eq!(streams.compile_room(opened), COMPILE_ROOM - 1);
 }
