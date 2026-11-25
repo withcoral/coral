@@ -192,10 +192,6 @@ pub struct AgentResult {
     /// What the turn's runs wait for from a person.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub required_actions: Vec<AgentRequiredAction>,
-    /// How the agent said its work went, if it said so in this turn.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "String", extend("enum" = ["success", "failure"]))]
-    pub outcome: Option<&'static str>,
     /// Each program and search of the turn, oldest first.
     pub steps: Vec<AgentStep>,
     /// Pass it as `cursor` when you call coral.agent on this agent again.
@@ -276,7 +272,6 @@ pub(super) mod tests {
             answer: None,
             failure: None,
             required_actions: Vec::new(),
-            outcome: None,
             steps: Vec::new(),
             next_cursor: "t1".to_owned(),
         };
@@ -299,7 +294,6 @@ pub(super) mod tests {
             answer: Some("Twelve.".to_owned()),
             failure: Some("the model gave no answer".to_owned()),
             required_actions: vec![waiting],
-            outcome: Some("success"),
             steps: steps.to_vec(),
             ..running.clone()
         };

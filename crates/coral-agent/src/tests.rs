@@ -655,43 +655,6 @@ async fn the_tool_calls_of_one_reply_run_at_the_same_time() {
     assert!(waited.contains("canceled"), "{waited}");
 }
 
-// Catches: an outcome that the Sub-agent recorded with `end_task` and the lead
-// cannot read, and one that outlives its Turn.
-#[tokio::test]
-async fn the_lead_reads_the_outcome_that_the_turn_recorded() {
-    let lead = Lead::new().await;
-    let (tools, task_id) = (lead.tools(), lead.task().await);
-    let end = json!({"task_id": task_id.as_str(), "outcome": "failure"});
-    for respond in [
-        tool_calls(&[tool_call("call_1", "end_task", &end)]),
-        reply("Not found."),
-    ] {
-        Mock::given(any())
-            .respond_with(respond)
-            .up_to_n_times(1)
-            .mount(&lead.model)
-            .await;
-    }
-    lead.model_answers(reply("Found it.")).await;
-
-    let (sub_agent_id, recorded) = lead.turn(&*tools, &task_id).await;
-    let caller = lead.caller();
-    let message = json!({"sub_agent_id": sub_agent_id, "message": "Look again."});
-    result(call(&*tools, &caller, "agent", message).await);
-    let wait = json!({"sub_agent_id": sub_agent_id, "wait_ms": 30_000});
-    let next = result(call(&*tools, &caller, "agent", wait).await);
-
-    let read = |page: &Value| {
-        (
-            field(page, "answer").clone(),
-            field(page, "outcome").clone(),
-        )
-    };
-    let failure = (json!("Not found."), json!("failure"));
-    assert_eq!(read(&recorded), failure, "{recorded}");
-    assert_eq!(read(&next), (json!("Found it."), Value::Null), "{next}");
-}
-
 // Catches: a Sub-agent that works outside the lead's Task, and a call that
 // no longer reaches core once the Sub-agent is on.
 #[tokio::test]
