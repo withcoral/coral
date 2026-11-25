@@ -19,7 +19,8 @@ global:
 imagePullSecrets: []
 
 # Each secret is a key in a Secret you create. The chart never creates one.
-# An empty secretName means <release>-coral.
+# An empty secretName means the chart's own name: the release name when it
+# holds "coral", such as `coral`, or else <release>-coral.
 secrets:
   databaseUrl:
     secretName: ""

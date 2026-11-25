@@ -61,8 +61,8 @@ global.imageRegistry replaces the registry host and keeps the repository path.
 
 {{/*
 An env var read from a Secret. Call with (list $ "ENV_NAME" "values.path" $ref).
-$ref is a {secretName, key}; an empty secretName means <release>-coral, and an
-empty key fails the render.
+$ref is a {secretName, key}; an empty secretName means the chart's own name
+(coral.fullname), and an empty key fails the render.
 */}}
 {{- define "coral.secretEnv" -}}
 {{- $root := index . 0 -}}
@@ -71,7 +71,7 @@ empty key fails the render.
 - name: {{ index . 1 }}
   valueFrom:
     secretKeyRef:
-      name: {{ $ref.secretName | default (printf "%s-coral" $root.Release.Name) }}
+      name: {{ $ref.secretName | default (include "coral.fullname" $root) }}
       key: {{ $key }}
 {{- end -}}
 

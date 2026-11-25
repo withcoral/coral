@@ -33,7 +33,7 @@ The `coral` image holds the model for [semantic search](/getting-started/self-ho
    kubectl create namespace coral
    ```
 
-2. Create the Secret. With the release name `coral`, the chart reads every secret from a Secret named `coral-coral` by default.
+2. Create the Secret. With the release name `coral`, the chart reads every secret from a Secret named `coral` by default.
 
    | Key                         | Value                                                                                                                       |
    | --------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
@@ -48,7 +48,7 @@ The `coral` image holds the model for [semantic search](/getting-started/self-ho
    For example:
 
    ```shell
-   kubectl -n coral create secret generic coral-coral \
+   kubectl -n coral create secret generic coral \
      --from-literal=CORAL_DATABASE_URL='postgres://coral:PASSWORD@db.example.com:5432/coral?sslmode=verify-full' \
      --from-literal=CORAL_CREDENTIALS_KEY="$(openssl rand -base64 32)" \
      --from-literal=CORAL_SESSION_SIGNING_KEY="$(openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt -outform DER | base64 | tr -d '\n')" \
