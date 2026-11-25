@@ -1,5 +1,5 @@
 import { popup as menuPopup } from '@/wax/components/menu/menu.css'
-import { style } from '@/wax/css'
+import { globalStyle, style } from '@/wax/css'
 import { theme } from '@/wax/theme/theme.css'
 
 export const label = style({
@@ -23,4 +23,23 @@ export const popup = style({
 // that a text input draws.
 export const invalid = style({
   boxShadow: `inset 0 0 0 1px ${theme.input.stroke.error}`,
+})
+
+// A trigger that fills its cell keeps its icon and label at the start and the
+// chevron at the end, so a column of them lines up.
+export const fill = style({
+  justifyContent: 'flex-start',
+  textAlign: 'start',
+  width: '100%',
+})
+globalStyle(`${fill} > :last-child`, { marginInlineStart: 'auto' })
+
+// An option's label that takes width and no height or text: generated content
+// stays out of the trigger's text, and hidden it stays out of its name.
+export const widthOf = style({
+  display: 'block',
+  height: 0,
+  overflow: 'hidden',
+  visibility: 'hidden',
+  '::before': { content: 'attr(data-label)' },
 })

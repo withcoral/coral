@@ -1,3 +1,4 @@
+import { showsCredentialTable } from '@/views/management/credential-fields'
 import { useEffect, useId, useRef, useState } from 'react'
 import { Form, useBeforeUnload, useBlocker, useNavigation, useSubmit } from 'react-router'
 import {
@@ -223,7 +224,10 @@ export function EditConfigurationPage({
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Backdrop />
-        <Dialog.Popup>
+        {/* Typed credentials with a store on offer show as a table that needs the width. */}
+        <Dialog.Popup
+          size={!oauth && showsCredentialTable(secretStores, savedReferences) ? 'xxl' : undefined}
+        >
           <Dialog.Title>{audience.shareTitle}</Dialog.Title>
           <Dialog.Description>{audience.shareBody}</Dialog.Description>
           <UpdateAuthorization

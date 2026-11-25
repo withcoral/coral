@@ -1,3 +1,4 @@
+import { showsCredentialTable } from '@/views/management/credential-fields'
 import { useId, useState } from 'react'
 import type { OfferedSecretStore } from '@/views/accounts/types'
 import { Form } from 'react-router'
@@ -293,10 +294,21 @@ export function AccountStep({
           </Dialog.Trigger>
           <Dialog.Portal>
             <Dialog.Backdrop />
-            <Dialog.Popup>
+            {/* With stores on offer, each field is a row of a table that needs the width. */}
+            <Dialog.Popup size={shared && showsCredentialTable(secretStores) ? 'xxl' : undefined}>
               <Dialog.Title>{shared ? audience.shareTitle : 'Connect your account'}</Dialog.Title>
               <Dialog.Description>
                 {shared ? audience.shareBody : audience.onlyYou}
+                {/* Where to find the values, read before the fields, not after them. */}
+                {documentationUrl && (
+                  <>
+                    {' '}
+                    <Button.ExternalLink href={documentationUrl} className={styles.inlineControl}>
+                      Find your credentials in the{' '}
+                      {setup.configuration?.values.displayName || 'provider'} docs
+                    </Button.ExternalLink>
+                  </>
+                )}
               </Dialog.Description>
               {/* Its own form: the portal renders outside the step's, so an
                       input here would never be submitted with it. */}
@@ -307,14 +319,7 @@ export function AccountStep({
                 id={secretFormId}
                 extra={accountField}
                 secretStores={shared ? secretStores : []}
-              >
-                {documentationUrl && (
-                  <Button.ExternalLink href={documentationUrl} className={styles.inlineControl}>
-                    Find your credentials in the{' '}
-                    {setup.configuration?.values.displayName || 'provider'} docs
-                  </Button.ExternalLink>
-                )}
-              </SetupSecretForm>
+              />
               <Dialog.Actions>
                 <Button.TextButton
                   type="button"

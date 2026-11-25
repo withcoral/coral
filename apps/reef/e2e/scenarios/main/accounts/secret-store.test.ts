@@ -8,9 +8,9 @@ import { managementClients } from '../../../support/management.ts'
 import { listen, openApiDocument } from '../../../support/provider-fixtures.ts'
 import {
   acceptTools,
-  checkRadio,
   chooseAccount,
   chooseFile,
+  chooseSecretStore,
   confirmConfiguration,
   enableTool,
   openCustomSource,
@@ -129,9 +129,9 @@ test('Organization owner grants a KV v2 store, and a tool sends the value a refe
         await page.goto(`/workspaces/${id}/providers/${provider}/accounts`)
         await page.getByRole('button', { name: 'Reconnect' }).click()
         await page.getByRole('dialog').getByRole('button', { name: 'Reconnect' }).click()
-        await checkRadio(page.getByRole('radio', { name: 'Use a secret store' }))
-        await page.getByRole('textbox', { name: 'Path' }).fill(SECRET_STORE.path)
-        await page.getByRole('textbox', { name: 'Key' }).fill(SECRET_STORE.key)
+        await chooseSecretStore(page, 'Token', SECRET_STORE.name)
+        await page.getByRole('textbox', { name: 'Path for Token' }).fill(SECRET_STORE.path)
+        await page.getByRole('textbox', { name: 'Key for Token' }).fill(SECRET_STORE.key)
         await page.getByRole('button', { name: 'Connect account' }).click()
         await page.getByText('Account connected.').waitFor()
         await page.goto(`/workspaces/${id}/providers/${provider}/accounts`)
@@ -170,9 +170,9 @@ test('Organization owner grants a KV v2 store, and a tool sends the value a refe
           page,
           page.getByRole('button', { name: 'Connect the shared account', exact: true }),
         )
-        await checkRadio(dialog.getByRole('radio', { name: 'Use a secret store' }))
-        await dialog.getByRole('textbox', { name: 'Path' }).fill(SECRET_STORE.path)
-        await dialog.getByRole('textbox', { name: 'Key' }).fill(SECRET_STORE.key)
+        await chooseSecretStore(page, 'Token', SECRET_STORE.name, dialog)
+        await dialog.getByRole('textbox', { name: 'Path for Token' }).fill(SECRET_STORE.path)
+        await dialog.getByRole('textbox', { name: 'Key for Token' }).fill(SECRET_STORE.key)
         await dialog
           .getByRole('button', { name: 'Save and share the account', exact: true })
           .click()
@@ -216,8 +216,10 @@ test('Organization owner grants an env store, and a tool sends the variable it n
         await page.goto(`/workspaces/${id}/providers/${provider}/accounts`)
         await page.getByRole('button', { name: 'Reconnect' }).click()
         await page.getByRole('dialog').getByRole('button', { name: 'Reconnect' }).click()
-        await checkRadio(page.getByRole('radio', { name: 'Use a secret store' }))
-        await page.getByRole('textbox', { name: 'Variable name' }).fill(ENV_SECRET_STORE.variable)
+        await chooseSecretStore(page, 'Token', ENV_SECRET_STORE.name)
+        await page
+          .getByRole('textbox', { name: 'Variable name for Token' })
+          .fill(ENV_SECRET_STORE.variable)
         await page.getByRole('button', { name: 'Connect account' }).click()
         await page.getByText('Account connected.').waitFor()
         await page.goto(`/workspaces/${id}/providers/${provider}/accounts`)

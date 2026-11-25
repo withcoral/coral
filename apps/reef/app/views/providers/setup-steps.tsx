@@ -13,7 +13,6 @@ import { DeviceCodeDialog } from '@/views/accounts/device-code'
 import { oauthFailureMessage } from '@/views/accounts/oauth-failure'
 import { credentialHosts, OAuthApplicationBlock } from './oauth-application'
 
-import { CredentialEntry } from '@/views/accounts/credential-source'
 import { CredentialFields } from '@/views/management/credential-fields'
 import { accountLabels } from './account-labels'
 import type {
@@ -75,16 +74,12 @@ export function SetupSecretForm({
     <Form id={id} method="post" reloadDocument className={styles.stack} aria-busy={pending}>
       <Fields form={form} intent="secret" />
       <SetupFields setup={setup} extra={extra} />
-      <CredentialFields fields={setup.credentialFields}>
-        {(input, field, label) => (
-          <CredentialEntry
-            value={<Inputs.CredentialInput {...input} />}
-            field={field}
-            label={label}
-            stores={secretStores}
-            saved={savedReferences[field]}
-          />
-        )}
+      <CredentialFields
+        fields={setup.credentialFields}
+        stores={secretStores}
+        saved={savedReferences}
+      >
+        {(input) => <Inputs.CredentialInput {...input} />}
       </CredentialFields>
       {hosts.length > 0 && (
         <Typography.BodySmall as="p" variant="tertiary">

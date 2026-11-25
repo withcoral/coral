@@ -316,13 +316,13 @@ it('offers a secret store only when the authorization has one to offer', async (
   })
   await render()
   let popup = within(await open())
-  await popup.findByRole('radio', { name: 'Use a secret store' })
+  await popup.findByRole('button', { name: 'Type for Token' })
   await userEvent.click(popup.getByRole('button', { name: 'Close' }))
 
   checks = () => ({ view: pending })
   popup = within(await open())
   await popup.findByLabelText('Token')
-  expect(popup.queryByRole('radio', { name: 'Use a secret store' })).toBeNull()
+  expect(popup.queryByRole('button', { name: 'Type for Token' })).toBeNull()
   await userEvent.click(popup.getByRole('button', { name: 'Close' }))
 
   checks = () => ({
@@ -332,6 +332,8 @@ it('offers a secret store only when the authorization has one to offer', async (
     },
   })
   popup = within(await open())
-  expect(await popup.findByRole('radio', { name: 'Use a secret store' })).toBeChecked()
+  expect(await popup.findByRole('button', { name: 'Secret store for Token' })).toHaveTextContent(
+    'platform',
+  )
   expect(popup.getByDisplayValue('team/forecast')).toBeTruthy()
 })

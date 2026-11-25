@@ -1,3 +1,4 @@
+import classNames from 'classnames'
 import { Button, Menu, Typography } from '@/wax/components'
 import { Icon } from '@/wax/components/icon'
 import type { IconColor, IconName } from '@/wax/components/icon'
@@ -22,6 +23,12 @@ export interface PickerProps {
   disabled?: boolean
   /** The trigger's id, for a page that moves focus to it. */
   id?: string
+  /**
+   * Takes its container's width, its label at the start and the chevron at the end.
+   * It is never narrower than its longest option, so a column of them keeps one
+   * width whatever each one picks.
+   */
+  fill?: boolean
   /** Draws the error border and marks the value invalid. */
   invalid?: boolean
   label?: string
@@ -38,6 +45,7 @@ export function Picker({
   disabled = false,
   id,
   invalid = false,
+  fill = false,
   label,
   onChange,
   options,
@@ -60,12 +68,25 @@ export function Picker({
             ariaLabel={ariaLabel}
             aria-invalid={invalid || undefined}
             aria-describedby={ariaDescribedBy}
-            className={invalid ? styles.invalid : undefined}
+            className={classNames(invalid && styles.invalid, fill && styles.fill)}
           />
         }
       >
         {selectedIcon && <Icon color={selectedIcon.color} name={selectedIcon.name} size="16" />}
-        <Button.Text>{displayLabel}</Button.Text>
+        <Button.Text>
+          {displayLabel}
+          {fill &&
+            // Each option's label takes its width in no height, so the trigger keeps its
+            // longest option's width and a new choice does not move what sits beside it.
+            options.map((option) => (
+              <span
+                key={option.value}
+                aria-hidden
+                className={styles.widthOf}
+                data-label={option.label}
+              />
+            ))}
+        </Button.Text>
         <Button.Icon name="ChevronDown" />
       </Menu.Trigger>
       <Menu.Content className={styles.popup}>
