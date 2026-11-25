@@ -8,7 +8,7 @@ const NOW: UnixNanos = UnixNanos::new(1_800_000_000_000_000_000);
 /// The version of the first of the store's two steps. It makes
 /// `users.issuer` and `users.subject` optional, and the next step adds the
 /// table and copies each Subject.
-const FIRST_STORE_MIGRATION_VERSION: i64 = 86;
+const FIRST_STORE_MIGRATION_VERSION: i64 = 87;
 
 const fn subject(value: &str) -> UserIdentifier<'_> {
     UserIdentifier::new(UserIdentifierKind::Subject, value)
