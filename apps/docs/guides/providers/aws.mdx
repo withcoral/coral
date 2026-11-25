@@ -207,7 +207,7 @@ flowchart LR
 
   </Step>
   <Step title="Let Coral reach the bridge">
-    With `[auth]` configured, Coral denies provider calls to private network addresses. The bridge has a private address and serves plain HTTP, so add the [`[outbound]`](/reference/configuration#outbound) policy to Coral's configuration. In the Docker Compose guide, that is the `CORAL_CONFIG` value in the compose file. In the Kubernetes guide, it is the `config.toml` key of the Coral ConfigMap.
+    With `[auth]` configured, Coral denies provider calls to private network addresses. The bridge has a private address and serves plain HTTP, so add the [`[outbound]`](/reference/configuration#outbound) policy to Coral's configuration. In the Docker Compose guide, that is the `CORAL_CONFIG` value in the compose file. In the Kubernetes guide, it is the chart's `config` value.
 
     ```toml
     [outbound]

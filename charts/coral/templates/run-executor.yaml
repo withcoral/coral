@@ -1,0 +1,77 @@
+{{- $fullname := include "coral.fullname" . -}}
+{{- /*
+A Run Executor runs customer programs. Its pod's lock-down is fixed: no value
+loosens it, and no value adds a volume, a service account token or a secret
+other than its token.
+*/ -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-run-executor
+  labels:
+    {{- include "coral.labels" . | nindent 4 }}
+    app.kubernetes.io/component: run-executor
+spec:
+  replicas: {{ .Values.runExecutors.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "coral.selectorLabels" (list . "run-executor") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "coral.labels" . | nindent 8 }}
+        app.kubernetes.io/component: run-executor
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.runExecutors.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: run-executor
+          image: {{ include "coral.image" (list . .Values.coral.image) }}
+          imagePullPolicy: {{ .Values.coral.image.pullPolicy }}
+          args:
+            - run-executor
+            - --coral-address
+            - http://{{ $fullname }}:{{ include "coral.port.runExecutor" . }}
+            - --health-listen
+            - 0.0.0.0:{{ include "coral.port.runExecutorHealth" . }}
+            - --max-runs-held
+            - {{ .Values.runExecutors.maxRunsHeld | quote }}
+          ports:
+            - name: health
+              containerPort: {{ include "coral.port.runExecutorHealth" . }}
+          env:
+            {{- include "coral.secretEnv" (list . "CORAL_RUN_EXECUTOR_TOKEN" "runExecutors.token" .Values.runExecutors.token) | nindent 12 }}
+          readinessProbe:
+            grpc:
+              port: {{ include "coral.port.runExecutorHealth" . }}
+              service: coral.readiness
+            {{- include "coral.probeTimings" .Values.runExecutors.probes.readiness | nindent 12 }}
+          livenessProbe:
+            grpc:
+              port: {{ include "coral.port.runExecutorHealth" . }}
+            {{- include "coral.probeTimings" .Values.runExecutors.probes.liveness | nindent 12 }}
+          resources:
+            {{- toYaml .Values.runExecutors.resources | nindent 12 }}
+          securityContext:
+            {{- include "coral.containerSecurityContext" . | nindent 12 }}
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault

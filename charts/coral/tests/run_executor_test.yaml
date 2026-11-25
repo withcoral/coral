@@ -1,0 +1,79 @@
+suite: run executor
+release:
+  name: coral-test
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/run-executor.yaml
+tests:
+  - it: locks the pod down
+    asserts:
+      - equal:
+          path: spec.template.spec.automountServiceAccountToken
+          value: false
+      - notExists:
+          path: spec.template.spec.volumes
+      - notExists:
+          path: spec.template.spec.containers[0].volumeMounts
+      - notExists:
+          path: spec.template.spec.serviceAccountName
+      - equal:
+          path: spec.template.spec.securityContext
+          value:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+      - equal:
+          path: spec.template.spec.containers[0].securityContext
+          value:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+
+  - it: gives the pod no secret but its token
+    asserts:
+      - lengthEqual:
+          path: spec.template.spec.containers[0].env
+          count: 1
+      - equal:
+          path: spec.template.spec.containers[0].env[0].name
+          value: CORAL_RUN_EXECUTOR_TOKEN
+      - notExists:
+          path: spec.template.spec.containers[0].envFrom
+
+  - it: has no value that loosens the pod
+    set:
+      runExecutors.securityContext:
+        privileged: true
+    asserts:
+      - failedTemplate:
+          errorPattern: additional properties 'securityContext' not allowed
+
+  - it: dials coral's Run Executor port and serves its health listener
+    set:
+      runExecutors.maxRunsHeld: 4
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - run-executor
+            - --coral-address
+            - http://coral-test:14557
+            - --health-listen
+            - 0.0.0.0:14558
+            - --max-runs-held
+            - "4"
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.grpc
+          value:
+            port: 14558
+            service: coral.readiness

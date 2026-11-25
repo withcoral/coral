@@ -1,0 +1,51 @@
+suite: coral
+release:
+  name: coral-test
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/coral.yaml
+tests:
+  - it: rolls with no downtime
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.strategy
+          value:
+            type: RollingUpdate
+            rollingUpdate:
+              maxUnavailable: 0
+              maxSurge: 1
+      - exists:
+          path: spec.template.metadata.annotations["checksum/config"]
+
+  - it: gives migrations 15 minutes to start by default
+    documentSelector:
+      path: kind
+      value: Deployment
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].startupProbe
+          value:
+            grpc:
+              port: 14555
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 90
+      - equal:
+          path: spec.template.spec.containers[0].readinessProbe.grpc.service
+          value: coral.readiness
+
+  - it: pins the image by digest when one is set
+    documentSelector:
+      path: kind
+      value: Deployment
+    set:
+      global.imageRegistry: registry.internal
+      coral.image.digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.internal/withcoral/coral@sha256:0000000000000000000000000000000000000000000000000000000000000000

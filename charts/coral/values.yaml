@@ -1,0 +1,138 @@
+# Values for the Coral chart. values.schema.json rejects any key not listed
+# here. Set any other Coral setting under `config`.
+
+# Required. The UI's host name, such as coral.example.com. Coral serves the UI
+# on https://<host>, sign-in on https://<hosts.auth> and MCP on
+# https://<hosts.mcp>.
+host: ""
+
+hosts:
+  # Defaults to auth.<host>.
+  auth: ""
+  # Defaults to mcp.<host>.
+  mcp: ""
+
+global:
+  # Replaces the registry host of every image, and keeps each repository path.
+  imageRegistry: ""
+
+imagePullSecrets: []
+
+# Each secret is a key in a Secret you create. The chart never creates one.
+# An empty secretName means <release>-coral.
+secrets:
+  databaseUrl:
+    secretName: ""
+    key: CORAL_DATABASE_URL
+  credentialsKey:
+    secretName: ""
+    key: CORAL_CREDENTIALS_KEY
+  sessionSigningKey:
+    secretName: ""
+    key: CORAL_SESSION_SIGNING_KEY
+  oidcClientSecret:
+    secretName: ""
+    key: CORAL_OIDC_CLIENT_SECRET
+  webSessionSecret:
+    secretName: ""
+    key: CORAL_WEB_SESSION_SECRET
+  # Without a License, Coral runs as the Community Edition.
+  license:
+    enabled: false
+    secretName: ""
+    key: CORAL_LICENSE
+
+# Coral's config.toml, merged on top of the settings the chart writes. The
+# render fails if this sets a key the chart owns. Set at least
+# auth.provider.issuer and auth.provider.client_id.
+config: {}
+
+coral:
+  image:
+    registry: ghcr.io
+    repository: withcoral/coral
+    # Defaults to the chart's appVersion.
+    tag: ""
+    # When set, the image is pulled by digest, such as sha256:...
+    digest: ""
+    pullPolicy: IfNotPresent
+  replicas: 2
+  resources:
+    requests:
+      cpu: 500m
+      memory: 2Gi
+    limits:
+      memory: 2Gi
+  probes:
+    # Coral listens only after its migrations finish: this allows 15 minutes.
+    startup:
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 90
+    readiness:
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    liveness:
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 6
+
+web:
+  image:
+    registry: ghcr.io
+    repository: withcoral/coral-web
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  replicas: 2
+  # MCP clients that may have a Coral plugin, such as [claude, chatgpt]. See
+  # "Offering a Coral plugin" in the Kubernetes docs.
+  agentsWithAvailablePlugins: []
+  resources:
+    requests:
+      cpu: 250m
+      memory: 768Mi
+    limits:
+      memory: 768Mi
+  probes:
+    readiness:
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    liveness:
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 6
+
+# Run Executors run programs in their own pods, from the coral image. Their
+# pods are always locked down, and no value loosens them.
+runExecutors:
+  replicas: 2
+  # The most Runs one Run Executor holds at once.
+  maxRunsHeld: 8
+  # Time a stopping Run Executor has to finish the Runs it holds.
+  terminationGracePeriodSeconds: 300
+  # Required. At least 32 characters. Coral and every Run Executor read it.
+  token:
+    secretName: ""
+    key: CORAL_RUN_EXECUTOR_TOKEN
+  # During a rotation, Coral also accepts this token. Set a key to turn it on.
+  previousToken:
+    secretName: ""
+    key: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 2Gi
+    limits:
+      memory: 2Gi
+  probes:
+    readiness:
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 3
+    liveness:
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 6

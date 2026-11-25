@@ -1,0 +1,33 @@
+suite: values
+release:
+  name: coral-test
+values:
+  - ../ci/default-values.yaml
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: renders with the least values
+    asserts:
+      - hasDocuments:
+          count: 1
+
+  - it: fails on an unknown key
+    set:
+      replicas: 3
+    asserts:
+      - failedTemplate:
+          errorPattern: additional properties 'replicas' not allowed
+
+  - it: fails on an unknown nested key
+    set:
+      coral.extraEnv: []
+    asserts:
+      - failedTemplate:
+          errorPattern: additional properties 'extraEnv' not allowed
+
+  - it: fails without host
+    set:
+      host: ""
+    asserts:
+      - failedTemplate:
+          errorPattern: /host

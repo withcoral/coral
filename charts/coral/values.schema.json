@@ -1,0 +1,370 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "host",
+    "config"
+  ],
+  "properties": {
+    "host": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(:[0-9]{1,5})?$",
+      "minLength": 1,
+      "description": "The UI's host name, with no scheme or path."
+    },
+    "hosts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "auth": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(:[0-9]{1,5})?$"
+        },
+        "mcp": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9.]*[a-z0-9])?(:[0-9]{1,5})?$"
+        }
+      }
+    },
+    "global": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "imageRegistry": {
+          "type": "string"
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "databaseUrl",
+        "credentialsKey",
+        "sessionSigningKey",
+        "oidcClientSecret",
+        "webSessionSecret",
+        "license"
+      ],
+      "properties": {
+        "databaseUrl": {
+          "$ref": "#/$defs/secret"
+        },
+        "credentialsKey": {
+          "$ref": "#/$defs/secret"
+        },
+        "sessionSigningKey": {
+          "$ref": "#/$defs/secret"
+        },
+        "oidcClientSecret": {
+          "$ref": "#/$defs/secret"
+        },
+        "webSessionSecret": {
+          "$ref": "#/$defs/secret"
+        },
+        "license": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "enabled",
+            "secretName",
+            "key"
+          ],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "secretName": {
+              "type": "string"
+            },
+            "key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "description": "Coral's config.toml, merged on top of the chart's settings.",
+      "required": [
+        "auth"
+      ],
+      "properties": {
+        "auth": {
+          "type": "object",
+          "required": [
+            "provider"
+          ],
+          "properties": {
+            "provider": {
+              "type": "object",
+              "required": [
+                "issuer",
+                "client_id"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "coral": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image",
+        "replicas",
+        "resources",
+        "probes"
+      ],
+      "properties": {
+        "image": {
+          "$ref": "#/$defs/image"
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
+        },
+        "probes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "startup",
+            "readiness",
+            "liveness"
+          ],
+          "properties": {
+            "startup": {
+              "$ref": "#/$defs/probe"
+            },
+            "readiness": {
+              "$ref": "#/$defs/probe"
+            },
+            "liveness": {
+              "$ref": "#/$defs/probe"
+            }
+          }
+        }
+      }
+    },
+    "web": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image",
+        "replicas",
+        "resources",
+        "probes"
+      ],
+      "properties": {
+        "image": {
+          "$ref": "#/$defs/image"
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
+        },
+        "probes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "readiness",
+            "liveness"
+          ],
+          "properties": {
+            "readiness": {
+              "$ref": "#/$defs/probe"
+            },
+            "liveness": {
+              "$ref": "#/$defs/probe"
+            }
+          }
+        },
+        "agentsWithAvailablePlugins": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32
+          }
+        }
+      }
+    },
+    "runExecutors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "replicas",
+        "maxRunsHeld",
+        "terminationGracePeriodSeconds",
+        "token",
+        "previousToken",
+        "resources",
+        "probes"
+      ],
+      "properties": {
+        "replicas": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxRunsHeld": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "terminationGracePeriodSeconds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "token": {
+          "$ref": "#/$defs/secret"
+        },
+        "previousToken": {
+          "$ref": "#/$defs/secret"
+        },
+        "resources": {
+          "$ref": "#/$defs/resources"
+        },
+        "probes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "readiness",
+            "liveness"
+          ],
+          "properties": {
+            "readiness": {
+              "$ref": "#/$defs/probe"
+            },
+            "liveness": {
+              "$ref": "#/$defs/probe"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "secret": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "secretName",
+        "key"
+      ],
+      "properties": {
+        "secretName": {
+          "type": "string"
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registry",
+        "repository",
+        "tag",
+        "digest",
+        "pullPolicy"
+      ],
+      "properties": {
+        "registry": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^(|sha256:[0-9a-f]{64})$"
+        },
+        "pullPolicy": {
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          }
+        }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "periodSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "failureThreshold": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}
