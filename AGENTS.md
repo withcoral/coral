@@ -305,11 +305,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   its primitives when a UI needs a missing capability; app-specific modules
   compose Wax and own layout, not a parallel set of controls or theme values.
 - `apps/reef/app/wax` is also the npm package `@withcoral/wax`: other apps install
-  that folder as source. A Wax file imports another Wax file by a relative path,
-  and a helper or an asset that Wax needs lives in that folder. Reef imports Wax
-  through `@/wax`. Declare a package that Wax imports in `app/wax/package.json` at
-  Reef's range, and list a run-time import in `app/wax/vite.js`.
-  `app/__tests__/architecture.test.ts` checks all three.
+  that folder as source, so Wax imports nothing outside it. Put a helper or an
+  asset that Wax needs in that folder. `app/__tests__/architecture.test.ts`
+  checks Wax's imports, its `package.json` and its `vite.js`, and names each fix.
 - When a table row opens a page, pass the path to `Table.Row`'s `to` so a
   click anywhere in the row opens it, and link its name with `Table.RowLink`.
   Do not make only the name a link, or style the name as a link.

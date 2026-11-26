@@ -12,7 +12,8 @@
   "files": [
     "**",
     "!**/*.test.ts",
-    "!**/*.test.tsx"
+    "!**/*.test.tsx",
+    "!**/test-support"
   ],
   "publishConfig": {
     "access": "public",

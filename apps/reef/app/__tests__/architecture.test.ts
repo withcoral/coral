@@ -639,6 +639,8 @@ it('guards every route action with mutationForm or names why not', () => {
 describe('the Wax package', () => {
   const waxDir = path.join(appDir, 'wax')
   const waxFiles = filesUnder(waxDir, (name) => /\.(?:tsx?|css)$/.test(name))
+  const inFolder = (file: string, name: string) =>
+    path.relative(waxDir, file).split(path.sep).includes(name)
 
   it('imports nothing outside itself', () => {
     const violations = waxFiles.flatMap((file) =>
@@ -667,9 +669,10 @@ describe('the Wax package', () => {
     const declared = { ...wax.dependencies, ...wax.peerDependencies }
     const installed = { ...reef.dependencies, ...reef.devDependencies }
 
-    // The unit tests stay out of the tarball, so what only they import is not declared.
+    // The unit tests stay out of the tarball (`files` in the manifest), so what only
+    // they import is not declared.
     const undeclared = waxFiles
-      .filter((file) => !/\.test\.tsx?$/.test(file))
+      .filter((file) => !/\.test\.tsx?$/.test(file) && !inFolder(file, 'test-support'))
       .flatMap((file) =>
         moduleSpecifiers(file)
           .map(({ specifier }) => packageName(specifier))
@@ -686,7 +689,7 @@ describe('the Wax package', () => {
     // An app builds Wax against its own lockfile, so Wax states the versions it was
     // tested with. A package that Reef pins to one version takes a caret, or an app
     // would have to move that package in the same change as Wax.
-    const tested = Object.fromEntries(
+    const expected = Object.fromEntries(
       Object.keys(declared).map((name) => [
         name,
         /^\d/.test(installed[name] ?? '') ? `^${installed[name]}` : installed[name],
@@ -696,7 +699,7 @@ describe('the Wax package', () => {
       declared,
       'Each range in app/wax/package.json must equal the range in apps/reef/package.json. ' +
         'Change both files together.',
-    ).toEqual(tested)
+    ).toEqual(expected)
   })
 
   it('lists each run-time import for the dev server of an app', () => {
@@ -704,7 +707,7 @@ describe('the Wax package', () => {
       // A test and a story never reach an app's pages, and a `.css.ts` file runs at
       // build time and leaves only class names.
       .filter((file) => /\.tsx?$/.test(file) && !/\.(?:test|stories|css|d)\.tsx?$/.test(file))
-      .filter((file) => !within(file, path.join(waxDir, 'storybook')))
+      .filter((file) => !inFolder(file, 'storybook') && !inFolder(file, 'test-support'))
       .flatMap((file) => moduleSpecifiers(file))
       .filter(({ runtime, specifier }) => runtime && packageName(specifier) !== null)
       .map(({ specifier }) => specifier)
@@ -772,9 +775,13 @@ function moduleSpecifiers(file: string): { runtime: boolean; specifier: string }
       found.push({ runtime: !typeOnly, specifier: node.source.value })
     },
     ExportNamedDeclaration({ node }) {
-      if (node.source) {
-        found.push({ runtime: node.exportKind !== 'type', specifier: node.source.value })
-      }
+      if (!node.source) return
+      const typeOnly =
+        node.exportKind === 'type' ||
+        node.specifiers.every(
+          (specifier) => specifier.type === 'ExportSpecifier' && specifier.exportKind === 'type',
+        )
+      found.push({ runtime: !typeOnly, specifier: node.source.value })
     },
     ExportAllDeclaration({ node }) {
       found.push({ runtime: node.exportKind !== 'type', specifier: node.source.value })
