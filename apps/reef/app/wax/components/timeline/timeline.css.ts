@@ -180,6 +180,8 @@ export const afterOpen = style({
 
 const markBase = style({
   position: 'absolute',
+  // Marks remain above a selected or keyboard-focused bar's ring and hit target.
+  zIndex: 5,
   insetBlock: 0,
   marginBlock: 'auto',
   left,
