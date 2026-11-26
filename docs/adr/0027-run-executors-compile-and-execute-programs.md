@@ -461,9 +461,9 @@ and the options not chosen.
   the one bound.
 - **A new claim at reconnect as a fence.** It would drop every result the old Coral Instance was about to commit.
 - **A code of its own for the lost answer.** `upstream_incomplete` is the state every tool already has.
-- **A Run Executor's telemetry only through Coral**, as numbers on the messages it already sends or as OTLP batches
-  relayed on the link. Each needs a link change for every new number, and a relay makes Coral export content it did
-  not name. A Run Executor's own exporter changes nothing on the link.
+- **Telemetry sent to Coral on the link**, as numbers added to a Run Executor's messages or as OTLP batches that Coral
+  relays. A Run Executor exports its own telemetry directly instead, and nothing about it travels on the link. Numbers
+  on the link would change the link for each new one, and a relay would make Coral export content it did not name.
 - **Spans opened by a Run Executor.** Coral's spans already cover the load and the Program to within one message, and
   the Run Executor's metrics carry the rest.
 - **Mutual TLS or a credential per Run Executor now.** One operator-held token admits the first epic's Run Executors; a
