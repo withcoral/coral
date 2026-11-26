@@ -406,6 +406,9 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 
 - On `coral.request.duration`, `operation` is the route template or the gRPC method. An MCP tool call is `tools/call` followed by the tool's name, such as `tools/call exec`.
 - Coral samples `coral.program.execution.heap.peak` each time a program waits and when it ends. A program that frees memory before it waits or ends shows less than its true peak.
+- `coral.run.waiting` counts the program runs that no run executor has taken yet. `coral.run.waiting.age` is the wait of the oldest of them, or zero. `coral.run.held` counts the runs that a run executor has taken and that have not ended.
+- Each Coral process reads these three gauges from the same database every 15 seconds. Take their maximum across processes, not their sum.
+- `coral.run_executor.linked` counts the run executors connected to this Coral process. A run executor that reconnects can count twice for a moment. `coral.run_executor.kind` is `local` for a run executor that Coral starts itself and `dialed` for one that you start with `coral run-executor`.
 
 | Metric                                   | Kind      | Attributes                                                                   |
 | ---------------------------------------- | --------- | ---------------------------------------------------------------------------- |
@@ -419,6 +422,10 @@ With `endpoint` set, you receive the `coral.*` metrics below. Their names, units
 | `coral.run.duration`                     | Histogram | `run.status`                                                                 |
 | `coral.run.phase.duration`               | Histogram | `run.phase`                                                                  |
 | `coral.run.active`                       | Gauge     | None                                                                         |
+| `coral.run.waiting`                      | Gauge     | None                                                                         |
+| `coral.run.waiting.age`                  | Gauge     | None                                                                         |
+| `coral.run.held`                         | Gauge     | None                                                                         |
+| `coral.run_executor.linked`              | Gauge     | `coral.run_executor.kind`                                                    |
 | `coral.invocation.started`               | Counter   | `provider.protocol`, `tool.effect`                                           |
 | `coral.invocation.ended`                 | Counter   | `provider.protocol`, `tool.effect`, `invocation.result_kind`, `failure.code` |
 | `coral.invocation.duration`              | Histogram | `provider.protocol`, `tool.effect`, `invocation.result_kind`                 |

@@ -30,7 +30,7 @@ pub(crate) struct Claimed {
 /// release's Run Owner's Run is never one: it holds a worker claim from
 /// its acceptance until its start writes the execution claim. The state is
 /// a literal, so every plan can use the partial index of waiting Runs.
-fn waiting() -> Condition {
+pub(super) fn waiting() -> Condition {
     super::running_without_worker_claim()
         .add(Expr::col(ProgramRunRecords::ExecutionClaimId).is_null())
         .add(Expr::col(ProgramRunRecords::ExecutionStartedAtUnixNanos).is_null())

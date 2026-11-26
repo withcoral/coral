@@ -790,6 +790,19 @@ fn start_passes(
             async move { sweep_runs(runs.sweep_runs()).await }
         });
     }
+    {
+        let runs = runs.clone();
+        let clock = Arc::clone(clock);
+        let schedule = Schedule::every(coral_run::RUN_QUEUE_INTERVAL);
+        passes.start("run_queue", schedule, move || {
+            let (runs, clock) = (runs.clone(), Arc::clone(&clock));
+            async move {
+                runs.read_queue(clock.as_ref())
+                    .await
+                    .map_err(|error| error.code())
+            }
+        });
+    }
     let accounts = accounts.clone();
     let schedule = Schedule::every(DEVICE_RECOVERY_INTERVAL);
     let recovery_clock = Arc::clone(clock);

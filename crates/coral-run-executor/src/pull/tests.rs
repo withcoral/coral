@@ -1000,3 +1000,57 @@ async fn a_draining_link_ends_its_pull_streams_and_opens_no_new_one() {
     assert!(link.streams.held().is_empty(), "the refusal holds nothing");
     assert!(!link.streams.has_room());
 }
+
+/// `coral.run_executor.linked` counts each pull stream this Coral Instance
+/// holds by the kind of credential that admitted it, a closing one too,
+/// until its holder ends it.
+#[test]
+fn the_linked_gauge_counts_each_held_stream_by_kind() {
+    let capture = coral_telemetry::testing::MetricCapture::default();
+    let _measured = tracing::subscriber::set_default(capture.subscriber());
+    let linked = || {
+        let points = capture.named("coral.run_executor.linked");
+        let of = |kind: &str| {
+            points
+                .iter()
+                .filter(|point| {
+                    point
+                        .attributes
+                        .get("coral.run_executor.kind")
+                        .map(String::as_str)
+                        == Some(kind)
+                })
+                .map(|point| point.value)
+                .sum::<f64>()
+        };
+        (of("local"), of("dialed"))
+    };
+    let before = linked();
+    let delta = || {
+        let now = linked();
+        (now.0 - before.0, now.1 - before.1)
+    };
+    let streams = PullStreams::default();
+    let child = Credentials::new([]).admit_local(&Token::new(LOCAL.to_owned()).unwrap());
+    let (outbound, _local_sent) = mpsc::unbounded_channel();
+    let local = streams.insert(
+        "a-local-child".to_owned(),
+        (Kind::Local, child.id()),
+        1,
+        outbound,
+    );
+    let (dialed, _dialed_sent) = dialed_stream(&streams, 1);
+    assert_eq!(delta(), (1.0, 1.0), "one held stream of each kind");
+
+    streams.drain();
+    assert_eq!(delta(), (1.0, 1.0), "a closing stream is still held");
+
+    streams.end(local, None);
+    assert_eq!(
+        delta(),
+        (0.0, 1.0),
+        "an ended stream leaves its kind's count"
+    );
+    streams.end_scripted(dialed);
+    assert_eq!(delta(), (0.0, 0.0));
+}
