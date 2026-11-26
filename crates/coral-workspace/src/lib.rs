@@ -1050,14 +1050,6 @@ async fn record_event(
     workspace_id: &WorkspaceId,
     detail: EventDetail<'_>,
 ) -> Result<(), Error> {
-    management::record_change(
-        transaction,
-        context,
-        workspace_id,
-        detail.target_kind,
-        detail.target_id,
-    )
-    .await?;
     repository::insert_lifecycle_event(
         transaction,
         repository::NewLifecycleEvent {

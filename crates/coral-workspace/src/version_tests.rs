@@ -1,6 +1,7 @@
 //! The version each resource's row keeps, which Coral shows as the etag and
 //! checks a change against, beside the table of concurrency metadata that
-//! Coral still writes for a Coral that reads it.
+//! held the etag before. Coral neither reads nor writes that table: it keeps
+//! what a Coral that still writes it left there.
 use std::collections::BTreeMap;
 
 use coral_db::{Transaction, UnixNanos, Version};
@@ -102,7 +103,7 @@ impl Resource {
     }
 
     /// Reads the resource's row in the table of concurrency metadata, past
-    /// the Interface: Coral writes that table and reads it nowhere.
+    /// the Interface: Coral names that table nowhere.
     async fn metadata(&self, tx: &mut Transaction<'_>) -> Option<StoredMetadata> {
         let mut statement = Query::select();
         statement
@@ -130,8 +131,9 @@ impl Resource {
         })
     }
 
-    /// Reads what Coral keeps of the resource for a conflict check: its own
-    /// on the row, and that of a Coral which still reads the metadata table.
+    /// Reads what the database keeps of the resource: the row, which Coral
+    /// checks a change against, and the row in the metadata table, which only
+    /// a Coral that still writes that table changes.
     async fn kept(&self, tx: &mut Transaction<'_>) -> Kept {
         Kept {
             metadata: self.metadata(tx).await,
@@ -141,7 +143,7 @@ impl Resource {
 }
 
 /// The etag that the table of concurrency metadata holds for one Workspace
-/// Membership, which a Coral that still reads the table shows.
+/// Membership, which a release that read the table showed.
 pub(super) async fn membership_metadata_etag(
     module: &WorkspaceModule,
     workspace: &WorkspaceId,
@@ -155,8 +157,31 @@ pub(super) async fn membership_metadata_etag(
     metadata.map(|metadata| metadata.etag)
 }
 
+/// Every row of the table of concurrency metadata, in the order of its key,
+/// read past the Interface: its key, then its etag and its two times.
+pub(super) async fn metadata_table(
+    module: &WorkspaceModule,
+) -> Vec<(String, String, String, String, UnixNanos, UnixNanos)> {
+    let key = ["workspace_id", "kind", "target_id"];
+    let mut statement = Query::select();
+    statement
+        .columns(key.map(Alias::new))
+        .columns(["etag", "created_at", "updated_at"].map(Alias::new))
+        .from(Alias::new("workspace_resource_metadata"));
+    for column in key {
+        statement.order_by(Alias::new(column), sea_query::Order::Asc);
+    }
+    let mut tx = module.database.begin_read_snapshot().await.unwrap();
+    let rows = tx
+        .fetch_all(statement)
+        .await
+        .expect("read the metadata table");
+    tx.commit().await.unwrap();
+    rows
+}
+
 /// The row of one resource in the table of concurrency metadata: what a
-/// Coral that still reads the table shows and checks.
+/// Coral that still writes the table left there.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StoredMetadata {
     etag: String,
@@ -183,9 +208,9 @@ impl StoredRow {
     }
 }
 
-/// What Coral keeps of one resource for a conflict check. A resource that
-/// was never created has neither part, and one whose row is gone keeps its
-/// metadata.
+/// What the database keeps of one resource. A resource that was never
+/// created has neither part, and one whose row is gone keeps the metadata
+/// that another Coral wrote for it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Kept {
     metadata: Option<StoredMetadata>,
@@ -200,22 +225,19 @@ impl Kept {
     }
 }
 
-/// What one accepted change does to one resource. "A new etag" is a new one
-/// in the table of concurrency metadata.
+/// What one accepted change does to the row of one resource. No change
+/// moves the resource's row in the table of concurrency metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Move {
-    /// The resource's first row, at the first version, with a new etag.
+    /// The resource's first row, at the first version.
     Created,
-    /// A change to the row: its version rises by one, and the etag is new.
+    /// A change to the row: its version rises by one.
     Raised,
-    /// The Agent's row stays, marked deleted, at the next version and with a
-    /// new etag. No inspection shows it any more.
+    /// The Agent's row stays, marked deleted, at the next version. No
+    /// inspection shows it any more.
     MarkedDeleted,
-    /// The row is gone, and the etag is new.
+    /// The row is gone.
     Removed,
-    /// The Registration's row went with its Agent. That is the Agent's
-    /// change: the Registration's metadata is as it was.
-    RemovedWithItsAgent,
 }
 
 /// One change to a Workspace, a Membership, an Agent or a Registration.
@@ -287,7 +309,7 @@ enum StaleEtag {
     /// A version that the row is not at.
     Version,
     /// A UUID: the etag that Coral showed before each row kept its version,
-    /// and that a Coral which still reads the metadata table shows now.
+    /// which the metadata table still holds.
     Uuid,
 }
 
@@ -305,9 +327,9 @@ impl StaleEtag {
     /// An etag of this form that is not the resource's.
     fn of(self, kept: &Kept) -> String {
         match self {
-            // The etag that the metadata table holds for the resource now: a
-            // client that read it from a Coral which still shows it sends it
-            // here. It is current there and stale here.
+            // The etag that the metadata table holds for the resource now,
+            // which a page that was open before each row kept its version
+            // sends. A check that read the table would pass it.
             Self::Uuid => kept.etag().expect("the resource has metadata").to_owned(),
             Self::Version => {
                 let current = kept.row.expect("the resource has a row").version.get();
@@ -423,7 +445,34 @@ impl Changes {
         resources
     }
 
-    /// What Coral keeps of every resource, in one read snapshot.
+    /// Writes a row in the table of concurrency metadata for each resource
+    /// that has a row of its own and none there, as a Coral that still
+    /// writes the table does with every change. This Coral must leave it.
+    async fn write_metadata_as_another_coral(&self) {
+        let kept = self.kept().await;
+        for (name, resource) in self.resources() {
+            let kept = kept.get(name).expect("every resource is read");
+            if kept.row.is_none() || kept.metadata.is_some() {
+                continue;
+            }
+            let (workspace, kind, target, etag) = (
+                resource.workspace(),
+                resource.kind().as_storage_str(),
+                resource.target_id(),
+                uuid::Uuid::new_v4(),
+            );
+            self.database
+                .execute_fixture_sql(&format!(
+                    "INSERT INTO workspace_resource_metadata \
+                         (workspace_id, kind, target_id, etag, created_at, updated_at) \
+                     VALUES ('{workspace}', '{kind}', '{target}', '{etag}', 5, 5)"
+                ))
+                .await
+                .expect("write the metadata row of another Coral");
+        }
+    }
+
+    /// What the database keeps of every resource, in one read snapshot.
     async fn kept(&self) -> BTreeMap<&'static str, Kept> {
         let mut tx = self.module.database.begin_read_snapshot().await.unwrap();
         let mut kept = BTreeMap::new();
@@ -673,14 +722,9 @@ type Case = (Step, Refusal, &'static [(&'static str, Move)]);
 
 /// Asserts what one accepted change at `at` did to one resource.
 fn assert_moved(case: &str, before: &Kept, after: &Kept, moved: Move, at: UnixNanos) {
-    // A Coral that still reads the metadata table shows and checks the etag
-    // there, so every accepted change gives the resource a new one.
-    let new_etag = || {
-        let metadata = after.metadata.as_ref().expect(case);
-        assert_ne!(Some(metadata.etag.as_str()), before.etag(), "{case}");
-        assert_eq!(metadata.updated_at, at, "{case}");
-        metadata
-    };
+    // Coral does not write the metadata table: the resource's row there is
+    // as it was, and a resource that had none has none.
+    assert_eq!(after.metadata, before.metadata, "{case}");
     match moved {
         Move::Created => {
             assert_eq!(before.row, None, "{case}");
@@ -693,7 +737,6 @@ fn assert_moved(case: &str, before: &Kept, after: &Kept, moved: Move, at: UnixNa
                 }),
                 "{case}"
             );
-            assert_eq!(new_etag().created_at, at, "{case}");
         }
         Move::Raised | Move::MarkedDeleted => {
             let row = before.row.expect(case);
@@ -706,19 +749,10 @@ fn assert_moved(case: &str, before: &Kept, after: &Kept, moved: Move, at: UnixNa
                 }),
                 "{case}"
             );
-            // The row's times are the ones the metadata table holds.
-            let metadata = new_etag();
-            assert_eq!(row.created_at, Some(metadata.created_at), "{case}");
         }
         Move::Removed => {
             assert!(before.row.is_some(), "{case}");
             assert_eq!(after.row, None, "{case}");
-            new_etag();
-        }
-        Move::RemovedWithItsAgent => {
-            assert!(before.row.is_some(), "{case}");
-            assert_eq!(after.row, None, "{case}");
-            assert_eq!(after.metadata, before.metadata, "{case}");
         }
     }
 }
@@ -739,19 +773,14 @@ fn assert_shown_as_stored(
     assert_eq!(shown, &rows, "{case}");
 }
 
-/// Takes every step, each refused first and then accepted. A step that
-/// checks an etag is refused with a stale one of `stale` form, and accepted
-/// with the etag that the inspection of its resource shows. A refused step
-/// moves nothing. An accepted step raises the version on the row of exactly
-/// the resources it changes by one, which is what each inspection then
-/// shows, and gives each of them a new etag in the metadata table.
+/// Every change of a Workspace, a Membership, an Agent and a Registration,
+/// in an order in which each one can be taken.
 #[expect(
     clippy::too_many_lines,
     reason = "one table names every change and what each one moves"
 )]
-async fn every_change_moves_its_resources_and_no_other(stale: StaleEtag) {
-    let etag_mismatch: fn(&Error) -> bool = |error| matches!(error, Error::EtagMismatch);
-    let cases: [Case; 17] = [
+fn cases() -> [Case; 17] {
+    [
         (
             Step::Rename("Renamed"),
             Refusal::StaleEtag,
@@ -835,10 +864,7 @@ async fn every_change_moves_its_resources_and_no_other(stale: StaleEtag) {
         (
             Step::DeleteAgent,
             Refusal::StaleEtag,
-            &[
-                (AGENT, Move::MarkedDeleted),
-                (REGISTRATION, Move::RemovedWithItsAgent),
-            ],
+            &[(AGENT, Move::MarkedDeleted), (REGISTRATION, Move::Removed)],
         ),
         (
             Step::RemoveMembership,
@@ -855,13 +881,37 @@ async fn every_change_moves_its_resources_and_no_other(stale: StaleEtag) {
                 (HEIR_MEMBERSHIP, Move::Created),
             ],
         ),
-    ];
+    ]
+}
+
+/// Takes every step, each refused first and then accepted. A step that
+/// checks an etag is refused with a stale one of `stale` form, and accepted
+/// with the etag that the inspection of its resource shows. A refused step
+/// moves nothing. An accepted step raises the version on the row of exactly
+/// the resources it changes by one, which is what each inspection then
+/// shows. Before each step, another Coral has written the metadata table for
+/// every resource that exists, and no step, refused or accepted, changes a
+/// row of that table.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one loop refuses each change, accepts it, and compares what each of the two moved"
+)]
+async fn every_change_moves_its_resources_and_no_other(stale: StaleEtag) {
+    let etag_mismatch: fn(&Error) -> bool = |error| matches!(error, Error::EtagMismatch);
     let mut changes = Changes::new().await;
+    assert_eq!(
+        metadata_table(&changes.module).await,
+        [],
+        "the creation of a Workspace and of its Owner's Membership writes no row of the \
+         metadata table"
+    );
     let mut at = 100;
     // The Agent's row, once it is marked deleted.
     let mut hidden: Vec<&'static str> = Vec::new();
-    for (step, refusal, moves) in cases {
+    for (step, refusal, moves) in cases() {
         let case = format!("{stale:?}: {step:?}");
+        changes.write_metadata_as_another_coral().await;
+        let table_before = metadata_table(&changes.module).await;
         let before = changes.kept().await;
         let shown_before = changes.shown().await;
         assert_shown_as_stored(&case, &before, &shown_before, &hidden);
@@ -921,6 +971,11 @@ async fn every_change_moves_its_resources_and_no_other(stale: StaleEtag) {
             shown_before,
             "{case}: a refused change shows nothing new"
         );
+        assert_eq!(
+            metadata_table(&changes.module).await,
+            table_before,
+            "{case}: a refused change writes no row of the metadata table"
+        );
 
         at += 10;
         changes
@@ -943,6 +998,11 @@ async fn every_change_moves_its_resources_and_no_other(stale: StaleEtag) {
             }
         }
         assert_shown_as_stored(&case, &after, &changes.shown().await, &hidden);
+        assert_eq!(
+            metadata_table(&changes.module).await,
+            table_before,
+            "{case}: an accepted change writes no row of the metadata table"
+        );
     }
 }
 
@@ -950,8 +1010,8 @@ async fn every_change_moves_its_resources_and_no_other(stale: StaleEtag) {
 // row; a change that leaves the version, so that the next save with the etag
 // read before it passes; a change that moves another resource's version; a
 // stale version that passes; a refused change that moves a row; and a change
-// that gives the resource no new etag in the metadata table, so that a Coral
-// which still reads that table passes a stale save.
+// that writes, changes or removes a row of the metadata table, which Coral
+// has stopped using and a later step drops.
 #[tokio::test]
 async fn every_change_raises_the_version_shown_by_one_and_refuses_a_stale_version() {
     every_change_moves_its_resources_and_no_other(StaleEtag::Version).await;
@@ -966,9 +1026,43 @@ async fn every_change_refuses_the_uuid_etag_of_the_metadata_table_as_stale() {
     every_change_moves_its_resources_and_no_other(StaleEtag::Uuid).await;
 }
 
+// Catches: a change that names the table of concurrency metadata, to read it
+// or to write it. A later step drops the table while this Coral still
+// serves, and a statement that names it fails from then on.
+#[tokio::test]
+async fn every_change_is_accepted_without_the_metadata_table() {
+    let mut changes = Changes::new().await;
+    changes
+        .database
+        .execute_fixture_sql("DROP TABLE workspace_resource_metadata")
+        .await
+        .expect("drop the metadata table");
+    let owner = changes.owner.clone();
+    for (step, ..) in cases() {
+        changes
+            .take(step, &change(owner.clone(), 20, 'a'), &IfMatch::any())
+            .await
+            .unwrap_or_else(|error| panic!("{step:?}: {error:?}"));
+    }
+    let (module, workspace) = (&changes.module, &changes.workspace);
+    let context = change(owner, 30, 'b');
+    module
+        .create(&context, WorkspaceDisplayName::parse("Third").unwrap())
+        .await
+        .expect("create a Workspace");
+    module
+        .grant_secret_store(&context, &RequestId::generate(), workspace, "platform")
+        .await
+        .expect("grant a Secret Store");
+    module
+        .revoke_secret_store(&context, &RequestId::generate(), workspace, "platform")
+        .await
+        .expect("revoke a Secret Store");
+}
+
 // Catches: an inspection or a list that reads a resource's etag or times
-// from the metadata table. Without its row there each one fails as corrupt,
-// and once Coral stops writing the table each one shows a stale etag.
+// from the metadata table. No resource here has a row there, so such a read
+// finds nothing to show.
 #[tokio::test]
 async fn inspections_and_lists_show_each_row_without_its_metadata_table_row() {
     let mut changes = Changes::new().await;
@@ -986,14 +1080,10 @@ async fn inspections_and_lists_show_each_row_without_its_metadata_table_row() {
             .await
             .unwrap_or_else(|error| panic!("{step:?}: {error:?}"));
     }
-    changes
-        .database
-        .execute_fixture_sql("DELETE FROM workspace_resource_metadata")
-        .await
-        .expect("delete every row of the metadata table");
+    // No change wrote the metadata table, so no read takes anything from it.
+    assert_eq!(metadata_table(&changes.module).await, []);
 
     let kept = changes.kept().await;
-    assert!(kept.values().all(|kept| kept.metadata.is_none()));
     let row = |name: &str| kept.get(name).and_then(|kept| kept.row).expect("a row");
     let stored = |version, created_at, updated_at| StoredRow {
         version: Version::new(version).unwrap(),
@@ -1271,10 +1361,10 @@ fn agent_created_before_the_row_versions(
     )
 }
 
-/// The statements that a Coral which still shows the metadata table's etag
-/// sends to change the Agent and its Registration: it raises the version on
-/// each row, dates the change there, and gives each a new etag in the table.
-fn agent_changed_by_a_coral_that_shows_the_metadata_etag(
+/// The statements that a Coral which still writes the metadata table sends
+/// to change the Agent and its Registration: it raises the version on each
+/// row, dates the change there, and gives each a new etag in the table.
+fn agent_changed_by_a_coral_that_writes_the_metadata_table(
     workspace: &WorkspaceId,
     agent: &PrincipalId,
     registration: &AgentRegistrationId,
@@ -1298,10 +1388,10 @@ fn agent_changed_by_a_coral_that_shows_the_metadata_etag(
 
 // Catches: a row without times, as a Coral from before the row versions left
 // it, read as corrupt by an inspection or a list; a change by a Coral that
-// still shows the metadata table's etag that this Coral does not see, so that
-// it passes the save read before it; the etag that Coral shows accepted here;
-// and a change here that leaves the metadata table's etag, so that the other
-// Coral passes a stale save.
+// still writes the metadata table that this Coral does not see, so that it
+// passes the save read before it; the etag that the table holds accepted
+// here; and a change here that writes the row the other Coral left in the
+// table.
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
@@ -1376,7 +1466,7 @@ async fn an_agent_without_times_is_shown_and_another_corals_change_shows_in_its_
     assert_eq!(shown().await, [at(1, None); 2]);
 
     database
-        .execute_fixture_sql(&agent_changed_by_a_coral_that_shows_the_metadata_etag(
+        .execute_fixture_sql(&agent_changed_by_a_coral_that_writes_the_metadata_table(
             workspace,
             &agent,
             &registration,
@@ -1388,7 +1478,8 @@ async fn an_agent_without_times_is_shown_and_another_corals_change_shows_in_its_
     let after_the_other_coral = kept().await;
 
     // The version read before the other Coral's change is stale, and so is
-    // the etag that Coral shows now: only the version on the row passes.
+    // the etag that Coral wrote in the table: only the version on the row
+    // passes.
     let stale = change(owner.clone(), 70, '2');
     let first = IfMatch::version(Version::FIRST);
     for (case, agent_etag, registration_etag) in [
@@ -1424,9 +1515,9 @@ async fn an_agent_without_times_is_shown_and_another_corals_change_shows_in_its_
     }
 
     // The etag this Coral shows is current. Its change raises each version
-    // and dates the change on the row, which still has no creation time, and
-    // gives each resource a new etag in the metadata table for the other
-    // Coral.
+    // and dates the change on the row, which still has no creation time. The
+    // metadata table keeps what the other Coral wrote: its etag and the time
+    // of its change.
     let [agent_shown, registration_shown] = shown().await;
     let current = change(owner.clone(), 80, '3');
     module
@@ -1451,12 +1542,16 @@ async fn an_agent_without_times_is_shown_and_another_corals_change_shows_in_its_
         .await
         .expect("enable the Registration of an older Coral");
     assert_eq!(shown().await, [at(3, Some(80)); 2]);
-    for ((after, before), earlier) in kept().await.iter().zip(&after_the_other_coral).zip(changed) {
+    for (after, etag) in kept().await.iter().zip(changed) {
         assert_eq!(after.row.map(StoredRow::shown), Some(at(3, Some(80))));
-        let etag = after.etag().expect("the metadata row");
-        assert_ne!(Some(etag), before.etag());
-        let etag = uuid::Uuid::parse_str(etag).expect("the metadata table's etag is a UUID");
-        assert_ne!(etag, earlier);
+        assert_eq!(
+            after.metadata,
+            Some(StoredMetadata {
+                etag: etag.to_string(),
+                created_at: UnixNanos::new(50),
+                updated_at: UnixNanos::new(60),
+            })
+        );
     }
 }
 
