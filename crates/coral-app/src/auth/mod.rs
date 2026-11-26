@@ -2,6 +2,7 @@ mod authorization_server;
 mod config;
 mod error;
 mod id_token;
+mod oidc_mode;
 mod provider_client;
 mod request;
 mod sealed_handshake;
