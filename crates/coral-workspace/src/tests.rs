@@ -1597,7 +1597,8 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
     .expect("the Organization Owner leaves one Workspace");
     // A release from before the backfill kept a row in the table of
     // concurrency metadata for each Membership, and left it there when the
-    // Membership was removed. This version does not write that table.
+    // Membership was removed. This version does not write that table. The
+    // backfill writes those rows, and a later step drops the table.
     for workspace in [member, left] {
         fixture
             .execute_fixture_sql(&format!(
@@ -1611,12 +1612,6 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
             .await
             .expect("write the metadata row of an earlier release");
     }
-    // The etag that a release from before the backfill showed: the one in
-    // the table of concurrency metadata.
-    let member_etag_before =
-        versions::membership_metadata_etag(module, member.id(), organization_owner.user_id())
-            .await
-            .expect("the Member's metadata row");
     let mut events_before = Vec::new();
     for workspace in &workspaces {
         events_before.push(
@@ -1683,14 +1678,6 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
         assert_eq!(event.authority_source(), AuthoritySource::OrganizationOwner);
         assert_eq!(event.target_id(), organization_owner.user_id().as_str());
     }
-    let member_etag_after =
-        versions::membership_metadata_etag(module, member.id(), organization_owner.user_id())
-            .await
-            .expect("the promoted Member's metadata row");
-    assert_ne!(
-        member_etag_before, member_etag_after,
-        "a promotion invalidates the Membership's earlier etag"
-    );
     // The backfilled Membership is ordinary: its holder can leave again, with
     // the etag a client reads for it as the concurrency precondition.
     let (_, backfilled, _) = module

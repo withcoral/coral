@@ -1,0 +1,20 @@
+-- Drops `workspace_resource_metadata`, which no change and no read of a
+-- resource has used since step 0090. A Workspace, a Workspace Membership, an
+-- Agent and an Agent Registration each keep their version and their times on
+-- their own row. The step before this one took from the table the last
+-- times that a row lacked.
+--
+-- Nothing else names the table: no foreign key refers to it, and it has no
+-- index but its primary key and no view.
+--
+-- The table refers to `workspace_records`. On Postgres, a drop removes that
+-- foreign key too, and so takes the strongest lock on `workspace_records`
+-- until this step commits. The drop waits for every transaction that has
+-- read or held a Workspace row, and a transaction that reads one meanwhile
+-- waits for the drop. So this step holds nothing else: Postgres commits each
+-- step by itself, and this one writes no row. In one transaction with the
+-- step before, the drop would wait for a change that holds its Workspace
+-- row, while that change waits for the Agent row that the fill holds.
+--
+-- rolling-upgrade: unused since step 0090, in v1.12.0. Coral stopped reading and writing workspace_resource_metadata.
+DROP TABLE workspace_resource_metadata;
