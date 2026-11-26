@@ -1836,29 +1836,33 @@ const siteServersSetup = (errors: Record<string, string> = {}): SetupView => ({
     errors,
   },
 })
-const siteServersRecipe: RecipeConfigurationView = {
+const siteInput: RecipeConfigurationView['inputs'][number] = {
+  name: 'site',
+  label: 'Datadog site',
+  description: 'Choose the site for your account.',
+  type: 'hostname',
+  defaultValue: 'datadoghq.eu',
+  choices: ['datadoghq.com', 'datadoghq.eu'],
+}
+/** The Datadog-shaped recipe, giving the server at each index the URL `urlFor` makes. */
+const siteServersRecipeWith = (
+  urlFor: (index: number) => string,
+  inputs: RecipeConfigurationView['inputs'] = [siteInput],
+): RecipeConfigurationView => ({
   id: 'datadog_v2',
-  inputs: [
-    {
-      name: 'site',
-      label: 'Datadog site',
-      description: 'Choose the site for your account.',
-      type: 'hostname',
-      defaultValue: 'datadoghq.eu',
-      choices: ['datadoghq.com', 'datadoghq.eu'],
-    },
-  ],
+  inputs,
   suggestedMethods: ['none'],
   values: {
     authentication: 'none',
-    servers: siteServerDeclarations.map((declaration) => ({
+    servers: siteServerDeclarations.map((declaration, index) => ({
       declaration,
-      url: 'https://api.{{input.site}}',
+      url: urlFor(index),
       custom: true,
       variables: {},
     })),
   },
-}
+})
+const siteServersRecipe = siteServersRecipeWith(() => 'https://api.{{input.site}}')
 /** Every tool server holds the URL the site gives it, so each field sits in the box that scrolls. */
 export const ConfigurationDefaultServers: Story = {
   render: () => (
@@ -1887,19 +1891,7 @@ export const ConfigurationDefaultServersFixed: Story = {
     <StepperPage
       {...stepperWorkspace}
       setup={siteServersSetup()}
-      recipeConfiguration={{
-        ...siteServersRecipe,
-        inputs: [],
-        values: {
-          ...siteServersRecipe.values,
-          servers: siteServerDeclarations.map((declaration) => ({
-            declaration,
-            url: 'https://discord.com/api/v10',
-            custom: true,
-            variables: {},
-          })),
-        },
-      }}
+      recipeConfiguration={siteServersRecipeWith(() => 'https://discord.com/api/v10', [])}
     />
   ),
   parameters: workspaceEntry,
@@ -1910,18 +1902,9 @@ export const ConfigurationDefaultServersMixed: Story = {
     <StepperPage
       {...stepperWorkspace}
       setup={siteServersSetup()}
-      recipeConfiguration={{
-        ...siteServersRecipe,
-        values: {
-          ...siteServersRecipe.values,
-          servers: siteServerDeclarations.map((declaration, index) => ({
-            declaration,
-            url: index < 3 ? 'https://api.{{input.site}}' : 'https://intake.example.com',
-            custom: true,
-            variables: {},
-          })),
-        },
-      }}
+      recipeConfiguration={siteServersRecipeWith((index) =>
+        index < 3 ? 'https://api.{{input.site}}' : 'https://intake.example.com',
+      )}
     />
   ),
   parameters: workspaceEntry,

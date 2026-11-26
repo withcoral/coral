@@ -4,7 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { screen } from '@testing-library/react'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 
 import { ConfigurationStep } from './configuration-step'
 import type {
@@ -434,13 +434,18 @@ it('names no question when a boxed server does not use it', async () => {
 })
 
 // Catches: a link to the question the URLs come from that leaves focus where it
-// was, so a keyboard user still has to find the field.
+// was, so a keyboard user still has to find the field, or that leaves the field
+// under the pinned step header.
 it('moves focus to the question the default servers come from', async () => {
   await renderStep(siteRecipe, siteReview)
   const link = [...document.querySelectorAll('a')].find((a) => a.textContent === 'Site')!
+  const target = document.getElementById(link.getAttribute('href')!.slice(1))!
+  const scrollIntoView = vi.fn()
+  target.scrollIntoView = scrollIntoView
   await act(async () => link.click())
-  expect(document.activeElement?.id).toBe(link.getAttribute('href')!.slice(1))
-  expect(document.activeElement?.id).toBeTruthy()
+  expect(document.activeElement).toBe(target)
+  // In the middle of the view, where the pinned step header cannot cover it.
+  expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'center' }))
 })
 
 // Catches: a server that leaves the box, and moves the field, while the person

@@ -412,7 +412,8 @@ export function EditConfigurationPage({
   return (
     <PageLayout
       variant="wide"
-      pinnedTop
+      // The ended view has no step header to pin.
+      pinnedTop={view !== 'ended'}
       breadcrumbs={trail(
         [
           { label: 'Tools', to: toolsPath },
