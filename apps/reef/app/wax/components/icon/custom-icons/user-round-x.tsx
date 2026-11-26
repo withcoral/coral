@@ -1,6 +1,6 @@
-import type { LucideProps } from 'lucide-react'
+import type { CustomIconProps } from './props'
 
-export function UserRoundXIcon({ color = 'currentColor', size = 24, ...props }: LucideProps) {
+export function UserRoundXIcon({ color = 'currentColor', size = 24, ...props }: CustomIconProps) {
   return (
     <svg
       fill="none"

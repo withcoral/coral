@@ -305,6 +305,24 @@ describe('architecture', () => {
     ).toEqual([])
   })
 
+  it('keeps the types of lucide-react out of Wax props', () => {
+    const violations = filesUnder(path.join(appDir, 'wax'), (name) => /\.tsx?$/.test(name))
+      .filter((file) =>
+        /import\s+(?:type\s[^'"]*|\{[^}'"]*\btype\s[^}'"]*\})\s*from\s+['"]lucide-react['"]/.test(
+          fs.readFileSync(file, 'utf8'),
+        ),
+      )
+      .map((file) => path.relative(appDir, file))
+
+    expect(
+      violations,
+      "State an icon's props with CustomIconProps (wax/components/icon/custom-icons/props.ts). " +
+        "Storybook's react-docgen follows a props type to the file that declares it, and " +
+        'lucide-react resolves to one 1.2 MB bundle. Parsing it for each file that names ' +
+        'a lucide type blocks the Storybook dev server for over a minute.',
+    ).toEqual([])
+  })
+
   it('keeps components independent from route modules', () => {
     const componentFiles = [componentsDir, waxComponentsDir].flatMap((directory) =>
       filesUnder(directory, (name) => /\.tsx?$/.test(name)),

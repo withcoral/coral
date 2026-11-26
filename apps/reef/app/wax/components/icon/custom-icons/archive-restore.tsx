@@ -1,7 +1,11 @@
-import type { LucideProps } from 'lucide-react'
+import type { CustomIconProps } from './props'
 
 // One path: a translucent stroke must not darken where the arrow meets its stem.
-export function ArchiveRestoreIcon({ color = 'currentColor', size = 24, ...props }: LucideProps) {
+export function ArchiveRestoreIcon({
+  color = 'currentColor',
+  size = 24,
+  ...props
+}: CustomIconProps) {
   return (
     <svg
       fill="none"

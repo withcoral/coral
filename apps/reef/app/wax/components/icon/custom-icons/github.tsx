@@ -1,8 +1,8 @@
-import type { LucideProps } from 'lucide-react'
+import type { CustomIconProps } from './props'
 
 // The GitHub mark from Simple Icons (CC0). The padded viewBox insets it like the
 // 24px line icons around it.
-export function GitHubIcon({ color = 'currentColor', size = 24, ...props }: LucideProps) {
+export function GitHubIcon({ color = 'currentColor', size = 24, ...props }: CustomIconProps) {
   return (
     <svg
       height={size}

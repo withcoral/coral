@@ -1,8 +1,8 @@
-import type { LucideProps } from 'lucide-react'
+import type { CustomIconProps } from './props'
 
 import { theme } from '@/wax/theme/theme.css'
 
-export function SeverityModerateIcon({ size = 24, ...props }: LucideProps) {
+export function SeverityModerateIcon({ size = 24, ...props }: CustomIconProps) {
   return (
     <svg
       fill="none"

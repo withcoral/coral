@@ -1,7 +1,7 @@
-import type { LucideProps } from 'lucide-react'
+import type { CustomIconProps } from './props'
 
 // One path: a translucent stroke must not darken where the lid meets the box.
-export function ArchiveIcon({ color = 'currentColor', size = 24, ...props }: LucideProps) {
+export function ArchiveIcon({ color = 'currentColor', size = 24, ...props }: CustomIconProps) {
   return (
     <svg
       fill="none"
