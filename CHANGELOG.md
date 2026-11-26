@@ -1,5 +1,68 @@
 # Changelog
 
+## [1.11.0](https://github.com/withcoral/coral/compare/v1.10.0...v1.11.0) (2026-11-26)
+
+
+### Features
+
+* **credentials:** let an Agent's Account take Secret References ([#3374](https://github.com/withcoral/coral/issues/3374)) ([6fb153d](https://github.com/withcoral/coral/commit/6fb153dcb95fba24c1ed966e6664949d583245b3))
+* **recipes:** add the Airspeed recipes ([#3539](https://github.com/withcoral/coral/issues/3539)) ([6b62a65](https://github.com/withcoral/coral/commit/6b62a653b7db8a0eacda299e4e6a37525dfcd6b2))
+* **run:** accept Run Executors that Coral did not start ([#3407](https://github.com/withcoral/coral/issues/3407)) ([fc5a6d7](https://github.com/withcoral/coral/commit/fc5a6d7be9b446f79ed16be55f9999d6afb1fbca))
+* **run:** commit outside requests for a Run Executor's Run and wake its stream ([#3372](https://github.com/withcoral/coral/issues/3372)) ([21b499f](https://github.com/withcoral/coral/commit/21b499f2ed72c82e1cbcd2c37d073dc9e8a947ff))
+* **run:** execute every Run on a local Run Executor ([#3392](https://github.com/withcoral/coral/issues/3392)) ([e5c8bd3](https://github.com/withcoral/coral/commit/e5c8bd3779ac2dc441168dd6420074f2952ddaff))
+* **run:** run a Run Executor from the Coral image ([#3410](https://github.com/withcoral/coral/issues/3410)) ([6f67854](https://github.com/withcoral/coral/commit/6f67854db6589b3f6e3695de1c29437769305641))
+* **run:** sweep the Runs that Run Executors hold ([#3352](https://github.com/withcoral/coral/issues/3352)) ([9550af1](https://github.com/withcoral/coral/commit/9550af1fcfa04158e4d922103dcb9ff97bf8ecf4))
+* **search:** run the Embedder on more than one core with `[search] embedder_cores` ([#3389](https://github.com/withcoral/coral/issues/3389)) ([540f1bd](https://github.com/withcoral/coral/commit/540f1bdf0e086d923e5ded7393afc3fae1973438))
+* **secret-store:** read Credential Fields from AWS Secrets Manager ([#3387](https://github.com/withcoral/coral/issues/3387)) ([ff83d7e](https://github.com/withcoral/coral/commit/ff83d7e8140c58cecfffddba4908739f87d5c633))
+* **sub-agent:** answer a lead's agent call with one model call ([#3332](https://github.com/withcoral/coral/issues/3332)) ([b8c3934](https://github.com/withcoral/coral/commit/b8c3934ad3700992dfb6c6b744e8cfa638c5d33d))
+* **sub-agent:** compact a thread that nears the model's context window ([#3338](https://github.com/withcoral/coral/issues/3338)) ([40a529a](https://github.com/withcoral/coral/commit/40a529a447cd0ae3c0dda0ba760d29752b9c9125))
+* **sub-agent:** give the Sub-agent its own search tool ([#3336](https://github.com/withcoral/coral/issues/3336)) ([8bf968a](https://github.com/withcoral/coral/commit/8bf968addf1241e80cea287dd0ef940d61693011))
+* **sub-agent:** interrupt a Turn whose Coral Instance stops ([#3335](https://github.com/withcoral/coral/issues/3335)) ([95cfc0c](https://github.com/withcoral/coral/commit/95cfc0c79d8e33efc320c87deb86274afabbde10))
+* **sub-agent:** keep a model's reasoning and give it back to the same model ([#3337](https://github.com/withcoral/coral/issues/3337)) ([048e389](https://github.com/withcoral/coral/commit/048e38993299b0a2e118b0732e8f7b4f5eb2a1fb))
+* **sub-agent:** let the operator set reasoning_effort for the Sub-agent's model ([#3356](https://github.com/withcoral/coral/issues/3356)) ([e9508dd](https://github.com/withcoral/coral/commit/e9508dd77c7ef23f021e1c00085da40ecb91acd5))
+* **sub-agent:** let the Sub-agent's model run Programs with exec, wait and cancel ([#3334](https://github.com/withcoral/coral/issues/3334)) ([2dabb77](https://github.com/withcoral/coral/commit/2dabb77ef95006e54ab1e834e73c1f708d84ba6e))
+* **sub-agent:** record when each Turn starts and ends ([#3349](https://github.com/withcoral/coral/issues/3349)) ([03b6d08](https://github.com/withcoral/coral/commit/03b6d08386f5fdd511fec66ef6a4e0f1168a4fff))
+* **sub-agent:** serve Coral's agent as coral.agent, a tool of the Coral provider ([#3403](https://github.com/withcoral/coral/issues/3403)) ([467a6ad](https://github.com/withcoral/coral/commit/467a6ad2130713d5480c94ca2f2aaa1689b57edc))
+* **sub-agent:** show the lead a Sub-agent's steps and let it reply ([#3342](https://github.com/withcoral/coral/issues/3342)) ([6d05587](https://github.com/withcoral/coral/commit/6d05587241b21996e183410e0134922bfa32433d))
+* **sub-agent:** stop a Sub-agent when its Task ends, and cancel its Runs when it is canceled ([#3348](https://github.com/withcoral/coral/issues/3348)) ([086737a](https://github.com/withcoral/coral/commit/086737a0746c01d61783e09352bf8d354f3d6762))
+* **sub-agent:** support OpenAI Responses and Anthropic Messages protocols ([#3369](https://github.com/withcoral/coral/issues/3369)) ([0f3d0c3](https://github.com/withcoral/coral/commit/0f3d0c3aec8235ce03bb04c45c35f33ad6b61be4))
+* **sub-agent:** trace each Turn and count Turns, model calls, tokens and compactions ([#3340](https://github.com/withcoral/coral/issues/3340)) ([a1c6513](https://github.com/withcoral/coral/commit/a1c6513bb875a95b6baf37318ea54777291dbf8a))
+* **ui:** ask source details in a stacked dialog and show setup errors on their fields ([#3424](https://github.com/withcoral/coral/issues/3424)) ([d988fbd](https://github.com/withcoral/coral/commit/d988fbd4b34c2c42da844e8b5b0100ae9f35cb47))
+* **ui:** choose each credential's source in a table ([#3425](https://github.com/withcoral/coral/issues/3425)) ([da248c3](https://github.com/withcoral/coral/commit/da248c3f083d37594e9d9ff0a2f944c5b3c63657))
+* **ui:** polish secret stores and usage data pages ([#3421](https://github.com/withcoral/coral/issues/3421)) ([e1ff803](https://github.com/withcoral/coral/commit/e1ff80348e879f6425ab9910dc1f386356c45736))
+* **ui:** sort the agent accounts, secret stores and activity summary tables ([#3414](https://github.com/withcoral/coral/issues/3414)) ([331532c](https://github.com/withcoral/coral/commit/331532cb234254a2319c7fd54d72f8a6d238eadf))
+
+
+### Bug Fixes
+
+* **mcp:** show the required actions app from its own tool ([#3393](https://github.com/withcoral/coral/issues/3393)) ([698ba46](https://github.com/withcoral/coral/commit/698ba464ef3cb82b27cb849a2bb0a9693b8d1b4a))
+* **postgres:** start on a fresh database whose schema has default privileges ([#3536](https://github.com/withcoral/coral/issues/3536)) ([ca5e948](https://github.com/withcoral/coral/commit/ca5e948f19cde0a6cd119a40f3ef0045394f54aa))
+* **run:** compile a new Program while every Run Executor is full ([#3435](https://github.com/withcoral/coral/issues/3435)) ([6c1106f](https://github.com/withcoral/coral/commit/6c1106f312bd75cdd0ee9d066df2fddb61d7b946))
+* **run:** count the outputs a Run Executor rejects in Coral's metrics ([#3436](https://github.com/withcoral/coral/issues/3436)) ([123a6d8](https://github.com/withcoral/coral/commit/123a6d8d3f1631f0c3ad0d4c633fe0fc1e6c9836))
+* **run:** delete the Run Owner, the Run Inbox and the worker lease ([#3416](https://github.com/withcoral/coral/issues/3416)) ([fd1d7b4](https://github.com/withcoral/coral/commit/fd1d7b4fa476a7a408c0c5cf67dfdd1b676104d5))
+* **run:** end a Program's own limit or host loss in one terminal chunk, with no grace ([#3437](https://github.com/withcoral/coral/issues/3437)) ([5621f39](https://github.com/withcoral/coral/commit/5621f39e8edda2b3120d2ef4a19a6aa6f6201ce8))
+* **run:** refuse a reopen whose awaited list is out of order ([#3531](https://github.com/withcoral/coral/issues/3531)) ([2e134af](https://github.com/withcoral/coral/commit/2e134afe9cf50d3e1e81b9c8819535c7b53e4122))
+* **run:** reopen a Run whose awaited list is longer than a statement binds ([#3532](https://github.com/withcoral/coral/issues/3532)) ([525579b](https://github.com/withcoral/coral/commit/525579b8933a1ec6eae23c45dace0baf615d1004))
+* **search:** make an Authored Tool strong by a path word only when the word is rare ([#3430](https://github.com/withcoral/coral/issues/3430)) ([915e79f](https://github.com/withcoral/coral/commit/915e79fcee5fa5e53ffabd54aa64374f91a6fcb1))
+* **search:** make an Authored Tool strong by distance, and a rare path word only when it is near enough ([#3438](https://github.com/withcoral/coral/issues/3438)) ([a280f02](https://github.com/withcoral/coral/commit/a280f021cdb6feaf87cf5e68cafe53ca454396ce))
+* **search:** stop search index writes before the runtime shuts down ([#3363](https://github.com/withcoral/coral/issues/3363)) ([8d039b1](https://github.com/withcoral/coral/commit/8d039b19ceab11a58084d02a64288e6baf02d0e4))
+* **sub-agent:** give the Sub-agent end_task, and show the lead the outcome it records ([#3382](https://github.com/withcoral/coral/issues/3382)) ([0191ff8](https://github.com/withcoral/coral/commit/0191ff840d16d6899c68d1ad7d42953445d70e00))
+* **sub-agent:** keep unread tool results through compaction and cancel Runs after a Turn ends ([#3364](https://github.com/withcoral/coral/issues/3364)) ([244ac3c](https://github.com/withcoral/coral/commit/244ac3c0a79586c1ad3c6b0b285d516f3fba888e))
+* **sub-agent:** read only wording about the context as a too-long refusal ([#3365](https://github.com/withcoral/coral/issues/3365)) ([7a48e3e](https://github.com/withcoral/coral/commit/7a48e3e3ad1db1f282cf9f703be580854c021bc4))
+* **sub-agent:** stop serving the Sub-agent end_task, and drop the outcome from its reply ([#3533](https://github.com/withcoral/coral/issues/3533)) ([d227590](https://github.com/withcoral/coral/commit/d227590f10580e0a0cb30b186f80e27546826262))
+* **sub-agent:** use reported token usage for compaction threshold ([#3370](https://github.com/withcoral/coral/issues/3370)) ([674d0aa](https://github.com/withcoral/coral/commit/674d0aaec39fed154bc7622bdc668a24795873da))
+* **ui:** draw focus rings inside sidebar rows, scroll areas and dividers ([#3422](https://github.com/withcoral/coral/issues/3422)) ([b72e7a9](https://github.com/withcoral/coral/commit/b72e7a92955f5dfe6e4a1e1c6e28785f05d9ed43))
+* **ui:** hide the sign-in step when Coral runs without sign-in ([#3373](https://github.com/withcoral/coral/issues/3373)) ([6613166](https://github.com/withcoral/coral/commit/66131668ddaa9089eae17f6f890994164f5e3fdc))
+
+
+### Performance Improvements
+
+* **run:** take a Run as soon as it starts to wait ([#3524](https://github.com/withcoral/coral/issues/3524)) ([874541d](https://github.com/withcoral/coral/commit/874541dc7934aec30e8831664110be26872845e9))
+* **run:** wait for compile room in order instead of relaying each call ([#3525](https://github.com/withcoral/coral/issues/3525)) ([0bfe33a](https://github.com/withcoral/coral/commit/0bfe33ac38b3582b0fedcc6e0cc5f92aa39578f3))
+* **search:** compile out trace-level log records from dependencies ([#3385](https://github.com/withcoral/coral/issues/3385)) ([6f48162](https://github.com/withcoral/coral/commit/6f48162ebd5c94fbbcb13ba7c72328426898aca5))
+* **search:** reuse the vector of an unchanged text in the same Workspace ([#3388](https://github.com/withcoral/coral/issues/3388)) ([61ad9f0](https://github.com/withcoral/coral/commit/61ad9f0980f11d0938c7166bbfa896531728342c))
+* **workspaces:** read a resource's etag and times from its own row ([#3346](https://github.com/withcoral/coral/issues/3346)) ([4460cf3](https://github.com/withcoral/coral/commit/4460cf38ca9c28d356c65d1d63e8b2e492e352c5))
+
 ## [1.10.0](https://github.com/withcoral/coral/compare/v1.9.0...v1.10.0) (2026-11-19)
 
 
