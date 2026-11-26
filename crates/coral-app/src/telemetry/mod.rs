@@ -95,12 +95,15 @@ fn normalize_otlp_endpoint(endpoint: &str, signal: &str) -> String {
     format!("{base}/v1/{signal}")
 }
 
+/// `[otel] headers`, `key=value` pairs. A pair with an empty key or value
+/// is left out, as the OTLP exporter leaves it out of
+/// `OTEL_EXPORTER_OTLP_HEADERS`, so a local child sends what Coral sends.
 fn parse_headers(raw: &str) -> HashMap<String, String> {
     raw.split(',')
         .filter_map(|pair| {
-            let pair = pair.trim();
             let (key, value) = pair.split_once('=')?;
-            Some((key.trim().to_string(), value.trim().to_string()))
+            let (key, value) = (key.trim(), value.trim());
+            (!key.is_empty() && !value.is_empty()).then(|| (key.to_owned(), value.to_owned()))
         })
         .collect()
 }
@@ -677,6 +680,14 @@ mod tests {
             resource.get(&Key::new("service.instance.id")),
             Some(Value::from("6f1c2b0e-instance"))
         );
+    }
+
+    #[test]
+    fn headers_leave_out_a_pair_with_an_empty_key_or_value() {
+        let headers = super::parse_headers(" x-key = a , x-empty= ,=b,x-bare,x-eq=c=d");
+        let expected = [("x-key", "a"), ("x-eq", "c=d")]
+            .map(|(key, value)| (key.to_owned(), value.to_owned()));
+        assert_eq!(headers, expected.into_iter().collect());
     }
 
     /// The module of `tokenizers` that writes trace records for each
