@@ -39,7 +39,7 @@ async fn the_queue_gauges_move_by_the_runs_that_wait_and_the_runs_held() {
 
     fixture.clock.next.store(START, Ordering::SeqCst);
     let mut accepted = Vec::new();
-    for _ in 0..6 {
+    for _ in 0..7 {
         let run = runs
             .start(&principal, &workspace_id, submission("return 1;"))
             .await
@@ -47,13 +47,26 @@ async fn the_queue_gauges_move_by_the_runs_that_wait_and_the_runs_held() {
         accepted.push(run.run_id().clone());
         fixture.clock.next.fetch_add(SECOND, Ordering::SeqCst);
     }
-    let [_, started, oldest_waiting, _, _, newest] = <[_; 6]>::try_from(accepted).unwrap();
+    let [_, started, oldest_waiting, _, _, older_release, newest] =
+        <[_; 7]>::try_from(accepted).unwrap();
     // The two oldest are taken, and the second of them starts.
     take(runs).await;
     let claim = take(runs).await;
     let mut stream = Scripted::open(runs, &started.to_string(), &claim);
     stream.start().await;
     drop(stream);
+    // An older release started this one and released its worker claim
+    // when it recorded the Run's interruption: no Run Executor holds it.
+    assert_eq!(
+        fixture
+            .inject_fault(&format!(
+                "UPDATE program_run_records SET execution_claim_id = 'an-older-release', \
+                 execution_started_at_unix_nanos = accepted_at_unix_nanos \
+                 WHERE id = '{older_release}'"
+            ))
+            .await,
+        1
+    );
     // The newest ends before any take.
     runs.cancel(&principal, &workspace_id, &newest, &immediate(None, 1))
         .await
@@ -70,7 +83,7 @@ async fn the_queue_gauges_move_by_the_runs_that_wait_and_the_runs_held() {
     assert_eq!(
         (now_waiting - waiting, now_held - held),
         (3.0, 2.0),
-        "an ended Run counts nowhere"
+        "an ended Run and an older release's Run count nowhere"
     );
     assert_eq!(now_age, age(START + 10 * SECOND).as_secs_f64());
 
