@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { Typography } from '.'
+import { Typography } from '@/wax/components'
 import * as styles from './disclosure.css'
 
 /** Native, keyboard-accessible optional detail with shared visual treatment. */

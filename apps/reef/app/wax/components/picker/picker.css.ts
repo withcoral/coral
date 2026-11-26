@@ -1,6 +1,6 @@
-import { popup as menuPopup } from '../menu/menu.css'
-import { globalStyle, style } from '../../css'
-import { theme } from '../../theme/theme.css'
+import { popup as menuPopup } from '@/wax/components/menu/menu.css'
+import { globalStyle, style } from '@/wax/css'
+import { theme } from '@/wax/theme/theme.css'
 
 export const label = style({
   paddingBlockEnd: '6px',

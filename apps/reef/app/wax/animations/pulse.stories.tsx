@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { animations } from '.'
+import { animations } from '@/wax/animations'
 
 import { theme } from '../theme/theme.css'
 

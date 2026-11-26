@@ -2,9 +2,9 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { useState } from 'react'
 import { expect, waitFor } from 'storybook/test'
-import { Button } from '..'
-import { Avatar } from '../avatar'
-import { darkTheme } from '../../theme/theme-dark.css'
+import { Button } from '@/wax/components'
+import { Avatar } from '@/wax/components/avatar'
+import { darkTheme } from '@/wax/theme/theme-dark.css'
 
 import { SidebarButton } from './sidebar-button'
 

@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { Typography } from '..'
+import { Typography } from '@/wax/components'
 
 const meta = {
   parameters: {

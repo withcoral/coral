@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { Icon } from '../icon'
+import { Icon } from '@/wax/components/icon'
 
 import { Cell } from './cell'
 import { Row } from './row'

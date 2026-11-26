@@ -1,7 +1,7 @@
 import classNames from 'classnames'
 import { useId, type ReactNode } from 'react'
 
-import { Typography } from '../typography'
+import { Typography } from '@/wax/components/typography'
 
 import * as styles from './description-list.css'
 

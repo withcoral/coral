@@ -1,7 +1,7 @@
 import { Avatar as BaseAvatar } from '@base-ui/react/avatar'
 import classnames from 'classnames'
 
-import { getAvatarColorFromSeed } from '../avatar/utils/get-avatar-color'
+import { getAvatarColorFromSeed } from '@/wax/components/avatar/utils/get-avatar-color'
 
 import * as styles from './logo.css'
 

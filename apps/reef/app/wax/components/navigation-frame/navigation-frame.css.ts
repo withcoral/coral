@@ -1,6 +1,6 @@
-import { style } from '../../css'
-import { breakpoints } from '../../styles/breakpoints'
-import { theme } from '../../theme/theme.css'
+import { style } from '@/wax/css'
+import { breakpoints } from '@/wax/styles/breakpoints'
+import { theme } from '@/wax/theme/theme.css'
 const mobileQuery = `screen and (max-width: ${breakpoints.mobile})`
 export const desktop = style({
   display: 'contents',

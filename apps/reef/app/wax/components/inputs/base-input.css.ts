@@ -1,6 +1,6 @@
-import { style } from '../../css'
+import { style } from '@/wax/css'
 
-import { animation, theme } from '../../theme/theme.css'
+import { animation, theme } from '@/wax/theme/theme.css'
 
 const BORDER_PX = 1
 const PADDING_BLOCK_PX = 6

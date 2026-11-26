@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
 
-import type { ButtonSize, ButtonVariant } from './button.css'
-import type { IconName } from '../icon'
-import { Tooltip, type TooltipProps } from '../tooltip'
+import type { ButtonSize, ButtonVariant } from '@/wax/components/button/button.css'
+import type { IconName } from '@/wax/components/icon'
+import { Tooltip, type TooltipProps } from '@/wax/components/tooltip'
 
 import { Container } from './container'
 import { Icon } from './icon'

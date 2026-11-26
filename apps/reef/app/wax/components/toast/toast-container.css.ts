@@ -1,5 +1,5 @@
-import { globalStyle, style } from '../../css'
-import { zIndex } from '../../theme/theme.css'
+import { globalStyle, style } from '@/wax/css'
+import { zIndex } from '@/wax/theme/theme.css'
 
 // react-toastify's own z-index sits below dialogs, which hid a toast raised from one.
 export const toastContainer = style({

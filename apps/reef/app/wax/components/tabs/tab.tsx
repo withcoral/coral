@@ -1,7 +1,7 @@
 import { Tabs as BaseTabs } from '@base-ui/react/tabs'
 import classNames from 'classnames'
 
-import { Button } from '..'
+import { Button } from '@/wax/components'
 
 import * as styles from './tabs.css'
 

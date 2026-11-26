@@ -1,4 +1,4 @@
-import { assignVars, createGlobalTheme, globalStyle } from '../css'
+import { assignVars, createGlobalTheme, globalStyle } from '@/wax/css'
 
 import { darkThemeValues } from './theme-dark.css'
 import { lightThemeValues } from './theme-light.css'

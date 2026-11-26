@@ -1,5 +1,5 @@
-import { utils } from '../../styles/utils'
-import type { PaletteValues } from './types'
+import { utils } from '@/wax/styles/utils'
+import type { PaletteValues } from '@/wax/base/palette/types'
 
 const Gray: PaletteValues['Gray'] = {
   '01': '#FCFCFC',

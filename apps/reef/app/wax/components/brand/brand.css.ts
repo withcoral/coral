@@ -1,6 +1,6 @@
-import { style } from '../../css'
+import { style } from '@/wax/css'
 
-import { theme } from '../../theme/theme.css'
+import { theme } from '@/wax/theme/theme.css'
 
 // Sized as withcoral.com sets the lockup: the wordmark two thirds of the mark's height.
 export const brand = style({

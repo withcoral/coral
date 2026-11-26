@@ -1,6 +1,6 @@
-import * as Button from './button'
-import { TextInput } from './inputs/text/text-input'
-import { Typography } from './typography'
+import * as Button from '@/wax/components/button'
+import { TextInput } from '@/wax/components/inputs/text/text-input'
+import { Typography } from '@/wax/components/typography'
 import * as styles from './find-controls.css'
 
 /**

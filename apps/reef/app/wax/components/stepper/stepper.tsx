@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
 
-import { Button } from '..'
-import { Icon } from '../icon'
-import { Typography } from '../typography'
+import { Button } from '@/wax/components'
+import { Icon } from '@/wax/components/icon'
+import { Typography } from '@/wax/components/typography'
 
 import * as styles from './stepper.css'
 

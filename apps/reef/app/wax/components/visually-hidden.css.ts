@@ -1,4 +1,4 @@
-import { style } from '../css'
+import { style } from '@/wax/css'
 
 /**
  * The rules behind `visuallyHidden`, for a style that hides content only under

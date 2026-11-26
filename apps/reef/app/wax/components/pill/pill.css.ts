@@ -1,6 +1,6 @@
-import { style, styleVariants } from '../../css'
+import { style, styleVariants } from '@/wax/css'
 
-import { animation, theme } from '../../theme/theme.css'
+import { animation, theme } from '@/wax/theme/theme.css'
 
 export const basePill = style({
   alignItems: 'center',

@@ -3,8 +3,8 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { Link, MemoryRouter } from 'react-router'
 import { expect, fn } from 'storybook/test'
 
-import { Button } from '..'
-import { Icon } from '../icon'
+import { Button } from '@/wax/components'
+import { Icon } from '@/wax/components/icon'
 
 import { Card } from './card'
 

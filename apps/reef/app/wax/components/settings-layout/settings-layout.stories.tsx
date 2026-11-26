@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { Button, Typography } from '..'
-import { Card } from '../card/card'
+import { Button, Typography } from '@/wax/components'
+import { Card } from '@/wax/components/card/card'
 
 import {
   SettingsAside,

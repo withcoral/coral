@@ -1,8 +1,8 @@
-import { recipe, style } from '../../css'
-import type { RecipeVariants } from '../../css'
+import { recipe, style } from '@/wax/css'
+import type { RecipeVariants } from '@/wax/css'
 
-import { utils } from '../../styles/utils'
-import { theme } from '../../theme/theme.css'
+import { utils } from '@/wax/styles/utils'
+import { theme } from '@/wax/theme/theme.css'
 
 export const typography = recipe({
   base: {

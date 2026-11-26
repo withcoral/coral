@@ -1595,6 +1595,22 @@ async fn upgrade_makes_enabled_organization_owners_designated_owners_everywhere(
     )
     .await
     .expect("the Organization Owner leaves one Workspace");
+    // A release from before the backfill kept a row in the table of
+    // concurrency metadata for each Membership, and left it there when the
+    // Membership was removed. This version does not write that table.
+    for workspace in [member, left] {
+        fixture
+            .execute_fixture_sql(&format!(
+                "INSERT INTO workspace_resource_metadata \
+                     (workspace_id, kind, target_id, etag, created_at, updated_at) \
+                 VALUES ('{}', 'workspace_membership', '{}', '{}', 11, 12)",
+                workspace.id(),
+                organization_owner.user_id(),
+                uuid::Uuid::new_v4(),
+            ))
+            .await
+            .expect("write the metadata row of an earlier release");
+    }
     // The etag that a release from before the backfill showed: the one in
     // the table of concurrency metadata.
     let member_etag_before =

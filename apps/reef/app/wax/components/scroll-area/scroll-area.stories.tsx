@@ -2,9 +2,9 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { useState } from 'react'
 
-import { paletteDark } from '../../base/palette/palette-dark'
-import { Button } from '..'
-import { darkTheme } from '../../theme/theme-dark.css'
+import { paletteDark } from '@/wax/base/palette/palette-dark'
+import { Button } from '@/wax/components'
+import { darkTheme } from '@/wax/theme/theme-dark.css'
 
 import { Container } from './scroll-area'
 

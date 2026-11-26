@@ -2,11 +2,11 @@ import { Field } from '@base-ui/react/field'
 import classNames from 'classnames'
 import { useId, useRef } from 'react'
 
-import { useComposedRefs } from '../../../utils/compose-refs'
-import { IconButton } from '../../button'
-import { Icon } from '../../icon'
-import type { IconName } from '../../icon'
-import * as styles from '../base-input.css'
+import { useComposedRefs } from '@/wax/utils/compose-refs'
+import { IconButton } from '@/wax/components/button'
+import { Icon } from '@/wax/components/icon'
+import type { IconName } from '@/wax/components/icon'
+import * as styles from '@/wax/components/inputs/base-input.css'
 
 export interface TextInputProps {
   ariaLabel?: string

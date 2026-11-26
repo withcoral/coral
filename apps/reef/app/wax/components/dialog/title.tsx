@@ -1,7 +1,7 @@
 import { Dialog as BaseDialog } from '@base-ui/react/dialog'
 import classNames from 'classnames'
 
-import { visuallyHidden as visuallyHiddenStyle } from '../visually-hidden.css'
+import { visuallyHidden as visuallyHiddenStyle } from '@/wax/components/visually-hidden.css'
 
 import * as styles from './dialog.css'
 

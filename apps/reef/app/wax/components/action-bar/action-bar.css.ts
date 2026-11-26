@@ -1,7 +1,7 @@
-import { globalStyle, style } from '../../css'
+import { globalStyle, style } from '@/wax/css'
 
-import { theme } from '../../theme/theme.css'
-import { SCROLL_END_ROOM_PROPERTY } from '../table/constants'
+import { theme } from '@/wax/theme/theme.css'
+import { SCROLL_END_ROOM_PROPERTY } from '@/wax/components/table/constants'
 
 // How far the bar floats above the list's foot.
 const BAR_INSET_PX = 16

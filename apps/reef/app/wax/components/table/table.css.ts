@@ -1,6 +1,6 @@
-import { createVar, fallbackVar, globalStyle, recipe, style } from '../../css'
+import { createVar, fallbackVar, globalStyle, recipe, style } from '@/wax/css'
 
-import { theme } from '../../theme/theme.css'
+import { theme } from '@/wax/theme/theme.css'
 
 import {
   alignProperty,

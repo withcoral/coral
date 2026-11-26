@@ -33,8 +33,8 @@ same request, and the second is refused.
   a method that checks nothing accepts one silently.
 - **Keep a random token, and copy it onto the row.** Rejected: a data migration cannot make one in portable SQL, so an
   earlier backfill had to borrow another identifier, and three other resources already count.
-- **Stagger the move over four releases, so that no two builds ever disagree.** Rejected for the risk below, which we
-  accept in exchange for two releases.
+- **Stagger the move over four releases, so that no two builds ever disagree.** Rejected at first for the risk below,
+  in exchange for two releases. The move then shipped over four anyway, and that is the safer order.
 
 ## Consequences
 
@@ -46,26 +46,32 @@ same request, and the second is refused.
   change can lose.
 - A Workspace Membership that is added again shows the time of that grant as its creation time.
 - Tests may write without a precondition through a value that exists only in test builds.
-- The move takes two releases. The first adds the version and the times to each row and raises and writes them with
-  every change, then reads them, then stops writing the table of concurrency metadata. The second drops that table.
-  Inside the first release these three changes merge one at a time, and each finishes its rollout before the next
-  merges, so that two builds that follow one another agree on what a change is checked against. While only the first
-  of them is deployed, Coral still shows the random token and checks it against the table.
-- Nothing in the code enforces that order. A deployment that tracks `main` and skips a build has the window below.
+- The move takes four releases, one step each. 1.9.0 adds the version and the times to each row, and raises and
+  writes them with every change, while it still shows the random token and checks it against the table of
+  concurrency metadata. 1.11.0 reads the version and the times from the row, and still writes the table. The release
+  after it stops writing the table, and the one after that drops it. Two releases that follow one another agree on
+  what a change is checked against: each reads only what the one before it writes.
+- On `main` the steps merged one at a time, and each finished its rollout before the next merged. Nothing in the code
+  enforces that order. A deployment that tracks `main` and skips a build has the window below.
 
 ### The risk we accept
 
-A self-hoster on Postgres who does a rolling upgrade from the release before the first one, straight to it, runs both
-on one database for a while. On SQLite one process holds the state root, so two releases never serve one database. In
-that window:
+A self-hoster on Postgres who does a rolling upgrade across more than one of those steps, such as from 1.10.0 straight
+to the release that stops writing the table, runs both on one database for a while. A rolling upgrade from one step
+to the next has no such window. On SQLite one process holds the state root, so two releases never serve one database.
+In that window:
 
-- **A stale save can pass.** The older release checks only the table of concurrency metadata and never raises a
-  row's version. The newer release checks only the row's version and never writes the table. Each side misses the
-  other's changes.
-- **A save can be refused with a misleading message.** The older release rejects a version as a malformed etag, which
-  Reef shows as a problem with the form's fields. A token sent to the newer release is a stale etag.
-- **An Agent that the older release creates has no times on its row.** That release does not know the new columns. The
-  newer release reads a missing time as absent, and the second release fills it from the table before it drops it.
+- **A stale save can pass.** A release before 1.9.0 never raises a row's version, which a release from 1.11.0 checks.
+  A release before 1.11.0 checks the random token against the table, which a release that stopped writing it never
+  changes. Each older side hides its changes from the newer one, or misses the newer one's.
+- **The older release cannot read what the newer one creates.** A release before 1.11.0 finds no row in the table
+  for a Workspace, a Workspace Membership, an Agent or an Agent Registration that a release which stopped writing it
+  created, and reports corrupt data for the list that holds it.
+- **A save can be refused with a misleading message.** A release before 1.9.0 rejects a version as a malformed etag,
+  which Reef shows as a problem with the form's fields. 1.9.0 and 1.10.0 read a version and check it against the row.
+- **An Agent that a release before 1.9.0 creates has no times on its row.** That release does not know the new
+  columns. A later release reads a missing time as absent, and the release that drops the table fills the time from
+  it first.
 
 We accept this because the self-host guides stop Coral for an upgrade: the Kubernetes guide runs one replica and
 replaces it, so two releases never serve side by side. Rolling upgrades are planned in

@@ -1,9 +1,9 @@
 import React from 'react'
 
-import { Button } from '..'
-import type { ButtonSize, ButtonVariant } from './button.css'
-import { iconContainer } from './icon.css'
-import { Icon, IconSize } from '../icon'
+import { Button } from '@/wax/components'
+import type { ButtonSize, ButtonVariant } from '@/wax/components/button/button.css'
+import { iconContainer } from '@/wax/components/button/icon.css'
+import { Icon, IconSize } from '@/wax/components/icon'
 
 interface ExternalLinkProps {
   children: React.ReactNode

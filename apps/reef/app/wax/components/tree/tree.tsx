@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Link } from 'react-router'
 
-import { Icon } from '../icon'
-import { Tooltip } from '../tooltip'
-import type { FilterQuery } from '../../utils/filter-query'
+import { Icon } from '@/wax/components/icon'
+import { Tooltip } from '@/wax/components/tooltip'
+import type { FilterQuery } from '@/wax/utils/filter-query'
 
 import * as styles from './tree.css'
 

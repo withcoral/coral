@@ -7,7 +7,7 @@ import {
   buildSeverityPickerOptions,
   DETECTION_SOURCE_PICKER_OPTIONS,
   STATUS_PICKER_OPTIONS,
-} from './default-options'
+} from '@/wax/components/picker/default-options'
 
 import { Picker } from './picker'
 

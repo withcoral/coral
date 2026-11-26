@@ -1,4 +1,4 @@
-import { theme } from '../../theme/theme.css'
+import { theme } from '@/wax/theme/theme.css'
 
 export function computeNiceTicks(min: number, max: number, count: number): number[] {
   if (max === min) return [min]

@@ -1,8 +1,8 @@
 import React from 'react'
 
-import type { IconName } from '../icon'
+import type { IconName } from '@/wax/components/icon'
 
-import { Tooltip, TooltipProps } from '../tooltip'
+import { Tooltip, TooltipProps } from '@/wax/components/tooltip'
 
 import { ButtonProps, Container } from './container'
 import { Icon } from './icon'

@@ -9,7 +9,7 @@ import type { ComplexStyleRule, GlobalStyleRule, StyleRule } from '@vanilla-extr
 import { recipe as vanillaRecipe } from '@vanilla-extract/recipes'
 import type { RuntimeFn } from '@vanilla-extract/recipes'
 
-import { resetLayer, waxLayer } from './theme/layers.css'
+import { resetLayer, waxLayer } from '@/wax/theme/layers.css'
 
 /**
  * Instead of relying on bundlers, we want our CSS to follow a specific order:

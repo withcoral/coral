@@ -1,4 +1,4 @@
-import type { LucideProps } from 'lucide-react'
+import type { LucideProps } from 'lucide-react/types'
 
 /**
  * Lucide's FileCode draws the folded corner as a second stroke whose round caps

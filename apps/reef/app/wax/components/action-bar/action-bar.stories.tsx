@@ -1,9 +1,9 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 
-import { Button, Inputs, Typography } from '..'
+import { Button, Inputs, Typography } from '@/wax/components'
 
-import { SCROLL_END_ROOM_PROPERTY } from '../table/constants'
+import { SCROLL_END_ROOM_PROPERTY } from '@/wax/components/table/constants'
 
 import { Bar, Frame } from './action-bar'
 

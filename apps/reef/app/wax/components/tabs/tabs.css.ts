@@ -1,7 +1,7 @@
-import { style } from '../../css'
+import { style } from '@/wax/css'
 
-import { breakpoints } from '../../styles/breakpoints'
-import { theme, zIndex } from '../../theme/theme.css'
+import { breakpoints } from '@/wax/styles/breakpoints'
+import { theme, zIndex } from '@/wax/theme/theme.css'
 
 export const listRoot = style({
   maxWidth: '100%',

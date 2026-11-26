@@ -1,9 +1,9 @@
 import React from 'react'
 
-import { visuallyHidden } from '../visually-hidden.css'
+import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 
 import { ButtonProps, Container } from './container'
-import type { IconName } from '../icon'
+import type { IconName } from '@/wax/components/icon'
 
 import { Icon, SpinningButtonIcon } from './icon'
 import { Text } from './text'

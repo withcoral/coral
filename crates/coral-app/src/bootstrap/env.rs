@@ -11,7 +11,7 @@ use super::consts::{
 use super::error::AppError;
 use super::runtime::Launch;
 use crate::state::AppStateLayout;
-use crate::telemetry::RunContext;
+use crate::telemetry::{RunContext, RunExecutorTelemetry, TelemetryConfig};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AppEnvironment {
@@ -64,18 +64,19 @@ impl AppEnvironment {
 }
 
 /// The whole environment of a local Run Executor: this process's `TZ`,
-/// `LANG` and `LC_*`, and on Windows `SystemRoot`, without which no socket
-/// opens.
+/// `LANG` and `LC_*`, on Windows `SystemRoot`, without which no socket
+/// opens, and the OpenTelemetry variables that `telemetry` gives.
 #[expect(
     clippy::disallowed_methods,
     reason = "coral-app is the single owner of process environment access."
 )]
-pub(crate) fn run_executor_environment() -> Vec<(OsString, OsString)> {
+pub(crate) fn run_executor_environment(telemetry: &TelemetryConfig) -> Vec<(OsString, OsString)> {
     std::env::vars_os()
         .filter(|(name, _)| {
             name.to_str()
                 .is_some_and(|name| reaches_run_executor(name, cfg!(windows)))
         })
+        .chain(telemetry.run_executor_variables())
         .collect()
 }
 
@@ -196,6 +197,19 @@ impl RunContext {
         Self {
             trace_parent: env_var(CORAL_TRACE_PARENT).ok().flatten(),
         }
+    }
+}
+
+impl RunExecutorTelemetry {
+    /// Reads a Run Executor's OpenTelemetry variables, once, at its start.
+    ///
+    /// # Errors
+    ///
+    /// Returns the variable that is not Unicode.
+    pub fn from_env() -> Result<Self, String> {
+        Self::from_variables(|name| {
+            env_var(name).map_err(|_not_unicode| format!("{name} must be Unicode"))
+        })
     }
 }
 

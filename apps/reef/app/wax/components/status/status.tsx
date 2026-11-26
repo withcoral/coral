@@ -1,5 +1,5 @@
-import { Pill } from '../pill'
-import { Typography } from '../typography'
+import { Pill } from '@/wax/components/pill'
+import { Typography } from '@/wax/components/typography'
 
 import * as styles from './status.css'
 

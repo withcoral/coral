@@ -1,6 +1,6 @@
-import { recipe, style } from '../../css'
+import { recipe, style } from '@/wax/css'
 
-import { theme } from '../../theme/theme.css'
+import { theme } from '@/wax/theme/theme.css'
 
 export const banner = recipe({
   base: {

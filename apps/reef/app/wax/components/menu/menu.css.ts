@@ -1,7 +1,7 @@
-import { keyframes, style } from '../../css'
+import { keyframes, style } from '@/wax/css'
 
-import { animation, theme } from '../../theme/theme.css'
-import { zIndex } from '../../theme/z-index'
+import { animation, theme } from '@/wax/theme/theme.css'
+import { zIndex } from '@/wax/theme/z-index'
 
 const fadeIn = keyframes({
   from: {

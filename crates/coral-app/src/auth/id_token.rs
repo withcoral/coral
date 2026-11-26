@@ -9,7 +9,7 @@ use jsonwebtoken::jwk::{
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde_json::{Map, Value};
 
-use super::config::ResolvedOidcProvider;
+use super::oidc_mode::ResolvedOidcProvider;
 
 const CLOCK_SKEW_SECONDS: u64 = 60;
 const MAX_SUBJECT_BYTES: usize = 255;

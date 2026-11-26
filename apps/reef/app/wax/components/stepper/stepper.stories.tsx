@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
 
-import { Button, Inputs, Typography } from '..'
+import { Button, Inputs, Typography } from '@/wax/components'
 
 import { Stepper } from './stepper'
 

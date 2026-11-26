@@ -1,7 +1,7 @@
-import { resetStyle } from '../css'
+import { resetStyle } from '@/wax/css'
 
-import './font.css'
-import { theme } from './theme.css'
+import '@/wax/theme/font.css'
+import { theme } from '@/wax/theme/theme.css'
 
 resetStyle('body', {
   backgroundColor: theme.surface.mainContent,

@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { CodeBlock } from '../code-block'
-import { Picker } from '../picker'
+import { CodeBlock } from '@/wax/components/code-block'
+import { Picker } from '@/wax/components/picker'
 
 import * as DescriptionList from './index'
 

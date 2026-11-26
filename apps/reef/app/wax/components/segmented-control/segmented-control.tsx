@@ -1,7 +1,7 @@
 import { useRef, type KeyboardEvent } from 'react'
 
-import { Icon, type IconName } from '../icon'
-import { Tooltip } from '../tooltip'
+import { Icon, type IconName } from '@/wax/components/icon'
+import { Tooltip } from '@/wax/components/tooltip'
 
 import * as styles from './segmented-control.css'
 

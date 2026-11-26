@@ -28,8 +28,8 @@ use tracing_subscriber::{EnvFilter, Registry};
 pub mod config;
 
 use crate::bootstrap::AppError;
-pub use config::TelemetryConfig;
 use config::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER, TRACE_CONTEXT_FILTER};
+pub use config::{RunExecutorTelemetry, TelemetryConfig};
 /// Why an exporter that `[otel]` configures could not be built.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error(transparent)]
@@ -95,12 +95,15 @@ fn normalize_otlp_endpoint(endpoint: &str, signal: &str) -> String {
     format!("{base}/v1/{signal}")
 }
 
+/// `[otel] headers`, `key=value` pairs. A pair with an empty key or value
+/// is left out, as the OTLP exporter leaves it out of
+/// `OTEL_EXPORTER_OTLP_HEADERS`, so a local child sends what Coral sends.
 fn parse_headers(raw: &str) -> HashMap<String, String> {
     raw.split(',')
         .filter_map(|pair| {
-            let pair = pair.trim();
             let (key, value) = pair.split_once('=')?;
-            Some((key.trim().to_string(), value.trim().to_string()))
+            let (key, value) = (key.trim(), value.trim());
+            (!key.is_empty() && !value.is_empty()).then(|| (key.to_owned(), value.to_owned()))
         })
         .collect()
 }
@@ -115,8 +118,8 @@ fn configured_otlp_endpoint(config: &TelemetryConfig) -> Option<&str> {
 
 /// The process's resource: its service name and version, and as
 /// `service.instance.id` the id of the Coral Instance whose start initialized
-/// telemetry, so every exported span, log and metric names that Coral
-/// Instance.
+/// telemetry, or the Run Executor's id, so every exported span, log and
+/// metric names that process.
 fn telemetry_resource(service_name: &str, service_version: &str, instance_id: &str) -> Resource {
     Resource::builder()
         .with_attribute(opentelemetry::KeyValue::new(
@@ -373,6 +376,22 @@ pub(crate) fn init_tracing(
     })
     .clone()
     .map_err(AppError::Telemetry)
+}
+
+/// Starts a Run Executor's telemetry: what a Coral server installs, with
+/// the Run Executor's id as `service.instance.id`. With no endpoint it
+/// records and logs nothing.
+///
+/// # Errors
+///
+/// Returns [`AppError::Telemetry`] if an exporter that the settings
+/// configure cannot be built.
+pub fn init_run_executor_telemetry(
+    settings: &RunExecutorTelemetry,
+    run_executor_id: &str,
+    service_version: &str,
+) -> Result<(), AppError> {
+    init_tracing(&settings.0, run_executor_id, service_version)
 }
 
 fn try_init_tracing(
@@ -661,6 +680,14 @@ mod tests {
             resource.get(&Key::new("service.instance.id")),
             Some(Value::from("6f1c2b0e-instance"))
         );
+    }
+
+    #[test]
+    fn headers_leave_out_a_pair_with_an_empty_key_or_value() {
+        let headers = super::parse_headers(" x-key = a , x-empty= ,=b,x-bare,x-eq=c=d");
+        let expected = [("x-key", "a"), ("x-eq", "c=d")]
+            .map(|(key, value)| (key.to_owned(), value.to_owned()));
+        assert_eq!(headers, expected.into_iter().collect());
     }
 
     /// The module of `tokenizers` that writes trace records for each

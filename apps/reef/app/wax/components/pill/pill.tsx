@@ -2,7 +2,7 @@ import classNames from 'classnames'
 import React, { Children, isValidElement } from 'react'
 import type { ElementType } from 'react'
 
-import { Icon } from '../icon'
+import { Icon } from '@/wax/components/icon'
 
 import * as styles from './pill.css'
 

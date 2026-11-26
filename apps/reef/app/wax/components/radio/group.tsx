@@ -1,7 +1,7 @@
 import { RadioGroup as BaseRadioGroup } from '@base-ui/react/radio-group'
 import classNames from 'classnames'
 
-import { Container as ScrollArea } from '../scroll-area'
+import { Container as ScrollArea } from '@/wax/components/scroll-area'
 
 import * as styles from './radio.css'
 

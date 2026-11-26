@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { useState } from 'react'
 import { Controller, useForm } from 'react-hook-form'
 
-import { Button } from '../..'
+import { Button } from '@/wax/components'
 
 import { NumberInput } from './number-input'
 

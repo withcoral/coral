@@ -1,6 +1,6 @@
-import { style } from '../../../css'
+import { style } from '@/wax/css'
 
-import { animation, staticUtilities, theme } from '../../../theme/theme.css'
+import { animation, staticUtilities, theme } from '@/wax/theme/theme.css'
 
 export const root = style({
   alignItems: 'center',

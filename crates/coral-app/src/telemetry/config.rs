@@ -1,21 +1,99 @@
 //! Telemetry configuration parsing from the bootstrap snapshot.
 
+use std::ffi::OsString;
+
 use serde::Deserialize;
 
-pub(super) const DEFAULT_TRACE_FILTER: &str = "coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_run=trace,coral_search=trace,coral_search::index::reconcile=info,coral_upstream=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off";
+pub(super) const DEFAULT_TRACE_FILTER: &str = "coral.request=trace,coral_app=trace,coral_grpc=trace,coral_mcp=trace,coral_run=trace,coral_run_executor=info,coral_search=trace,coral_search::index::reconcile=info,coral_upstream=trace,coral_administration=trace,coral.http.body=off,coral.mcp.body=off";
 /// Spans that always get trace context, whatever `trace_filter` exports:
 /// every Coral span at info or above. A request's safe errors and records
 /// take their trace identifier from whichever of them is current, so a span
 /// left out would start a new trace.
 pub(super) const TRACE_CONTEXT_FILTER: &str = "coral=info";
-pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_grpc=info,coral_mcp=info,coral_search=info,coral_administration=info,coral_provider::account::secret_references=info";
+pub(super) const DEFAULT_LOG_FILTER: &str = "coral_app=info,coral_grpc=info,coral_mcp=info,coral_run_executor=info,coral_search=info,coral_administration=info,coral_provider::account::secret_references=info";
 const DEFAULT_SERVICE_NAME: &str = "coral";
+
+/// The standard OpenTelemetry variables that Coral writes into a local
+/// child's environment (ADR 0027). A Run Executor reads the endpoint, the
+/// service name and the ratio at its start. The OpenTelemetry SDK reads
+/// the headers and `OTEL_RESOURCE_ATTRIBUTES` itself.
+const OTEL_EXPORTER_OTLP_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
+const OTEL_EXPORTER_OTLP_HEADERS: &str = "OTEL_EXPORTER_OTLP_HEADERS";
+const OTEL_SERVICE_NAME: &str = "OTEL_SERVICE_NAME";
+const OTEL_TRACES_SAMPLER_ARG: &str = "OTEL_TRACES_SAMPLER_ARG";
 
 /// External telemetry settings loaded from `config.toml`.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct TelemetryConfig {
     pub(crate) otel: OtlpConfig,
+}
+
+impl TelemetryConfig {
+    /// The variables that make a local Run Executor export where Coral
+    /// does, under Coral's service name: none while no endpoint is set.
+    pub(crate) fn run_executor_variables(&self) -> Vec<(OsString, OsString)> {
+        let Some(endpoint) = super::configured_otlp_endpoint(self) else {
+            return Vec::new();
+        };
+        let ratio = self.otel.trace_sample_ratio.get().to_string();
+        [
+            (OTEL_EXPORTER_OTLP_ENDPOINT, Some(endpoint.to_owned())),
+            (
+                OTEL_EXPORTER_OTLP_HEADERS,
+                self.otel.headers.as_deref().map(encoded_header_values),
+            ),
+            (OTEL_SERVICE_NAME, Some(self.otel.service_name.clone())),
+            (OTEL_TRACES_SAMPLER_ARG, Some(ratio)),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| Some((name.into(), value?.into())))
+        .collect()
+    }
+}
+
+/// `[otel] headers` as `OTEL_EXPORTER_OTLP_HEADERS` holds them: the OTLP
+/// exporter percent-decodes each value, so each `%` becomes `%25`.
+fn encoded_header_values(headers: &str) -> String {
+    headers
+        .split(',')
+        .map(|pair| match pair.split_once('=') {
+            Some((key, value)) => format!("{key}={}", value.replace('%', "%25")),
+            None => pair.to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// A Run Executor's telemetry settings, from the standard OpenTelemetry
+/// variables. The rest is Coral's default, its filters included.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunExecutorTelemetry(pub(crate) TelemetryConfig);
+
+impl RunExecutorTelemetry {
+    /// The settings that `variable` gives, which answers each variable's
+    /// value, or why it cannot.
+    pub(crate) fn from_variables(
+        variable: impl Fn(&str) -> Result<Option<String>, String>,
+    ) -> Result<Self, String> {
+        let mut otel = OtlpConfig {
+            endpoint: variable(OTEL_EXPORTER_OTLP_ENDPOINT)?,
+            ..OtlpConfig::default()
+        };
+        // As set, empty included: a local child carries its parent's name.
+        if let Some(name) = variable(OTEL_SERVICE_NAME)? {
+            otel.service_name = name;
+        }
+        // A Run Executor opens no span, so an invalid ratio is ignored, as
+        // the OpenTelemetry specification asks.
+        if let Some(ratio) = variable(OTEL_TRACES_SAMPLER_ARG)?
+            .and_then(|ratio| ratio.trim().parse::<f64>().ok())
+            .and_then(|ratio| TraceSampleRatio::try_from(ratio).ok())
+        {
+            otel.trace_sample_ratio = ratio;
+        }
+        Ok(Self(TelemetryConfig { otel }))
+    }
 }
 
 /// External OpenTelemetry export settings loaded from `[otel]`.
@@ -79,9 +157,91 @@ impl Default for OtlpConfig {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use tracing_subscriber::filter::Targets;
 
-    use super::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER};
+    use super::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER, OtlpConfig, RunExecutorTelemetry};
+
+    /// Coral writes its endpoint, service name and sample ratio for a local
+    /// child to read, and its headers percent-encoded for the OTLP
+    /// exporter. It writes nothing while no endpoint is set, and never its
+    /// filters.
+    #[test]
+    fn a_local_run_executor_reads_the_settings_that_coral_writes() {
+        const ENDPOINT: &str = "http://collector:4318";
+        let otel = format!("[otel]\nendpoint = '{ENDPOINT}'\n");
+        let cases: [(String, &[(&str, &str)]); 5] = [
+            (String::new(), &[]),
+            (
+                "[otel]\nendpoint = ''\nheaders = 'x-key=1'\n".to_owned(),
+                &[],
+            ),
+            (
+                otel.clone(),
+                &[
+                    ("OTEL_EXPORTER_OTLP_ENDPOINT", ENDPOINT),
+                    ("OTEL_SERVICE_NAME", "coral"),
+                    ("OTEL_TRACES_SAMPLER_ARG", "1"),
+                ],
+            ),
+            (
+                format!("{otel}service_name = ''\n"),
+                &[
+                    ("OTEL_EXPORTER_OTLP_ENDPOINT", ENDPOINT),
+                    ("OTEL_SERVICE_NAME", ""),
+                    ("OTEL_TRACES_SAMPLER_ARG", "1"),
+                ],
+            ),
+            (
+                format!(
+                    "{otel}headers = 'x-key=a%41,x-other=1'\nservice_name = 'coral-eu'\n\
+                     trace_sample_ratio = 0.25\nlog_filter = 'coral=debug'\n\
+                     trace_filter = 'coral=debug'\n"
+                ),
+                &[
+                    ("OTEL_EXPORTER_OTLP_ENDPOINT", ENDPOINT),
+                    ("OTEL_EXPORTER_OTLP_HEADERS", "x-key=a%2541,x-other=1"),
+                    ("OTEL_SERVICE_NAME", "coral-eu"),
+                    ("OTEL_TRACES_SAMPLER_ARG", "0.25"),
+                ],
+            ),
+        ];
+        for (raw, expected_variables) in cases {
+            let parent = crate::bootstrap::telemetry(&raw).expect("telemetry config");
+            let written: HashMap<String, String> = parent
+                .run_executor_variables()
+                .into_iter()
+                .map(|(name, value)| (name.into_string().unwrap(), value.into_string().unwrap()))
+                .collect();
+            let expected_written = expected_variables
+                .iter()
+                .map(|&(name, value)| (name.to_owned(), value.to_owned()))
+                .collect();
+            assert_eq!(written, expected_written, "{raw}");
+            let child = RunExecutorTelemetry::from_variables(|name| Ok(written.get(name).cloned()))
+                .expect("the child reads its variables");
+            let expected = if written.is_empty() {
+                OtlpConfig::default()
+            } else {
+                OtlpConfig {
+                    headers: None,
+                    log_filter: None,
+                    trace_filter: DEFAULT_TRACE_FILTER.to_owned(),
+                    ..parent.otel
+                }
+            };
+            assert_eq!(child.0.otel, expected, "{raw}");
+        }
+        // A Run Executor opens no span: an invalid ratio is ignored.
+        for ratio in ["1.5", "half"] {
+            let child = RunExecutorTelemetry::from_variables(|name| {
+                Ok((name == "OTEL_TRACES_SAMPLER_ARG").then(|| ratio.to_owned()))
+            })
+            .expect("an invalid ratio is ignored");
+            assert_eq!(child.0.otel, OtlpConfig::default(), "{ratio}");
+        }
+    }
 
     #[test]
     fn trace_sample_ratio_admits_only_zero_to_one() {

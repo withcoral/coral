@@ -1,8 +1,8 @@
 import type { Decorator } from '@storybook/react-vite'
 
-import { darkTheme } from '../../theme/theme-dark.css'
-import { lightTheme } from '../../theme/theme-light.css'
-import { theme } from '../../theme/theme.css'
+import { darkTheme } from '@/wax/theme/theme-dark.css'
+import { lightTheme } from '@/wax/theme/theme-light.css'
+import { theme } from '@/wax/theme/theme.css'
 
 export const themeComparisonDecorator: Decorator = (Story, context) => {
   const isComparisonActive = context.globals.themeComparison

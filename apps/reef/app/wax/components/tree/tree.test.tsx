@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
-import { filterQuery } from '../../utils/filter-query'
+import { filterQuery } from '@/wax/utils/filter-query'
 
 import { Tree, filterNodes, type TreeNode } from './tree'
 

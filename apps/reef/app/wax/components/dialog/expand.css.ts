@@ -1,4 +1,4 @@
-import { style } from '../../css'
+import { style } from '@/wax/css'
 
 /** A tall viewer: its header, then content that fills the rest and scrolls inside. */
 export const popup = style({

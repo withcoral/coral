@@ -1,7 +1,7 @@
-import { style } from '../../../css'
+import { style } from '@/wax/css'
 
-import { input } from '../base-input.css'
-import { animation, theme } from '../../../theme/theme.css'
+import { input } from '@/wax/components/inputs/base-input.css'
+import { animation, theme } from '@/wax/theme/theme.css'
 
 export const textArea = style([
   input,

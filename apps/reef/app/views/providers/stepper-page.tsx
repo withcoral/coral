@@ -150,10 +150,12 @@ function StepperAttemptPage({
   const providerName = setup?.configuration?.confirmed
     ? setup.configuration.values.displayName
     : local.suggestedName || setup?.configuration?.values.displayName || recipe?.displayName
-  // One page for every state. A step heads its content with its title and actions.
-  const page = (body: ReactNode) => (
+  // One page for every state. A step heads its content with its title and
+  // actions, which pin to the top, so only a step's page fades its bottom alone.
+  const page = (body: ReactNode, step = false) => (
     <PageLayout
       variant="wide"
+      pinnedTop={step}
       breadcrumbs={[
         { id: 'tools', type: 'link', text: 'Tools', to: cancelPath },
         { id: 'add', type: 'text', text: `Add ${providerName || 'provider'}` },
@@ -178,6 +180,7 @@ function StepperAttemptPage({
       <div className={styles.setupPage}>
         <StepPage.Provider value>{content}</StepPage.Provider>
       </div>,
+      true,
     )
   return page(
     <div className={styles.setupPage}>

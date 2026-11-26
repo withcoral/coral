@@ -7,7 +7,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "1.10.0" # x-release-please-version
+version = "1.11.0" # x-release-please-version
 license = "Apache-2.0"
 rust-version = "1.100"
 
@@ -91,6 +91,7 @@ opentelemetry = "0.33.1"
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "api-24", "download-binaries", "tls-rustls", "tracing"] }
 opentelemetry-appender-tracing = "0.33.1"
 opentelemetry-otlp = "0.33.1"
+opentelemetry-proto = { version = "0.33.1", default-features = false }
 opentelemetry_sdk = "0.33.1"
 # PASETO v4.public with PASERK key ids, for Licenses (ADR 0038). No `std`: it
 # would bring a claims validator that compares `exp` with the clock.
@@ -174,6 +175,7 @@ coral-provider = { path = "crates/coral-provider" }
 coral-release = { path = "crates/coral-release" }
 coral-usage = { path = "crates/coral-usage" }
 coral-secret-store = { path = "crates/coral-secret-store" }
+coral-sign-in = { path = "crates/coral-sign-in" }
 coral-sqlite-vec = { path = "crates/coral-sqlite-vec" }
 coral-run = { path = "crates/coral-run" }
 coral-run-executor = { path = "crates/coral-run-executor" }

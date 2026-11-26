@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { expect } from 'storybook/test'
 
-import { Card } from '../card/card'
+import { Card } from '@/wax/components/card/card'
 
 import { Logo } from './logo'
 

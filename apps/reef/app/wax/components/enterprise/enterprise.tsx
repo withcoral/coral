@@ -1,9 +1,9 @@
 import type React from 'react'
 
-import { Banner } from '../banner'
-import { Icon } from '../icon'
-import { Pill } from '../pill'
-import type { PillSize } from '../pill'
+import { Banner } from '@/wax/components/banner'
+import { Icon } from '@/wax/components/icon'
+import { Pill } from '@/wax/components/pill'
+import type { PillSize } from '@/wax/components/pill'
 
 /** Marks something only the Enterprise Edition enables. An icon and text carry the meaning, not colour. */
 export function EnterpriseBadge({ size = 'small' }: { size?: PillSize }) {

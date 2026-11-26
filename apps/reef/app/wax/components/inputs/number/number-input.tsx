@@ -1,7 +1,7 @@
 import { NumberField as BaseNumberField } from '@base-ui/react/number-field'
 import classNames from 'classnames'
 
-import * as styles from '../base-input.css'
+import * as styles from '@/wax/components/inputs/base-input.css'
 
 export interface NumberInputProps {
   className?: string

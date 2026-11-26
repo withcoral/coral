@@ -1,8 +1,8 @@
-import { style } from '../../css'
+import { style } from '@/wax/css'
 
-import { breakpoints } from '../../styles/breakpoints'
-import { utils } from '../../styles/utils'
-import { theme } from '../../theme/theme.css'
+import { breakpoints } from '@/wax/styles/breakpoints'
+import { utils } from '@/wax/styles/utils'
+import { theme } from '@/wax/theme/theme.css'
 
 export const container = style({
   '@media': {

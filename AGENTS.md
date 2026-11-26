@@ -73,6 +73,10 @@
   metric catalog, and export filtering in `coral-telemetry`. Domain modules own
   signal timing and record metrics through `coral_telemetry::metric`.
   Application bootstrap owns exporter configuration.
+- A Run Executor opens no span: Coral opens every span of a Run and of a
+  compile. A number that only a Run Executor knows is a metric that the Run
+  Executor records through its own exporter, not a new field on the link
+  (ADR 0027).
 - Keep generated files marked `linguist-generated` in `.gitattributes`.
 - A build that Coral publishes sets `RUSTY_V8_ARCHIVE_SHA256` to its target's
   digest in `[workspace.metadata.v8-archive]` in `Cargo.toml`, so the v8
@@ -304,9 +308,9 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - Wax (`apps/reef/app/wax`) owns reusable visual behavior and styling. Extend
   its primitives when a UI needs a missing capability; app-specific modules
   compose Wax and own layout, not a parallel set of controls or theme values.
-- `apps/reef/app/wax` is also the npm package `@withcoral/wax`: other apps install
-  that folder as source. A Wax file imports a package, or a file in that folder
-  by a relative path. Put a helper or an asset that Wax needs in that folder.
+- `apps/reef/app/wax` stands alone, so that another app can use a copy of that
+  one folder. A Wax file imports a package or another Wax file. Put a helper or
+  an asset that Wax needs in that folder.
 - When a table row opens a page, pass the path to `Table.Row`'s `to` so a
   click anywhere in the row opens it, and link its name with `Table.RowLink`.
   Do not make only the name a link, or style the name as a link.

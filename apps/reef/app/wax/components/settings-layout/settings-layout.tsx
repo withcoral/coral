@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 
-import * as CardFrame from '../card'
-import { Typography } from '../typography'
+import * as CardFrame from '@/wax/components/card'
+import { Typography } from '@/wax/components/typography'
 
 import * as styles from './settings-layout.css'
 

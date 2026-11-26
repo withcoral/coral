@@ -1,7 +1,7 @@
-import { createVar, fallbackVar, style, styleVariants } from '../../css'
+import { createVar, fallbackVar, style, styleVariants } from '@/wax/css'
 
-import { utils } from '../../styles/utils'
-import { theme } from '../../theme/theme.css'
+import { utils } from '@/wax/styles/utils'
+import { theme } from '@/wax/theme/theme.css'
 
 export const card = style({
   background: theme.surface.card,

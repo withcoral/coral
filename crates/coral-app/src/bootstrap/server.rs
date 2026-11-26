@@ -408,7 +408,7 @@ impl PreparedServerBuilder {
                 settings,
                 program: (launcher.run_executor_program.clone())
                     .map_or_else(std::env::current_exe, Ok)?,
-                environment: super::env::run_executor_environment(),
+                environment: super::env::run_executor_environment(deployment_config.telemetry()),
             }),
             None => None,
         };

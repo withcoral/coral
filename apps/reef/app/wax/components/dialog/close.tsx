@@ -1,7 +1,7 @@
 import { Dialog as BaseDialog } from '@base-ui/react/dialog'
 import classNames from 'classnames'
 
-import { Button } from '..'
+import { Button } from '@/wax/components'
 
 import * as styles from './dialog.css'
 

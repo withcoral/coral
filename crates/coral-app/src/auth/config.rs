@@ -1,7 +1,5 @@
 //! Parsing and validation for Coral authentication settings.
 
-use std::cell::Cell;
-use std::collections::BTreeMap;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
@@ -12,16 +10,18 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer};
-use serde_json::Value;
 use url::Url;
 use zeroize::Zeroizing;
 
-use super::OIDC_CALLBACK_PATH;
 use super::error::AuthServerError;
+use super::oidc_mode::{OidcProviderSettings, ResolvedOidcProvider};
 use super::sealed_handshake::HandshakeKeys;
 use crate::oauth_resource::CanonicalOauthUrl;
 use coral_auth::SessionTokenIssuer;
 use coral_outbound::{Configured, EndpointUrl};
+use coral_sign_in::{
+    ModeEnvironment, ModeName, ModeSettings, SettingError, SignInMode, SignInModes,
+};
 
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 const DEFAULT_SIGNING_KEY_ENV: &str = "CORAL_SESSION_SIGNING_KEY";
@@ -46,6 +46,7 @@ const CONFLICTING_KEY_SOURCES: &str = "configure only one of signing_key_env or 
 #[derive(Clone)]
 pub struct AuthSettings {
     auth: RawAuthSettings,
+    provider: OidcProviderSettings,
     bind_addr: SocketAddr,
     authorization_server: AuthorizationServerSettings,
 }
@@ -66,7 +67,8 @@ struct RawAuthSettings {
     #[serde(default)]
     trusted_clients: Vec<String>,
     session: SessionTokenSettings,
-    provider: OidcProviderSettings,
+    /// Read by the mode that its `mode` names: [`provider_choice`].
+    provider: toml::Table,
 }
 
 impl AuthSettings {
@@ -78,11 +80,13 @@ impl AuthSettings {
     /// # Errors
     ///
     /// Returns [`AuthServerError::Config`] when an auth-owned field or
-    /// cross-section relationship is invalid.
+    /// cross-section relationship is invalid, or when `[auth.provider]`
+    /// names a sign-in mode that `modes` lacks.
     pub(crate) fn from_sections(
         auth: Option<AuthSection>,
         listener: &AuthListenerSettings,
         web: Option<&WebSettings>,
+        modes: &SignInModes,
     ) -> Result<Option<Self>, AuthServerError> {
         let issuer = listener.validate(auth.is_some())?;
         let web_client = web.and_then(WebClient::from_settings);
@@ -92,6 +96,16 @@ impl AuthSettings {
         auth.validate()?;
         let issuer =
             issuer.ok_or_else(|| config_error("[auth] requires listeners.auth.public_url"))?;
+        let provider = match provider_choice(std::mem::take(&mut auth.provider), &issuer, modes)? {
+            ProviderChoice::Oidc(provider) => *provider,
+            // No sign-in path serves a registered mode yet.
+            ProviderChoice::Mode(name, _mode) => {
+                return Err(invalid_provider(format!(
+                    "mode: sign-in mode `{}` cannot serve sign-in yet",
+                    name.as_str()
+                )));
+            }
+        };
         if let Some(web) = &web_client {
             // Do not count the derived registration as a duplicate of an
             // explicitly listed audience. Explicit duplicates still fail in
@@ -110,6 +124,7 @@ impl AuthSettings {
         };
         Ok(Some(Self {
             auth,
+            provider,
             bind_addr: listener.bind.unwrap_or(DEFAULT_BIND_ADDR),
             authorization_server,
         }))
@@ -153,7 +168,6 @@ impl AuthSettings {
         get_var: &impl Fn(&str) -> Result<Option<String>, String>,
     ) -> Result<(ResolvedAuthSettings, SessionTokenIssuer), AuthServerError> {
         let provider = self
-            .auth
             .provider
             .resolve(&self.authorization_server.issuer, get_var)?;
         let key = self.auth.session.load_signing_key(config_path, get_var)?;
@@ -230,7 +244,6 @@ impl ResolvedAuthSettings {
 impl RawAuthSettings {
     fn validate(&mut self) -> Result<(), AuthServerError> {
         self.session.validate()?;
-        self.provider.validate()?;
         for client_id in &mut self.trusted_clients {
             *client_id = validate_trusted_client(client_id)?;
         }
@@ -527,292 +540,97 @@ fn validate_trusted_client(configured: &str) -> Result<String, AuthServerError> 
     Ok(value.to_string())
 }
 
-const DEFAULT_PROVIDER_SCOPES: &[&str] = &["openid", "email", "profile"];
+/// The mode every build has, which `[auth.provider]` selects with no `mode`.
+const OIDC_MODE: &str = "oidc";
 
-/// Query parameters reserved to the authorization request.
-///
-/// No outside input may pre-set one. Operator-supplied `auth_params` are
-/// checked against this list here, and the provider client checks the
-/// `authorization_endpoint` it reads out of the discovery document against the
-/// same list, so the two paths cannot drift apart and leave the less trusted
-/// source — the discovery document — the more permissive one.
-pub(super) const RESERVED_PROVIDER_AUTH_PARAMS: &[&str] = &[
-    "response_type",
-    // `fragment` and `form_post` both stop the authorization code from ever
-    // reaching the GET callback route, so a login started with either simply
-    // never completes and leaves nothing in this server's logs.
-    "response_mode",
-    "client_id",
-    "redirect_uri",
-    "scope",
-    "state",
-    "nonce",
-    "code_challenge",
-    "code_challenge_method",
-];
-
-/// Deserialize-and-validate target for the `[auth.provider]` section.
-///
-/// This shape is the one place a client secret and a name pointing at one
-/// coexist. Validated settings keep it until startup resolves them;
-/// [`resolve`](Self::resolve) settles which of the two the provider uses, and
-/// the resolved provider carries neither name.
-#[derive(Clone, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct OidcProviderSettings {
-    issuer: String,
-    client_id: String,
-    client_secret: Option<ProviderSecret>,
-    client_secret_env: Option<String>,
-    scopes: Vec<String>,
-    display_name_claim: String,
-    name_claim: String,
-    email_claim: String,
-    email_verified_claim: String,
-    bootstrap_owner_subject: Option<String>,
-    auth_params: BTreeMap<String, String>,
-    required_claims: BTreeMap<String, Value>,
-    access_token: Option<AccessTokenAdmission>,
+/// The sign-in mode that `[auth.provider]` selects, with its settings checked.
+enum ProviderChoice {
+    Oidc(Box<OidcProviderSettings>),
+    Mode(ModeName, Arc<dyn SignInMode>),
 }
 
-/// Optional login admission evidence from an upstream RS256 JWT access token.
-/// It supplements, never replaces, the verified OIDC identity. The audience is
-/// explicit because a provider's access-token audience need not be its OIDC
-/// client ID. Keys come only from that provider's validated discovery JWKS.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct AccessTokenAdmission {
-    pub(super) audience: String,
-    #[serde(default)]
-    pub(super) required_claims: BTreeMap<String, Value>,
+/// Reads `mode` from `[auth.provider]` and gives the rest of the table to
+/// that mode, with Coral's URL `coral_url`. No `mode` means `oidc`, which
+/// every build has and no registered mode replaces. A key that the mode does
+/// not read is refused with the mode's name.
+fn provider_choice(
+    mut table: toml::Table,
+    coral_url: &str,
+    modes: &SignInModes,
+) -> Result<ProviderChoice, AuthServerError> {
+    let mode = match table.remove("mode") {
+        None => None,
+        Some(toml::Value::String(mode)) => Some(mode),
+        Some(_) => return Err(missing_mode(None, modes)),
+    };
+    let name = match mode.as_deref() {
+        None | Some(OIDC_MODE) => {
+            let mut provider: OidcProviderSettings =
+                ModeSettings::new(table).decode().map_err(|error| {
+                    not_a_setting(OIDC_MODE, &error).unwrap_or_else(|| {
+                        // The text that a decode error of the whole file has.
+                        AuthServerError::Config(format!(
+                            "server configuration is invalid: {}",
+                            at_provider(&error)
+                        ))
+                    })
+                })?;
+            provider.validate()?;
+            return Ok(ProviderChoice::Oidc(Box::new(provider)));
+        }
+        Some(name) => name,
+    };
+    let Some(factory) = modes.get(name) else {
+        return Err(missing_mode(Some(name), modes));
+    };
+    let coral_url = Url::parse(coral_url)
+        .map_err(|_error| config_error("listeners.auth.public_url is not a URL"))?;
+    let mode = factory
+        .build(&ModeSettings::new(table), &ModeEnvironment::new(coral_url))
+        .map_err(|error| {
+            not_a_setting(name, &error).unwrap_or_else(|| config_error(at_provider(&error)))
+        })?;
+    Ok(ProviderChoice::Mode(factory.name(), mode))
 }
 
-impl OidcProviderSettings {
-    fn validate(&mut self) -> Result<(), AuthServerError> {
-        if self.client_secret.is_some() == self.client_secret_env.is_some() {
-            return Err(config_error(
-                "auth.provider must configure exactly one of client_secret or client_secret_env",
-            ));
-        }
-        self.issuer = provider_required("issuer", &self.issuer)?;
-        let issuer = provider_literal_endpoint("issuer", &self.issuer)?;
-        if issuer.as_url().query().is_some() {
-            return Err(invalid_provider("issuer must not include a query"));
-        }
-        validate_canonical_issuer(&self.issuer, &issuer)?;
-        self.client_id = provider_required("client_id", &self.client_id)?;
+/// The refusal of a key of `[auth.provider]` that the mode `mode` does not
+/// read, or `None` when `error` is about another setting.
+fn not_a_setting(mode: &str, error: &SettingError) -> Option<AuthServerError> {
+    error.is_unknown().then(|| {
+        invalid_provider(format!(
+            "{}: not a setting of sign-in mode `{mode}`",
+            error.field()
+        ))
+    })
+}
 
-        if let Some(secret) = &mut self.client_secret {
-            *secret = ProviderSecret::from_trimmed("client_secret", secret.as_str())?;
-        }
-        if let Some(env_name) = &mut self.client_secret_env {
-            *env_name = env_name.trim().to_string();
-            if env_name.is_empty() {
-                return Err(invalid_provider(
-                    "client_secret_env must be a nonempty string",
-                ));
-            }
-            if env_name.bytes().any(|byte| matches!(byte, b'=' | b'\0')) {
-                return Err(invalid_provider("client_secret_env is invalid"));
-            }
-        }
-
-        // An omitted `scopes` and an explicit `scopes = []` both land here, and
-        // both take the defaults. Separating them would only let an empty list
-        // report `scopes must include openid` instead, which is the same
-        // startup failure for a request that could never authenticate.
-        if self.scopes.is_empty() {
-            self.scopes = DEFAULT_PROVIDER_SCOPES
-                .iter()
-                .map(ToString::to_string)
-                .collect();
-        }
-        if self.scopes.iter().any(|scope| !valid_scope_token(scope)) {
-            return Err(invalid_provider(
-                "scopes must contain valid OAuth scope tokens",
-            ));
-        }
-        if !self.scopes.iter().any(|scope| scope == "openid") {
-            return Err(invalid_provider("scopes must include `openid`"));
-        }
-
-        self.validate_identity_policy()?;
-        for key in self.auth_params.keys() {
-            validate_provider_key("auth_params", key)?;
-            if RESERVED_PROVIDER_AUTH_PARAMS
-                .iter()
-                .any(|reserved| key.eq_ignore_ascii_case(reserved))
-            {
-                return Err(invalid_provider(format!(
-                    "auth_params must not include reserved parameter `{key}`"
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_identity_policy(&mut self) -> Result<(), AuthServerError> {
-        self.display_name_claim =
-            provider_claim("display_name_claim", &self.display_name_claim, "email")?;
-        self.name_claim = provider_claim("name_claim", &self.name_claim, "name")?;
-        self.email_claim = provider_claim("email_claim", &self.email_claim, "email")?;
-        self.email_verified_claim = provider_claim(
-            "email_verified_claim",
-            &self.email_verified_claim,
-            "email_verified",
-        )?;
-        if self
-            .bootstrap_owner_subject
-            .as_deref()
-            .is_some_and(|subject| {
-                subject.len() > 255
-                    || !subject.is_ascii()
-                    || coral_workspace::UserId::parse(subject).is_err()
-                    || subject
-                        == coral_workspace::local_organization_owner()
-                            .user_id()
-                            .as_str()
-            })
-        {
-            return Err(invalid_provider(
-                "bootstrap_owner_subject must be a valid non-local OIDC subject",
-            ));
-        }
-        for (key, value) in &self.required_claims {
-            validate_provider_key("required_claims", key)?;
-            validate_required_claim_value(key, value)?;
-        }
-        if let Some(admission) = &mut self.access_token {
-            admission.audience = provider_required("access_token.audience", &admission.audience)?;
-            for (key, value) in &admission.required_claims {
-                validate_provider_key("access_token.required_claims", key)?;
-                validate_required_claim_value(key, value)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Reads the client secret from whichever source the config names and
-    /// hands the validated fields to the provider that will serve logins.
-    ///
-    /// The fields move rather than copy, so the two ways of naming a secret do
-    /// not survive into the resolved value alongside the secret itself.
-    fn resolve(
-        self,
-        authorization_server_issuer: &str,
-        get_var: &impl Fn(&str) -> Result<Option<String>, String>,
-    ) -> Result<ResolvedOidcProvider, AuthServerError> {
-        let client_secret = match (self.client_secret, self.client_secret_env) {
-            (Some(secret), _) => secret,
-            (None, Some(env_name)) => {
-                let value = Zeroizing::new(
-                    get_var(&env_name)
-                        .map_err(|_error| invalid_provider("client_secret_env could not be read"))?
-                        .ok_or_else(|| {
-                            invalid_provider(format!(
-                                "client_secret_env names `{env_name}`, which is not set"
-                            ))
-                        })?,
-                );
-                ProviderSecret::from_trimmed("client_secret_env", &value)?
-            }
-            // Defense in depth: `validate` requires exactly one source before
-            // any call reaches here, so this arm only guards a future caller
-            // that skips it.
-            (None, None) => {
-                return Err(invalid_provider(
-                    "client_secret or client_secret_env is required",
-                ));
-            }
-        };
-        Ok(ResolvedOidcProvider {
-            issuer: self.issuer,
-            client_id: self.client_id,
-            // The validated issuer is a canonical origin with no trailing slash.
-            redirect_uri: format!("{authorization_server_issuer}{OIDC_CALLBACK_PATH}"),
-            scopes: self.scopes,
-            bootstrap_owner_subject: self.bootstrap_owner_subject,
-            display_name_claim: self.display_name_claim,
-            name_claim: self.name_claim,
-            email_claim: self.email_claim,
-            email_verified_claim: self.email_verified_claim,
-            auth_params: self.auth_params,
-            required_claims: self.required_claims,
-            access_token: self.access_token,
-            client_secret,
-        })
+/// Where in `[auth.provider]` a setting is unusable, and why.
+fn at_provider(error: &SettingError) -> String {
+    if error.field().is_empty() {
+        format!("auth.provider: {}", error.reason())
+    } else {
+        format!("auth.provider.{error}")
     }
 }
 
-/// One upstream OIDC provider, validated and ready to serve logins.
-///
-/// [`OidcProviderSettings::resolve`] is the only way to build one, and it moves
-/// the validated fields out of the configured shape, so this type carries no
-/// `client_secret_env` still pointing at a secret and no empty `client_secret`
-/// to disagree with the one it holds. Holding one is therefore proof the secret
-/// was fetched, which is why reading it cannot fail.
-///
-/// The derived `Debug` is safe to print: the only secret-bearing field is a
-/// [`ProviderSecret`], which redacts itself.
-#[derive(Clone, Debug)]
-pub(super) struct ResolvedOidcProvider {
-    pub(super) issuer: String,
-    pub(super) client_id: String,
-    pub(super) redirect_uri: String,
-    pub(super) scopes: Vec<String>,
-    bootstrap_owner_subject: Option<String>,
-    pub(super) display_name_claim: String,
-    pub(super) name_claim: String,
-    pub(super) email_claim: String,
-    pub(super) email_verified_claim: String,
-    pub(super) auth_params: BTreeMap<String, String>,
-    pub(super) required_claims: BTreeMap<String, Value>,
-    pub(super) access_token: Option<AccessTokenAdmission>,
-    client_secret: ProviderSecret,
-}
-
-impl ResolvedOidcProvider {
-    pub(super) fn client_secret(&self) -> &str {
-        self.client_secret.as_str()
-    }
-}
-
-#[derive(Clone)]
-struct ProviderSecret(Arc<Zeroizing<String>>);
-
-impl ProviderSecret {
-    /// Trims a secret read from `field`, which names it in any error.
-    fn from_trimmed(field: &str, value: &str) -> Result<Self, AuthServerError> {
-        let value = value.trim();
-        if value.is_empty() {
-            Err(invalid_provider(format!("{field} must not be empty")))
-        } else {
-            Ok(Self(Arc::new(Zeroizing::new(value.to_string()))))
-        }
-    }
-
-    fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl<'de> Deserialize<'de> for ProviderSecret {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let invalid = || D::Error::custom("provider secret must be a nonempty string");
-        let value = String::deserialize(deserializer)
-            .map(Zeroizing::new)
-            .map_err(|_error| invalid())?;
-        if value.trim().is_empty() {
-            return Err(invalid());
-        }
-        Ok(Self(Arc::new(value)))
-    }
-}
-
-impl fmt::Debug for ProviderSecret {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("<redacted>")
-    }
+/// The one refusal for every `mode` this build lacks, `value` being the
+/// string it holds, if any. It repeats the value only when it has the form of
+/// a mode's name, since an operator can paste a secret under the wrong key.
+fn missing_mode(value: Option<&str>, modes: &SignInModes) -> AuthServerError {
+    let mut names: Vec<&str> = modes.names().filter(|name| *name != OIDC_MODE).collect();
+    names.sort_unstable();
+    let names = std::iter::once(OIDC_MODE)
+        .chain(names)
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mode = match value.filter(|value| ModeName::is_name(value)) {
+        Some(value) => format!("sign-in mode `{value}`"),
+        None => "such sign-in mode".to_owned(),
+    };
+    invalid_provider(format!(
+        "mode: this build has no {mode}. The modes of this build: {names}"
+    ))
 }
 
 fn deserialize_bind_addr<'de, D: Deserializer<'de>>(
@@ -835,121 +653,7 @@ fn required(label: &str, value: &str) -> Result<String, AuthServerError> {
     }
 }
 
-fn provider_required(field: &str, value: &str) -> Result<String, AuthServerError> {
-    let value = value.trim();
-    if value.is_empty() {
-        Err(invalid_provider(format!("{field} is required")))
-    } else {
-        Ok(value.to_string())
-    }
-}
-
-/// Parses the provider issuer without silently repairing its configured spelling.
-/// Discovery compares it byte for byte; syntax violations must fail at startup.
-fn provider_literal_endpoint(
-    field: &str,
-    value: &str,
-) -> Result<EndpointUrl<Configured>, AuthServerError> {
-    let syntax_violation = Cell::new(None);
-    let record_violation = |violation| syntax_violation.set(Some(violation));
-    let url = Url::options()
-        .syntax_violation_callback(Some(&record_violation))
-        .parse(value)
-        .map_err(|error| invalid_provider(format!("{field} is invalid: {error}")))?;
-    if let Some(violation) = syntax_violation.get() {
-        return Err(invalid_provider(format!("{field} is invalid: {violation}")));
-    }
-    EndpointUrl::<Configured>::from_parsed(url)
-        .map_err(|error| invalid_provider(format!("{field} is invalid: {error}")))
-}
-
-/// Rejects a provider issuer the URL parser would rewrite.
-///
-/// The issuer is retained exactly as configured, because an `OpenID` Connect
-/// discovery document's `issuer` must equal the configured one byte for byte.
-/// `OpenID` Connect Discovery 1.0 §3 and RFC 8414 §2 both require a published
-/// issuer to be a normalized URL, so a spelling the parser rewrites is one no
-/// compliant provider can publish. Accepting it would not make it work: it
-/// would trade a startup error for a discovery mismatch on every login.
-///
-/// Providers publish issuers both with a trailing slash and without one, so
-/// both are accepted — the parser appends one only to a root-path URL.
-fn validate_canonical_issuer(
-    configured: &str,
-    parsed: &EndpointUrl<Configured>,
-) -> Result<(), AuthServerError> {
-    let canonical = parsed.as_url().as_str();
-    if configured == canonical || format!("{configured}/") == canonical {
-        return Ok(());
-    }
-    Err(invalid_provider(format!(
-        "issuer must be copied exactly as the provider publishes it; `{configured}` is not a canonical URL (its canonical form is `{canonical}`)"
-    )))
-}
-
-fn valid_scope_token(scope: &str) -> bool {
-    !scope.is_empty()
-        && scope
-            .bytes()
-            .all(|byte| matches!(byte, 0x21 | 0x23..=0x5b | 0x5d..=0x7e))
-}
-
-fn provider_claim(field: &str, value: &str, default: &str) -> Result<String, AuthServerError> {
-    let value = if value.trim().is_empty() {
-        default
-    } else {
-        value.trim()
-    };
-    validate_provider_key(field, value)?;
-    Ok(value.to_string())
-}
-
-/// Rejects a `required_claims` value no ID token could carry.
-///
-/// These values are held as JSON so the check against a decoded ID token is a
-/// plain equality, but they are written in TOML, and the two languages do not
-/// describe the same values. TOML has a datetime that JSON does not, and `toml`
-/// hands one over as an object carrying a private marker key — accepted in
-/// silence today, then unmatchable against every ID token a provider can send.
-/// A date belongs in quotes, where it compares as the string the provider
-/// actually sends.
-///
-/// Numbers are accepted as written and compared as written: `serde_json` holds
-/// integers and floats apart, so `3` does not equal `3.0`. That distinction is
-/// the provider's to make, not something this can settle at startup — the value
-/// has to be spelled the way the ID token spells it.
-fn validate_required_claim_value(key: &str, value: &Value) -> Result<(), AuthServerError> {
-    let is_scalar =
-        |value: &Value| matches!(value, Value::String(_) | Value::Bool(_) | Value::Number(_));
-    let supported = match value {
-        Value::Array(values) => values.iter().all(is_scalar),
-        value => is_scalar(value),
-    };
-    if supported {
-        Ok(())
-    } else {
-        Err(invalid_provider(format!(
-            "required_claims `{key}` must be a string, boolean, number, or an array of those; quote a date or time so it is compared as the string the provider sends"
-        )))
-    }
-}
-
-/// Rejects a key that cannot name a claim or an authorization query parameter.
-///
-/// Interior whitespace matters as much as surrounding whitespace: a claim name
-/// carrying it can never be found in an ID token, and validating it here is
-/// what makes `provider_claim`'s startup guarantee real rather than reporting
-/// it as a missing claim on every login.
-fn validate_provider_key(field: &str, key: &str) -> Result<(), AuthServerError> {
-    if key.is_empty() || key.chars().any(char::is_whitespace) {
-        return Err(invalid_provider(format!(
-            "{field} keys must be nonempty and contain no whitespace"
-        )));
-    }
-    Ok(())
-}
-
-fn invalid_provider(message: impl fmt::Display) -> AuthServerError {
+pub(super) fn invalid_provider(message: impl fmt::Display) -> AuthServerError {
     AuthServerError::Config(format!(
         "invalid auth configuration: auth.provider.{message}"
     ))
@@ -971,7 +675,7 @@ fn validate_endpoint(label: &str, raw: &str) -> Result<EndpointUrl<Configured>, 
         .map_err(|error| config_error(format!("{label} is invalid: {error}")))
 }
 
-fn config_error(message: impl AsRef<str>) -> AuthServerError {
+pub(super) fn config_error(message: impl AsRef<str>) -> AuthServerError {
     AuthServerError::Config(format!("invalid auth configuration: {}", message.as_ref()))
 }
 
@@ -1000,12 +704,13 @@ mod tests {
 
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::*;
 
     use crate::auth::test_config::{PROVIDER, SESSION};
-    use crate::bootstrap::auth_settings;
+    use crate::bootstrap::{auth_settings, auth_settings_with};
+    use coral_sign_in::testing::TestModeFactory;
 
     /// Local override of the shared fixture: the trailing slash proves
     /// `validate_issuer` normalizes it away, and the rejection table rewrites
@@ -1631,6 +1336,192 @@ mod tests {
         assert_eq!(claims.get("level"), Some(&json!(3)));
         assert_eq!(claims.get("ratio"), Some(&json!(1.5)));
         assert_eq!(claims.get("groups"), Some(&json!(["staff", "admin"])));
+    }
+
+    /// `[auth.provider]` with `mode`, then `settings`.
+    fn with_mode(mode: &str, settings: &str) -> String {
+        format!(
+            "[auth]\n{SESSION}{AUTHORIZATION_SERVER}\n[auth.provider]\nmode = {mode}\n{settings}"
+        )
+    }
+
+    /// The fixture with `mode = 'oidc'`.
+    fn valid_with_oidc_mode() -> String {
+        valid("").replace("[auth.provider]\n", "[auth.provider]\nmode = 'oidc'\n")
+    }
+
+    fn test_modes() -> SignInModes {
+        SignInModes::default().with(Arc::new(TestModeFactory))
+    }
+
+    /// A mode that a launcher registers as `oidc`. Its `build` fails, so a
+    /// start that builds it is refused.
+    struct Impostor;
+
+    impl coral_sign_in::SignInModeFactory for Impostor {
+        fn name(&self) -> ModeName {
+            ModeName::new(OIDC_MODE).expect("a mode's name")
+        }
+
+        fn feature(&self) -> Option<coral_edition::EnterpriseFeature> {
+            None
+        }
+
+        fn build(
+            &self,
+            _settings: &ModeSettings,
+            _environment: &ModeEnvironment,
+        ) -> Result<Arc<dyn SignInMode>, SettingError> {
+            Err(SettingError::new("", "a mode registered as `oidc` built"))
+        }
+    }
+
+    fn impostor_modes() -> SignInModes {
+        SignInModes::default().with(Arc::new(Impostor))
+    }
+
+    /// A file of today has no `mode`, and means `oidc`. `oidc` is the
+    /// build's own: a mode that a launcher registers under that name never
+    /// builds.
+    #[test]
+    fn a_file_with_no_mode_or_mode_oidc_signs_in_by_oidc() {
+        let today = format!("{:?}", resolved(&valid("")).provider());
+        assert_eq!(
+            format!("{:?}", resolved(&valid_with_oidc_mode()).provider()),
+            today
+        );
+        // A build with other modes reads such a file the same way.
+        for modes in [test_modes(), impostor_modes()] {
+            for raw in [valid(""), valid_with_oidc_mode()] {
+                assert!(
+                    matches!(auth_settings_with(&raw, &modes), Ok(Some(_))),
+                    "{raw}"
+                );
+            }
+        }
+    }
+
+    /// One message serves every `mode` the build lacks. It lists the modes
+    /// of the build, and repeats only a value that has the form of a name.
+    #[test]
+    fn a_mode_this_build_lacks_refuses_the_start() {
+        const SECRET: &str = "Sk_Live_0123456789abcdef";
+        let prefix = "invalid auth configuration: auth.provider.mode: ";
+        for (mode, modes, expected) in [
+            (
+                "'nope'",
+                SignInModes::default(),
+                "this build has no sign-in mode `nope`. The modes of this build: `oidc`",
+            ),
+            (
+                "'nope'",
+                test_modes(),
+                "this build has no sign-in mode `nope`. The modes of this build: `oidc`, `test`",
+            ),
+            (
+                "'nope'",
+                impostor_modes(),
+                "this build has no sign-in mode `nope`. The modes of this build: `oidc`",
+            ),
+            (
+                &format!("'{SECRET}'"),
+                SignInModes::default(),
+                "this build has no such sign-in mode. The modes of this build: `oidc`",
+            ),
+            (
+                "7",
+                SignInModes::default(),
+                "this build has no such sign-in mode. The modes of this build: `oidc`",
+            ),
+        ] {
+            let raw = with_mode(mode, "");
+            let Err(error) = auth_settings_with(&raw, &modes) else {
+                panic!("{mode}: expected a refusal");
+            };
+            assert_eq!(error, format!("{prefix}{expected}"), "{mode}");
+        }
+    }
+
+    /// A key that the configured mode does not read names the key and the
+    /// mode, never the value. A nested key keeps its path.
+    #[test]
+    fn an_unknown_setting_names_the_mode() {
+        const SECRET: &str = "Sk_Live_0123456789abcdef";
+        for (raw, modes, expected) in [
+            (
+                valid("") + &format!("unknown = '{SECRET}'\n"),
+                SignInModes::default(),
+                "unknown: not a setting of sign-in mode `oidc`",
+            ),
+            (
+                valid_with_oidc_mode() + "sign_in_url = 'https://idp.example.test/start'\n",
+                test_modes(),
+                "sign_in_url: not a setting of sign-in mode `oidc`",
+            ),
+            (
+                valid("")
+                    + &format!(
+                        "\n[auth.provider.access_token]\naudience = 'env'\nunknown = '{SECRET}'\n"
+                    ),
+                SignInModes::default(),
+                "access_token.unknown: not a setting of sign-in mode `oidc`",
+            ),
+        ] {
+            let Err(error) = auth_settings_with(&raw, &modes) else {
+                panic!("{raw}: expected a refusal");
+            };
+            assert_eq!(
+                error,
+                format!("invalid auth configuration: auth.provider.{expected}"),
+                "{raw}"
+            );
+        }
+    }
+
+    /// The mode gets the rest of `[auth.provider]`, without `mode`, and
+    /// Coral's URL. Until a sign-in path serves a mode, startup then refuses.
+    #[tokio::test]
+    async fn a_registered_mode_gets_the_rest_of_the_section_and_coral_url() {
+        let prefix = "invalid auth configuration: auth.provider";
+        let start = "sign_in_url = 'https://idp.example.test/start'";
+        for (settings, expected) in [
+            (start, ".mode: sign-in mode `test` cannot serve sign-in yet"),
+            (
+                &format!("{start}\nissuer = 'https://accounts.example.test'"),
+                ".issuer: not a setting of sign-in mode `test`",
+            ),
+        ] {
+            let Err(error) = auth_settings_with(&with_mode("'test'", settings), &test_modes())
+            else {
+                panic!("{settings}: expected a refusal");
+            };
+            // The mode's own words follow; they are the mode's to test.
+            assert!(
+                error.starts_with(&format!("{prefix}{expected}")),
+                "{settings}: {error}"
+            );
+        }
+
+        let table = toml::from_str(&format!("mode = 'test'\n{start}")).expect("TOML");
+        let Ok(ProviderChoice::Mode(name, mode)) =
+            provider_choice(table, "http://localhost:9080", &test_modes())
+        else {
+            panic!("the test mode builds");
+        };
+        assert_eq!(name.as_str(), "test");
+        let begin = mode
+            .begin(
+                &coral_sign_in::SignInValue::new("value".to_owned()),
+                coral_db::UnixNanos::new(0),
+            )
+            .await
+            .expect("begin");
+        assert!(
+            begin
+                .as_str()
+                .ends_with("&return_to=http%3A%2F%2Flocalhost%3A9080%2F"),
+            "{begin}"
+        );
     }
 
     #[test]

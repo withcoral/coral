@@ -1,4 +1,4 @@
-import type { LucideProps } from 'lucide-react'
+import type { LucideProps } from 'lucide-react/types'
 
 // The GitHub mark from Simple Icons (CC0). The padded viewBox insets it like the
 // 24px line icons around it.

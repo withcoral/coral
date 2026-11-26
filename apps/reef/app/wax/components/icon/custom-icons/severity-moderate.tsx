@@ -1,6 +1,6 @@
-import type { LucideProps } from 'lucide-react'
+import type { LucideProps } from 'lucide-react/types'
 
-import { theme } from '../../../theme/theme.css'
+import { theme } from '@/wax/theme/theme.css'
 
 export function SeverityModerateIcon({ size = 24, ...props }: LucideProps) {
   return (

@@ -8,7 +8,7 @@ import {
   type ReactNode,
   type Ref,
 } from 'react'
-import { Container as ScrollArea } from '../scroll-area'
+import { Container as ScrollArea } from '@/wax/components/scroll-area'
 
 import { usePinnedGroup } from './pinned-group'
 import { ReadingPosition } from './reading-position'

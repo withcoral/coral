@@ -1,6 +1,6 @@
-import { globalStyle, recipe, style } from '../../css'
+import { globalStyle, recipe, style } from '@/wax/css'
 
-import { animation, theme } from '../../theme/theme.css'
+import { animation, theme } from '@/wax/theme/theme.css'
 
 export const group = style({
   background: theme.surface.onMainContent,

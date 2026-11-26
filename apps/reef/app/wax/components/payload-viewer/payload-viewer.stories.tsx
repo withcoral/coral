@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, waitFor, within } from 'storybook/test'
-import { inTestBrowser, press } from '../../storybook/browser'
+import { inTestBrowser, press } from '@/wax/storybook/browser'
 import { PayloadViewer } from './payload-viewer'
 
 const largeJson = JSON.stringify({

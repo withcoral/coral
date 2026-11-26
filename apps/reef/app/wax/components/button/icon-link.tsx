@@ -1,7 +1,7 @@
 import { Link, type To } from 'react-router'
 
-import type { IconName } from '../icon'
-import { Tooltip, type TooltipProps } from '../tooltip'
+import type { IconName } from '@/wax/components/icon'
+import { Tooltip, type TooltipProps } from '@/wax/components/tooltip'
 
 import type { ButtonSize, ButtonVariant } from './button.css'
 import { Container } from './container'

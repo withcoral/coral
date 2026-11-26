@@ -1,9 +1,9 @@
 import { Popover } from '@base-ui/react/popover'
 import { useState } from 'react'
 
-import { Button, Inputs, Typography } from '..'
-import { Icon } from '../icon'
-import type { IconName } from '../icon'
+import { Button, Inputs, Typography } from '@/wax/components'
+import { Icon } from '@/wax/components/icon'
+import type { IconName } from '@/wax/components/icon'
 
 import * as styles from './duration-picker.css'
 

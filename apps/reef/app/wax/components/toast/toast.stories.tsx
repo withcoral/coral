@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { TextButton } from '../button'
+import { TextButton } from '@/wax/components/button'
 
 import { addToast, dismissAllToasts } from './toast'
 import { ToastContainer } from './toast-container'

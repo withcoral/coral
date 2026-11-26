@@ -1,6 +1,6 @@
 import { useState, type PointerEvent, type ReactNode } from 'react'
 
-import { Tooltip } from '../../tooltip'
+import { Tooltip } from '@/wax/components/tooltip'
 
 import { chartBgColor, chartColor, scaleLinear } from '../utils'
 import * as styles from './sparkline.css'

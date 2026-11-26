@@ -1,5 +1,5 @@
-import { keyframes, style } from '../css'
-import type { StyleRule } from '../css'
+import { keyframes, style } from '@/wax/css'
+import type { StyleRule } from '@/wax/css'
 
 const reducedMotion = {
   '@media': {

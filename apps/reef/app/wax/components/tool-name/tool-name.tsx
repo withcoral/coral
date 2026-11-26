@@ -1,7 +1,7 @@
 import classNames from 'classnames'
 import type { ReactNode } from 'react'
 
-import { Logo, type LogoIcons } from '../logo'
+import { Logo, type LogoIcons } from '@/wax/components/logo'
 
 import * as styles from './tool-name.css'
 

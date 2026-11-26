@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 
-import { List } from '..'
-import { IconButton } from '../button'
+import { List } from '@/wax/components'
+import { IconButton } from '@/wax/components/button'
 
 import { KeyboardShortcut } from './keyboard-shortcut'
 

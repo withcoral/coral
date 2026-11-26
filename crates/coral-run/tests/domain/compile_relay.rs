@@ -42,6 +42,7 @@ fn token() -> Token {
 /// A Run Executor in this process that dials `link` and holds it.
 fn dial(link: &Link) {
     let config = RunExecutorConfig {
+        run_executor_id: uuid::Uuid::new_v4(),
         coral_address: format!("http://{}", link.address)
             .parse()
             .expect("the link's address"),

@@ -1,4 +1,4 @@
-import { sourceLines } from '../code-block'
+import { sourceLines } from '@/wax/components/code-block'
 
 /** One line of a diff, numbered from 1 on each side that holds it. */
 export interface DiffLine {

@@ -1,9 +1,9 @@
 import classNames from 'classnames'
 import { useEffect, useId, useImperativeHandle, useRef, useState } from 'react'
 
-import { TextButton } from '../../button'
-import * as inputStyles from '../base-input.css'
-import { visuallyHidden } from '../../visually-hidden.css'
+import { TextButton } from '@/wax/components/button'
+import * as inputStyles from '@/wax/components/inputs/base-input.css'
+import { visuallyHidden } from '@/wax/components/visually-hidden.css'
 import * as styles from './file-input.css'
 
 export interface FileInputProps {

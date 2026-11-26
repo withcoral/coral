@@ -1,6 +1,6 @@
-import { style } from '../../css'
+import { style } from '@/wax/css'
 
-import { theme } from '../../theme/theme.css'
+import { theme } from '@/wax/theme/theme.css'
 
 export const popover = style({
   backgroundColor: theme.surface.floating,

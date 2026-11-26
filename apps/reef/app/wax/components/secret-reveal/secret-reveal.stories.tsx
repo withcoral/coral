@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 import { createRoutesStub } from 'react-router'
 import { expect, userEvent } from 'storybook/test'
 
-import { Button } from '..'
+import { Button } from '@/wax/components'
 
 import { SecretReveal } from './secret-reveal'
 

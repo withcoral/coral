@@ -1,6 +1,6 @@
-import { globalStyle, style, styleVariants } from '../../css'
+import { globalStyle, style, styleVariants } from '@/wax/css'
 
-import { theme } from '../../theme/theme.css'
+import { theme } from '@/wax/theme/theme.css'
 
 const FADE_SIZE_PX = 40
 

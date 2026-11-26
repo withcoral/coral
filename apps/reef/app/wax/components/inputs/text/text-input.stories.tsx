@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { Controller, useForm } from 'react-hook-form'
 import { expect, userEvent } from 'storybook/test'
 
-import { Button } from '../..'
+import { Button } from '@/wax/components'
 
 import { TextInput } from './text-input'
 
