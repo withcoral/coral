@@ -149,6 +149,15 @@ fn a_rejected_mode_setting_names_its_field_and_never_its_value() {
         (error.field(), error.reason()),
         ("issuer", "not a setting of this sign-in mode")
     );
+
+    // An empty key names no field, so it is not marked.
+    let (built, environment) = settings("sign_in_url = 'https://idp.example.test/'\n'' = 1");
+    let Err(error) = TestModeFactory.build(&built, &environment) else {
+        panic!("expected a refusal");
+    };
+    assert!(!error.is_unknown(), "{error}");
+    assert_eq!(error.field(), "", "{error}");
+    assert!(error.reason().starts_with("unknown field ``"), "{error}");
 }
 
 /// Settings, a request, a sign-in's value and a person can each hold a

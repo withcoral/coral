@@ -107,15 +107,16 @@ impl SettingError {
         }
     }
 
-    /// Whether [`ModeSettings::decode`] found a key that the mode's settings
-    /// do not read. The reason then names no mode, so that the caller can
-    /// name it.
+    /// Whether [`ModeSettings::decode`] found a nonempty key that the mode's
+    /// settings do not read. The reason then names no mode, so that the
+    /// caller can name it.
     #[must_use]
     pub const fn is_unknown(&self) -> bool {
         self.unknown
     }
 
-    /// The field below `[auth.provider]`. Empty for the table itself.
+    /// The field below `[auth.provider]`. Empty for the table itself, and for
+    /// a key that is the empty string.
     #[must_use]
     pub fn field(&self) -> &str {
         &self.field
@@ -164,7 +165,7 @@ impl ModeSettings {
     ///
     /// A message that serde writes with the value it rejects becomes
     /// "unsupported value". When `T` has `#[serde(deny_unknown_fields)]`, a
-    /// key that it does not read gives an error for which
+    /// nonempty key that it does not read gives an error for which
     /// [`SettingError::is_unknown`] holds. Without that attribute, or with a
     /// `#[serde(flatten)]` field, serde accepts such a key in silence, so a
     /// mode's settings deny unknown fields. Any other message is kept, so a
@@ -187,7 +188,8 @@ impl ModeSettings {
                     error.path().to_string()
                 };
                 let message = error.inner().message();
-                let unknown = message.starts_with(UNKNOWN_FIELD_MESSAGE);
+                // An empty key names no field, so serde's text stays.
+                let unknown = !field.is_empty() && message.starts_with(UNKNOWN_FIELD_MESSAGE);
                 let reason = if unknown {
                     Cow::Borrowed("not a setting of this sign-in mode")
                 } else if VALUE_BEARING_MESSAGES
