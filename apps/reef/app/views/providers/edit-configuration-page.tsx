@@ -412,6 +412,7 @@ export function EditConfigurationPage({
   return (
     <PageLayout
       variant="wide"
+      pinnedTop
       breadcrumbs={trail(
         [
           { label: 'Tools', to: toolsPath },

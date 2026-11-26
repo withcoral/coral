@@ -38,6 +38,7 @@ export function UpdatePage({
   return (
     <PageLayout
       variant="wide"
+      pinnedTop
       breadcrumbs={trail(
         [
           { label: 'Tools', to: toolsPath },

@@ -154,6 +154,7 @@ function StepperAttemptPage({
   const page = (body: ReactNode) => (
     <PageLayout
       variant="wide"
+      pinnedTop
       breadcrumbs={[
         { id: 'tools', type: 'link', text: 'Tools', to: cancelPath },
         { id: 'add', type: 'text', text: `Add ${providerName || 'provider'}` },

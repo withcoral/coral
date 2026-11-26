@@ -1,5 +1,6 @@
-import { useId } from 'react'
-import { Combobox, Radio, Typography } from '@/wax/components'
+import { useId, type MouseEvent, type ReactNode } from 'react'
+import { Card, Combobox, Radio, ScrollArea, Typography } from '@/wax/components'
+import { TextLink } from '@/wax/components/text-link'
 
 import { serverLabel } from './configuration-details'
 import { FieldError, RequiredMark, TextField } from './fields'
@@ -135,6 +136,67 @@ export function ServerField({
           />
         ),
       )}
+    </div>
+  )
+}
+
+/**
+ * Brings a field into the middle of the view, clear of the pinned step header,
+ * and focuses it, as the browser's own jump to `#id` does not.
+ */
+function jumpTo(event: MouseEvent<HTMLAnchorElement>, id: string) {
+  const target = document.getElementById(id)
+  if (!target) return
+  event.preventDefault()
+  const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+  target.scrollIntoView?.({ block: 'center', behavior: still ? 'auto' : 'smooth' })
+  target.focus({ preventScroll: true })
+}
+
+/**
+ * The servers that hold the URL the recipe gives them, each with its full field,
+ * in a box that scrolls on its own. A recipe can fill in many servers, and a
+ * long list must not make the step long.
+ */
+export function DefaultServers({
+  sources,
+  children,
+}: {
+  /** The recipe questions the URLs are built from, such as Datadog site, and their fields' ids. */
+  sources: readonly { label: string; id: string }[]
+  /** The server fields. */
+  children: ReactNode
+}) {
+  const headingId = useId()
+  return (
+    <div className={styles.defaultServers} role="group" aria-labelledby={headingId}>
+      <div className={styles.defaultServersText}>
+        <Typography.BodySmallStrong as="h4" id={headingId}>
+          Servers
+        </Typography.BodySmallStrong>
+        <Typography.BodySmall as="p" variant="tertiary">
+          Each tool sends its requests to one of these URLs.
+          {sources.length > 0 && (
+            <>
+              {' Based on the '}
+              {sources.map((source, index) => (
+                <span key={source.id}>
+                  {index > 0 && ' and '}
+                  <TextLink href={`#${source.id}`} onClick={(event) => jumpTo(event, source.id)}>
+                    {source.label}
+                  </TextLink>
+                </span>
+              ))}
+              {' config above.'}
+            </>
+          )}
+        </Typography.BodySmall>
+      </div>
+      <Card.Container flush>
+        <ScrollArea.Container maxHeight="320px" scrollDirection="vertical">
+          <div className={styles.defaultServerFields}>{children}</div>
+        </ScrollArea.Container>
+      </Card.Container>
     </div>
   )
 }

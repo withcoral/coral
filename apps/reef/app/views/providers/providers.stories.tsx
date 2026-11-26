@@ -1802,12 +1802,22 @@ export const ConfigurationFromRecipe: Story = {
   play: async ({ canvas }) => {
     // The recipe's questions are plain fields now, so the story checks the
     // question and the value it filled in rather than a section around them.
-    await expect(canvas.getByText('Example site')).toBeVisible()
+    await expect(canvas.getByText('Example site', { selector: 'span' })).toBeVisible()
     await expect(canvas.getByRole('button', { name: 'eu.example.test' })).toBeVisible()
   },
 }
 // Datadog V2's shape: each tool's own server is built from the site the person picks.
-const siteToolPaths = ['/api/v2/logs', '/api/v2/metrics', '/api/v2/series', '/api/v2/spans']
+const siteToolPaths = [
+  '/api/v2/cilogs',
+  '/api/v2/events',
+  '/api/v2/logs',
+  '/api/v2/on-call/pages',
+  '/api/v2/on-call/pages/{page_id}/acknowledge',
+  '/api/v2/on-call/pages/{page_id}/escalate',
+  '/api/v2/on-call/pages/{page_id}/reroute',
+  '/api/v2/on-call/pages/{page_id}/resolve',
+  '/api/v2/prodlytics',
+]
 const siteServerDeclarations = siteToolPaths.map(
   (path) => `#/paths/${path.replaceAll('/', '~1')}/post/servers`,
 )
@@ -1815,6 +1825,8 @@ const siteServersSetup = (errors: Record<string, string> = {}): SetupView => ({
   ...configurationSetup,
   configuration: {
     ...configurationSetup.configuration!,
+    // Nothing saved yet: the base fixture's saved main server is not in this document.
+    values: { ...configurationSetup.configuration!.values, servers: [] },
     servers: siteServerDeclarations.map((declaration) => ({
       declaration,
       tools: ['submit'],
@@ -1847,8 +1859,8 @@ const siteServersRecipe: RecipeConfigurationView = {
     })),
   },
 }
-/** Every tool server holds the URL the site gives it, so the list folds to one line. */
-export const ConfigurationSuggestedServersFolded: Story = {
+/** Every tool server holds the URL the site gives it, so each field sits in the box that scrolls. */
+export const ConfigurationDefaultServers: Story = {
   render: () => (
     <StepperPage
       {...stepperWorkspace}
@@ -1858,13 +1870,58 @@ export const ConfigurationSuggestedServersFolded: Story = {
   ),
   parameters: workspaceEntry,
 }
-/** A tool server with an error stays in view; the rest fold. */
-export const ConfigurationSuggestedServersWithError: Story = {
+/** A tool server with an error stays in view above the box of the rest. */
+export const ConfigurationDefaultServersWithError: Story = {
   render: () => (
     <StepperPage
       {...stepperWorkspace}
       setup={siteServersSetup({ [siteServerDeclarations[1]]: 'Enter a reachable URL.' })}
       recipeConfiguration={siteServersRecipe}
+    />
+  ),
+  parameters: workspaceEntry,
+}
+/** Discord's shape: the recipe gives each server a fixed URL, so no question sets them. */
+export const ConfigurationDefaultServersFixed: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      setup={siteServersSetup()}
+      recipeConfiguration={{
+        ...siteServersRecipe,
+        inputs: [],
+        values: {
+          ...siteServersRecipe.values,
+          servers: siteServerDeclarations.map((declaration) => ({
+            declaration,
+            url: 'https://discord.com/api/v10',
+            custom: true,
+            variables: {},
+          })),
+        },
+      }}
+    />
+  ),
+  parameters: workspaceEntry,
+}
+/** No recipe does this yet: the site sets three servers, the rest are fixed, so the box names no question. */
+export const ConfigurationDefaultServersMixed: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      setup={siteServersSetup()}
+      recipeConfiguration={{
+        ...siteServersRecipe,
+        values: {
+          ...siteServersRecipe.values,
+          servers: siteServerDeclarations.map((declaration, index) => ({
+            declaration,
+            url: index < 3 ? 'https://api.{{input.site}}' : 'https://intake.example.com',
+            custom: true,
+            variables: {},
+          })),
+        },
+      }}
     />
   ),
   parameters: workspaceEntry,
