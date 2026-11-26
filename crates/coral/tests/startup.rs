@@ -587,9 +587,10 @@ const OPERATOR_TOKEN_ENV: &str = "CORAL_TEST_RUN_EXECUTOR_TOKEN";
 const OPERATOR_TOKEN: &str = "operator-token-for-the-dialed-run-executor-tests";
 
 /// A runtime with its local Run Executors off, admitting the operator token,
-/// on a state root in `temp`.
+/// on a state root in `temp`, with the TOML `extra_toml` appended to its
+/// config.
 #[cfg(unix)]
-fn runtime_with_children_off(temp: &tempfile::TempDir) -> (Runtime, PathBuf) {
+fn runtime_with_children_off(temp: &tempfile::TempDir, extra_toml: &str) -> (Runtime, PathBuf) {
     let state_root = local_state_root_with(
         temp,
         &format!(
@@ -598,7 +599,7 @@ bind = '127.0.0.1:0'
 token_env = '{OPERATOR_TOKEN_ENV}'
 [runtime]
 local_run_executors = false
-"
+{extra_toml}"
         ),
     );
     let runtime = Runtime::start_with(&state_root, false, |command| {
@@ -608,16 +609,18 @@ local_run_executors = false
 }
 
 /// A `coral run-executor` that `runtime` did not start, dialing it with the
-/// operator token and holding at most `max_runs_held` Runs.
+/// operator token and holding at most `max_runs_held` Runs, with only
+/// `environment` beside the token.
 #[cfg(unix)]
 struct Dialed(Child);
 
 #[cfg(unix)]
 impl Dialed {
-    fn dial(runtime: &Runtime, max_runs_held: u32) -> Self {
+    fn dial(runtime: &Runtime, max_runs_held: u32, environment: &[(&str, &str)]) -> Self {
         let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_coral"));
         command
             .env_clear()
+            .envs(environment.iter().copied())
             .env("CORAL_RUN_EXECUTOR_TOKEN", OPERATOR_TOKEN)
             .args(["run-executor", "--coral-address"])
             .arg(&runtime.run_executor_address)
@@ -649,8 +652,8 @@ fn assert_no_child(runtime: &Runtime) {
 #[test]
 fn a_dialed_run_executor_compiles_and_runs_with_local_children_off() {
     let temp = tempfile::tempdir().expect("temp dir");
-    let (runtime, state_root) = runtime_with_children_off(&temp);
-    let _dialed = Dialed::dial(&runtime, 128);
+    let (runtime, state_root) = runtime_with_children_off(&temp, "");
+    let _dialed = Dialed::dial(&runtime, 128, &[]);
     let body = exec_over_mcp(
         workspace_mcp_url(&runtime),
         r#"{"goal":"Run on a dialed one","intent":"Run on a dialed one","program":"return 40 + 2;"}"#,
@@ -659,7 +662,7 @@ fn a_dialed_run_executor_compiles_and_runs_with_local_children_off() {
         body.contains(r#""final_value":{"kind":"value","value":42}"#),
         "{body}"
     );
-    let kind = block_on(composed::recorded_run_executor_kind(
+    let (kind, _id) = block_on(composed::recorded_run_executor(
         &state_root,
         &run_id_in(&body),
     ));
@@ -674,8 +677,8 @@ fn a_dialed_run_executor_compiles_and_runs_with_local_children_off() {
 #[test]
 fn a_full_fleet_leaves_work_waiting_and_starts_no_child() {
     let temp = tempfile::tempdir().expect("temp dir");
-    let (runtime, state_root) = runtime_with_children_off(&temp);
-    let _dialed = Dialed::dial(&runtime, 1);
+    let (runtime, state_root) = runtime_with_children_off(&temp, "");
+    let _dialed = Dialed::dial(&runtime, 1, &[]);
     let url = workspace_mcp_url(&runtime);
     let spinning = run_id_in(&exec_over_mcp(
         url.clone(),
@@ -711,4 +714,166 @@ fn a_full_fleet_leaves_work_waiting_and_starts_no_child() {
         "{body}"
     );
     assert_no_child(&runtime);
+}
+
+/// An OTLP/HTTP collector that keeps every export it receives.
+#[cfg(unix)]
+struct Sink(wiremock::MockServer);
+
+#[cfg(unix)]
+impl Sink {
+    fn start() -> Self {
+        use wiremock::{Mock, ResponseTemplate, matchers::method};
+        block_on(async {
+            let server = wiremock::MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200))
+                .mount(&server)
+                .await;
+            Self(server)
+        })
+    }
+
+    /// The `[otel]` table of a runtime that exports to this sink.
+    fn otel_toml(&self) -> String {
+        format!("[otel]\nendpoint = '{}'\n", self.0.uri())
+    }
+
+    /// Waits until `found` holds for one export to `path`, decoded as `M`.
+    fn wait_for<M: prost::Message + Default>(&self, path: &str, mut found: impl FnMut(M) -> bool) {
+        let deadline = Instant::now() + EXIT_TIMEOUT;
+        loop {
+            let requests = block_on(self.0.received_requests()).unwrap_or_default();
+            if requests
+                .iter()
+                .filter(|request| request.url.path() == path)
+                .filter_map(|request| M::decode(request.body.as_slice()).ok())
+                .any(&mut found)
+            {
+                return;
+            }
+            assert!(Instant::now() < deadline, "no export to {path} matched");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+/// The `service.instance.id` of an exported `resource`.
+#[cfg(unix)]
+fn instance_id(
+    resource: Option<&opentelemetry_proto::tonic::resource::v1::Resource>,
+) -> Option<&str> {
+    use opentelemetry_proto::tonic::common::v1::any_value::Value;
+    let attribute = resource?
+        .attributes
+        .iter()
+        .find(|attribute| attribute.key == "service.instance.id")?;
+    match attribute.value.as_ref()?.value.as_ref()? {
+        Value::StringValue(id) => Some(id),
+        _ => None,
+    }
+}
+
+/// A Run on a local child and a Run on a dialed Run Executor each send the
+/// Run Executor's CPU time, heap peak and compiler metrics to the
+/// collector, with its id as `service.instance.id`. Coral's `[otel]`
+/// reaches its child, and the operator's variables the dialed one.
+///
+/// Catches: a Run Executor that starts no exporter, or whose metrics no
+/// layer records (#3498).
+#[cfg(unix)]
+#[test]
+fn a_run_executors_metrics_reach_the_collector_under_its_id() {
+    use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+
+    let sink = Sink::start();
+    let endpoint = sink.0.uri();
+    for dialed in [false, true] {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let (runtime, state_root) = if dialed {
+            runtime_with_children_off(&temp, &sink.otel_toml())
+        } else {
+            let state_root = local_state_root_with(&temp, &sink.otel_toml());
+            (Runtime::start(&state_root, false), state_root)
+        };
+        let _dialed = dialed
+            .then(|| Dialed::dial(&runtime, 1, &[("OTEL_EXPORTER_OTLP_ENDPOINT", &endpoint)]));
+        let body = exec_over_mcp(
+            workspace_mcp_url(&runtime),
+            r#"{"goal":"Export","intent":"Export","program":"return 40 + 2;"}"#,
+        );
+        assert!(body.contains(r#""value":42"#), "{body}");
+        let (kind, id) = block_on(composed::recorded_run_executor(
+            &state_root,
+            &run_id_in(&body),
+        ));
+        assert_eq!(
+            kind.as_deref(),
+            Some(if dialed { "dialed" } else { "local" })
+        );
+        let id = id.expect("the Run's Run Executor");
+        let mut names = std::collections::BTreeSet::new();
+        sink.wait_for("/v1/metrics", |export: ExportMetricsServiceRequest| {
+            let metrics = export
+                .resource_metrics
+                .iter()
+                .filter(|metrics| instance_id(metrics.resource.as_ref()) == Some(&id))
+                .flat_map(|metrics| &metrics.scope_metrics)
+                .flat_map(|scope| &scope.metrics);
+            names.extend(metrics.map(|metric| metric.name.clone()));
+            names.contains("coral.program.execution.cpu.duration")
+                && names.contains("coral.program.execution.heap.peak")
+                && names.iter().any(|name| name.starts_with("coral.compiler."))
+        });
+    }
+}
+
+/// Catches: a default log filter that leaves out the Run Executor
+/// listener, so that Coral's refusal of a Run Executor at another protocol
+/// level reaches no collector (#3498).
+#[cfg(unix)]
+#[test]
+fn the_listeners_protocol_level_refusal_reaches_the_collector() {
+    use coral_run_executor::wire::v1::link_service_client::LinkServiceClient;
+    use coral_run_executor::wire::v1::{Hello, PullRequest, pull_request};
+    use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+    use opentelemetry_proto::tonic::common::v1::any_value::Value;
+
+    let sink = Sink::start();
+    let temp = tempfile::tempdir().expect("temp dir");
+    let (runtime, _state_root) = runtime_with_children_off(&temp, &sink.otel_toml());
+    let hello = PullRequest {
+        message: Some(pull_request::Message::Hello(Hello {
+            run_executor_id: uuid::Uuid::new_v4().to_string(),
+            protocol_level: coral_run_executor::PROTOCOL_LEVEL + 2,
+            free: 1,
+            limits: None,
+        })),
+    };
+    let refused = block_on(async {
+        let mut client = LinkServiceClient::connect(runtime.run_executor_address.clone())
+            .await
+            .expect("connect to the Run Executor listener");
+        let mut request = tonic::Request::new(tonic::codegen::tokio_stream::once(hello));
+        request.metadata_mut().insert(
+            "authorization",
+            format!("Bearer {OPERATOR_TOKEN}")
+                .parse()
+                .expect("metadata"),
+        );
+        client
+            .pull(request)
+            .await
+            .expect_err("Coral refuses the pull stream")
+    });
+    assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
+    sink.wait_for("/v1/logs", |export: ExportLogsServiceRequest| {
+        export
+            .resource_logs
+            .iter()
+            .flat_map(|logs| &logs.scope_logs)
+            .flat_map(|scope| &scope.log_records)
+            .filter_map(|record| record.body.as_ref()?.value.as_ref())
+            .any(|body| matches!(body, Value::StringValue(body) if body.contains("protocol level")))
+    });
 }

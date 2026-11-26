@@ -149,7 +149,11 @@ impl coral_app::RunErrorTelemetry for ProcessError {
 pub async fn run(extensions: coral_app::Extensions) -> ExitCode {
     let ProcessArgs { command } = ProcessArgs::parse();
     let result = match command {
-        Some(Command::RunExecutor(args)) => Some(run_executor(args).await),
+        Some(Command::RunExecutor(args)) => {
+            let result = run_executor(args).await;
+            let _flushed = tokio::task::spawn_blocking(coral_app::shutdown_tracing).await;
+            Some(result)
+        }
         Some(Command::EmbedCheck(args)) => Some(embed_check::run(&args)),
         None => None,
     };
@@ -363,11 +367,16 @@ async fn run_executor(args: RunExecutorArgs) -> anyhow::Result<()> {
             "invalid --execution-heap-bytes (CORAL_RUN_EXECUTOR_EXECUTION_HEAP_BYTES) \
              or --compiler-heap-bytes (CORAL_RUN_EXECUTOR_COMPILER_HEAP_BYTES)",
         )?;
-    // The Run Executor's own warnings, such as a refused protocol level.
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_max_level(tracing_subscriber::filter::LevelFilter::WARN)
-        .init();
+    let run_executor_id = uuid::Uuid::new_v4();
+    // Coral's exporter, filters and queues; with no endpoint, no log at all.
+    let telemetry =
+        coral_app::telemetry::RunExecutorTelemetry::from_env().map_err(anyhow::Error::msg)?;
+    coral_app::telemetry::init_run_executor_telemetry(
+        &telemetry,
+        &run_executor_id.to_string(),
+        VERSION,
+    )
+    .context("start the Run Executor's telemetry")?;
     let token = match (token_stdin, run_executor_token_env()?) {
         (true, None) => read_stdin_token()?
             .await
@@ -387,6 +396,7 @@ async fn run_executor(args: RunExecutorArgs) -> anyhow::Result<()> {
         None => None,
     };
     let config = coral_run_executor::RunExecutorConfig {
+        run_executor_id,
         coral_address,
         token: coral_run_executor::Token::new(token)?,
         local_child: token_stdin,

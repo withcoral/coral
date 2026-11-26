@@ -408,7 +408,7 @@ impl PreparedServerBuilder {
                 settings,
                 program: (launcher.run_executor_program.clone())
                     .map_or_else(std::env::current_exe, Ok)?,
-                environment: super::env::run_executor_environment(),
+                environment: super::env::run_executor_environment(deployment_config.telemetry()),
             }),
             None => None,
         };
@@ -712,7 +712,8 @@ fn init_server_telemetry(
     service_version: Option<&'static str>,
 ) -> Result<(), AppError> {
     let service_version = service_version.unwrap_or(env!("CARGO_PKG_VERSION"));
-    crate::telemetry::init_tracing(config, instance_id, service_version)
+    crate::telemetry::init_tracing(config, "", instance_id, service_version)
+        .map_err(AppError::Telemetry)
 }
 
 /// Opens the host credential vault from the source the deployment selects:
