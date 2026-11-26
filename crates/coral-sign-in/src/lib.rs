@@ -34,6 +34,9 @@ const TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%SZ";
 /// Serde messages that quote the value they reject.
 const VALUE_BEARING_MESSAGES: [&str; 3] = ["invalid type: ", "invalid value: ", "unknown variant "];
 
+/// Serde's message for a key that a struct does not read.
+const UNKNOWN_FIELD_MESSAGE: &str = "unknown field ";
+
 /// The name a build registers a mode under: the value of `mode`, and the
 /// segment of the mode's URLs under `/auth/`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +92,7 @@ fn is_token(value: &str, max_len: usize, also: impl Fn(char) -> bool) -> bool {
 pub struct SettingError {
     field: String,
     reason: Cow<'static, str>,
+    unknown: bool,
 }
 
 impl SettingError {
@@ -99,10 +103,20 @@ impl SettingError {
         Self {
             field: field.into(),
             reason: Cow::Borrowed(reason),
+            unknown: false,
         }
     }
 
-    /// The field below `[auth.provider]`. Empty for the table itself.
+    /// Whether [`ModeSettings::decode`] found a nonempty key that the mode's
+    /// settings do not read. The reason then names no mode, so that the
+    /// caller can name it.
+    #[must_use]
+    pub const fn is_unknown(&self) -> bool {
+        self.unknown
+    }
+
+    /// The field below `[auth.provider]`. Empty for the table itself, and for
+    /// a key that is the empty string.
     #[must_use]
     pub fn field(&self) -> &str {
         &self.field
@@ -150,9 +164,14 @@ impl ModeSettings {
     /// `toml::Value` hands a datetime over as a string.
     ///
     /// A message that serde writes with the value it rejects becomes
-    /// "unsupported value". Any other message is kept, so a mode's own
-    /// `Deserialize` must never quote what it rejects, as for every setting
-    /// of `config.toml`.
+    /// "unsupported value". When `T` has `#[serde(deny_unknown_fields)]`, a
+    /// nonempty key that it does not read gives an error for which
+    /// [`SettingError::is_unknown`] holds. Without that attribute, or with a
+    /// `#[serde(flatten)]` field, serde accepts such a key in silence, so a
+    /// mode's settings deny unknown fields. Any other message is kept, so a
+    /// mode's own `Deserialize` must never quote what it rejects, as for
+    /// every setting of `config.toml`, nor start a message with "unknown
+    /// field".
     ///
     /// # Errors
     /// Returns the field and reason a value is rejected, never the value.
@@ -163,8 +182,17 @@ impl ModeSettings {
             .map_err(|_error| SettingError::new("", "unsupported value"))?;
         serde_path_to_error::deserialize(deserializer).map_err(
             |error: serde_path_to_error::Error<toml::de::Error>| {
+                let field = if error.path().iter().next().is_none() {
+                    String::new()
+                } else {
+                    error.path().to_string()
+                };
                 let message = error.inner().message();
-                let reason = if VALUE_BEARING_MESSAGES
+                // An empty key names no field, so serde's text stays.
+                let unknown = !field.is_empty() && message.starts_with(UNKNOWN_FIELD_MESSAGE);
+                let reason = if unknown {
+                    Cow::Borrowed("not a setting of this sign-in mode")
+                } else if VALUE_BEARING_MESSAGES
                     .iter()
                     .any(|prefix| message.starts_with(prefix))
                 {
@@ -172,12 +200,11 @@ impl ModeSettings {
                 } else {
                     Cow::Owned(message.to_owned())
                 };
-                let field = if error.path().iter().next().is_none() {
-                    String::new()
-                } else {
-                    error.path().to_string()
-                };
-                SettingError { field, reason }
+                SettingError {
+                    field,
+                    reason,
+                    unknown,
+                }
             },
         )
     }

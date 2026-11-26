@@ -36,10 +36,10 @@ use tokio::time::Instant;
 use url::Url;
 use zeroize::Zeroizing;
 
-use super::config::{RESERVED_PROVIDER_AUTH_PARAMS, ResolvedOidcProvider};
 use super::id_token::{
     TokenRejection, ValidatedOidcIdentity, validate_access_token_admission, validate_id_token,
 };
+use super::oidc_mode::{RESERVED_PROVIDER_AUTH_PARAMS, ResolvedOidcProvider};
 use super::sealed_handshake::HandshakeKeys;
 use coral_outbound::{Configured, Discovered, EndpointUrl, read_bounded_body};
 
