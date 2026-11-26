@@ -376,8 +376,7 @@ async fn catalog_schema_rejects_drift() {
         .unwrap();
 
     let error = fixture
-        .database()
-        .migrate(coral_db::migration_plan())
+        .upgrade()
         .await
         .expect_err("a drifted catalog table must be rejected");
 
@@ -499,10 +498,7 @@ async fn upgrade_renames_what_a_generation_stored_about_its_tools() {
         fixture.execute_fixture_sql(downgrade).await.unwrap();
     }
 
-    database
-        .migrate(coral_db::migration_plan())
-        .await
-        .expect("apply the upgrade");
+    fixture.upgrade().await.expect("apply the upgrade");
 
     let mut transaction = database.begin_read_snapshot().await.unwrap();
     for (generation, tools) in [&openapi, &builtin].into_iter().zip(before) {

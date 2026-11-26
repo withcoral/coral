@@ -99,10 +99,7 @@ async fn upgrade_renames_what_named_operations_and_keeps_every_row() {
         .unwrap();
     let database = fixture.database();
 
-    database
-        .migrate(coral_db::migration_plan())
-        .await
-        .expect("apply the upgrade");
+    fixture.upgrade().await.expect("apply the upgrade");
 
     let mut transaction = database.begin().await.unwrap();
     assert_each_row(
@@ -255,10 +252,7 @@ async fn upgrade_renames_what_coral_wrote_about_operations_and_nothing_a_program
         .unwrap();
     let database = fixture.database();
 
-    database
-        .migrate(coral_db::migration_plan())
-        .await
-        .expect("apply the upgrade");
+    fixture.upgrade().await.expect("apply the upgrade");
 
     let mut transaction = database.begin_read_snapshot().await.unwrap();
     assert_each_row(
@@ -467,10 +461,7 @@ async fn upgrade_renames_what_named_saved_functions_and_nothing_a_program_wrote(
         .unwrap();
     let database = fixture.database();
 
-    database
-        .migrate(coral_db::migration_plan())
-        .await
-        .expect("apply the upgrade");
+    fixture.upgrade().await.expect("apply the upgrade");
 
     let mut transaction = database.begin_read_snapshot().await.unwrap();
     assert_each_row(
@@ -716,8 +707,9 @@ async fn upgrade_gives_each_row_the_first_version_and_the_times_its_metadata_hol
 /// that its concurrency metadata holds.
 const RESOURCE_TIMES_REPAIR: i64 = 85;
 
-/// Agents and Registrations on the schema of the resource version step, as
-/// two Corals that served side by side left them. A Coral with that step
+/// Agents and Registrations on a schema that has the resource version step
+/// and still has the concurrency metadata, as two Corals that served side by
+/// side left them. A Coral with that step
 /// writes a row and its concurrency metadata with one instant. A Coral from
 /// before it writes only the metadata.
 ///
@@ -813,11 +805,78 @@ async fn upgrade_gives_each_row_the_times_its_metadata_holds_after_an_older_cora
         .unwrap();
     let database = fixture.database();
 
+    // The step alone: a later step drops the metadata.
     database
-        .migrate(coral_db::migration_plan())
+        .migrate(&coral_test_support::migration_plan_before(
+            RESOURCE_TIMES_REPAIR + 1,
+        ))
         .await
         .expect("apply the upgrade");
 
+    assert_each_row_is_up_to_its_metadata(&database).await;
+    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    assert_each_row(
+        &mut transaction,
+        [(
+            "SELECT etag, CAST(created_at AS TEXT), CAST(updated_at AS TEXT) \
+             FROM workspace_resource_metadata \
+             WHERE workspace_id = 'workspace' AND kind = 'agent' \
+                 AND target_id = 'agent:stale'",
+            ["etag-stale", "10", "70"],
+        )],
+    )
+    .await;
+    transaction.commit().await.unwrap();
+}
+
+/// A database where no Coral reads or writes the concurrency metadata any
+/// more, and where a Coral from before the resource version step served
+/// after the repair ran: its rows are behind their metadata as they were
+/// before the repair. The upgrade brings each Agent and each Registration row
+/// up to its metadata once more, by the repair's rule, and then drops the
+/// metadata.
+// Catches: a drop that takes with it the only copy of a time, so that Coral
+// shows none for an Agent that the older Coral created, or an earlier time
+// of change for one that it changed; a last fill that sets a later time of
+// change back, takes a time from another kind's or another Workspace's
+// metadata, sets the times of a row without metadata to NULL, or moves a
+// version; and an upgrade that keeps the table.
+#[tokio::test]
+async fn upgrade_brings_each_row_up_to_its_metadata_and_then_drops_the_metadata() {
+    let before = coral_test_support::migration_plan_before(step_named("resource times fill"));
+    let fixture = TestDatabase::new(&before).await.unwrap();
+    fixture
+        .execute_fixture_sql(ROWS_BEFORE_RESOURCE_TIMES_REPAIR)
+        .await
+        .unwrap();
+
+    fixture.upgrade().await.expect("apply the upgrade");
+
+    assert_each_row_is_up_to_its_metadata(&fixture.database()).await;
+    // The fixture wrote the table before the upgrade. A table of its name
+    // can be created only where there is none.
+    fixture
+        .execute_fixture_sql("CREATE TABLE workspace_resource_metadata (probe BIGINT)")
+        .await
+        .expect("the upgrade left no table of the metadata's name");
+}
+
+/// The version of the step of Coral's plan that `name` names. A step's name
+/// is its file's name after the version, with spaces: it stays when the step
+/// is renumbered.
+fn step_named(name: &str) -> i64 {
+    coral_db::migration_plan()
+        .for_system(coral_db::DatabaseSystem::Postgres)
+        .iter()
+        .find(|migration| migration.description == name)
+        .unwrap_or_else(|| panic!("Coral's plan has no step named '{name}'"))
+        .version
+}
+
+/// Asserts what a step that brings each row up to its metadata leaves of
+/// [`ROWS_BEFORE_RESOURCE_TIMES_REPAIR`]: each row's version as it was, and
+/// its times as the row or its metadata held them, whichever the rule takes.
+async fn assert_each_row_is_up_to_its_metadata(database: &coral_db::Database) {
     let agents = [
         ["agent:current", "3", "10:30"],
         ["agent:older", "1", "50:55"],
@@ -835,7 +894,10 @@ async fn upgrade_gives_each_row_the_times_its_metadata_holds_after_an_older_cora
         ["newer-registration", "6", "11:95"],
         ["unrecorded-registration", "2", "12:35"],
     ];
-    let mut transaction = database.begin_read_snapshot().await.unwrap();
+    let mut transaction = database
+        .begin_read_snapshot()
+        .await
+        .expect("begin a read snapshot");
     for expected in agents {
         assert_each_row(
             &mut transaction,
@@ -850,18 +912,7 @@ async fn upgrade_gives_each_row_the_times_its_metadata_holds_after_an_older_cora
         )
         .await;
     }
-    assert_each_row(
-        &mut transaction,
-        [(
-            "SELECT etag, CAST(created_at AS TEXT), CAST(updated_at AS TEXT) \
-             FROM workspace_resource_metadata \
-             WHERE workspace_id = 'workspace' AND kind = 'agent' \
-                 AND target_id = 'agent:stale'",
-            ["etag-stale", "10", "70"],
-        )],
-    )
-    .await;
-    transaction.commit().await.unwrap();
+    transaction.commit().await.expect("end the read snapshot");
 }
 
 /// The two times of a row as one text column, `created:updated`, with `none`

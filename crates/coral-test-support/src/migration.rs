@@ -27,6 +27,47 @@ pub fn migration_plan_before(version: i64) -> MigrationPlan {
     })
 }
 
+impl TestDatabase {
+    /// Brings a database that an earlier plan left up to Coral's plan, as an
+    /// operator does who upgrades one release at a time.
+    ///
+    /// On a Postgres that an earlier plan left, Coral refuses a run that
+    /// would apply a step which removes what older Corals use, unless the
+    /// step that the removal names is applied. The refusal names the removing
+    /// step. An operator then starts the releases before it. So this applies
+    /// the plan up to each step that Coral refuses, and then the rest. On
+    /// `SQLite`, and where the named step is applied, it is one run of the plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`coral_db::Database::migrate`] returns for the first run
+    /// that fails for another reason.
+    pub async fn upgrade(&self) -> Result<(), coral_db::Error> {
+        let database = self.database();
+        // The removing steps that Coral refused, each below the one before.
+        let mut refused: Vec<i64> = Vec::new();
+        loop {
+            let run = match refused.last() {
+                Some(removal) => database.migrate(&migration_plan_before(*removal)).await,
+                None => database.migrate(coral_db::migration_plan()).await,
+            };
+            match run {
+                Err(coral_db::Error::SkippedStep { migration, .. })
+                    if refused.last().is_none_or(|removal| migration < *removal) =>
+                {
+                    refused.push(migration);
+                }
+                Err(error) => return Err(error),
+                Ok(()) => {
+                    if refused.pop().is_none() {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Coral's migration plan with each database's migrations passed through
 /// `edit`, such as a plan that stops before one version.
 #[must_use]

@@ -7,7 +7,7 @@ use crate::{
 use coral_test_support::TestDatabase;
 
 struct Fixture {
-    database: TestDatabase,
+    _database: TestDatabase,
     module: WorkspaceModule,
     /// An Organization Owner with no Membership in the Workspace.
     governor: AuthenticatedUser,
@@ -29,7 +29,7 @@ async fn fixture() -> Fixture {
         .await
         .unwrap();
     Fixture {
-        database,
+        _database: database,
         module,
         governor,
         owner,
@@ -96,53 +96,6 @@ async fn an_organization_owner_grants_and_revokes_with_an_event_for_each() {
     // The Organization Owner reads the same Events, as their own governance.
     let governance = f.module.list_governance_events(&f.governor).await.unwrap();
     assert!(added.iter().all(|event| governance.contains(event)));
-}
-
-// Catches: a grant or a revocation that writes the table of concurrency
-// metadata, as each one did before Coral stopped using that table: it gave
-// the store a row there that nothing read.
-#[tokio::test]
-async fn a_grant_and_a_revocation_leave_the_metadata_table_as_it_was() {
-    let f = fixture().await;
-    let id = f.workspace.id();
-    // The row that a Coral which still writes the table left when it granted
-    // and revoked the same store.
-    f.database
-        .execute_fixture_sql(&format!(
-            "INSERT INTO workspace_resource_metadata \
-                 (workspace_id, kind, target_id, etag, created_at, updated_at) \
-             VALUES ('{id}', 'secret_store', 'platform', '{}', 5, 6)",
-            uuid::Uuid::new_v4(),
-        ))
-        .await
-        .expect("write the metadata row of another Coral");
-    let before = super::versions::metadata_table(&f.module).await;
-
-    for (at, store) in [(10, "platform"), (11, "analytics")] {
-        f.module
-            .grant_secret_store(
-                &change(f.governor.clone(), at, '2'),
-                &RequestId::generate(),
-                id,
-                store,
-            )
-            .await
-            .unwrap();
-    }
-    assert_eq!(f.granted().await, ["analytics", "platform"]);
-    assert_eq!(super::versions::metadata_table(&f.module).await, before);
-
-    f.module
-        .revoke_secret_store(
-            &change(f.governor.clone(), 12, '3'),
-            &RequestId::generate(),
-            id,
-            "platform",
-        )
-        .await
-        .unwrap();
-    assert_eq!(f.granted().await, ["analytics"]);
-    assert_eq!(super::versions::metadata_table(&f.module).await, before);
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -181,11 +181,7 @@ async fn the_upgrade_keeps_each_user_and_copies_its_subject_into_the_store() {
     let ana = insert_user_as_the_release_before(&fixture, "ana").await;
     let ben = insert_user_as_the_release_before(&fixture, "ben").await;
 
-    fixture
-        .database()
-        .migrate(coral_db::migration_plan())
-        .await
-        .unwrap();
+    fixture.upgrade().await.unwrap();
 
     assert_holders(
         &fixture,

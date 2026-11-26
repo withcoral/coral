@@ -907,11 +907,7 @@ async fn upgrade_keeps_each_saved_function_as_its_owners_private_tool() {
     }
 
     coral_test_support::drop_resource_version_columns(&fixture.fixture).await;
-    fixture
-        .database
-        .migrate(coral_db::migration_plan())
-        .await
-        .expect("apply the upgrade");
+    fixture.fixture.upgrade().await.expect("apply the upgrade");
 
     let agent_id = agent.principal().id().clone();
     for (principal, id, path, revision) in stored {

@@ -2604,10 +2604,7 @@ async fn upgrade_renames_the_tools_a_setup_cached() {
     .unwrap();
 
     coral_test_support::drop_resource_version_columns(&db).await;
-    database
-        .migrate(coral_db::migration_plan())
-        .await
-        .expect("apply the upgrade");
+    db.upgrade().await.expect("apply the upgrade");
 
     let after = providers
         .review_setup_configuration(&actor, workspace.id(), setup.id())
