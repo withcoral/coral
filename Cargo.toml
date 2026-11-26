@@ -91,6 +91,7 @@ opentelemetry = "0.33.1"
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "api-24", "download-binaries", "tls-rustls", "tracing"] }
 opentelemetry-appender-tracing = "0.33.1"
 opentelemetry-otlp = "0.33.1"
+opentelemetry-proto = { version = "0.33.1", default-features = false }
 opentelemetry_sdk = "0.33.1"
 # PASETO v4.public with PASERK key ids, for Licenses (ADR 0038). No `std`: it
 # would bring a claims validator that compares `exp` with the clock.

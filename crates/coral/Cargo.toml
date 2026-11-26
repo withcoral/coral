@@ -22,7 +22,7 @@ clap.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-tracing-subscriber.workspace = true
+uuid.workspace = true
 
 coral-agent.workspace = true
 coral-app.workspace = true
@@ -38,7 +38,6 @@ coral-db.workspace = true
 coral-run.workspace = true
 coral-grpc.workspace = true
 tonic.workspace = true
-uuid.workspace = true
 coral-run-executor = { workspace = true, features = ["test-support"] }
 coral-test-support.workspace = true
 reqwest.workspace = true
@@ -56,3 +55,5 @@ coral-workspace = { workspace = true, features = ["test-fixtures"] }
 jsonwebtoken.workspace = true
 url.workspace = true
 wiremock.workspace = true
+opentelemetry-proto = { workspace = true, features = ["gen-tonic-messages", "logs", "metrics"] }
+prost.workspace = true

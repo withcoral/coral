@@ -155,6 +155,7 @@ pub fn run_executor_config(
 
 fn run_executor_config_for(max_runs_held: u32, run_limits: RunLimits) -> RunExecutorConfig {
     RunExecutorConfig {
+        run_executor_id: uuid::Uuid::new_v4(),
         coral_address: "http://127.0.0.1:1".parse().expect("an address"),
         token: Token::new(RUN_EXECUTOR_TOKEN.to_owned()).expect("a valid token"),
         local_child: false,

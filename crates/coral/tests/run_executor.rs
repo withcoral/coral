@@ -18,7 +18,7 @@ use tokio::io::AsyncWriteExt as _;
 use tokio::process::{Child, Command};
 
 /// The variables the Run Executor reads, which the test must not inherit.
-const RUN_EXECUTOR_VARIABLES: [&str; 7] = [
+const RUN_EXECUTOR_VARIABLES: [&str; 12] = [
     "CORAL_RUN_EXECUTOR_CORAL_ADDRESS",
     "CORAL_RUN_EXECUTOR_TOKEN",
     "CORAL_RUN_EXECUTOR_TOKEN_STDIN",
@@ -26,6 +26,11 @@ const RUN_EXECUTOR_VARIABLES: [&str; 7] = [
     "CORAL_RUN_EXECUTOR_EXECUTION_HEAP_BYTES",
     "CORAL_RUN_EXECUTOR_COMPILER_HEAP_BYTES",
     "CORAL_RUN_EXECUTOR_HEALTH_LISTEN",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_HEADERS",
+    "OTEL_SERVICE_NAME",
+    "OTEL_TRACES_SAMPLER_ARG",
+    "OTEL_RESOURCE_ATTRIBUTES",
 ];
 
 /// Starts the real binary against `coral`. The rest of the environment
@@ -155,6 +160,29 @@ async fn after_sigterm_the_run_executor_exits_once_its_run_ends() {
         .expect("the Run Executor exits once its Run ends")
         .expect("wait for the Run Executor");
     assert!(status.success(), "{status}");
+}
+
+/// With no endpoint, a Run Executor logs nothing: a refused token, which it
+/// logs as a warning, leaves on stderr only the line that reports its exit.
+///
+/// Catches: a Run Executor that still logs to stderr (#3498).
+#[tokio::test]
+async fn with_no_endpoint_a_run_executor_writes_no_log_line_to_stderr() {
+    let coral = ScriptedCoral::start([Answer::Refuse(tonic::Code::Unauthenticated)]).await;
+    let child = spawn(&coral, |command| {
+        command
+            .env("CORAL_RUN_EXECUTOR_TOKEN", "refused-token")
+            .stderr(Stdio::piped());
+    });
+    let output = tokio::time::timeout(Duration::from_secs(30), child.wait_with_output())
+        .await
+        .expect("the Run Executor exits")
+        .expect("the Run Executor's output");
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Coral refused the Run Executor's token\n"
+    );
 }
 
 #[tokio::test]
