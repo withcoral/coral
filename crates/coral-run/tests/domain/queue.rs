@@ -35,11 +35,12 @@ async fn the_queue_gauges_move_by_the_runs_that_wait_and_the_runs_held() {
     let (workspace_id, principal) = fixture.user_scope("user:queue", "Queue").await;
     let clock = ManualClock::starting_at(UnixNanos::new(START));
     runs.read_queue(&clock).await.expect("read the queue");
-    let [waiting, _, held] = gauges(&capture);
+    let [waiting, age, held] = gauges(&capture);
+    assert_eq!(age, 0.0, "the age is zero while no Run waits");
 
     fixture.clock.next.store(START, Ordering::SeqCst);
     let mut accepted = Vec::new();
-    for _ in 0..7 {
+    for _ in 0..8 {
         let run = runs
             .start(&principal, &workspace_id, submission("return 1;"))
             .await
@@ -47,14 +48,29 @@ async fn the_queue_gauges_move_by_the_runs_that_wait_and_the_runs_held() {
         accepted.push(run.run_id().clone());
         fixture.clock.next.fetch_add(SECOND, Ordering::SeqCst);
     }
-    let [_, started, oldest_waiting, _, _, older_release, newest] =
-        <[_; 7]>::try_from(accepted).unwrap();
-    // The two oldest are taken, and the second of them starts.
+    let [
+        _,
+        started,
+        ended,
+        oldest_waiting,
+        _,
+        _,
+        older_release,
+        newest,
+    ] = <[_; 8]>::try_from(accepted).unwrap();
+    // The three oldest are taken, the second and third start, and the
+    // third ends.
     take(runs).await;
-    let claim = take(runs).await;
-    let mut stream = Scripted::open(runs, &started.to_string(), &claim);
-    stream.start().await;
-    drop(stream);
+    for run_id in [&started, &ended] {
+        let claim = take(runs).await;
+        let mut stream = Scripted::open(runs, &run_id.to_string(), &claim);
+        stream.start().await;
+        drop(stream);
+    }
+    runs.cancel(&principal, &workspace_id, &ended, &immediate(None, 1))
+        .await
+        .expect("cancel a started Run");
+    wait_for_terminal(runs, &principal, &workspace_id, &ended).await;
     // An older release started this one and released its worker claim
     // when it recorded the Run's interruption: no Run Executor holds it.
     assert_eq!(
@@ -83,7 +99,7 @@ async fn the_queue_gauges_move_by_the_runs_that_wait_and_the_runs_held() {
     assert_eq!(
         (now_waiting - waiting, now_held - held),
         (3.0, 2.0),
-        "an ended Run and an older release's Run count nowhere"
+        "ended Runs and an older release's Run count nowhere"
     );
     assert_eq!(now_age, age(START + 10 * SECOND).as_secs_f64());
 
