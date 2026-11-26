@@ -75,8 +75,9 @@ describe('login route', () => {
     ])
   })
 
-  // A sign-in that Coral sends back with the mark starts over a session, and
-  // with no session the mark changes nothing. Either way it lands on `/`.
+  // With the mark, a sign-in starts over a session. With no session, it is the
+  // sign-in that starts without the mark. Either way the mark drops
+  // `returnTo`, and the sign-in lands on `/`.
   it.each([true, false])(
     'starts a sign-in with the fresh mark when the browser holds a session: %s',
     async (holdsSession) => {

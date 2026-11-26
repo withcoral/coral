@@ -53,8 +53,9 @@ const FAILED_SIGN_IN_DESCRIPTION = /^([a-z][a-z0-9_]{0,63}) (\d{4}-\d{2}-\d{2}T\
 
 /**
  * The mark on `/login` that starts a sign-in even when the browser holds a
- * session: `/login?fresh=1`. Coral sends the browser there, and anybody can
- * link to it. With no session, the mark changes nothing.
+ * session: `/login?fresh=1`. Anybody can link to it. With no session, the
+ * sign-in is the one `/login` starts without the mark. Either way the mark
+ * drops `returnTo`, so the sign-in lands on `/`.
  */
 export function isFreshSignIn(url: URL): boolean {
   return url.searchParams.get('fresh') === '1'
