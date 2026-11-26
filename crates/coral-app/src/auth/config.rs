@@ -22,6 +22,9 @@ use super::sealed_handshake::HandshakeKeys;
 use crate::oauth_resource::CanonicalOauthUrl;
 use coral_auth::SessionTokenIssuer;
 use coral_outbound::{Configured, EndpointUrl};
+use coral_sign_in::{
+    ModeEnvironment, ModeName, ModeSettings, SettingError, SignInMode, SignInModes,
+};
 
 const DEFAULT_BIND_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 const DEFAULT_SIGNING_KEY_ENV: &str = "CORAL_SESSION_SIGNING_KEY";
@@ -46,6 +49,7 @@ const CONFLICTING_KEY_SOURCES: &str = "configure only one of signing_key_env or 
 #[derive(Clone)]
 pub struct AuthSettings {
     auth: RawAuthSettings,
+    provider: OidcProviderSettings,
     bind_addr: SocketAddr,
     authorization_server: AuthorizationServerSettings,
 }
@@ -66,7 +70,8 @@ struct RawAuthSettings {
     #[serde(default)]
     trusted_clients: Vec<String>,
     session: SessionTokenSettings,
-    provider: OidcProviderSettings,
+    /// Read by the mode that its `mode` names: [`provider_choice`].
+    provider: toml::Table,
 }
 
 impl AuthSettings {
@@ -78,11 +83,13 @@ impl AuthSettings {
     /// # Errors
     ///
     /// Returns [`AuthServerError::Config`] when an auth-owned field or
-    /// cross-section relationship is invalid.
+    /// cross-section relationship is invalid, or when `[auth.provider]`
+    /// names a sign-in mode that `modes` lacks.
     pub(crate) fn from_sections(
         auth: Option<AuthSection>,
         listener: &AuthListenerSettings,
         web: Option<&WebSettings>,
+        modes: &SignInModes,
     ) -> Result<Option<Self>, AuthServerError> {
         let issuer = listener.validate(auth.is_some())?;
         let web_client = web.and_then(WebClient::from_settings);
@@ -92,6 +99,16 @@ impl AuthSettings {
         auth.validate()?;
         let issuer =
             issuer.ok_or_else(|| config_error("[auth] requires listeners.auth.public_url"))?;
+        let provider = match provider_choice(std::mem::take(&mut auth.provider), &issuer, modes)? {
+            ProviderChoice::Oidc(provider) => *provider,
+            // No sign-in path serves a registered mode yet.
+            ProviderChoice::Mode(name, _mode) => {
+                return Err(invalid_provider(format!(
+                    "mode: sign-in mode `{}` cannot serve sign-in yet",
+                    name.as_str()
+                )));
+            }
+        };
         if let Some(web) = &web_client {
             // Do not count the derived registration as a duplicate of an
             // explicitly listed audience. Explicit duplicates still fail in
@@ -110,6 +127,7 @@ impl AuthSettings {
         };
         Ok(Some(Self {
             auth,
+            provider,
             bind_addr: listener.bind.unwrap_or(DEFAULT_BIND_ADDR),
             authorization_server,
         }))
@@ -153,7 +171,6 @@ impl AuthSettings {
         get_var: &impl Fn(&str) -> Result<Option<String>, String>,
     ) -> Result<(ResolvedAuthSettings, SessionTokenIssuer), AuthServerError> {
         let provider = self
-            .auth
             .provider
             .resolve(&self.authorization_server.issuer, get_var)?;
         let key = self.auth.session.load_signing_key(config_path, get_var)?;
@@ -230,7 +247,6 @@ impl ResolvedAuthSettings {
 impl RawAuthSettings {
     fn validate(&mut self) -> Result<(), AuthServerError> {
         self.session.validate()?;
-        self.provider.validate()?;
         for client_id in &mut self.trusted_clients {
             *client_id = validate_trusted_client(client_id)?;
         }
@@ -550,6 +566,84 @@ pub(super) const RESERVED_PROVIDER_AUTH_PARAMS: &[&str] = &[
     "code_challenge",
     "code_challenge_method",
 ];
+
+/// The mode every build has, which `[auth.provider]` selects with no `mode`.
+const OIDC_MODE: &str = "oidc";
+
+/// The sign-in mode that `[auth.provider]` selects, with its settings checked.
+enum ProviderChoice {
+    Oidc(Box<OidcProviderSettings>),
+    Mode(ModeName, Arc<dyn SignInMode>),
+}
+
+/// Reads `mode` from `[auth.provider]` and gives the rest of the table to
+/// that mode, with Coral's URL `coral_url`. No `mode` means `oidc`, which
+/// every build has and no registered mode replaces.
+fn provider_choice(
+    mut table: toml::Table,
+    coral_url: &str,
+    modes: &SignInModes,
+) -> Result<ProviderChoice, AuthServerError> {
+    let mode = match table.remove("mode") {
+        None => None,
+        Some(toml::Value::String(mode)) => Some(mode),
+        Some(_) => return Err(invalid_provider("mode: unsupported value")),
+    };
+    let name = match mode.as_deref() {
+        None | Some(OIDC_MODE) => {
+            // The text that a decode error of the whole file has.
+            let mut provider: OidcProviderSettings =
+                ModeSettings::new(table).decode().map_err(|error| {
+                    AuthServerError::Config(format!(
+                        "server configuration is invalid: {}",
+                        at_provider(&error)
+                    ))
+                })?;
+            provider.validate()?;
+            return Ok(ProviderChoice::Oidc(Box::new(provider)));
+        }
+        Some(name) => name,
+    };
+    let Some(factory) = modes.get(name) else {
+        return Err(missing_mode(name, modes));
+    };
+    let coral_url = Url::parse(coral_url)
+        .map_err(|_error| config_error("listeners.auth.public_url is not a URL"))?;
+    let mode = factory
+        .build(&ModeSettings::new(table), &ModeEnvironment::new(coral_url))
+        .map_err(|error| config_error(at_provider(&error)))?;
+    Ok(ProviderChoice::Mode(factory.name(), mode))
+}
+
+/// Where in `[auth.provider]` a setting is unusable, and why.
+fn at_provider(error: &SettingError) -> String {
+    if error.field().is_empty() {
+        format!("auth.provider: {}", error.reason())
+    } else {
+        format!("auth.provider.{error}")
+    }
+}
+
+/// The one refusal for every `mode` this build lacks. It repeats the value
+/// only when it has the form of a mode's name, since an operator can paste a
+/// secret under the wrong key.
+fn missing_mode(value: &str, modes: &SignInModes) -> AuthServerError {
+    let mut names: Vec<&str> = modes.names().filter(|name| *name != OIDC_MODE).collect();
+    names.sort_unstable();
+    let names = std::iter::once(OIDC_MODE)
+        .chain(names)
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mode = if ModeName::is_name(value) {
+        format!("sign-in mode `{value}`")
+    } else {
+        "such sign-in mode".to_owned()
+    };
+    invalid_provider(format!(
+        "mode: this build has no {mode}. The modes of this build: {names}"
+    ))
+}
 
 /// Deserialize-and-validate target for the `[auth.provider]` section.
 ///
@@ -1005,7 +1099,8 @@ mod tests {
     use super::*;
 
     use crate::auth::test_config::{PROVIDER, SESSION};
-    use crate::bootstrap::auth_settings;
+    use crate::bootstrap::{auth_settings, auth_settings_with};
+    use coral_sign_in::testing::TestModeFactory;
 
     /// Local override of the shared fixture: the trailing slash proves
     /// `validate_issuer` normalizes it away, and the rejection table rewrites
@@ -1631,6 +1726,112 @@ mod tests {
         assert_eq!(claims.get("level"), Some(&json!(3)));
         assert_eq!(claims.get("ratio"), Some(&json!(1.5)));
         assert_eq!(claims.get("groups"), Some(&json!(["staff", "admin"])));
+    }
+
+    /// `[auth.provider]` with `mode`, then `settings`.
+    fn with_mode(mode: &str, settings: &str) -> String {
+        format!(
+            "[auth]\n{SESSION}{AUTHORIZATION_SERVER}\n[auth.provider]\nmode = {mode}\n{settings}"
+        )
+    }
+
+    fn test_modes() -> SignInModes {
+        SignInModes::default().with(Arc::new(TestModeFactory))
+    }
+
+    /// A file of today has no `mode`, and means `oidc`.
+    #[test]
+    fn a_file_with_no_mode_or_mode_oidc_signs_in_by_oidc() {
+        let today = format!("{:?}", resolved(&valid("")).provider());
+        let explicit = valid("").replace("[auth.provider]\n", "[auth.provider]\nmode = 'oidc'\n");
+        assert_eq!(format!("{:?}", resolved(&explicit).provider()), today);
+        // A build with other modes reads such a file the same way.
+        assert!(matches!(
+            auth_settings_with(&valid(""), &test_modes()),
+            Ok(Some(_))
+        ));
+    }
+
+    /// One message serves every `mode` the build lacks. It lists the modes
+    /// of the build, and repeats only a value that has the form of a name.
+    #[test]
+    fn a_mode_this_build_lacks_refuses_the_start() {
+        const SECRET: &str = "Sk_Live_0123456789abcdef";
+        let prefix = "invalid auth configuration: auth.provider.mode: ";
+        for (mode, modes, expected) in [
+            (
+                "'nope'",
+                SignInModes::default(),
+                "this build has no sign-in mode `nope`. The modes of this build: `oidc`",
+            ),
+            (
+                "'nope'",
+                test_modes(),
+                "this build has no sign-in mode `nope`. The modes of this build: `oidc`, `test`",
+            ),
+            (
+                &format!("'{SECRET}'"),
+                SignInModes::default(),
+                "this build has no such sign-in mode. The modes of this build: `oidc`",
+            ),
+            ("7", SignInModes::default(), "unsupported value"),
+        ] {
+            let raw = with_mode(mode, "");
+            let Err(error) = auth_settings_with(&raw, &modes) else {
+                panic!("{mode}: expected a refusal");
+            };
+            assert_eq!(error, format!("{prefix}{expected}"), "{mode}");
+        }
+    }
+
+    /// The mode gets the rest of `[auth.provider]`, without `mode`, and
+    /// Coral's URL. Until a sign-in path serves a mode, startup then refuses.
+    #[tokio::test]
+    async fn a_registered_mode_gets_the_rest_of_the_section_and_coral_url() {
+        let prefix = "invalid auth configuration: auth.provider";
+        let start = "sign_in_url = 'https://idp.example.test/start'";
+        for (settings, expected) in [
+            (start, ".mode: sign-in mode `test` cannot serve sign-in yet"),
+            (
+                "sign_in_url = 'http://idp.example.test/start'",
+                ".sign_in_url: must be https",
+            ),
+            (
+                &format!("{start}\nissuer = 'https://accounts.example.test'"),
+                ".issuer: unknown field `issuer`",
+            ),
+        ] {
+            let Err(error) = auth_settings_with(&with_mode("'test'", settings), &test_modes())
+            else {
+                panic!("{settings}: expected a refusal");
+            };
+            // The mode's own words follow; they are the mode's to test.
+            assert!(
+                error.starts_with(&format!("{prefix}{expected}")),
+                "{settings}: {error}"
+            );
+        }
+
+        let table = toml::from_str(&format!("mode = 'test'\n{start}")).expect("TOML");
+        let Ok(ProviderChoice::Mode(name, mode)) =
+            provider_choice(table, "http://localhost:9080", &test_modes())
+        else {
+            panic!("the test mode builds");
+        };
+        assert_eq!(name.as_str(), "test");
+        let begin = mode
+            .begin(
+                &coral_sign_in::SignInValue::new("value".to_owned()),
+                coral_db::UnixNanos::new(0),
+            )
+            .await
+            .expect("begin");
+        assert!(
+            begin
+                .as_str()
+                .ends_with("&return_to=http%3A%2F%2Flocalhost%3A9080%2F"),
+            "{begin}"
+        );
     }
 
     #[test]

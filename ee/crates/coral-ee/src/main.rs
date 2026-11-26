@@ -31,6 +31,7 @@ fn extensions(edition: coral_edition::EditionCheck) -> coral_app::Extensions {
         edition,
         secret_store_kinds,
         enterprise_features,
+        ..coral_app::Extensions::default()
     }
 }
 

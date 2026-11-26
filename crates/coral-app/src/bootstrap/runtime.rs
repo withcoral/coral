@@ -30,6 +30,9 @@ pub struct Extensions {
     /// The Secret Store kinds this binary adds to the `env` kind every build
     /// has. A store of any other kind shows as a kind the build lacks.
     pub secret_store_kinds: coral_secret_store::SecretStoreKinds,
+    /// The sign-in modes this binary adds to the `oidc` mode every build
+    /// has. A `mode` in `[auth.provider]` that names no mode refuses the start.
+    pub sign_in_modes: coral_sign_in::SignInModes,
     /// The Enterprise Features this binary contains, which Reef shows with
     /// their state. Core registers none.
     pub enterprise_features: coral_edition::EnterpriseFeatures,
