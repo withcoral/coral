@@ -1,0 +1,54 @@
+{
+  "name": "wax-scratch-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc",
+    "build": "vite build",
+    "build:ssr": "vite build --ssr src/entry-server.tsx --outDir dist-ssr",
+    "dev-check": "node scripts/dev-check.ts",
+    "test": "vitest run",
+    "test:wax": "vitest run --config vitest.wax.config.ts",
+    "test:stories": "vitest run --config vitest.stories.config.ts",
+    "build-storybook": "storybook build",
+    "trial": "npm run typecheck && npm run build && npm run build:ssr && npm run dev-check && npm test && npm run test:wax && npm run build-storybook && npm run storybook-dev-check && npm run test:stories",
+    "storybook-dev-check": "node scripts/storybook-dev-check.ts"
+  },
+  "dependencies": {
+    "@vanilla-extract/css": "^1.21.3",
+    "@withcoral/wax": "file:../out/withcoral-wax.tgz",
+    "jotai": "^3.0.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router": "8.5.1"
+  },
+  "devDependencies": {
+    "@storybook/addon-vitest": "10.6.5",
+    "@storybook/icons": "^2.2.0",
+    "@storybook/react-vite": "10.6.5",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.8",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vanilla-extract/vite-plugin": "^5.2.6",
+    "@vitejs/plugin-react": "^6.1.2",
+    "@vitest/browser-playwright": "5.0.5",
+    "happy-dom": "^21.0.4",
+    "playwright": "1.64.1",
+    "react-hook-form": "^7.91.0",
+    "storybook": "10.6.5",
+    "typescript": "^7.0.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  },
+  "overrides": {
+    "@storybook/addon-vitest": {
+      "vitest": "5.0.5",
+      "@vitest/browser": "5.0.5",
+      "@vitest/browser-playwright": "5.0.5"
+    }
+  }
+}
