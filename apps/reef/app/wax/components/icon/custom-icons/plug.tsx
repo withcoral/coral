@@ -1,6 +1,6 @@
-import type { CustomIconProps } from './props'
+import type { LucideProps } from 'lucide-react/types'
 
-export function PlugIcon({ color = 'currentColor', size = 24, ...props }: CustomIconProps) {
+export function PlugIcon({ color = 'currentColor', size = 24, ...props }: LucideProps) {
   return (
     <svg
       fill="none"

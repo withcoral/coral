@@ -305,7 +305,7 @@ describe('architecture', () => {
     ).toEqual([])
   })
 
-  it('keeps the types of lucide-react out of Wax props', () => {
+  it('takes the types of lucide-react from the entry point that holds only types', () => {
     const violations = filesUnder(path.join(appDir, 'wax'), (name) => /\.tsx?$/.test(name))
       .filter((file) =>
         /import\s+(?:type\s[^'"]*|\{[^}'"]*\btype\s[^}'"]*\})\s*from\s+['"]lucide-react['"]/.test(
@@ -316,10 +316,10 @@ describe('architecture', () => {
 
     expect(
       violations,
-      "State an icon's props with CustomIconProps (wax/components/icon/custom-icons/props.ts). " +
-        "Storybook's react-docgen follows a props type to the file that declares it, and " +
-        'lucide-react resolves to one 1.2 MB bundle. Parsing it for each file that names ' +
-        'a lucide type blocks the Storybook dev server for over a minute.',
+      "Import a lucide type from 'lucide-react/types'. Storybook's react-docgen follows a " +
+        "props type to the file that declares it, and 'lucide-react' resolves to one 1.2 MB " +
+        'bundle. Parsing it for each file that names a lucide type blocks the Storybook dev ' +
+        "server for over a minute. 'lucide-react/types' has no JavaScript to parse.",
     ).toEqual([])
   })
 

@@ -1,10 +1,10 @@
-import type { CustomIconProps } from './props'
+import type { LucideProps } from 'lucide-react/types'
 
 export function TriangleAlertFullIcon({
   color = 'currentColor',
   size = 24,
   ...props
-}: CustomIconProps) {
+}: LucideProps) {
   return (
     <svg
       fill="none"

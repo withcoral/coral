@@ -1,6 +1,6 @@
-import type { CustomIconProps } from './props'
+import type { LucideProps } from 'lucide-react/types'
 
-export function AtSignIcon({ color = 'currentColor', size = 24, ...props }: CustomIconProps) {
+export function AtSignIcon({ color = 'currentColor', size = 24, ...props }: LucideProps) {
   return (
     <svg
       fill="none"

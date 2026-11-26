@@ -1,4 +1,4 @@
-import type { CustomIconProps } from './props'
+import type { LucideProps } from 'lucide-react/types'
 
 /**
  * Lucide's FileCode draws the folded corner as a second stroke whose round caps
@@ -6,7 +6,7 @@ import type { CustomIconProps } from './props'
  * two overlaps read as bright blots. This is the same icon with the strokes
  * outlined and merged into one filled shape, which paints every pixel once.
  */
-export function FileCodeIcon({ color = 'currentColor', size = 24, ...props }: CustomIconProps) {
+export function FileCodeIcon({ color = 'currentColor', size = 24, ...props }: LucideProps) {
   return (
     <svg
       fill="none"
