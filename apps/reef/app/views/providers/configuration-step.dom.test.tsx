@@ -3,6 +3,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { createMemoryRouter, RouterProvider } from 'react-router'
+import { screen } from '@testing-library/react'
 import { afterEach, expect, it } from 'vitest'
 
 import { ConfigurationStep } from './configuration-step'
@@ -376,11 +377,17 @@ const siteReview: ConfigurationReviewView = {
   })),
 }
 // The server fields above the box of default servers, and the ones inside it.
-const serverFields = (inBox: boolean) =>
-  [...document.querySelectorAll('label')]
-    .filter((label) => label.textContent?.startsWith('Server for'))
-    .filter((label) => Boolean(label.closest('[role="group"][aria-labelledby]')) === inBox)
+// The box is the last part of the Servers section, under its Servers heading.
+const serverFields = (inBox: boolean) => {
+  const heading = screen.queryByRole('heading', { name: 'Servers', level: 4 })
+  const after = (label: Element) =>
+    heading !== null &&
+    Boolean(heading.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING)
+  return screen
+    .queryAllByText(/^Server for /, { selector: 'label' })
+    .filter((label) => after(label) === inBox)
     .map((label) => label.textContent)
+}
 
 // Catches: a list of servers that each hold the recipe's URL making the part of
 // Setup that needs nothing the longest part of it, or one with an error hidden

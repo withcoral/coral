@@ -167,13 +167,11 @@ export function DefaultServers({
   /** The server fields. */
   children: ReactNode
 }) {
-  const headingId = useId()
   return (
-    <div className={styles.defaultServers} role="group" aria-labelledby={headingId}>
+    // No group of its own: the section around it is already named Servers.
+    <div className={styles.defaultServers}>
       <div className={styles.defaultServersText}>
-        <Typography.BodySmallStrong as="h4" id={headingId}>
-          Servers
-        </Typography.BodySmallStrong>
+        <Typography.BodySmallStrong as="h4">Servers</Typography.BodySmallStrong>
         <Typography.BodySmall as="p" variant="tertiary">
           Each tool sends its requests to one of these URLs.
           {sources.length > 0 && (

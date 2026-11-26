@@ -387,7 +387,9 @@ export function ConfigurationStep({
     )
   }
   // Fixed when the step opens, so a field never leaves the box as the person
-  // edits it. A post reloads the step, which sorts the servers again.
+  // edits it. A post reloads the step, which sorts the servers again. A boxed
+  // server whose recipe answer is cleared later stays boxed on purpose: its
+  // field says what it waits for, and Next points to that answer's field.
   const [defaultServers] = useState(
     () => new Set(serverGroups.filter(suggestedServer).map((group) => group.declaration)),
   )
