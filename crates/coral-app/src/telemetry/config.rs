@@ -68,7 +68,8 @@ impl RunExecutorTelemetry {
             headers: variable(OTEL_EXPORTER_OTLP_HEADERS)?,
             ..OtlpConfig::default()
         };
-        if let Some(name) = variable(OTEL_SERVICE_NAME)?.filter(|name| !name.is_empty()) {
+        // As set, empty included: a local child carries its parent's name.
+        if let Some(name) = variable(OTEL_SERVICE_NAME)? {
             otel.service_name = name;
         }
         if let Some(ratio) = variable(OTEL_TRACES_SAMPLER_ARG)? {
@@ -163,6 +164,7 @@ mod tests {
             (String::new(), 0),
             ("[otel]\nendpoint = ''\nheaders = 'x-key=1'\n".to_owned(), 0),
             (endpoint.to_owned(), 3),
+            (format!("{endpoint}service_name = ''\n"), 3),
             (
                 format!(
                     "{endpoint}headers = 'x-key=1'\nservice_name = 'coral-eu'\n\
