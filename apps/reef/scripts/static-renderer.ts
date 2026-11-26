@@ -42,6 +42,7 @@ export async function buildStaticRenderer<T>(entry: URL): Promise<{ css: string;
     const font = Buffer.from(file.source).toString('base64')
     css = css.replaceAll(`/${file.fileName}`, `data:font/woff2;base64,${font}`)
   }
+  if (css.includes('.woff2')) throw new Error('Static styles name a font the build did not emit')
   // The vanilla-extract plugin keeps `@vanilla-extract/css` external for SSR,
   // so import the bundle from where Node resolves Reef's packages.
   const temporary = await mkdtemp(join(root, 'node_modules', '.coral-static-renderer-'))

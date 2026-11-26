@@ -638,16 +638,20 @@ it('guards every route action with mutationForm or names why not', () => {
 // notices a file, a manifest entry or a pre-bundle entry that only an installed copy needs.
 describe('the Wax package', () => {
   const waxDir = path.join(appDir, 'wax')
-  const waxFiles = filesUnder(waxDir, (name) => /\.(?:tsx?|css)$/.test(name))
-  const inFolder = (file: string, name: string) =>
-    path.relative(waxDir, file).split(path.sep).includes(name)
+  const waxFiles = filesUnder(waxDir, (name) => /\.(?:[cm]?[jt]sx?|css)$/.test(name))
+  // The unit tests stay out of the tarball: `files` in the manifest.
+  const published = waxFiles.filter((file) => !/\.test\.tsx?$/.test(file))
+  // A story and a Storybook helper reach an app's Storybook, never its pages.
+  const isStorybookFile = (file: string) =>
+    /\.stories\.tsx?$/.test(file) || within(file, path.join(waxDir, 'storybook'))
 
   it('imports nothing outside itself', () => {
     const violations = waxFiles.flatMap((file) =>
       moduleSpecifiers(file)
         .filter(({ specifier }) => {
           if (specifier.startsWith('.')) {
-            return !within(path.resolve(path.dirname(file), specifier), waxDir)
+            const target = path.resolve(path.dirname(file), specifier)
+            return target !== waxDir && !within(target, waxDir)
           }
           // `@/` and `~/` are Reef's aliases, and a path from `/` is Reef's `public` folder.
           return /^[@~]?\//.test(specifier)
@@ -669,18 +673,20 @@ describe('the Wax package', () => {
     const declared = { ...wax.dependencies, ...wax.peerDependencies }
     const installed = { ...reef.dependencies, ...reef.devDependencies }
 
-    // The unit tests stay out of the tarball (`files` in the manifest), so what only
-    // they import is not declared.
-    const undeclared = waxFiles
-      .filter((file) => !/\.test\.tsx?$/.test(file) && !inFolder(file, 'test-support'))
-      .flatMap((file) =>
-        moduleSpecifiers(file)
-          .map(({ specifier }) => packageName(specifier))
-          .filter((name) => name !== null && !(name in declared))
-          .map((name) => `${path.relative(appDir, file)} -> ${name}`),
-      )
+    // An app may leave an optional peer out, so only its Storybook may need one.
+    const optional = Object.keys(wax.peerDependenciesMeta ?? {})
+    const missing = published.flatMap((file) =>
+      moduleSpecifiers(file)
+        .map(({ specifier }) => packageName(specifier))
+        .filter(
+          (name) =>
+            name !== null &&
+            (!(name in declared) || (optional.includes(name) && !isStorybookFile(file))),
+        )
+        .map((name) => `${path.relative(appDir, file)} -> ${name}`),
+    )
     expect(
-      undeclared,
+      missing,
       'app/wax/package.json must declare each package that a published Wax file imports. ' +
         'A peer is a package that holds state the app shares with Wax, such as React. ' +
         'An optional peer is one that only the stories and their helpers import.',
@@ -703,11 +709,10 @@ describe('the Wax package', () => {
   })
 
   it('lists each run-time import for the dev server of an app', () => {
-    const imported = waxFiles
-      // A test and a story never reach an app's pages, and a `.css.ts` file runs at
-      // build time and leaves only class names.
-      .filter((file) => /\.tsx?$/.test(file) && !/\.(?:test|stories|css|d)\.tsx?$/.test(file))
-      .filter((file) => !inFolder(file, 'storybook') && !inFolder(file, 'test-support'))
+    const imported = published
+      // A `.css.ts` file runs at build time and leaves only class names.
+      .filter((file) => /\.tsx?$/.test(file) && !/\.(?:css|d)\.ts$/.test(file))
+      .filter((file) => !isStorybookFile(file))
       .flatMap((file) => moduleSpecifiers(file))
       .filter(({ runtime, specifier }) => runtime && packageName(specifier) !== null)
       .map(({ specifier }) => specifier)
@@ -728,7 +733,7 @@ function readManifest(file: string) {
   return JSON.parse(fs.readFileSync(file, 'utf8')) as Record<
     'dependencies' | 'devDependencies' | 'peerDependencies',
     Record<string, string> | undefined
-  >
+  > & { peerDependenciesMeta?: Record<string, unknown> }
 }
 
 /** The package a bare specifier names, or null for a path, an alias or a Node built-in. */
@@ -762,7 +767,7 @@ function moduleSpecifiers(file: string): { runtime: boolean; specifier: string }
   const ast = parseSync(source, {
     babelrc: false,
     configFile: false,
-    parserOpts: { plugins: file.endsWith('.tsx') ? ['typescript', 'jsx'] : ['typescript'] },
+    parserOpts: { plugins: /\.[jt]sx$/.test(file) ? ['typescript', 'jsx'] : ['typescript'] },
   })!
   traverse(ast, {
     ImportDeclaration({ node }) {
