@@ -31,10 +31,10 @@ Every Run Executor dials Coral. A Coral Instance starts local children unless th
 deployment and in the Docker image, so an installation that upgrades keeps running Programs with no new configuration.
 It starts at most a small number of them, a count the operator can change, and past it work waits. It admits Run
 Executors it did not start on every deployment, and an operator who runs Run Executors in their own container turns
-the children off. A local child runs as Coral's OS user with an empty environment, so
-it isolates resource use and failures, not access. A Run Executor in its own container also isolates access: it has no
-ingress, no volume, no secret but its credential, and no egress except to Coral and DNS. A bridge also reaches its
-runtime.
+the children off. A local child runs as Coral's OS user with an environment that holds only its time zone, its locale
+and its OpenTelemetry settings, so it isolates resource use and failures, not access. A Run Executor in its own
+container also isolates access: it has no ingress, no volume, no secret but its credential and the collector's headers,
+and no egress except to Coral, DNS and the collector. A bridge also reaches its runtime.
 
 ## The link
 
@@ -357,9 +357,30 @@ checks to run before a bridge is built.
 
 ## Telemetry
 
-A Run Executor's telemetry reaches an exporter only through Coral.
-[Trace a Run Executor's work and export its telemetry](https://github.com/withcoral/coral/issues/2705) decides what
-Coral exports and amends this ADR.
+A Run Executor exports its own telemetry over OTLP, as Coral does, when an endpoint is set. It reads the standard
+OpenTelemetry variables at its start. Coral writes them, from its own settings, into a local child's environment. A Run
+Executor carries the service name of any `coral` process, its parent's for a local child, and its id as its instance
+id. It installs what Coral installs: the same export filter and allowlist, the same counted queues, and no log on
+stderr. With no endpoint it records and logs nothing.
+[Trace a Run Executor's work and export its telemetry](https://github.com/withcoral/coral/issues/2705) holds the names
+and the options not chosen.
+
+- **A Run's trace is Coral's.** A Run Executor opens no span. Its log events about a Run carry the trace context from
+  the Run's package, so a backend shows them on the Run's trace. A Program opens no span, and its logs stay Run Events.
+- **Coral traces the wait.** The Coral Instance that commits a Run's start records, from the Run row, a span from the
+  acceptance to the take, a span from the take to the start, and the whole wait in a histogram.
+- **A compile has one span, Coral's.** It runs from the compile's start to its answer, and names the Run Executor that
+  served it, whether it was relayed, and the outcome. The Run Executor's compiler metrics give the split between its
+  queue and its work.
+- **Coral reads the queue from the database.** Every Coral Instance reads the Runs waiting, the oldest wait and the
+  Runs held on a period, and reports the same values. A backend takes their maximum, not their sum.
+- **Each side reports what it holds.** A Coral Instance reports the Run Executors whose pull stream it holds, by kind.
+  A Run Executor reports its free room and its maximum. No metric attribute names a Run Executor's id: only a Run
+  Executor's own telemetry carries it, as its instance id.
+- **Coral counts** the put-backs, the reconnects and the relayed compiles. A rejected output stays counted in Coral,
+  from OutputRejected.
+- **Logs.** Coral logs each refused dial with its reason. A Run Executor logs once when its link goes down and once
+  when it comes back, not at each retry.
 
 ## The contract every slice keeps
 
@@ -441,6 +462,11 @@ Coral exports and amends this ADR.
   the one bound.
 - **A new claim at reconnect as a fence.** It would drop every result the old Coral Instance was about to commit.
 - **A code of its own for the lost answer.** `upstream_incomplete` is the state every tool already has.
+- **Telemetry sent to Coral on the link**, as numbers added to a Run Executor's messages or as OTLP batches that Coral
+  relays. A Run Executor exports its own telemetry directly instead, and nothing about it travels on the link. Numbers
+  on the link would change the link for each new one, and a relay would make Coral export content it did not name.
+- **Spans opened by a Run Executor.** Coral's spans already cover the load and the Program to within one message, and
+  the Run Executor's metrics carry the rest.
 - **Mutual TLS or a credential per Run Executor now.** One operator-held token admits the first epic's Run Executors; a
   credential per Run Executor waits for a hosted fleet.
 - **The same build on both sides of a link.** A rolling update would split capacity by build.
