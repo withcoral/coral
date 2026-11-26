@@ -551,7 +551,8 @@ enum ProviderChoice {
 
 /// Reads `mode` from `[auth.provider]` and gives the rest of the table to
 /// that mode, with Coral's URL `coral_url`. No `mode` means `oidc`, which
-/// every build has and no registered mode replaces.
+/// every build has and no registered mode replaces. A key that the mode does
+/// not read is refused with the mode's name.
 fn provider_choice(
     mut table: toml::Table,
     coral_url: &str,
@@ -564,13 +565,15 @@ fn provider_choice(
     };
     let name = match mode.as_deref() {
         None | Some(OIDC_MODE) => {
-            // The text that a decode error of the whole file has.
             let mut provider: OidcProviderSettings =
                 ModeSettings::new(table).decode().map_err(|error| {
-                    AuthServerError::Config(format!(
-                        "server configuration is invalid: {}",
-                        at_provider(&error)
-                    ))
+                    not_a_setting(OIDC_MODE, &error).unwrap_or_else(|| {
+                        // The text that a decode error of the whole file has.
+                        AuthServerError::Config(format!(
+                            "server configuration is invalid: {}",
+                            at_provider(&error)
+                        ))
+                    })
                 })?;
             provider.validate()?;
             return Ok(ProviderChoice::Oidc(Box::new(provider)));
@@ -584,8 +587,21 @@ fn provider_choice(
         .map_err(|_error| config_error("listeners.auth.public_url is not a URL"))?;
     let mode = factory
         .build(&ModeSettings::new(table), &ModeEnvironment::new(coral_url))
-        .map_err(|error| config_error(at_provider(&error)))?;
+        .map_err(|error| {
+            not_a_setting(name, &error).unwrap_or_else(|| config_error(at_provider(&error)))
+        })?;
     Ok(ProviderChoice::Mode(factory.name(), mode))
+}
+
+/// The refusal of a key of `[auth.provider]` that the mode `mode` does not
+/// read, or `None` when `error` is about another setting or names no key.
+fn not_a_setting(mode: &str, error: &SettingError) -> Option<AuthServerError> {
+    (error.is_unknown() && !error.field().is_empty()).then(|| {
+        invalid_provider(format!(
+            "{}: not a setting of sign-in mode `{mode}`",
+            error.field()
+        ))
+    })
 }
 
 /// Where in `[auth.provider]` a setting is unusable, and why.
@@ -1382,6 +1398,86 @@ mod tests {
         }
     }
 
+    /// A key that the configured mode does not read names the key and the
+    /// mode, never the value. A nested key keeps its path.
+    #[test]
+    fn an_unknown_setting_names_the_mode() {
+        const SECRET: &str = "Sk_Live_0123456789abcdef";
+        let oidc = valid("").replace("[auth.provider]\n", "[auth.provider]\nmode = 'oidc'\n");
+        for (raw, modes, expected) in [
+            (
+                valid("") + &format!("unknown = '{SECRET}'\n"),
+                SignInModes::default(),
+                "unknown: not a setting of sign-in mode `oidc`",
+            ),
+            (
+                oidc + "sign_in_url = 'https://idp.example.test/start'\n",
+                test_modes(),
+                "sign_in_url: not a setting of sign-in mode `oidc`",
+            ),
+            (
+                valid("")
+                    + &format!(
+                        "\n[auth.provider.access_token]\naudience = 'env'\nunknown = '{SECRET}'\n"
+                    ),
+                SignInModes::default(),
+                "access_token.unknown: not a setting of sign-in mode `oidc`",
+            ),
+        ] {
+            let Err(error) = auth_settings_with(&raw, &modes) else {
+                panic!("{raw}: expected a refusal");
+            };
+            assert_eq!(
+                error,
+                format!("invalid auth configuration: auth.provider.{expected}"),
+                "{raw}"
+            );
+        }
+    }
+
+    /// `oidc` is the build's own: a mode a launcher registers under that
+    /// name never builds, and the modes of the build list `oidc` once.
+    #[test]
+    fn a_mode_registered_as_oidc_never_builds() {
+        struct Impostor;
+        impl coral_sign_in::SignInModeFactory for Impostor {
+            fn name(&self) -> ModeName {
+                ModeName::new(OIDC_MODE).expect("a mode's name")
+            }
+            fn feature(&self) -> Option<coral_edition::EnterpriseFeature> {
+                None
+            }
+            fn build(
+                &self,
+                _settings: &ModeSettings,
+                _environment: &ModeEnvironment,
+            ) -> Result<Arc<dyn SignInMode>, SettingError> {
+                // A build would refuse the start.
+                Err(SettingError::new("", "a mode registered as `oidc` built"))
+            }
+        }
+        let modes = SignInModes::default().with(Arc::new(Impostor));
+        let today = format!("{:?}", resolved(&valid("")).provider());
+        let explicit = valid("").replace("[auth.provider]\n", "[auth.provider]\nmode = 'oidc'\n");
+        let temp = signing_key_dir();
+        for raw in [valid(""), explicit] {
+            let (settings, _issuer) = auth_settings_with(&raw, &modes)
+                .expect("valid config")
+                .expect("auth settings")
+                .resolve_runtime_dependencies(&temp.path().join("config.toml"), &|_| Ok(None))
+                .expect("resolved runtime dependencies");
+            assert_eq!(format!("{:?}", settings.provider()), today, "{raw}");
+        }
+        assert_eq!(
+            auth_settings_with(&with_mode("'nope'", ""), &modes).err(),
+            Some(
+                "invalid auth configuration: auth.provider.mode: this build has no sign-in mode \
+                 `nope`. The modes of this build: `oidc`"
+                    .to_owned()
+            )
+        );
+    }
+
     /// The mode gets the rest of `[auth.provider]`, without `mode`, and
     /// Coral's URL. Until a sign-in path serves a mode, startup then refuses.
     #[tokio::test]
@@ -1392,7 +1488,7 @@ mod tests {
             (start, ".mode: sign-in mode `test` cannot serve sign-in yet"),
             (
                 &format!("{start}\nissuer = 'https://accounts.example.test'"),
-                ".issuer: unknown field `issuer`",
+                ".issuer: not a setting of sign-in mode `test`",
             ),
         ] {
             let Err(error) = auth_settings_with(&with_mode("'test'", settings), &test_modes())

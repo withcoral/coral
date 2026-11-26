@@ -34,6 +34,9 @@ const TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%SZ";
 /// Serde messages that quote the value they reject.
 const VALUE_BEARING_MESSAGES: [&str; 3] = ["invalid type: ", "invalid value: ", "unknown variant "];
 
+/// Serde's message for a key that a struct does not read.
+const UNKNOWN_FIELD_MESSAGE: &str = "unknown field ";
+
 /// The name a build registers a mode under: the value of `mode`, and the
 /// segment of the mode's URLs under `/auth/`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +92,7 @@ fn is_token(value: &str, max_len: usize, also: impl Fn(char) -> bool) -> bool {
 pub struct SettingError {
     field: String,
     reason: Cow<'static, str>,
+    unknown: bool,
 }
 
 impl SettingError {
@@ -99,7 +103,25 @@ impl SettingError {
         Self {
             field: field.into(),
             reason: Cow::Borrowed(reason),
+            unknown: false,
         }
+    }
+
+    /// `field` is not a setting of the mode. The reason names no mode, so
+    /// that the caller can.
+    #[must_use]
+    pub fn unknown(field: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+            reason: Cow::Borrowed("not a setting of this sign-in mode"),
+            unknown: true,
+        }
+    }
+
+    /// Whether the field is not a setting of the mode.
+    #[must_use]
+    pub const fn is_unknown(&self) -> bool {
+        self.unknown
     }
 
     /// The field below `[auth.provider]`. Empty for the table itself.
@@ -150,7 +172,8 @@ impl ModeSettings {
     /// `toml::Value` hands a datetime over as a string.
     ///
     /// A message that serde writes with the value it rejects becomes
-    /// "unsupported value". Any other message is kept, so a mode's own
+    /// "unsupported value", and a key that `T` does not read becomes
+    /// [`SettingError::unknown`]. Any other message is kept, so a mode's own
     /// `Deserialize` must never quote what it rejects, as for every setting
     /// of `config.toml`.
     ///
@@ -163,7 +186,15 @@ impl ModeSettings {
             .map_err(|_error| SettingError::new("", "unsupported value"))?;
         serde_path_to_error::deserialize(deserializer).map_err(
             |error: serde_path_to_error::Error<toml::de::Error>| {
+                let field = if error.path().iter().next().is_none() {
+                    String::new()
+                } else {
+                    error.path().to_string()
+                };
                 let message = error.inner().message();
+                if message.starts_with(UNKNOWN_FIELD_MESSAGE) {
+                    return SettingError::unknown(field);
+                }
                 let reason = if VALUE_BEARING_MESSAGES
                     .iter()
                     .any(|prefix| message.starts_with(prefix))
@@ -172,12 +203,11 @@ impl ModeSettings {
                 } else {
                     Cow::Owned(message.to_owned())
                 };
-                let field = if error.path().iter().next().is_none() {
-                    String::new()
-                } else {
-                    error.path().to_string()
-                };
-                SettingError { field, reason }
+                SettingError {
+                    field,
+                    reason,
+                    unknown: false,
+                }
             },
         )
     }
