@@ -11,7 +11,7 @@ use super::super::sealed_handshake::SignInSession;
 use super::response::{TrustedRedirect, direct_error};
 use super::{AuthorizationServerHttpState, query, sign_in_cookie};
 use coral_auth::authorization_codes::{AuthorizationGrant, CodeIssue};
-use coral_auth::{LoginProvisioning, UserDirectory, VerifiedOidcLogin};
+use coral_auth::{LoginProvisioning, UserDirectory, VerifiedLogin};
 use coral_db::UnixNanos;
 use coral_telemetry::safe;
 use coral_workspace::UserId;
@@ -234,7 +234,7 @@ async fn provision(
 ) -> Result<UserId, ProvisioningFailure> {
     let provisioning = user_directory
         .provision_login(
-            VerifiedOidcLogin::new(
+            VerifiedLogin::oidc(
                 &identity.issuer,
                 &identity.subject,
                 identity.display_name.as_deref(),
@@ -970,7 +970,7 @@ mod tests {
         mount_provider(&server, 200, 200, &nonce()).await;
         let fixture = database().await;
         UserDirectory::new(fixture.database())
-            .provision_login(VerifiedOidcLogin::new(
+            .provision_login(VerifiedLogin::oidc(
                 BOUND_ISSUER,
                 UPSTREAM_SUBJECT,
                 None,
@@ -1238,7 +1238,7 @@ mod tests {
         issuer: &str,
     ) -> coral_workspace::AuthenticatedUser {
         let Ok(LoginProvisioning::Provisioned(user_id)) = UserDirectory::new(database.clone())
-            .provision_login(VerifiedOidcLogin::new(
+            .provision_login(VerifiedLogin::oidc(
                 issuer,
                 UPSTREAM_SUBJECT,
                 None,

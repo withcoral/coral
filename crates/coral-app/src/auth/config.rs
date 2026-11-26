@@ -217,11 +217,8 @@ impl ResolvedAuthSettings {
         &self.handshake_keys
     }
 
-    pub(crate) fn bootstrap_owner(&self) -> Option<(&str, &str)> {
-        self.provider
-            .bootstrap_owner_subject
-            .as_deref()
-            .map(|subject| (self.provider.issuer.as_str(), subject))
+    pub(crate) fn bootstrap_owner_subject(&self) -> Option<&str> {
+        self.provider.bootstrap_owner_subject.as_deref()
     }
 
     pub(super) fn matches_session_token_issuer(&self, issuer: &SessionTokenIssuer) -> bool {

@@ -11,7 +11,7 @@ use super::{UserIdentifier, UserIdentifierKind};
 use crate::{Error, UserId};
 
 #[derive(Iden)]
-enum UserIdentifiers {
+pub(crate) enum UserIdentifiers {
     Table,
     Kind,
     Value,
