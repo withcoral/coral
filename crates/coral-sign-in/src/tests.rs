@@ -131,6 +131,31 @@ fn a_rejected_mode_setting_names_its_field_and_never_its_value() {
     }
 }
 
+/// Settings, a request, a sign-in's value and a person can each hold a
+/// secret or personal data, so their `Debug` prints none of it.
+#[test]
+fn debug_prints_no_value() {
+    let request = ModeRequest {
+        query: "code=SECRET",
+        body: b"SECRET",
+    };
+    let (settings, _) = settings("client_secret = 'SECRET'");
+    for (printed, expected) in [
+        (format!("{request:?}"), "ModeRequest { .. }"),
+        (format!("{settings:?}"), "ModeSettings { .. }"),
+        (
+            format!("{:?}", SignInValue::new("SECRET".to_owned())),
+            "SignInValue(<redacted>)",
+        ),
+        (
+            format!("{:?}", ProvenPerson::name_id("SECRET".to_owned())),
+            "ProvenPerson { .. }",
+        ),
+    ] {
+        assert_eq!(printed, expected);
+    }
+}
+
 /// A mode outside `ee/` can serve the whole contract: the begin, the two
 /// answers of a request, and a refusal.
 #[tokio::test]

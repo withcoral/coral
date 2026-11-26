@@ -128,8 +128,15 @@ impl fmt::Display for SettingError {
 impl std::error::Error for SettingError {}
 
 /// `[auth.provider]` without the `mode` that core reads.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct ModeSettings(toml::Table);
+
+/// Prints no value: an operator can paste a secret under any key.
+impl fmt::Debug for ModeSettings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModeSettings").finish_non_exhaustive()
+    }
+}
 
 impl ModeSettings {
     /// The settings in `table`.
@@ -141,6 +148,11 @@ impl ModeSettings {
     /// Deserializes the settings. They go back through TOML text, so each
     /// value decodes as it does in the file: deserializing from a
     /// `toml::Value` hands a datetime over as a string.
+    ///
+    /// A message that serde writes with the value it rejects becomes
+    /// "unsupported value". Any other message is kept, so a mode's own
+    /// `Deserialize` must never quote what it rejects, as for every setting
+    /// of `config.toml`.
     ///
     /// # Errors
     /// Returns the field and reason a value is rejected, never the value.
@@ -266,8 +278,14 @@ pub trait SignInMode: Send + Sync {
 
 /// A sign-in's random value. Core makes it when the sign-in begins, and finds
 /// the sign-in's cookie by it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SignInValue(String);
+
+impl fmt::Debug for SignInValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SignInValue(<redacted>)")
+    }
+}
 
 impl SignInValue {
     /// The value `value`.
@@ -284,12 +302,19 @@ impl SignInValue {
 }
 
 /// A request at one of a mode's URLs, as core hands it to the mode.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct ModeRequest<'a> {
     /// The query, without its `?`.
     pub query: &'a str,
     /// The body.
     pub body: &'a [u8],
+}
+
+/// Prints no field: a request can carry a code or a signed answer.
+impl fmt::Debug for ModeRequest<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModeRequest").finish_non_exhaustive()
+    }
 }
 
 /// Which sign-in a request at a mode's URL names.
@@ -313,7 +338,10 @@ pub enum Named {
 pub struct Refusal(String);
 
 impl Refusal {
-    /// The refusal with `code` at `now`, in the form that core sends.
+    /// The refusal with `code` at `now`, in the form that core sends. The
+    /// code must be at most 64 lowercase letters, digits or `_`, starting
+    /// with a letter: for any other, [`Self::checked`] refuses the refusal,
+    /// and core sends none of its text.
     #[must_use]
     pub fn new(code: &str, now: UnixNanos) -> Self {
         let time = chrono::DateTime::from_timestamp_nanos(now.get());
@@ -352,7 +380,7 @@ fn is_time(value: &str) -> bool {
 ///
 /// Each kind of identifier has its own constructor, so a Subject always comes
 /// with the issuer that verified it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ProvenPerson {
     identifier: Identifier,
     name: Option<String>,
@@ -360,7 +388,14 @@ pub struct ProvenPerson {
     email_verified: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Prints no field: a person's identifier, name and email are personal data.
+impl fmt::Debug for ProvenPerson {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProvenPerson").finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 enum Identifier {
     Subject { issuer: String, subject: String },
     NameId(String),
