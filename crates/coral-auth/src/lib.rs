@@ -91,7 +91,9 @@ fn database_failure<R>(error: &coral_db::Error, refusal: R) -> R {
     refusal
 }
 
-/// One verified sign-in supplied by the authorization-server Adapter.
+/// One verified sign-in supplied by the authorization-server Adapter. Each kind
+/// of identifier has its own constructor, so a Subject always comes with the
+/// issuer that verified it.
 pub struct VerifiedLogin<'a> {
     identifier: UserIdentifier<'a>,
     /// The verified issuer of an OIDC login. Its User keeps it and the Subject
@@ -113,28 +115,26 @@ impl<'a> VerifiedLogin<'a> {
         display_name: Option<&'a str>,
         occurred_at: UnixNanos,
     ) -> Self {
-        let mut login = Self::new(
-            UserIdentifier::new(UserIdentifierKind::Subject, subject),
-            display_name,
-            occurred_at,
-        );
-        login.oidc_issuer = Some(issuer);
-        login
+        Self {
+            identifier: UserIdentifier::new(UserIdentifierKind::Subject, subject),
+            oidc_issuer: Some(issuer),
+            // The other fields are the same for every kind of identifier.
+            ..Self::name_id(subject, display_name, occurred_at)
+        }
     }
 
     /// Builds the persistence input for a verified sign-in that names its
-    /// person by `identifier` alone. A new User of such a sign-in keeps no
+    /// person by the value of a `NameId`. A new User of such a sign-in keeps no
     /// issuer and no Subject in `users`, so the release before this one cannot
-    /// find it: give a Subject to [`Self::oidc`] instead. No sign-in that Coral
-    /// ships calls this yet.
+    /// find it. No sign-in that Coral ships calls this yet.
     #[must_use]
-    pub const fn new(
-        identifier: UserIdentifier<'a>,
+    pub const fn name_id(
+        value: &'a str,
         display_name: Option<&'a str>,
         occurred_at: UnixNanos,
     ) -> Self {
         Self {
-            identifier,
+            identifier: UserIdentifier::new(UserIdentifierKind::NameId, value),
             oidc_issuer: None,
             display_name,
             profile: coral_workspace::VerifiedUserProfile::new(None, None, None, None),
@@ -823,8 +823,8 @@ mod tests {
         display_name: Option<&'a str>,
         occurred_at_unix_nanos: i64,
     ) -> VerifiedLogin<'a> {
-        VerifiedLogin::new(
-            name_id(value),
+        VerifiedLogin::name_id(
+            value,
             display_name,
             coral_db::UnixNanos::new(occurred_at_unix_nanos),
         )
