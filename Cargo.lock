@@ -1176,6 +1176,7 @@ dependencies = [
  "coral-run-executor",
  "coral-search",
  "coral-secret-store",
+ "coral-sign-in",
  "coral-task",
  "coral-telemetry",
  "coral-test-support",
@@ -1690,6 +1691,22 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+]
+
+[[package]]
+name = "coral-sign-in"
+version = "1.11.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "coral-db",
+ "coral-edition",
+ "serde",
+ "serde_path_to_error",
+ "thiserror",
+ "tokio",
+ "toml",
+ "url",
 ]
 
 [[package]]

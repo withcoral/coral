@@ -60,6 +60,7 @@ coral-provider.workspace = true
 coral-release.workspace = true
 coral-usage.workspace = true
 coral-secret-store.workspace = true
+coral-sign-in.workspace = true
 coral-run.workspace = true
 coral-run-executor.workspace = true
 coral-tools.workspace = true
@@ -69,6 +70,7 @@ coral-telemetry.workspace = true
 coral-workspace.workspace = true
 
 [dev-dependencies]
+coral-sign-in = { workspace = true, features = ["test-support"] }
 coral-run = { workspace = true, features = ["test-support"] }
 coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
