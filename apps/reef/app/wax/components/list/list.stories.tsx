@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite'
 
 import { fn } from 'storybook/test'
 
-import { utils } from '@/styles/utils'
+import { utils } from '@/wax/styles/utils'
 import { List } from '@/wax/components'
 import { theme } from '@/wax/theme/theme.css'
 

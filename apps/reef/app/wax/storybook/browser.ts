@@ -6,7 +6,8 @@
  * it, and throws if it cannot, so a play never passes without the change. Storybook's
  * own UI has no test browser: there each call resolves false (or null, for one that
  * reads) and changes nothing, and the play skips the steps that need it.
- * `vitest.stories.config.ts` maps this import to `vitest/browser`, as addon-vitest does.
+ * The Vitest config that runs the stories maps this import to `vitest/browser`, as
+ * addon-vitest does.
  */
 async function browser() {
   if (!(globalThis as { __vitest_browser__?: unknown }).__vitest_browser__) return null
@@ -98,9 +99,8 @@ export async function paintedPixels(area: Element, parts: Element[]) {
   const context = await browser()
   if (!context) return null
   const base64 = await context.page.screenshot({ element: area, save: false })
-  const image = await createImageBitmap(
-    await (await fetch(`data:image/png;base64,${base64}`)).blob(),
-  )
+  const png = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0))
+  const image = await createImageBitmap(new Blob([png], { type: 'image/png' }))
   const canvas = new OffscreenCanvas(image.width, image.height)
   const drawing = canvas.getContext('2d')!
   drawing.drawImage(image, 0, 0)

@@ -2,7 +2,7 @@ import { Dialog as BaseDialog } from '@base-ui/react/dialog'
 import classNames from 'classnames'
 import { useContext } from 'react'
 
-import { useComposedRefs } from '@/utils/compose-refs'
+import { useComposedRefs } from '@/wax/utils/compose-refs'
 
 import * as styles from './dialog.css'
 import { ForceBackdropContext, RailContext, RailModeContext } from './rail'

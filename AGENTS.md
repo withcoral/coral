@@ -308,11 +308,14 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 - Wax (`apps/reef/app/wax`) owns reusable visual behavior and styling. Extend
   its primitives when a UI needs a missing capability; app-specific modules
   compose Wax and own layout, not a parallel set of controls or theme values.
+- `apps/reef/app/wax` stands alone, so that another app can use a copy of that
+  one folder. A Wax file imports a package or another Wax file. Put a helper or
+  an asset that Wax needs in that folder.
 - When a table row opens a page, pass the path to `Table.Row`'s `to` so a
   click anywhere in the row opens it, and link its name with `Table.RowLink`.
   Do not make only the name a link, or style the name as a link.
   Use `Table.useRowCursor` so ↑, ↓ and Enter reach the rows.
-- Match a filter field's text with `filterQuery` (`apps/reef/app/utils/filter-query.ts`),
+- Match a filter field's text with `filterQuery` (`apps/reef/app/wax/utils/filter-query.ts`),
   not `includes`, so every filter trims the query and ignores case the same
   way. To bold the matches, use Wax's `HighlightedMatches`.
 - Do not show status or meaning with color alone. Pair color with a distinct

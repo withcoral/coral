@@ -1,6 +1,6 @@
 import { style } from '@/wax/css'
 
-import { breakpoints } from '@/styles/breakpoints'
+import { breakpoints } from '@/wax/styles/breakpoints'
 import { theme, zIndex } from '@/wax/theme/theme.css'
 
 export const listRoot = style({

@@ -9,6 +9,8 @@ import {
 import { NavigationProgressBar } from './components/navigation-progress-bar'
 import { ErrorPage } from './components/error-page/error-page'
 import { runtimeConfigMiddleware } from './lib/runtime-config.server'
+import bodyFont from './wax/fonts/encode-sans-semi-expanded/EncodeSansSemiExpanded-400-latin.woff2?url'
+import headingFont from './wax/fonts/encode-sans-semi-expanded/EncodeSansSemiExpanded-500-latin.woff2?url'
 import resetStylesheet from './wax/theme/reset.css?url'
 import './wax/theme/global.css'
 import { darkTheme } from './wax/theme/theme-dark.css'
@@ -18,9 +20,9 @@ import { THEME_STORAGE_KEY, useTheme } from './wax/theme/theme-provider'
 
 export const links = () => [
   // Discover body and heading fonts before the first text paint, not during layout.
-  ...[400, 500].map((weight) => ({
+  ...[bodyFont, headingFont].map((href) => ({
     rel: 'preload',
-    href: `/fonts/encode-sans-semi-expanded/EncodeSansSemiExpanded-${weight}-latin.woff2`,
+    href,
     as: 'font',
     type: 'font/woff2',
     crossOrigin: 'anonymous' as const,

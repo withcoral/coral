@@ -1,7 +1,7 @@
 import { useDeferredValue, useRef, useState } from 'react'
 import { CatalogFilterMenu, CatalogToolbar, type CatalogFilterOptions } from '@/components/catalog'
 import { EmptyPage } from '@/components/empty-page'
-import { filterQuery } from '@/utils/filter-query'
+import { filterQuery } from '@/wax/utils/filter-query'
 import { Button, Combobox, Table, Typography } from '@/wax/components'
 import { Tooltip } from '@/wax/components/tooltip'
 import { Pill } from '@/wax/components/pill'

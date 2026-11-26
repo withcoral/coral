@@ -3,7 +3,7 @@ import { Link } from 'react-router'
 
 import { Icon } from '@/wax/components/icon'
 import { Tooltip } from '@/wax/components/tooltip'
-import type { FilterQuery } from '@/utils/filter-query'
+import type { FilterQuery } from '@/wax/utils/filter-query'
 
 import * as styles from './tree.css'
 

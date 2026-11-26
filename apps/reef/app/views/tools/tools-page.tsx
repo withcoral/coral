@@ -40,7 +40,7 @@ import {
   toolbarActionLabel,
   type CatalogRailEmpty,
 } from '@/components/catalog'
-import { filterQuery, type FilterQuery } from '@/utils/filter-query'
+import { filterQuery, type FilterQuery } from '@/wax/utils/filter-query'
 import { EmptyPage } from '@/components/empty-page'
 import { PolicyToggle, policyOptions, type PolicyState } from '@/components/policy-toggle'
 import {
@@ -62,7 +62,7 @@ import {
 } from '@/views/providers/add-provider'
 import { toolCallPath } from '@/lib/call-root'
 import { ProviderMarksContext } from '@/views/activity/call-tool'
-import { countLabel } from '@/utils/count-label'
+import { countLabel } from '@/wax/utils/count-label'
 import { catalogMatches } from '@/views/providers/provider-catalog'
 import {
   addressedTool,

@@ -323,6 +323,40 @@ describe('architecture', () => {
     ).toEqual([])
   })
 
+  it('keeps Wax in one folder that stands alone', () => {
+    const waxDir = path.join(appDir, 'wax')
+    const violations = filesUnder(waxDir, (name) => /\.(?:tsx?|css)$/.test(name)).flatMap(
+      (file) => {
+        const source = fs.readFileSync(file, 'utf8')
+        const named = file.endsWith('.css')
+          ? [...source.matchAll(/(?:@import\s+|url\(\s*)['"]?([^'")\s]+)/g)].map(
+              (match) => match[1],
+            )
+          : [
+              ...importsFrom(source),
+              ...[...source.matchAll(/\bvi\.\w+\(\s*['"]([^'"]+)['"]/g)].map((match) => match[1]),
+            ]
+        return named
+          .filter((specifier) => {
+            // `@/wax` is the folder itself. Any other `@/` or `~/` path is Reef's, and a
+            // path from `/` is Reef's `public` folder.
+            if (/^[@~]\//.test(specifier)) return !/^@\/wax(?:\/|$)/.test(specifier)
+            if (specifier.startsWith('/')) return true
+            if (!specifier.startsWith('.')) return false
+            const target = path.resolve(path.dirname(file), specifier)
+            return target !== waxDir && !within(target, waxDir)
+          })
+          .map((specifier) => `${path.relative(appDir, file)} -> ${specifier}`)
+      },
+    )
+
+    expect(
+      violations,
+      'Another app can use a copy of app/wax, and it has only the files in that folder. ' +
+        'Move a helper or an asset that Wax needs into app/wax; Reef then imports it from @/wax.',
+    ).toEqual([])
+  })
+
   it('keeps components independent from route modules', () => {
     const componentFiles = [componentsDir, waxComponentsDir].flatMap((directory) =>
       filesUnder(directory, (name) => /\.tsx?$/.test(name)),

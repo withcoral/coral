@@ -1,4 +1,4 @@
-import { utils } from '@/styles/utils'
+import { utils } from '@/wax/styles/utils'
 import type { PaletteValues } from '@/wax/base/palette/types'
 
 const Gray: PaletteValues['Gray'] = {

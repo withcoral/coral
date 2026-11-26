@@ -20,7 +20,7 @@ import { accountStates } from './account-states'
 import { ConnectButton } from './connect-button'
 import { DisconnectAccount } from './disconnect-account'
 import * as styles from './accounts.css'
-import { filterQuery } from '@/utils/filter-query'
+import { filterQuery } from '@/wax/utils/filter-query'
 import { useFollowRequiredActions } from '@/lib/use-action-signal'
 import { DeclineConnection } from '@/views/actions/decline-connection'
 

@@ -1,6 +1,6 @@
 import { createVar, globalStyle, keyframes, style, styleVariants } from '@/wax/css'
 
-import { utils } from '@/styles/utils'
+import { utils } from '@/wax/styles/utils'
 import { stickyBottom, stickyTop } from '@/wax/components/card/card.css'
 import { animation, staticUtilities, theme, zIndex } from '@/wax/theme/theme.css'
 

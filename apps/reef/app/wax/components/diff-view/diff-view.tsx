@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 
-import { countLabel } from '@/utils/count-label'
+import { countLabel } from '@/wax/utils/count-label'
 import { Container as ScrollArea } from '@/wax/components/scroll-area'
 import { Typography } from '@/wax/components/typography'
 import { visuallyHidden } from '@/wax/components/visually-hidden.css'

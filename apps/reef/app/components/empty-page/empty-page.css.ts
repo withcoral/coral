@@ -1,6 +1,6 @@
 import { style } from '@vanilla-extract/css'
 
-import { breakpoints } from '@/styles/breakpoints'
+import { breakpoints } from '@/wax/styles/breakpoints'
 
 export const fullSizeWrapper = style({
   alignItems: 'center',

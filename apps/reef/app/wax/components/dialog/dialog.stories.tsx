@@ -6,7 +6,7 @@ import { expect, waitFor, within } from 'storybook/test'
 import { Button, Dialog, Menu } from '@/wax/components'
 import { Tooltip } from '@/wax/components/tooltip'
 
-import { resizeViewport } from '../../../../.storybook/browser'
+import { resizeViewport } from '@/wax/storybook/browser'
 
 const meta: Meta = {
   parameters: {

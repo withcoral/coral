@@ -2,7 +2,7 @@ import { Field } from '@base-ui/react/field'
 import classNames from 'classnames'
 import { useId, useRef } from 'react'
 
-import { useComposedRefs } from '@/utils/compose-refs'
+import { useComposedRefs } from '@/wax/utils/compose-refs'
 import { IconButton } from '@/wax/components/button'
 import { Icon } from '@/wax/components/icon'
 import type { IconName } from '@/wax/components/icon'

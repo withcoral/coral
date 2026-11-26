@@ -6,7 +6,7 @@ import '../app/wax/theme/reset.css'
 import '../app/wax/theme/global.css'
 import { theme } from '../app/wax/theme/theme.css'
 import { getThemeClass, useTheme } from '../app/wax/theme/theme-provider'
-import { themeComparisonDecorator } from './addons/theme-comparison'
+import { themeComparisonDecorator } from '../app/wax/storybook/theme-comparison'
 import { ShellFormContext } from '../app/views/management/forms'
 
 const withThemeDecorator: Decorator = (Story, context) => {

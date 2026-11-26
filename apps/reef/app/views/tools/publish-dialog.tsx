@@ -4,7 +4,7 @@ import { useFetcher } from 'react-router'
 
 import { PolicyToggle, type PolicyState } from '@/components/policy-toggle'
 import { privateToolPath, sharedToolCallPath, sharedToolPath } from '@/lib/call-root'
-import { countLabel } from '@/utils/count-label'
+import { countLabel } from '@/wax/utils/count-label'
 import { CallTool } from '@/views/activity/call-tool'
 import { Fields } from '@/views/management/forms'
 import { SavedAt } from '@/views/management/saved-at'

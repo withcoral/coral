@@ -1,5 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { utils } from '@/styles/utils'
+import { utils } from '@/wax/styles/utils'
 import { theme, zIndex } from '@/wax/theme/theme.css'
 export const setupPage = style({ maxWidth: 1120, width: '100%', minWidth: 0 })
 export const sourceGrid = style({

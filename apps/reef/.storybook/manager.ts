@@ -1,1 +1,1 @@
-import './addons/theme-comparison/register'
+import '../app/wax/storybook/theme-comparison/register'

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
-import { downloadText } from '@/utils/download'
-import { payloadQuery } from '@/utils/filter-query'
+import { downloadText } from '@/wax/utils/download'
+import { payloadQuery } from '@/wax/utils/filter-query'
 import * as Button from '@/wax/components/button'
 import { CopyButton } from '@/wax/components/button/copy-button'
 import { AnnotatedCodeBlock } from '@/wax/components/code-block/annotated-code-block'
