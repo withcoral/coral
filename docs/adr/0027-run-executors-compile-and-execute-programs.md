@@ -101,7 +101,7 @@ runtime.
 - **Coral never refuses a Run for capacity.** On a full fleet, a new Program compiles and its Run waits in the queue. With no
   room anywhere and work waiting, a Coral Instance that runs local children starts another, up to their limit; an
   orchestrator scales Run Executors in their own container. A Coral Instance is ready without a linked Run Executor:
-  [ADR 0042](0042-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md) says what its
+  [ADR 0043](0043-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md) says what its
   readiness checks.
 
 ## The Run stream
@@ -194,7 +194,7 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   its side of the stream cleanly; the Run Executor reopens it at once and the Run goes on elsewhere. The drain also
   finishes the requests in flight on the Coral Instance's other listeners, and it ends when nothing is in flight. One
   length limits all of it
-  ([ADR 0042](0042-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)): at that
+  ([ADR 0043](0043-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)): at that
   length the Coral Instance closes the rest, and the calls in flight of those Runs end `indeterminate`. A local child
   dials only its parent, so its streams cannot move: the drain keeps dispatching for them, and at its length their Runs
   end Interrupted. A Run on a dialed Run Executor is never interrupted by the drain, and a rolling deploy loses none of
@@ -228,7 +228,7 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   ended, and terminates the Program. The sweeper deletes a lapsed row that holds no Run. The Coral Instance that started
   a local child and sees it exit runs the same write for that child's Runs at once.
 - **One sweeper at a time, elected by a lease row.** Every Coral Instance that has the core role
-  ([ADR 0042](0042-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)) tries the
+  ([ADR 0043](0043-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)) tries the
   row on a period; the one whose update lands sweeps that pass and renews on each pass, and another takes over when it
   dies. The first pass runs at boot before the core role's listeners bind. Each pass, bounded, oldest first: `running`
   Runs past their deadline, `pending` Approval Requests past theirs, taken Runs that never started, Run Executors past

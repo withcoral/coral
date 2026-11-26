@@ -8,7 +8,7 @@ Each kind's retriever runs a vector query beside its lexical query, merges the t
 weak; the engine's fusion does not change. One embedding model, `BAAI/bge-small-en-v1.5`, runs on the CPU inside the
 Coral process on Desktop and on the server. On a server that separates the Instance Roles, it runs inside each Coral
 Instance that has the core role
-([ADR 0042](0042-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)). A background
+([ADR 0043](0043-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)). A background
 Embedder gives each Search Entity a vector of its text, and an
 Entity without a current vector ranks by words alone. Search Hits carry no evidence. One setting turns the vector side
 off.

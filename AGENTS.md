@@ -262,7 +262,7 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
 
 ### Rolling upgrades
 
-[ADR 0042](docs/adr/0042-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)
+[ADR 0043](docs/adr/0043-an-operator-composes-coral-from-instance-roles-and-upgrades-it-one-process-at-a-time.md)
 has the reasons.
 
 - A rolling upgrade runs two versions of Coral on one Postgres database (on
