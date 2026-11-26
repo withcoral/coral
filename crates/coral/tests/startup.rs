@@ -734,21 +734,29 @@ impl Sink {
         })
     }
 
-    /// The `[otel]` table of a runtime that exports to this sink.
+    /// The `[otel]` table of a runtime that exports to this sink, with a
+    /// header whose value holds a `%`.
     fn otel_toml(&self) -> String {
-        format!("[otel]\nendpoint = '{}'\n", self.0.uri())
+        format!(
+            "[otel]\nendpoint = '{}'\nheaders = 'x-coral-test=a%41'\n",
+            self.0.uri()
+        )
     }
 
     /// Waits until `found` holds for one export to `path`, decoded as `M`.
-    fn wait_for<M: prost::Message + Default>(&self, path: &str, mut found: impl FnMut(M) -> bool) {
+    fn wait_for<M: prost::Message + Default>(
+        &self,
+        path: &str,
+        mut found: impl FnMut(&wiremock::Request, M) -> bool,
+    ) {
         let deadline = Instant::now() + EXIT_TIMEOUT;
         loop {
             let requests = block_on(self.0.received_requests()).unwrap_or_default();
             if requests
                 .iter()
                 .filter(|request| request.url.path() == path)
-                .filter_map(|request| M::decode(request.body.as_slice()).ok())
-                .any(&mut found)
+                .filter_map(|request| Some((request, M::decode(request.body.as_slice()).ok()?)))
+                .any(|(request, export)| found(request, export))
             {
                 return;
             }
@@ -758,29 +766,31 @@ impl Sink {
     }
 }
 
-/// The `service.instance.id` of an exported `resource`.
+/// The string attribute `key` of an exported `resource`.
 #[cfg(unix)]
-fn instance_id(
-    resource: Option<&opentelemetry_proto::tonic::resource::v1::Resource>,
-) -> Option<&str> {
+fn resource_attribute<'a>(
+    resource: Option<&'a opentelemetry_proto::tonic::resource::v1::Resource>,
+    key: &str,
+) -> Option<&'a str> {
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
     let attribute = resource?
         .attributes
         .iter()
-        .find(|attribute| attribute.key == "service.instance.id")?;
+        .find(|attribute| attribute.key == key)?;
     match attribute.value.as_ref()?.value.as_ref()? {
-        Value::StringValue(id) => Some(id),
+        Value::StringValue(value) => Some(value),
         _ => None,
     }
 }
 
 /// A Run on a local child and a Run on a dialed Run Executor each send the
 /// Run Executor's CPU time, heap peak and compiler metrics to the
-/// collector, with its id as `service.instance.id`. Coral's `[otel]`
-/// reaches its child, and the operator's variables the dialed one.
+/// collector, with its id as `service.instance.id`, `coral` as
+/// `service.name`, and the header's value as Coral sends it. Coral's
+/// `[otel]` reaches its child, and the operator's variables the dialed one.
 ///
 /// Catches: a Run Executor that starts no exporter, or whose metrics no
-/// layer records (#3498).
+/// layer records, and a child that decodes the `%` in a header (#3498).
 #[cfg(unix)]
 #[test]
 fn a_run_executors_metrics_reach_the_collector_under_its_id() {
@@ -796,8 +806,16 @@ fn a_run_executors_metrics_reach_the_collector_under_its_id() {
             let state_root = local_state_root_with(&temp, &sink.otel_toml());
             (Runtime::start(&state_root, false), state_root)
         };
-        let _dialed = dialed
-            .then(|| Dialed::dial(&runtime, 1, &[("OTEL_EXPORTER_OTLP_ENDPOINT", &endpoint)]));
+        let _dialed = dialed.then(|| {
+            Dialed::dial(
+                &runtime,
+                1,
+                &[
+                    ("OTEL_EXPORTER_OTLP_ENDPOINT", &endpoint),
+                    ("OTEL_EXPORTER_OTLP_HEADERS", "x-coral-test=a%2541"),
+                ],
+            )
+        });
         let body = exec_over_mcp(
             workspace_mcp_url(&runtime),
             r#"{"goal":"Export","intent":"Export","program":"return 40 + 2;"}"#,
@@ -813,18 +831,29 @@ fn a_run_executors_metrics_reach_the_collector_under_its_id() {
         );
         let id = id.expect("the Run's Run Executor");
         let mut names = std::collections::BTreeSet::new();
-        sink.wait_for("/v1/metrics", |export: ExportMetricsServiceRequest| {
-            let metrics = export
-                .resource_metrics
-                .iter()
-                .filter(|metrics| instance_id(metrics.resource.as_ref()) == Some(&id))
-                .flat_map(|metrics| &metrics.scope_metrics)
-                .flat_map(|scope| &scope.metrics);
-            names.extend(metrics.map(|metric| metric.name.clone()));
-            names.contains("coral.program.execution.cpu.duration")
-                && names.contains("coral.program.execution.heap.peak")
-                && names.iter().any(|name| name.starts_with("coral.compiler."))
-        });
+        sink.wait_for(
+            "/v1/metrics",
+            |request, export: ExportMetricsServiceRequest| {
+                let header = request.headers.get("x-coral-test");
+                if header.and_then(|value| value.to_str().ok()) != Some("a%41") {
+                    return false;
+                }
+                let metrics = export
+                    .resource_metrics
+                    .iter()
+                    .filter(|metrics| {
+                        let resource = metrics.resource.as_ref();
+                        resource_attribute(resource, "service.instance.id") == Some(&id)
+                            && resource_attribute(resource, "service.name") == Some("coral")
+                    })
+                    .flat_map(|metrics| &metrics.scope_metrics)
+                    .flat_map(|scope| &scope.metrics);
+                names.extend(metrics.map(|metric| metric.name.clone()));
+                names.contains("coral.program.execution.cpu.duration")
+                    && names.contains("coral.program.execution.heap.peak")
+                    && names.iter().any(|name| name.starts_with("coral.compiler."))
+            },
+        );
     }
 }
 
@@ -867,7 +896,7 @@ fn the_listeners_protocol_level_refusal_reaches_the_collector() {
             .expect_err("Coral refuses the pull stream")
     });
     assert_eq!(refused.code(), tonic::Code::FailedPrecondition);
-    sink.wait_for("/v1/logs", |export: ExportLogsServiceRequest| {
+    sink.wait_for("/v1/logs", |_request, export: ExportLogsServiceRequest| {
         export
             .resource_logs
             .iter()

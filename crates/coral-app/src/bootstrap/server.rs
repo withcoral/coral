@@ -712,8 +712,7 @@ fn init_server_telemetry(
     service_version: Option<&'static str>,
 ) -> Result<(), AppError> {
     let service_version = service_version.unwrap_or(env!("CARGO_PKG_VERSION"));
-    crate::telemetry::init_tracing(config, "", instance_id, service_version)
-        .map_err(AppError::Telemetry)
+    crate::telemetry::init_tracing(config, instance_id, service_version)
 }
 
 /// Opens the host credential vault from the source the deployment selects:

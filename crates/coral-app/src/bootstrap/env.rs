@@ -205,8 +205,7 @@ impl RunExecutorTelemetry {
     ///
     /// # Errors
     ///
-    /// Returns the variable that is not Unicode, or a sample ratio that is
-    /// not a number from `0.0` to `1.0`.
+    /// Returns the variable that is not Unicode.
     pub fn from_env() -> Result<Self, String> {
         Self::from_variables(|name| {
             env_var(name).map_err(|_not_unicode| format!("{name} must be Unicode"))

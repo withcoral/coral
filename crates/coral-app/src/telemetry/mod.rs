@@ -27,6 +27,7 @@ use tracing_subscriber::{EnvFilter, Registry};
 
 pub mod config;
 
+use crate::bootstrap::AppError;
 use config::{DEFAULT_LOG_FILTER, DEFAULT_TRACE_FILTER, TRACE_CONTEXT_FILTER};
 pub use config::{RunExecutorTelemetry, TelemetryConfig};
 /// Why an exporter that `[otel]` configures could not be built.
@@ -115,20 +116,9 @@ fn configured_otlp_endpoint(config: &TelemetryConfig) -> Option<&str> {
 /// The process's resource: its service name and version, and as
 /// `service.instance.id` the id of the Coral Instance whose start initialized
 /// telemetry, or the Run Executor's id, so every exported span, log and
-/// metric names that process. `attributes`, `key=value` pairs, come below
-/// those three.
-fn telemetry_resource(
-    service_name: &str,
-    service_version: &str,
-    instance_id: &str,
-    attributes: &str,
-) -> Resource {
+/// metric names that process.
+fn telemetry_resource(service_name: &str, service_version: &str, instance_id: &str) -> Resource {
     Resource::builder()
-        .with_attributes(
-            parse_headers(attributes)
-                .into_iter()
-                .map(|(key, value)| opentelemetry::KeyValue::new(key, value)),
-        )
         .with_attribute(opentelemetry::KeyValue::new(
             "service.name",
             service_name.to_string(),
@@ -372,19 +362,17 @@ fn trace_pipeline(
     Ok((provider, layer, filter_error))
 }
 
-/// Starts this process's telemetry once; `resource_attributes` are
-/// `key=value` pairs for [`telemetry_resource`].
 pub(crate) fn init_tracing(
     config: &TelemetryConfig,
-    resource_attributes: &str,
     instance_id: &str,
     service_version: &str,
-) -> Result<(), ExporterError> {
+) -> Result<(), AppError> {
     INIT.get_or_init(|| {
-        try_init_tracing(config, resource_attributes, instance_id, service_version)
+        try_init_tracing(config, instance_id, service_version)
             .map_err(|error| ExporterError(Arc::new(error)))
     })
     .clone()
+    .map_err(AppError::Telemetry)
 }
 
 /// Starts a Run Executor's telemetry: what a Coral server installs, with
@@ -393,24 +381,18 @@ pub(crate) fn init_tracing(
 ///
 /// # Errors
 ///
-/// Returns [`ExporterError`] if an exporter that the settings configure
-/// cannot be built.
+/// Returns [`AppError::Telemetry`] if an exporter that the settings
+/// configure cannot be built.
 pub fn init_run_executor_telemetry(
     settings: &RunExecutorTelemetry,
     run_executor_id: &str,
     service_version: &str,
-) -> Result<(), ExporterError> {
-    init_tracing(
-        &settings.config,
-        &settings.resource_attributes,
-        run_executor_id,
-        service_version,
-    )
+) -> Result<(), AppError> {
+    init_tracing(&settings.0, run_executor_id, service_version)
 }
 
 fn try_init_tracing(
     config: &TelemetryConfig,
-    resource_attributes: &str,
     instance_id: &str,
     service_version: &str,
 ) -> Result<(), ExporterBuildError> {
@@ -418,12 +400,7 @@ fn try_init_tracing(
     let endpoint = configured_otlp_endpoint(config);
     let (log_filter, log_filter_error) = build_log_filter(config.otel.log_filter.as_deref());
 
-    let resource = telemetry_resource(
-        &config.otel.service_name,
-        service_version,
-        instance_id,
-        resource_attributes,
-    );
+    let resource = telemetry_resource(&config.otel.service_name, service_version, instance_id);
     // Metrics leave only through an endpoint, so without one nothing records them.
     let mut metrics = None;
     if let Some(endpoint) = endpoint {
@@ -548,7 +525,7 @@ mod tests {
             ),
         ] {
             let config = crate::bootstrap::telemetry(raw).expect("telemetry config");
-            let resource = telemetry_resource("coral-test", "1.2.3+abc1234", "instance", "");
+            let resource = telemetry_resource("coral-test", "1.2.3+abc1234", "instance");
             let (provider, layer, filter_error) =
                 trace_pipeline(&config, &resource, None).expect("trace pipeline");
             assert_eq!(filter_error, None, "{case}");
@@ -626,7 +603,7 @@ mod tests {
             let case = format!("{ratio:?} with caller {caller:?}");
             let config = crate::bootstrap::telemetry(&format!("[otel]\n{ratio}\n"))
                 .expect("telemetry config");
-            let resource = telemetry_resource("coral-test", "1.2.3+abc1234", "instance", "");
+            let resource = telemetry_resource("coral-test", "1.2.3+abc1234", "instance");
             let (provider, layer, _filter_error) =
                 trace_pipeline(&config, &resource, None).expect("trace pipeline");
             let logs = opentelemetry_sdk::logs::InMemoryLogExporter::default();
@@ -682,21 +659,11 @@ mod tests {
     }
 
     /// Operators filter exported telemetry by `service.instance.id` to find
-    /// the Coral Instance or the Run Executor that produced it, and by
-    /// `service.version` to find the build. A Run Executor's
-    /// `OTEL_RESOURCE_ATTRIBUTES` add to those three and change none.
+    /// the Coral Instance that produced it, and by `service.version` to find
+    /// the build.
     #[test]
     fn the_resource_names_the_service_its_version_and_the_coral_instance() {
-        let resource = telemetry_resource(
-            "coral-test",
-            "1.2.3+abc1234",
-            "6f1c2b0e-instance",
-            "deployment.environment = staging, service.instance.id=other,service.name=other",
-        );
-        assert_eq!(
-            resource.get(&Key::new("deployment.environment")),
-            Some(Value::from("staging"))
-        );
+        let resource = telemetry_resource("coral-test", "1.2.3+abc1234", "6f1c2b0e-instance");
 
         assert_eq!(
             resource.get(&Key::new("service.name")),
@@ -762,7 +729,7 @@ mod tests {
                     "[otel]\ntrace_filter = \"{DEPENDENCY_TARGET}=trace\"\n"
                 ))
                 .expect("telemetry config");
-                super::init_tracing(&config, "", "instance", "1.2.3+abc1234")
+                super::init_tracing(&config, "instance", "1.2.3+abc1234")
                     .expect("telemetry starts");
                 // The checks that each `log` call makes before it sends its
                 // record: the build's level, the bridge's level, and the
