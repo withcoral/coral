@@ -1,5 +1,5 @@
 import classNames from 'classnames'
-import type { ReactNode } from 'react'
+import type { MouseEventHandler, ReactNode } from 'react'
 
 import * as styles from './text-link.css'
 
@@ -12,12 +12,15 @@ export function TextLink({
   className,
   external = false,
   href,
+  onClick,
   title,
 }: {
   children: ReactNode
   className?: string
   external?: boolean
   href?: string
+  /** Runs before the browser follows `href`, such as to move to a place on the page itself. */
+  onClick?: MouseEventHandler<HTMLAnchorElement>
   /** Shown as a tooltip, as Markdown's `[text](url "title")` gives it. */
   title?: string
 }) {
@@ -25,6 +28,7 @@ export function TextLink({
     <a
       className={classNames(styles.link, className)}
       href={href}
+      onClick={onClick}
       title={title}
       {...(external && { target: '_blank', rel: 'noopener noreferrer' })}
     >
