@@ -6,18 +6,15 @@
 //! predicate, the execution claim id and the head the chunk was built on, and
 //! moves the head by one. The Run-scoped rows a chunk carries (Invocation
 //! rows, Approval Request rows) join the same transaction through their owning
-//! repositories; the Run row's own changes (the termination intent the chunk
-//! carries, the terminal outcome) ride in the head update as further Run row
-//! columns.
+//! repositories; the Run row's own changes (the terminal outcome) ride in
+//! the head update as further Run row columns.
 
 use coral_db::Transaction;
 use coral_workspace::WorkspaceId;
 use sea_query::{Expr, ExprTrait as _, Query};
 
-use super::events::{NewEvent, OwnedEvent, insert_events};
-use super::termination::request_values;
+use super::events::{NewEvent, PendingEvent, insert_events};
 use super::{ProgramRunRecords, RunRecord};
-use crate::lifecycle::RequestedTermination;
 use crate::{Error, RunId, RunState};
 
 /// One Event of a chunk and when it occurred.
@@ -41,8 +38,6 @@ pub(crate) struct Chunk<'a> {
     events: Vec<ChunkEvent<'a>>,
     /// The Run Output Budget total after this chunk, written as a plain value.
     output_bytes: usize,
-    /// The termination intent this chunk records in its head update.
-    termination: Option<&'a RequestedTermination>,
     /// The highest Run stream request number committed with this chunk.
     request_number: Option<u64>,
 }
@@ -64,7 +59,6 @@ impl<'a> Chunk<'a> {
             committed_at_unix_nanos,
             events: Vec::new(),
             output_bytes: run.accumulated_output_bytes,
-            termination: None,
             request_number: None,
         }
     }
@@ -85,7 +79,10 @@ impl<'a> Chunk<'a> {
     }
 
     /// Appends `events` in order after the ones already in the chunk.
-    pub(crate) fn owned_events(mut self, events: impl IntoIterator<Item = &'a OwnedEvent>) -> Self {
+    pub(crate) fn pending_events(
+        mut self,
+        events: impl IntoIterator<Item = &'a PendingEvent>,
+    ) -> Self {
         for event in events {
             self = self.event(event.as_new(), event.occurred_at_unix_nanos);
         }
@@ -98,14 +95,6 @@ impl<'a> Chunk<'a> {
         self
     }
 
-    /// Records the termination `intent` in this chunk's head update. A
-    /// cancellation's intent is recorded beside its `cancellation.requested`
-    /// Event.
-    pub(crate) const fn termination(mut self, intent: &'a RequestedTermination) -> Self {
-        self.termination = Some(intent);
-        self
-    }
-
     #[cfg(test)]
     pub(crate) const fn built_on_head(mut self, head: u64) -> Self {
         self.head = head;
@@ -114,9 +103,8 @@ impl<'a> Chunk<'a> {
 }
 
 /// Commits `chunk` in `transaction`: asserts the claim, the head and a running
-/// Run, moves the head by one, writes the output total, the commit time, the
-/// termination intent the chunk carries, and appends the
-/// Events after the Run's last one. The caller commits the transaction.
+/// Run, moves the head by one, writes the output total and the commit time,
+/// and appends the Events after the Run's last one. The caller commits the transaction.
 ///
 /// The update also advances `next_event_sequence` by the chunk's Event count.
 /// This release never reads it, but the previous release numbers its Events
@@ -145,9 +133,6 @@ pub(super) async fn commit_chunk_with(
     run_values: Vec<(ProgramRunRecords, Expr)>,
 ) -> Result<(), Error> {
     let mut run_values = run_values;
-    if let Some(intent) = chunk.termination {
-        run_values.extend(request_values(intent));
-    }
     if let Some(number) = chunk.request_number {
         let number = i64::try_from(number)
             .map_err(|_error| Error::CorruptData("Run request number overflowed".to_string()))?;

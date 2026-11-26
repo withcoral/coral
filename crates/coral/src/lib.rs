@@ -73,8 +73,19 @@ struct RunExecutorArgs {
         value_parser = clap::value_parser!(u32).range(1..)
     )]
     max_runs_held: u32,
-    /// The Program Compiler's heap limit, in bytes.
-    #[arg(long, env = "CORAL_RUN_EXECUTOR_COMPILER_HEAP_BYTES", default_value_t = 512 << 20)]
+    /// Each Run's heap limit, in bytes. At least 8 MiB.
+    #[arg(
+        long,
+        env = "CORAL_RUN_EXECUTOR_EXECUTION_HEAP_BYTES",
+        default_value_t = coral_run_executor::IsolateLimits::defaults().execution_heap_bytes()
+    )]
+    execution_heap_bytes: usize,
+    /// The Program Compiler's heap limit, in bytes. At least 8 MiB.
+    #[arg(
+        long,
+        env = "CORAL_RUN_EXECUTOR_COMPILER_HEAP_BYTES",
+        default_value_t = coral_run_executor::IsolateLimits::defaults().compiler_heap_bytes()
+    )]
     compiler_heap_bytes: usize,
     /// Serve the gRPC health service on this `host:port`.
     #[arg(long, env = "CORAL_RUN_EXECUTOR_HEALTH_LISTEN")]
@@ -343,9 +354,15 @@ async fn run_executor(args: RunExecutorArgs) -> anyhow::Result<()> {
         coral_address,
         token_stdin,
         max_runs_held,
+        execution_heap_bytes,
         compiler_heap_bytes,
         health_listen,
     } = args;
+    let isolate = coral_run_executor::IsolateLimits::new(execution_heap_bytes, compiler_heap_bytes)
+        .context(
+            "invalid --execution-heap-bytes (CORAL_RUN_EXECUTOR_EXECUTION_HEAP_BYTES) \
+             or --compiler-heap-bytes (CORAL_RUN_EXECUTOR_COMPILER_HEAP_BYTES)",
+        )?;
     // The Run Executor's own warnings, such as a refused protocol level.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -374,8 +391,10 @@ async fn run_executor(args: RunExecutorArgs) -> anyhow::Result<()> {
         token: coral_run_executor::Token::new(token)?,
         local_child: token_stdin,
         max_runs_held,
-        compiler_heap_bytes,
-        run_limits: coral_run_executor::RunLimits::default(),
+        run_limits: coral_run_executor::RunLimits {
+            isolate,
+            ..coral_run_executor::RunLimits::default()
+        },
     };
     let mut retire_failure = None;
     let retire = async {

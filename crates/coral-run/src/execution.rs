@@ -7,7 +7,11 @@ use tokio::sync::Notify;
 use crate::Error;
 use crate::types::HeldRunId;
 
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// How long the end of the Shutdown Drain waits for the loops it moves or
+/// interrupts: each one's own end write, retried until the database answers.
+/// It is the 5 s dispatch grace this release removed plus the 1 s margin
+/// that followed it, so the drain's timing does not change.
+const COMMIT_GRACE: Duration = Duration::from_secs(6);
 /// How long an Approval Request waits for a decision at most; the Run
 /// deadline bounds it further.
 const APPROVAL_WAIT: Duration = Duration::from_mins(15);
@@ -115,7 +119,7 @@ pub(crate) trait ExecutionObserver: Send + Sync {
     }
 
     /// The loop's task dequeued one message.
-    fn owner_message_dequeued(&self) {}
+    fn loop_message_dequeued(&self) {}
 
     /// The wake-up reader woke one Run stream's loop, in a read that `turn`
     /// started.
@@ -125,11 +129,11 @@ pub(crate) trait ExecutionObserver: Send + Sync {
     async fn before_wake_read(&self) {}
 
     /// The loop armed `timer` to fire after `after_nanos` on the host clock.
-    fn timer_armed(&self, _timer: &crate::owner::Timer, _after_nanos: i64) {}
+    fn timer_armed(&self, _timer: &crate::run_stream::run_loop::Timer, _after_nanos: i64) {}
 
     /// The loop's `check` of its parked waits read its snapshot and found
     /// `found` waits ended or moot.
-    fn precheck_finished(&self, _check: crate::owner::Check, _found: usize) {}
+    fn precheck_finished(&self, _check: crate::run_stream::run_loop::Check, _found: usize) {}
 
     fn execution_attempt_finished(&self) {}
 }
@@ -143,7 +147,7 @@ impl ExecutionObserver for NoopExecutionObserver {}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ExecutionPolicy {
-    shutdown_grace: Duration,
+    commit_grace: Duration,
     approval_wait: Duration,
     precheck_interval: Duration,
     wake_gap: Duration,
@@ -152,7 +156,7 @@ pub(crate) struct ExecutionPolicy {
 impl ExecutionPolicy {
     pub(crate) const fn production() -> Self {
         Self {
-            shutdown_grace: SHUTDOWN_GRACE,
+            commit_grace: COMMIT_GRACE,
             approval_wait: APPROVAL_WAIT,
             precheck_interval: PARKED_PRECHECK_INTERVAL,
             wake_gap: CHANGE_WAKE_GAP,
@@ -162,7 +166,7 @@ impl ExecutionPolicy {
     #[cfg(test)]
     pub(crate) const fn testing() -> Self {
         Self {
-            shutdown_grace: Duration::from_millis(100),
+            commit_grace: Duration::from_millis(1100),
             approval_wait: APPROVAL_WAIT,
             precheck_interval: TEST_PRECHECK_INTERVAL,
             wake_gap: TEST_WAKE_GAP,
@@ -201,29 +205,15 @@ impl ExecutionPolicy {
         }
     }
 
-    /// Keeps everything else while a test chooses the shutdown grace.
-    #[cfg(test)]
-    pub(crate) const fn testing_with_shutdown_grace(shutdown_grace: Duration) -> Self {
-        Self {
-            shutdown_grace,
-            ..Self::testing()
-        }
-    }
-
     /// How long the end of the Shutdown Drain waits for the loops it moves
-    /// or interrupts to record that: the shutdown grace their dispatches in
-    /// flight get, and the settle's last attempt.
-    pub(crate) fn commit_grace(self) -> Duration {
-        self.shutdown_grace + crate::termination::SETTLE_MARGIN
+    /// or interrupts to record that.
+    pub(crate) const fn commit_grace(self) -> Duration {
+        self.commit_grace
     }
 
     /// How long an Approval Request waits for a decision at most.
     pub(crate) fn approval_wait_nanos(self) -> i64 {
         duration_nanos(self.approval_wait)
-    }
-
-    pub(crate) fn shutdown_grace_nanos(self) -> i64 {
-        duration_nanos(self.shutdown_grace)
     }
 
     /// How often a Run stream loop with parked Invocations prechecks their waits.

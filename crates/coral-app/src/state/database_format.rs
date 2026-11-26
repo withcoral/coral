@@ -173,6 +173,11 @@ fn postgres_schema_objects(current_schema: &str) -> SelectStatement {
         .and_where(Expr::cust(
             "dependency.classid <> 'pg_catalog.pg_extension'::regclass",
         ))
+        // A hosted Postgres, such as Neon, sets default privileges in a new
+        // database's schema. They are not Coral state either.
+        .and_where(Expr::cust(
+            "dependency.classid <> 'pg_catalog.pg_default_acl'::regclass",
+        ))
         .and_where(Expr::cust(
             "NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend AS member \
              WHERE member.classid = dependency.classid \
@@ -514,7 +519,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_administrators_extension_alone_is_fresh_postgres_state() {
+    async fn an_administrators_setup_alone_is_fresh_postgres_state() {
         coral_test_support::database_only!(Postgres);
         let url = bootstrap::env_var("CORAL_TEST_POSTGRES_URL")
             .expect("read Postgres test URL")
@@ -524,35 +529,46 @@ mod tests {
             .connect(&url)
             .await
             .expect("open Postgres");
-        // A role that may not create extensions depends on an administrator
-        // installing Universal Search's pg_trgm before the first boot, often in
-        // Coral's own schema. The test uses `hstore` in its place: pg_trgm is
-        // already in this test database's `public`, and an extension exists
-        // once per database.
-        let schema = create_schema(&pool, "extension").await;
-        sqlx::query(AssertSqlSafe(format!(
-            "CREATE EXTENSION hstore SCHEMA {schema}"
-        )))
-        .execute(&pool)
-        .await
-        .expect("install an administrator's extension");
-        let extension_only = validate_database_state(&postgres_config(&url, &schema)).await;
-        sqlx::query(AssertSqlSafe(format!(
-            "CREATE TABLE {schema}.legacy_sources (name TEXT NOT NULL)"
-        )))
-        .execute(&pool)
-        .await
-        .expect("create retired table beside the extension");
-        let with_table = validate_database_state(&postgres_config(&url, &schema)).await;
-        sqlx::query(AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+        let cases = [
+            // A role that may not create extensions depends on an
+            // administrator installing Universal Search's pg_trgm before the
+            // first boot, often in Coral's own schema. The test uses `hstore`
+            // in its place: pg_trgm is already in this test database's
+            // `public`, and an extension exists once per database.
+            ("extension", "CREATE EXTENSION hstore SCHEMA {schema}"),
+            // A hosted Postgres, such as Neon, sets default privileges in
+            // every new database's `public`.
+            (
+                "default_acl",
+                "ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} GRANT SELECT ON TABLES TO PUBLIC",
+            ),
+        ];
+        for (label, setup) in cases {
+            let schema = create_schema(&pool, label).await;
+            sqlx::query(AssertSqlSafe(setup.replace("{schema}", &schema)))
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("{label}: run the administrator's setup: {error}"));
+            let setup_only = validate_database_state(&postgres_config(&url, &schema)).await;
+            sqlx::query(AssertSqlSafe(format!(
+                "CREATE TABLE {schema}.legacy_sources (name TEXT NOT NULL)"
+            )))
             .execute(&pool)
             .await
-            .expect("drop extension test schema");
-        pool.close().await;
+            .unwrap_or_else(|error| panic!("{label}: create retired table: {error}"));
+            let with_table = validate_database_state(&postgres_config(&url, &schema)).await;
+            sqlx::query(AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("{label}: drop test schema: {error}"));
 
-        extension_only.expect("extension objects alone are fresh state");
-        let error = with_table.expect_err("a table beside the extension is pre-v1 state");
-        assert_refused(&error, &StateRefusal::PreV1Database, "extension");
+            setup_only.unwrap_or_else(|error| {
+                panic!("{label}: the administrator's setup alone is fresh state: {error}")
+            });
+            let error = with_table.expect_err("a table beside the setup is pre-v1 state");
+            assert_refused(&error, &StateRefusal::PreV1Database, label);
+        }
+        pool.close().await;
     }
 
     async fn assert_forged_marker_is_rejected(pool: &sqlx::PgPool, url: &str, marker_schema: &str) {

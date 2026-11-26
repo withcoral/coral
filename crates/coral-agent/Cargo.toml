@@ -13,15 +13,16 @@ workspace = true
 [dependencies]
 async-trait.workspace = true
 chrono.workspace = true
+coral-agent-model.workspace = true
 coral-app.workspace = true
 coral-catalog.workspace = true
 coral-credentials.workspace = true
 coral-db.workspace = true
 coral-identifier.workspace = true
 coral-outbound = { workspace = true, features = ["transport"] }
+coral-policy.workspace = true
 coral-run.workspace = true
 coral-search.workspace = true
-coral-secret-store.workspace = true
 coral-task.workspace = true
 coral-telemetry.workspace = true
 coral-workspace.workspace = true
@@ -33,7 +34,6 @@ serde_json.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
-toml.workspace = true
 tracing.workspace = true
 url.workspace = true
 uuid.workspace = true
@@ -41,10 +41,12 @@ uuid.workspace = true
 [dev-dependencies]
 coral-run = { workspace = true, features = ["test-support"] }
 coral-mcp = { workspace = true, features = ["test-fixtures"] }
-coral-policy.workspace = true
+coral-administration.workspace = true
 coral-provider = { workspace = true, features = ["test-fixtures"] }
+coral-search = { workspace = true, features = ["test-fixtures"] }
 coral-telemetry = { workspace = true, features = ["test-support"] }
 coral-test-support.workspace = true
+tempfile.workspace = true
 coral-workspace = { workspace = true, features = ["test-fixtures"] }
 opentelemetry.workspace = true
 rmcp.workspace = true

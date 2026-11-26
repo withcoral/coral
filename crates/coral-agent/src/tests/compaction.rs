@@ -100,15 +100,10 @@ async fn requests(lead: &Lead) -> Vec<&'static str> {
 #[tokio::test]
 async fn a_thread_near_the_window_is_summarized_and_the_turn_answers() {
     let lead = Lead::new().await;
-    let section = format!(
-        "base_url = '{}'\nmodel = '{MODEL}'\ncontext_window = 48000",
-        lead.base_url()
-    );
-    let factory = SubAgentFactory;
-    let tools = factory.build(&toml::from_str(&section).unwrap(), lead.dependencies());
+    let tools = lead.tools_with_window(Some(48_000));
     stub(&lead, 3).await;
 
-    let (sub_agent_id, waited) = lead.turn(&*tools.unwrap(), &lead.task().await).await;
+    let (sub_agent_id, waited) = lead.turn(&*tools, &lead.task().await).await;
 
     assert_eq!(waited.get("answer"), Some(&json!(ANSWER)), "{waited}");
     let steps = ["step", "step", "step", "summary", "step"];
@@ -137,17 +132,28 @@ async fn a_thread_near_the_window_is_summarized_and_the_turn_answers() {
     );
 }
 
+// Catches: a model with no context window set that is never compacted, or is compacted as if its
+// window were small.
+#[tokio::test]
+async fn a_model_with_no_window_compacts_as_if_it_had_128_000_tokens() {
+    let lead = Lead::new().await;
+    // The twelfth call leaves less than the reserve free of 128,000 tokens.
+    stub(&lead, 11).await;
+
+    let (_, waited) = lead.turn(&*lead.tools(), &lead.task().await).await;
+
+    assert_eq!(waited.get("answer"), Some(&json!(ANSWER)), "{waited}");
+    let mut steps = vec!["step"; 11];
+    steps.extend(["summary", "step"]);
+    assert_eq!(requests(&lead).await, steps);
+}
+
 // Catches: a server's "too long" that fails the Turn where a summary of its
 // older messages lets it go on, and a retry that sends the thread whole again.
 #[tokio::test]
 async fn a_refusal_as_too_long_compacts_the_thread_and_asks_again() {
     let lead = Lead::new().await;
-    let section = format!(
-        "base_url = '{}'\nmodel = '{MODEL}'\ncontext_window = 200000",
-        lead.base_url()
-    );
-    let factory = SubAgentFactory;
-    let tools = factory.build(&toml::from_str(&section).unwrap(), lead.dependencies());
+    let tools = lead.tools_with_window(Some(200_000));
     let too_long = json!({"error": {"message": "m", "code": "context_length_exceeded"}});
     // The request that holds the third round is refused once.
     Mock::given(body_string_contains("call_3"))
@@ -157,7 +163,7 @@ async fn a_refusal_as_too_long_compacts_the_thread_and_asks_again() {
         .await;
     stub(&lead, 3).await;
 
-    let (_, waited) = lead.turn(&*tools.unwrap(), &lead.task().await).await;
+    let (_, waited) = lead.turn(&*tools, &lead.task().await).await;
 
     assert_eq!(waited.get("answer"), Some(&json!(ANSWER)), "{waited}");
     let steps = ["step", "step", "step", "step", "summary", "step"];
@@ -175,14 +181,7 @@ async fn a_refusal_as_too_long_compacts_the_thread_and_asks_again() {
 #[tokio::test]
 async fn reported_usage_triggers_compaction_across_turns() {
     let lead = Lead::new().await;
-    let section = format!(
-        "base_url = '{}'\nmodel = '{MODEL}'\ncontext_window = 48000",
-        lead.base_url()
-    );
-    let factory = SubAgentFactory;
-    let tools = factory
-        .build(&toml::from_str(&section).unwrap(), lead.dependencies())
-        .unwrap();
+    let tools = lead.tools_with_window(Some(48_000));
     let summary = json!({"role": "assistant", "content": SUMMARY});
     Mock::given(body_string_contains("max_completion_tokens"))
         .respond_with(completion(&summary))
@@ -240,14 +239,7 @@ async fn reported_usage_triggers_compaction_across_turns() {
 #[tokio::test]
 async fn missing_usage_falls_back_to_byte_estimate() {
     let lead = Lead::new().await;
-    let section = format!(
-        "base_url = '{}'\nmodel = '{MODEL}'\ncontext_window = 48000",
-        lead.base_url()
-    );
-    let factory = SubAgentFactory;
-    let tools = factory
-        .build(&toml::from_str(&section).unwrap(), lead.dependencies())
-        .unwrap();
+    let tools = lead.tools_with_window(Some(48_000));
     stub_steps(&lead, 3, false).await;
 
     let (_, waited) = lead.turn(&*tools, &lead.task().await).await;
@@ -292,14 +284,7 @@ impl Respond for DenseTokenizerStub {
 #[tokio::test]
 async fn dense_tokenizer_at_48k_does_not_compact_on_every_call() {
     let lead = Lead::new().await;
-    let section = format!(
-        "base_url = '{}'\nmodel = '{MODEL}'\ncontext_window = 48000",
-        lead.base_url()
-    );
-    let factory = SubAgentFactory;
-    let tools = factory
-        .build(&toml::from_str(&section).unwrap(), lead.dependencies())
-        .unwrap();
+    let tools = lead.tools_with_window(Some(48_000));
     lead.model_answers(DenseTokenizerStub {
         step: std::sync::atomic::AtomicUsize::new(0),
         calls: 8,

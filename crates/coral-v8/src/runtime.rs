@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 
+use coral_telemetry::metric::OutputKind;
+
 use crate::source_map::{authored_location, decode_authored};
 use crate::v8_support::{compile_script, evaluate_script, run_compiled, run_script};
 use crate::{
@@ -1124,7 +1126,7 @@ fn reject_emission(
     return_value: &mut v8::ReturnValue,
     error: ProgramOutputHostError,
 ) {
-    coral_telemetry::metric::output_rejected(coral_telemetry::metric::OutputKind::Emission);
+    output_rejected(scope, OutputKind::Emission);
     reject_output_promise(scope, return_value, error);
 }
 
@@ -1449,23 +1451,23 @@ fn serialize_final_value(
     let receiver = v8::undefined(&try_catch).into();
     let Some(encoded) = serializer.call(&try_catch, receiver, &[value]) else {
         let Some(exception) = try_catch.exception() else {
-            return Err(rejected_final_value());
+            return Err(rejected_final_value(&try_catch));
         };
         // An Emission or Log refused while serializing was counted where it
         // was refused.
         if let Some(error) = classify_output_exception(&mut try_catch, exception) {
             return Err(output_execution_error(error));
         }
-        coral_telemetry::metric::output_rejected(coral_telemetry::metric::OutputKind::FinalValue);
+        output_rejected(&try_catch, OutputKind::FinalValue);
         return Err(Error::ProgramOutputRejected(Box::new(
             crate::program_error::from_exception(&mut try_catch, exception, source_map),
         )));
     };
     if !encoded.is_string() {
-        return Err(rejected_final_value());
+        return Err(rejected_final_value(&try_catch));
     }
-    let encoded =
-        v8::Local::<v8::String>::try_from(encoded).map_err(|_error| rejected_final_value())?;
+    let encoded = v8::Local::<v8::String>::try_from(encoded)
+        .map_err(|_error| rejected_final_value(&try_catch))?;
     let encoded = encoded.to_rust_string_lossy(&try_catch);
     let limits = try_catch
         .get_slot::<ProgramHostSlot>()
@@ -1475,11 +1477,9 @@ fn serialize_final_value(
     limits
         .validate_json(&encoded)
         .map_err(|error| match error {
-            coral_value::ValueError::Invalid => rejected_final_value(),
+            coral_value::ValueError::Invalid => rejected_final_value(&try_catch),
             coral_value::ValueError::TooLarge => {
-                coral_telemetry::metric::output_rejected(
-                    coral_telemetry::metric::OutputKind::FinalValue,
-                );
+                output_rejected(&try_catch, OutputKind::FinalValue);
                 Error::ResourceLimitExceeded
             }
         })?;
@@ -1487,9 +1487,17 @@ fn serialize_final_value(
 }
 
 /// Rejects a Final Value that is not a Program Value, and counts it.
-fn rejected_final_value() -> Error {
-    coral_telemetry::metric::output_rejected(coral_telemetry::metric::OutputKind::FinalValue);
+fn rejected_final_value(isolate: &v8::Isolate) -> Error {
+    output_rejected(isolate, OutputKind::FinalValue);
     Error::InvalidProgramValue(INVALID_FINAL_VALUE_MESSAGE.to_string())
+}
+
+/// Counts an output of `kind` that the isolate rejected, through the host.
+/// With no host slot, no host can receive the count.
+fn output_rejected(isolate: &v8::Isolate, kind: OutputKind) {
+    if let Some(slot) = isolate.get_slot::<ProgramHostSlot>() {
+        slot.host.output_rejected(kind);
+    }
 }
 
 thread_local! {

@@ -149,8 +149,8 @@ fn answering() -> Arc<SequencedUpstream> {
     upstream
 }
 
-/// Catches: a decision on a Run a Run Executor holds that waits for a Run
-/// Owner, answers "not yet recorded", or reaches the Program only through
+/// Catches: a decision on a Run a Run Executor holds that waits for its
+/// loop, answers "not yet recorded", or reaches the Program only through
 /// the periodic precheck; a receiver that judges a late approval by its own
 /// clock.
 #[tokio::test(flavor = "multi_thread")]
@@ -238,8 +238,8 @@ async fn a_decision_under_the_loops_chunk_reaches_its_waiter_through_the_rebuild
     assert!(probe.turns().is_empty(), "the reader handed nothing");
 }
 
-/// Catches: a cancellation of a Run a Run Executor holds that waits for a
-/// Run Owner, leaves an Invocation open, or never reaches the Program; and
+/// Catches: a cancellation of a Run a Run Executor holds that waits for its
+/// loop, leaves an Invocation open, or never reaches the Program; and
 /// a receiver that judges one past the Run's deadline by its own clock: it
 /// ends Canceled, as the first write under the head decides.
 #[tokio::test(flavor = "multi_thread")]
@@ -338,7 +338,7 @@ async fn a_loop_whose_run_ended_elsewhere_retires_when_its_stream_closes() {
         .await
         .expect("the cancellation is recorded at once");
     assert_eq!(held.terminated().await, TerminateReason::Canceled);
-    assert!(held.runs.has_owner(&held.run_id));
+    assert!(held.runs.has_loop(&held.run_id));
 
     let Held {
         runs,
@@ -348,7 +348,7 @@ async fn a_loop_whose_run_ended_elsewhere_retires_when_its_stream_closes() {
     } = held;
     drop(stream);
 
-    wait_until(|| !runs.has_owner(&run_id)).await;
+    wait_until(|| !runs.has_loop(&run_id)).await;
 }
 
 /// Catches: a cancellation that writes a Run an older release's Run Owner

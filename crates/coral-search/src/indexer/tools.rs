@@ -1,7 +1,7 @@
 //! The Tool indexer: one Provider Generation's entries in, one row per
 //! Tool and the Generation's state row out.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -16,6 +16,7 @@ use super::{
     DistinctWords, EntityIndexer, INDEXER_REVISION, IndexError, compact_identifier_variant,
 };
 use crate::CallPath;
+use crate::retriever::plan::path_words;
 
 /// Indexes the Tools of Provider Generations.
 #[derive(Debug, Default, Clone, Copy)]
@@ -51,7 +52,8 @@ impl EntityIndexer for ToolIndexer {
     }
 
     /// Turns each entry into its row as the entries prepare it, so one
-    /// Tool's declaration fields are held at a time.
+    /// Tool's declaration fields are held at a time, and counts the words of
+    /// the Tool paths.
     fn rows<'e>(&self, entries: &'e GenerationEntries) -> Result<GenerationRows<'e>, IndexError> {
         let mut rows = GenerationRows::default();
         for tool in entries.tools() {
@@ -61,6 +63,13 @@ impl EntityIndexer for ToolIndexer {
                     .iter()
                     .map(|warning| (tool.key(), warning.clone())),
             );
+            for word in path_words(&format!(
+                "{}.{}",
+                entries.call_root().name(),
+                tool.relative_path()
+            )) {
+                *rows.path_words.entry(word).or_default() += 1;
+            }
             rows.rows.push(tool_row(entries, &tool)?);
         }
         Ok(rows)
@@ -73,7 +82,9 @@ impl EntityIndexer for ToolIndexer {
         rows: &GenerationRows<'_>,
         clock: &dyn coral_db::Clock,
     ) -> Result<super::IndexEffect, IndexError> {
-        let rows = &rows.rows;
+        let GenerationRows {
+            rows, path_words, ..
+        } = rows;
         let workspace_id = entries.workspace_id();
         let generation_id = entries.generation_id();
         let visibility =
@@ -84,9 +95,23 @@ impl EntityIndexer for ToolIndexer {
         // entries under the current rules, which may leave one out; a rewrite
         // then removes that row.
         repository::delete_rows_not_written(transaction, workspace_id, generation_id, rows).await?;
+        repository::write_path_words(
+            transaction,
+            workspace_id,
+            entries.provider_id(),
+            generation_id,
+            path_words,
+        )
+        .await?;
         repository::write_generation_state(
             transaction,
-            generation_state(entries.into(), attempted_at, AttemptState::Complete),
+            generation_state(
+                entries.into(),
+                attempted_at,
+                AttemptState::Complete {
+                    tool_count: rows.len(),
+                },
+            ),
         )
         .await?;
         let target = || super::IndexedCatalog {
@@ -300,10 +325,15 @@ impl ToolIndexer {
     }
 }
 
-/// One Generation's rows, and the search warnings preparing them left.
+/// One Generation's rows, the words of its Tool paths, and the search
+/// warnings preparing them left.
 #[derive(Default)]
 pub(crate) struct GenerationRows<'e> {
     rows: Vec<ToolRow<'e>>,
+    /// Each word of the Generation's Tool paths, and the number of its Tools
+    /// whose path holds the word. A Tool's path here is the last segment of
+    /// its Provider Call Root and its Tool-relative Path.
+    path_words: BTreeMap<String, usize>,
     warnings: Vec<(&'e ToolKey, CatalogDiagnostic)>,
 }
 

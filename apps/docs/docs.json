@@ -167,6 +167,18 @@
   "seo": {
     "metatags": {
       "canonical": "https://withcoral.com/docs"
+    },
+    "organization": {
+      "id": "https://withcoral.com/#organization",
+      "name": "Coral",
+      "legalName": "Phoebe Technology Limited",
+      "url": "https://withcoral.com",
+      "logo": "https://withcoral.com/icon-coral.svg",
+      "sameAs": [
+        "https://github.com/withcoral",
+        "https://linkedin.com/company/withcoral",
+        "https://www.youtube.com/@BuildWithCoral"
+      ]
     }
   },
   "search": {

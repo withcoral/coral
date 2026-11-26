@@ -13,10 +13,10 @@ use coral_telemetry::safe;
 use tokio::sync::watch;
 use tokio::time::timeout;
 
-use crate::owner::DrainStep;
+use crate::run_stream::run_loop::DrainStep;
 use crate::{Error, RunModule};
 
-/// Whether the process still accepts new owners, and how many it admitted
+/// Whether the process still accepts new loops, and how many it admitted
 /// that have not registered yet; shared by every clone of one Run module.
 #[derive(Clone, Default)]
 pub(crate) struct Admission(Arc<AdmissionState>);
@@ -31,7 +31,7 @@ struct AdmissionState {
 }
 
 impl Admission {
-    /// Refuses new owners from now on; `false` when they were refused already.
+    /// Refuses new loops from now on; `false` when they were refused already.
     fn close(&self) -> bool {
         !self.0.closed.swap(true, Ordering::SeqCst)
     }
@@ -45,9 +45,9 @@ impl Admission {
         }
     }
 
-    /// Admits one owner to come, held until it is registered or given up:
+    /// Admits one loop to come, held until it is registered or given up:
     /// [`RunModule::shutdown`] waits for every admission it let through
-    /// before it counts the live owners. Refused once shutting down.
+    /// before it counts the live loops. Refused once shutting down.
     pub(crate) fn admit(&self) -> Result<Admitted, Error> {
         self.0.in_flight.send_modify(|count| *count += 1);
         let admitted = Admitted(self.clone());
@@ -70,8 +70,8 @@ impl Admission {
     }
 }
 
-/// One admission in flight; dropping it, once the owner is registered or
-/// the admission failed, lets shutdown count the live owners.
+/// One admission in flight; dropping it, once the loop is registered or
+/// the admission failed, lets shutdown count the live loops.
 pub(crate) struct Admitted(Admission);
 
 impl Drop for Admitted {
@@ -83,7 +83,7 @@ impl Drop for Admitted {
 impl RunModule {
     /// Shuts the Run module down gracefully. Every new Run is refused with
     /// [`Error::ShuttingDown`] from now on. The pull streams close and no new
-    /// stream opens. Each stream's owner starts no new dispatch, and once
+    /// stream opens. Each stream's loop starts no new dispatch, and once
     /// this Coral Instance holds no pull stream and no dispatch is in flight
     /// on the stream, it commits what it applied and ends the stream cleanly:
     /// the Run Executor reopens it on another Coral Instance. At the drain's
@@ -93,7 +93,7 @@ impl RunModule {
     /// length its Run ends interrupted.
     ///
     /// The drain starts when this is called: admission closes, the pull
-    /// streams drain and the stream owners hold their dispatches before the
+    /// streams drain and the stream loops hold their dispatches before the
     /// returned future is first polled. The caller reports itself not ready
     /// before this, and stops serving only after the future completes. The
     /// drain runs on its own task, so dropping the future does not stop it,
@@ -105,7 +105,7 @@ impl RunModule {
             if let Some(streams) = &self.pull_streams {
                 streams.drain();
             }
-            self.drain_owners(DrainStep::Hold);
+            self.drain_loops(DrainStep::Hold);
             let module = self.clone();
             Some(tokio::spawn(async move { module.drain_and_stop().await }))
         } else {
@@ -124,50 +124,50 @@ impl RunModule {
     /// The rest of [`Self::shutdown`] once the drain started.
     async fn drain_and_stop(&self) {
         // An admission let through before the close ends registered or
-        // refused before the owners are counted.
+        // refused before the loops are counted.
         let drain = self.shutdown_drain.duration();
         let drained = timeout(drain, async {
             self.admission.settled().await;
-            self.drain_owners(DrainStep::Hold);
+            self.drain_loops(DrainStep::Hold);
             // A stream that moved while the Run Executor's pull stream was
             // still here would reopen here.
             if let Some(streams) = &self.pull_streams {
                 streams.ended().await;
             }
-            self.drain_owners(DrainStep::Move);
-            self.owners.retired().await;
+            self.drain_loops(DrainStep::Move);
+            self.loops.retired().await;
         })
         .await;
         if drained.is_ok() {
             return;
         }
         tracing::warn!(
-            coral.shutdown.live_runs = safe::number(self.owners.live().len()),
+            coral.shutdown.live_runs = safe::number(self.loops.live().len()),
             coral.shutdown.drain_ms = safe::number(drain.as_millis()),
             "the Shutdown Drain is out: moving the Run streams and interrupting the local children's Runs"
         );
-        let end_live = || self.drain_owners(DrainStep::MoveNow);
+        let end_live = || self.drain_loops(DrainStep::MoveNow);
         end_live();
         let committed = timeout(self.execution_policy.commit_grace(), async {
             // A loop registered by a late admission moves or is interrupted
             // too.
             self.admission.settled().await;
             end_live();
-            self.owners.retired().await;
+            self.loops.retired().await;
         })
         .await;
         if committed.is_err() {
             tracing::warn!(
-                coral.shutdown.live_runs = safe::number(self.owners.live().len()),
+                coral.shutdown.live_runs = safe::number(self.loops.live().len()),
                 "Run streams still live after the commit grace are left to the Run sweeper"
             );
         }
     }
 
-    /// Takes `step` of the drain with every owner live here.
-    fn drain_owners(&self, step: DrainStep) {
-        for owner in self.owners.live() {
-            owner.drain(step);
+    /// Takes `step` of the drain with every loop live here.
+    fn drain_loops(&self, step: DrainStep) {
+        for run_loop in self.loops.live() {
+            run_loop.drain(step);
         }
     }
 }

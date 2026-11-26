@@ -16,11 +16,11 @@ use coral_run::RunId;
 use refusal::Refusal;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tokio::time::Instant;
 use url::Url;
 
-use crate::prompt::ToolText;
+use crate::prompt::{TOOLS, ToolText};
 use crate::telemetry::ModelCallTrace;
 
 /// The wire protocol a configured model endpoint speaks.
@@ -55,8 +55,8 @@ pub(crate) struct ModelClient {
     model: String,
     api_key: Option<Secret>,
     context_window: Option<u32>,
-    /// Sent as written on every request: servers accept different values.
-    reasoning_effort: Option<String>,
+    /// Merged into every request, where Coral's own fields win.
+    request_args: Map<String, Value>,
     retry_waits: [Duration; 3],
 }
 
@@ -70,7 +70,7 @@ impl ModelClient {
         model: String,
         api_key: Option<Secret>,
         context_window: Option<u32>,
-        reasoning_effort: Option<String>,
+        request_args: Map<String, Value>,
     ) -> Self {
         let base = base_url.as_str().trim_end_matches('/');
         Self {
@@ -80,14 +80,14 @@ impl ModelClient {
             model,
             api_key,
             context_window,
-            reasoning_effort,
+            request_args,
             retry_waits: RETRY_WAITS,
         }
     }
 
-    /// The model's context window in tokens, when the operator set it.
-    pub(crate) const fn context_window(&self) -> Option<u32> {
-        self.context_window
+    /// The model's context window in tokens.
+    pub(crate) fn context_window(&self) -> u32 {
+        self.context_window.unwrap_or(CONTEXT_WINDOW_DEFAULT)
     }
 
     /// Sends `system`, the conversation and the tools the model may call, and returns its reply.
@@ -123,33 +123,25 @@ impl ModelClient {
         tools: &[ToolText],
         max_tokens: Option<u32>,
     ) -> Result<Vec<u8>, ModelError> {
-        let effort = self.reasoning_effort.as_deref();
-        match self.protocol {
-            Protocol::ChatCompletions => chat_completions::request_body(
-                &self.model,
-                system,
-                conversation,
-                tools,
-                max_tokens,
-                effort,
-            ),
+        let args = &self.request_args;
+        let body = match self.protocol {
+            Protocol::ChatCompletions => {
+                chat_completions::request_body(&self.model, system, conversation, tools, max_tokens)
+            }
             Protocol::OpenAiResponses => openai_responses::request_body(
                 &self.model,
                 system,
                 conversation,
                 tools,
                 max_tokens,
-                effort,
+                args,
             ),
-            Protocol::Anthropic => anthropic::request_body(
-                &self.model,
-                system,
-                conversation,
-                tools,
-                max_tokens,
-                effort,
-            ),
-        }
+            Protocol::Anthropic => {
+                anthropic::request_body(&self.model, system, conversation, tools, max_tokens, args)
+            }
+        };
+        let body = body.map_err(|_unwritable| ModelError::Misconfigured)?;
+        merged(body, args, max_tokens.is_some())
     }
 
     fn decode_reply(&self, body: &[u8], latency: Duration) -> Result<Reply, ModelError> {
@@ -158,6 +150,16 @@ impl ModelClient {
             Protocol::OpenAiResponses => openai_responses::parse_reply(body, &self.model, latency),
             Protocol::Anthropic => anthropic::parse_reply(body, &self.model, latency),
         }
+    }
+
+    /// Asks for one reply to a fixed prompt, with the Sub-agent's tools, and
+    /// does not retry. No Turn asks, so it is no model call in the telemetry.
+    /// # Errors
+    /// Returns why the model gave no reply.
+    pub(crate) async fn probe(&self) -> Result<(), ModelError> {
+        let asked = [Message::user("Reply with the word ready.".to_owned())];
+        let body = self.encode_request("You are being tested.", &asked, &TOOLS, None)?;
+        self.send(&body).await.map(|_reply| ())
     }
 
     async fn complete(&self, request_body: &[u8]) -> Result<Reply, ModelError> {
@@ -180,7 +182,7 @@ impl ModelClient {
         let mut builder = self
             .http
             .post(&self.endpoint_url)
-            .map_err(|_rejected| ModelError::Misconfigured)?
+            .map_err(|_rejected| ModelError::Forbidden)?
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(request_body.to_vec());
         match self.protocol {
@@ -200,7 +202,7 @@ impl ModelClient {
             .send()
             .await
             .map_err(|error| match FetchError::from(error) {
-                FetchError::DestinationRejected => ModelError::Misconfigured,
+                FetchError::DestinationRejected => ModelError::Forbidden,
                 FetchError::Http(_) => ModelError::Unavailable(None),
             })?;
         match response.status() {
@@ -227,6 +229,24 @@ impl ModelClient {
         let latency = sent_at.elapsed();
         self.decode_reply(&body, latency)
     }
+}
+
+/// The names of the fields that cap a reply's tokens, one for each protocol.
+const TOKEN_CAPS: [&str; 3] = ["max_completion_tokens", "max_output_tokens", "max_tokens"];
+
+/// The bytes of `body` with `args` merged in. A field that Coral wrote wins,
+/// and so does its cap on the tokens of a summary.
+fn merged(body: Value, args: &Map<String, Value>, capped: bool) -> Result<Vec<u8>, ModelError> {
+    let Value::Object(mut body) = body else {
+        return Err(ModelError::Misconfigured);
+    };
+    for (name, value) in args {
+        let capped = capped && TOKEN_CAPS.contains(&name.as_str());
+        if !capped && !body.contains_key(name) {
+            body.insert(name.clone(), value.clone());
+        }
+    }
+    serde_json::to_vec(&body).map_err(|_unwritable| ModelError::Misconfigured)
 }
 
 /// Parses a tool's static JSON schema string into a [`Value`].
@@ -420,8 +440,12 @@ pub(crate) enum ModelError {
     /// The server refused the request because it does not fit the model's context window.
     #[error("the conversation is too long for the model: start a new agent with a narrower brief")]
     ContextTooLong(StatusCode),
-    /// The destination policy forbids the server, or its answer could not be read for the configured protocol.
+    /// The destination policy forbids the server.
     #[error("the model settings do not lead to a model endpoint Coral may use")]
+    Forbidden,
+    /// The request could not be written, or the server's answer could not be read, for the
+    /// configured protocol.
+    #[error("the model server's answer does not read as a reply of its protocol")]
     Misconfigured,
 }
 
@@ -431,6 +455,10 @@ const RETRY_WAITS: [Duration; 3] = [
     Duration::from_secs(2),
     Duration::from_secs(4),
 ];
+
+/// The context window of a model that nobody gave one. A larger model is
+/// compacted earlier than it needs; a smaller one needs its own.
+const CONTEXT_WINDOW_DEFAULT: u32 = 128_000;
 
 /// The largest answer Coral reads from the model server.
 const BODY_LIMIT: usize = 4 << 20;

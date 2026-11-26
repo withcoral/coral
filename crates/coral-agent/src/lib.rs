@@ -1,8 +1,10 @@
 //! The Sub-agent (ADR 0040): a model that Coral runs to do data work for the
 //! agent that calls it, the lead. A Program of the lead reaches it through
-//! `coral.agent`, while the config file has a `[sub_agent]` section.
+//! `coral.agent`, while the Organization has a model and the Workspace's Owner
+//! turned the Tool on.
 
 mod model;
+mod organization_model;
 mod prompt;
 mod repository;
 mod run_tools;
@@ -20,30 +22,28 @@ use std::time::Duration;
 
 use coral_app::{SubAgentDependencies, SubAgentToolsFactory};
 use coral_run::SubAgentTools;
-use coral_secret_store::{BuildEnvironment, SettingError, StoreSettings, env_var_name};
-use serde::Deserialize;
-use url::Url;
 
-use model::{ModelClient, Protocol};
+use organization_model::{OrganizationModel, Tester};
 use sub_agents::SubAgents;
 use tools::AgentTools;
 
-/// Builds what `coral.agent` and `coral.cancelAgent` reach, from the
-/// `[sub_agent]` section of the config file.
+/// Builds what `coral.agent` and `coral.cancelAgent` reach.
 pub struct SubAgentFactory;
 
 impl SubAgentToolsFactory for SubAgentFactory {
-    fn section_name(&self) -> &'static str {
-        "sub_agent"
-    }
-
     fn build(
         &self,
-        section: &toml::Table,
         dependencies: SubAgentDependencies,
     ) -> Result<Arc<dyn SubAgentTools>, Box<dyn Error + Send + Sync>> {
-        let section: Section = StoreSettings::new(section.clone()).decode()?;
-        let model = section.model_client(&dependencies)?;
+        let models = OrganizationModel {
+            database: dependencies.database.clone(),
+            models: dependencies.agent_models,
+            http: coral_outbound::Client::new(dependencies.outbound_policy, MODEL_CALL_TIMEOUT)?,
+        };
+        let tester = Tester {
+            http: coral_outbound::Client::new(dependencies.outbound_policy, TEST_TIMEOUT)?,
+        };
+        models.models.set_tester(Arc::new(tester));
         let human_interface = dependencies.modules.human_interface().clone();
         let modules = dependencies.modules;
         let tasks = modules.tasks;
@@ -53,7 +53,7 @@ impl SubAgentToolsFactory for SubAgentFactory {
             modules.commands,
             modules.runs,
             modules.search,
-            model,
+            Arc::new(models),
             dependencies.clock,
             dependencies.stopping,
         );
@@ -66,79 +66,7 @@ impl SubAgentToolsFactory for SubAgentFactory {
     }
 }
 
-/// The fewest tokens a model's context window may hold.
-const CONTEXT_WINDOW_MIN: u32 = 48_000;
 /// How long the model may take over one attempt at a reply.
 const MODEL_CALL_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// The `[sub_agent]` section, as the operator wrote it.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Section {
-    #[serde(default)]
-    protocol: Protocol,
-    base_url: String,
-    model: String,
-    api_key_env: Option<String>,
-    context_window: Option<u32>,
-    reasoning_effort: Option<String>,
-}
-
-impl Section {
-    /// Checks each setting and reads the token. It sends the model nothing.
-    fn model_client(
-        self,
-        dependencies: &SubAgentDependencies,
-    ) -> Result<ModelClient, SettingError> {
-        let base_url = Url::parse(&self.base_url)
-            .ok()
-            .filter(|url| matches!(url.scheme(), "http" | "https") && url.has_host())
-            .filter(|url| url.query().is_none() && url.fragment().is_none())
-            .ok_or_else(|| {
-                let reason = "must be an absolute http or https URL without a query or fragment";
-                SettingError::new("base_url", reason)
-            })?;
-        if self.model.trim().is_empty() {
-            return Err(SettingError::new("model", "must not be empty"));
-        }
-        if self
-            .context_window
-            .is_some_and(|tokens| tokens < CONTEXT_WINDOW_MIN)
-        {
-            let reason = format!("must be at least {CONTEXT_WINDOW_MIN}");
-            return Err(SettingError::new("context_window", reason));
-        }
-        if self
-            .reasoning_effort
-            .as_deref()
-            .is_some_and(|effort| effort.trim().is_empty())
-        {
-            return Err(SettingError::new("reasoning_effort", "must not be empty"));
-        }
-        let policy = dependencies.outbound_policy;
-        let environment = BuildEnvironment::new(
-            policy,
-            Arc::clone(&dependencies.env),
-            Arc::clone(&dependencies.clock),
-        );
-        let api_key = match &self.api_key_env {
-            Some(name) => {
-                let name = env_var_name("api_key_env", name)?;
-                Some(environment.secret("api_key_env", &name)?)
-            }
-            None => None,
-        };
-        let http = coral_outbound::Client::new(policy, MODEL_CALL_TIMEOUT)
-            .map_err(|_error| SettingError::new("", "model client initialization failed"))?;
-        let (window, effort) = (self.context_window, self.reasoning_effort);
-        Ok(ModelClient::new(
-            http,
-            self.protocol,
-            &base_url,
-            self.model,
-            api_key,
-            window,
-            effort,
-        ))
-    }
-}
+/// How long a test waits for the model. A person waits for it on a page.
+const TEST_TIMEOUT: Duration = Duration::from_secs(45);

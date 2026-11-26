@@ -1,6 +1,6 @@
 //! Coral's side of a Run stream: the transient work of one open stream.
 //! `Open` is answered by the Run row; `Loaded` rechecks the Principal's
-//! authority and commits the start chunk; then the Run Owner's loop commits
+//! authority and commits the start chunk; then the loop commits
 //! the Program's requests, in number order, with the stream in place of the
 //! in-process isolate ([`program`]).
 //!
@@ -24,7 +24,6 @@ use tokio_stream::StreamExt as _;
 use crate::engine::{ExecutionCompletion, ProgramPackage};
 use crate::execution::until_answered;
 use crate::lifecycle::{RunRecord, RunTerminationKind};
-use crate::owner::{self, Message, OwnerHandle, StartedExecution};
 use crate::trace::RunEnd;
 use crate::types::{AcceptedRun, HeldRunId, LinkedTool};
 
@@ -37,6 +36,9 @@ use crate::{
 
 mod program;
 mod reopen;
+pub(crate) mod run_loop;
+
+use run_loop::{LoopHandle, Message, StartedExecution};
 
 pub(crate) use program::{Requests, start as start_program};
 pub(crate) use reopen::Resume;
@@ -62,7 +64,7 @@ impl RunStreamServer for RunStreams {
 }
 
 /// Coral's half of one open Run stream, shared by its server, the Run's
-/// owner and the reader of the Program's requests.
+/// loop and the reader of the Program's requests.
 pub(crate) struct StreamLink {
     responses: mpsc::UnboundedSender<Result<RunResponse, Closing>>,
     /// The highest request number a chunk committed.
@@ -101,8 +103,8 @@ impl StreamLink {
         }));
     }
 
-    /// The Shutdown Drain moves the stream: it ends cleanly once its owner
-    /// retired. The owner's detach answers each call it holds or parks as
+    /// The Shutdown Drain moves the stream: it ends cleanly once its loop
+    /// retired. The loop's detach answers each call it holds or parks as
     /// the Program's host ending; from now on no such answer, and no
     /// `Terminate`, reaches the Program, which runs on. The Coral Instance
     /// the stream reopens on answers what the Run Executor still waits on.
@@ -128,7 +130,7 @@ impl StreamLink {
         }));
     }
 
-    /// The owner terminates the Program for `kind`, unless it finished or
+    /// The loop terminates the Program for `kind`, unless it finished or
     /// was terminated already.
     pub(crate) fn terminate(&self, kind: Option<RunTerminationKind>) {
         if self.finished.load(Ordering::SeqCst) || self.terminated.swap(true, Ordering::SeqCst) {
@@ -183,7 +185,7 @@ fn taken_end(run: &RunRecord, claim_id: &str) -> Option<WireEnd> {
     (claim != Some(claim_id)).then_some(WireEnd::NotHeld)
 }
 
-/// A Run stream's Run once its owner runs it: how the owner reaches the
+/// A Run stream's Run once its loop runs it: how the loop reaches the
 /// stream.
 pub(crate) struct StreamRun {
     pub(crate) actor: AuthenticatedPrincipal,
@@ -235,11 +237,13 @@ impl RunModule {
             Ok(None) => return link.end(WireEnd::NotHeld),
             Err(_unanswered) => return link.close(Closing::Unavailable("the Run is not read")),
         };
+        // A Run not started waits on no answer: the list is not kept.
+        drop(open.awaited);
         send_package(&run, &package, &linked, link);
         if !self.loaded(&mut requests, &run, &claim, link).await {
             return;
         }
-        // Held until the owner is registered, so a Shutdown Drain counts it.
+        // Held until the loop is registered, so a Shutdown Drain counts it.
         let Ok(admitted) = self.admission.admit() else {
             return link.close(Closing::Unavailable(SHUTTING_DOWN));
         };
@@ -415,7 +419,7 @@ impl RunModule {
         }
         let checked_at = self.now()?.max(run.accepted_at_unix_nanos);
         if resumed && run.termination.is_some() {
-            // A termination recorded meanwhile: no Program starts on it.
+            // An older build recorded a termination: no Program starts on it.
             transaction.commit().await?;
             return Ok(Start::Unavailable("the Run is being terminated"));
         }
@@ -578,11 +582,11 @@ impl RunModule {
         Ok(wire_end(outcome.state()))
     }
 
-    /// Runs the started Run's owner, with the stream as its Program, until
+    /// Runs the started Run's loop, with the stream as its Program, until
     /// it retires; `resume` rebuilds a reopened stream's loop.
     #[expect(
         clippy::too_many_arguments,
-        reason = "each is one part of the started Run its owner takes"
+        reason = "each is one part of the started Run its loop takes"
     )]
     async fn run_on_stream(
         &self,
@@ -602,14 +606,13 @@ impl RunModule {
             workspace_id: run.workspace_id,
             principal: run.principal,
             accepted_at_unix_nanos: run.accepted_at_unix_nanos,
-            shutdown_grace_nanos: run.shutdown_grace_nanos,
             value_limits: run.value_limits,
             claim_id: claim_id.clone(),
             linked_snapshots,
             trace: run.trace,
             time_limit_nanos: run.time_limit_nanos,
         };
-        let (handle, mailbox): (OwnerHandle, _) = OwnerHandle::for_stream(
+        let (handle, mailbox): (LoopHandle, _) = LoopHandle::for_stream(
             accepted.held_id(),
             claim_id,
             accepted.workspace_id.clone(),
@@ -617,7 +620,7 @@ impl RunModule {
         );
         // Decisions and cancellations reach it from their receiver through
         // the Run's head.
-        let registration = self.register_stream_owner(&handle);
+        let registration = self.register_loop(&handle);
         drop(admitted);
         handle.send(Message::Started(Ok(Some(started))));
         let stream = Arc::new(StreamRun {
@@ -626,7 +629,7 @@ impl RunModule {
             requests: Mutex::new(Some(requests)),
             resume: Mutex::new(resume),
         });
-        owner::host(
+        run_loop::host(
             self.clone(),
             accepted,
             stream,

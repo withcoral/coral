@@ -52,6 +52,7 @@
 mod error;
 pub mod history_repository;
 mod repository;
+mod sub_agent;
 mod types;
 
 use std::collections::BTreeMap;
@@ -67,6 +68,10 @@ use coral_workspace::{
 
 pub use coral_catalog::ToolAccessState;
 pub use error::Error;
+pub use sub_agent::{
+    start_sub_agent_off_in_transaction, sub_agent_is_on_in_transaction,
+    turn_sub_agent_off_in_transaction,
+};
 pub use types::{
     AdministrativeLifecycleEvent, ExactToolRules, LifecycleAction, LifecycleOutcome, ListedTool,
     PrivateToolOwner, ToolPolicyDecision, ToolPolicyTarget,
@@ -376,9 +381,23 @@ impl ToolPolicyModule {
             .workspaces
             .check_configuration_in_transaction(&mut transaction, context.actor(), workspace)
             .await?;
+        // A change of the model holds its row exclusively, then turns these
+        // rules off. Taken first, so that neither waits on the other's rules.
+        if updates
+            .iter()
+            .any(|(target, _)| sub_agent::goes_off_with_the_model(target))
+        {
+            coral_agent_model::current_id_in_transaction(
+                &mut transaction,
+                coral_db::RowLock::Shared,
+            )
+            .await?;
+        }
         let mut decisions = Vec::with_capacity(updates.len());
         for (target, access_state) in updates {
             require_tool_in_transaction(&mut transaction, context.actor(), &evidence, &target)
+                .await?;
+            sub_agent::refuse_turn_on_in_transaction(&mut transaction, &target, access_state)
                 .await?;
             decisions.push(
                 write_access_state_in_transaction(
@@ -393,6 +412,71 @@ impl ToolPolicyModule {
         }
         transaction.commit().await?;
         Ok(decisions)
+    }
+
+    /// Turns `coral.agent` on in one Workspace, enabled or with approval, for
+    /// the Sub-agent model `seen` whose destination its Owner was shown. The
+    /// rule is the Owner's consent: there is no other record of it. It also
+    /// enables `coral.cancelAgent` when that is off.
+    ///
+    /// # Errors
+    ///
+    /// Requires an active Workspace and Workspace Owner authority. Returns
+    /// [`Error::SubAgentModelChanged`] when the Organization's model is not
+    /// `seen`, [`Error::ToolNotFound`] while the Workspace does not have the
+    /// Tool, and [`Error::InvalidBatch`] for `disabled`, which
+    /// [`Self::set_access_states`] sets. All change nothing.
+    pub async fn turn_on_sub_agent(
+        &self,
+        context: &ChangeContext,
+        workspace_id: &WorkspaceId,
+        seen: uuid::Uuid,
+        access_state: ToolAccessState,
+    ) -> Result<ToolPolicyDecision, Error> {
+        if access_state == ToolAccessState::Disabled {
+            return Err(Error::InvalidBatch);
+        }
+        let mut transaction = self.database.begin().await?;
+        let evidence = self
+            .workspaces
+            .check_configuration_in_transaction(&mut transaction, context.actor(), workspace_id)
+            .await?;
+        // A change of the model holds its row exclusively and turns every
+        // rule off, so a consent commits wholly before it or after it.
+        let current = coral_agent_model::current_id_in_transaction(
+            &mut transaction,
+            coral_db::RowLock::Shared,
+        )
+        .await?;
+        if current != Some(seen) {
+            return Err(Error::SubAgentModelChanged);
+        }
+        let target = sub_agent::target_in_transaction(&mut transaction, workspace_id)
+            .await?
+            .ok_or(Error::ToolNotFound)?;
+        require_tool_in_transaction(&mut transaction, context.actor(), &evidence, &target).await?;
+        let cancel = sub_agent::cancel_to_enable_in_transaction(&mut transaction, &target).await?;
+        let decision = write_access_state_in_transaction(
+            &mut transaction,
+            context,
+            &evidence,
+            target,
+            access_state,
+        )
+        .await?;
+        if let Some(cancel) = cancel {
+            let enabled = ToolAccessState::Enabled;
+            write_access_state_in_transaction(
+                &mut transaction,
+                context,
+                &evidence,
+                cancel,
+                enabled,
+            )
+            .await?;
+        }
+        transaction.commit().await?;
+        Ok(decision)
     }
 
     /// Atomically sets the exact state of 1–100 Tools, each named by its

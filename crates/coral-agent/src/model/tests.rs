@@ -4,7 +4,7 @@ use std::time::Duration;
 use coral_credentials::Secret;
 use coral_outbound::{DestinationPolicy, NetworkAccess};
 use reqwest::StatusCode;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use url::Url;
 use wiremock::matchers::{any, body_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -39,9 +39,28 @@ fn client_for(server: &MockServer, protocol: Protocol, api_key: Option<&str>) ->
             MODEL.to_owned(),
             api_key,
             None,
-            None,
+            Map::new(),
         )
     }
+}
+
+/// Args that set how much a model reasons on each protocol.
+fn effort_args(protocol: Protocol, effort: Option<&str>) -> Map<String, Value> {
+    let Some(effort) = effort else {
+        return Map::new();
+    };
+    let args = match protocol {
+        Protocol::ChatCompletions => json!({"reasoning_effort": effort}),
+        Protocol::OpenAiResponses => json!({"reasoning": {"effort": effort}}),
+        Protocol::Anthropic if effort == "none" => json!({"thinking": {"type": "disabled"}}),
+        Protocol::Anthropic => match effort.parse::<u32>() {
+            Ok(budget) => json!({"thinking": {"type": "enabled", "budget_tokens": budget}}),
+            Err(_word) => {
+                json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": effort}})
+            }
+        },
+    };
+    args.as_object().cloned().unwrap()
 }
 
 fn client(server: &MockServer, api_key: Option<&str>) -> ModelClient {
@@ -195,7 +214,7 @@ async fn reasoning_effort_goes_on_every_request_only_when_set() {
             .mount(&server)
             .await;
         let client = ModelClient {
-            reasoning_effort: effort.map(str::to_owned),
+            request_args: effort_args(Protocol::ChatCompletions, effort),
             ..client(&server, None)
         };
 
@@ -419,7 +438,7 @@ async fn openai_responses_encodes_conversation_and_decodes_reply_and_encrypted_r
         .await;
 
     let client = ModelClient {
-        reasoning_effort: Some("high".to_owned()),
+        request_args: effort_args(Protocol::OpenAiResponses, Some("high")),
         ..client_for(&server, Protocol::OpenAiResponses, Some(KEY))
     };
     let reply = ask(&client).await.unwrap();
@@ -494,7 +513,7 @@ async fn openai_responses_handles_summarize_none_effort_and_incomplete_status() 
             .await;
 
         let client = ModelClient {
-            reasoning_effort: Some("none".to_owned()),
+            request_args: effort_args(Protocol::OpenAiResponses, Some("none")),
             ..client_for(&server, Protocol::OpenAiResponses, None)
         };
         let reply = client
@@ -602,7 +621,7 @@ async fn anthropic_encodes_caching_error_flags_merged_turns_and_replays_thinking
         .await;
 
     let client = ModelClient {
-        reasoning_effort: Some("medium".to_owned()),
+        request_args: effort_args(Protocol::Anthropic, Some("medium")),
         ..client_for(&server, Protocol::Anthropic, Some(KEY))
     };
     let reply = ask(&client).await.unwrap();
@@ -726,7 +745,7 @@ async fn anthropic_maps_reasoning_effort_variants_and_stop_reasons() {
             .mount(&server)
             .await;
         let client = ModelClient {
-            reasoning_effort: effort.map(str::to_owned),
+            request_args: effort_args(Protocol::Anthropic, effort),
             ..client_for(&server, Protocol::Anthropic, None)
         };
         let hello = [Message::user("Hello?".to_owned())];
@@ -752,6 +771,58 @@ async fn anthropic_maps_reasoning_effort_variants_and_stop_reasons() {
             Some(&json!(expected_max)),
             "{effort:?}"
         );
+    }
+}
+
+// Catches: args left off a reply or a summary on any protocol, a field that Coral owns replaced by
+// an arg, an arg that lifts the cap on a summary's tokens, and a cap on replies that args cannot set.
+#[tokio::test]
+async fn args_are_merged_into_every_request_where_coral_owns_the_rest() {
+    let chat = json!({"choices": [{"message": {"role": "assistant", "content": "Hi."}}]});
+    let responses = json!({"status": "completed", "output": [
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Hi."}]},
+    ]});
+    let anthropic =
+        json!({"stop_reason": "end_turn", "content": [{"type": "text", "text": "Hi."}]});
+    for (protocol, answer, cap) in [
+        (Protocol::ChatCompletions, chat, "max_completion_tokens"),
+        (Protocol::OpenAiResponses, responses, "max_output_tokens"),
+        (Protocol::Anthropic, anthropic, "max_tokens"),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_json(answer))
+            .mount(&server)
+            .await;
+        let args = json!({"model": "other", "speed": "fast", "max_tokens": 32_000, "top_p": 0.5});
+        let client = ModelClient {
+            request_args: args.as_object().cloned().unwrap(),
+            ..client_for(&server, protocol, None)
+        };
+
+        ask(&client).await.unwrap();
+        let summary = client.summarize("Be brief.", &conversation(), 100).await;
+        summary.unwrap();
+
+        let [reply, summary] = &received(&server).await[..] else {
+            panic!("{protocol:?}: two requests");
+        };
+        let (reply, summary): (Value, Value) =
+            (reply.body_json().unwrap(), summary.body_json().unwrap());
+        for body in [&reply, &summary] {
+            assert_eq!(body.get("model"), Some(&json!(MODEL)), "{protocol:?}");
+            assert_eq!(body.get("speed"), Some(&json!("fast")), "{protocol:?}");
+            assert_eq!(body.get("top_p"), Some(&json!(0.5)), "{protocol:?}");
+        }
+        assert_eq!(
+            reply.get("max_tokens"),
+            Some(&json!(32_000)),
+            "{protocol:?}"
+        );
+        let caps = ["max_completion_tokens", "max_output_tokens", "max_tokens"];
+        let capped = caps.map(|name| (name, summary.get(name).cloned()));
+        let expected = caps.map(|name| (name, (name == cap).then(|| json!(100))));
+        assert_eq!(capped, expected, "{protocol:?}");
     }
 }
 
@@ -807,6 +878,21 @@ async fn busy_or_failing_server_is_retried_three_times() {
         assert_eq!(text, expected, "status {status}");
         assert_eq!(received(&server).await.len(), requests);
     }
+}
+
+// Catches: a server that the operator's destination policy forbids sent the request and the key, or
+// the refusal shown as a server that did not answer.
+#[tokio::test]
+async fn a_forbidden_server_is_sent_nothing() {
+    let server = MockServer::start().await;
+    let closed = DestinationPolicy::default();
+    let client = ModelClient {
+        http: coral_outbound::Client::new(closed, Duration::from_secs(5)).unwrap(),
+        ..client(&server, Some(KEY))
+    };
+
+    assert_eq!(client.probe().await, Err(ModelError::Forbidden));
+    assert!(received(&server).await.is_empty());
 }
 
 // Catches: a refusal or an unreadable answer retried, or an error's text holding the answer or the key.

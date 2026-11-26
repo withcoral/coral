@@ -19,7 +19,7 @@ use url::Url;
 
 use crate::model::{ModelError, Reply};
 use crate::prompt;
-use crate::sub_agents::TurnFailure;
+use crate::sub_agents::{ModelRefusal, TurnFailure};
 
 /// The trace and metrics of one Turn. Its span is the root of a trace of its
 /// own, linked to the span of the `agent` call that started the Turn.
@@ -150,6 +150,10 @@ impl TurnEnd {
             Err(TurnFailure::TooManyModelCalls) => Self::Failed("too_many_model_calls"),
             Err(TurnFailure::NoAnswer) => Self::Failed("no_answer"),
             Err(TurnFailure::TimeLimit) => Self::Failed("time_limit"),
+            Err(TurnFailure::Withdrawn(ModelRefusal::Unreadable(_))) => {
+                Self::Failed("model_unreadable")
+            }
+            Err(TurnFailure::Withdrawn(_)) => Self::Failed("model_withdrawn"),
             Err(TurnFailure::Internal) => Self::Failed("internal"),
             Err(TurnFailure::Canceled) => Self::Canceled,
         }
@@ -272,7 +276,7 @@ fn failed(span: &tracing::Span, error: &ModelError) -> ModelCallOutcome {
     let status = match error {
         ModelError::Unavailable(status) => *status,
         ModelError::Refused(status) | ModelError::ContextTooLong(status) => Some(*status),
-        ModelError::Misconfigured => None,
+        ModelError::Forbidden | ModelError::Misconfigured => None,
     };
     if let Some(status) = status {
         span.record("http.response.status_code", safe::number(status.as_u16()));
@@ -291,7 +295,7 @@ const fn model_failure(error: &ModelError) -> &'static str {
         ModelError::Unavailable(_) => "model_unavailable",
         ModelError::Refused(_) => "model_refused",
         ModelError::ContextTooLong(_) => "model_context_too_long",
-        ModelError::Misconfigured => "model_misconfigured",
+        ModelError::Forbidden | ModelError::Misconfigured => "model_misconfigured",
     }
 }
 
@@ -318,10 +322,12 @@ impl fmt::Display for Minted<'_> {
     }
 }
 
-/// The model's name or its server's host, from the `[sub_agent]` section.
+/// The model's name or its server's host, as an Organization Owner set them.
 struct Configured<'a>(&'a str);
 
-/// The operator wrote it in the config file; no caller chooses it.
+/// An Organization Owner set it, and Coral bounds its length; no caller chooses
+/// it. A host can name a company, and a model's name is free text, so both are
+/// on traces alone and on no metric.
 impl safe::Identifier for Configured<'_> {}
 
 impl fmt::Display for Configured<'_> {

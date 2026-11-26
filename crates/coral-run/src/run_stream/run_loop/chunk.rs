@@ -9,7 +9,7 @@ use coral_db::Transaction;
 
 use crate::invocation::{EnforcementBatch, EnforcementRequest, ParkedInvocation};
 use crate::lifecycle::RunRecord;
-use crate::run_repository::OwnedEvent;
+use crate::run_repository::PendingEvent;
 use crate::{CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, Error};
 
 use super::handle::{Reply, RequestKey};
@@ -25,7 +25,7 @@ pub(crate) const CHUNK_WORK_CAP: usize = 32;
 /// so at the default limit a batch never exceeds this.
 pub(crate) const ENFORCEMENT_BATCH_CAP: usize = 32;
 
-/// A database write that the owner runs inside a chunk's commit transaction,
+/// A database write that the loop runs inside a chunk's commit transaction,
 /// such as inserting an Invocation or recording its result. After the commit,
 /// the work is told whether the chunk landed.
 #[async_trait]
@@ -38,10 +38,10 @@ pub(crate) trait ChunkWork: Send + fmt::Debug {
         transaction: &mut Transaction<'_>,
         run: &RunRecord,
         now_unix_nanos: i64,
-    ) -> Result<Vec<OwnedEvent>, Error>;
+    ) -> Result<Vec<PendingEvent>, Error>;
 
     /// The Invocation this work parked on a wait, once [`Self::run`]
-    /// returned `Ok`: the owner keeps it, arms the wait's deadline, and wakes
+    /// returned `Ok`: the loop keeps it, arms the wait's deadline, and wakes
     /// it once the chunk has landed and the wait ended. `None` for work that
     /// parks nothing.
     fn take_parked(&mut self) -> Option<Box<ParkedInvocation>> {
@@ -55,7 +55,7 @@ pub(crate) trait ChunkWork: Send + fmt::Debug {
 
 /// One entry of a chunk, in arrival order.
 pub(crate) enum ChunkItem {
-    Event(OwnedEvent),
+    Event(PendingEvent),
     Work(Box<dyn ChunkWork>),
 }
 
@@ -84,7 +84,7 @@ pub(crate) struct ChunkBuild {
     /// The Approval Requests this chunk's expiries decide: a later expiry of
     /// one is a repeat.
     pub(crate) requests: Vec<RequestKey>,
-    /// Events the owner counted at apply time; row work adds its own inside
+    /// Events the loop counted at apply time; row work adds its own inside
     /// the transaction.
     pub(crate) events: usize,
     /// Output bytes applied into this chunk.

@@ -44,11 +44,17 @@ The vector query carries the lexical query's `WHERE`: the caller's discoverable 
 exclusions and the Provider filter. It reads only vectors of the current Embedder revision, and before the merge the
 retriever drops each vector entry whose source stamp differs from its Search Entity's, so a vector of an old model or
 of old text never ranks. Both queries return the window depth from the same read snapshot. The retriever merges them
-by reciprocal rank with equal weight and cuts the result to the window. An entry is strong when the retriever's own
-strong rule holds for it, wherever it came from, or when it is among a fixed number at the top of the vector list. The
-engine's strong-first fusion across kinds ([ADR 0011](0011-universal-search-engine-and-retrievers.md)) does not
-change. The manifest holds the merge constants; [#3050](https://github.com/withcoral/coral/issues/3050) has their
-values.
+by reciprocal rank with equal weight and cuts the result to the window. A Provider Tool is strong when the retriever's
+own strong rule holds for it, wherever it came from, or when it is among a fixed number at the top of the vector list.
+An Authored Tool is not strong by its place in the vector list. The rerank step makes it strong by a phrase, by a rare
+path word when it is no farther than the Provider Tool of a fixed rank in the Provider Tool vector list before the
+merge, or when it is strictly nearer than the nearest Provider Tool there
+([ADR 0044](0044-a-rerank-step-decides-by-distance-whether-an-authored-tool-is-strong.md)). When the Authored Tool
+or the Provider Tools have no distance, the rare path word decides alone. Each entry that the vector list holds
+carries its distance for that step, and each answer carries the distances of its vector list; an entry of the lexical
+list alone carries none. The vector side merges no list across kinds: the engine's strong-first fusion
+([ADR 0011](0011-universal-search-engine-and-retrievers.md)) merges the windows by position. The manifest holds the
+merge constants; [#3050](https://github.com/withcoral/coral/issues/3050) has their values.
 
 - **The strong count is fixed.** It does not follow the request's limit, so the order is the same for every page size and
   offset pages ([ADR 0028](0028-search-pages-by-a-plain-offset.md)) do not repeat or skip rows. Vector hits that are

@@ -38,7 +38,6 @@ async fn a_taken_identifier_writes_nothing_and_a_fresh_one_inserts() {
         workspace_id: workspace.id().clone(),
         principal: principal.clone(),
         accepted_at_unix_nanos,
-        shutdown_grace_nanos: 0,
         value_limits: coral_value::ValueLimits::default(),
         claim_id: format!("claim-{accepted_at_unix_nanos}"),
         linked_snapshots: std::collections::HashMap::new(),

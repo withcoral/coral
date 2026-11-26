@@ -177,29 +177,29 @@ impl NewEvent<'_> {
     }
 }
 
-/// An Event a writer holds in memory until its chunk commits: the Run Owner's
+/// An Event a writer holds in memory until its chunk commits: the loop's
 /// applied Events, and the Events a chunk's row work produces inside the
 /// commit transaction.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct OwnedEvent {
-    pub(crate) kind: OwnedEventKind,
+pub(crate) struct PendingEvent {
+    pub(crate) kind: PendingEventKind,
     pub(crate) occurred_at_unix_nanos: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum OwnedEventKind {
+pub(crate) enum PendingEventKind {
     InvocationStarted(InvocationId),
     InvocationEnded(InvocationId, InvocationResultKind),
-    /// A cancellation the Run Owner applied, by the Principal who asked.
+    /// A cancellation the loop applied, by the Principal who asked.
     CancellationRequested(Principal),
     /// A Program Emission as its encoded JSON: what the row stores, and all
-    /// the owner keeps in memory until the chunk commits.
+    /// the loop keeps in memory until the chunk commits.
     Emitted(String, Option<SourceLocation>),
     Logged(ProgramLogLevel, String, Option<SourceLocation>),
 }
 
-impl OwnedEvent {
-    pub(crate) const fn new(kind: OwnedEventKind, occurred_at_unix_nanos: i64) -> Self {
+impl PendingEvent {
+    pub(crate) const fn new(kind: PendingEventKind, occurred_at_unix_nanos: i64) -> Self {
         Self {
             kind,
             occurred_at_unix_nanos,
@@ -208,13 +208,15 @@ impl OwnedEvent {
 
     pub(crate) fn as_new(&self) -> NewEvent<'_> {
         match &self.kind {
-            OwnedEventKind::InvocationStarted(id) => NewEvent::InvocationStarted(id),
-            OwnedEventKind::InvocationEnded(id, kind) => NewEvent::InvocationEnded(id, *kind),
-            OwnedEventKind::CancellationRequested(requester) => {
+            PendingEventKind::InvocationStarted(id) => NewEvent::InvocationStarted(id),
+            PendingEventKind::InvocationEnded(id, kind) => NewEvent::InvocationEnded(id, *kind),
+            PendingEventKind::CancellationRequested(requester) => {
                 NewEvent::CancellationRequested(requester)
             }
-            OwnedEventKind::Emitted(value, location) => NewEvent::Emitted(value, location.as_ref()),
-            OwnedEventKind::Logged(level, message, location) => {
+            PendingEventKind::Emitted(value, location) => {
+                NewEvent::Emitted(value, location.as_ref())
+            }
+            PendingEventKind::Logged(level, message, location) => {
                 NewEvent::Logged(*level, message, location.as_ref())
             }
         }

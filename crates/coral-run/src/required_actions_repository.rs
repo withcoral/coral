@@ -140,7 +140,7 @@ fn authorized_candidates(
 /// Earliest expiry of the invoking authority behind a current action,
 /// including requests outside loaded pages: the one time-dependent
 /// visibility of the queue, since a Run's or a request's deadline changes
-/// nothing a reader shows until the Run Owner records it. Scheduling
+/// nothing a reader shows until the loop records it. Scheduling
 /// evidence only: reads do not settle requests or renew retention.
 pub(crate) async fn next_authority_deadline(
     tx: &mut Transaction<'_>,

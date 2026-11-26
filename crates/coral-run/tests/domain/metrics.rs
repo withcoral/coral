@@ -79,7 +79,7 @@ async fn a_run_records_its_acceptance_phases_and_end() {
         .terminal_record(&workspace_id, accepted.run_id())
         .await;
     assert_eq!(run.state, RunState::Succeeded);
-    wait_until(|| !runs.has_owner(accepted.run_id())).await;
+    wait_until(|| !runs.has_loop(accepted.run_id())).await;
 
     assert_eq!(
         counts(&metrics, "coral.run.accepted"),
@@ -198,7 +198,7 @@ async fn a_tool_invocation_records_its_gates_result_and_end() {
     fixture
         .terminal_record(&tool.workspace_id, accepted.run_id())
         .await;
-    wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
+    wait_until(|| !fixture.runs.has_loop(accepted.run_id())).await;
 
     assert_eq!(
         counts(&metrics, "coral.invocation.started"),
@@ -267,7 +267,7 @@ async fn a_canceled_run_records_its_program_termination() {
         .await;
     assert_eq!(run.state, RunState::Canceled);
     finish_terminated(&mut stream, 1).await;
-    wait_until(|| !fixture.runs.has_owner(accepted.run_id())).await;
+    wait_until(|| !fixture.runs.has_loop(accepted.run_id())).await;
 
     assert_eq!(
         counts(&metrics, "coral.program.termination"),
@@ -279,11 +279,82 @@ async fn a_canceled_run_records_its_program_termination() {
     );
 }
 
-/// Coral records what a Run keeps: each Emission and Log by size. The Run
-/// Executor keeps the Run's output budget, so the Emission over it never
-/// reaches Coral and is not counted here (#3406).
+/// Catches: outputs a Run Executor rejected that Coral does not count by
+/// kind and count, or an unspecified kind or a count of none that does not
+/// break the protocol.
 #[tokio::test]
-async fn program_output_records_what_the_run_keeps() {
+async fn a_run_executors_rejected_outputs_count_by_kind() {
+    use coral_run_executor::wire::v1::{
+        Finish, FinishEnd, OutputKind, OutputRejected, finish, request, run_request,
+    };
+    let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+    let (workspace_id, principal) = fixture
+        .user_scope("user:rejected-metrics", "Reject outputs")
+        .await;
+    let every = [
+        (OutputKind::Emission, 2),
+        (OutputKind::Log, 1),
+        (OutputKind::FinalValue, 1),
+    ];
+    let counted = owned(&[
+        ("output.kind=emission", 2),
+        ("output.kind=final_value", 1),
+        ("output.kind=log", 1),
+    ]);
+    for (sent, state, counted) in [
+        (&every[..], RunState::Succeeded, counted),
+        (
+            &[(OutputKind::Unspecified, 1)][..],
+            RunState::Interrupted,
+            Vec::new(),
+        ),
+        (
+            &[(OutputKind::Log, 0)][..],
+            RunState::Interrupted,
+            Vec::new(),
+        ),
+    ] {
+        let (metrics, _guard) = measured();
+        let accepted = fixture
+            .runs
+            .start(&principal, &workspace_id, submission("return;"))
+            .await
+            .expect("accept the Run");
+        let claim = take(&fixture.runs).await;
+        let mut stream = Scripted::open(&fixture.runs, &accepted.run_id().to_string(), &claim);
+        stream.start().await;
+        for (kind, count) in sent {
+            stream.send(run_request::Message::OutputRejected(OutputRejected {
+                kind: (*kind).into(),
+                count: *count,
+            }));
+        }
+        if state == RunState::Succeeded {
+            let absent = finish::Completion::End(FinishEnd::Absent.into());
+            stream.request(
+                1,
+                request::Kind::Finish(Finish {
+                    completion: Some(absent),
+                }),
+            );
+        }
+        let run = fixture
+            .terminal_record(&workspace_id, accepted.run_id())
+            .await;
+
+        assert_eq!(run.state, state, "{sent:?}");
+        assert_eq!(
+            counts(&metrics, "coral.output.rejections"),
+            counted,
+            "{sent:?}"
+        );
+    }
+}
+
+/// Coral records what a Run keeps, each Emission and Log by size, and
+/// counts the Emission over the budget that the Run Executor rejected.
+#[tokio::test]
+async fn program_output_records_what_the_run_keeps_and_rejects() {
     let (metrics, _guard) = measured();
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let (workspace_id, principal) = fixture
@@ -310,5 +381,9 @@ async fn program_output_records_what_the_run_keeps() {
     assert_eq!(
         counts(&metrics, "coral.output.size"),
         owned(&[("output.kind=emission", 63), ("output.kind=log", 1)])
+    );
+    assert_eq!(
+        counts(&metrics, "coral.output.rejections"),
+        owned(&[("output.kind=emission", 1)])
     );
 }

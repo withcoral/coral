@@ -431,6 +431,11 @@ message RunRequest {
     Loaded loaded = 2;
     // One of the Program's requests.
     Request request = 3;
+    // The outputs of one kind the Run Executor rejected since its last
+    // request, which Coral counts. It takes no request number, goes just
+    // before the next request (Coral reads nothing after the Finish), and is
+    // never resent: one sent while the stream is down is not counted.
+    OutputRejected output_rejected = 4;
   }
 }
 
@@ -466,8 +471,11 @@ message Open {
   string claim_id = 2;
   // The Run Executor's protocol level.
   uint32 protocol_level = 3;
-  // Each request that waits for its InvocationResult. Coral answers again
-  // each one the committed watermark covers, from what it recorded.
+  // Each request that waits for its InvocationResult, once, in ascending
+  // number order, every number above zero, and each Complete after the
+  // Perform it completes. Coral answers again each one the committed
+  // watermark covers, from what it recorded. On the reopen of a started
+  // Run, any other list breaks the protocol.
   repeated Awaited awaited = 4;
 }
 
@@ -660,6 +668,27 @@ enum LogLevel {
   LOG_LEVEL_WARN = 3;
   // `console.error`.
   LOG_LEVEL_ERROR = 4;
+}
+
+// Outputs the Run Executor rejected: too large, invalid, or over the Run
+// Output Budget. Nothing answers it.
+message OutputRejected {
+  // What the Program could not keep.
+  OutputKind kind = 1;
+  // How many, at least one.
+  uint32 count = 2;
+}
+
+// A kind of Program output.
+enum OutputKind {
+  // Not set; breaks the protocol.
+  OUTPUT_KIND_UNSPECIFIED = 0;
+  // A Program Emission.
+  OUTPUT_KIND_EMISSION = 1;
+  // A Program Log.
+  OUTPUT_KIND_LOG = 2;
+  // The Final Value.
+  OUTPUT_KIND_FINAL_VALUE = 3;
 }
 
 // An authored source location.

@@ -3,6 +3,7 @@ import { automaticApplicationAllowed } from '@/lib/provider-publication-attempt/
 import { Button, Inputs, Radio, Typography } from '@/wax/components'
 import { Markdown } from '@/wax/components/markdown'
 import type { ConfigurationReviewView, SetupView } from './types'
+import { FieldError } from './fields'
 import * as styles from './providers.css'
 
 type ApplicationMode = 'automatic' | 'explicit'
@@ -20,6 +21,8 @@ export function OAuthApplicationBlock({
   clientConfigHintMarkdown,
   configuring = false,
   clientSecretInput,
+  applicationError,
+  clientIdRefused = false,
 }: {
   setup: SetupView
   device?: boolean
@@ -29,6 +32,14 @@ export function OAuthApplicationBlock({
   clientConfigHintMarkdown?: string
   configuring?: boolean
   clientSecretInput?: ReactNode
+  /** What is wrong with the application as a whole, such as its PKCE policy. */
+  applicationError?: string
+  /**
+   * Automatic client setup was refused, so the application needs a client ID of the
+   * person's own. The field says so in its own words, which can name the sign-in host
+   * and the callback URL shown above it.
+   */
+  clientIdRefused?: boolean
 }) {
   const automaticAllowed = automaticApplicationAllowed(setup, device)
   // The OAuth host holds the registration; it can differ from the API host.
@@ -60,6 +71,8 @@ export function OAuthApplicationBlock({
   const mode: ApplicationMode = automaticAllowed && !client.trim() ? 'automatic' : 'explicit'
   const [authentication, setAuthentication] = useState(configured?.authentication ?? 'none')
   const clientId = useId()
+  const clientHelpId = useId()
+  const clientErrorId = useId()
   const callbackId = useId()
   const parameterId = useId()
   const confidential = mode === 'explicit' && authentication !== 'none'
@@ -83,6 +96,7 @@ export function OAuthApplicationBlock({
       {configuring && (
         <Typography.BodySmallStrong as="span">OAuth application</Typography.BodySmallStrong>
       )}
+      {configuring && <FieldError message={applicationError} />}
       {configuring ? (
         <>
           {/* Coral establishes the client at sign-in, by a client ID metadata
@@ -116,16 +130,31 @@ export function OAuthApplicationBlock({
             <Inputs.TextInput
               id={clientId}
               name="clientId"
-              required={!automaticAllowed}
+              required={!automaticAllowed || clientIdRefused}
               maxLength={1024}
               value={client}
+              invalid={clientIdRefused}
+              ariaDescribedBy={clientIdRefused ? clientErrorId : clientHelpId}
               onChange={setClient}
             />
-            <Typography.BodySmall as="p" variant="tertiary">
-              {automaticAllowed
-                ? 'Leave empty to use automatic client setup.'
-                : `From your application's registration with ${registrar}.`}
-            </Typography.BodySmall>
+            {/* The error takes the hint's place: it says how to get a client ID. */}
+            {clientIdRefused ? (
+              <FieldError
+                id={clientErrorId}
+                alert={false}
+                message={
+                  device
+                    ? `${registrar} did not accept automatic client registration. Register an OAuth application with it. Then enter its client ID here.`
+                    : `${registrar} did not accept automatic client registration. Register an OAuth application with it. Add the callback URL to its allowed redirect URLs. Then enter its client ID here.`
+                }
+              />
+            ) : (
+              <Typography.BodySmall as="p" id={clientHelpId} variant="tertiary">
+                {automaticAllowed
+                  ? 'Leave empty to use automatic client setup.'
+                  : `From your application's registration with ${registrar}.`}
+              </Typography.BodySmall>
+            )}
             {clientConfigHintMarkdown && (
               <Markdown color="tertiary">{clientConfigHintMarkdown}</Markdown>
             )}
@@ -260,7 +289,11 @@ export function hostOf(url = '') {
   }
 }
 
-/** Where Coral sends a credential: each host the tools call, or the MCP server. */
+/**
+ * Where Coral sends a credential: each host the tools call, or the MCP server.
+ * Sorted, because the destinations arrive as a map whose order changes between
+ * reads, and a list that reshuffles is hard to check.
+ */
 export function credentialHosts(setup: SetupView) {
   return [
     ...new Set(
@@ -268,5 +301,7 @@ export function credentialHosts(setup: SetupView) {
         ? [setup.sourceHost]
         : Object.values(setup.configuration?.destinations ?? {}).map((url) => hostOf(url)),
     ),
-  ].filter(Boolean)
+  ]
+    .filter(Boolean)
+    .toSorted()
 }

@@ -1,15 +1,15 @@
 //! The Run sweeper's statements: its election lease, the Runs
 //! each pass reads, and the put-back of a taken Run that never started.
 //!
-//! Every read of Runs starts from [`running_without_owner`]: a Run Owner's
-//! Run is never one.
+//! Every read of Runs starts from [`running_without_worker_claim`]: an older
+//! release's Run Owner's Run is never one.
 
 use coral_db::{Database, QueryExecutor, Transaction, UnixNanos};
 use coral_workspace::WorkspaceId;
 use sea_query::{Condition, Expr, ExprTrait as _, Iden, OnConflict, Order, Query};
 
 use super::run_row::UndecodableRun;
-use super::{ProgramRunRecords, running_without_owner};
+use super::{ProgramRunRecords, running_without_worker_claim};
 use crate::types::HeldRunId;
 use crate::{CoralInstanceId, Error, RunId};
 
@@ -118,7 +118,7 @@ async fn held_runs(
                 ])
                 .from(ProgramRunRecords::Table)
                 .cond_where(
-                    running_without_owner()
+                    running_without_worker_claim()
                         .add(Expr::col(ProgramRunRecords::ExecutionClaimId).is_not_null())
                         .add(condition),
                 )
@@ -192,7 +192,7 @@ pub(crate) async fn names_run_executor(
                 .column(ProgramRunRecords::Id)
                 .from(ProgramRunRecords::Table)
                 .cond_where(
-                    running_without_owner()
+                    running_without_worker_claim()
                         .add(Expr::col(ProgramRunRecords::RunExecutorId).eq(run_executor_id)),
                 )
                 .limit(1)
@@ -206,7 +206,8 @@ pub(crate) async fn names_run_executor(
 /// Executor, predicated on the claim the pass read and the missing start
 /// mark. `false` when the row no longer matches: the Run started, ended or
 /// was taken again. Like the take, it records no Event and wakes no
-/// observer; the Run keeps its place.
+/// observer; the Run keeps its place. It rings [`super::QUEUE`], so a take
+/// loop takes the Run again at once.
 pub(crate) async fn put_back(
     transaction: &mut Transaction<'_>,
     held: &HeldRun,
@@ -234,7 +235,7 @@ pub(crate) async fn put_back(
                     ),
                 ])
                 .cond_where(
-                    running_without_owner()
+                    running_without_worker_claim()
                         .add(
                             Expr::col(ProgramRunRecords::WorkspaceId)
                                 .eq(held.workspace_id.to_string()),
@@ -246,5 +247,8 @@ pub(crate) async fn put_back(
                 .to_owned(),
         )
         .await?;
+    if written == 1 {
+        transaction.ring_on_commit(super::QUEUE);
+    }
     Ok(written == 1)
 }

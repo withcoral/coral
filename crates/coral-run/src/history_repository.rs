@@ -134,7 +134,7 @@ pub(crate) fn running() -> SimpleExpr {
     col("r", "state").eq(crate::RunState::Running.as_storage_str())
 }
 /// A Run that still takes human actions, as recorded: running with no
-/// termination intent (its deadline ends it only once the owner records the
+/// termination intent (its deadline ends it only once the loop records the
 /// timeout), under an invoking authority current at `now`.
 pub(super) fn active_run(now: i64) -> SimpleExpr {
     running()

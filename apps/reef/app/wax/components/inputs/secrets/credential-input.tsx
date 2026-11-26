@@ -16,6 +16,10 @@ export function CredentialInput({
   disabled = false,
   required = true,
   masked = true,
+  bare = false,
+  invalid = false,
+  ariaDescribedBy,
+  autoFocus,
 }: {
   id: string
   name?: string
@@ -23,6 +27,13 @@ export function CredentialInput({
   required?: boolean
   /** Starts the value hidden; an account email, say, can start visible. */
   masked?: boolean
+  /** No border of its own, for a table cell that draws the edges. */
+  bare?: boolean
+  /** Draws the error border and marks the value invalid. */
+  invalid?: boolean
+  /** The id of the text that explains the value, such as its error. */
+  ariaDescribedBy?: string
+  autoFocus?: boolean
 }) {
   const [hidden, setHidden] = useState(masked)
   return (
@@ -42,7 +53,11 @@ export function CredentialInput({
         required={required}
         maxLength={4096}
         disabled={disabled}
-        className={classNames(base.input, styles.input)}
+        autoFocus={autoFocus}
+        aria-invalid={invalid || undefined}
+        aria-describedby={ariaDescribedBy}
+        data-invalid={invalid ? '' : undefined}
+        className={classNames(base.input, styles.input, bare && base.bareInput)}
       />
       <IconButton
         className={styles.reveal}

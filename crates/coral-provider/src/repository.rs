@@ -1059,6 +1059,21 @@ pub(super) async fn builtin_active_generations(
     root_active_generations(transaction, &crate::ProviderCallRoot::Builtin).await
 }
 
+/// The active Generation of one Workspace's Built-in Provider.
+pub(super) async fn workspace_builtin_generation(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+) -> Result<Option<crate::ActiveGeneration>, Error> {
+    let mut query = active_generation_query();
+    query
+        .and_where(
+            Expr::col(ProviderRecords::Namespace).eq(crate::ProviderCallRoot::Builtin.as_str()),
+        )
+        .and_where(Expr::col(ProviderRecords::WorkspaceId).eq(workspace_id.to_string()));
+    let mut active = fetch_active_generations(transaction, query).await?;
+    Ok(active.pop())
+}
+
 /// The active Generation of every Workspace's Provider at `call_root`, across
 /// Workspaces and in any state.
 pub(super) async fn root_active_generations(

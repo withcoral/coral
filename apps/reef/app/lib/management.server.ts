@@ -22,6 +22,7 @@ import { ReleaseService } from '@/generated/coral/management/v1/release_pb'
 import { SharedToolService } from '@/generated/coral/management/v1/shared_tool_pb'
 import { UsageDataService } from '@/generated/coral/management/v1/usage_data_pb'
 import { SecretStoreService } from '@/generated/coral/management/v1/secret_store_pb'
+import { SubAgentModelService } from '@/generated/coral/management/v1/sub_agent_model_pb'
 import { managementTransportForRequest } from './coral-request.server'
 import { runtimeConfigContext } from './runtime-config.server'
 
@@ -51,6 +52,7 @@ export function management(context: Readonly<RouterContextProvider>) {
     releases: createClient(ReleaseService, transport),
     usageData: createClient(UsageDataService, transport),
     secretStores: createClient(SecretStoreService, transport),
+    subAgentModel: createClient(SubAgentModelService, transport),
   }
 }
 export type ManagementApi = ReturnType<typeof management>

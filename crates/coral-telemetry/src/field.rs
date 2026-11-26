@@ -92,6 +92,13 @@ const CORAL: &[&str] = &[
     // reason it did.
     "coral.search.semantic",
     "coral.search.lexical_only.reason",
+    // How many Authored Tools of one search each rule made strong (a
+    // phrase, a rare path word, nearer than the nearest Provider Tool), and
+    // whether a Provider Tool distance was there to compare with.
+    "coral.search.authored_strong.phrase",
+    "coral.search.authored_strong.rare_path_word",
+    "coral.search.authored_strong.distance",
+    "coral.search.provider_tool_distance_present",
     // What one search index reconcile pass did.
     "coral.search.reconcile.generations_indexed",
     "coral.search.reconcile.generations_failed",

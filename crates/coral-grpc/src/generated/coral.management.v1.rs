@@ -17862,6 +17862,1058 @@ pub(crate) mod shared_tool_service_server {
         const NAME: &'static str = SERVICE_NAME;
     }
 }
+/// Asks for the model.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSubAgentModelRequest {}
+/// The model, when one is set.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetSubAgentModelResponse {
+    /// Absent while the Organization has no model.
+    #[prost(message, optional, tag = "1")]
+    pub model: ::core::option::Option<SubAgentModel>,
+}
+/// Sets the model.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct CreateSubAgentModelRequest {
+    /// What to set.
+    #[prost(message, optional, tag = "1")]
+    pub settings: ::core::option::Option<SubAgentModelSettings>,
+    /// The API key. Absent for a model that takes none.
+    #[prost(string, optional, tag = "2")]
+    pub api_key: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// Changes the model.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UpdateSubAgentModelRequest {
+    /// What to set, in full.
+    #[prost(message, optional, tag = "1")]
+    pub settings: ::core::option::Option<SubAgentModelSettings>,
+    /// Required current etag.
+    #[prost(string, tag = "2")]
+    pub etag: ::prost::alloc::string::String,
+    /// Absent keeps the stored API key, unless the base URL changes, which drops
+    /// it. Empty removes it. Anything else replaces it.
+    #[prost(string, optional, tag = "3")]
+    pub api_key: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// Removes the model.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DeleteSubAgentModelRequest {
+    /// Required current etag.
+    #[prost(string, tag = "1")]
+    pub etag: ::prost::alloc::string::String,
+}
+/// A model as it is stored, without its API key.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubAgentModel {
+    /// Names where the model's requests go. A new base URL issues a new one, and
+    /// so does a model that is removed and set again.
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    /// What an Organization Owner set.
+    #[prost(message, optional, tag = "2")]
+    pub settings: ::core::option::Option<SubAgentModelSettings>,
+    /// Whether an API key is stored. Coral never returns it.
+    #[prost(bool, tag = "3")]
+    pub has_api_key: bool,
+    /// The User who last changed the model, as `users/{user}`.
+    #[prost(string, tag = "4")]
+    pub changed_by: ::prost::alloc::string::String,
+    /// When the model last changed.
+    #[prost(message, optional, tag = "5")]
+    pub change_time: ::core::option::Option<::prost_types::Timestamp>,
+    /// The current etag.
+    #[prost(string, tag = "6")]
+    pub etag: ::prost::alloc::string::String,
+}
+/// What an Organization Owner sets, but the API key.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubAgentModelSettings {
+    /// The wire protocol of the endpoint.
+    #[prost(enumeration = "SubAgentModelProtocol", tag = "1")]
+    pub protocol: i32,
+    /// Where the endpoint is, such as `<https://host/v1`.>
+    #[prost(string, tag = "2")]
+    pub base_url: ::prost::alloc::string::String,
+    /// The model's name, as the endpoint knows it.
+    #[prost(string, tag = "3")]
+    pub model: ::prost::alloc::string::String,
+    /// The model's context window in tokens. Absent leaves it to Coral.
+    #[prost(uint32, optional, tag = "4")]
+    pub context_window: ::core::option::Option<u32>,
+    /// What Coral merges into each request: a JSON object, or empty for none.
+    #[prost(string, tag = "5")]
+    pub request_args_json: ::prost::alloc::string::String,
+}
+/// Tests a model.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TestSubAgentModelRequest {
+    /// The settings as they are entered.
+    #[prost(message, optional, tag = "1")]
+    pub settings: ::core::option::Option<SubAgentModelSettings>,
+    /// Absent uses the stored API key, if the base URL is the one it is stored
+    /// for. Empty sends none. Anything else is sent.
+    #[prost(string, optional, tag = "2")]
+    pub api_key: ::core::option::Option<::prost::alloc::string::String>,
+}
+/// How the model answered.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TestSubAgentModelResponse {
+    /// What happened.
+    #[prost(enumeration = "SubAgentModelTestOutcome", tag = "1")]
+    pub outcome: i32,
+    /// The HTTP status of a refusal.
+    #[prost(uint32, optional, tag = "2")]
+    pub http_status: ::core::option::Option<u32>,
+}
+/// Asks what a Workspace Owner agrees to.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct GetWorkspaceSubAgentModelRequest {
+    /// The Workspace, as `workspaces/{workspace}`. The caller must be its Owner.
+    #[prost(string, tag = "1")]
+    pub workspace: ::prost::alloc::string::String,
+}
+/// The model as a Workspace Owner sees it before they turn `coral.agent` on.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct WorkspaceSubAgentModel {
+    /// The id to name in `TurnOnSubAgent`.
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    /// What an Organization Owner set.
+    #[prost(message, optional, tag = "2")]
+    pub settings: ::core::option::Option<SubAgentModelSettings>,
+}
+/// Turns `coral.agent` on.
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TurnOnSubAgentRequest {
+    /// The Workspace, as `workspaces/{workspace}`. The caller must be its Owner.
+    #[prost(string, tag = "1")]
+    pub workspace: ::prost::alloc::string::String,
+    /// The id of the model that the Owner was shown.
+    #[prost(string, tag = "2")]
+    pub model_id: ::prost::alloc::string::String,
+    /// Enabled, or approval required. Not a way to disable the Tool.
+    #[prost(enumeration = "ToolAccessState", tag = "3")]
+    pub access_state: i32,
+}
+/// The state that `coral.agent` has now.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct TurnOnSubAgentResponse {
+    /// The committed state.
+    #[prost(enumeration = "ToolAccessState", tag = "1")]
+    pub access_state: i32,
+}
+/// How a model answered a test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SubAgentModelTestOutcome {
+    /// Unknown: a newer runtime may send an outcome this client does not know.
+    Unspecified = 0,
+    /// The model replied.
+    Answered = 1,
+    /// The server could not be reached, or did not answer in time.
+    Unreachable = 2,
+    /// The server answered with `http_status`.
+    Refused = 3,
+    /// The operator's destination policy forbids the server.
+    Forbidden = 4,
+    /// The server's answer does not read as a reply of the protocol.
+    Unreadable = 5,
+}
+impl SubAgentModelTestOutcome {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SUB_AGENT_MODEL_TEST_OUTCOME_UNSPECIFIED",
+            Self::Answered => "SUB_AGENT_MODEL_TEST_OUTCOME_ANSWERED",
+            Self::Unreachable => "SUB_AGENT_MODEL_TEST_OUTCOME_UNREACHABLE",
+            Self::Refused => "SUB_AGENT_MODEL_TEST_OUTCOME_REFUSED",
+            Self::Forbidden => "SUB_AGENT_MODEL_TEST_OUTCOME_FORBIDDEN",
+            Self::Unreadable => "SUB_AGENT_MODEL_TEST_OUTCOME_UNREADABLE",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SUB_AGENT_MODEL_TEST_OUTCOME_UNSPECIFIED" => Some(Self::Unspecified),
+            "SUB_AGENT_MODEL_TEST_OUTCOME_ANSWERED" => Some(Self::Answered),
+            "SUB_AGENT_MODEL_TEST_OUTCOME_UNREACHABLE" => Some(Self::Unreachable),
+            "SUB_AGENT_MODEL_TEST_OUTCOME_REFUSED" => Some(Self::Refused),
+            "SUB_AGENT_MODEL_TEST_OUTCOME_FORBIDDEN" => Some(Self::Forbidden),
+            "SUB_AGENT_MODEL_TEST_OUTCOME_UNREADABLE" => Some(Self::Unreadable),
+            _ => None,
+        }
+    }
+}
+/// The wire protocol that a model's endpoint speaks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum SubAgentModelProtocol {
+    /// Unknown: a newer runtime may send a protocol this client does not know.
+    Unspecified = 0,
+    /// OpenAI-compatible Chat Completions.
+    ChatCompletions = 1,
+    /// OpenAI's Responses API.
+    OpenaiResponses = 2,
+    /// Anthropic's Messages API.
+    Anthropic = 3,
+}
+impl SubAgentModelProtocol {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "SUB_AGENT_MODEL_PROTOCOL_UNSPECIFIED",
+            Self::ChatCompletions => "SUB_AGENT_MODEL_PROTOCOL_CHAT_COMPLETIONS",
+            Self::OpenaiResponses => "SUB_AGENT_MODEL_PROTOCOL_OPENAI_RESPONSES",
+            Self::Anthropic => "SUB_AGENT_MODEL_PROTOCOL_ANTHROPIC",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "SUB_AGENT_MODEL_PROTOCOL_UNSPECIFIED" => Some(Self::Unspecified),
+            "SUB_AGENT_MODEL_PROTOCOL_CHAT_COMPLETIONS" => Some(Self::ChatCompletions),
+            "SUB_AGENT_MODEL_PROTOCOL_OPENAI_RESPONSES" => Some(Self::OpenaiResponses),
+            "SUB_AGENT_MODEL_PROTOCOL_ANTHROPIC" => Some(Self::Anthropic),
+            _ => None,
+        }
+    }
+}
+/// Generated client implementations.
+pub mod sub_agent_model_service_client {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    use tonic::codegen::http::Uri;
+    /// The one model that the Organization's Sub-agents use. Only an Organization
+    /// Owner can read or change it. A Workspace Owner reads where it sends data, and
+    /// turns `coral.agent` on for their Workspace.
+    #[derive(Debug, Clone)]
+    pub struct SubAgentModelServiceClient<T> {
+        inner: tonic::client::Grpc<T>,
+    }
+    impl SubAgentModelServiceClient<tonic::transport::Channel> {
+        /// Attempt to create a new client by connecting to a given endpoint.
+        pub async fn connect<D>(dst: D) -> Result<Self, tonic::transport::Error>
+        where
+            D: TryInto<tonic::transport::Endpoint>,
+            D::Error: Into<StdError>,
+        {
+            let conn = tonic::transport::Endpoint::new(dst)?.connect().await?;
+            Ok(Self::new(conn))
+        }
+    }
+    impl<T> SubAgentModelServiceClient<T>
+    where
+        T: tonic::client::GrpcService<tonic::body::Body>,
+        T::Error: Into<StdError>,
+        T::ResponseBody: Body<Data = Bytes> + std::marker::Send + 'static,
+        <T::ResponseBody as Body>::Error: Into<StdError> + std::marker::Send,
+    {
+        pub fn new(inner: T) -> Self {
+            let inner = tonic::client::Grpc::new(inner);
+            Self { inner }
+        }
+        pub fn with_origin(inner: T, origin: Uri) -> Self {
+            let inner = tonic::client::Grpc::with_origin(inner, origin);
+            Self { inner }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> SubAgentModelServiceClient<InterceptedService<T, F>>
+        where
+            F: tonic::service::Interceptor,
+            T::ResponseBody: Default,
+            T: tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+                Response = http::Response<
+                    <T as tonic::client::GrpcService<tonic::body::Body>>::ResponseBody,
+                >,
+            >,
+            <T as tonic::codegen::Service<
+                http::Request<tonic::body::Body>,
+            >>::Error: Into<StdError> + std::marker::Send + std::marker::Sync,
+        {
+            SubAgentModelServiceClient::new(InterceptedService::new(inner, interceptor))
+        }
+        /// Compress requests with the given encoding.
+        ///
+        /// This requires the server to support it otherwise it might respond with an
+        /// error.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.send_compressed(encoding);
+            self
+        }
+        /// Enable decompressing responses.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.inner = self.inner.accept_compressed(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_decoding_message_size(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.inner = self.inner.max_encoding_message_size(limit);
+            self
+        }
+        /// Reads the model, when one is set.
+        pub async fn get_sub_agent_model(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetSubAgentModelRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetSubAgentModelResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SubAgentModelService/GetSubAgentModel",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SubAgentModelService",
+                        "GetSubAgentModel",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Sets the model of an Organization that has none.
+        pub async fn create_sub_agent_model(
+            &mut self,
+            request: impl tonic::IntoRequest<super::CreateSubAgentModelRequest>,
+        ) -> std::result::Result<tonic::Response<super::SubAgentModel>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SubAgentModelService/CreateSubAgentModel",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SubAgentModelService",
+                        "CreateSubAgentModel",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Changes the model with an exact etag.
+        pub async fn update_sub_agent_model(
+            &mut self,
+            request: impl tonic::IntoRequest<super::UpdateSubAgentModelRequest>,
+        ) -> std::result::Result<tonic::Response<super::SubAgentModel>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SubAgentModelService/UpdateSubAgentModel",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SubAgentModelService",
+                        "UpdateSubAgentModel",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Removes the model, and its API key, with an exact etag.
+        pub async fn delete_sub_agent_model(
+            &mut self,
+            request: impl tonic::IntoRequest<super::DeleteSubAgentModelRequest>,
+        ) -> std::result::Result<tonic::Response<()>, tonic::Status> {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SubAgentModelService/DeleteSubAgentModel",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SubAgentModelService",
+                        "DeleteSubAgentModel",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Asks a model for one reply to a fixed prompt, with no Workspace data. It
+        /// changes nothing, and the settings need not be saved.
+        pub async fn test_sub_agent_model(
+            &mut self,
+            request: impl tonic::IntoRequest<super::TestSubAgentModelRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::TestSubAgentModelResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SubAgentModelService/TestSubAgentModel",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SubAgentModelService",
+                        "TestSubAgentModel",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Reads what a Workspace Owner agrees to by turning `coral.agent` on.
+        pub async fn get_workspace_sub_agent_model(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetWorkspaceSubAgentModelRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::WorkspaceSubAgentModel>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SubAgentModelService/GetWorkspaceSubAgentModel",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SubAgentModelService",
+                        "GetWorkspaceSubAgentModel",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// Turns `coral.agent` on in one Workspace, for the model its Owner was shown.
+        pub async fn turn_on_sub_agent(
+            &mut self,
+            request: impl tonic::IntoRequest<super::TurnOnSubAgentRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::TurnOnSubAgentResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/coral.management.v1.SubAgentModelService/TurnOnSubAgent",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new(
+                        "coral.management.v1.SubAgentModelService",
+                        "TurnOnSubAgent",
+                    ),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+    }
+}
+/// Generated server implementations.
+#[allow(dead_code, unreachable_pub)]
+pub(crate) mod sub_agent_model_service_server {
+    #![allow(
+        unused_variables,
+        dead_code,
+        missing_docs,
+        clippy::wildcard_imports,
+        clippy::let_unit_value,
+    )]
+    use tonic::codegen::*;
+    /// Generated trait containing gRPC methods that should be implemented for use with SubAgentModelServiceServer.
+    #[async_trait]
+    pub trait SubAgentModelService: std::marker::Send + std::marker::Sync + 'static {
+        /// Reads the model, when one is set.
+        async fn get_sub_agent_model(
+            &self,
+            request: tonic::Request<super::GetSubAgentModelRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetSubAgentModelResponse>,
+            tonic::Status,
+        >;
+        /// Sets the model of an Organization that has none.
+        async fn create_sub_agent_model(
+            &self,
+            request: tonic::Request<super::CreateSubAgentModelRequest>,
+        ) -> std::result::Result<tonic::Response<super::SubAgentModel>, tonic::Status>;
+        /// Changes the model with an exact etag.
+        async fn update_sub_agent_model(
+            &self,
+            request: tonic::Request<super::UpdateSubAgentModelRequest>,
+        ) -> std::result::Result<tonic::Response<super::SubAgentModel>, tonic::Status>;
+        /// Removes the model, and its API key, with an exact etag.
+        async fn delete_sub_agent_model(
+            &self,
+            request: tonic::Request<super::DeleteSubAgentModelRequest>,
+        ) -> std::result::Result<tonic::Response<()>, tonic::Status>;
+        /// Asks a model for one reply to a fixed prompt, with no Workspace data. It
+        /// changes nothing, and the settings need not be saved.
+        async fn test_sub_agent_model(
+            &self,
+            request: tonic::Request<super::TestSubAgentModelRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::TestSubAgentModelResponse>,
+            tonic::Status,
+        >;
+        /// Reads what a Workspace Owner agrees to by turning `coral.agent` on.
+        async fn get_workspace_sub_agent_model(
+            &self,
+            request: tonic::Request<super::GetWorkspaceSubAgentModelRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::WorkspaceSubAgentModel>,
+            tonic::Status,
+        >;
+        /// Turns `coral.agent` on in one Workspace, for the model its Owner was shown.
+        async fn turn_on_sub_agent(
+            &self,
+            request: tonic::Request<super::TurnOnSubAgentRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::TurnOnSubAgentResponse>,
+            tonic::Status,
+        >;
+    }
+    /// The one model that the Organization's Sub-agents use. Only an Organization
+    /// Owner can read or change it. A Workspace Owner reads where it sends data, and
+    /// turns `coral.agent` on for their Workspace.
+    #[derive(Debug)]
+    pub struct SubAgentModelServiceServer<T> {
+        inner: Arc<T>,
+        accept_compression_encodings: EnabledCompressionEncodings,
+        send_compression_encodings: EnabledCompressionEncodings,
+        max_decoding_message_size: Option<usize>,
+        max_encoding_message_size: Option<usize>,
+    }
+    impl<T> SubAgentModelServiceServer<T> {
+        pub fn new(inner: T) -> Self {
+            Self::from_arc(Arc::new(inner))
+        }
+        pub fn from_arc(inner: Arc<T>) -> Self {
+            Self {
+                inner,
+                accept_compression_encodings: Default::default(),
+                send_compression_encodings: Default::default(),
+                max_decoding_message_size: None,
+                max_encoding_message_size: None,
+            }
+        }
+        pub fn with_interceptor<F>(
+            inner: T,
+            interceptor: F,
+        ) -> InterceptedService<Self, F>
+        where
+            F: tonic::service::Interceptor,
+        {
+            InterceptedService::new(Self::new(inner), interceptor)
+        }
+        /// Enable decompressing requests with the given encoding.
+        #[must_use]
+        pub fn accept_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.accept_compression_encodings.enable(encoding);
+            self
+        }
+        /// Compress responses with the given encoding, if the client supports it.
+        #[must_use]
+        pub fn send_compressed(mut self, encoding: CompressionEncoding) -> Self {
+            self.send_compression_encodings.enable(encoding);
+            self
+        }
+        /// Limits the maximum size of a decoded message.
+        ///
+        /// Default: `4MB`
+        #[must_use]
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
+            self.max_decoding_message_size = Some(limit);
+            self
+        }
+        /// Limits the maximum size of an encoded message.
+        ///
+        /// Default: `usize::MAX`
+        #[must_use]
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
+            self.max_encoding_message_size = Some(limit);
+            self
+        }
+    }
+    impl<T, B> tonic::codegen::Service<http::Request<B>>
+    for SubAgentModelServiceServer<T>
+    where
+        T: SubAgentModelService,
+        B: Body + std::marker::Send + 'static,
+        B::Error: Into<StdError> + std::marker::Send + 'static,
+    {
+        type Response = http::Response<tonic::body::Body>;
+        type Error = std::convert::Infallible;
+        type Future = BoxFuture<Self::Response, Self::Error>;
+        fn poll_ready(
+            &mut self,
+            _cx: &mut Context<'_>,
+        ) -> Poll<std::result::Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+        fn call(&mut self, req: http::Request<B>) -> Self::Future {
+            match req.uri().path() {
+                "/coral.management.v1.SubAgentModelService/GetSubAgentModel" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetSubAgentModelSvc<T: SubAgentModelService>(pub Arc<T>);
+                    impl<
+                        T: SubAgentModelService,
+                    > tonic::server::UnaryService<super::GetSubAgentModelRequest>
+                    for GetSubAgentModelSvc<T> {
+                        type Response = super::GetSubAgentModelResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetSubAgentModelRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SubAgentModelService>::get_sub_agent_model(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetSubAgentModelSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SubAgentModelService/CreateSubAgentModel" => {
+                    #[allow(non_camel_case_types)]
+                    struct CreateSubAgentModelSvc<T: SubAgentModelService>(pub Arc<T>);
+                    impl<
+                        T: SubAgentModelService,
+                    > tonic::server::UnaryService<super::CreateSubAgentModelRequest>
+                    for CreateSubAgentModelSvc<T> {
+                        type Response = super::SubAgentModel;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::CreateSubAgentModelRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SubAgentModelService>::create_sub_agent_model(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = CreateSubAgentModelSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SubAgentModelService/UpdateSubAgentModel" => {
+                    #[allow(non_camel_case_types)]
+                    struct UpdateSubAgentModelSvc<T: SubAgentModelService>(pub Arc<T>);
+                    impl<
+                        T: SubAgentModelService,
+                    > tonic::server::UnaryService<super::UpdateSubAgentModelRequest>
+                    for UpdateSubAgentModelSvc<T> {
+                        type Response = super::SubAgentModel;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::UpdateSubAgentModelRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SubAgentModelService>::update_sub_agent_model(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = UpdateSubAgentModelSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SubAgentModelService/DeleteSubAgentModel" => {
+                    #[allow(non_camel_case_types)]
+                    struct DeleteSubAgentModelSvc<T: SubAgentModelService>(pub Arc<T>);
+                    impl<
+                        T: SubAgentModelService,
+                    > tonic::server::UnaryService<super::DeleteSubAgentModelRequest>
+                    for DeleteSubAgentModelSvc<T> {
+                        type Response = ();
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::DeleteSubAgentModelRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SubAgentModelService>::delete_sub_agent_model(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = DeleteSubAgentModelSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SubAgentModelService/TestSubAgentModel" => {
+                    #[allow(non_camel_case_types)]
+                    struct TestSubAgentModelSvc<T: SubAgentModelService>(pub Arc<T>);
+                    impl<
+                        T: SubAgentModelService,
+                    > tonic::server::UnaryService<super::TestSubAgentModelRequest>
+                    for TestSubAgentModelSvc<T> {
+                        type Response = super::TestSubAgentModelResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::TestSubAgentModelRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SubAgentModelService>::test_sub_agent_model(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = TestSubAgentModelSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SubAgentModelService/GetWorkspaceSubAgentModel" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetWorkspaceSubAgentModelSvc<T: SubAgentModelService>(
+                        pub Arc<T>,
+                    );
+                    impl<
+                        T: SubAgentModelService,
+                    > tonic::server::UnaryService<
+                        super::GetWorkspaceSubAgentModelRequest,
+                    > for GetWorkspaceSubAgentModelSvc<T> {
+                        type Response = super::WorkspaceSubAgentModel;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                super::GetWorkspaceSubAgentModelRequest,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SubAgentModelService>::get_workspace_sub_agent_model(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetWorkspaceSubAgentModelSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/coral.management.v1.SubAgentModelService/TurnOnSubAgent" => {
+                    #[allow(non_camel_case_types)]
+                    struct TurnOnSubAgentSvc<T: SubAgentModelService>(pub Arc<T>);
+                    impl<
+                        T: SubAgentModelService,
+                    > tonic::server::UnaryService<super::TurnOnSubAgentRequest>
+                    for TurnOnSubAgentSvc<T> {
+                        type Response = super::TurnOnSubAgentResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::TurnOnSubAgentRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as SubAgentModelService>::turn_on_sub_agent(
+                                        &inner,
+                                        request,
+                                    )
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = TurnOnSubAgentSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                _ => {
+                    Box::pin(async move {
+                        let mut response = http::Response::new(
+                            tonic::body::Body::default(),
+                        );
+                        let headers = response.headers_mut();
+                        headers
+                            .insert(
+                                tonic::Status::GRPC_STATUS,
+                                (tonic::Code::Unimplemented as i32).into(),
+                            );
+                        headers
+                            .insert(
+                                http::header::CONTENT_TYPE,
+                                tonic::metadata::GRPC_CONTENT_TYPE,
+                            );
+                        Ok(response)
+                    })
+                }
+            }
+        }
+    }
+    impl<T> Clone for SubAgentModelServiceServer<T> {
+        fn clone(&self) -> Self {
+            let inner = self.inner.clone();
+            Self {
+                inner,
+                accept_compression_encodings: self.accept_compression_encodings,
+                send_compression_encodings: self.send_compression_encodings,
+                max_decoding_message_size: self.max_decoding_message_size,
+                max_encoding_message_size: self.max_encoding_message_size,
+            }
+        }
+    }
+    /// Generated gRPC service name
+    pub const SERVICE_NAME: &str = "coral.management.v1.SubAgentModelService";
+    impl<T> tonic::server::NamedService for SubAgentModelServiceServer<T> {
+        const NAME: &'static str = SERVICE_NAME;
+    }
+}
 /// Asks for the deployment's usage data.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetUsageDataRequest {}

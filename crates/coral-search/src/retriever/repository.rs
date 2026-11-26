@@ -18,7 +18,7 @@ use super::RetrievalError;
 use super::plan::{
     QueryPlan, ScoringPlan, Statistics, WordStatistics, contains_pattern, prefix_pattern,
 };
-use super::vector_list::{CurrentRow, NearestVector};
+use super::vector_list::{CurrentRow, Distance, NearestVector};
 use crate::CallPath;
 
 /// The `search_entities` columns the coverage reads name, for sea-query.
@@ -310,12 +310,13 @@ async fn nearest(
     limit: usize,
 ) -> Result<Vec<NearestVector>, Error> {
     let (sql, values) = nearest_statement(transaction.system(), scope, revision, vector, limit);
-    let rows: Vec<(String, UnixNanos)> = transaction.fetch_all_sql(&sql, values).await?;
+    let rows: Vec<(String, UnixNanos, f64)> = transaction.fetch_all_sql(&sql, values).await?;
     Ok(rows
         .into_iter()
-        .map(|(doc_id, source_indexed_at)| NearestVector {
+        .map(|(doc_id, source_indexed_at, distance)| NearestVector {
             doc_id,
             source_indexed_at,
+            distance: Distance(distance),
         })
         .collect())
 }
@@ -404,7 +405,9 @@ fn row_columns(alias: &str) -> String {
     )
 }
 
-/// The vector query over the scope, with its binds.
+/// The vector query over the scope, with its binds. Each row is a key, the
+/// source stamp of its vector and the vector's cosine distance from
+/// `vector`.
 ///
 /// On Postgres the vector binds as `halfvec`, the column's type, so the
 /// distance needs no cast per row, and the scan is exact: the table has no
@@ -431,10 +434,11 @@ fn nearest_statement(
     let limit = binds.push(limit_value(limit));
     let sql = match system {
         DatabaseSystem::Postgres => format!(
-            "SELECT d.doc_id, d.source_indexed_at_unix_nanos \
+            "SELECT d.doc_id, d.source_indexed_at_unix_nanos, \
+                d.embedding <=> CAST({vector} AS halfvec) AS distance \
              FROM search_entity_embeddings AS d \
              WHERE {conditions} AND d.embedder_revision = {revision} \
-             ORDER BY d.embedding <=> CAST({vector} AS halfvec), d.doc_id COLLATE \"C\" ASC \
+             ORDER BY distance, d.doc_id COLLATE \"C\" ASC \
              LIMIT {limit}"
         ),
         DatabaseSystem::Sqlite => format!(
@@ -447,7 +451,7 @@ fn nearest_statement(
                     JOIN search_entities AS d \
                         ON d.workspace_id = e.workspace_id AND d.doc_id = e.doc_id \
                     WHERE {conditions} AND e.embedder_revision = {revision})) \
-             SELECT e.doc_id, e.source_indexed_at_unix_nanos \
+             SELECT e.doc_id, e.source_indexed_at_unix_nanos, n.distance \
              FROM nearest AS n \
              JOIN search_entity_embeddings AS e ON e.vector_rowid = n.vector_rowid \
              ORDER BY n.distance, e.doc_id"
@@ -1090,6 +1094,102 @@ pub(super) async fn complete_generations(
         )
         .await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// How many of a Workspace's Provider Tool paths hold a word that starts
+/// with each of some words. It counts the paths of the given Generations
+/// that the index holds complete: the last segment of each Provider Call
+/// Root and the Tool-relative Path.
+pub(super) struct PathWordCounts {
+    /// The Provider Tools of those Generations.
+    pub(super) tools: i64,
+    /// How many of those Generations hold no counts: an earlier indexer
+    /// wrote them, and a reconcile pass has not indexed them again yet.
+    pub(super) uncounted: i64,
+    /// Each word asked for, and at most how many of those Tools hold a word
+    /// that starts with it.
+    pub(super) words: Vec<PathWordCount>,
+}
+
+/// One word's count in [`PathWordCounts`].
+pub(super) struct PathWordCount {
+    pub(super) word: String,
+    /// The sum of the Tool counts of the stored words that start with
+    /// `word`. A Tool whose path holds two such words counts twice, so the
+    /// sum is an upper bound, and it can be more than all the Tools. This is
+    /// usual: a camelCase run is a word and so is its first part, so
+    /// `getIssue` holds both `get` and `getissue`.
+    pub(super) tools_at_most: i64,
+}
+
+/// The byte after `z` and after each digit. Each stored word and each word
+/// asked for is ASCII letters and digits in lowercase, so the stored words
+/// that start with `w` are those from `w` up to, not including, `w` followed
+/// by this character, when words compare byte by byte.
+const AFTER_EVERY_WORD_CHARACTER: &str = "{";
+
+/// Counts the Provider Tool paths of `generations`, Generations of the
+/// Workspace, for each of `words`, as [`PathWordCounts`] describes, in one
+/// statement. Each word reads only its own range of the primary key.
+pub(super) async fn path_word_counts(
+    transaction: &mut Transaction<'_>,
+    workspace_id: &WorkspaceId,
+    generations: &[String],
+    words: &[&str],
+) -> Result<PathWordCounts, Error> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        word: String,
+        tools_at_most: i64,
+        tools: i64,
+        uncounted: i64,
+    }
+    let mut binds = Binds::new(transaction.system());
+    let workspace = binds.push(workspace_id.to_string());
+    let list = binds.push(json(words));
+    let tool = binds.push(TOOL);
+    let complete = binds.push(COMPLETE);
+    let after = binds.push(AFTER_EVERY_WORD_CHARACTER);
+    let counted = binds.list(generations);
+    let (asked, collate) = match transaction.system() {
+        DatabaseSystem::Postgres => (
+            format!("SELECT jsonb_array_elements_text({list}::jsonb) AS word"),
+            " COLLATE \"C\"",
+        ),
+        DatabaseSystem::Sqlite => (format!("SELECT value AS word FROM json_each({list})"), ""),
+    };
+    let complete_states = format!(
+        "FROM search_index_states AS s \
+         WHERE s.workspace_id = {workspace} AND s.kind = {tool} AND s.state = {complete} \
+             AND s.target_id IN ({counted})"
+    );
+    let sql = format!(
+        "SELECT q.word AS word, \
+             CAST(coalesce(( \
+                 SELECT sum(w.tool_count) FROM search_path_words AS w \
+                 WHERE w.workspace_id = {workspace} \
+                     AND w.word >= q.word{collate} \
+                     AND w.word < (q.word || {after}){collate} \
+                     AND w.provider_generation_id IN (SELECT s.target_id {complete_states}) \
+             ), 0) AS BIGINT) AS tools_at_most, \
+             CAST(coalesce((SELECT sum(s.tool_count) {complete_states}), 0) AS BIGINT) AS tools, \
+             CAST(( \
+                 SELECT count(*) {complete_states} AND s.tool_count IS NULL \
+             ) AS BIGINT) AS uncounted \
+         FROM ({asked}) AS q"
+    );
+    let rows: Vec<Row> = transaction.fetch_all_sql(&sql, binds.values).await?;
+    Ok(PathWordCounts {
+        tools: rows.first().map_or(0, |row| row.tools),
+        uncounted: rows.first().map_or(0, |row| row.uncounted),
+        words: rows
+            .into_iter()
+            .map(|row| PathWordCount {
+                word: row.word,
+                tools_at_most: row.tools_at_most,
+            })
+            .collect(),
+    })
 }
 
 /// The Authored Tools of the scope that have a row in the index.

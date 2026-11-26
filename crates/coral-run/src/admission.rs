@@ -225,7 +225,6 @@ impl RunModule {
                 workspace_id: workspace_id.clone(),
                 principal: actor.principal().clone(),
                 accepted_at_unix_nanos,
-                shutdown_grace_nanos: self.execution_policy.shutdown_grace_nanos(),
                 value_limits: self.value_limits,
                 // The Run waits for a take, which gives it its claim.
                 claim_id: String::new(),

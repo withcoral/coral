@@ -114,6 +114,10 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   holds (`fetch_optional_locked`), and worker-lease renewals (`execute`) must
   not wake activity observers or Run waits. Time-dependent visibility also
   needs an observation deadline.
+- A write that makes a Run wait for a take, such as an acceptance or a
+  put-back, rings `run_repository::QUEUE` with `Transaction::ring_on_commit`.
+  The take loop follows only that signal, so a Run whose write rings nothing
+  can wait up to the loop's backstop.
 - Open read-only work with `Database::begin_read_snapshot` and non-holding
   checks. `Database::begin` takes SQLite's write lock at `BEGIN`, so it waits
   behind every other writer.
@@ -138,13 +142,14 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   exclusive hold: only its owner links it.
 - A Run executes on a Run Executor over a Run stream
   ([ADR 0027](docs/adr/0027-run-executors-compile-and-execute-programs.md)).
-  The Coral Instance that holds the stream hosts the Run's loop (the `owner`
-  module of `coral-run`). The loop applies the stream's requests in number
+  The Coral Instance that holds the stream hosts the Run's loop (the
+  `run_stream::run_loop` module of `coral-run`). The loop applies the stream's requests in number
   order, commits each chunk under the claim and the head and marks it by its
   commit time, and rebuilds a chunk on a head that another writer moved
   under the claim, dropping the requests that writer committed. At the Run's
-  deadline, it commits what it applied, then ends the Run and its open
-  Invocations in one chunk, and only then sends `Terminate`. A reopen of the
+  deadline, at a CPU or memory limit, or when its Program host is lost, it
+  commits what it applied, then ends the Run and its open Invocations in one
+  chunk, and only then does the stream hear of it. A reopen of the
   stream starts a new loop, rebuilt from the ledger; the loop it replaces
   rebuilds nothing, and its chunk is refused. A loop writes its Run only
   while the row names its Coral Instance as the stream's holder. In the
@@ -181,11 +186,13 @@ has the reasons; `ee/AGENTS.md` has the rules for work inside `ee/`.
   a retry with bounded backoff until the answer comes or the loop has
   retired, and a definite answer (a rejection, a claim mismatch, an ended
   Run, a corrupt head) stops it. The loop's own end of its Run (at its
-  deadline, at the drain's length for a local child, or on a reopen that
-  finds its Principal gone) alone retries every answer but a claim mismatch
-  or an ended Run. A termination the Run stream itself records (a CPU or
-  memory limit, a lost Program host) still settles within the Run's
-  shutdown grace until #3405.
+  deadline, at a CPU or memory limit or a lost Program host, at the drain's
+  length for a local child, or on a reopen that finds its Principal gone or
+  its `Open` broken) alone retries every answer but a claim mismatch or an
+  ended Run. An end that reaches a loop whose commit was refused goes
+  through the terminal write instead, which stops on a definite answer and
+  leaves the Run to the sweeper. No write records a termination intent or
+  waits a grace: the chunk that decides a termination ends the Run.
 - A write to a source never touches the Universal Search tables, and they keep
   no foreign key to a source but the Workspace (the vector table keeps none).
   Notify `SearchIndex` after the commit with ids alone; its reconcile pass

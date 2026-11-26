@@ -11,6 +11,7 @@ import {
   defaultAnswers,
   filledRecipe,
   refilled,
+  sameServer,
   serverInputs,
   withRecipe,
   type RecipeAnswers,
@@ -211,6 +212,17 @@ export function ConfigurationStep({
   }
   const review = setup.configuration!
   const errors = result?.configurationErrors ?? review.errors
+  // A refused Next names the fields at fault, which can be far down the page:
+  // bring the first control that marks itself invalid into view and focus it.
+  const refused = result?.configurationErrors
+  useEffect(() => {
+    if (!refused || Object.keys(refused).length === 0) return
+    const first = formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')
+    if (!first) return
+    const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    first.scrollIntoView?.({ block: 'center', behavior: still ? 'auto' : 'smooth' })
+    first.focus({ preventScroll: true })
+  }, [refused])
   const mcp = setup.kind === 'mcp'
   // A recipe fills in only a first configuration, never a confirmed one.
   const applied = review.confirmed ? null : recipe
@@ -359,6 +371,24 @@ export function ConfigurationStep({
     if (missing.length === 0)
       blockers.push({ field: ids.server(group.declaration), message: problem })
   const blocked = blockers.at(0)
+  // A server that holds the URL the recipe gives it needs nothing from the
+  // person, so it folds away until they open the list. One that differs, waits
+  // for an answer or has an error stays in view.
+  const suggestedServer = (group: ServerGroup) => {
+    const fromRecipe = filled?.values.servers?.find(
+      (server) => server.declaration === group.declaration && server.url,
+    )
+    const selection = value.servers.find((server) => server.declaration === group.declaration)
+    return (
+      fromRecipe !== undefined &&
+      sameServer(selection, fromRecipe) &&
+      !errors[group.declaration] &&
+      !serverProblem(group, selection)
+    )
+  }
+  const foldableServers = serverGroups.filter(suggestedServer).length
+  const [serversOpen, setServersOpen] = useState(false)
+  const folded = (group: ServerGroup) => !serversOpen && suggestedServer(group)
   const serverFieldsShowErrors =
     staleServers.length > 0 ||
     serverProblems.length > 0 ||
@@ -630,6 +660,8 @@ export function ConfigurationStep({
                 }
                 callbackUrl={callbackUrl}
                 clientConfigHintMarkdown={applied?.clientConfigHintMarkdown}
+                applicationError={errors.application}
+                clientIdRefused={Boolean(errors['application.client_id'])}
                 configuring
                 clientSecretInput={
                   <>
@@ -684,23 +716,43 @@ export function ConfigurationStep({
                   {/* Each field names the server it sets, so the group needs a
                     boundary rather than a title. */}
                   <div className={styles.groupRule} role="presentation" />
-                  {review.servers.map((group) => (
-                    <ServerField
-                      key={group.declaration}
-                      id={ids.server(group.declaration)}
-                      waitingFor={waitingFor(group)}
-                      group={group}
-                      selection={value.servers.find(
-                        (server) => server.declaration === group.declaration,
-                      )}
-                      error={errors[group.declaration]}
-                      onChange={(selection) =>
-                        selection
-                          ? setServer(group.declaration, selection)
-                          : clearServer(group.declaration)
-                      }
-                    />
-                  ))}
+                  {review.servers
+                    .filter((group) => !folded(group))
+                    .map((group) => (
+                      <ServerField
+                        key={group.declaration}
+                        id={ids.server(group.declaration)}
+                        waitingFor={waitingFor(group)}
+                        group={group}
+                        selection={value.servers.find(
+                          (server) => server.declaration === group.declaration,
+                        )}
+                        error={errors[group.declaration]}
+                        onChange={(selection) =>
+                          selection
+                            ? setServer(group.declaration, selection)
+                            : clearServer(group.declaration)
+                        }
+                      />
+                    ))}
+                  {foldableServers > 0 && (
+                    <div className={styles.foldedServers}>
+                      <Typography.BodySmall as="p" variant="secondary">
+                        {foldableServers === 1
+                          ? '1 server has the suggested URL.'
+                          : `${foldableServers} servers have the suggested URL.`}
+                      </Typography.BodySmall>
+                      <Button.TextButton
+                        type="button"
+                        variant="secondary"
+                        size="32"
+                        aria-expanded={serversOpen}
+                        onClick={() => setServersOpen(!serversOpen)}
+                      >
+                        {serversOpen ? 'Hide these servers' : 'Show these servers'}
+                      </Button.TextButton>
+                    </div>
+                  )}
                 </section>
               )}
             </div>
@@ -717,6 +769,8 @@ export function ConfigurationStep({
                 'authentication.device_authorization_url',
                 'authentication.token_url',
                 'authentication.scopes',
+                // The OAuth application block shows these beside its own fields.
+                ...(oauth ? ['application', 'application.client_id'] : []),
               ].includes(field) &&
               !isCredentialsError(field) &&
               !review.servers.some((group) => group.declaration === field) &&

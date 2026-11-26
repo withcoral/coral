@@ -6,11 +6,11 @@ use super::*;
 
 use super::run_stream_reconnect::finish_with;
 use super::run_streams::{ended, started as started_on_a_stream};
-use crate::owner::{
-    CHUNK_WORK_CAP, Check, CommitRejection, DrainStep, Effect, Message, OwnerLimits, OwnerState,
+use crate::lifecycle::RunTerminationKind;
+use crate::run_stream::run_loop::{
+    CHUNK_WORK_CAP, Check, CommitRejection, DrainStep, Effect, LoopLimits, LoopState, Message,
     ParkedWait, Phase, StartedExecution, Timer, apply,
 };
-use crate::termination::ShutdownAction;
 use crate::{AppliedOutputCap, CHUNK_BYTES_CAP, CHUNK_EVENTS_CAP, CoralFailure, FanOutLimit};
 use coral_run_executor::wire::v1::RunEnd as WireEnd;
 
@@ -97,7 +97,7 @@ async fn a_burst_of_emits_commits_in_chunks_and_stays_prefix_complete() {
 /// Without that, the end was discarded with the failed clock read and the
 /// loop stayed registered forever.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_failing_clock_stops_the_owner_and_the_programs_end_still_retires_it() {
+async fn a_failing_clock_stops_the_loop_and_the_programs_end_still_retires_it() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let tool = fixture.user_tool("user:clock", "Lose the clock").await;
     let (run_id, stream) = started_on_a_stream(&fixture.runs, &tool).await;
@@ -105,7 +105,7 @@ async fn a_failing_clock_stops_the_owner_and_the_programs_end_still_retires_it()
     fixture.clock.fail();
 
     stream.request(1, finish_with("null"));
-    wait_until(|| !fixture.runs.has_owner(&run_id)).await;
+    wait_until(|| !fixture.runs.has_loop(&run_id)).await;
     let abandoned = fixture.run_record(&tool.workspace_id, &run_id).await;
     assert_eq!(abandoned.state, RunState::Running);
     assert!(abandoned.termination.is_none());
@@ -117,7 +117,7 @@ async fn a_failing_clock_stops_the_owner_and_the_programs_end_still_retires_it()
 }
 
 /// A reply the table test can read back.
-fn reply() -> (crate::owner::Reply, Answer) {
+fn reply() -> (crate::run_stream::run_loop::Reply, Answer) {
     tokio::sync::oneshot::channel()
 }
 
@@ -125,7 +125,7 @@ fn answered(receiver: &mut Answer) -> Option<Result<(), Error>> {
     receiver.try_recv().ok()
 }
 
-fn emit(state: &mut OwnerState, bytes: usize, now: i64) -> (Vec<Effect>, Answer) {
+fn emit(state: &mut LoopState, bytes: usize, now: i64) -> (Vec<Effect>, Answer) {
     let (reply, receiver) = reply();
     let value = ProgramValue::from_encoded_json(format!("\"{}\"", "x".repeat(bytes - 2)))
         .expect("a string value");
@@ -139,14 +139,14 @@ fn emit(state: &mut OwnerState, bytes: usize, now: i64) -> (Vec<Effect>, Answer)
 
 type Answer = tokio::sync::oneshot::Receiver<Result<(), Error>>;
 
-fn result(state: &mut OwnerState, bytes: usize, now: i64) -> (Vec<Effect>, Answer, Settled) {
+fn result(state: &mut LoopState, bytes: usize, now: i64) -> (Vec<Effect>, Answer, Settled) {
     result_freeing(state, bytes, true, now)
 }
 
 /// [`result`] of an Invocation that frees a slot as it is applied when
 /// `frees_slot`.
 fn result_freeing(
-    state: &mut OwnerState,
+    state: &mut LoopState,
     bytes: usize,
     frees_slot: bool,
     now: i64,
@@ -194,8 +194,8 @@ fn deliver(effects: Vec<Effect>) -> Vec<Effect> {
 
 /// A Run stream's loop started at 2 with the deadline `limits` names: the
 /// start arms the Run deadline and starts the Program.
-fn started(limits: OwnerLimits) -> OwnerState {
-    let mut state = OwnerState::for_run_stream(limits, (0, 0));
+fn started(limits: LoopLimits) -> LoopState {
+    let mut state = LoopState::for_run_stream(limits, (0, 0));
     let deadline = limits.deadline_at_unix_nanos;
     assert!(matches!(
         apply(
@@ -221,14 +221,14 @@ fn started(limits: OwnerLimits) -> OwnerState {
 }
 
 /// The termination a Run stream's end writes, when `effects` end with it.
-fn ended_as(effects: &[Effect]) -> Option<crate::lifecycle::RunTerminationKind> {
+fn ended_as(effects: &[Effect]) -> Option<RunTerminationKind> {
     match effects {
         [.., Effect::EndStreamRun(end)] => Some(end.termination.kind),
         _ => None,
     }
 }
 
-const LIMITS: OwnerLimits = OwnerLimits {
+const LIMITS: LoopLimits = LoopLimits {
     run_output_bytes: 64 << 20,
     applied_cap_bytes: AppliedOutputCap::DEFAULT_BYTES,
     fan_out_invocations: FanOutLimit::DEFAULT_INVOCATIONS,
@@ -242,7 +242,7 @@ const PRECHECK: i64 = 15_000;
 const WAKE_GAP: i64 = 1_000;
 
 /// [`LIMITS`] under a Fan-out Limit of two.
-const LIMITED: OwnerLimits = OwnerLimits {
+const LIMITED: LoopLimits = LoopLimits {
     fan_out_invocations: 2,
     ..LIMITS
 };
@@ -325,7 +325,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
     // Two results against the budget: the first fits, the second is refused
     // by the byte, and the total records only what was admitted.
     {
-        let mut state = started(OwnerLimits {
+        let mut state = started(LoopLimits {
             run_output_bytes: 300,
             ..LIMITS
         });
@@ -373,7 +373,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
     // The Applied cap: once unrecorded output exceeds it, a request answers
     // only when the chunk that carries it is recorded.
     {
-        let mut state = started(OwnerLimits {
+        let mut state = started(LoopLimits {
             applied_cap_bytes: 2 * CHUNK_BYTES_CAP,
             ..LIMITS
         });
@@ -418,11 +418,11 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert_eq!(state.unrecorded_bytes(), 0);
     }
 
-    // A claim mismatch: the request waiting on the lost chunk learns the owner
+    // A claim mismatch: the request waiting on the lost chunk learns the loop
     // is lost, pending work is abandoned, the Program is terminated, later
     // requests are refused, and the Program's end writes nothing.
     {
-        let mut state = started(OwnerLimits {
+        let mut state = started(LoopLimits {
             applied_cap_bytes: 2 * CHUNK_BYTES_CAP,
             ..LIMITS
         });
@@ -509,7 +509,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert_eq!(state.phase(), Phase::Retired);
     }
 
-    // A refused commit also stops the owner, but the Program's end still gets
+    // A refused commit also stops the loop, but the Program's end still gets
     // its terminal write: the deadline or a released claim is for it to record.
     {
         let mut state = started(LIMITS);
@@ -569,7 +569,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         );
         assert_eq!(state.phase(), Phase::Completing);
         assert!(matches!(
-            apply(&mut state, Message::Completed(Ok(None)), 63).as_slice(),
+            apply(&mut state, Message::Completed(Ok(())), 63).as_slice(),
             [Effect::Retire]
         ));
     }
@@ -593,7 +593,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
 
     // A refused terminal write (a nonterminal Invocation) with an Invocation
     // end waiting: the end commits first, then the write runs again; refused
-    // with nothing pending, the owner retires and leaves the Run to recovery.
+    // with nothing pending, the loop retires and leaves the Run to recovery.
     {
         let mut state = started(LIMITS);
         let effects = apply(
@@ -637,79 +637,66 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
         assert_eq!(state.phase(), Phase::Retired);
     }
 
-    // A recorded termination is settled between the owner's commits, never
-    // beside one: a result pending at the terminal write commits first, a
-    // settle attempt follows each commit, a result that arrives during an
-    // attempt commits before the next attempt, and the attempt that ends
-    // the Run retires the owner, which accepts nothing more.
-    {
-        let mut state = started(LIMITS);
-        deliver(apply(
-            &mut state,
-            Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated),
+    // The Run Executor's own end of the Program (a limit, a lost Program
+    // host) is written first, as the deadline is: what is pending commits,
+    // then one chunk ends the Run and its open Invocations, with no grace
+    // and no `Terminate` before it. Past the deadline the Run times out. A
+    // result that arrives after the end is refused.
+    for (completion, now, kind) in [
+        (
+            ExecutionCompletion::CpuLimitExceeded,
             90,
-        ));
-        let (effects, _, _) = result(&mut state, 10, 91);
+            RunTerminationKind::CpuLimitExceeded,
+        ),
+        (
+            ExecutionCompletion::MemoryLimitExceeded,
+            90,
+            RunTerminationKind::MemoryLimitExceeded,
+        ),
+        (
+            ExecutionCompletion::ProgramHostTerminated,
+            90,
+            RunTerminationKind::Interrupted,
+        ),
+        (
+            ExecutionCompletion::CpuLimitExceeded,
+            LIMITS.deadline_at_unix_nanos,
+            RunTerminationKind::TimedOut,
+        ),
+    ] {
+        let mut state = started(LIMITS);
+        let (effects, _, _) = result(&mut state, 10, now - 1);
         deliver(effects);
-        let effects = apply(
-            &mut state,
-            Message::Completed(Ok(Some(ShutdownAction::for_apply_test()))),
-            92,
-        );
-        assert!(
-            matches!(effects.as_slice(), [Effect::Commit { .. }]),
-            "{effects:?}"
-        );
-        assert_eq!(state.phase(), Phase::Settling);
+        let effects = apply(&mut state, Message::ProgramEnded(completion.clone()), now);
         assert!(
             matches!(
-                apply(&mut state, Message::Committed, 93).as_slice(),
-                [Effect::Settle { again: false, .. }]
+                effects.as_slice(),
+                [Effect::TerminateProgram, Effect::Commit { .. }]
             ),
-            "the settle is attempted once the pending result is recorded"
+            "{completion:?}: the pending result commits first: {effects:?}"
         );
-        let (effects, mut late, late_work) = result(&mut state, 10, 94);
+        assert!(state.ends_stream_first(), "{completion:?}");
+        let effects = apply(&mut state, Message::Committed, now + 1);
+        assert_eq!(
+            ended_as(&effects),
+            Some(kind),
+            "{completion:?}: {effects:?}"
+        );
+        assert_eq!(state.phase(), Phase::Completing);
+        let (effects, _, late_work) = result(&mut state, 10, now + 2);
         assert!(deliver(effects).is_empty());
-        assert!(matches!(answered(&mut late), Some(Ok(()))));
-        assert!(
-            apply(&mut state, Message::Drained, 95).is_empty(),
-            "nothing commits during a settle attempt"
-        );
-        let effects = apply(&mut state, Message::SettleAttempted(Ok(false)), 96);
-        assert!(
-            matches!(effects.as_slice(), [Effect::Commit { .. }]),
-            "the late result commits before the next attempt: {effects:?}"
-        );
-        assert!(matches!(
-            apply(&mut state, Message::Committed, 97).as_slice(),
-            [Effect::Settle { again: false, .. }]
-        ));
-        assert!(late_work.lock().expect("settle").is_none());
+        let rest = deliver(apply(&mut state, Message::Completed(Ok(())), now + 3));
+        assert!(matches!(rest.as_slice(), [Effect::Retire]), "{rest:?}");
         assert!(
             matches!(
-                apply(&mut state, Message::SettleAttempted(Ok(false)), 98).as_slice(),
-                [Effect::Settle { again: true, .. }]
+                late_work.lock().expect("settle").as_ref(),
+                Some(Err(Error::ProgramHostTerminated))
             ),
-            "with nothing to commit the next attempt waits a moment"
+            "{completion:?}: a result after the end is never recorded"
         );
-        assert!(matches!(
-            apply(&mut state, Message::SettleAttempted(Ok(true)), 99).as_slice(),
-            [Effect::Retire]
-        ));
-        assert_eq!(state.phase(), Phase::Retired);
-        let (effects, mut refused, refused_work) = result(&mut state, 10, 100);
-        assert!(deliver(effects).is_empty());
-        assert!(matches!(
-            answered(&mut refused),
-            Some(Err(Error::InvocationPersistence(_)))
-        ));
-        assert!(matches!(
-            refused_work.lock().expect("settle").as_ref(),
-            Some(Err(Error::ProgramHostTerminated))
-        ));
     }
 
-    // A corrupt ledger: the owner stops loudly, pending work learns it, and
+    // A corrupt ledger: the loop stops loudly, pending work learns it, and
     // the Program's end writes nothing.
     {
         let mut state = started(LIMITS);
@@ -757,7 +744,7 @@ fn apply_decides_bursts_budgets_the_applied_cap_and_a_lost_claim_in_memory() {
 )]
 async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_ones_at_once() {
     use crate::invocation::{EnforcementOutcome, EnforcementRequest};
-    use crate::owner::ENFORCEMENT_BATCH_CAP;
+    use crate::run_stream::run_loop::ENFORCEMENT_BATCH_CAP;
 
     type EnforcementAnswer = tokio::sync::oneshot::Receiver<Result<EnforcementOutcome, Error>>;
 
@@ -783,7 +770,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         .expect("four Invocations");
     let invoker = test_invoker(&fixture, &tool, &record);
     let enforce_as =
-        |state: &mut OwnerState, index: usize, now: i64| -> (Vec<Effect>, EnforcementAnswer) {
+        |state: &mut LoopState, index: usize, now: i64| -> (Vec<Effect>, EnforcementAnswer) {
             let (sender, receiver) = tokio::sync::oneshot::channel();
             let admitted = invocations.get(index).expect("one of four").clone();
             let request = EnforcementRequest::for_apply_test(invoker.clone(), admitted, sender);
@@ -792,11 +779,11 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
                 receiver,
             )
         };
-    let enforce = |state: &mut OwnerState, now: i64| enforce_as(state, 0, now);
+    let enforce = |state: &mut LoopState, now: i64| enforce_as(state, 0, now);
     // One request per Invocation, in order, at the instants of `nows`;
     // the effects delivered.
     let enforce_each =
-        |state: &mut OwnerState, nows: std::ops::Range<i64>| -> Vec<EnforcementAnswer> {
+        |state: &mut LoopState, nows: std::ops::Range<i64>| -> Vec<EnforcementAnswer> {
             nows.enumerate()
                 .map(|(index, now)| {
                     let (effects, answer) = enforce_as(state, index, now);
@@ -854,7 +841,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
     // at the default limit it would wait for a slot instead, since every
     // request in a batch holds one.
     {
-        let mut state = started(OwnerLimits {
+        let mut state = started(LoopLimits {
             fan_out_invocations: ENFORCEMENT_BATCH_CAP + 1,
             ..LIMITS
         });
@@ -952,7 +939,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         assert_eq!(chunk.items.len(), 1, "the Emission commits");
     }
 
-    // Past the deadline in owner memory a request answers at once.
+    // Past the deadline in loop memory a request answers at once.
     {
         let mut state = started(LIMITS);
         let (effects, mut late) = enforce(&mut state, LIMITS.deadline_at_unix_nanos);
@@ -1051,11 +1038,11 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         assert_eq!(state.pending_chunks(), 1, "the free slot batches at once");
     }
 
-    // An over-budget result frees no slot: the owner applies nothing, the
+    // An over-budget result frees no slot: the loop applies nothing, the
     // row stays dispatching, and the Invocation task frees the slot once
     // the row's end is recorded (through `DispatchEnded`).
     {
-        let mut state = started(OwnerLimits {
+        let mut state = started(LoopLimits {
             run_output_bytes: 10,
             ..LIMITED
         });
@@ -1172,7 +1159,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
         assert_eq!(state.pending_chunks(), 0);
     }
 
-    // The Shutdown Drain on a Run stream's owner: a request after `Hold`
+    // The Shutdown Drain on a Run stream's loop: a request after `Hold`
     // starts no dispatch and stays in memory; `Move` waits for the
     // dispatch in flight, and its result frees the stream to move. The
     // held request is answered as the Program's host ending, its result's
@@ -1255,7 +1242,7 @@ async fn apply_batches_enforcement_requests_and_a_stop_answers_the_uncommitted_o
 /// way loses, starting the Program after the drain.
 #[test]
 fn the_drains_interruption_times_out_a_run_past_its_deadline_and_waits_for_its_start() {
-    let limits = OwnerLimits {
+    let limits = LoopLimits {
         deadline_at_unix_nanos: 10,
         ..LIMITS
     };
@@ -1272,7 +1259,7 @@ fn the_drains_interruption_times_out_a_run_past_its_deadline_and_waits_for_its_s
         assert_eq!(ended_as(&effects), Some(kind), "{at}: {effects:?}");
     }
 
-    let mut state = OwnerState::for_run_stream(limits, (0, 0));
+    let mut state = LoopState::for_run_stream(limits, (0, 0));
     let effects = apply(&mut state, Message::Drain(DrainStep::Interrupt), 2);
     assert!(deliver(effects).is_empty(), "it waits for the start");
     let effects = deliver(apply(
@@ -1318,13 +1305,13 @@ fn approval_id() -> crate::approval::ApprovalId {
     crate::approval::ApprovalId::parse(&uuid::Uuid::new_v4().to_string()).expect("an id")
 }
 
-/// What a parked Invocation reads once its owner wakes it (`Ok`) or lets
+/// What a parked Invocation reads once its loop wakes it (`Ok`) or lets
 /// it go (`Err`).
 type Woken = tokio::sync::oneshot::Receiver<()>;
 
 /// Parks `admitted` on `wait`, as a landed held recheck reports it.
 fn park(
-    state: &mut OwnerState,
+    state: &mut LoopState,
     invoker: &crate::invocation::ToolInvoker,
     admitted: &Arc<crate::invocation::AdmittedInvocation>,
     wait: ParkedWait,
@@ -1375,15 +1362,15 @@ fn prechecks(effects: &[Effect], check: Check, parks: &[u64]) -> bool {
 }
 
 /// The one pending chunk a commit effect carries.
-fn committed_chunk(effects: Vec<Effect>) -> crate::owner::ChunkBuildView {
+fn committed_chunk(effects: Vec<Effect>) -> crate::run_stream::run_loop::ChunkBuildView {
     let effects = deliver(effects);
     let [Effect::Commit { chunk, .. }] = effects.as_slice() else {
         panic!("{effects:?}");
     };
-    crate::owner::ChunkBuildView::of(chunk)
+    crate::run_stream::run_loop::ChunkBuildView::of(chunk)
 }
 
-/// The owner's wake-ups and prechecks of its parked Invocations, in mailbox
+/// The loop's wake-ups and prechecks of its parked Invocations, in mailbox
 /// order: an approval wait subscribes to nothing, so a change rings nothing
 /// and reads nothing; a connection wait holds the one subscription, and the
 /// rings it brings are coalesced into one read of the connection requests
@@ -1537,7 +1524,7 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
     }
 
     // The periodic precheck reads every parked wait. A finding wakes the
-    // parks it names; a park woken meanwhile by the owner's own record is
+    // parks it names; a park woken meanwhile by the loop's own record is
     // not woken twice; the precheck is armed again while waits remain and
     // not once none does. A failed precheck wakes nothing.
     {
@@ -1607,7 +1594,7 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
             head: state.head() + 1,
             recorded_total: 0,
             running: true,
-            termination: None,
+            ended_as: None,
         };
         let effects = apply(&mut state, Message::Woken(moved), 10);
         assert!(prechecks(&effects, Check::Approvals, &[1]), "{effects:?}");
@@ -1634,7 +1621,7 @@ async fn apply_wakes_parked_invocations_on_their_own_evidence_and_prechecks_the_
         assert!(effects.is_empty(), "{effects:?}");
     }
 
-    // A precheck due past the Run deadline on the owner's clock, before the
+    // A precheck due past the Run deadline on the loop's clock, before the
     // deadline's timer arrived: the timeout is applied first, as the timer
     // would have been, the parked Invocation is let go, and nothing is read.
     {

@@ -3,9 +3,10 @@ import { createRoutesStub } from 'react-router'
 import { expect, screen, userEvent, within } from 'storybook/test'
 import type { CreationAttempt, UpdateAttempt } from '@/lib/provider-publication-attempt/model'
 import { StepperPage } from './stepper-page'
-import type { ReviewToolView, SetupView } from './types'
+import type { RecipeConfigurationView, ReviewToolView, SetupView } from './types'
 import { UpdatePage } from './update-page'
 import { EditConfigurationPage } from './edit-configuration-page'
+import type { SourceChoice } from '@/lib/provider-recipes/choice'
 import { catalogRecipes, form, githubRecipe, workspace } from './story-fixtures'
 
 const meta = {
@@ -262,6 +263,40 @@ export const ConfigurationOAuthFieldErrors: Story = {
   ),
 }
 
+// Automatic client setup failed: the error and the way past it sit on Client ID,
+// which takes focus.
+export const ConfigurationRefusedAutomaticClient: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      setup={{
+        ...configurationSetup,
+        configuration: {
+          ...configurationSetup.configuration!,
+          authenticationStatus: 'supported',
+          documentDisplayName: 'Example API',
+          values: {
+            ...configurationSetup.configuration!.values,
+            authentication: 'oauth',
+            authorizationUrl: 'https://accounts.example.test/authorize',
+            tokenUrl: 'https://accounts.example.test/token',
+            scopes: ['read'],
+          },
+        },
+      }}
+      result={{
+        error: null,
+        credential: null,
+        configurationErrors: {
+          'application.client_id':
+            'The service did not accept automatic client registration. ' +
+            'Register an OAuth application with the service, and give its client ID.',
+        },
+      }}
+    />
+  ),
+}
+
 // Microsoft requests many scopes that share a URL prefix on each of two hosts.
 export const ConfigurationOAuthManyScopes: Story = {
   render: () => (
@@ -382,7 +417,7 @@ export const ConfigurationResolvedDestinations: Story = {
             },
             {
               key: 'stream',
-              reasons: ['an OpenAPI callback cannot be invoked by the v1 HTTP binding'],
+              reasons: ['This tool cannot send a request body of type application/logplex-1.'],
             },
           ],
         },
@@ -647,6 +682,36 @@ const stepperWorkspace = {
 const workspaceEntry = { initialEntry: '/workspaces/demo/providers/new' }
 export const StepWhereIsIt: Story = {
   render: () => <StepperPage {...stepperWorkspace} setup={null} />,
+  parameters: workspaceEntry,
+}
+const regionalRecipe: SourceChoice = {
+  id: 'aws_api',
+  displayName: 'AWS',
+  description: 'Resources, Athena queries, S3 objects and Redshift services from AWS.',
+  kind: 'mcp',
+  url: 'https://aws-mcp.{{input.region}}.api.aws/mcp?oauth=initialize',
+  sourceInputs: [
+    {
+      name: 'region',
+      label: 'AWS MCP region',
+      description: '',
+      type: 'hostname',
+      defaultValue: 'us-east-1',
+      choices: ['us-east-1', 'eu-central-1'],
+    },
+  ],
+}
+// A recipe that asks for source details asks in a small dialog stacked on the
+// catalog, here as a ?recipe= link opens the page.
+export const SourceDetailsDialog: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      setup={null}
+      recipes={[regionalRecipe]}
+      recipe={regionalRecipe}
+    />
+  ),
   parameters: workspaceEntry,
 }
 export const SourcePickerRecipes: Story = {
@@ -955,6 +1020,21 @@ export const StepAccountTokenEachPerson: Story = {
     />
   ),
   parameters: { initialEntry: '/workspaces/demo/providers/new?setup=setup-1&account=caller' },
+}
+/** API keys saved as secret store references: the account is connected, not signed in to. */
+export const StepAccountTokenSaved: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      setup={{
+        ...setupBearer,
+        authorized: true,
+        provisionalGrantId: '33333333-3333-4333-8333-333333333333',
+        holdsSecretReferences: true,
+      }}
+    />
+  ),
+  parameters: workspaceEntry,
 }
 export const StepAccountOAuthApplication: Story = {
   render: () => <StepperPage {...stepperWorkspace} setup={setupOpenApiOAuth} />,
@@ -1725,6 +1805,69 @@ export const ConfigurationFromRecipe: Story = {
     await expect(canvas.getByText('Example site')).toBeVisible()
     await expect(canvas.getByRole('button', { name: 'eu.example.test' })).toBeVisible()
   },
+}
+// Datadog V2's shape: each tool's own server is built from the site the person picks.
+const siteToolPaths = ['/api/v2/logs', '/api/v2/metrics', '/api/v2/series', '/api/v2/spans']
+const siteServerDeclarations = siteToolPaths.map(
+  (path) => `#/paths/${path.replaceAll('/', '~1')}/post/servers`,
+)
+const siteServersSetup = (errors: Record<string, string> = {}): SetupView => ({
+  ...configurationSetup,
+  configuration: {
+    ...configurationSetup.configuration!,
+    servers: siteServerDeclarations.map((declaration) => ({
+      declaration,
+      tools: ['submit'],
+      required: true,
+      options: [{ url: 'https://{subdomain}.{site}', variables: [] }],
+    })),
+    errors,
+  },
+})
+const siteServersRecipe: RecipeConfigurationView = {
+  id: 'datadog_v2',
+  inputs: [
+    {
+      name: 'site',
+      label: 'Datadog site',
+      description: 'Choose the site for your account.',
+      type: 'hostname',
+      defaultValue: 'datadoghq.eu',
+      choices: ['datadoghq.com', 'datadoghq.eu'],
+    },
+  ],
+  suggestedMethods: ['none'],
+  values: {
+    authentication: 'none',
+    servers: siteServerDeclarations.map((declaration) => ({
+      declaration,
+      url: 'https://api.{{input.site}}',
+      custom: true,
+      variables: {},
+    })),
+  },
+}
+/** Every tool server holds the URL the site gives it, so the list folds to one line. */
+export const ConfigurationSuggestedServersFolded: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      setup={siteServersSetup()}
+      recipeConfiguration={siteServersRecipe}
+    />
+  ),
+  parameters: workspaceEntry,
+}
+/** A tool server with an error stays in view; the rest fold. */
+export const ConfigurationSuggestedServersWithError: Story = {
+  render: () => (
+    <StepperPage
+      {...stepperWorkspace}
+      setup={siteServersSetup({ [siteServerDeclarations[1]]: 'Enter a reachable URL.' })}
+      recipeConfiguration={siteServersRecipe}
+    />
+  ),
+  parameters: workspaceEntry,
 }
 // Datadog's shape: two keys the person enters, each in its own header, and a fixed header.
 export const ConfigurationHeaderCredentials: Story = {

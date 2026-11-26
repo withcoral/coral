@@ -1,13 +1,17 @@
 import type { Decorator, Meta, StoryObj } from '@storybook/react-vite'
+import { useSyncExternalStore } from 'react'
 import { createRoutesStub } from 'react-router'
-import { expect, screen, spyOn, userEvent, waitFor, within } from 'storybook/test'
+import { expect, fn, screen, spyOn, userEvent, waitFor, within, type Mock } from 'storybook/test'
 import { dismissAllToasts, ToastContainer } from '@/wax/components/toast'
 import { AgentActivityPage } from './agent-activity-page'
 import { AgentSettingsPage } from './agent-settings-page'
 import { AgentsPage } from './agents-page'
 import { ManagementError } from './management-error'
 import { OrganizationMembersPage } from './organization-members-page'
-import { OrganizationSecretStoresPage } from './organization-secret-stores-page'
+import {
+  OrganizationSecretStoresPage,
+  type SecretStoreRow,
+} from './organization-secret-stores-page'
 import { OrganizationWorkspacesPage } from './organization-workspaces-page'
 import { WorkspaceMembersPage, type WorkspaceMembersPageProps } from './workspace-members-page'
 import { Activity } from '@/views/activity/activity'
@@ -185,14 +189,16 @@ const meta = {
         {
           path: '*',
           Component: Story,
-          action: () =>
-            context.parameters.dialogPending
+          action: async ({ request }) => {
+            await context.parameters.onAction?.(await request.formData())
+            return context.parameters.dialogPending
               ? new Promise(() => {})
               : {
                   error: context.parameters.dialogError ?? null,
                   credential: null,
                   refused: context.parameters.dialogRefused,
-                },
+                }
+          },
         },
       ])
       return <Stub initialEntries={[context.parameters.initialEntry ?? '/workspaces/demo']} />
@@ -1369,6 +1375,7 @@ export const OrganizationSecretStores: Story = {
   parameters: { initialEntry: '/organization/secret-stores' },
   play: async ({ canvas }) => {
     await expect(canvas.getByRole('heading', { level: 1, name: 'Secret stores' })).toBeVisible()
+    await expect(canvas.getByRole('link', { name: /Read the docs/ })).toBeVisible()
     const row = within(canvas.getByRole('row', { name: /platform/ }))
     await expect(row.getByText(secretStoreKind)).toBeVisible()
     await expect(row.getByText('Closed · Archived')).toBeVisible()
@@ -1384,51 +1391,150 @@ export const OrganizationSecretStores: Story = {
 export const OrganizationSecretStoresEmpty: Story = {
   render: () => <OrganizationSecretStoresPage form={form} workspaces={[]} stores={[]} />,
   parameters: { initialEntry: '/organization/secret-stores' },
-}
-// Catches: granting to a workspace that holds the grant, a submit with no workspace,
-// a grant offered for a store config removed, two workspaces of one name that look
-// the same, or a form that submits the wrong store or workspace.
-export const GrantSecretStore: Story = {
-  render: OrganizationSecretStores.render,
-  parameters: OrganizationSecretStores.parameters,
+  // The docs link stays under the title when no store exists.
   play: async ({ canvas }) => {
-    const body = within(document.body)
-    await expect(canvas.queryByRole('button', { name: 'Grant retired to a workspace' })).toBeNull()
-
-    await userEvent.click(canvas.getByRole('button', { name: 'Grant platform to a workspace' }))
-    const dialog = within(await body.findByRole('dialog'))
-    await expect(dialog.getByRole('button', { name: 'Grant' })).toBeDisabled()
-    await userEvent.click(dialog.getByRole('button', { name: 'Workspace' }))
-    const support = await body.findByRole('menuitemradio', { name: 'Support (b71e94d0)' })
-    await expect(
-      body.getByRole('menuitemradio', { name: 'Support (5f0c2a9e)' }),
-    ).toBeInTheDocument()
-    await expect(body.queryByRole('menuitemradio', { name: 'Research' })).toBeNull()
-    await userEvent.click(support)
-    const submit = dialog.getByRole('button', { name: 'Grant' })
-    await expect(submit).toBeEnabled()
-    const fields = new FormData((submit as HTMLButtonElement).form!)
-    await expect(fields.get('intent')).toBe('grant')
-    await expect(fields.get('name')).toBe('secretStores/platform')
-    await expect(fields.get('workspace')).toBe('workspaces/b71e94d0-0000-4000-8000-000000000002')
+    await expect(canvas.getByText('No secret stores yet')).toBeVisible()
+    await expect(canvas.getByRole('link', { name: /Read the docs/ })).toBeVisible()
   },
 }
-// Catches: a revocation offered for an archived workspace, which Coral refuses, or a
-// form that submits the wrong store or workspace.
-export const RevokeSecretStore: Story = {
+// A page whose grants change when you check and clear workspaces, to try the list by hand.
+const liveWorkspaces = [
+  ...organizationSecretStores.workspaces,
+  { name: 'workspaces/billing', displayName: 'Billing' },
+  { name: 'workspaces/data-platform', displayName: 'Data platform' },
+  { name: 'workspaces/growth', displayName: 'Growth' },
+  { name: 'workspaces/infra', displayName: 'Infrastructure' },
+  { name: 'workspaces/mobile', displayName: 'Mobile' },
+  { name: 'workspaces/security', displayName: 'Security' },
+]
+let liveStores: SecretStoreRow[] = organizationSecretStores.stores
+const liveListeners = new Set<() => void>()
+async function applyLiveChange(change: FormData) {
+  await new Promise((resolve) => setTimeout(resolve, 400))
+  const store = String(change.get('name')).replace(/^secretStores\//, '')
+  const granted = change.getAll('grant').map(String)
+  const revoked = new Set(change.getAll('revoke').map(String))
+  liveStores = liveStores.map((s) =>
+    s.name !== store
+      ? s
+      : {
+          ...s,
+          workspaces: [
+            ...s.workspaces.filter((w) => !revoked.has(w.name)),
+            ...liveWorkspaces
+              .filter((w) => granted.includes(w.name))
+              .map((w) => ({ ...w, archived: false })),
+          ],
+        },
+  )
+  liveListeners.forEach((listener) => listener())
+}
+function LiveSecretStores() {
+  const stores = useSyncExternalStore(
+    (listener) => {
+      liveListeners.add(listener)
+      return () => liveListeners.delete(listener)
+    },
+    () => liveStores,
+  )
+  return <OrganizationSecretStoresPage form={form} workspaces={liveWorkspaces} stores={stores} />
+}
+export const TryGrants: Story = {
+  render: () => <LiveSecretStores />,
+  parameters: { initialEntry: '/organization/secret-stores', onAction: applyLiveChange },
+}
+/**
+ * Opens the dialog that edits a store's workspaces. Its list, once open, hides the rest
+ * of the dialog from assistive technology, so find the dialog's controls first.
+ */
+async function editWorkspaces(canvas: ReturnType<typeof within>, store: string) {
+  const body = within(document.body)
+  await userEvent.click(canvas.getByRole('button', { name: `Edit the workspaces of ${store}` }))
+  const dialog = within(await body.findByRole('dialog', { name: 'Edit workspaces' }))
+  const save = dialog.getByRole('button', { name: 'Save changes' })
+  // The dialog animates in.
+  await waitFor(() => expect(save).toBeVisible())
+  const openList = () => userEvent.click(dialog.getByRole('combobox', { name: 'Workspaces' }))
+  return { body, dialog, openList, save }
+}
+/** The changes the dialog's form would submit. */
+function changes(save: HTMLElement) {
+  const fields = new FormData((save as HTMLButtonElement).form!)
+  return {
+    intent: fields.get('intent'),
+    grant: fields.getAll('grant'),
+    revoke: fields.getAll('revoke'),
+  }
+}
+// Catches: a save offered with nothing changed, an archived workspace that you could remove
+// although Coral refuses it, two workspaces of one name that look the same, a store config
+// removed that offers new grants, or an addition that asks you to confirm.
+export const EditSecretStoreWorkspaces: Story = {
   render: OrganizationSecretStores.render,
   parameters: OrganizationSecretStores.parameters,
   play: async ({ canvas }) => {
-    const body = within(document.body)
-    await expect(canvas.queryByRole('button', { name: 'Revoke platform from Closed' })).toBeNull()
-    await userEvent.click(canvas.getByRole('button', { name: 'Revoke platform from Research' }))
-    const dialog = within(await body.findByRole('dialog'))
-    const submit = dialog.getByRole('button', { name: 'Revoke' })
-    await expect(submit).toBeEnabled()
-    const fields = new FormData((submit as HTMLButtonElement).form!)
-    await expect(fields.get('intent')).toBe('revoke')
-    await expect(fields.get('name')).toBe('secretStores/platform')
-    await expect(fields.get('workspace')).toBe('workspaces/research')
+    const { body, dialog, openList, save } = await editWorkspaces(canvas, 'platform')
+    await expect(save).toBeDisabled()
+    await expect(dialog.getByRole('button', { name: 'Remove Research' })).toBeVisible()
+    await expect(dialog.queryByRole('button', { name: /Remove Closed/ })).toBeNull()
+    await openList()
+    // The list animates in.
+    await waitFor(() =>
+      expect(body.getByRole('option', { name: 'Support (5f0c2a9e)' })).toBeVisible(),
+    )
+    await userEvent.click(body.getByRole('option', { name: 'Support (b71e94d0)' }))
+    await userEvent.keyboard('{Escape}')
+    await expect(save).toBeEnabled()
+    await expect(changes(save)).toEqual({
+      intent: 'update',
+      grant: ['workspaces/b71e94d0-0000-4000-8000-000000000002'],
+      revoke: [],
+    })
+    await userEvent.click(save)
+    await waitFor(() => expect(body.queryByRole('dialog')).toBeNull())
+
+    const retired = await editWorkspaces(canvas, 'retired')
+    await retired.openList()
+    const options = await retired.body.findAllByRole('option')
+    await expect(options.map((option) => option.textContent)).toEqual(['Support'])
+  },
+}
+// Catches: a revocation saved without asking, a confirmation that names the wrong
+// workspace, a cancel that throws away the edit behind it, a confirm that does not submit
+// the edit, or a failed save whose error hides behind the confirmation.
+export const RevokeSecretStore: Story = {
+  render: OrganizationSecretStores.render,
+  parameters: {
+    ...OrganizationSecretStores.parameters,
+    dialogError: 'Coral could not revoke this grant.',
+    onAction: fn(),
+  },
+  play: async ({ canvas, parameters }) => {
+    const { body, dialog, save } = await editWorkspaces(canvas, 'platform')
+    await userEvent.click(dialog.getByRole('button', { name: 'Remove Research' }))
+    await expect(changes(save)).toEqual({
+      intent: 'update',
+      grant: [],
+      revoke: ['workspaces/research'],
+    })
+    await userEvent.click(save)
+    const confirm = within(await body.findByRole('dialog', { name: 'Revoke access?' }))
+    await waitFor(() =>
+      expect(confirm.getByText('Research loses access to platform.')).toBeVisible(),
+    )
+    await userEvent.click(confirm.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(body.queryByRole('dialog', { name: 'Revoke access?' })).toBeNull())
+    await expect(save).toBeEnabled()
+    await expect(dialog.queryByRole('button', { name: 'Remove Research' })).toBeNull()
+
+    await userEvent.click(save)
+    const again = within(await body.findByRole('dialog', { name: 'Revoke access?' }))
+    await userEvent.click(again.getByRole('button', { name: 'Revoke and save' }))
+    await waitFor(() => expect(parameters.onAction).toHaveBeenCalledOnce())
+    const sent = (parameters.onAction as Mock).mock.calls[0][0] as FormData
+    await expect(sent.getAll('revoke')).toEqual(['workspaces/research'])
+    await waitFor(() => expect(body.queryByRole('dialog', { name: 'Revoke access?' })).toBeNull())
+    await expect(dialog.getByText('Coral could not revoke this grant.')).toBeVisible()
   },
 }
 

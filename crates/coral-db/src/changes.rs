@@ -1,11 +1,81 @@
 //! Content-free, coalescing invalidation after explicitly marked commits.
 //! This is a wake-up hint, not a durable event log or authorization evidence.
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use sqlx::postgres::PgListener;
 use tokio::sync::watch;
 
 use crate::{Database, Error};
+
+/// A named signal: a commit that rings it wakes only its own subscribers,
+/// not the change signal's (ADR 0027). Its name is all that crosses; like
+/// the change signal, it carries no table name, row identity or content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Signal(&'static str);
+
+/// The change signal's name on the Postgres channel: none.
+pub(crate) const CHANGE_SIGNAL_NAME: &str = "";
+
+/// The longest name a signal takes, far below the 8,000 bytes that Postgres
+/// takes as a notification's payload.
+const SIGNAL_NAME_MAX_BYTES: usize = 64;
+
+impl Signal {
+    /// The signal named `name`, which the module that rings it owns.
+    ///
+    /// # Panics
+    ///
+    /// When `name` is empty (the change signal's name), or longer than
+    /// `SIGNAL_NAME_MAX_BYTES`. Evaluated in a `const` item, as every signal
+    /// is, it fails the build instead.
+    #[must_use]
+    pub const fn new(name: &'static str) -> Self {
+        assert!(!name.is_empty(), "a signal has a name");
+        assert!(
+            name.len() <= SIGNAL_NAME_MAX_BYTES,
+            "a signal's name exceeds SIGNAL_NAME_MAX_BYTES"
+        );
+        Self(name)
+    }
+
+    pub(crate) const fn name(self) -> &'static str {
+        self.0
+    }
+}
+
+/// One sender per named signal, made by its first subscriber. A ring that
+/// no subscriber here asked for wakes nobody.
+#[derive(Clone, Default)]
+pub(crate) struct Signals(Arc<Mutex<HashMap<&'static str, watch::Sender<()>>>>);
+
+impl Signals {
+    fn subscribe(&self, signal: Signal) -> watch::Receiver<()> {
+        self.lock()
+            .entry(signal.name())
+            .or_insert_with(|| watch::channel(()).0)
+            .subscribe()
+    }
+
+    /// Wakes the subscribers of the signal named `name`.
+    pub(crate) fn ring(&self, name: &str) {
+        if let Some(sender) = self.lock().get(name) {
+            sender.send_replace(());
+        }
+    }
+
+    /// Wakes every subscriber: after an outage, any signal may have rung.
+    fn ring_all(&self) {
+        for sender in self.lock().values() {
+            sender.send_replace(());
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<&'static str, watch::Sender<()>>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
 
 const CHANNEL_PREFIX: &str = "coral_committed_change_";
 /// Default liveness period for the Postgres notification connection.
@@ -26,9 +96,13 @@ async fn postgres_listener(url: &str, channel: &str) -> Result<PgListener, Error
 pub(crate) struct Changes {
     /// Each send is one coalescing wake-up; receivers track the version they last saw.
     pub(crate) changed: watch::Sender<()>,
+    /// The named signals' senders.
+    pub(crate) signals: Signals,
     /// Whether the notification path can be trusted. Readers fail closed while false.
     available: watch::Sender<bool>,
     /// Postgres notifies through LISTEN so other workers observe the same commits.
+    /// A named signal's notification on it carries the signal's name; the
+    /// change signal's carries nothing.
     pub(crate) postgres_channel: Option<String>,
     listener: Option<tokio::task::JoinHandle<()>>,
 }
@@ -37,6 +111,7 @@ impl Changes {
     pub(crate) fn local() -> Self {
         Self {
             changed: watch::channel(()).0,
+            signals: Signals::default(),
             available: watch::channel(true).0,
             postgres_channel: None,
             listener: None,
@@ -57,6 +132,7 @@ impl Changes {
         let mut listener = postgres_listener(url, &channel).await?;
         let mut changes = Self::local();
         let wake = changes.changed.clone();
+        let signals = changes.signals.clone();
         let available = changes.available.clone();
         let url = url.to_owned();
         changes.postgres_channel = Some(channel.clone());
@@ -66,9 +142,16 @@ impl Changes {
             health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 let connected = tokio::select! {
-                    result = listener.try_recv() => {
-                        if let Ok(Some(_)) = result { wake.send_replace(()); true } else { false }
-                    }
+                    result = listener.try_recv() => match result {
+                        Ok(Some(notification)) => {
+                            match notification.payload() {
+                                CHANGE_SIGNAL_NAME => { wake.send_replace(()); }
+                                name => signals.ring(name),
+                            }
+                            true
+                        }
+                        _ => false,
+                    },
                     _ = health.tick() => {
                         // Test this socket, not the query pool. A half-open LISTEN
                         // connection must not leave stale views alive indefinitely.
@@ -87,6 +170,7 @@ impl Changes {
                             listener = replacement;
                             available.send_replace(true);
                             wake.send_replace(());
+                            signals.ring_all();
                             break;
                         }
                     }
@@ -202,10 +286,23 @@ impl Database {
     /// # Errors
     /// Returns an error when the notification connection is unavailable.
     pub fn subscribe_changes(&self) -> Result<ChangeSubscription, Error> {
-        let changes = &self.access.changes;
+        self.subscription(self.access.changes.changed.subscribe())
+    }
+
+    /// Subscribes to the commits that ring `signal`
+    /// ([`crate::Transaction::ring_on_commit`]), and to no other commit. An
+    /// outage of the notification connection ends it as it ends
+    /// [`Self::subscribe_changes`], and the resync after it wakes it.
+    /// # Errors
+    /// Returns an error when the notification connection is unavailable.
+    pub fn subscribe_signal(&self, signal: Signal) -> Result<ChangeSubscription, Error> {
+        self.subscription(self.access.changes.signals.subscribe(signal))
+    }
+
+    fn subscription(&self, changed: watch::Receiver<()>) -> Result<ChangeSubscription, Error> {
         let subscription = ChangeSubscription {
-            changed: changes.changed.subscribe(),
-            available: changes.available.subscribe(),
+            changed,
+            available: self.access.changes.available.subscribe(),
         };
         subscription.check()?;
         Ok(subscription)

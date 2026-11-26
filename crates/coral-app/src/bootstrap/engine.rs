@@ -58,8 +58,8 @@ pub(crate) struct EngineParts {
     pub(crate) clock: Arc<dyn coral_db::Clock>,
     pub(crate) policy: coral_outbound::DestinationPolicy,
     pub(crate) runtime_limits: coral_run::RuntimeLimits,
-    /// Whether the deployment configures a Sub-agent, whose Tools the
-    /// built-in catalog then holds.
+    /// Whether this process has a Sub-agent, whose Tools a Workspace's
+    /// Built-in catalog then holds while the Organization has a model.
     pub(crate) sub_agent: bool,
     /// Reef's origin, where a Run's Built-in Tools link a person.
     pub(crate) human_interface: coral_mcp::HumanInterfaceUrl,
@@ -270,7 +270,7 @@ impl RunExecutorParts {
                     program: children.program,
                     coral_address: format!("http://{address}"),
                     max_runs_held: children.settings.max_runs_held,
-                    compiler_heap_bytes: runtime_limits.isolate().compiler_heap_bytes(),
+                    isolate_limits: runtime_limits.isolate(),
                     environment: children.environment,
                 };
                 Some(coral_run_executor::LocalRunExecutors::start(
@@ -313,6 +313,7 @@ struct Modules {
     releases: Option<coral_release::ReleaseCheck>,
     edition: coral_edition::EditionInspection,
     usage: Option<coral_usage::UsageData>,
+    agent_models: coral_agent_model::AgentModels,
     readiness: EngineReadiness,
     /// The instance's one clock, which the periodic passes and the modules
     /// each surface builds read.
@@ -451,12 +452,10 @@ impl Engine {
             usage,
         } = parts;
         let workspaces = coral_workspace::WorkspaceModule::new(database.clone());
-        let builtin_catalog = if sub_agent {
-            coral_catalog::BuiltinCatalog::with_sub_agent()
-        } else {
-            coral_catalog::BuiltinCatalog::running()
-        }
-        .map_err(|error| AppError::engine_boot(error.to_string()))?;
+        let prepared = |catalog: Result<_, coral_catalog::Error>| {
+            catalog.map_err(|error| AppError::engine_boot(error.to_string()))
+        };
+        let builtin_catalog = prepared(coral_catalog::BuiltinCatalog::running())?;
         let providers = coral_provider::ProviderModule::new(
             policy,
             database.clone(),
@@ -467,6 +466,17 @@ impl Engine {
             ),
         )
         .with_clock(clock.clone());
+        let providers = if sub_agent {
+            let catalog = prepared(coral_catalog::BuiltinCatalog::with_sub_agent())?;
+            providers.with_sub_agent_catalog(catalog)
+        } else {
+            providers
+        };
+        let agent_models = coral_agent_model::AgentModels::new(
+            database.clone(),
+            credentials.vault.clone(),
+            policy,
+        );
         let (accounts, secret_stores) = credentials.accounts(providers.clone(), clock.clone());
         let (search_index, search_module, embedder_slot) =
             search.modules(&database, &workspaces, &clock);
@@ -531,6 +541,7 @@ impl Engine {
                 releases,
                 edition,
                 usage: usage.as_ref().map(|usage| usage.data.clone()),
+                agent_models,
                 readiness,
                 clock,
                 local_run_executors,
@@ -554,6 +565,11 @@ impl Engine {
     /// The initialized persistence foundation.
     pub(crate) fn database(&self) -> Arc<Database> {
         Arc::clone(&self.modules.database)
+    }
+
+    /// The model that the Organization's Sub-agents use.
+    pub(crate) fn agent_models(&self) -> coral_agent_model::AgentModels {
+        self.modules.agent_models.clone()
     }
 
     /// The credential subsystem, which the Provider OAuth callback completes
@@ -635,6 +651,10 @@ impl Engine {
             releases: self.modules.releases.clone(),
             edition: self.modules.edition.clone(),
             usage: self.modules.usage.clone(),
+            sub_agent_models: coral_administration::SubAgentModelWorkflow::new(
+                self.modules.agent_models.clone(),
+                self.modules.provider_workflow.clone(),
+            ),
             secret_stores: coral_administration::SecretStoreAdministration::new(
                 coral_workspace::OrganizationModule::new(database.clone()),
                 workspaces.clone(),

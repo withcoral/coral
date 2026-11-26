@@ -2,31 +2,20 @@ use crate::{
     Agent, AgentCredential, AgentDisplayName, AgentRegistration, AgentRegistrationId, AgentState,
     AuthenticatedPrincipal, AuthenticatedUser, ChangeContext, Error, EventDetail, IfMatch,
     IssuedAgentCredential, LifecycleAction, LifecycleTargetKind, Principal, PrincipalId,
-    PrincipalKind, RequestId, WorkspaceId, WorkspaceModule, agent_repository as repository,
-    agent_types::credential_verifier, record_event,
+    PrincipalKind, RequestId, ResourceMetadata, WorkspaceId, WorkspaceModule,
+    agent_repository as repository, agent_types::credential_verifier, record_event,
 };
 use coral_db::UnixNanos;
 
+/// Commits an issuance and returns what it shows once. Each metadata is what
+/// the transaction left on the row: the caller wrote it, so nothing reads it
+/// back.
 async fn finish_issuance(
     mut transaction: coral_db::Transaction<'_>,
-    agent: Agent,
-    registration: AgentRegistration,
+    (agent, agent_metadata): (Agent, ResourceMetadata),
+    (registration, registration_metadata): (AgentRegistration, ResourceMetadata),
     credential: AgentCredential,
 ) -> Result<IssuedAgentCredential, Error> {
-    let agent_metadata = crate::management_repository::metadata(
-        &mut transaction,
-        agent.workspace_id(),
-        LifecycleTargetKind::Agent,
-        agent.principal().id().as_str(),
-    )
-    .await?;
-    let registration_metadata = crate::management_repository::metadata(
-        &mut transaction,
-        agent.workspace_id(),
-        LifecycleTargetKind::AgentRegistration,
-        &registration.id().to_string(),
-    )
-    .await?;
     let creator_profile =
         crate::profile::read_profile(&mut transaction, agent.created_by()).await?;
     transaction.commit().await?;
@@ -40,6 +29,15 @@ async fn finish_issuance(
     })
 }
 
+/// Conceals every Agent from a caller who is not an Owner of the Workspace.
+pub(crate) fn require_agent_inspector(evidence: &crate::WorkspaceEvidence) -> Result<(), Error> {
+    if evidence.effective_role() == crate::WorkspaceRole::Owner {
+        Ok(())
+    } else {
+        Err(Error::AgentNotFound)
+    }
+}
+
 impl WorkspaceModule {
     /// Resolves one exact Agent for Owner inspection within an existing snapshot.
     /// Disabled Agents remain inspectable; this does not grant execution authority.
@@ -51,9 +49,7 @@ impl WorkspaceModule {
         evidence: &crate::WorkspaceEvidence,
         agent_id: &PrincipalId,
     ) -> Result<Agent, Error> {
-        if evidence.effective_role() != crate::WorkspaceRole::Owner {
-            return Err(Error::AgentNotFound);
-        }
+        require_agent_inspector(evidence)?;
         repository::find(transaction, evidence.workspace().id(), agent_id).await
     }
 
@@ -144,7 +140,14 @@ impl WorkspaceModule {
             },
         )
         .await?;
-        finish_issuance(transaction, agent, registration, credential).await
+        let created = ResourceMetadata::created(context.occurred_at());
+        finish_issuance(
+            transaction,
+            (agent, created),
+            (registration, created),
+            credential,
+        )
+        .await
     }
 
     /// Rotates the verifier of the Registration that the caller read at
@@ -173,18 +176,16 @@ impl WorkspaceModule {
         let evidence = self
             .check_configuration_in_transaction(&mut transaction, context.actor(), workspace_id)
             .await?;
-        let registration =
-            repository::registration_by_id(&mut transaction, workspace_id, registration_id).await?;
-        let agent =
-            repository::find(&mut transaction, workspace_id, registration.agent_id()).await?;
-        crate::management::check(
+        let (registration, read) = repository::registration_by_id_with_metadata(
             &mut transaction,
-            if_match,
             workspace_id,
-            LifecycleTargetKind::AgentRegistration,
-            &registration_id.to_string(),
+            registration_id,
         )
         .await?;
+        let agent =
+            repository::find_with_metadata(&mut transaction, workspace_id, registration.agent_id())
+                .await?;
+        crate::management::check(if_match, read.version)?;
         crate::management::claim_request(&mut transaction, context.actor().user_id(), request)
             .await?;
         repository::update_verifier(
@@ -192,9 +193,11 @@ impl WorkspaceModule {
             workspace_id,
             registration_id,
             &credential_verifier(credential.expose()),
+            read.version,
             context.occurred_at(),
         )
         .await?;
+        let rotated = read.changed(context.occurred_at())?;
         record_event(
             &mut transaction,
             context,
@@ -208,7 +211,7 @@ impl WorkspaceModule {
             },
         )
         .await?;
-        finish_issuance(transaction, agent, registration, credential).await
+        finish_issuance(transaction, agent, (registration, rotated), credential).await
     }
 
     /// Changes the lifecycle of the Agent that the caller read at `if_match`,
@@ -230,20 +233,20 @@ impl WorkspaceModule {
         let evidence = self
             .check_configuration_in_transaction(&mut transaction, context.actor(), workspace_id)
             .await?;
-        let mut agent = repository::find(&mut transaction, workspace_id, agent_id).await?;
-        crate::management::check(
-            &mut transaction,
-            if_match,
-            workspace_id,
-            LifecycleTargetKind::Agent,
-            agent_id.as_str(),
-        )
-        .await?;
+        let (mut agent, read) =
+            repository::find_with_metadata(&mut transaction, workspace_id, agent_id).await?;
+        crate::management::check(if_match, read.version)?;
         if agent.state == state {
             return Ok(agent);
         }
         agent.state = state;
-        repository::update_state(&mut transaction, &agent, context.occurred_at()).await?;
+        repository::update_state(
+            &mut transaction,
+            &agent,
+            read.version,
+            context.occurred_at(),
+        )
+        .await?;
         record_event(
             &mut transaction,
             context,
@@ -284,16 +287,13 @@ impl WorkspaceModule {
         let evidence = self
             .check_configuration_in_transaction(&mut transaction, context.actor(), workspace_id)
             .await?;
-        let mut registration =
-            repository::registration_by_id(&mut transaction, workspace_id, registration_id).await?;
-        crate::management::check(
+        let (mut registration, read) = repository::registration_by_id_with_metadata(
             &mut transaction,
-            if_match,
             workspace_id,
-            LifecycleTargetKind::AgentRegistration,
-            &registration_id.to_string(),
+            registration_id,
         )
         .await?;
+        crate::management::check(if_match, read.version)?;
         let mut fields = Vec::new();
         if registration.enabled != enabled {
             fields.push("enabled");
@@ -306,8 +306,13 @@ impl WorkspaceModule {
         }
         registration.enabled = enabled;
         registration.expires_at = expires_at;
-        repository::update_registration(&mut transaction, &registration, context.occurred_at())
-            .await?;
+        repository::update_registration(
+            &mut transaction,
+            &registration,
+            read.version,
+            context.occurred_at(),
+        )
+        .await?;
         record_event(
             &mut transaction,
             context,
@@ -340,7 +345,7 @@ impl WorkspaceModule {
             .await?;
         let agents = repository::list(&mut transaction, workspace_id).await?;
         transaction.commit().await?;
-        Ok(agents)
+        Ok(agents.into_iter().map(|(agent, _metadata)| agent).collect())
     }
 
     /// Inspects one Agent's single Registration without exposing its verifier.

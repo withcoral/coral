@@ -15,7 +15,7 @@ use super::acceptance::{
     PACKAGE_COLUMNS, PackageRow, ProgramRunPackages, ProgramRunPrivateToolSnapshots,
     ProgramRunSharedToolSnapshots,
 };
-use super::events::OwnedEvent;
+use super::events::PendingEvent;
 use super::ledger::{Chunk, commit_chunk_with};
 use super::{ProgramRunRecords, RUN_COLUMNS, RunRow};
 use crate::engine::ProgramPackage;
@@ -181,13 +181,13 @@ pub(crate) async fn reopen_taken(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     claim_id: &str,
-    events: &[OwnedEvent],
+    events: &[PendingEvent],
     committed_at_unix_nanos: i64,
     holder: &CoralInstanceId,
 ) -> Result<(), Error> {
     commit_chunk_with(
         transaction,
-        Chunk::new(run, Some(claim_id), committed_at_unix_nanos).owned_events(events),
+        Chunk::new(run, Some(claim_id), committed_at_unix_nanos).pending_events(events),
         vec![(
             ProgramRunRecords::HolderInstanceId,
             Expr::val(holder.as_str()),
@@ -208,13 +208,13 @@ pub(crate) struct RunHead {
     /// The Run Output Budget total the row records.
     pub(crate) recorded_total: usize,
     pub(crate) running: bool,
-    /// The termination the row records, if any.
-    pub(crate) termination: Option<RunTerminationKind>,
+    /// How an ended Run ended, as its state says
+    /// ([`RunTerminationKind::of_ended`]).
+    pub(crate) ended_as: Option<RunTerminationKind>,
 }
 
 /// The Run Ledger head of each of `runs` that has a row, its recorded
-/// output total, whether it is still running and the termination it
-/// records, by Run: one statement for up to [`HEADS_PER_STATEMENT`] Runs,
+/// output total, whether it is still running and how it ended, by Run: one statement for up to [`HEADS_PER_STATEMENT`] Runs,
 /// each matched by its Workspace and id. A row that does not decode is left
 /// out: its loop's own reads report it.
 pub(crate) async fn heads(
@@ -240,7 +240,7 @@ pub(crate) async fn heads(
                 )
             },
         );
-        let rows: Vec<(String, i64, i64, String, Option<String>)> = database
+        let rows: Vec<(String, i64, i64, String)> = database
             .fetch_all(
                 Query::select()
                     .columns([
@@ -248,23 +248,18 @@ pub(crate) async fn heads(
                         ProgramRunRecords::ChunkSequence,
                         ProgramRunRecords::AccumulatedOutputBytes,
                         ProgramRunRecords::State,
-                        ProgramRunRecords::TerminationKind,
                     ])
                     .from(ProgramRunRecords::Table)
                     .cond_where(named)
                     .to_owned(),
             )
             .await?;
-        for (id, head, recorded_total, state, termination) in rows {
-            let (Ok(id), Ok(head), Ok(recorded_total), Ok(state), Ok(termination)) = (
+        for (id, head, recorded_total, state) in rows {
+            let (Ok(id), Ok(head), Ok(recorded_total), Ok(state)) = (
                 RunId::parse(&id),
                 u64::try_from(head),
                 usize::try_from(recorded_total),
                 RunState::from_storage_str(&state),
-                termination
-                    .as_deref()
-                    .map(RunTerminationKind::from_storage_str)
-                    .transpose(),
             ) else {
                 continue;
             };
@@ -274,7 +269,7 @@ pub(crate) async fn heads(
                     head,
                     recorded_total,
                     running: !state.is_terminal(),
-                    termination,
+                    ended_as: RunTerminationKind::of_ended(state),
                 },
             );
         }

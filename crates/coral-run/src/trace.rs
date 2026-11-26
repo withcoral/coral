@@ -26,8 +26,9 @@ pub(crate) enum Phase {
     Execute,
     /// The terminal write after the Program ended, or an interruption.
     Complete,
-    /// Settling a recorded termination: a cancellation, the deadline or a
-    /// shutdown.
+    /// Ending a Run in one chunk: the deadline, a limit, a lost Program
+    /// host, the end of the Shutdown Drain for a local child, or an older
+    /// build's recorded termination.
     Terminate,
 }
 
@@ -244,9 +245,9 @@ impl InvocationTrace {
         &self.span
     }
 
-    /// Counts the Invocation of `tool` as started, once its Run Owner
+    /// Counts the Invocation of `tool` as started, once its loop
     /// admitted it, and measures it until [`Self::end`] or
-    /// [`Self::run_terminated`]. One the owner refuses is never counted.
+    /// [`Self::run_terminated`]. One the loop refuses is never counted.
     pub(crate) fn admitted(&self, tool: &coral_catalog::MaterializedTool) {
         let protocol = match tool.execution_binding() {
             ExecutionBinding::Http(_) => metric::ProviderProtocol::Http,

@@ -2,14 +2,23 @@ import { style } from '@/wax/css'
 
 import { animation, theme } from '@/wax/theme/theme.css'
 
+const BORDER_PX = 1
+const PADDING_BLOCK_PX = 6
+
+/**
+ * A one-line input's height. A row that holds an input on one page and none on
+ * another takes it as its least height, so the row does not change height.
+ */
+export const inputHeight = `calc(${theme.typography.body.fontSize} * ${theme.typography.body.lineHeight} + ${2 * (BORDER_PX + PADDING_BLOCK_PX)}px)`
+
 export const baseInput = style({
   backgroundColor: 'transparent',
-  border: `1px solid ${theme.input.stroke.default}`,
+  border: `${BORDER_PX}px solid ${theme.input.stroke.default}`,
   borderRadius: '8px',
   boxShadow: 'none',
   color: theme.content.primary,
   outline: 'none',
-  paddingBlock: '6px',
+  paddingBlock: PADDING_BLOCK_PX,
   paddingInline: '12px',
   transition: animation.colorTransition,
   width: '100%',

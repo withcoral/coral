@@ -576,7 +576,7 @@ async fn a_setup_call_cut_off_by_its_runs_end_settles_as_the_run_ending_first() 
 
         assert_eq!(ended, crate::InvocationResultKind::RunTerminated, "{tool}");
         release.send(()).unwrap();
-        wait_until(|| !scope.fixture.runs.has_owner(&run)).await;
+        wait_until(|| !scope.fixture.runs.has_loop(&run)).await;
     }
 }
 
@@ -611,5 +611,5 @@ async fn a_rename_cut_off_by_its_runs_end_is_indeterminate() {
 
     assert_eq!(ended, crate::InvocationResultKind::Indeterminate);
     renamer.release.notify_one();
-    wait_until(|| !scope.fixture.runs.has_owner(&run)).await;
+    wait_until(|| !scope.fixture.runs.has_loop(&run)).await;
 }

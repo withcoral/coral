@@ -67,7 +67,7 @@ impl ToolInvoker {
         PerformedCall {
             invoker: self.clone(),
             body: ToolBody::new(admitted.id.clone(), admitted.span.clone()),
-            slot: DispatchSlot::new(self.owner.clone(), &admitted),
+            slot: DispatchSlot::new(self.run_loop.clone(), &admitted),
             admitted,
             progress: InvocationProgress {
                 dispatch_started: true,
@@ -118,7 +118,7 @@ impl ToolInvoker {
             let arguments = arguments(&admitted)?;
             let Permit { slot, progress, .. } =
                 self.permit(&admitted, &arguments, RECHECKED, None).await?;
-            if self.owner.is_stopping() {
+            if self.run_loop.is_stopping() {
                 self.end_before_send(&admitted).await?;
                 return Err(InvocationHostError::Fatal(Error::ProgramHostTerminated));
             }

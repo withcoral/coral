@@ -25,7 +25,7 @@ struct Started {
     principal: AuthenticatedPrincipal,
     run_id: crate::RunId,
     stream: Scripted,
-    owner: crate::owner::OwnerHandle,
+    run_loop: crate::run_stream::run_loop::LoopHandle,
 }
 
 async fn started_run(fixture: &TestModules, label: &str) -> Started {
@@ -41,9 +41,9 @@ async fn started_run(fixture: &TestModules, label: &str) -> Started {
     let claim = take(&fixture.runs).await;
     let mut stream = Scripted::open(&fixture.runs, &run_id.to_string(), &claim);
     stream.start().await;
-    let owner = fixture
+    let run_loop = fixture
         .runs
-        .owners
+        .loops
         .find(&run_id, &claim)
         .expect("the loop is live");
     Started {
@@ -51,7 +51,7 @@ async fn started_run(fixture: &TestModules, label: &str) -> Started {
         principal,
         run_id,
         stream,
-        owner,
+        run_loop,
     }
 }
 
@@ -156,7 +156,7 @@ async fn a_commit_whose_answer_is_lost_before_it_landed_is_recommitted_as_built_
 /// A rejection the database answers with is definite: the chunk is not
 /// retried, the loop stops, and the Program's end records Interrupted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_definite_database_rejection_stops_the_owner_without_a_retry() {
+async fn a_definite_database_rejection_stops_the_loop_without_a_retry() {
     let probe = CommitProbe::new();
     let fixture = quiet_fixture(probe.clone()).await;
     let mut run = started_run(&fixture, "rejected").await;
@@ -170,7 +170,7 @@ async fn a_definite_database_rejection_stops_the_owner_without_a_retry() {
         .await;
 
     run.stream.request(1, emit(&serde_json::json!("one")));
-    wait_until(|| run.owner.stop().is_requested()).await;
+    wait_until(|| run.run_loop.stop().is_requested()).await;
     assert_eq!(
         probe.commits() - commits_before,
         1,
@@ -208,7 +208,7 @@ enum ForeignHead {
 /// it: the pending work learns the ledger is corrupt, nothing is retried,
 /// and nothing more is written.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_foreign_head_stops_the_owner_loudly_and_changes_nothing() {
+async fn a_foreign_head_stops_the_loop_loudly_and_changes_nothing() {
     for case in [ForeignHead::ReadBeforeTheWrite, ForeignHead::Reread] {
         let probe = CommitProbe::new();
         let fixture = quiet_fixture(probe.clone()).await;
@@ -237,7 +237,7 @@ async fn a_foreign_head_stops_the_owner_loudly_and_changes_nothing() {
         let counter = fixture.compatibility_counter(&workspace_id, &run_id).await;
         let events = fixture.events_after(&workspace_id, &run_id, 0).await;
         let (work, settled) = probe_work();
-        run.owner.work(work).expect("the loop takes the work");
+        run.run_loop.work(work).expect("the loop takes the work");
         release.send(()).expect("release the commit");
 
         wait_until(|| settled.lock().expect("settle lock").is_some()).await;
@@ -249,10 +249,10 @@ async fn a_foreign_head_stops_the_owner_loudly_and_changes_nothing() {
             "{case:?}: {:?}",
             settled.lock().expect("settle lock")
         );
-        wait_until(|| run.owner.stop().is_requested()).await;
+        wait_until(|| run.run_loop.stop().is_requested()).await;
         assert_eq!(probe.commits() - commits_before, 1, "{case:?}: no retry");
         finish_terminated(&mut run.stream, 2).await;
-        wait_until(|| !fixture.runs.has_owner(&run_id)).await;
+        wait_until(|| !fixture.runs.has_loop(&run_id)).await;
         assert_eq!(
             fixture.run_record(&workspace_id, &run_id).await,
             tampered,

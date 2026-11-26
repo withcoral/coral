@@ -819,36 +819,6 @@ pub(super) async fn has_nonterminal_for_run(
     .await
 }
 
-/// The Generations whose Tools the run's dispatches that started and have
-/// not ended called, each once.
-pub(super) async fn dispatching_generations_for_run(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &WorkspaceId,
-    run_id: &RunId,
-) -> Result<Vec<coral_catalog::ProviderGenerationId>, Error> {
-    let rows: Vec<(String,)> = transaction
-        .fetch_all(
-            Query::select()
-                .distinct()
-                .column(ToolInvocations::ProviderGenerationId)
-                .from(ToolInvocations::Table)
-                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(workspace_id.to_string()))
-                .and_where(Expr::col(ToolInvocations::RunId).eq(run_id.to_string()))
-                .and_where(
-                    Expr::col(ToolInvocations::State)
-                        .eq(InvocationState::Dispatching.as_storage_str()),
-                )
-                .to_owned(),
-        )
-        .await?;
-    rows.into_iter()
-        .map(|(generation,)| {
-            coral_catalog::ProviderGenerationId::parse(&generation)
-                .map_err(|error| coral_provider::Error::from(error).into())
-        })
-        .collect()
-}
-
 async fn has_for_run(
     transaction: &mut Transaction<'_>,
     workspace_id: &WorkspaceId,
@@ -1010,56 +980,99 @@ struct StreamInvocationRow {
     upstream_rejection: Option<String>,
 }
 
+/// How many request numbers one statement of [`for_run_stream`] names, within
+/// every database's bind limit: `SQLite` binds 32,766 values per statement
+/// and Postgres 65,535.
+const REQUESTS_PER_STATEMENT: usize = 1000;
+
 /// The Invocations of `run` that Run stream requests opened and that are
 /// nonterminal or that one of `requests` opened, in request order.
+///
+/// One statement reads the nonterminal ones and those that the first
+/// [`REQUESTS_PER_STATEMENT`] of `requests` opened, so a short list is read
+/// in one statement. Each further statement reads the ended ones that its
+/// batch of the rest opened.
 pub(crate) async fn for_run_stream(
     transaction: &mut Transaction<'_>,
     run: &RunRecord,
     requests: &[u64],
 ) -> Result<Vec<StreamInvocation>, Error> {
-    let requests = requests
+    let mut requests = requests
         .iter()
         .map(|number| i64::try_from(*number))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_error| Error::CorruptData("Run request number overflowed".to_string()))?;
-    let rows: Vec<StreamInvocationRow> = transaction
+    // Batches that name no number twice read no ended row twice.
+    requests.sort_unstable();
+    requests.dedup();
+    let mut batches = requests.chunks(REQUESTS_PER_STATEMENT);
+    let state = || Expr::col(ToolInvocations::State);
+    let opened_by =
+        |batch: &[i64]| Expr::col(ToolInvocations::RequestNumber).is_in(batch.iter().copied());
+    let mut rows: Vec<StreamInvocationRow> = transaction
         .fetch_all(
-            Query::select()
-                .columns([
-                    ToolInvocations::Id,
-                    ToolInvocations::RequestNumber,
-                    ToolInvocations::State,
-                    ToolInvocations::ProviderId,
-                    ToolInvocations::CredentialRoute,
-                    ToolInvocations::ProviderAccountSettingVersion,
-                    ToolInvocations::ProviderGenerationId,
-                    ToolInvocations::ToolKey,
-                    ToolInvocations::CallPath,
-                    ToolInvocations::ArgumentsJson,
-                    ToolInvocations::ParentInvocationId,
-                    ToolInvocations::AdmittedAtUnixNanos,
-                    ToolInvocations::ResultKind,
-                    ToolInvocations::ResultJson,
-                    ToolInvocations::FailureCode,
-                    ToolInvocations::FailureMessage,
-                    ToolInvocations::UpstreamRejection,
-                ])
-                .from(ToolInvocations::Table)
-                .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(run.workspace_id.to_string()))
-                .and_where(Expr::col(ToolInvocations::RunId).eq(run.id.to_string()))
-                .and_where(Expr::col(ToolInvocations::RequestNumber).is_not_null())
+            stream_invocations(run)
                 .and_where(
-                    Expr::col(ToolInvocations::State)
+                    state()
                         .ne(InvocationState::Ended.as_storage_str())
-                        .or(Expr::col(ToolInvocations::RequestNumber).is_in(requests)),
+                        .or(opened_by(batches.next().unwrap_or_default())),
                 )
-                // A body's call is numbered after its Perform, whatever the
-                // clocks of the Coral Instances that admitted them.
-                .order_by(ToolInvocations::RequestNumber, Order::Asc)
                 .to_owned(),
         )
         .await?;
+    for batch in batches {
+        let ended: Vec<StreamInvocationRow> = transaction
+            .fetch_all(
+                stream_invocations(run)
+                    .and_where(state().eq(InvocationState::Ended.as_storage_str()))
+                    .and_where(opened_by(batch))
+                    .to_owned(),
+            )
+            .await?;
+        rows.extend(ended);
+    }
+    // A body's call is numbered after its Perform, whatever the clocks of
+    // the Coral Instances that admitted them. On Postgres, a row that is
+    // open in the first statement and that another writer ends before a
+    // later one is read twice, and the first read is kept. That writer
+    // moved the Run's head, so the reopen's write under the head
+    // (`run_repository::reopen_taken`) is refused, and the reopen reads
+    // again.
+    rows.sort_by(|left, right| {
+        (left.request_number, &left.id).cmp(&(right.request_number, &right.id))
+    });
+    rows.dedup_by(|later, earlier| later.id == earlier.id);
     rows.into_iter().map(StreamInvocationRow::decode).collect()
+}
+
+/// The select of `run`'s Invocations that Run stream requests opened, with
+/// the columns of a [`StreamInvocationRow`].
+fn stream_invocations(run: &RunRecord) -> sea_query::SelectStatement {
+    Query::select()
+        .columns([
+            ToolInvocations::Id,
+            ToolInvocations::RequestNumber,
+            ToolInvocations::State,
+            ToolInvocations::ProviderId,
+            ToolInvocations::CredentialRoute,
+            ToolInvocations::ProviderAccountSettingVersion,
+            ToolInvocations::ProviderGenerationId,
+            ToolInvocations::ToolKey,
+            ToolInvocations::CallPath,
+            ToolInvocations::ArgumentsJson,
+            ToolInvocations::ParentInvocationId,
+            ToolInvocations::AdmittedAtUnixNanos,
+            ToolInvocations::ResultKind,
+            ToolInvocations::ResultJson,
+            ToolInvocations::FailureCode,
+            ToolInvocations::FailureMessage,
+            ToolInvocations::UpstreamRejection,
+        ])
+        .from(ToolInvocations::Table)
+        .and_where(Expr::col(ToolInvocations::WorkspaceId).eq(run.workspace_id.to_string()))
+        .and_where(Expr::col(ToolInvocations::RunId).eq(run.id.to_string()))
+        .and_where(Expr::col(ToolInvocations::RequestNumber).is_not_null())
+        .to_owned()
 }
 
 /// The request numbers of `run`'s ended Invocations whose call path is one

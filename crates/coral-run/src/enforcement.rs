@@ -2,9 +2,9 @@
 //! reads the shared Workspace, Provider, policy and Account facts a batch of
 //! ready Invocations depends on, under the lock mode the caller chooses, and
 //! one evaluator decides each Invocation in memory against those facts, the
-//! Run-scoped facts the owner holds, and one clock sample.
+//! Run-scoped facts the loop holds, and one clock sample.
 //!
-//! The enforcement point loads the facts with a shared hold inside the owner's
+//! The enforcement point loads the facts with a shared hold inside the loop's
 //! chunk commit, so enforcement checks of different Runs read side by side and
 //! an authority writer's `UPDATE` waits for the enforcement checks in flight: a
 //! revocation that commits first is seen, one that commits after the recorded
@@ -41,7 +41,7 @@ pub(crate) struct EnforcementTarget<'a> {
     pub(crate) credential_evidence: Option<&'a CredentialEvidence>,
 }
 
-/// The Run-scoped facts a decision needs: the Run row the owner holds (its
+/// The Run-scoped facts a decision needs: the Run row the loop holds (its
 /// claim, termination, deadline) and the identity the Invocation was
 /// admitted under.
 pub(crate) struct RunFacts<'a> {
@@ -60,11 +60,11 @@ impl RunFacts<'_> {
     }
 }
 
-/// An Invocation's Approval Request as the decision sees it, from owner
+/// An Invocation's Approval Request as the decision sees it, from loop
 /// memory: in the enforcement point, what the held approval gate recorded (a
 /// request is never needed again once approved, and an approval never changes);
 /// in the parked-wait precheck, the pending request the Invocation is parked on
-/// (only its owner decides it).
+/// (a decision on it wakes the loop, and the held recheck reads it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ApprovalFact {
     /// No request exists, or none was needed when the gate ran.

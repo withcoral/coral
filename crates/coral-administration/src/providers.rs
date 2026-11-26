@@ -31,6 +31,11 @@ impl ProviderWorkflow {
         Self { providers, search }
     }
 
+    /// The database that the Provider module's transactions open on.
+    pub(crate) fn database(&self) -> &std::sync::Arc<coral_db::Database> {
+        self.providers.database()
+    }
+
     /// Publishes one Workspace-owned Provider.
     ///
     /// An exact replay of a committed request returns the same terminal result.
@@ -143,38 +148,77 @@ impl ProviderWorkflow {
     }
 
     /// Updates every Workspace's Built-in Provider that pins another catalog
-    /// to the one this process serves, each in its own transaction, then tells
-    /// Universal Search. Bootstrap runs it before the process takes requests.
-    /// A Workspace whose update fails keeps its catalog until the next boot,
-    /// and the others still update.
+    /// to the one this process serves now, each in its own transaction, then
+    /// tells Universal Search. An update that gives a Workspace the
+    /// Sub-agent's Tools turns `coral.agent` off in the same transaction.
+    /// Bootstrap runs it before the process takes requests, and a change of
+    /// the Sub-agent's model runs it after its commit. A Workspace whose
+    /// update fails keeps its catalog until the next one, and the others
+    /// still update.
     ///
     /// # Errors
     ///
     /// Returns the errors of [`ProviderModule::outdated_builtin_generations`].
     pub async fn update_builtin_catalogs(&self, occurred_at: UnixNanos) -> Result<(), Error> {
-        for outdated in self.providers.outdated_builtin_generations().await? {
-            match self
-                .providers
-                .update_builtin_catalog(&outdated, occurred_at)
-                .await
-            {
-                Ok(committed) => {
-                    self.notify(committed);
-                }
-                Err(error) => tracing::warn!(
-                    coral.workspace.id = safe::id(&outdated.workspace_id()),
-                    coral.provider.id = safe::id(&outdated.provider_id()),
-                    error.type = safe::kind(error.code()),
-                    "failed to update a Built-in Provider's catalog"
-                ),
-            }
-        }
-        Ok(())
+        update_builtin_catalogs(&self.providers, &self.search, None, occurred_at).await
     }
 
     fn notify<T>(&self, committed: Committed<T>) -> T {
         notify(&self.search, committed)
     }
+}
+
+/// [`ProviderWorkflow::update_builtin_catalogs`], of `workspace` alone when
+/// there is one.
+pub(crate) async fn update_builtin_catalogs(
+    providers: &ProviderModule,
+    search: &SearchIndex,
+    workspace: Option<&WorkspaceId>,
+    occurred_at: UnixNanos,
+) -> Result<(), Error> {
+    for outdated in providers.outdated_builtin_generations(workspace).await? {
+        match update_builtin_catalog(providers, &outdated, occurred_at).await {
+            Ok(Some(committed)) => notify(search, committed),
+            Ok(None) => {}
+            Err(error) => tracing::warn!(
+                coral.workspace.id = safe::id(&outdated.workspace_id()),
+                coral.provider.id = safe::id(&outdated.provider_id()),
+                error.type = safe::kind(match &error {
+                    crate::Error::Provider(error) => error.code(),
+                    crate::Error::Database(error) => error.code(),
+                    _ => "policy",
+                }),
+                "failed to update a Built-in Provider's catalog"
+            ),
+        }
+    }
+    Ok(())
+}
+
+async fn update_builtin_catalog(
+    providers: &ProviderModule,
+    outdated: &coral_provider::ActiveGeneration,
+    occurred_at: UnixNanos,
+) -> Result<Option<Committed<()>>, crate::Error> {
+    let mut transaction = providers.database().begin().await?;
+    let updated = providers
+        .update_builtin_catalog_in_transaction(&mut transaction, outdated, occurred_at)
+        .await?;
+    if updated.is_some()
+        && providers
+            .serves_sub_agent_in_transaction(&mut transaction)
+            .await?
+    {
+        coral_policy::start_sub_agent_off_in_transaction(
+            &mut transaction,
+            outdated.workspace_id(),
+            outdated.provider_id(),
+            occurred_at,
+        )
+        .await?;
+    }
+    transaction.commit().await?;
+    Ok(updated)
 }
 
 /// Records that a boot could not install `provider` in the Workspace, which

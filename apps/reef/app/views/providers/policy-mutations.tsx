@@ -31,6 +31,8 @@ type Mutations = {
     /** Set by the bulk form: the confirmed keys leave the selection. */
     onConfirmed?: (confirmed: SelectionKey[]) => void,
   ) => void
+  /** Forgets how the last request on this tool ended, for a change made another way. */
+  supersede: (provider: string, tool: string) => void
   state: (
     provider: string,
     tool: string,
@@ -106,17 +108,19 @@ export function PolicyMutations({
       setFailures((current) => new Map([...current, ...settled.failures]))
     if (settled.confirmed.length > 0) request.onConfirmed?.(settled.confirmed)
   }, [])
+  const forget = (targets: readonly SelectedTool[]) =>
+    setFailures((current) => {
+      const next = new Map(current)
+      for (const target of targets) next.delete(selectionKey(target.provider, target.tool))
+      return next.size === current.size ? current : next
+    })
   const submit: Mutations['submit'] = (data, action, onConfirmed) => {
     const targets = targetsOf(data)
     // Generated outside the updater, which StrictMode invokes twice.
     const id = crypto.randomUUID()
     const sequence = ++submissions.current
     // A new attempt supersedes the outcome of the last.
-    setFailures((current) => {
-      const next = new Map(current)
-      for (const target of targets) next.delete(selectionKey(target.provider, target.tool))
-      return next.size === current.size ? current : next
-    })
+    forget(targets)
     setRequests((current) => {
       // Two events can arrive before React re-renders the disabled controls,
       // so the authoritative overlap check is against the live request list.
@@ -164,6 +168,7 @@ export function PolicyMutations({
       value={{
         bulkPending: requests.some((request) => request.onConfirmed !== undefined),
         submit,
+        supersede: (provider, tool) => forget([{ provider, tool }]),
         state,
         policies,
         blockers: (provider) => savedBlockers.get(provider.id)?.blockers ?? provider.blockers,

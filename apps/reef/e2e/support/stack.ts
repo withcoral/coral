@@ -12,6 +12,7 @@ import { reefRoot, repoRoot, type FixtureAddress, type Target } from './config.t
 import {
   prepareAuthenticatedTarget,
   reservePort,
+  type PortReservation,
   type SessionLifetimes,
 } from './authenticated-target.ts'
 import { startInstanceControl } from './instance-control.ts'
@@ -32,13 +33,61 @@ export async function bounded<T>(work: Promise<T>, ms: number, label: string): P
   }
 }
 
-function startProcess(
+/** Another process took a port that the harness reserved, before the child could bind it. */
+class ReservedPortTaken extends Error {
+  readonly port: number
+  constructor(port: number, message: string) {
+    super(message)
+    this.port = port
+  }
+}
+
+/**
+ * Returns the port of `ports` that a child's final error report says it could
+ * not bind because the address is in use, or `undefined`.
+ *
+ * The report runs from the last line that begins one, `Error: ` or `Coral web
+ * startup failed: `, to the end. Coral and the Run Executor end with `Error: failed to bind … to 127.0.0.1:<port>` or `Error:
+ * bind the health listener on 127.0.0.1:<port>`, then a cause line `Address
+ * already in use`. Reef ends with `Coral web startup failed: HTTP listener:
+ * listen EADDRINUSE: address already in use 127.0.0.1:<port>`.
+ */
+export function reservedPortTaken(output: string, ports: number[]) {
+  const lines = output.trimEnd().split('\n')
+  const start = lines.findLastIndex((line) => /^(?:Error: |Coral web startup failed: )/.test(line))
+  if (start === -1) return undefined
+  const report = lines.slice(start)
+  if (!report.some((line) => /address already in use/i.test(line))) return undefined
+  return ports.find((port) => {
+    const bind = new RegExp(String.raw`\b(?:bind|listen)\b.*\b127\.0\.0\.1:${port}(?!\d)`)
+    return report.some((line) => bind.test(line))
+  })
+}
+
+/**
+ * Starts a child that binds the `reserved` ports. Each reservation is released
+ * just before the child starts. If the child exits during startup because one
+ * of them was taken, the error is a `ReservedPortTaken`.
+ */
+async function startProcess(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv,
   log: string,
-  privateValues: string[] = [],
+  {
+    privateValues = [],
+    reserved = [],
+    note,
+  }: {
+    /** Values that never leave this process: each copy of the output redacts them. */
+    privateValues?: string[]
+    reserved?: PortReservation[]
+    /** A line for the log before the child's own output. */
+    note?: string
+  } = {},
 ) {
+  if (note) await appendFile(log, `${note}\n`)
+  await Promise.all(reserved.map((reservation) => reservation.release()))
   const child = spawn(command, args, {
     cwd: reefRoot,
     env,
@@ -85,20 +134,30 @@ function startProcess(
     const tail = redact(output.split('\n').slice(-40).join('\n').trim())
     return `See ${log}. Its last output:\n${tail}`
   }
+  const running = async () => {
+    if (failed) throw failed
+    if (child.exitCode === null && child.signalCode === null) return
+    // 'exit' can come before the pipes drain; 'close' brings the last lines.
+    await Promise.race([exited, delay(1000)])
+    const end = child.exitCode ?? child.signalCode
+    const message = `Process exited (${end}) during startup. ${ending()}`
+    const port = reservedPortTaken(
+      output,
+      reserved.map((reservation) => reservation.port),
+    )
+    throw port === undefined ? new Error(message) : new ReservedPortTaken(port, message)
+  }
   return {
     pid: child.pid,
+    /** Throws if the child has exited, as `match` does. */
+    running,
     async match(pattern: RegExp) {
       const deadline = Date.now() + 30_000
       while (Date.now() < deadline) {
         if (failed) throw failed
         const match = output.match(pattern)
         if (match) return match[1]
-        if (child.exitCode !== null || child.signalCode !== null) {
-          // 'exit' can come before the pipes drain; 'close' brings the last lines.
-          await Promise.race([exited, delay(1000)])
-          const end = child.exitCode ?? child.signalCode
-          throw new Error(`Process exited (${end}) during startup. ${ending()}`)
-        }
+        await running()
         await delay(50)
       }
       throw new Error(`Startup timed out. ${ending()}`)
@@ -119,6 +178,8 @@ function startProcess(
   }
 }
 
+type StartedProcess = Awaited<ReturnType<typeof startProcess>>
+
 export async function ready(origin: string) {
   const deadline = Date.now() + 30_000
   while (Date.now() < deadline) {
@@ -138,7 +199,7 @@ export async function ready(origin: string) {
 }
 
 /** Waits until the Run Executor whose health service is at `url` has linked to its Coral. */
-async function linked(url: string) {
+async function linked(url: string, runExecutor: StartedProcess) {
   // Imported here: the harness's own Node tests import this module, and Node's
   // type stripping rejects the enums in generated code. Vitest loads them.
   const { Health, HealthCheckResponse_ServingStatus } =
@@ -146,6 +207,8 @@ async function linked(url: string) {
   const health = createClient(Health, createGrpcTransport({ baseUrl: url }))
   const deadline = Date.now() + 30_000
   while (Date.now() < deadline) {
+    // One that exited, as when another process took its health port, never links.
+    await runExecutor.running()
     try {
       const { status } = await health.check({ service: 'coral.readiness' }, { timeoutMs: 2000 })
       if (status === HealthCheckResponse_ServingStatus.SERVING) return
@@ -157,7 +220,7 @@ async function linked(url: string) {
   throw new Error(`The Run Executor at ${url} did not link`)
 }
 
-export async function startStack(options: {
+interface StackOptions {
   coralBinary: string
   childEnv: NodeJS.ProcessEnv
   runDir: string
@@ -170,23 +233,54 @@ export async function startStack(options: {
   multiInstance?: boolean
   /** Shortened sign-in lifetimes for a scenario's own stack. */
   sessionLifetimes?: SessionLifetimes
-}) {
+}
+
+const STARTUP_ATTEMPTS = 3
+
+/**
+ * Starts Coral and Reef in private state. When another process takes a port
+ * that the harness reserved before its child binds it, the attempt stops and
+ * the stack starts again on fresh ports and fresh state, which rebuilds every
+ * origin that names them. Every other startup failure fails at once.
+ *
+ * A Postgres stack makes one attempt. Coral migrates its database before it
+ * binds a listener, so a collision always comes after a Coral used the one
+ * database that the runner owns, and a fresh attempt cannot get a fresh one.
+ */
+export async function startStack(options: StackOptions) {
   if (options.postgresURL && !options.authenticated) {
     throw new Error('Postgres requires the main suite')
   }
   if (options.multiInstance && !options.postgresURL) {
     throw new Error('Several Coral Instances share one Postgres database')
   }
+  const attempts = options.postgresURL ? 1 : STARTUP_ATTEMPTS
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await startStackOnce(options, attempt)
+    } catch (error) {
+      if (!(error instanceof ReservedPortTaken) || attempt === attempts) throw error
+      console.warn(
+        `Another process took reserved port ${error.port} before its child bound it. ` +
+          `Starting the stack again (attempt ${attempt + 1} of ${attempts}).`,
+      )
+    }
+  }
+}
+
+async function startStackOnce(options: StackOptions, attempt: number) {
+  // Each log keeps every attempt's output.
+  const note = attempt > 1 ? `--- Reel: stack attempt ${attempt} ---` : undefined
   const rootDir = await mkdtemp(join(tmpdir(), 'coral-reel-'))
   // Each Coral Instance locks its own state root.
   const stateDirs = options.multiInstance
     ? [join(rootDir, 'coral-1'), join(rootDir, 'coral-2')]
     : [join(rootDir, 'coral')]
-  const processes: ReturnType<typeof startProcess>[] = []
+  const processes: StartedProcess[] = []
   const coralPids: number[] = []
   let authentication: Awaited<ReturnType<typeof prepareAuthenticatedTarget>> | undefined
   let secretStore: Awaited<ReturnType<typeof startSecretStoreFixture>> | undefined
-  let localWeb: Awaited<ReturnType<typeof reservePort>> | undefined
+  let localWeb: PortReservation | undefined
   let proxy: Awaited<ReturnType<typeof startRoundRobinProxy>> | undefined
   let control: Awaited<ReturnType<typeof startInstanceControl>> | undefined
   let stopping: Promise<void> | undefined
@@ -306,19 +400,22 @@ bind = '127.0.0.1:0'
 bind = '127.0.0.1:0'
 `),
       )
-      await authentication?.releaseCoralPorts(index)
-      const coral = startProcess(
+      const coral = await startProcess(
         options.coralBinary,
         [],
         { ...coralEnv, CORAL_CONFIG_DIR: stateDir },
         join(options.runDir, options.multiInstance ? `coral-${index + 1}.log` : 'coral.log'),
-        [
-          options.postgresURL ?? '',
-          credentialKey ?? '',
-          runExecutorToken ?? '',
-          ...(authentication ? Object.values(authentication.coralEnv) : []),
-          ...(secretStore ? [secretStore.secretId, ...Object.values(envSecretStore.env)] : []),
-        ],
+        {
+          privateValues: [
+            options.postgresURL ?? '',
+            credentialKey ?? '',
+            runExecutorToken ?? '',
+            ...(authentication ? Object.values(authentication.coralEnv) : []),
+            ...(secretStore ? [secretStore.secretId, ...Object.values(envSecretStore.env)] : []),
+          ],
+          reserved: authentication?.coralPorts(index),
+          note,
+        },
       )
       processes.push(coral)
       if (coral.pid !== undefined) coralPids.push(coral.pid)
@@ -334,9 +431,8 @@ bind = '127.0.0.1:0'
       if (runExecutorToken) {
         const listener = await coral.match(/Coral Run Executor listener on (\S+)/)
         const health = await reservePort()
-        await health.release()
         // It holds one Run at a time, so a journey can fill it with one waiting Run.
-        const runExecutor = startProcess(
+        const runExecutor = await startProcess(
           options.coralBinary,
           ['run-executor', '--coral-address', `http://${listener}`, '--max-runs-held', '1'],
           {
@@ -345,10 +441,15 @@ bind = '127.0.0.1:0'
             CORAL_RUN_EXECUTOR_HEALTH_LISTEN: `127.0.0.1:${health.port}`,
           },
           join(options.runDir, `run-executor-${index + 1}.log`),
-          [runExecutorToken],
-        )
+          { privateValues: [runExecutorToken], reserved: [health], note },
+        ).catch(async (error: unknown) => {
+          // No cleanup owns this reservation, so a start that fails before it
+          // releases the port closes the listener here.
+          await health.release()
+          throw error
+        })
         processes.push(runExecutor)
-        await linked(health.url)
+        await linked(health.url, runExecutor)
       }
       instances.push({ grpcURL, mcpURL, authURL: authentication?.authOrigins[index] ?? '' })
     }
@@ -364,10 +465,9 @@ bind = '127.0.0.1:0'
     if (proxy)
       control = await startInstanceControl(proxy, options.postgresURL!, childEnv, instanceIds)
     if (authentication) await ready(authentication.authentication.issuerURL)
-    await authentication?.releaseWebPort()
-    await localWeb?.release()
+    const webPort = authentication?.webPort ?? localWeb
     // The bundle Docker and Desktop ship, with no node_modules beside it.
-    const reef = startProcess(
+    const reef = await startProcess(
       process.execPath,
       ['server.mjs'],
       {
@@ -381,7 +481,11 @@ bind = '127.0.0.1:0'
         ...authentication?.webEnv,
       },
       join(options.runDir, 'reef.log'),
-      authentication ? [authentication.webEnv.CORAL_WEB_SESSION_SECRET] : [],
+      {
+        privateValues: authentication ? [authentication.webEnv.CORAL_WEB_SESSION_SECRET] : [],
+        reserved: webPort ? [webPort] : [],
+        note,
+      },
     )
     processes.push(reef)
     const port = await reef.match(/Coral web listening on .*:(\d+)/)
@@ -420,6 +524,13 @@ bind = '127.0.0.1:0'
       await stop()
     } catch (cleanup) {
       console.warn(cleanup)
+      // A stack that did not stop can still hold its state: start no other.
+      if (error instanceof ReservedPortTaken)
+        throw new AggregateError(
+          [error, cleanup],
+          'Stack cleanup failed after another process took a reserved port; not starting again',
+          { cause: cleanup },
+        )
     }
     throw error
   }

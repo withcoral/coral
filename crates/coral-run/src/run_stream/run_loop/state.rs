@@ -1,14 +1,14 @@
-//! The Run Owner's loop as a pure function of its state and one message.
+//! The loop as a pure function of its state and one message.
 //!
 //! [`apply`] does no I/O; it returns [`Effect`]s for the hosting task to run.
 //! It decides, in memory:
 //!
-//! - the Run Output Budget, against the owner's exact total;
+//! - the Run Output Budget, against the loop's exact total;
 //! - the Applied cap on unrecorded output;
 //! - how Events and row work fill chunks, and when a chunk commits;
 //! - which ready Invocations one chunk's Policy Enforcement Point decides
 //!   together, and that a stop answers the ones not yet committed at once;
-//! - the Fan-out Limit: a ready Invocation above the owner's count of
+//! - the Fan-out Limit: a ready Invocation above the loop's count of
 //!   dispatching ones waits in memory, in readiness order, for an earlier
 //!   one to end;
 //! - the Run stream's requests, applied in number order;
@@ -24,7 +24,7 @@
 //!   (while a connection wait is parked), when to read the connection requests after the signal rang
 //!   (coalesced, at most once per wake gap), and when the periodic precheck
 //!   reads every parked wait;
-//! - the Run Ledger head, which the owner tracks from its start mark and
+//! - the Run Ledger head, which the loop tracks from its start mark and
 //!   every chunk commit asserts;
 //! - what a lost commit means.
 
@@ -34,8 +34,7 @@ use crate::approval::{ApprovalId, DecideWork};
 use crate::engine::ExecutionCompletion;
 use crate::invocation::{EnforcementBatch, EnforcementRequest, ParkedInvocation, PrecheckBatch};
 use crate::lifecycle::{RequestedTermination, RunTerminationKind};
-use crate::run_repository::{OwnedEvent, OwnedEventKind, RunHead};
-use crate::termination::ShutdownAction;
+use crate::run_repository::{PendingEvent, PendingEventKind, RunHead};
 use crate::{CoralFailure, Error};
 
 use super::chunk::{ChunkBuild, ChunkItem, ChunkWork};
@@ -51,7 +50,7 @@ struct RequestOrder {
     held: BTreeMap<u64, Option<Box<Message>>>,
 }
 
-/// What the hosting task does for the owner.
+/// What the hosting task does for the loop.
 #[derive(Debug)]
 pub(crate) enum Effect {
     /// Answer one Program request.
@@ -81,39 +80,30 @@ pub(crate) enum Effect {
     /// Read the batch's parked waits in one snapshot, holding nothing; the
     /// findings come back as [`Message::Prechecked`].
     Precheck(PrecheckBatch),
-    /// Settle row work the owner will never commit.
+    /// Settle row work the loop will never commit.
     Abandon(Box<dyn ChunkWork>, Error),
     /// Write the Run's terminal state for the Program's completion.
     CompleteExecution { completion: ExecutionCompletion },
     /// Write a Run stream's termination in one chunk until the database
     /// answers, then terminate the Program on the stream; the answer
-    /// reaches the owner as [`Message::Completed`].
+    /// reaches the loop as [`Message::Completed`].
     EndStreamRun(RequestedTermination),
-    /// One attempt to settle the recorded termination: end every nonterminal
-    /// Invocation and the Run once no dispatch is in flight, or once the
-    /// shutdown grace is out. `again` means the previous attempt found a
-    /// dispatch in flight: the host waits a moment before this one. The owner
-    /// keeps recording dispatch results between attempts, never during one.
-    Settle {
-        shutdown: ShutdownAction,
-        again: bool,
-    },
-    /// A Run stream owner moves its stream in the Shutdown Drain: the
-    /// stream sends no `Terminate` and no fatal answer, the owner detaches and
+    /// A Run stream loop moves its stream in the Shutdown Drain: the
+    /// stream sends no `Terminate` and no fatal answer, the loop detaches and
     /// retires with no terminal write, and the stream ends cleanly so the
     /// Run Executor reopens it on another Coral Instance.
     MoveStream,
-    /// The owner is done. A Run it leaves running is the sweeper's to end.
+    /// The loop is done. A Run it leaves running is the sweeper's to end.
     Retire,
 }
 
-/// The deadline of a Run that has none: it never passes, so the owner never
+/// The deadline of a Run that has none: it never passes, so the loop never
 /// times such a Run out.
 pub(crate) const NO_DEADLINE: i64 = i64::MAX;
 
-/// The limits one owner decides against.
+/// The limits one loop decides against.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct OwnerLimits {
+pub(crate) struct LoopLimits {
     pub(crate) run_output_bytes: usize,
     pub(crate) applied_cap_bytes: usize,
     /// The Fan-out Limit: Invocations of the Run `dispatching` at once at most.
@@ -121,14 +111,14 @@ pub(crate) struct OwnerLimits {
     /// The Run deadline: [`NO_DEADLINE`] until the stream's start records
     /// one.
     pub(crate) deadline_at_unix_nanos: i64,
-    /// How often the owner prechecks its parked waits while it has any.
+    /// How often the loop prechecks its parked waits while it has any.
     pub(crate) precheck_interval_nanos: i64,
     /// The shortest gap between two reads of the parked connection requests
     /// after the change signal rang.
     pub(crate) wake_gap_nanos: i64,
 }
 
-/// The owner's change subscription and its snapshot checks of the parked
+/// The loop's change subscription and its snapshot checks of the parked
 /// waits.
 #[derive(Debug, Default)]
 struct Wakeups {
@@ -179,21 +169,18 @@ pub(crate) enum Phase {
     Ending,
     /// The terminal write is running.
     Completing,
-    /// A termination is recorded and being settled; results of dispatches
-    /// still in flight ride the owner's chunks until the Run ends.
-    Settling,
     /// A commit was lost or refused; nothing more is committed. The Program's
     /// end decides what follows.
     Stopped(CommitRejection),
     Retired,
 }
 
-/// How far a Run stream owner is in the Shutdown Drain (ADR 0027).
+/// How far a Run stream loop is in the Shutdown Drain (ADR 0027).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Draining {
     #[default]
     No,
-    /// The owner commits the stream's requests but starts no dispatch.
+    /// The loop commits the stream's requests but starts no dispatch.
     Holding,
     /// It moves the stream once no dispatch is in flight.
     Moving,
@@ -217,26 +204,21 @@ impl InFlight {
     }
 }
 
-/// One Run Owner's memory.
-pub(crate) struct OwnerState {
+/// One loop's memory.
+pub(crate) struct LoopState {
     phase: Phase,
-    limits: OwnerLimits,
+    limits: LoopLimits,
     /// No more Program requests: a stop, the Run's end, or the end of the
     /// Program's execution.
     stop_requested: bool,
-    /// A settle attempt of the recorded termination runs: no chunk commits
-    /// meanwhile.
-    settling: bool,
-    /// The recorded termination the owner settles, from its terminal write.
-    shutdown: Option<ShutdownAction>,
     /// The Program's completion, kept until its terminal write has answered.
     completion: Option<ExecutionCompletion>,
-    /// A Run stream's termination the owner decided (ADR 0027): written in
+    /// A Run stream's termination the loop decided (ADR 0027): written in
     /// one chunk once the pending chunks commit, before the Program hears
     /// of it.
     stream_end: Option<RequestedTermination>,
     /// The Run Ledger head: set by the start mark, moved by every chunk the
-    /// owner commits and by its own terminal write, asserted by every chunk.
+    /// loop commits and by its own terminal write, asserted by every chunk.
     head: u64,
     /// Outside requests whose chunk is recorded: a repeat records nothing,
     /// and only its row rides the next chunk.
@@ -246,14 +228,14 @@ pub(crate) struct OwnerState {
     /// The total the last committed chunk recorded.
     recorded_total: usize,
     /// Slots held under the Fan-out Limit: one per enforcement request the
-    /// owner has batched that holds one and whose dispatch it has not seen
+    /// loop has batched that holds one and whose dispatch it has not seen
     /// end. A reopen rebuilds it from the `dispatching` Invocation rows.
     slots_held: usize,
     /// Ready Invocations waiting for a slot, in readiness order (their
     /// mailbox arrival order). Each one stays `pending`, with no Event, and
     /// joins an enforcement batch when an earlier dispatch ends.
     waiting: VecDeque<Box<EnforcementRequest>>,
-    /// Invocations parked on a wait, holding nothing, by the serial the owner
+    /// Invocations parked on a wait, holding nothing, by the serial the loop
     /// gave each park. A reopen parks them again from their rows.
     parked_waits: BTreeMap<u64, Box<ParkedInvocation>>,
     /// The serial of the last park.
@@ -262,28 +244,26 @@ pub(crate) struct OwnerState {
     open: ChunkBuild,
     closed: VecDeque<ChunkBuild>,
     in_flight: Option<InFlight>,
-    /// A Run stream owner's requests, applied in number order.
+    /// A Run stream loop's requests, applied in number order.
     requests: RequestOrder,
     /// Items pushed into chunks so far, so a request knows whether it made one.
     pushed: u64,
-    /// A Run stream owner's place in the Shutdown Drain.
+    /// A Run stream loop's place in the Shutdown Drain.
     draining: Draining,
     /// The termination of a Run another writer ended: the reason the
     /// Program's `Terminate` gives.
     ended_outside: Option<RunTerminationKind>,
 }
 
-impl OwnerState {
-    fn new(limits: OwnerLimits) -> Self {
+impl LoopState {
+    fn new(limits: LoopLimits) -> Self {
         Self {
             phase: Phase::Starting,
-            limits: OwnerLimits {
+            limits: LoopLimits {
                 deadline_at_unix_nanos: NO_DEADLINE,
                 ..limits
             },
             stop_requested: false,
-            settling: false,
-            shutdown: None,
             completion: None,
             stream_end: None,
             head: 0,
@@ -308,12 +288,12 @@ impl OwnerState {
         }
     }
 
-    /// An owner for a Run that a Run Executor runs: it applies the stream's
+    /// A loop for a Run that a Run Executor runs: it applies the stream's
     /// numbered requests in order, from one, or, for a reopened stream, from
     /// the one after the `watermark` committed, on the `output_total` the
     /// Run row recorded.
     pub(crate) fn for_run_stream(
-        limits: OwnerLimits,
+        limits: LoopLimits,
         (watermark, output_total): (u64, usize),
     ) -> Self {
         Self {
@@ -338,17 +318,17 @@ impl OwnerState {
         self.output_total
     }
 
-    /// The Run Ledger head the owner tracks.
+    /// The Run Ledger head the loop tracks.
     pub(crate) const fn head(&self) -> u64 {
         self.head
     }
 
-    /// Whether a chunk of the owner's is being committed.
+    /// Whether a chunk of the loop's is being committed.
     pub(crate) const fn chunk_in_flight(&self) -> bool {
         self.in_flight.is_some()
     }
 
-    /// Whether a Run stream's owner acts on a wake-up: its Program runs and
+    /// Whether a Run stream's loop acts on a wake-up: its Program runs and
     /// it ends its Run in no write of its own.
     pub(crate) const fn listens(&self) -> bool {
         matches!(self.phase, Phase::Running) && !self.stop_requested && self.stream_end.is_none()
@@ -424,16 +404,17 @@ impl OwnerState {
             && now_unix_nanos < self.limits.deadline_at_unix_nanos
     }
 
-    /// Row work and dispatch results are accepted while the owner can still
-    /// commit them: an Invocation that ends after the Program did, during the
-    /// terminal write, or while a recorded termination is being settled, still
-    /// records its outcome. Work that arrives during the terminal write commits
-    /// once that write has answered: before the settle, or before the terminal
-    /// write runs again when it refused a Run with a nonterminal Invocation.
+    /// Row work and dispatch results are accepted while the loop can still
+    /// commit them: an Invocation that ends after the Program did, or during
+    /// the terminal write, still records its outcome. Work that arrives during
+    /// the terminal write commits once that write has answered, before the
+    /// terminal write runs again when it refused a Run with a nonterminal
+    /// Invocation. After a Run stream's end, which ends every Invocation,
+    /// nothing commits.
     fn accepts_work(&self) -> bool {
         matches!(
             self.phase,
-            Phase::Running | Phase::Ending | Phase::Completing | Phase::Settling
+            Phase::Running | Phase::Ending | Phase::Completing
         )
     }
 
@@ -484,7 +465,7 @@ impl OwnerState {
         Vec::new()
     }
 
-    fn output(&mut self, kind: OwnedEventKind, reply: Reply, now_unix_nanos: i64) -> Vec<Effect> {
+    fn output(&mut self, kind: PendingEventKind, reply: Reply, now_unix_nanos: i64) -> Vec<Effect> {
         if !self.accepts_program_requests(now_unix_nanos) {
             return vec![Effect::Reply(
                 reply,
@@ -493,7 +474,7 @@ impl OwnerState {
                 )),
             )];
         }
-        let event = OwnedEvent::new(kind, now_unix_nanos);
+        let event = PendingEvent::new(kind, now_unix_nanos);
         let bytes = event.output_bytes();
         if !self.output_fits(bytes) {
             return vec![Effect::Reply(reply, Err(Error::ProgramValueTooLarge))];
@@ -524,10 +505,10 @@ impl OwnerState {
         self.answer(reply)
     }
 
-    /// An upstream result the owner applies ends the dispatch that produced
+    /// An upstream result the loop applies ends the dispatch that produced
     /// it: when it `frees_slot`, its slot under the Fan-out Limit goes to the
     /// Invocation that has waited longest, whose enforcement request joins the
-    /// chunk after this row's end. A result the owner refuses (over budget, or
+    /// chunk after this row's end. A result the loop refuses (over budget, or
     /// no longer taking work) leaves the row `dispatching` and the slot with
     /// the Invocation task, which frees it once the row's end is recorded.
     fn invocation_result(
@@ -589,7 +570,7 @@ impl OwnerState {
     /// dispatch ends. An Invocation that holds no slot (one Coral performs in
     /// the Program, whose body's calls take slots of their own) joins the
     /// batch at once. A Run that no longer takes Program requests (stopped,
-    /// past its deadline in owner memory) answers at once, without the
+    /// past its deadline in loop memory) answers at once, without the
     /// database.
     fn enforce(&mut self, request: Box<EnforcementRequest>, now_unix_nanos: i64) -> Vec<Effect> {
         if !self.accepts_program_requests(now_unix_nanos) {
@@ -626,7 +607,7 @@ impl OwnerState {
     fn dispatch_ended(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
         // Saturating: the `apply` table sends results no enforcement check
         // preceded. In production a result or a `DispatchEnded` comes only from
-        // a task whose request the owner batched, so the count is exact.
+        // a task whose request the loop batched, so the count is exact.
         self.slots_held = self.slots_held.saturating_sub(1);
         if !self.accepts_program_requests(now_unix_nanos) {
             return self.release_waiting(|| Error::ProgramHostTerminated);
@@ -660,7 +641,7 @@ impl OwnerState {
         effects
     }
 
-    /// A chunk that landed parked an Invocation: the owner keeps it until
+    /// A chunk that landed parked an Invocation: the loop keeps it until
     /// its wait ends and arms the wait's deadline, the periodic precheck
     /// unless it is armed, and the change subscription for a connection
     /// wait, whose first ring reads the request. Under a subscription already
@@ -780,7 +761,7 @@ impl OwnerState {
 
     /// The periodic precheck is due: every parked wait is read in one
     /// snapshot against the Policy Enforcement Point's facts. Past the Run
-    /// deadline on the owner's clock, the deadline is applied instead, as its
+    /// deadline on the loop's clock, the deadline is applied instead, as its
     /// timer would have been first.
     fn precheck_due(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
         self.wakeups.precheck = Precheck::Unarmed;
@@ -835,7 +816,7 @@ impl OwnerState {
             // The Program stops at once. A chunk in flight may have landed
             // before the end: its answer still settles its waiters, and a
             // chunk that did not finds the end and stops the loop.
-            self.ended_outside = run.termination;
+            self.ended_outside = run.ended_as;
             if self.in_flight.is_none() {
                 return self.rejected(CommitRejection::RunEnded);
             }
@@ -954,7 +935,7 @@ impl OwnerState {
                 Vec::new()
             }
             // The Invocations parked on the request go back to their held
-            // recheck, which records its expiry inside the owner's chunk.
+            // recheck, which records its expiry inside the loop's chunk.
             Timer::Connection(expired) => {
                 if !self.accepts_program_requests(now_unix_nanos) {
                     return Vec::new();
@@ -987,12 +968,12 @@ impl OwnerState {
     }
 
     /// The Run Executor ended the Program at the deadline it counts from
-    /// `Started`: the Run times out once the deadline passed on the owner's
-    /// clock, as the owner's timer decides, and is interrupted before then.
+    /// `Started`: the Run times out once the deadline passed on the loop's
+    /// clock, as the loop's timer decides, and is interrupted before then.
     /// After another end was applied, it is the Program's end as any other.
     fn deadline_reached(&mut self, now_unix_nanos: i64) -> Vec<Effect> {
         if self.phase != Phase::Running {
-            return self.program_ended(ExecutionCompletion::ProgramHostTerminated);
+            return self.program_ended(ExecutionCompletion::ProgramHostTerminated, now_unix_nanos);
         }
         if now_unix_nanos >= self.limits.deadline_at_unix_nanos {
             return self.deadline(now_unix_nanos);
@@ -1012,7 +993,7 @@ impl OwnerState {
         if self.phase != Phase::Running {
             return Vec::new();
         }
-        let Ok(termination) = RequestedTermination::new(kind, None, at_unix_nanos, 0) else {
+        let Ok(termination) = RequestedTermination::unrequested(kind, at_unix_nanos) else {
             return self.stop();
         };
         self.stream_end = Some(termination);
@@ -1024,10 +1005,7 @@ impl OwnerState {
 
     /// Commit-when-free: the oldest pending chunk, once nothing is in flight.
     fn commit_when_free(&mut self) -> Vec<Effect> {
-        if self.in_flight.is_some()
-            || self.settling
-            || !matches!(self.phase, Phase::Running | Phase::Ending | Phase::Settling)
-        {
+        if self.in_flight.is_some() || !matches!(self.phase, Phase::Running | Phase::Ending) {
             return Vec::new();
         }
         let chunk = match self.closed.pop_front() {
@@ -1036,32 +1014,6 @@ impl OwnerState {
             None => std::mem::take(&mut self.open),
         };
         self.commit(chunk)
-    }
-
-    /// Commits the pending chunks when free; with none left while a recorded
-    /// termination is being settled, attempts the settle.
-    fn commit_or_settle_when_free(&mut self) -> Vec<Effect> {
-        if self.pending_chunks() > 0 {
-            return self.commit_when_free();
-        }
-        self.settle_when_free(false)
-    }
-
-    /// One settle attempt, once nothing is in flight and no chunk is
-    /// pending: the owner records every dispatch result it holds before it
-    /// looks at what is still dispatching.
-    fn settle_when_free(&mut self, again: bool) -> Vec<Effect> {
-        if self.phase != Phase::Settling || self.settling || self.in_flight.is_some() {
-            return Vec::new();
-        }
-        if self.pending_chunks() > 0 {
-            return self.commit_when_free();
-        }
-        let Some(shutdown) = self.shutdown.clone() else {
-            return Vec::new();
-        };
-        self.settling = true;
-        vec![Effect::Settle { shutdown, again }]
     }
 
     /// Starts one chunk commit.
@@ -1106,14 +1058,14 @@ impl OwnerState {
             }
         }
         match self.phase {
-            Phase::Running | Phase::Settling => effects.extend(self.commit_or_settle_when_free()),
+            Phase::Running => effects.extend(self.commit_when_free()),
             Phase::Ending => effects.extend(self.advance_ending()),
             Phase::Starting | Phase::Completing | Phase::Stopped(_) | Phase::Retired => {}
         }
         effects
     }
 
-    /// Retires the owner: whatever is still pending will never commit.
+    /// Retires the loop: whatever is still pending will never commit.
     fn retire(&mut self) -> Vec<Effect> {
         self.phase = Phase::Retired;
         let mut effects = self.abandon_pending(|| Error::ProgramHostTerminated);
@@ -1202,9 +1154,23 @@ impl OwnerState {
         ]
     }
 
-    fn program_ended(&mut self, completion: ExecutionCompletion) -> Vec<Effect> {
-        match self.phase {
-            Phase::Running => {
+    /// The Program ended. One that the Run Executor ended on its own, at a
+    /// limit or with its Program host lost, ends the Run as the deadline
+    /// does (ADR 0027): its termination written first in one chunk, with
+    /// its open Invocations, and no grace; past the Run deadline it times
+    /// out. A Program the loop stopped leaves the terminal write to decide.
+    fn program_ended(
+        &mut self,
+        completion: ExecutionCompletion,
+        now_unix_nanos: i64,
+    ) -> Vec<Effect> {
+        let own_end = completion.termination().filter(|_| !self.stop_requested);
+        match (self.phase, own_end) {
+            (Phase::Running, Some(_)) if now_unix_nanos >= self.limits.deadline_at_unix_nanos => {
+                self.deadline(now_unix_nanos)
+            }
+            (Phase::Running, Some(kind)) => self.end_stream_run(kind, now_unix_nanos),
+            (Phase::Running, None) => {
                 self.phase = Phase::Ending;
                 self.completion = Some(completion);
                 // Wake every detached Invocation wait, as execution's end does;
@@ -1215,37 +1181,25 @@ impl OwnerState {
                 effects
             }
             // A refused or failed commit leaves the terminal write to decide;
-            // a lost or
-            // ended Run has nothing left to write, and a corrupt one gets
-            // nothing more written.
-            Phase::Stopped(CommitRejection::Refused | CommitRejection::Failed) => {
+            // a lost or ended Run has nothing left to write, and a corrupt one
+            // gets nothing more written.
+            (Phase::Stopped(CommitRejection::Refused | CommitRejection::Failed), _) => {
                 self.phase = Phase::Completing;
                 vec![Effect::CompleteExecution { completion }]
             }
-            Phase::Stopped(
-                CommitRejection::ClaimMismatch
-                | CommitRejection::RunEnded
-                | CommitRejection::Corrupt,
+            (
+                Phase::Stopped(
+                    CommitRejection::ClaimMismatch
+                    | CommitRejection::RunEnded
+                    | CommitRejection::Corrupt,
+                ),
+                _,
             ) => self.retire(),
-            Phase::Starting
-            | Phase::Ending
-            | Phase::Completing
-            | Phase::Settling
-            | Phase::Retired => Vec::new(),
+            (Phase::Starting | Phase::Ending | Phase::Completing | Phase::Retired, _) => Vec::new(),
         }
     }
 
-    /// The terminal write found or recorded a termination: the owner settles
-    /// it, recording the results of dispatches in flight between attempts.
-    fn settle_recorded(&mut self, shutdown: ShutdownAction) -> Vec<Effect> {
-        self.phase = Phase::Settling;
-        self.head = shutdown.head();
-        self.completion = None;
-        self.shutdown = Some(shutdown);
-        self.commit_or_settle_when_free()
-    }
-
-    /// A lost or refused commit stops the owner at once: the Program is
+    /// A lost or refused commit stops the loop at once: the Program is
     /// terminated, nothing pending commits, and every waiting request learns
     /// its outcome is unknown.
     fn rejected(&mut self, cause: CommitRejection) -> Vec<Effect> {
@@ -1263,16 +1217,13 @@ impl OwnerState {
                     None => effects.extend(self.retire()),
                 }
             }
-            // The recorded termination still has to be settled; the owner
-            // records nothing else.
-            Phase::Settling => effects.extend(self.settle_when_free(false)),
             Phase::Starting | Phase::Completing | Phase::Stopped(_) | Phase::Retired => {}
         }
         effects
     }
 }
 
-impl OwnerState {
+impl LoopState {
     /// Run stream request `number`: applied once every lower request was,
     /// in number order, then marked on the chunk that holds what it made.
     fn request(
@@ -1319,14 +1270,14 @@ impl OwnerState {
         chunk.request_number = Some(number);
     }
 
-    /// Whether a Run stream owner in the Shutdown Drain holds new
+    /// Whether a Run stream loop in the Shutdown Drain holds new
     /// dispatches back: one that moved still applies what its mailbox held
     /// before its detach.
     fn holds_dispatches(&self) -> bool {
         self.draining != Draining::No
     }
 
-    /// A step of the Shutdown Drain, which only a Run stream owner takes.
+    /// A step of the Shutdown Drain, which only a Run stream loop takes.
     fn drain(&mut self, step: DrainStep, now_unix_nanos: i64) -> Vec<Effect> {
         if self.draining == Draining::Moved {
             return Vec::new();
@@ -1354,11 +1305,9 @@ impl OwnerState {
                 // terminal write ends the Run Interrupted once it lands. The
                 // Run deadline is not known before the start.
                 Phase::Starting => {
-                    if let Ok(end) = RequestedTermination::new(
+                    if let Ok(end) = RequestedTermination::unrequested(
                         RunTerminationKind::Interrupted,
-                        None,
                         now_unix_nanos,
-                        0,
                     ) {
                         self.stream_end = Some(end);
                     }
@@ -1445,13 +1394,13 @@ fn arm_at(timer: Timer, at_unix_nanos: i64, now_unix_nanos: i64) -> Effect {
 
 /// A Run stream's loop: applies `message` to `state` at `now_unix_nanos` and
 /// returns what the hosting task runs. No I/O happens here.
-pub(crate) fn apply(state: &mut OwnerState, message: Message, now_unix_nanos: i64) -> Vec<Effect> {
+pub(crate) fn apply(state: &mut LoopState, message: Message, now_unix_nanos: i64) -> Vec<Effect> {
     let mut effects = apply_message(state, message, now_unix_nanos);
     effects.extend(state.move_when_idle());
     effects
 }
 
-fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) -> Vec<Effect> {
+fn apply_message(state: &mut LoopState, message: Message, now_unix_nanos: i64) -> Vec<Effect> {
     match message {
         Message::Started(Ok(Some(started))) => state.started(started, now_unix_nanos),
         // The terminal write refused a Run with a nonterminal Invocation (or
@@ -1466,25 +1415,13 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
                 state.retire()
             }
         }
-        Message::Started(Ok(None) | Err(_)) | Message::Completed(Ok(None)) => state.retire(),
-        Message::Completed(Ok(Some(shutdown))) => state.settle_recorded(shutdown),
-        // The Run ended; or the settle gave a definite answer other than the
-        // Run's end, and the sweeper ends the Run from its recorded
-        // termination.
-        Message::SettleAttempted(Ok(true) | Err(_)) => {
-            state.settling = false;
-            state.retire()
-        }
-        Message::SettleAttempted(Ok(false)) => {
-            state.settling = false;
-            state.settle_when_free(true)
-        }
+        Message::Started(Ok(None) | Err(_)) | Message::Completed(Ok(())) => state.retire(),
         Message::Emit {
             value,
             location,
             reply,
         } => state.output(
-            OwnedEventKind::Emitted(value.into_encoded_json(), location),
+            PendingEventKind::Emitted(value.into_encoded_json(), location),
             reply,
             now_unix_nanos,
         ),
@@ -1494,7 +1431,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
             location,
             reply,
         } => state.output(
-            OwnedEventKind::Logged(level, message, location),
+            PendingEventKind::Logged(level, message, location),
             reply,
             now_unix_nanos,
         ),
@@ -1512,7 +1449,7 @@ fn apply_message(state: &mut OwnerState, message: Message, now_unix_nanos: i64) 
         Message::Parked(parked) => state.park(parked, now_unix_nanos),
         Message::Changed => state.changed(),
         Message::Prechecked { check, found } => state.prechecked(check, found),
-        Message::ProgramEnded(completion) => state.program_ended(completion),
+        Message::ProgramEnded(completion) => state.program_ended(completion, now_unix_nanos),
         Message::DeadlineReached => state.deadline_reached(now_unix_nanos),
         Message::Committed => state.committed(),
         Message::CommitRejected(rejection) => state.rejected(rejection),

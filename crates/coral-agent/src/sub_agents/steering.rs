@@ -120,6 +120,7 @@ impl SubAgents {
         sub_agent_id: &str,
         message: &str,
     ) -> Result<(), Error> {
+        let model = self.models.current(workspace_id).await?;
         let mut transaction = self.database.begin().await?;
         let task_id = repository::task_id(&mut transaction, workspace_id, sub_agent_id).await?;
         let task_id = task_id.ok_or(Error::SubAgentNotFound)?;
@@ -136,6 +137,7 @@ impl SubAgents {
             trace,
             id: uuid::Uuid::new_v4().to_string(),
             sub_agent_id: sub_agent_id.to_owned(),
+            model,
             caller: Caller {
                 principal: actor.clone(),
                 workspace_id: workspace_id.clone(),

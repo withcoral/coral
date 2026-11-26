@@ -16,7 +16,6 @@ use coral_telemetry::safe;
 use coral_workspace::{AuthenticatedPrincipal, WorkspaceId};
 
 use crate::repository;
-use crate::run_tools::Outcome;
 use crate::sub_agents::{Error, SubAgents, TurnPage, TurnState};
 
 /// The Sub-agent as a Program of the lead calls it.
@@ -178,10 +177,6 @@ impl AgentTools {
             answer,
             failure,
             required_actions: actions.collect(),
-            outcome: page.outcome.map(|outcome| match outcome {
-                Outcome::Success => "success",
-                Outcome::Failure => "failure",
-            }),
             steps: steps.collect(),
             next_cursor: page.cursor(),
         }
@@ -202,6 +197,7 @@ impl From<Error> for SubAgentError {
                 field: "cursor",
                 reason: "belongs to another turn of the agent",
             },
+            Error::Model(refusal) => Self::Unavailable(refusal.text()),
             Error::Task(error) => match error.into_database_error() {
                 Ok(database) => Self::Host(database.into()),
                 Err(_refused) => Self::Unavailable("you can no longer use the task of this run"),

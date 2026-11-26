@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use super::agents::{AgentLoss, agent_scope};
-use crate::run_repository::{self, Chunk, OwnedEvent, OwnedEventKind, Taker};
+use crate::run_repository::{self, Chunk, PendingEvent, PendingEventKind, Taker};
 
 /// One Run stream served by `runs`, driven as a scripted Run Executor.
 pub(super) struct Scripted {
@@ -371,18 +371,18 @@ async fn a_head_race_with_a_direct_write_lands_each_request_once() {
     .expect("read the Run")
     .expect("the Run");
     let others = [1, 2].map(|n| {
-        OwnedEvent::new(
-            OwnedEventKind::Emitted(serde_json::json!({"n": n}).to_string(), None),
+        PendingEvent::new(
+            PendingEventKind::Emitted(serde_json::json!({"n": n}).to_string(), None),
             run.accepted_at_unix_nanos,
         )
     });
     run_repository::commit_chunk(
         &mut transaction,
         Chunk::new(&run, Some(&claim), run.accepted_at_unix_nanos)
-            .owned_events(&others)
+            .pending_events(&others)
             .output_bytes(
                 run.accumulated_output_bytes
-                    + others.iter().map(OwnedEvent::output_bytes).sum::<usize>(),
+                    + others.iter().map(PendingEvent::output_bytes).sum::<usize>(),
             )
             .request_number(2),
     )
@@ -425,12 +425,16 @@ pub(super) fn invoke_forecast() -> request::Kind {
     })
 }
 
-/// Fires one of the stream Run owner's timers now, as its sleep would.
-pub(super) fn fire(runs: &RunModule, run_id: &crate::RunId, timer: crate::owner::Timer) {
-    runs.owners
+/// Fires one of the Run stream loop's timers now, as its sleep would.
+pub(super) fn fire(
+    runs: &RunModule,
+    run_id: &crate::RunId,
+    timer: crate::run_stream::run_loop::Timer,
+) {
+    runs.loops
         .get(run_id)
-        .expect("the stream's owner")
-        .send(crate::owner::Message::Timer(timer));
+        .expect("the stream's loop")
+        .send(crate::run_stream::run_loop::Message::Timer(timer));
 }
 
 /// An accepted Run of `tool` taken and started on a scripted stream.
@@ -486,13 +490,18 @@ async fn a_run_past_its_deadline_ends_timed_out_first_and_drops_a_late_dispatch_
     })
     .await;
 
-    fire(&runs, &run_id, crate::owner::Timer::RunDeadline);
+    fire(
+        &runs,
+        &run_id,
+        crate::run_stream::run_loop::Timer::RunDeadline,
+    );
     loop {
         match stream.next().await {
             run_response::Message::Terminate(terminate) => {
                 assert_eq!(terminate.reason(), TerminateReason::TimedOut);
                 let run = fixture.run_record(&tool.workspace_id, &run_id).await;
                 assert_eq!(run.state, RunState::TimedOut, "written before Terminate");
+                assert_eq!(run.termination, None, "no termination intent");
                 break;
             }
             run_response::Message::Ended(_) => panic!("Ended before Terminate"),
@@ -523,9 +532,9 @@ async fn a_run_past_its_deadline_ends_timed_out_first_and_drops_a_late_dispatch_
     );
     let events = fixture.events_after(&tool.workspace_id, &run_id, 0).await;
 
-    // Only the owner records a dispatch result: once it retired, the
+    // Only the loop records a dispatch result: once it retired, the
     // released dispatch's result has nowhere to land.
-    wait_until(|| runs.owners.get(&run_id).is_none()).await;
+    wait_until(|| runs.loops.get(&run_id).is_none()).await;
     upstream.release();
     wait_until(|| upstream.exited.load(Ordering::SeqCst)).await;
     assert_eq!(
@@ -566,7 +575,7 @@ async fn started_rounds_the_time_left_up_to_a_whole_millisecond() {
 }
 
 /// Catches: a `Finish` at the Run Executor's deadline recorded as anything
-/// but the owner's own deadline rule.
+/// but the loop's own deadline rule.
 #[tokio::test]
 async fn a_finish_at_the_deadline_times_out_once_corals_clock_passed_it() {
     for (passed, end, state) in [
@@ -604,6 +613,221 @@ async fn a_finish_at_the_deadline_times_out_once_corals_clock_passed_it() {
     }
 }
 
+/// Catches: a Run Executor's own end of a Program (a CPU or memory limit, a
+/// lost Program host) recorded as a termination intent that waits for its
+/// dispatches, written in more than one chunk, or leaving an Invocation
+/// open; or a late dispatch result recorded after the end. Past the Run
+/// deadline the Run times out instead (ADR 0027: a termination is written
+/// first, with no grace).
+#[tokio::test]
+async fn a_programs_own_end_ends_its_run_in_one_chunk_with_no_grace() {
+    for (end, past_deadline, state, wire, failure) in [
+        (
+            FinishEnd::CpuBudget,
+            false,
+            RunState::Failed,
+            WireEnd::Failed,
+            Some(RunFailureCode::CpuLimitExceeded),
+        ),
+        (
+            FinishEnd::MemoryLimit,
+            false,
+            RunState::Failed,
+            WireEnd::Failed,
+            Some(RunFailureCode::MemoryLimitExceeded),
+        ),
+        (
+            FinishEnd::HostTerminated,
+            false,
+            RunState::Interrupted,
+            WireEnd::Interrupted,
+            None,
+        ),
+        (
+            FinishEnd::CpuBudget,
+            true,
+            RunState::TimedOut,
+            WireEnd::TimedOut,
+            None,
+        ),
+    ] {
+        let case = format!("{end:?}, past the deadline: {past_deadline}");
+        let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
+            200,
+            serde_json::json!({}),
+        )));
+        let fixture = TestModules::with_execution_adapters(
+            Arc::new(ImmediateEngine),
+            upstream.clone(),
+            Arc::new(NoopInvocationObserver),
+            Arc::new(NoopExecutionObserver),
+        )
+        .await;
+        let runs = fixture.runs.clone();
+        let tool = fixture
+            .user_tool("user:own-end", "A Program's own end")
+            .await;
+        let (run_id, mut stream) = started(&runs, &tool).await;
+        stream.request(1, invoke_forecast());
+        wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
+        stream.until(|read| read.contains(&committed(1))).await;
+        let before = fixture.run_record(&tool.workspace_id, &run_id).await;
+        if past_deadline {
+            let deadline = before
+                .deadline_at_unix_nanos
+                .expect("a started Run's deadline");
+            fixture.clock.next.store(deadline, Ordering::SeqCst);
+        }
+
+        stream.request(
+            2,
+            request::Kind::Finish(Finish {
+                completion: Some(finish::Completion::End(end.into())),
+            }),
+        );
+        let read = stream
+            .until(|read| {
+                read.iter()
+                    .any(|message| matches!(message, run_response::Message::Ended(_)))
+            })
+            .await;
+        assert_eq!(read.last(), Some(&ended(wire)), "{case}");
+        let run = fixture.run_record(&tool.workspace_id, &run_id).await;
+        assert_eq!(run.state, state, "{case}");
+        let code = match &run.terminal_outcome {
+            Some(crate::RunTerminalOutcome::Failed(failure)) => Some(failure.code()),
+            _ => None,
+        };
+        assert_eq!(code, failure, "{case}");
+        assert_eq!(
+            run.chunk_sequence,
+            before.chunk_sequence + 1,
+            "{case}: one chunk"
+        );
+        assert_eq!(run.termination, None, "{case}: no termination intent");
+        let rows = fixture.invocation_rows(&tool.workspace_id, &run_id).await;
+        assert_eq!(
+            rows.iter().map(|row| row.result_kind).collect::<Vec<_>>(),
+            [Some(crate::InvocationResultKind::Indeterminate)],
+            "{case}"
+        );
+
+        wait_until(|| runs.loops.get(&run_id).is_none()).await;
+        upstream.release();
+        wait_until(|| upstream.exited.load(Ordering::SeqCst)).await;
+        assert_eq!(
+            fixture.invocation_rows(&tool.workspace_id, &run_id).await,
+            rows,
+            "{case}: the late result is dropped"
+        );
+    }
+}
+
+/// Catches: a retried end whose first write landed with no answer read as
+/// another writer's, so the stream never hears how its Run ended, the end of
+/// an older build's recorded intent among them; or another writer's end read
+/// as its own, a cancellation an older build wrote with its termination
+/// among them.
+#[tokio::test]
+async fn a_retried_end_recognizes_only_the_end_it_wrote() {
+    use crate::lifecycle::{RequestedTermination, RunTerminationKind as Kind};
+    /// How the Run ended before the retried attempt reads it.
+    #[derive(Debug)]
+    enum First {
+        /// An earlier attempt of the same end landed.
+        Ours(Kind),
+        /// Another end, written by another call.
+        Other(Kind),
+        /// An older build's cancellation, with its termination recorded.
+        OlderCancel,
+        /// An earlier attempt ended an older build's recorded intent.
+        OlderIntent(Kind),
+    }
+    for (first, decided, recognized) in [
+        (
+            First::Ours(Kind::CpuLimitExceeded),
+            Kind::CpuLimitExceeded,
+            true,
+        ),
+        (
+            First::Ours(Kind::MemoryLimitExceeded),
+            Kind::MemoryLimitExceeded,
+            true,
+        ),
+        (First::Ours(Kind::TimedOut), Kind::TimedOut, true),
+        (
+            First::Other(Kind::CpuLimitExceeded),
+            Kind::MemoryLimitExceeded,
+            false,
+        ),
+        (First::OlderCancel, Kind::CpuLimitExceeded, false),
+        (
+            First::OlderIntent(Kind::CpuLimitExceeded),
+            Kind::MemoryLimitExceeded,
+            true,
+        ),
+    ] {
+        let case = format!("{first:?}, then {decided:?}");
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+        let runs = fixture.runs.clone();
+        let tool = fixture.user_tool("user:retried-end", "A retried end").await;
+        let (run_id, _stream) = started(&runs, &tool).await;
+        let run = fixture.run_record(&tool.workspace_id, &run_id).await;
+        let claim = run.execution_claim_id.clone().expect("a claimed Run");
+        let at = run.execution_started_at_unix_nanos.expect("the start mark");
+        let end = async |kind: Kind, attempted: &mut Option<Kind>| {
+            let decided = RequestedTermination::unrequested(kind, at).expect("an end");
+            runs.interrupt_owned_run(
+                &tool.workspace_id,
+                &run_id,
+                &claim,
+                Some(&decided),
+                crate::termination::Interrupter::Loop,
+                attempted,
+            )
+            .await
+        };
+        let recorded = async |kind: &str| {
+            assert_eq!(
+                fixture
+                    .inject_fault(&format!(
+                        "UPDATE program_run_records SET termination_kind = '{kind}', \
+                         termination_started_at_unix_nanos = {at}, \
+                         termination_deadline_at_unix_nanos = {at} WHERE id = '{run_id}'"
+                    ))
+                    .await,
+                1
+            );
+        };
+        let mut attempted = None;
+        match &first {
+            First::Ours(kind) => end(*kind, &mut attempted).await.expect("the first write"),
+            First::Other(kind) => end(*kind, &mut None).await.expect("another end"),
+            First::OlderCancel => {
+                runs.cancel(
+                    &tool.principal,
+                    &tool.workspace_id,
+                    &run_id,
+                    &immediate(None, 100),
+                )
+                .await
+                .expect("cancel the Run");
+                recorded("canceled").await;
+            }
+            First::OlderIntent(kind) => {
+                recorded(kind.as_storage_str()).await;
+                end(decided, &mut attempted).await.expect("the first write");
+            }
+        }
+        let answer = end(decided, &mut attempted).await;
+        if recognized {
+            assert!(answer.is_ok(), "{case}: {answer:?}");
+        } else {
+            assert!(matches!(answer, Err(Error::RunEnded)), "{case}: {answer:?}");
+        }
+    }
+}
+
 /// Catches: an Approval Request's deadline the loop does not record, or
 /// one that overrides a decision committed before it.
 #[tokio::test]
@@ -636,7 +860,7 @@ async fn an_approval_expires_in_the_loop_unless_a_decision_committed_first() {
         fire(
             &runs,
             &run_id,
-            crate::owner::Timer::Approval(request.id.clone()),
+            crate::run_stream::run_loop::Timer::Approval(request.id.clone()),
         );
         wait_until_async(async || {
             fixture
@@ -646,7 +870,7 @@ async fn an_approval_expires_in_the_loop_unless_a_decision_committed_first() {
                 .all(|row| row.ended_at_unix_nanos.is_some())
         })
         .await;
-        // The owner applies its mailbox in order: once the Finish sent after
+        // The loop applies its mailbox in order: once the Finish sent after
         // the timer is answered, the timer was applied.
         stream.request(
             2,
@@ -687,16 +911,16 @@ async fn an_approval_expires_in_the_loop_unless_a_decision_committed_first() {
     }
 }
 
-/// Catches: a stale stream owner whose interruption lands on a Run whose
+/// Catches: a stale stream loop whose interruption lands on a Run whose
 /// stream another Coral Instance now holds, under the claim the reopen kept.
 #[tokio::test]
-async fn a_stream_owner_writes_no_interruption_once_another_instance_holds_the_stream() {
+async fn a_stream_loop_writes_no_interruption_once_another_instance_holds_the_stream() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let runs = fixture.runs.clone();
     let tool = fixture.user_tool("user:holder", "Stream holder").await;
     let (run_id, stream) = started(&runs, &tool).await;
     drop(stream);
-    wait_until(|| runs.owners.get(&run_id).is_none()).await;
+    wait_until(|| runs.loops.get(&run_id).is_none()).await;
     let elsewhere = crate::CoralInstanceId::generate();
     assert_eq!(
         fixture
@@ -723,7 +947,8 @@ async fn a_stream_owner_writes_no_interruption_once_another_instance_holds_the_s
             &run_id,
             &claim,
             None,
-            crate::termination::Interrupter::Owner,
+            crate::termination::Interrupter::Loop,
+            &mut None,
         )
         .await;
 

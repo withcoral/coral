@@ -17,6 +17,8 @@ export default [
     route('activity/resolve', 'routes/activity-resolve.ts'),
     route('workspaces/:workspace/approvals/history', 'routes/approvals-history.ts'),
     route('workspaces/:workspace/shared-tools/publish', 'routes/shared-tool-publish.ts'),
+    route('workspaces/:workspace/sub-agent/consent', 'routes/sub-agent-consent.ts'),
+    route('organization/sub-agent/test', 'routes/organization-sub-agent-test.ts'),
     route('workspaces/:workspace/providers/:provider/icon', 'routes/provider-icon.ts'),
     route('provider-setup/oauth/callback', 'routes/provider-setup-oauth-callback.ts'),
     route(
@@ -36,6 +38,7 @@ export default [
         route('organization/members', 'routes/organization-members.tsx'),
         route('organization/workspaces', 'routes/organization-workspaces.tsx'),
         route('organization/secret-stores', 'routes/organization-secret-stores.tsx'),
+        route('organization/sub-agent', 'routes/organization-sub-agent.tsx'),
         route('usage-data', 'routes/usage-data.tsx'),
       ]),
       route('workspaces/:workspace', 'routes/workspace.tsx'),

@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use coral_credentials::Secret;
 use coral_telemetry::safe;
-use coral_v8::IsolateLimits;
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, mpsc, watch};
 use tokio_stream::wrappers::ReceiverStream;
@@ -47,7 +46,7 @@ type Outbound = mpsc::Sender<PullRequest>;
 
 /// The level of the link's messages and the Program Runtime Surface. A
 /// release that changes either raises it by exactly one.
-pub const PROTOCOL_LEVEL: u32 = 1;
+pub const PROTOCOL_LEVEL: u32 = 2;
 /// The largest message either side of the link sends or accepts: the Run
 /// Executor's client and Coral's listener, [`crate::LinkServer`], both set
 /// it. It holds a compile's TypeScript, at most 512 KiB in all, and a
@@ -93,10 +92,8 @@ pub struct RunExecutorConfig {
     pub local_child: bool,
     /// The most Runs it holds at once: its free room while it holds none.
     pub max_runs_held: u32,
-    /// What each Run runs within.
+    /// What each Run runs within, and the Program Compiler's heap limit.
     pub run_limits: RunLimits,
-    /// The Program Compiler's heap limit, in bytes.
-    pub compiler_heap_bytes: usize,
 }
 
 /// Why a Run Executor stopped before it retired.
@@ -133,11 +130,7 @@ pub async fn run(
     health: Option<TcpListener>,
     retire: impl Future<Output = ()>,
 ) -> Result<(), RunError> {
-    let limits = IsolateLimits::new(
-        IsolateLimits::defaults().execution_heap_bytes(),
-        config.compiler_heap_bytes,
-    )
-    .map_err(RunError::Compiler)?;
+    let limits = config.run_limits.isolate;
     // `new` returns once the compiler is warm, so Hello waits for it.
     let compiler = tokio::task::spawn_blocking(move || InProcessCompiler::new(limits))
         .await

@@ -16,8 +16,10 @@
 //! - [`UniversalSearchModule::discover`] is the one discovery operation, which
 //!   the Built-in Tool `coral.search` reaches, each request in one
 //!   read snapshot. A query runs one ranked statement per Search Entity kind,
-//!   one retriever each, and fuses their windows by position, strong matches
-//!   first, into bounded pages of Search Hits with one status per retriever.
+//!   one retriever each; a rerank step sets the final mark of each Authored
+//!   Tool, and the engine fuses the windows by position, strong matches
+//!   first and last matches at the end, into bounded pages of Search Hits
+//!   with one status per retriever.
 //!   An omitted query lists current items in Call Path order and reads no
 //!   index. Exact Call Paths resolve to their Authoring
 //!   Descriptions and read no index; `signature::abridge` shortens the
@@ -49,8 +51,9 @@
 //!
 //! The engine inside [`UniversalSearchModule`] normalizes the query, embeds
 //! it once when the vector side is on (ADR 0035), hands the same terms and
-//! vector to every retriever, fuses by position, and pages by a plain
-//! offset that authorizes nothing. It never names a Search Entity kind. Every search
+//! vector to every retriever, reranks, fuses by position, and pages by a
+//! plain offset that authorizes nothing. Only the rerank step reads the kind
+//! of an entry (ADR 0044). Every search
 //! page and exact description applies the owners' current visibility rules.
 //! Discovery never starts an interactive authorization or refreshes credentials.
 
@@ -67,6 +70,7 @@ mod model_load;
 mod page;
 pub mod projection;
 mod readiness;
+mod rerank;
 mod retriever;
 mod signature;
 mod snippet;
@@ -146,7 +150,7 @@ impl UniversalSearchModule {
         Self::with_retrievers(
             database,
             workspaces,
-            ToolRetriever::default(),
+            Arc::new(ToolRetriever::default()),
             AuthoredToolRetriever::new,
         )
     }
@@ -181,9 +185,9 @@ impl UniversalSearchModule {
         Self::with_retrievers(
             database,
             workspaces,
-            ToolRetriever {
+            Arc::new(ToolRetriever {
                 fail_ranking: kinds.contains(&EntityKind::ProviderTool),
-            },
+            }),
             |kind| AuthoredToolRetriever {
                 fail_ranking: kinds.contains(&EntityKind::authored(kind)),
                 ..AuthoredToolRetriever::new(kind)
@@ -194,14 +198,14 @@ impl UniversalSearchModule {
     fn with_retrievers(
         database: Arc<Database>,
         workspaces: WorkspaceModule,
-        tools: ToolRetriever,
+        tools: Arc<dyn EntityRetriever>,
         authored_tools: impl Fn(coral_catalog::AuthoredToolKind) -> AuthoredToolRetriever,
     ) -> Self {
         Self {
             database,
             workspaces,
             retrievers: Arc::new([
-                Arc::new(tools) as Arc<dyn EntityRetriever>,
+                tools,
                 Arc::new(authored_tools(coral_catalog::AuthoredToolKind::Private)),
                 Arc::new(authored_tools(coral_catalog::AuthoredToolKind::Shared)),
             ]),
@@ -243,7 +247,8 @@ impl UniversalSearchModule {
     /// the query mode of [`Self::discover`].
     ///
     /// Each retriever applies current visibility and ranks its own kind; the
-    /// engine fuses the windows by position, strong matches first. Only the
+    /// rerank step sets each Authored Tool's mark to strong or last, and the engine
+    /// fuses the windows by position: strong, then weak, then last. Only the
     /// page's items are hydrated, each into a hit with a signature line and
     /// the beginning of its description; a hit says nothing of why it
     /// matched. Every page carries one status per retriever. An omitted query
@@ -269,7 +274,13 @@ impl UniversalSearchModule {
         request: &SearchRequest,
     ) -> Result<SearchPage, Error> {
         self.page_in_span(actor, workspace_id, request)
-            .instrument(tracing::info_span!("coral.search"))
+            .instrument(tracing::info_span!(
+                "coral.search",
+                coral.search.authored_strong.phrase = Empty,
+                coral.search.authored_strong.rare_path_word = Empty,
+                coral.search.authored_strong.distance = Empty,
+                coral.search.provider_tool_distance_present = Empty,
+            ))
             .await
     }
 
@@ -437,6 +448,7 @@ impl UniversalSearchModule {
         let mut statuses = Vec::with_capacity(self.retrievers.len());
         let mut applied = 0usize;
         let mut failed = 0usize;
+        let mut vector_lists = Vec::with_capacity(self.retrievers.len());
         for (retriever_index, retriever) in self.retrievers.iter().enumerate() {
             begin_query(transaction).await?;
             let span = tracing::info_span!(
@@ -454,6 +466,7 @@ impl UniversalSearchModule {
                     window,
                     coverage,
                     semantic,
+                    vector_distances,
                 }) => {
                     if let Some(semantic) = semantic {
                         record_semantic(&span, semantic);
@@ -461,6 +474,7 @@ impl UniversalSearchModule {
                     end_query(transaction).await?;
                     applied += 1;
                     windows.push((retriever_index, window));
+                    vector_lists.push((retriever.kind(), vector_distances));
                     ranked_status(retriever.kind(), coverage)
                 }
                 Err(QueryError::Retriever(error)) => {
@@ -487,6 +501,8 @@ impl UniversalSearchModule {
         if applied > 0 && failed == applied {
             return Err(Error::ServiceUnavailable);
         }
+        let reranked = rerank::rerank(&mut windows, &vector_lists);
+        record_marks(&tracing::Span::current(), &reranked);
         Ok((fuse(windows), statuses))
     }
 
@@ -714,11 +730,10 @@ fn query_terms(query: &str) -> Vec<String> {
 
 /// Fuses the retrievers' windows, each `(retriever index, window)` in
 /// retriever order: the strong entries of every window by position, then the
-/// weak ones by position. At equal position the earlier retriever comes
-/// first. Each retriever marks its own entries by its own rule and signals,
-/// so only a position and that mark cross into the engine, and no score is
-/// compared across kinds. A weak entry is demoted below every strong one,
-/// never dropped.
+/// weak ones by position, then the last ones by position. At equal position
+/// the earlier retriever comes first. Only a position and a mark cross into
+/// `fuse`, and no score is compared across kinds. A weak or last entry is
+/// demoted, never dropped.
 fn fuse(windows: Vec<(usize, Vec<WindowEntry>)>) -> Vec<Ranked> {
     let mut entries = windows
         .into_iter()
@@ -726,15 +741,15 @@ fn fuse(windows: Vec<(usize, Vec<WindowEntry>)>) -> Vec<Ranked> {
             window
                 .into_iter()
                 .enumerate()
-                .map(move |(position, entry)| (!entry.strong, position, retriever_index, entry))
+                .map(move |(position, entry)| (entry.mark, position, retriever_index, entry))
         })
         .collect::<Vec<_>>();
-    entries.sort_by_key(|(weak, position, retriever_index, _entry)| {
-        (*weak, *position, *retriever_index)
+    entries.sort_by_key(|(mark, position, retriever_index, _entry)| {
+        (*mark, *position, *retriever_index)
     });
     entries
         .into_iter()
-        .map(|(_weak, _position, retriever_index, entry)| Ranked {
+        .map(|(_mark, _position, retriever_index, entry)| Ranked {
             retriever_index,
             entity: entry.entity,
         })
@@ -751,6 +766,27 @@ fn record_semantic(span: &tracing::Span, semantic: Semantic) {
             safe::kind(reason.as_str()),
         );
     }
+}
+
+/// Records on the search span how many Authored Tools each rule made strong,
+/// and whether a Provider Tool distance was there to compare with.
+fn record_marks(span: &tracing::Span, reranked: &rerank::Reranked) {
+    span.record(
+        "coral.search.authored_strong.phrase",
+        safe::number(count(reranked.strong_by_phrase)),
+    );
+    span.record(
+        "coral.search.authored_strong.rare_path_word",
+        safe::number(count(reranked.strong_by_rare_path_word)),
+    );
+    span.record(
+        "coral.search.authored_strong.distance",
+        safe::number(count(reranked.strong_by_distance)),
+    );
+    span.record(
+        "coral.search.provider_tool_distance_present",
+        safe::flag(reranked.provider_tool_distance),
+    );
 }
 
 /// A ranked retriever's state follows from its coverage.

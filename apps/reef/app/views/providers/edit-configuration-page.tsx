@@ -1,3 +1,4 @@
+import { showsCredentialTable } from '@/views/management/credential-fields'
 import { useEffect, useId, useRef, useState } from 'react'
 import { Form, useBeforeUnload, useBlocker, useNavigation, useSubmit } from 'react-router'
 import {
@@ -20,7 +21,7 @@ import { DiscoveryStep, SignInStatus } from './setup-steps'
 import { usePublication } from './publication-form'
 import { StepFrame, StepPage } from './step-frame'
 import { UpdateAuthorization } from './update-authorization'
-import { accountLabels, useAccountAudience } from './account-labels'
+import { accountLabels, connectAgain, useAccountAudience } from './account-labels'
 import { AttemptEnded } from './attempt-ended'
 import type { AccountChoice, SetupView, UpdatePageProps } from './types'
 import * as styles from './providers.css'
@@ -223,7 +224,10 @@ export function EditConfigurationPage({
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Backdrop />
-        <Dialog.Popup>
+        {/* Typed credentials with a store on offer show as a table that needs the width. */}
+        <Dialog.Popup
+          size={!oauth && showsCredentialTable(secretStores, savedReferences) ? 'xxl' : undefined}
+        >
           <Dialog.Title>{audience.shareTitle}</Dialog.Title>
           <Dialog.Description>{audience.shareBody}</Dialog.Description>
           <UpdateAuthorization
@@ -334,7 +338,7 @@ export function EditConfigurationPage({
                   <Radio.Item
                     variant="card"
                     value="shared-held"
-                    description={`${audience.sharedCallers} the account you signed in to.${
+                    description={`${audience.sharedCallers} the account you connected.${
                       setup.grantedScope ? ` Granted permissions: ${setup.grantedScope}.` : ''
                     }`}
                   >
@@ -344,7 +348,7 @@ export function EditConfigurationPage({
                 <Radio.Item
                   variant="card"
                   value="shared-connect"
-                  description={`You sign in${held ? ' again' : ' once'}. ${audience.sharedCallers} that account.`}
+                  description={`${connectAgain(oauth, held).shared} ${audience.sharedCallers} that account.`}
                 >
                   {held || currentAccount === 'fixed'
                     ? 'Connect another account'

@@ -2,11 +2,13 @@
 //! in flight on the loop before as `indeterminate`, takes back the call that
 //! waits for its approval, answers again what the Run Executor waits on, and
 //! lands each resent request once.
+use std::collections::HashMap;
+
 use super::*;
 use coral_run_executor::PROTOCOL_LEVEL;
 use coral_run_executor::wire::v1::{
-    Awaited, Complete, Finish, InvocationResult, Invoke, Open, Perform, RunEnd as WireEnd,
-    complete, finish, invocation_result, request, run_response,
+    Awaited, Complete, Finish, InvocationResult, Invoke, Log, LogLevel, Open, Perform,
+    RunEnd as WireEnd, complete, finish, invocation_result, request, run_response,
 };
 
 use super::agents::{AgentLoss, agent_scope};
@@ -397,6 +399,109 @@ async fn a_reopen_answers_a_waited_request_that_left_no_row_as_not_admitted() {
     );
 }
 
+#[tokio::test]
+async fn a_reopen_whose_awaited_list_breaks_the_protocol_interrupts_the_run() {
+    // A Run Executor lists each request it waits on once, in ascending
+    // number order, every number above zero, and a `Complete` after its
+    // Perform. Each list here breaks one of those, whatever the watermark
+    // covers.
+    let lists: [&[(u64, u64)]; 4] = [&[(0, 0)], &[(1, 0), (1, 0)], &[(2, 0), (1, 0)], &[(2, 2)]];
+    for awaited in lists {
+        let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
+        let tool = fixture.user_tool("user:awaited", "Awaited").await;
+        let modules = modules(&fixture, |runs| runs);
+        let (moving, stream) = start_moving(fixture, modules, tool, "return 1;").await;
+        drop(stream);
+        let (read, closing) = reopen(&moving, awaited).read_to_close().await;
+        assert!(
+            read.is_empty() && matches!(closing, coral_run_executor::Closing::InvalidArgument(_)),
+            "{awaited:?}: {read:?} {closing:?}"
+        );
+        // The Run is interrupted: the next reopen hears how it ended.
+        let mut stream = reopen(&moving, &[]);
+        assert_eq!(
+            stream.next().await,
+            ended(WireEnd::Interrupted),
+            "{awaited:?}"
+        );
+    }
+}
+
+/// The requests the Run below commits before its stream moves, more than
+/// either database binds in one statement: 32,766 on `SQLite`, 65,535 on
+/// Postgres.
+const MANY_REQUESTS: u64 = 66_000;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reopen_answers_an_awaited_list_longer_than_a_statement_binds() {
+    let upstream = Arc::new(ScriptedUpstream::json(
+        200,
+        serde_json::json!({"temperature": 18}),
+    ));
+    let fixture = TestModules::with_upstream(Arc::new(ImmediateEngine), upstream).await;
+    let tool = fixture.user_tool("user:many-awaited", "Many awaited").await;
+    let modules = modules(&fixture, |runs| runs);
+    let (moving, mut stream) = start_moving(fixture, modules, tool, "return 1;").await;
+    // The first and the last request call the weather Tool; each request
+    // between them logs. They go out as a Run Executor sends them, no more
+    // than its held cap above the watermark.
+    let held_cap = u64::try_from(coral_run_executor::HELD_CAP_REQUESTS).expect("held cap");
+    let (mut sent, mut watermark) = (0, 0);
+    let mut called = HashMap::new();
+    while watermark < MANY_REQUESTS || called.len() < 2 {
+        while sent < MANY_REQUESTS && sent < watermark + held_cap {
+            sent += 1;
+            let kind = if sent == 1 || sent == MANY_REQUESTS {
+                forecast(None)
+            } else {
+                request::Kind::Log(Log {
+                    level: LogLevel::Info.into(),
+                    message: "step".to_owned(),
+                    location: None,
+                })
+            };
+            stream.request(sent, kind);
+        }
+        match stream.next().await {
+            run_response::Message::Committed(committed) => watermark = committed.request_number,
+            run_response::Message::InvocationResult(result) => {
+                called.insert(result.number, result);
+            }
+            _ => {}
+        }
+    }
+    drop(stream);
+
+    // The Run Executor waits on an answer to every request.
+    let awaited: Vec<(u64, u64)> = (1..=MANY_REQUESTS).map(|number| (number, 0)).collect();
+    let mut stream = reopen(&moving, &awaited);
+    assert_eq!(stream.next().await, committed(MANY_REQUESTS));
+    let mut answered = HashMap::with_capacity(awaited.len());
+    while answered.len() < awaited.len() {
+        if let run_response::Message::InvocationResult(result) = stream.next().await {
+            let number = result.number;
+            assert!(answered.insert(number, result).is_none(), "{number} twice");
+        }
+    }
+    // Each call is answered again from its row, the first and the last
+    // alike; a log left no row.
+    for number in [1, MANY_REQUESTS] {
+        let again = answered.get(&number).expect("the call is answered again");
+        assert_eq!(Some(again), called.get(&number), "{number}");
+    }
+    for number in 2..MANY_REQUESTS {
+        let answer = answered.get(&number).expect("the log is answered");
+        assert!(
+            failed_with(answer, "invocation_not_admitted"),
+            "{number}: {answer:?}"
+        );
+    }
+    stream.request(MANY_REQUESTS + 1, finish_with("1"));
+    stream
+        .until(|read| read.contains(&ended(WireEnd::Succeeded)))
+        .await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_loop_whose_stream_moved_commits_nothing_more() {
     let (gate, release) = CommitGate::blocking();
@@ -420,9 +525,9 @@ async fn a_loop_whose_stream_moved_commits_nothing_more() {
     wait_until(|| gate.entered()).await;
     let first_loop = moving
         .first
-        .owners
+        .loops
         .find(&moving.run_id, &moving.claim)
-        .expect("the first loop's owner");
+        .expect("the first loop");
     drop(stream);
     let mut stream = reopen(&moving, &[(1, 0)]);
     assert_eq!(stream.next().await, committed(0));
@@ -743,8 +848,67 @@ async fn a_perform_waiting_for_its_approval_is_permitted_after_a_reopen() {
         .await;
 }
 
+/// Catches: a reopen that leaves a termination intent an older build
+/// recorded unended, or ends it in more than one chunk or with another
+/// outcome. The intent is written as that build wrote it, after its loop is
+/// gone.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_reopen_ends_a_run_whose_termination_the_loop_before_recorded() {
+async fn a_reopen_ends_an_older_builds_termination_intent_in_one_chunk() {
+    let upstream = Arc::new(BlockingUpstream::new(HttpOutcome::new(
+        200,
+        serde_json::json!({}),
+    )));
+    let fixture = TestModules::with_execution_adapters(
+        Arc::new(ImmediateEngine),
+        upstream.clone(),
+        Arc::new(NoopInvocationObserver),
+        Arc::new(NoopExecutionObserver),
+    )
+    .await;
+    let runs = fixture.runs.clone();
+    let tool = fixture
+        .user_tool("user:older-intent", "An older intent")
+        .await;
+    let (run_id, stream) = super::run_streams::started(&runs, &tool).await;
+    stream.request(1, super::run_streams::invoke_forecast());
+    wait_until(|| upstream.entered.load(Ordering::SeqCst)).await;
+    drop(stream);
+    wait_until(|| runs.loops.get(&run_id).is_none()).await;
+    let before = fixture.run_record(&tool.workspace_id, &run_id).await;
+    let claim = before.execution_claim_id.clone().expect("a claimed Run");
+    let at = before
+        .execution_started_at_unix_nanos
+        .expect("the start mark");
+    let kind = crate::lifecycle::RunTerminationKind::CpuLimitExceeded.as_storage_str();
+    assert_eq!(
+        fixture
+            .inject_fault(&format!(
+                "UPDATE program_run_records SET termination_kind = '{kind}', \
+                 termination_started_at_unix_nanos = {at}, \
+                 termination_deadline_at_unix_nanos = {} WHERE id = '{run_id}'",
+                at + 5_000_000_000
+            ))
+            .await,
+        1
+    );
+
+    let mut stream = Scripted::open(&runs, &run_id.to_string(), &claim);
+    assert_eq!(stream.next().await, ended(WireEnd::Failed));
+    let run = fixture.run_record(&tool.workspace_id, &run_id).await;
+    let Some(crate::RunTerminalOutcome::Failed(failure)) = &run.terminal_outcome else {
+        panic!("the recorded limit fails the Run: {run:?}");
+    };
+    assert_eq!(failure.code(), RunFailureCode::CpuLimitExceeded);
+    assert_eq!(run.chunk_sequence, before.chunk_sequence + 1, "one chunk");
+    assert_eq!(
+        result_kinds(&fixture, &tool, &run_id).await,
+        [Some(InvocationResultKind::Indeterminate)]
+    );
+    upstream.release();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reopen_of_a_canceled_run_answers_how_it_ended() {
     let fixture = TestModules::new(Arc::new(ImmediateEngine)).await;
     let runs = fixture.runs.clone();
     let (workspace_id, principal) = fixture.user_scope("user:ending", "Reopen end").await;

@@ -19,4 +19,5 @@ inputs:
       - ../../crates/coral-grpc/proto/coral/management/v1/provider.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/account.proto
       - ../../crates/coral-grpc/proto/coral/management/v1/policy.proto
+      - ../../crates/coral-grpc/proto/coral/management/v1/sub_agent_model.proto
       - ../../crates/coral-grpc/proto/coral/internal/v1/inspection.proto

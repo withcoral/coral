@@ -1,3 +1,4 @@
+import { showsCredentialTable } from '@/views/management/credential-fields'
 import { useId, useState } from 'react'
 import type { OfferedSecretStore } from '@/views/accounts/types'
 import { Form } from 'react-router'
@@ -14,7 +15,7 @@ import { Banner, Button, Inputs, Radio, Typography } from '@/wax/components'
 import * as Dialog from '@/wax/components/dialog'
 import { DocumentSubmitButton } from '@/components/document-submit-button'
 import { Fields } from '@/views/management/forms'
-import { accountLabels, useAccountAudience } from './account-labels'
+import { accountLabels, connectAgain, useAccountAudience } from './account-labels'
 import { OAuthApplicationBlock } from './oauth-application'
 import { usePublication } from './publication-form'
 import {
@@ -140,6 +141,8 @@ export function AccountStep({
     held && setup.automaticRefresh === false
       ? ' This account cannot refresh automatically. Reconnect when access expires.'
       : ''
+  // A sign-in and typed credentials both connect an account; only OAuth signs in.
+  const again = connectAgain(oauth, held)
   const accountField = <input type="hidden" name="account" value={choice} />
   const back = (
     <Button.InternalLink size="small" to={backPath} variant="secondary">
@@ -210,9 +213,7 @@ export function AccountStep({
                   <Radio.Item
                     variant="card"
                     value="shared-keep"
-                    description={
-                      `${audience.sharedCallers} the account you signed in to.` + refresh
-                    }
+                    description={`${audience.sharedCallers} the account you connected.` + refresh}
                   >
                     Use this account
                   </Radio.Item>
@@ -220,7 +221,7 @@ export function AccountStep({
                 <Radio.Item
                   variant="card"
                   value="shared-connect"
-                  description={`${held ? 'You sign in again.' : 'You sign in once.'} ${audience.sharedCallers} that account.`}
+                  description={`${again.shared} ${audience.sharedCallers} that account.`}
                 >
                   {held ? 'Connect another account' : 'Connect an account'}
                 </Radio.Item>
@@ -243,7 +244,7 @@ export function AccountStep({
                 <Radio.Item
                   variant="card"
                   value="own-connect"
-                  description={`${held ? 'You sign in again' : 'You sign in now'}, and that account becomes yours. ${audience.others}`}
+                  description={`${again.own}, and that account becomes yours. ${audience.others}`}
                 >
                   {held ? 'Connect now with another account' : 'Connect now'}
                 </Radio.Item>
@@ -293,10 +294,21 @@ export function AccountStep({
           </Dialog.Trigger>
           <Dialog.Portal>
             <Dialog.Backdrop />
-            <Dialog.Popup>
+            {/* With stores on offer, each field is a row of a table that needs the width. */}
+            <Dialog.Popup size={shared && showsCredentialTable(secretStores) ? 'xxl' : undefined}>
               <Dialog.Title>{shared ? audience.shareTitle : 'Connect your account'}</Dialog.Title>
               <Dialog.Description>
                 {shared ? audience.shareBody : audience.onlyYou}
+                {/* Where to find the values, read before the fields, not after them. */}
+                {documentationUrl && (
+                  <>
+                    {' '}
+                    <Button.ExternalLink href={documentationUrl} className={styles.inlineControl}>
+                      Find your credentials in the{' '}
+                      {setup.configuration?.values.displayName || 'provider'} docs
+                    </Button.ExternalLink>
+                  </>
+                )}
               </Dialog.Description>
               {/* Its own form: the portal renders outside the step's, so an
                       input here would never be submitted with it. */}
@@ -307,14 +319,7 @@ export function AccountStep({
                 id={secretFormId}
                 extra={accountField}
                 secretStores={shared ? secretStores : []}
-              >
-                {documentationUrl && (
-                  <Button.ExternalLink href={documentationUrl} className={styles.inlineControl}>
-                    Find your credentials in the{' '}
-                    {setup.configuration?.values.displayName || 'provider'} docs
-                  </Button.ExternalLink>
-                )}
-              </SetupSecretForm>
+              />
               <Dialog.Actions>
                 <Button.TextButton
                   type="button"

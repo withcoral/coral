@@ -78,6 +78,8 @@ runtime.
 - **Compiles ride it, and take no room.** A compile runs on the Run Executor's one warm compiler, not in a Run's room.
   Coral keeps a small count of its own for each pull stream, its compile room, which bounds the compiles queued on that
   compiler. A compile holds one unit of it until it is answered. A full set of Runs therefore does not stop a compile.
+  Compiles that find no compile room wait on their Coral Instance in the order they came, and each unit that frees goes
+  to the oldest. A compile whose pull stream ended before it answered waits again at the front.
 
 ## The queue and the take
 
@@ -86,11 +88,12 @@ runtime.
   holder, and no Coral Instance holds a waiting Run in memory. A waiting Run reads `running`; Reef shows it waiting to
   start. One queue, oldest first, across Coral Instances and Workspaces.
 - **The room report is the ask, and Coral holds it.** Each Coral Instance runs one take loop for all its pull streams.
-  The change signal marks it dirty; it runs a take at most once per short period, and once a longer period while any
-  pull stream has room. Each take picks the pull stream with the most room and, in one statement, claims the oldest
-  waiting Runs up to that room and a cap, each with its own claim and its take time, skipping rows another take holds.
-  Coral sends them as one message. The loop repeats while Runs wait and room remains, so a burst spreads across Run
-  Executors and Coral Instances. A Run Executor never polls, and never reaches the database.
+  The queue signal and new room mark it dirty; it runs a take at once, and once a longer period while any pull stream
+  has room. A take rings nothing, so the loop never wakes itself. Each take picks the pull stream with the most room
+  and, in one statement, claims the oldest waiting Runs up to that room and a cap, each with its own claim and its take
+  time, skipping rows another take holds. Coral sends them as one message. The loop repeats while Runs wait and room
+  remains, so a burst spreads across Run Executors and Coral Instances. A Run Executor never polls, and never reaches
+  the database.
 - **A taken Run that never starts goes back to waiting.** The sweep clears the claim of a Run with no start mark and a
   take older than a confirmation period, predicated on the claim and the missing start mark; the Run keeps its place. A
   late load from the first Run Executor fails the start's claim predicate and is answered that the Run is not held. No
@@ -118,6 +121,11 @@ runtime.
   an Emit or a Log: the Run Executor checks the value against the package's value limits, counts the Run Output Budget
   and fails the Run when it is exceeded, and pauses the Program's next request while more than the Applied cap is
   unconfirmed; Coral confirms at commit. Every kind of Run Executor settles Emit and Log the same way.
+- **A rejected output is counted in Coral.** The Run Executor counts each Emission, Log or Final Value it rejects (too
+  large, invalid, or past the Run Output Budget). Just before its next request, the Finish included, it sends one
+  unnumbered OutputRejected for each kind it rejected since its last request, with the count. Coral counts it in its
+  metrics. It is never resent, so one sent while the stream is down is not counted. Coral counts a Tool result it
+  refuses itself.
 - **A Private or Shared Tool call is a code-performed Invoke ([ADR 0034](0034-every-callable-is-a-tool.md)).**
   - **The Invoke** names the tool and, for a Shared Tool, its revision. Every Invoke that a tool's body makes carries
     its parent Invocation; an Invoke from the Program itself or from module-level code carries none. Coral refuses an
@@ -246,20 +254,32 @@ above it, in order. A repeat carries the same number and lands once; an Emission
   already ended, and the waiter reports it to the Program. When another write moves the head under a chunk the loop is
   committing, the loop rebuilds that chunk on the new head and rereads those Approval Requests then too. The head is durable, so no outside
   write goes unseen.
-- **The other waiters keep the content-free signal**: the take loop and the compile relay, one subscription each per
-  Coral Instance. The content-free signal stays the only signal in `coral-db`: no table name, row identity or payload
-  crosses it.
+- **The compile relay keeps the content-free signal**, one subscription per Coral Instance.
+- **The take loop follows the queue signal**, one subscription per Coral Instance. It is a named signal in `coral-db`: a
+  commit that rings it by name wakes its subscribers, and other commits do not. Like the content-free signal, it also
+  wakes them when an outage of the notification connection begins and at the resync after it. A write that makes a Run
+  wait rings it: an acceptance, and a put-back of a take that never started. A release before the queue signal rings
+  nothing, so during a rolling upgrade a newer loop takes that release's Runs at its backstop. Every observable commit
+  rings the content-free signal, so on it a take loop wakes on every Coral Instance for commits that make no Run wait,
+  and needs a period between passes to bound its reads. A named signal carries its name and nothing else. No table
+  name, row identity or payload crosses either signal.
 
 ## Compiling
 
 Each Run Executor keeps one warm Program Compiler, warmed before it says hello, with the compiler's existing limits. A
 compile travels down the pull stream and its answer comes back on it; it goes to the pull stream with the most compile
-room on the Coral Instance that needs it. A Coral Instance that holds no pull stream, or none with compile room, writes
-the call to a relay row that any Coral Instance that has the core role and compile room, itself included, picks up, serves and answers
-through the database. Coral Instances keep talking only through the database. A compile that no Run Executor can serve yet waits for one: no Run
-Executor linked is a state every rollout passes through. The compile's own time limit runs once a Run Executor serves
-it; a compile that waits past a bound fails as a missing compiler fails today, and Runs already accepted wait.
-Only no Run Executor linked, or every compiler busy for the bound, reaches it: a full set of Runs never does. With
+room on the Coral Instance that needs it. A Coral Instance that holds an open pull stream, one it has not closed for
+the connection's age, the drain or shutdown, waits for its own compile room, and borrows no idle compiler from another
+Coral Instance; a retiring Run Executor's stream stays open. A unit frees when a compile answers or its pull stream
+ends. A Coral Instance that holds no open pull stream writes the call to a relay row that any Coral Instance that has
+the core role and compile room picks up, serves and answers through the database. A Coral Instance whose callers wait
+for compile room holds a place in that line for each relay row waiting, up to 64, so the rows wait in order with its
+own callers; a row past the 64 takes a place as one frees. Coral Instances keep talking only through the database.
+A compile that no Run Executor can serve yet waits for one: no Run Executor linked is a state every rollout passes
+through. The compile's own time limit runs once a Run Executor serves it; a compile that waits past a bound fails as a
+missing compiler fails today, and Runs already accepted wait. Only no Run Executor linked, or every compiler busy for
+the bound, reaches it: on a Coral Instance that holds a pull stream, every compiler of its own pull streams. A full set
+of Runs never does. With
 local children on and below their limit, a compile with no child running starts one and waits for it. A compile carries no authority, and a Run Executor cannot call Coral back
 during one. The compiler has its Run Executor's release, so a global takes three release steps. A compile carries the
 names of the Workspace's Built-in Tools as admission reads them, and the compiled Program adds exactly those to
@@ -309,9 +329,10 @@ Executors roll apart from Coral.
   use a new global two releases after the Run Executor gains it, and stops two releases before the Run Executor drops
   it. Only a removed global matters, and the Run then fails as a Program that uses a missing global.
 - The rule applies from the release in which Coral accepts dial-ins from Run Executors it did not start, the first
-  after v1.10.0. Before it, every Run Executor is a child of the same binary. A Run Executor from v1.8.0 also reports
-  level 1 but has no Run stream, so it cannot execute a Run. An operator runs no Run Executor older than v1.9.0
-  beside a later Coral.
+  after v1.10.0. Before it, every Run Executor is a child of the same binary. A message or field added in that
+  release takes one step, because no earlier Coral serves a Run stream to a Run Executor that it did not start;
+  OutputRejected took one. A Run Executor from v1.8.0 also reports level 1 but has no Run stream, so it cannot execute
+  a Run. An operator runs no Run Executor older than v1.9.0 beside a later Coral.
 - `scripts/check-protocol-level.sh`, in `make rust-checks`, compares the messages, as Buf builds them, and the
   globals' allow-list with the newest release's, and fails unless a change raised the level by exactly one.
 
@@ -374,6 +395,9 @@ Coral exports and amends this ADR.
   bound. Reef, sign-in and every other MCP tool keep working, and Runs already accepted wait.
 - **When every Run Executor is full, a new Program compiles, and its Run is accepted and waits like any other.** Its
   compile runs beside the full set of Runs and shares their CPU.
+- **A Coral Instance compiles only on its own pull streams while it holds one.** When one Coral Instance receives most
+  of the new Programs, its compiles wait in line while Run Executors linked to another Coral Instance sit idle. The
+  wait costs the database nothing; the relay writes rows for each compile.
 - **A dead Coral Instance loses only the calls in flight on it.** The Program sees `upstream_incomplete` for each; the
   Applied cap bounds what the Run Executor holds for a resend.
 - **A lost Run Executor ends every Run it started**, within a lease and a sweep period, and its unstarted Runs wait for
@@ -404,6 +428,11 @@ Coral exports and amends this ADR.
   machine and a hosted fleet are all reachable only if the Run Executor dials.
 - **Polling, or a held request kept only so work can be pushed.** The room report is the ask; a Run Executor with no
   room sends nothing, and the take loop reads Coral's own database on a period.
+- **A take loop on the content-free signal, at most one pass per short period.** The period bounds the reads, but each
+  Run waits up to that period for its take. At 50 ms a Run waited about 30 ms, and the p95 of Runs at 50 to 100 Runs/s
+  rose 1.4 to 1.6 times ([A Run waits about 30 ms for a take pass](https://github.com/withcoral/coral/issues/3496)
+  measured both). **An in-process wake at an acceptance, beside that period,** ends the wait only on the Coral Instance
+  that accepted the Run. A Run accepted on another one still waits up to the period.
 - **Room as a grant Coral spends and the Run Executor refills.** A count can drift by one unit for a moment and needs
   no arithmetic on both sides.
 - **A Retiring message.** Coral cannot tell a full Run Executor from a retiring one, and does not need to.

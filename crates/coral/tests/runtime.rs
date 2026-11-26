@@ -15,6 +15,11 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use coral_catalog::{AgentArguments, AgentResult, CancelAgentArguments};
+use coral_grpc::coral::management::v1::sub_agent_model_service_client::SubAgentModelServiceClient;
+use coral_grpc::coral::management::v1::{
+    CreateSubAgentModelRequest, GetWorkspaceSubAgentModelRequest, SubAgentModelProtocol,
+    SubAgentModelSettings, ToolAccessState, TurnOnSubAgentRequest,
+};
 use coral_run::{SubAgentCaller, SubAgentError, SubAgentTools};
 
 use composed::{WEB, compose, compose_with, recorded_run_state, run_to_end, spin_a_run};
@@ -160,21 +165,16 @@ async fn readiness_reports_not_serving_while_a_local_childs_run_keeps_the_drain(
     );
 }
 
-/// A factory that claims `[stop_watch]`, builds a Sub-agent that refuses
-/// every call, and keeps the stop signal core hands it.
+/// A factory that builds a Sub-agent that refuses every call, and keeps the
+/// stop signal core hands it.
 #[derive(Default)]
 struct StopWatch {
     stopping: OnceLock<tokio::sync::watch::Receiver<bool>>,
 }
 
 impl coral_app::SubAgentToolsFactory for StopWatch {
-    fn section_name(&self) -> &'static str {
-        "stop_watch"
-    }
-
     fn build(
         &self,
-        _section: &toml::Table,
         dependencies: coral_app::SubAgentDependencies,
     ) -> Result<Arc<dyn SubAgentTools>, Box<dyn std::error::Error + Send + Sync>> {
         self.stopping
@@ -182,6 +182,14 @@ impl coral_app::SubAgentToolsFactory for StopWatch {
             .map_err(|_set| "core called the factory twice")?;
         Ok(Arc::new(Refusing))
     }
+}
+
+/// `message` as Reef sends it to a local deployment.
+fn reef<T>(message: T) -> tonic::Request<T> {
+    let mut request = tonic::Request::new(message);
+    let audience = "reef".parse().expect("audience");
+    request.metadata_mut().insert("coral-audience", audience);
+    request
 }
 
 struct Refusing;
@@ -205,17 +213,48 @@ impl SubAgentTools for Refusing {
     }
 }
 
-/// Catches: a section that leaves `coral.agent` out of the catalog, or a
-/// Sub-agent that bootstrap built and never wired to the Run module.
+/// Catches: a model that leaves `coral.agent` out of a Workspace's catalog, a
+/// Tool that is on before its Owner turns it on, or a Sub-agent that bootstrap
+/// built and never wired to the Run module.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_program_reaches_the_sub_agent_that_a_registered_factory_builds() {
     let factory = Arc::new(StopWatch::default());
-    let composed = compose_with(&format!("{WEB}[stop_watch]\n"), Some(factory)).await;
-
+    let composed = compose_with(WEB, Some(factory)).await;
     let program =
         "try { await coral.agent({ message: 'hello' }); } catch (error) { return error.message; }";
-    let refused = run_to_end(&composed.client, program).await;
+    let mut models =
+        SubAgentModelServiceClient::connect(composed.runtime.endpoint_uri().to_owned())
+            .await
+            .expect("connect gRPC");
+    let created = models.create_sub_agent_model(reef(CreateSubAgentModelRequest {
+        settings: Some(SubAgentModelSettings {
+            protocol: SubAgentModelProtocol::Anthropic.into(),
+            base_url: "https://model.example/v1".into(),
+            model: "model-1".into(),
+            context_window: None,
+            request_args_json: String::new(),
+        }),
+        api_key: None,
+    }));
+    created.await.expect("set the Sub-agent's model");
 
+    let off = run_to_end(&composed.client, program).await;
+    assert_eq!(off["final_value"]["value"], "Tool is disabled", "{off}");
+
+    let workspace = format!("workspaces/{}", composed.workspace);
+    let shown = models.get_workspace_sub_agent_model(reef(GetWorkspaceSubAgentModelRequest {
+        workspace: workspace.clone(),
+    }));
+    let shown = shown.await.expect("read the model").into_inner();
+    let turned_on = models.turn_on_sub_agent(reef(TurnOnSubAgentRequest {
+        workspace,
+        model_id: shown.id,
+        access_state: ToolAccessState::Enabled.into(),
+    }));
+    let turned_on = turned_on.await.expect("turn coral.agent on").into_inner();
+    assert_eq!(turned_on.access_state(), ToolAccessState::Enabled);
+
+    let refused = run_to_end(&composed.client, program).await;
     assert_eq!(
         refused["final_value"]["value"], "Tool is unavailable: the test's agent refuses",
         "{refused}"
@@ -231,7 +270,7 @@ async fn a_program_reaches_the_sub_agent_that_a_registered_factory_builds() {
 async fn a_factory_is_told_when_shutdown_begins() {
     let factory = Arc::new(StopWatch::default());
     let composed = compose_with(
-        &format!("{WEB}[runtime]\nshutdown_drain_seconds = 3\n[stop_watch]\n"),
+        &format!("{WEB}[runtime]\nshutdown_drain_seconds = 3\n"),
         Some(factory.clone()),
     )
     .await;

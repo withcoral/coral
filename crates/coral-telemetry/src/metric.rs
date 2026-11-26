@@ -1264,10 +1264,15 @@ pub fn output_kept(kind: OutputKind, size: usize) {
 
 /// Counts one output of `kind` a Program Run could not keep.
 pub fn output_rejected(kind: OutputKind) {
+    outputs_rejected(kind, 1);
+}
+
+/// Counts `count` outputs of `kind` a Program Run could not keep.
+pub fn outputs_rejected(kind: OutputKind, count: u64) {
     with(|catalog| {
         catalog
             .output_rejections
-            .add(1, &[KeyValue::new("output.kind", kind.as_str())]);
+            .add(count, &[KeyValue::new("output.kind", kind.as_str())]);
     });
 }
 

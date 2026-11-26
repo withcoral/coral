@@ -19,10 +19,10 @@ use coral_workspace::WorkspaceId;
 
 use super::plan::QueryPlan;
 use super::repository;
-use super::vector_list::{self, VectorList};
+use super::vector_list::{self, Merged, VectorList};
 use super::{
-    Answer, EntityRef, EntityRetriever, Hydrated, LexicalReason, Listing, QueryError, QueryRequest,
-    RequestContext, RetrievalError, Semantic, ToolRef, WindowEntry, count,
+    Answer, EntityRef, EntityRetriever, Hydrated, LexicalReason, Listing, Mark, QueryError,
+    QueryRequest, RequestContext, RetrievalError, Semantic, ToolRef, WindowEntry, count,
 };
 use crate::eligibility::tool_approval;
 use crate::hit::{HitMaterial, hit_text};
@@ -114,6 +114,7 @@ impl EntityRetriever for ToolRetriever {
                 window: Vec::new(),
                 coverage: RetrieverCoverage::new(count(eligible), count(eligible), 0, false),
                 semantic: Some(Semantic::of(&request.vector)),
+                vector_distances: Vec::new(),
             });
         };
         let complete = repository::complete_generations(transaction, context.workspace_id)
@@ -168,32 +169,17 @@ impl EntityRetriever for ToolRetriever {
             lexical_and_vector_lists(transaction, context.workspace_id, &scope, &plan, request)
                 .await?;
         let semantic = Semantic::of(&vector);
+        let vector_distances = vector.as_ref().map_or_default(VectorList::distances);
         let (merged, has_more) = vector_list::merged_window(
             lexical,
             vector.ok(),
             |tool: &repository::RankedTool| tool.doc_id.clone(),
             request.window,
         );
-        let mut window = Vec::new();
-        for entry in merged {
-            let strong_by_vector = entry.strong_by_vector();
-            let tool = entry.entry;
-            let provider = searched
-                .get(&tool.provider_id)
-                .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
-                    "a ranked Tool's Provider was not searched",
-                )))?;
-            window.push(WindowEntry {
-                strong: strong_by_vector
-                    || strong_tool(&plan, &tool.matched, named.contains(&tool.provider_id)),
-                entity: EntityRef::Tool(ToolRef {
-                    provider: Arc::clone(provider),
-                    tool_key: tool.tool_key,
-                    rules: Arc::clone(&rules),
-                    call_path: tool.call_path,
-                }),
-            });
-        }
+        let window = merged
+            .into_iter()
+            .map(|entry| window_entry(entry, &plan, &named, &searched, &rules))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Answer {
             coverage: RetrieverCoverage::new(
                 count(eligible),
@@ -203,6 +189,7 @@ impl EntityRetriever for ToolRetriever {
             ),
             window,
             semantic: Some(semantic),
+            vector_distances,
         })
     }
 
@@ -384,6 +371,38 @@ pub(crate) async fn explain_vector_query(
     .await
 }
 
+/// The window entry of one merged Tool: its mark by the Tool retriever's
+/// rules, its distance, and what hydration needs.
+fn window_entry(
+    entry: Merged<repository::RankedTool>,
+    plan: &QueryPlan,
+    named: &[ProviderId],
+    searched: &HashMap<ProviderId, Arc<ActiveProvider>>,
+    rules: &Arc<ExactToolRules>,
+) -> Result<WindowEntry, QueryError> {
+    let strong_by_vector = entry.strong_by_vector();
+    let distance = entry.distance();
+    let tool = entry.entry;
+    let provider = searched
+        .get(&tool.provider_id)
+        .ok_or(QueryError::Retriever(RetrievalError::Corrupt(
+            "a ranked Tool's Provider was not searched",
+        )))?;
+    Ok(WindowEntry {
+        mark: Mark::of(
+            strong_by_vector || strong_tool(plan, &tool.matched, named.contains(&tool.provider_id)),
+        ),
+        distance,
+        rare_path_word: false,
+        entity: EntityRef::Tool(ToolRef {
+            provider: Arc::clone(provider),
+            tool_key: tool.tool_key,
+            rules: Arc::clone(rules),
+            call_path: tool.call_path,
+        }),
+    })
+}
+
 /// Whether a ranked Tool is a strong match, by the Tool retriever's own
 /// rule: a field holds the query's words in order, the query names its
 /// Provider, or its name and title start words with at least half of the
@@ -396,7 +415,9 @@ fn strong_tool(plan: &QueryPlan, matched: &repository::RowMatch, named: bool) ->
     matched.phrase_points > 0
         || named
         || (words > 0
-            && 2 * plan.content_words_starting([matched.name.as_str(), matched.title.as_str()])
+            && 2 * plan
+                .content_words_starting([matched.name.as_str(), matched.title.as_str()])
+                .len()
                 >= words)
 }
 

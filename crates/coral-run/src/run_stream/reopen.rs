@@ -8,18 +8,20 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use coral_provider::ResolvedInvocationTool;
 use coral_run_executor::wire::v1::{Awaited, RunEnd as WireEnd};
 use coral_run_executor::{Closing, SHUTTING_DOWN};
 use coral_workspace::AuthenticatedPrincipal;
 
+use super::program::stream_violated;
 use super::{LinkedTools, Requests, StreamLink, taken_end, wire_end};
 use crate::execution::until_answered;
 use crate::invocation_lifecycle::{self, InvocationState};
 use crate::invocation_repository::{self, RecordedOutcome, StreamInvocation};
 use crate::lifecycle::RunRecord;
-use crate::owner::StartedExecution;
+use crate::run_stream::run_loop::StartedExecution;
 use crate::{Error, InvocationId, RunModule, run_repository};
 
 /// How many times a reopen reads the Run again after a writer moved its
@@ -49,7 +51,8 @@ enum Reopen {
     Ended(WireEnd),
     /// No actor can be rebuilt for the Run: its Principal is gone.
     Unowned,
-    /// A termination is recorded, and the loop that recorded it is gone.
+    /// An older build recorded a termination, and the loop that recorded it
+    /// is gone.
     Terminating(Box<RunRecord>),
     Unavailable(&'static str),
 }
@@ -71,12 +74,15 @@ impl RunModule {
         awaited: Vec<Awaited>,
     ) {
         let held = run.held_id();
-        // Held until the owner is registered, so a Shutdown Drain counts it.
+        // Held until the loop is registered, so a Shutdown Drain counts it.
         let Ok(admitted) = self.admission.admit() else {
             return link.close(Closing::Unavailable(SHUTTING_DOWN));
         };
-        // An owner of this Run still here commits nothing more on a moved head.
-        self.owners.supersede(&run.id);
+        // A loop of this Run still here commits nothing more on a moved head.
+        self.loops.supersede(&run.id);
+        if !awaited_well_formed(&awaited) {
+            return self.refuse_broken_open(&run, &claim_id, link).await;
+        }
         let reopened = until_answered(
             &held,
             "Run stream reopen",
@@ -84,25 +90,20 @@ impl RunModule {
             || self.reopen(&run, &claim_id, &linked, &awaited),
         )
         .await;
+        // `Resume` keeps the entries it answers: the list is not kept.
+        drop(awaited);
         let (actor, run, resume) = match reopened {
             Ok(Reopen::Reopened(reopened)) => *reopened,
             Ok(Reopen::Ended(end)) => return link.end(end),
             Ok(Reopen::Unowned) => {
-                let recorded = self
-                    .record_interruption(
-                        &run.workspace_id,
-                        &held,
-                        &claim_id,
-                        None,
-                        crate::termination::Interrupter::Reopen,
-                    )
-                    .await;
-                return match recorded {
+                return match self.interrupt_on_reopen(&run, &claim_id).await {
                     Ok(()) => link.end(WireEnd::Interrupted),
                     Err(_unanswered) => link.close(Closing::Unavailable("the end is not written")),
                 };
             }
-            Ok(Reopen::Terminating(run)) => return self.end_terminating(&run, link).await,
+            Ok(Reopen::Terminating(run)) => {
+                return self.end_terminating(&run, &claim_id, link).await;
+            }
             Ok(Reopen::Unavailable(reason)) => return link.close(Closing::Unavailable(reason)),
             Err(_unanswered) => {
                 return link.close(Closing::Unavailable("the reopen is not written"));
@@ -132,23 +133,38 @@ impl RunModule {
         self.close_served(link, &workspace_id, &id).await;
     }
 
-    /// Ends a Run whose termination the loop before recorded and did not
-    /// settle: its terminal chunk ends its open Invocations, whose dispatches
-    /// were lost with that loop, and the Run Executor learns how it ended.
-    async fn end_terminating(&self, run: &RunRecord, link: &StreamLink) {
-        let settled = match crate::termination::ShutdownAction::from_run(run) {
-            Ok(shutdown) => {
-                until_answered(
-                    &run.held_id(),
-                    "Run stream reopen settle",
-                    || !link.responses.is_closed(),
-                    || self.settle_termination(&shutdown, true),
-                )
-                .await
-            }
-            Err(error) => Err(error),
-        };
-        if settled.is_err() {
+    /// Interrupts a Run whose `Open` broke the protocol, as a break on its
+    /// stream would, and closes the stream. Nothing is reopened.
+    async fn refuse_broken_open(&self, run: &RunRecord, claim_id: &str, link: &StreamLink) {
+        stream_violated(&run.held_id());
+        link.violated.store(true, Ordering::SeqCst);
+        // A Run that ended or that another writer took has nothing to
+        // interrupt: the stream closes the same way.
+        let _interrupted = self.interrupt_on_reopen(run, claim_id).await;
+        self.close_served(link, &run.workspace_id, &run.id).await;
+    }
+
+    /// [`Self::record_interruption`] by a reopen, which does not hold the
+    /// Run's stream yet.
+    async fn interrupt_on_reopen(&self, run: &RunRecord, claim_id: &str) -> Result<(), Error> {
+        self.record_interruption(
+            &run.workspace_id,
+            &run.held_id(),
+            claim_id,
+            None,
+            crate::termination::Interrupter::Reopen,
+        )
+        .await
+    }
+
+    /// Ends a Run whose termination an older build's loop recorded and did
+    /// not end the Run with: one chunk ends its open Invocations, whose
+    /// dispatches were lost with that loop, and the Run with the recorded
+    /// termination, under the claim and the head; no grace. The Run Executor
+    /// then learns how it ended.
+    async fn end_terminating(&self, run: &RunRecord, claim_id: &str, link: &StreamLink) {
+        let ended = self.interrupt_on_reopen(run, claim_id).await;
+        if !matches!(ended, Ok(()) | Err(Error::RunEnded)) {
             return link.close(Closing::Unavailable("the end is not written"));
         }
         self.close_served(link, &run.workspace_id, &run.id).await;
@@ -239,11 +255,11 @@ impl RunModule {
             }
         };
         let watermark = run.committed_request_number.unwrap_or(0);
-        // The requests the Run Executor waits on that the watermark covers:
-        // the rest it sends again.
+        // The requests the Run Executor waits on that the watermark covers,
+        // a prefix of the list in number order: the rest it sends again.
         let answered: Vec<Awaited> = awaited
             .iter()
-            .filter(|awaited| awaited.number <= watermark)
+            .take_while(|awaited| awaited.number <= watermark)
             .copied()
             .collect();
         let numbers: Vec<u64> = answered
@@ -320,7 +336,7 @@ impl RunModule {
         transaction: &mut coral_db::Transaction<'_>,
         run: &RunRecord,
         invocation: &mut StreamInvocation,
-        events: &mut Vec<crate::run_repository::OwnedEvent>,
+        events: &mut Vec<crate::run_repository::PendingEvent>,
         now: i64,
     ) -> Result<(), Error> {
         match invocation.state {
@@ -389,14 +405,14 @@ impl RunModule {
         workspace_id: &coral_workspace::WorkspaceId,
         id: &crate::RunId,
     ) {
-        if link.violated.load(std::sync::atomic::Ordering::SeqCst) {
+        if link.violated.load(Ordering::SeqCst) {
             return link.close(Closing::InvalidArgument(
                 "the Run stream broke the protocol",
             ));
         }
         // The stream moves: the Coral Instance it reopens on answers how the
         // Run stands.
-        if link.moving.load(std::sync::atomic::Ordering::SeqCst) {
+        if link.moving.load(Ordering::SeqCst) {
             return link.close(Closing::Moved);
         }
         if let Ok(Some(run)) = run_repository::find_exact(&self.database, workspace_id, id).await
@@ -405,4 +421,17 @@ impl RunModule {
             link.end(wire_end(run.state));
         }
     }
+}
+
+/// Whether `awaited` lists requests as a Run Executor waits on them: each
+/// once, in ascending number order, every number above zero, and each
+/// `Complete` after the Perform it completes. A reopen then answers again at
+/// most one entry for each request the Run committed.
+fn awaited_well_formed(awaited: &[Awaited]) -> bool {
+    awaited
+        .iter()
+        .try_fold(0, |last, entry| {
+            (last < entry.number && entry.perform < entry.number).then_some(entry.number)
+        })
+        .is_some()
 }

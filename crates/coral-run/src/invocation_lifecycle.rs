@@ -6,7 +6,7 @@
 
 use crate::invocation::{AdmittedInvocation, InvocationCompletion};
 use crate::lifecycle::{RunRecord, RunTerminationKind};
-use crate::run_repository::{OwnedEvent, OwnedEventKind};
+use crate::run_repository::{PendingEvent, PendingEventKind};
 use crate::{
     CoralFailure, Error, InvocationId, InvocationResultKind, approval, invocation_repository,
 };
@@ -77,30 +77,10 @@ async fn generation_runs_in_program(
     )
 }
 
-/// Reports whether a dispatch of `run_id` is in flight that may still
-/// record its result: an upstream send or a Built-in Tool that started and
-/// has not ended. A Tool whose body runs in the Program never does once
-/// the Run is ending, so the settle of a termination never waits for one.
-pub(crate) async fn has_dispatch_in_flight(
-    transaction: &mut Transaction<'_>,
-    workspace_id: &coral_workspace::WorkspaceId,
-    run_id: &crate::RunId,
-) -> Result<bool, Error> {
-    for generation in
-        invocation_repository::dispatching_generations_for_run(transaction, workspace_id, run_id)
-            .await?
-    {
-        if !generation_runs_in_program(transaction, &generation).await? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 /// What ending an Invocation found.
 pub(crate) enum FinishOutcome {
     /// The Invocation ended now; the Event rides the caller's chunk.
-    Finished(OwnedEvent),
+    Finished(PendingEvent),
     /// Another completion already won with the same failure code: the durable
     /// decision is the one delivered, and no second Event is written.
     SameFailure,
@@ -158,8 +138,8 @@ pub(crate) async fn finish(
         ended_at_unix_nanos,
     )
     .await?;
-    Ok(FinishOutcome::Finished(OwnedEvent::new(
-        OwnedEventKind::InvocationEnded(admitted.id.clone(), completion.result_kind()),
+    Ok(FinishOutcome::Finished(PendingEvent::new(
+        PendingEventKind::InvocationEnded(admitted.id.clone(), completion.result_kind()),
         ended_at_unix_nanos,
     )))
 }
@@ -174,7 +154,7 @@ pub(crate) async fn finish_approval_failure(
     invocation: &InvocationId,
     failure: CoralFailure,
     now: i64,
-) -> Result<Option<OwnedEvent>, Error> {
+) -> Result<Option<PendingEvent>, Error> {
     let ended = end_pending(tx, run, invocation, failure, now).await?;
     if ended.is_none() {
         tracing::warn!(
@@ -194,12 +174,12 @@ async fn end_pending(
     invocation: &InvocationId,
     failure: CoralFailure,
     now: i64,
-) -> Result<Option<OwnedEvent>, Error> {
+) -> Result<Option<PendingEvent>, Error> {
     if !invocation_repository::end_pending_with_failure(tx, run, invocation, failure, now).await? {
         return Ok(None);
     }
-    Ok(Some(OwnedEvent::new(
-        OwnedEventKind::InvocationEnded(invocation.clone(), InvocationResultKind::CoralFailure),
+    Ok(Some(PendingEvent::new(
+        PendingEventKind::InvocationEnded(invocation.clone(), InvocationResultKind::CoralFailure),
         now,
     )))
 }
@@ -224,7 +204,7 @@ pub(crate) async fn end_nonterminal_invocations(
     run: &RunRecord,
     kind: RunTerminationKind,
     ended_at_unix_nanos: i64,
-) -> Result<Vec<OwnedEvent>, Error> {
+) -> Result<Vec<PendingEvent>, Error> {
     let invocations = invocation_repository::nonterminal_for_run(transaction, run).await?;
     if invocations.is_empty() {
         return Ok(Vec::new());
@@ -277,7 +257,7 @@ pub(crate) async fn end_for_termination(
     result_kind: InvocationResultKind,
     result_json: Option<&str>,
     ended_at_unix_nanos: i64,
-) -> Result<Option<OwnedEvent>, Error> {
+) -> Result<Option<PendingEvent>, Error> {
     if !invocation_repository::end_for_termination(
         transaction,
         run,
@@ -297,8 +277,8 @@ pub(crate) async fn end_for_termination(
         ended_at_unix_nanos,
     )
     .await?;
-    Ok(Some(OwnedEvent::new(
-        OwnedEventKind::InvocationEnded(invocation.id.clone(), result_kind),
+    Ok(Some(PendingEvent::new(
+        PendingEventKind::InvocationEnded(invocation.id.clone(), result_kind),
         ended_at_unix_nanos,
     )))
 }
@@ -323,7 +303,7 @@ pub(crate) async fn settle_lost_dispatches(
     performs: impl Fn(&invocation_repository::StreamInvocation) -> bool,
     completes_lost: &std::collections::HashSet<u64>,
     ended_at_unix_nanos: i64,
-) -> Result<Vec<OwnedEvent>, Error> {
+) -> Result<Vec<PendingEvent>, Error> {
     let mut events = Vec::new();
     for invocation in invocations
         .iter_mut()
@@ -364,7 +344,7 @@ pub(crate) async fn settle_lost(
     invocation: &mut invocation_repository::StreamInvocation,
     recovered: Option<(InvocationResultKind, Option<String>)>,
     ended_at_unix_nanos: i64,
-) -> Result<OwnedEvent, Error> {
+) -> Result<PendingEvent, Error> {
     let (result_kind, result_json) = match recovered {
         Some((InvocationResultKind::UpstreamOutcome, Some(json))) => {
             (InvocationResultKind::UpstreamOutcome, Some(json))
@@ -412,7 +392,7 @@ pub(crate) async fn end_unreachable(
     run: &RunRecord,
     invocation: &InvocationId,
     ended_at_unix_nanos: i64,
-) -> Result<OwnedEvent, Error> {
+) -> Result<PendingEvent, Error> {
     let ended = end_pending(
         transaction,
         run,

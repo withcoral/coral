@@ -1,6 +1,6 @@
 //! The Program of a Run stream: the Run Executor's requests, read in order
 //! on a blocking thread and made as calls on the Run's Program host, which
-//! the in-process isolate calls too. Each request reaches the owner with its
+//! the in-process isolate calls too. Each request reaches the loop with its
 //! number; the answers go back on the stream.
 
 use std::collections::HashMap;
@@ -24,9 +24,9 @@ mod resume;
 
 use super::{StreamLink, StreamRun};
 use crate::engine::{self, ExecutionCompletion};
-use crate::owner::{Message, OwnerHandle};
 use crate::program_output::ProgramOutputWriter;
-use crate::types::AcceptedRun;
+use crate::run_stream::run_loop::{LoopHandle, Message};
+use crate::types::{AcceptedRun, HeldRunId};
 use crate::{FinalValue, RunFailure, RunFailureCode, RunModule};
 
 /// The Run Executor's messages on one Run stream.
@@ -39,7 +39,7 @@ pub(crate) fn start(
     module: &RunModule,
     accepted: &AcceptedRun,
     stream: &Arc<StreamRun>,
-    handle: &OwnerHandle,
+    handle: &LoopHandle,
     invoker: crate::invocation::ToolInvoker,
     deadline_at_unix_nanos: i64,
 ) {
@@ -90,7 +90,7 @@ pub(crate) fn start(
     let mut reader = Reader {
         runtime: tokio::runtime::Handle::current(),
         host,
-        owner: handle.clone(),
+        run_loop: handle.clone(),
         link: stream.link.clone(),
         sources: accepted
             .linked_snapshots
@@ -129,11 +129,11 @@ pub(crate) fn start(
             .then(|| tracing::dispatcher::set_default(&dispatch));
         let _execute = span;
         let message = match reader.read(requests, value_limits) {
-            // `Finish` reached the owner, or the reader detached it before
+            // `Finish` reached the loop, or the reader detached it before
             // its calls dropped.
             Read::Finished | Read::Detached => return,
             Read::Violated => {
-                stream_violated(&handle);
+                stream_violated(handle.held_id());
                 Message::ProgramEnded(ExecutionCompletion::ProgramHostTerminated)
             }
         };
@@ -141,16 +141,16 @@ pub(crate) fn start(
     });
 }
 
-fn stream_violated(handle: &OwnerHandle) {
+pub(super) fn stream_violated(held: &HeldRunId) {
     tracing::warn!(
-        coral.run.id = coral_telemetry::safe::id(handle.held_id()),
+        coral.run.id = coral_telemetry::safe::id(held),
         "the Run Executor broke the Run stream's protocol; the Run is interrupted"
     );
 }
 
 /// How reading the requests ended.
 enum Read {
-    /// `Finish` reached the owner.
+    /// `Finish` reached the loop.
     Finished,
     /// The stream ended, or its server retired.
     Detached,
@@ -177,7 +177,7 @@ enum Body {
 struct Reader {
     runtime: tokio::runtime::Handle,
     host: Arc<engine::host::RunProgramHost>,
-    owner: OwnerHandle,
+    run_loop: LoopHandle,
     link: Arc<StreamLink>,
     /// The Program and each linked Tool's source, by the Tool's id.
     sources: HashMap<String, AuthoredSource>,
@@ -204,17 +204,21 @@ impl Reader {
                     request = requests.next() => request,
                 }
             });
-            let Some(RunRequest {
-                message: Some(run_request::Message::Request(request)),
-            }) = next
-            else {
-                return if next.is_some() {
-                    self.violate()
-                } else {
+            let request = match next.map(|next| next.message) {
+                Some(Some(run_request::Message::Request(request))) => request,
+                Some(Some(run_request::Message::OutputRejected(rejected))) => {
+                    let (Ok(kind), 1..) = (rejected.kind().try_into(), rejected.count) else {
+                        return self.violate();
+                    };
+                    coral_telemetry::metric::outputs_rejected(kind, rejected.count.into());
+                    continue;
+                }
+                Some(_) => return self.violate(),
+                None => {
                     // Before the open Performs drop: their bodies run on.
-                    self.owner.detach();
-                    Read::Detached
-                };
+                    self.run_loop.detach();
+                    return Read::Detached;
+                }
             };
             // Number 0 is no request: the check below refuses it.
             if (1..=self.covered).contains(&request.number) {
@@ -242,15 +246,15 @@ impl Reader {
                 } else {
                     Message::ProgramEnded(completion)
                 };
-                self.owner.send(Message::Request {
+                self.run_loop.send(Message::Request {
                     number,
                     message: Some(Box::new(message)),
                 });
                 return Read::Finished;
             }
             // The call the request makes takes the number; one it does not
-            // take leaves nothing for the owner to record.
-            self.owner.hand_request(number);
+            // take leaves nothing for the loop to record.
+            self.run_loop.hand_request(number);
             let read = match request.kind {
                 Some(request::Kind::Finish(_)) | None => None,
                 Some(request::Kind::Invoke(invoke)) => self.invoke(number, invoke),
@@ -272,7 +276,7 @@ impl Reader {
                     level.and_then(|level| output(self.host.log(level, &log.message, location)))
                 }
             };
-            drop(self.owner.take_request());
+            drop(self.run_loop.take_request());
             if read.is_none() {
                 return self.violate();
             }
@@ -429,7 +433,7 @@ impl Reader {
     }
 }
 
-/// An Emission or a Log the Run Executor sent: one the owner refuses for
+/// An Emission or a Log the Run Executor sent: one the loop refuses for
 /// its value or the budget breaks the protocol, since the Run Executor
 /// checks both first; one it no longer takes is not recorded.
 fn output(written: Result<(), coral_v8::ProgramOutputHostError>) -> Option<()> {
@@ -487,7 +491,7 @@ fn failure(error: ToolHostError) -> invocation_result::Outcome {
 }
 
 /// How the Program ended, as `finish` says; `None` when it breaks the
-/// protocol. The Run's deadline, when reached, is the owner's to record.
+/// protocol. The Run's deadline, when reached, is the loop's to record.
 pub(super) fn completion(
     finish: Finish,
     limits: coral_value::ValueLimits,

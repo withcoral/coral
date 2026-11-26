@@ -492,12 +492,12 @@ async fn an_ended_request_records_one_terminal_event_and_replays_unchanged() {
     }
 }
 
-/// The owner arms a timer at each connection request's deadline when an
+/// The loop arms a timer at each connection request's deadline when an
 /// Invocation parks on it, beside the Run deadline's; when it fires, the
-/// owner sends the parked Invocation back to its held recheck, which records
+/// loop sends the parked Invocation back to its held recheck, which records
 /// what the request became.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_owner_arms_a_timer_at_a_connection_requests_deadline() {
+async fn the_loop_arms_a_timer_at_a_connection_requests_deadline() {
     let server = MockServer::start().await;
     let probe = Arc::new(TimerProbe::default());
     let fixture = TestModules::with_execution_adapters(
@@ -525,7 +525,7 @@ async fn the_owner_arms_a_timer_at_a_connection_requests_deadline() {
         .await
         .unwrap();
     let request = wait_for_connection(&accounts, &tool).await;
-    let timer = crate::owner::Timer::Connection(request.id);
+    let timer = crate::run_stream::run_loop::Timer::Connection(request.id);
     wait_until(|| probe.armed(&timer).is_some()).await;
     let after_nanos = probe.armed(&timer).unwrap();
     let now = fixture.clock.next.load(Ordering::SeqCst);
@@ -535,8 +535,10 @@ async fn the_owner_arms_a_timer_at_a_connection_requests_deadline() {
         request.expires_at.get() - now
     );
     assert!(
-        probe.armed(&crate::owner::Timer::RunDeadline).is_some(),
-        "the Run deadline is the owner's timer too"
+        probe
+            .armed(&crate::run_stream::run_loop::Timer::RunDeadline)
+            .is_some(),
+        "the Run deadline is the loop's timer too"
     );
     let terminal = runs
         .cancel(
@@ -1138,10 +1140,10 @@ async fn caller_connection_reconnect_preserves_account_and_blocks_prepared_dispa
 }
 
 /// A completed connection wakes exactly the Run parked on it: the change
-/// signal rings both parked Runs' owners, each reads just its own pending
+/// signal rings both parked Runs' loops, each reads just its own pending
 /// connection requests, and only the one whose request ended sends its
 /// Invocation back to its held recheck, within the wake gap. That Invocation
-/// dispatches after one enforcement check. The other owner writes nothing: its
+/// dispatches after one enforcement check. The other loop writes nothing: its
 /// Run's ledger head stays where it was, and its request stays pending.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_after_one_enforcement_check()
@@ -1202,7 +1204,7 @@ async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_afte
 
     assert_eq!(terminal.state(), RunState::Succeeded);
     let found_at = probe
-        .first_found(crate::owner::Check::Connections)
+        .first_found(crate::run_stream::run_loop::Check::Connections)
         .expect("a connection check found the request ended");
     // At most one gap after the ring, plus the read itself.
     let found_after = found_at.saturating_duration_since(connected_at);
@@ -1215,7 +1217,7 @@ async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_afte
     assert!(
         prechecks
             .iter()
-            .all(|(check, _)| *check == crate::owner::Check::Connections),
+            .all(|(check, _)| *check == crate::run_stream::run_loop::Check::Connections),
         "no periodic precheck: {prechecks:?}"
     );
     assert_eq!(
@@ -1229,7 +1231,7 @@ async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_afte
     assert_eq!(bystander.state, RunState::Running);
     assert_eq!(
         bystander.chunk_sequence, second_head,
-        "the other Run's owner wrote nothing"
+        "the other Run's loop wrote nothing"
     );
     assert_eq!(
         accounts
@@ -1255,7 +1257,7 @@ async fn a_completed_connection_wakes_exactly_its_parked_run_within_the_gap_afte
 
 /// A wake-up is a hint: with the change listener down, the periodic
 /// precheck still finds a completed connection and the Invocation
-/// dispatches. During the outage the owner's subscription rings nothing and
+/// dispatches. During the outage the loop's subscription rings nothing and
 /// subscribes again only a wake gap apart, which here outlasts the finding.
 /// The test cuts the listener only after the check from the subscription's
 /// first ring.
@@ -1287,14 +1289,14 @@ async fn with_the_change_listener_down_the_periodic_precheck_still_finds_a_compl
         .unwrap();
     wait_for_connection(&accounts, &tool).await;
     probe.until_parked(1).await;
-    // The owner's subscription rings once as it starts, and that ring's
+    // The loop's subscription rings once as it starts, and that ring's
     // check of the connection waits could otherwise read after the
     // connection completes below and find it first.
     wait_until(|| {
         probe
             .prechecks()
             .iter()
-            .any(|(check, _)| *check == crate::owner::Check::Connections)
+            .any(|(check, _)| *check == crate::run_stream::run_loop::Check::Connections)
     })
     .await;
     fixture
@@ -1311,11 +1313,11 @@ async fn with_the_change_listener_down_the_periodic_precheck_still_finds_a_compl
     assert_eq!(terminal.state(), RunState::Succeeded);
     let prechecks = probe.prechecks();
     assert!(
-        prechecks.contains(&(crate::owner::Check::Periodic, 1)),
+        prechecks.contains(&(crate::run_stream::run_loop::Check::Periodic, 1)),
         "the periodic precheck found it: {prechecks:?}"
     );
     assert!(
-        !prechecks.contains(&(crate::owner::Check::Connections, 1)),
+        !prechecks.contains(&(crate::run_stream::run_loop::Check::Connections, 1)),
         "no change wake-up found it: {prechecks:?}"
     );
 }

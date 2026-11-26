@@ -117,10 +117,26 @@ impl Semantic {
 }
 
 /// One entry of the vector list as the vector query found it: the Search
-/// Entity's key and the source stamp the vector was made from.
+/// Entity's key, the source stamp the vector was made from, and its
+/// distance from the query.
 pub(crate) struct NearestVector {
     pub(crate) doc_id: String,
     pub(crate) source_indexed_at: UnixNanos,
+    pub(crate) distance: Distance,
+}
+
+/// The cosine distance of a Search Entity's vector from the query's vector,
+/// as the vector query computed it: lower is nearer. Both stores compute
+/// the cosine distance, so the distances of one request compare across
+/// kinds.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub(crate) struct Distance(pub(crate) f64);
+
+impl Distance {
+    /// A total order, nearest first, for sorting distances.
+    pub(crate) fn order(self, other: Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
 }
 
 /// One Search Entity's row as it stands now: its source stamp, and the
@@ -131,44 +147,70 @@ pub(crate) struct CurrentRow<T> {
 }
 
 /// The entries of `nearest`, in order, whose Search Entity is in `rows`, by
-/// key, with the stamp its vector was made from. A vector of old text, or of
-/// a row that is gone, leaves the list, so that Entity ranks by its words
-/// alone.
+/// key, with the stamp its vector was made from, each with its distance. A
+/// vector of old text, or of a row that is gone, leaves the list, so that
+/// Entity ranks by its words alone.
 pub(crate) fn keep_current<T>(
     nearest: Vec<NearestVector>,
     mut rows: HashMap<String, CurrentRow<T>>,
-) -> Vec<T> {
+) -> Vec<(T, Distance)> {
     nearest
         .into_iter()
         .filter_map(|vector| match rows.remove(&vector.doc_id) {
-            Some(row) if row.indexed_at == vector.source_indexed_at => Some(row.entry),
+            Some(row) if row.indexed_at == vector.source_indexed_at => {
+                Some((row.entry, vector.distance))
+            }
             Some(_) | None => None,
         })
         .collect()
 }
 
-/// A retriever's vector list, best first, and whether the window cut it
-/// short.
+/// A retriever's vector list, best first, each entry with its distance, and
+/// whether the window cut it short.
 pub(crate) struct VectorList<T> {
-    pub(crate) entries: Vec<T>,
+    pub(crate) entries: Vec<(T, Distance)>,
     pub(crate) has_more: bool,
 }
 
-/// One entry of a retriever's window and its rank in the vector list, from
-/// 1.
+impl<T> VectorList<T> {
+    /// The distance of each entry, nearest first.
+    pub(crate) fn distances(&self) -> Vec<Distance> {
+        self.entries
+            .iter()
+            .map(|(_entry, distance)| *distance)
+            .collect()
+    }
+}
+
+/// One entry of a retriever's window, and its place in the vector list
+/// when the list holds it.
 pub(crate) struct Merged<T> {
     pub(crate) entry: T,
-    vector_rank: Option<usize>,
+    vector: Option<VectorPlace>,
+}
+
+/// An entry's place in a vector list: its rank, from 1, and its distance.
+#[derive(Clone, Copy)]
+struct VectorPlace {
+    rank: usize,
+    distance: Distance,
 }
 
 impl<T> Merged<T> {
     /// Whether the entry is strong by its place in the vector list: among
     /// the manifest's strong count at its top. The count is a constant, so
     /// the strong entries are the same for every limit. A retriever's own
-    /// strong rule makes an entry strong too, wherever it came from.
+    /// strong rule makes an entry strong too, wherever it came from. Only
+    /// the Tool retriever reads it: a place makes no Authored Tool strong,
+    /// since the rerank step judges its distance (ADR 0044).
     pub(crate) fn strong_by_vector(&self) -> bool {
-        self.vector_rank
-            .is_some_and(|rank| rank <= MANIFEST.strong_count)
+        self.vector
+            .is_some_and(|place| place.rank <= MANIFEST.strong_count)
+    }
+
+    /// The entry's distance from the query, when the vector list holds it.
+    pub(crate) fn distance(&self) -> Option<Distance> {
+        self.vector.map(|place| place.distance)
     }
 }
 
@@ -195,7 +237,7 @@ pub(crate) fn merged_window<T, K: Eq + Hash>(
             .into_iter()
             .map(|entry| Merged {
                 entry,
-                vector_rank: None,
+                vector: None,
             })
             .collect(),
     };
@@ -212,7 +254,7 @@ pub(crate) fn merged_window<T, K: Eq + Hash>(
 /// every request while the index is unchanged.
 fn merge<T, K: Eq + Hash>(
     lexical: Vec<T>,
-    vector: Vec<T>,
+    vector: Vec<(T, Distance)>,
     key: impl Fn(&T) -> K,
     weights: Merge,
     window: usize,
@@ -224,23 +266,24 @@ fn merge<T, K: Eq + Hash>(
             slots.push(Slot {
                 entry,
                 lexical_rank: Some(rank),
-                vector_rank: None,
+                vector: None,
             });
             slots.len() - 1
         });
     }
-    for (rank, entry) in (1..).zip(vector) {
+    for (rank, (entry, distance)) in (1..).zip(vector) {
+        let place = VectorPlace { rank, distance };
         if let Some(slot) = positions
             .get(&key(&entry))
             .and_then(|position| slots.get_mut(*position))
         {
-            slot.vector_rank.get_or_insert(rank);
+            slot.vector.get_or_insert(place);
         } else {
             positions.insert(key(&entry), slots.len());
             slots.push(Slot {
                 entry,
                 lexical_rank: None,
-                vector_rank: Some(rank),
+                vector: Some(place),
             });
         }
     }
@@ -251,7 +294,7 @@ fn merge<T, K: Eq + Hash>(
         .take(window)
         .map(|slot| Merged {
             entry: slot.entry,
-            vector_rank: slot.vector_rank,
+            vector: slot.vector,
         })
         .collect()
 }
@@ -259,14 +302,14 @@ fn merge<T, K: Eq + Hash>(
 struct Slot<T> {
     entry: T,
     lexical_rank: Option<usize>,
-    vector_rank: Option<usize>,
+    vector: Option<VectorPlace>,
 }
 
 impl<T> Slot<T> {
     fn score(&self, weights: Merge) -> Score {
         [
             (self.lexical_rank, weights.lexical_weight),
-            (self.vector_rank, weights.vector_weight),
+            (self.vector.map(|place| place.rank), weights.vector_weight),
         ]
         .into_iter()
         .filter_map(|(rank, weight)| {

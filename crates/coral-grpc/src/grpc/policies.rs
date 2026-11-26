@@ -17,6 +17,13 @@ pub(super) fn error(value: coral_policy::Error) -> Status {
         coral_policy::Error::ToolNotFound | coral_policy::Error::RefusedToolPaths { .. } => {
             status::not_found()
         }
+        coral_policy::Error::SubAgentConsentRequired => status::safe_status(
+            tonic::Code::FailedPrecondition,
+            "SUB_AGENT_CONSENT_REQUIRED",
+        ),
+        coral_policy::Error::SubAgentModelChanged => {
+            status::safe_status(tonic::Code::Aborted, "SUB_AGENT_MODEL_CHANGED")
+        }
         coral_policy::Error::CorruptData(_)
         | coral_policy::Error::Database(_)
         | coral_policy::Error::EventFields(_) => status::unavailable(),
@@ -196,6 +203,16 @@ mod tests {
         let cases = [
             (E::InvalidBatch, Code::InvalidArgument, "INVALID_ARGUMENT"),
             (E::ToolNotFound, Code::NotFound, "NOT_FOUND"),
+            (
+                E::SubAgentConsentRequired,
+                Code::FailedPrecondition,
+                "SUB_AGENT_CONSENT_REQUIRED",
+            ),
+            (
+                E::SubAgentModelChanged,
+                Code::Aborted,
+                "SUB_AGENT_MODEL_CHANGED",
+            ),
             (
                 E::RefusedToolPaths {
                     missing: vec!["coral.providers.repos.nope".to_owned()],

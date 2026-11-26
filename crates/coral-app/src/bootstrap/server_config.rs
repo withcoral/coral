@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 
 use super::env::AppEnvironment;
 use super::secret_store_config::SecretStoreDefinitions;
-use super::sub_agent::ConfiguredSubAgent;
+use super::sub_agent::SubAgentToolsFactory;
 use super::{AppError, is_loopback_ip};
 use crate::auth::{
     AuthListenerSettings, AuthSection, AuthServerError, AuthSettings, CoralAuthorizationServer,
@@ -163,14 +163,7 @@ impl LoadedServerConfig {
         launcher: &Launcher,
         grpc_bind: Option<SocketAddr>,
     ) -> Result<DeploymentConfig, AppError> {
-        let mut document = Document::parse(&self.raw).map_err(AppError::ConfigDecode)?;
-        let sub_agent = match &launcher.sub_agent_factory {
-            Some(factory) => {
-                ConfiguredSubAgent::take(factory, &mut document).map_err(AppError::ConfigDecode)?
-            }
-            None => None,
-        };
-        // A section that no factory took is an unknown field here.
+        let document = Document::parse(&self.raw).map_err(AppError::ConfigDecode)?;
         let mut file = ServerConfigFile::decode(document)?;
         let auth = file.auth_settings()?;
         let ServerConfigFile {
@@ -258,7 +251,7 @@ impl LoadedServerConfig {
             credential_key_env,
             license,
             secret_stores,
-            sub_agent,
+            sub_agent_factory: launcher.sub_agent_factory.clone(),
             session_auth,
             telemetry: TelemetryConfig { otel },
         })
@@ -293,7 +286,8 @@ pub(crate) struct DeploymentConfig {
     license: Option<LicenseSource>,
     /// None when the deployment turned Secret Stores off.
     secret_stores: Option<SecretStoreDefinitions>,
-    sub_agent: Option<ConfiguredSubAgent>,
+    /// Builds the Sub-agent's Tools. None when the launch registered none.
+    sub_agent_factory: Option<std::sync::Arc<dyn SubAgentToolsFactory>>,
     session_auth: Option<SessionAuthConfig>,
     telemetry: TelemetryConfig,
 }
@@ -461,10 +455,10 @@ impl DeploymentConfig {
         self.local_run_executors
     }
 
-    /// Whether the config file has the registered Sub-agent's section, so
-    /// that the built-in catalog holds `agent` and `cancelAgent`.
-    pub(crate) const fn configures_sub_agent(&self) -> bool {
-        self.sub_agent.is_some()
+    /// Whether the launch registered a Sub-agent, whose Tools a Workspace's
+    /// Built-in catalog then holds while the Organization has a model.
+    pub(crate) const fn has_sub_agent(&self) -> bool {
+        self.sub_agent_factory.is_some()
     }
 
     /// Reef's origin, where Coral links a person.
@@ -531,7 +525,7 @@ impl DeploymentConfig {
             outbound_policy: self.outbound_policy(defaults),
             mcp_oauth_client_bootstrap: self.mcp_oauth_client_bootstrap(),
             mcp_http: self.mcp_http.clone(),
-            sub_agent: self.sub_agent.clone(),
+            sub_agent_factory: self.sub_agent_factory.clone(),
             auth_bind_addr: self.auth_bind_addr,
             session_auth: self.resolve_session_auth()?,
             human_interface: self.human_interface.clone(),
@@ -776,7 +770,7 @@ impl LicenseSettings {
 struct RuntimeSettings {
     execution_heap_bytes: usize,
     compiler_heap_bytes: usize,
-    /// Program output a Run Owner may hold applied but not yet recorded before
+    /// Program output a Run's loop may hold applied but not yet recorded before
     /// Program requests wait for their chunk to commit. At least twice the
     /// chunk bytes cap; 8 MiB by default.
     #[serde(rename = "applied_output_cap_bytes")]
@@ -1188,7 +1182,7 @@ pub struct ServeSettings {
     outbound_policy: coral_outbound::DestinationPolicy,
     mcp_oauth_client_bootstrap: coral_provider::account::ClientBootstrapPolicy,
     pub(super) mcp_http: McpHttpServeConfig,
-    pub(super) sub_agent: Option<ConfiguredSubAgent>,
+    pub(super) sub_agent_factory: Option<std::sync::Arc<dyn SubAgentToolsFactory>>,
     auth_bind_addr: SocketAddr,
     pub(super) session_auth: Option<SessionAuthSettings>,
     human_interface: coral_mcp::HumanInterfaceUrl,

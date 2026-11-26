@@ -181,9 +181,12 @@ All suites run real Coral plus the production Reef server in private temporary
 state. The main suite uses SQLite or Postgres and genuine Coral sign-in.
 Local and Desktop checks use SQLite and the implicit Organization Owner. They use
 loopback port zero. The product fixture reserves ephemeral loopback ports before constructing
-OAuth origins, releases each reservation just before its owning child binds, and
-fails startup if another process claims the port. It never falls back to that
-other server. It discovers only the child processes' reported
+OAuth origins and releases each reservation just before its owning child binds.
+If another process takes the port first, the child exits on its bind failure.
+On SQLite, the harness then starts the whole stack again on fresh ports and
+fresh state, at most three times. On Postgres, the failure is final: Coral
+migrates the runner's one database before it binds a port. Any other startup
+failure fails at once. The fixture never falls back to that other server. It discovers only the child processes' reported
 addresses and waits for MCP and Reef `/readyz` (including Reef's real private gRPC
 health call). It never attaches to a conventional port or reads developer Coral,
 Postgres, auth or telemetry settings. Local mode uses the actual implicit

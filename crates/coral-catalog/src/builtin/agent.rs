@@ -39,12 +39,12 @@ pub(super) fn agent_definition() -> Definition {
         key: BuiltinTool::Agent.key(),
         summary: "Delegate data work to one of Coral's agents",
         presentation: ToolPresentation::new(
-            Some("Agent".to_string()),
+            Some("Sub-agent".to_string()),
             "Delegate data work, reads and writes, to one of Coral's agents. It runs programs \
              with your permissions, in the task of this run."
                 .to_string(),
             false,
-            vec!["Agents".to_string()],
+            vec!["Sub-agent".to_string()],
             Some(AGENT_GUIDANCE.to_string()),
         ),
         // Not read-only: it starts work. That work is the caller's own, and
@@ -62,12 +62,12 @@ pub(super) fn cancel_definition() -> Definition {
         key: BuiltinTool::CancelAgent.key(),
         summary: "Stop one of the agents you started",
         presentation: ToolPresentation::new(
-            Some("Cancel agent".to_string()),
+            Some("Cancel sub-agent".to_string()),
             "Stop one of the agents you started: its turn and its unfinished runs. It returns \
              the agent as coral.agent does."
                 .to_string(),
             false,
-            vec!["Agents".to_string()],
+            vec!["Sub-agent".to_string()],
             None,
         ),
         hints: ToolHints::new(Some(false), Some(true), Some(true), Some(false)),
@@ -192,10 +192,6 @@ pub struct AgentResult {
     /// What the turn's runs wait for from a person.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub required_actions: Vec<AgentRequiredAction>,
-    /// How the agent said its work went, if it said so in this turn.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "String", extend("enum" = ["success", "failure"]))]
-    pub outcome: Option<&'static str>,
     /// Each program and search of the turn, oldest first.
     pub steps: Vec<AgentStep>,
     /// Pass it as `cursor` when you call coral.agent on this agent again.
@@ -276,7 +272,6 @@ pub(super) mod tests {
             answer: None,
             failure: None,
             required_actions: Vec::new(),
-            outcome: None,
             steps: Vec::new(),
             next_cursor: "t1".to_owned(),
         };
@@ -299,7 +294,6 @@ pub(super) mod tests {
             answer: Some("Twelve.".to_owned()),
             failure: Some("the model gave no answer".to_owned()),
             required_actions: vec![waiting],
-            outcome: Some("success"),
             steps: steps.to_vec(),
             ..running.clone()
         };

@@ -2029,7 +2029,7 @@ impl ManyRows {
 async fn a_long_page_sends_the_statements_of_a_short_one() {
     let rows = ManyRows::new().await;
     // The Runs that wait keep sending statements on the fixture's handle:
-    // their owners renew leases and recheck parked waits. The reads run on a
+    // their loops recheck parked waits. The reads run on a
     // peer handle, which counts only its own statements.
     let reads = rows.fixture.test_database.connect_peer().await.unwrap();
     let mut tx = reads.begin_read_snapshot().await.unwrap();

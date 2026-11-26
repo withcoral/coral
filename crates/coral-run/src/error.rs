@@ -613,7 +613,7 @@ impl Error {
             Self::Tools(error) => error.database_error(),
             // Name every variant so a new one that holds a database error
             // is found here: an unanswered write that this misses reads as
-            // a definite answer, and stops an owner that should retry.
+            // a definite answer, and stops a loop that should retry.
             Self::InvalidInput(_)
             | Self::RunNotFound
             | Self::ApprovalNotFound

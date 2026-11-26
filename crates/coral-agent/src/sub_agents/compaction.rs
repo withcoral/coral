@@ -11,7 +11,7 @@ use super::{RunningTurn, SubAgents, ThreadEntry, TurnFailure};
 
 impl SubAgents {
     /// The model's reply to the thread, compacted first when the request
-    /// would leave less than [`RESERVE_TOKENS`] of the configured window free.
+    /// would leave less than [`RESERVE_TOKENS`] of its window free.
     /// When the server still answers that the request is too long, the thread
     /// is compacted and, if that added a summary, sent once more. Otherwise
     /// the refusal stands.
@@ -22,22 +22,21 @@ impl SubAgents {
         tools: &[ToolText],
         thread: &mut Vec<ThreadEntry>,
     ) -> Result<Reply, TurnFailure> {
-        let window = self.model.context_window();
-        if let Some(window) = window
-            && is_near(system, tools, thread, window)
-        {
+        let model = &turn.model.client;
+        let window = model.context_window();
+        if is_near(system, tools, thread, window) {
             self.compact(turn, system, tools, thread, window).await?;
         }
-        let reply = self.model.reply(system, &for_model(thread), tools).await;
-        let (Err(ModelError::ContextTooLong(_)), Some(window)) = (&reply, window) else {
+        let reply = model.reply(system, &for_model(thread), tools).await;
+        if !matches!(reply, Err(ModelError::ContextTooLong(_))) {
             return Ok(reply?);
-        };
+        }
         // The server counts tokens and Coral estimates them. With nothing
         // left to summarize, the refusal stands.
         if !self.compact(turn, system, tools, thread, window).await? {
             return Ok(reply?);
         }
-        Ok(self.model.reply(system, &for_model(thread), tools).await?)
+        Ok(model.reply(system, &for_model(thread), tools).await?)
     }
 
     /// Compacts the thread in a span that records its tokens before and
@@ -82,8 +81,9 @@ impl SubAgents {
         let older = thread.get(start..kept_from).unwrap_or_default();
         let previous = previous.map(|(text, _)| text);
         let request = [summary_request(previous, older, window)];
-        let summarized = self
+        let summarized = turn
             .model
+            .client
             .summarize(SUMMARIZER, &request, SUMMARY_MAX_TOKENS);
         let reply = match summarized.await {
             Ok(reply) if !reply.message.text().trim().is_empty() => reply,
