@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=../schema.json
+schema_version: 1
+id: airspeed_mcp
+# The catalog offers this beside the OpenAPI Recipe, on the one airspeed card.
+service: airspeed
+display_name: Airspeed
+description: Airspeed's hosted MCP server.
+icons:
+  light: logo.svg
+
+source:
+  mcp:
+    url: https://mcp.goairspeed.com/mcp-oauth
+
+authentication:
+  options:
+    oauth:
+      # Airspeed's authorization server supports dynamic client registration
+      # and PKCE, so Coral registers its own client. The server advertises an
+      # empty scopes_supported list and reads no scopes, so the Recipe names
+      # none. Airspeed retired API keys for MCP; they work only with the REST
+      # API.
+      method: oauth_discovery
+      label: Sign in with Airspeed
+      documentation_url: https://docs.goairspeed.com/articles/1087586625-airspeed-mcp-server
+      flow: authorization_code
