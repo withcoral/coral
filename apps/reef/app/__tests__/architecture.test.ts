@@ -638,7 +638,7 @@ it('guards every route action with mutationForm or names why not', () => {
 // notices a file, a manifest entry or a pre-bundle entry that only an installed copy needs.
 describe('the Wax package', () => {
   const waxDir = path.join(appDir, 'wax')
-  const waxFiles = filesUnder(waxDir, (name) => /\.(?:[cm]?[jt]sx?|css)$/.test(name))
+  const waxFiles = filesUnder(waxDir, (name) => /\.(?:[cm]?[jt]s|[jt]sx|css)$/.test(name))
   // The unit tests stay out of the tarball: `files` in the manifest.
   const published = waxFiles.filter((file) => !/\.test\.tsx?$/.test(file))
   // A story and a Storybook helper reach an app's Storybook, never its pages.
@@ -711,7 +711,7 @@ describe('the Wax package', () => {
   it('lists each run-time import for the dev server of an app', () => {
     const imported = published
       // A `.css.ts` file runs at build time and leaves only class names.
-      .filter((file) => /\.tsx?$/.test(file) && !/\.(?:css|d)\.ts$/.test(file))
+      .filter((file) => !/\.css$|\.(?:css|d)\.ts$/.test(file))
       .filter((file) => !isStorybookFile(file))
       .flatMap((file) => moduleSpecifiers(file))
       .filter(({ runtime, specifier }) => runtime && packageName(specifier) !== null)
