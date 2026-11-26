@@ -85,6 +85,7 @@ fn names_and_refusals_keep_their_forms() {
         ("Refused 2026-11-26T10:15:42Z", false),
         ("1refused 2026-11-26T10:15:42Z", false),
         ("refused 2026-02-30T10:15:42Z", false),
+        ("refused 2026-12-31T23:59:60Z", false),
         ("refused 2026-11-26T10:15:42", false),
         ("refused 2026-11-26 10:15:42Z", false),
         ("refused 2026-11-26T10:15:42+00:00", false),
@@ -106,28 +107,33 @@ fn names_and_refusals_keep_their_forms() {
 
 #[test]
 fn a_rejected_mode_setting_names_its_field_and_never_its_value() {
-    for (settings, expected) in [
+    for (settings, field, reason) in [
         (
             format!("sign_in_url = '{SECRET}'"),
-            "sign_in_url: must be a URL",
+            "sign_in_url",
+            "must be a URL",
         ),
         (
             "sign_in_url = 7".to_owned(),
-            "sign_in_url: unsupported value",
+            "sign_in_url",
+            "unsupported value",
         ),
         (
             "sign_in_url = 'http://idp.example.test/'".to_owned(),
-            "sign_in_url: must be https",
+            "sign_in_url",
+            "must be https",
         ),
-        (String::new(), "missing field `sign_in_url`"),
+        (String::new(), "", "missing field `sign_in_url`"),
     ] {
         let (built, environment) = super::tests::settings(&settings);
         let Err(error) = TestModeFactory.build(&built, &environment) else {
             panic!("{settings}: expected a refusal");
         };
-        let error = error.to_string();
-        assert!(error.starts_with(expected), "{settings}: {error}");
-        assert!(!error.contains(SECRET), "{settings}: {error}");
+        assert_eq!(
+            (error.field(), error.reason()),
+            (field, reason),
+            "{settings}"
+        );
     }
 }
 

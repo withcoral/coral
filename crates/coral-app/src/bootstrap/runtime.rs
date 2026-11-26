@@ -32,6 +32,7 @@ pub struct Extensions {
     pub secret_store_kinds: coral_secret_store::SecretStoreKinds,
     /// The sign-in modes this binary adds to the `oidc` mode every build
     /// has. A `mode` in `[auth.provider]` that names no mode refuses the start.
+    /// `oidc` is the build's own: a mode registered under that name never runs.
     pub sign_in_modes: coral_sign_in::SignInModes,
     /// The Enterprise Features this binary contains, which Reef shows with
     /// their state. Core registers none.

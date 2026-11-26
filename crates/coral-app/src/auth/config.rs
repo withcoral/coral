@@ -587,7 +587,7 @@ fn provider_choice(
     let mode = match table.remove("mode") {
         None => None,
         Some(toml::Value::String(mode)) => Some(mode),
-        Some(_) => return Err(invalid_provider("mode: unsupported value")),
+        Some(_) => return Err(missing_mode(None, modes)),
     };
     let name = match mode.as_deref() {
         None | Some(OIDC_MODE) => {
@@ -605,7 +605,7 @@ fn provider_choice(
         Some(name) => name,
     };
     let Some(factory) = modes.get(name) else {
-        return Err(missing_mode(name, modes));
+        return Err(missing_mode(Some(name), modes));
     };
     let coral_url = Url::parse(coral_url)
         .map_err(|_error| config_error("listeners.auth.public_url is not a URL"))?;
@@ -624,10 +624,10 @@ fn at_provider(error: &SettingError) -> String {
     }
 }
 
-/// The one refusal for every `mode` this build lacks. It repeats the value
-/// only when it has the form of a mode's name, since an operator can paste a
-/// secret under the wrong key.
-fn missing_mode(value: &str, modes: &SignInModes) -> AuthServerError {
+/// The one refusal for every `mode` this build lacks, `value` being the
+/// string it holds, if any. It repeats the value only when it has the form of
+/// a mode's name, since an operator can paste a secret under the wrong key.
+fn missing_mode(value: Option<&str>, modes: &SignInModes) -> AuthServerError {
     let mut names: Vec<&str> = modes.names().filter(|name| *name != OIDC_MODE).collect();
     names.sort_unstable();
     let names = std::iter::once(OIDC_MODE)
@@ -635,10 +635,9 @@ fn missing_mode(value: &str, modes: &SignInModes) -> AuthServerError {
         .map(|name| format!("`{name}`"))
         .collect::<Vec<_>>()
         .join(", ");
-    let mode = if ModeName::is_name(value) {
-        format!("sign-in mode `{value}`")
-    } else {
-        "such sign-in mode".to_owned()
+    let mode = match value.filter(|value| ModeName::is_name(value)) {
+        Some(value) => format!("sign-in mode `{value}`"),
+        None => "such sign-in mode".to_owned(),
     };
     invalid_provider(format!(
         "mode: this build has no {mode}. The modes of this build: {names}"
@@ -1774,7 +1773,11 @@ mod tests {
                 SignInModes::default(),
                 "this build has no such sign-in mode. The modes of this build: `oidc`",
             ),
-            ("7", SignInModes::default(), "unsupported value"),
+            (
+                "7",
+                SignInModes::default(),
+                "this build has no such sign-in mode. The modes of this build: `oidc`",
+            ),
         ] {
             let raw = with_mode(mode, "");
             let Err(error) = auth_settings_with(&raw, &modes) else {
@@ -1792,10 +1795,6 @@ mod tests {
         let start = "sign_in_url = 'https://idp.example.test/start'";
         for (settings, expected) in [
             (start, ".mode: sign-in mode `test` cannot serve sign-in yet"),
-            (
-                "sign_in_url = 'http://idp.example.test/start'",
-                ".sign_in_url: must be https",
-            ),
             (
                 &format!("{start}\nissuer = 'https://accounts.example.test'"),
                 ".issuer: unknown field `issuer`",

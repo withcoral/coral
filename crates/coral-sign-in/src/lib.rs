@@ -363,13 +363,15 @@ impl Refusal {
     }
 }
 
-/// `YYYY-MM-DDTHH:MM:SSZ`, and a time that exists.
+/// `YYYY-MM-DDTHH:MM:SSZ`, and a time that exists. A leap second (`:60`) is
+/// refused, as Reef refuses one.
 fn is_time(value: &str) -> bool {
     value.len() == 20
         && value.bytes().enumerate().all(|(index, byte)| match index {
             4 | 7 => byte == b'-',
             10 => byte == b'T',
             13 | 16 => byte == b':',
+            17 => (b'0'..=b'5').contains(&byte),
             19 => byte == b'Z',
             _ => byte.is_ascii_digit(),
         })
